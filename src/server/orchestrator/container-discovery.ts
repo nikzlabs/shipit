@@ -13,6 +13,7 @@ import {
 } from "./session-container.js";
 import { cleanupSessionDockerResources } from "./container-lifecycle.js";
 import { getContainerFreshness } from "./container-freshness.js";
+import { setWorkerAuthToken, workerTokenFromContainerEnv } from "./worker-auth.js";
 
 // ---------------------------------------------------------------------------
 // Internal types for dependency injection
@@ -97,11 +98,20 @@ export async function rediscoverContainers(
         // valid workspace dir, bind mount validation would be unsafe
         if (!resolved?.workspaceDir) continue;
         const dockerAccess = resolved.dockerAccess;
+        // SHI-311 — the container we're adopting was created by a previous
+        // orchestrator process, so its worker token exists only in its own env.
+        // Read it back rather than persisting a key orchestrator-side; a
+        // container from before the mechanism simply has none (its worker gates
+        // only the loopback-only routes).
+        const workerUrl = `http://${networkInfo.IPAddress}:${deps.workerPort}`;
+        const workerToken = workerTokenFromContainerEnv(info.Config?.Env);
+        setWorkerAuthToken(workerUrl, workerToken);
         deps.containers.set(sessionId, {
           id: ci.Id,
           sessionId,
           containerIp: networkInfo.IPAddress,
-          workerUrl: `http://${networkInfo.IPAddress}:${deps.workerPort}`,
+          workerUrl,
+          workerToken,
           status: "running",
           workerBuildId: ci.Labels?.[CONTAINER_BUILD_ID_LABEL] || undefined,
           hostWorkspaceDir: resolved.workspaceDir,
@@ -168,11 +178,17 @@ export async function adoptRunningContainer(
         // the runner, same as the no-resolver path).
         if (!resolved?.workspaceDir) return false;
         const dockerAccess = resolved.dockerAccess;
+        // SHI-311 — see rediscoverContainers: the token lives in the adopted
+        // container's own env.
+        const workerUrl = `http://${networkInfo.IPAddress}:${deps.workerPort}`;
+        const workerToken = workerTokenFromContainerEnv(info.Config?.Env);
+        setWorkerAuthToken(workerUrl, workerToken);
         deps.containers.set(sessionId, {
           id: ci.Id,
           sessionId,
           containerIp: networkInfo.IPAddress,
-          workerUrl: `http://${networkInfo.IPAddress}:${deps.workerPort}`,
+          workerUrl,
+          workerToken,
           status: "running",
           workerBuildId: ci.Labels?.[CONTAINER_BUILD_ID_LABEL] || undefined,
           hostWorkspaceDir: resolved.workspaceDir,

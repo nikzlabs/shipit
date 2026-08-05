@@ -18,6 +18,7 @@
  * is about to run.
  */
 
+import path from "node:path";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
 import type { ChatHistoryManager } from "./chat-history.js";
@@ -55,6 +56,8 @@ import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 import { routeFromSelection } from "./provider-route-preflight.js";
 import { failoverNotice, failoverPinnedSession } from "./services/provider-account-switch.js";
 import { emitNoticeInTurn } from "./chat-card-persistence.js";
+import { ensureCodexHomeInitialized } from "./agents/codex/home-init.js";
+import { ensureLocalAgentOpsHost } from "./local-agent-ops.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { collectMcpAgentEnv } from "./secret-resolver.js";
 import { buildConversationReplay } from "./services/replay.js";
@@ -484,6 +487,43 @@ export async function prepareSessionAgentEnvironment(
     } catch (err) {
       console.warn("[local-credentials] updating agent home links failed:", getErrorMessage(err));
     }
+
+    // The other half of the Codex cold-start gate (`agents/codex/home-init.ts`).
+    //
+    // In local mode this turn's CLI spawns with HOME at the account root the
+    // links above just pointed at — the SAME root `graduateSession`'s naming CLI
+    // is spawning against right now, on this very message. Codex's first-run
+    // initialization of that root is not concurrency-safe, so on the first turn
+    // after connecting an account the two collide and the loser exits 1 with
+    // `failed to initialize sqlite state runtime`. When the loser is the turn,
+    // the user gets a dead turn — while naming succeeds and gives the session a
+    // real title and branch, so it reads like a turn that ran.
+    //
+    // Awaiting here rather than in the adapter keeps `CodexAgentProcess.run()`
+    // synchronous, and env-prep is already the awaited pre-spawn step. Costs one
+    // directory read once the root is warm; the naming call awaits the same
+    // single-flight promise, so only one process ever does the initializing.
+    //
+    // eslint-disable-next-line no-restricted-syntax -- genuine per-CLI-shape exception (docs/155): the non-atomic first-run init of a `.codex` state directory is a property of the Codex CLI, not a capability any agent could declare.
+    if (agentId === "codex" && accountId) {
+      await ensureCodexHomeInitialized(
+        path.join(providerAccountCredentialRoot(deps.credentialsDir, agentId, accountId), ".codex"),
+      );
+    }
+
+    // The `/agent-ops` host that makes the `gh` shim work here (docs/251).
+    //
+    // A containerized turn reaches `gh` through the worker's broker; local mode
+    // has no worker, so `Dockerfile.dogfood` shipped no shim and a dogfood turn
+    // could not open a PR. This starts a session-bound loopback host whose URL
+    // reaches the CLI as `SHIPIT_AGENT_OPS_URL` (`local-agent-mcp.ts`).
+    //
+    // Awaited here for the same reason as the Codex gate above: the adapters
+    // spawn synchronously, so the URL has to be in the registry BEFORE the
+    // spawn reads it. Single-flight, so a session's later turns are a map hit.
+    // Fails open — a host that cannot start leaves `gh` unavailable for the
+    // turn rather than killing it.
+    await ensureLocalAgentOpsHost({ sessionId });
 
     // Step 1c (docs/118, SHI-59): the local-mode workspace-trust write — the third
     // container-gated writer this mode was missing, after SHI-282 and SHI-298.

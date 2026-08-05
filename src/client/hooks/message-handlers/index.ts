@@ -7,6 +7,7 @@ import { handleTurnSnapshot } from "./turn-snapshot.js";
 import { handleAgentInterrupted } from "./agent-interrupted.js";
 import { handleActionChecklistCard } from "./action-checklist-card.js";
 import { handleBranchAutoResetCard } from "./branch-auto-reset-card.js";
+import { handleSessionRenamedCard } from "./session-renamed-card.js";
 import { handleBranchSyncedCard } from "./branch-synced-card.js";
 import { handleAuthRequired } from "./auth-required.js";
 import { handleAutoResolveResult } from "./auto-resolve-result.js";
@@ -64,6 +65,7 @@ import { handleRewindComplete } from "./rewind-complete.js";
 import { handleRewindPreview } from "./rewind-preview.js";
 import { handleRewindRestored } from "./rewind-restored.js";
 import { handleRewindSnapshotAvailable } from "./rewind-snapshot-available.js";
+import { handleSecretBlockStatus } from "./secret-block-status.js";
 import { handleSecretsStatus } from "./secrets-status.js";
 import { handleServiceList } from "./service-list.js";
 import { handleServiceStatus } from "./service-status.js";
@@ -79,6 +81,7 @@ import { handleSessionStatus } from "./session-status.js";
 import { handleSessionContainerFreshness } from "./session-container-freshness.js";
 import { handleSubAgentConsultCard } from "./sub-agent-consult-card.js";
 import { handleSubAgentSpawn } from "./sub-agent-spawn.js";
+import { handleSubagentReportUpdate } from "./subagent-report-update.js";
 import { handleSystemNotice } from "./system-notice.js";
 import { handleSystemUserMessage } from "./system-user-message.js";
 import { handleTemplateApplied } from "./template-applied.js";
@@ -121,6 +124,7 @@ export const messageHandlers: MessageHandlerMap = {
   auto_resolve_result: handleAutoResolveResult,
   auto_resolve_started: handleAutoResolveStarted,
   branch_auto_reset_card: handleBranchAutoResetCard,
+  session_renamed_card: handleSessionRenamedCard,
   branch_synced_card: handleBranchSyncedCard,
   agent_event: handleAgentEvent,
   turn_snapshot: handleTurnSnapshot,
@@ -180,6 +184,7 @@ export const messageHandlers: MessageHandlerMap = {
   rewind_preview: handleRewindPreview,
   rewind_restored: handleRewindRestored,
   rewind_snapshot_available: handleRewindSnapshotAvailable,
+  secret_block_status: handleSecretBlockStatus,
   secrets_status: handleSecretsStatus,
   service_list: handleServiceList,
   service_status: handleServiceStatus,
@@ -195,6 +200,7 @@ export const messageHandlers: MessageHandlerMap = {
   session_container_freshness: handleSessionContainerFreshness,
   sub_agent_consult_card: handleSubAgentConsultCard,
   sub_agent_spawn: handleSubAgentSpawn,
+  subagent_report_update: handleSubagentReportUpdate,
   system_notice: handleSystemNotice,
   system_user_message: handleSystemUserMessage,
   template_applied: handleTemplateApplied,
@@ -247,12 +253,15 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "permission_resolved",
   "release_card",
   "self_merge_watch_card",
+  "session_renamed_card",
   "session_report_card",
   "session_spawn_failed",
   "session_spawned",
   "session_container_freshness",
+  "secret_block_status",
   "sub_agent_consult_card",
   "sub_agent_spawn",
+  "subagent_report_update",
   "system_notice",
   "system_user_message",
   "message_steered",

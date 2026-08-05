@@ -57,6 +57,29 @@
       it; and `sliceSubagentReport` rebuilds the block array in place so a
       report's image survives, with URL substitution running before the clamp.
 
+## Retiring a finished background subagent's card (2026-08-04, from a production incident)
+
+- [x] Requirements 10–11 written from the incident's own terms, with a dated receipt
+- [x] Confirm against a live CLI 2.1.219 run what the completion actually puts on the
+      wire — `tool_use_id`, `status`, `usage`, and a `summary` that IS the report
+- [x] Carry `toolUseId` / `usage` through `AgentSelfWakeEvent` instead of dropping them
+      at the adapter boundary
+- [x] Rewrite the stored `tool_result` in place, so the existing report path renders it
+      with no component change (req 11)
+- [x] Patch the runner's accumulator too — the notification routinely lands mid-turn,
+      where `replaceInProgress` would undo a database-only write
+- [x] `subagent_report_update` so the card retires live, not only on reload (req 10)
+- [x] Failed → error result; stopped → said plainly, not dressed as a failure (reqs 9, 11)
+- [x] Guard: a background **Bash** command's notification must not overwrite its result
+- [x] Guard: a repeat notification must not clobber the report already there
+- [x] Tests: pure logic, adapter mapping, client handler, and an integration test that
+      reads `GET /history` (mid-turn, post-turn, failure, Bash). Three of the four fail
+      against the pre-fix code
+- [x] docs/235 and docs/109 guard tests still green, `self-wake-midturn` included
+- [x] `npm run typecheck` + `npm run lint:dev` clean
+- [ ] Verify the retired card in a live browser render (same gap as the original
+      report work — needs a real backgrounded subagent turn in the dogfood instance)
+
 ## Not done
 
 - [ ] A **nested** report (a subagent's subagent) still renders through the generic

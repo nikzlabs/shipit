@@ -107,6 +107,33 @@ COPY docker/agent-hooks/block-branch-ops.mjs /etc/shipit/agent-hooks/block-branc
 COPY docker/agent-hooks/managed-settings.json /etc/shipit/managed-settings.json
 RUN chmod 0755 /etc/shipit/agent-hooks/stop-pr-check.sh /etc/shipit/agent-hooks/block-branch-ops.mjs
 
+# The curated `gh` shim (docs/251). Both session-worker images install this and
+# this one did not, so a dogfood turn that tried to open a PR got `gh: not
+# found` — which put every PR-shaped feature out of reach of the dogfood loop.
+#
+# TWO differences from the session-worker images' copy of this install, both
+# load-bearing:
+#
+#  1. Paths are `/workspace`, not `/app`. The worker images COPY the repo to
+#     /app; this one bind-mounts the outer session's checkout at /workspace and
+#     shares its node_modules (see docker-compose.yml). Same absolute-path-to-tsx
+#     rationale as the canonical comment in Dockerfile.session-worker.prod: `node
+#     --import tsx` would resolve the bare specifier against the cwd's
+#     node_modules and fail wherever the agent happens to run `gh`.
+#  2. The shim talks to an `/agent-ops` broker, and local mode has no worker
+#     hosting one. `orchestrator/local-agent-ops.ts` starts a session-bound host
+#     per session and passes its address in `SHIPIT_AGENT_OPS_URL`, which the
+#     shim prefers over its `127.0.0.1:$WORKER_PORT` default. Installing the
+#     binary without that host would trade `gh: not found` for a connection
+#     error, which is why this arrives together with it and not before.
+#
+# The `shipit` shim is deliberately NOT installed: it shares the plumbing but
+# only works in part here (`shipit service` needs a ServiceManager and local
+# mode runs no Compose stacks; `shipit agent run` spawns a sub-agent). Tracked
+# with the worker-served MCP tools in SHI-303. See docs/251.
+RUN printf '#!/bin/sh\nexec /workspace/node_modules/.bin/tsx /workspace/src/server/session/agent-shim/gh.ts "$@"\n' > /usr/local/bin/gh \
+ && chmod 0755 /usr/local/bin/gh
+
 # docs/150 §9 — local mode (RUNTIME_MODE=local) hosts the agent processes
 # in-process (claude-adapter / codex-adapter), which resolve their HOME via
 # agentHome(). DEFAULT_AGENT_HOME is /home/shipit, a user this image does not

@@ -128,7 +128,7 @@ describe("connect-time identity policy (req 22)", () => {
 
   it("records the external id and adopts the reported email as the label", () => {
     const account = accounts.create("claude");
-    expect(account.label).toBe("Claude account 1");
+    expect(account.label).toBe("Claude");
     writeClaudeSignIn(account.id, "uuid-1", "dev@example.com");
 
     expect(refuseIfAlreadyConnected("claude", account.id, accounts)).toBeNull();
@@ -158,7 +158,7 @@ describe("connect-time identity policy (req 22)", () => {
     expect(refuseIfAlreadyConnected("claude", account.id, accounts)).toBeNull();
 
     const stored = accounts.get("claude", account.id);
-    expect(stored?.label).toBe("Claude account 1");
+    expect(stored?.label).toBe("Claude");
     expect(stored?.externalId).toBeUndefined();
   });
 

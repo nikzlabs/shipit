@@ -17,6 +17,14 @@
  * immutable definition. The durable record of a submit is the user message in the
  * transcript below, not anything on the card.
  *
+ * The ack is CONDITIONAL ON DELIVERY: `onSubmit` reports whether the message
+ * actually reached the wire, and only a `true` clears the boxes and confirms. A
+ * dropped send keeps the exact selection the user ticked (including the
+ * RECOMMENDED defaults, which the old unconditional clear silently ate) and
+ * shows a transient "couldn't send" line instead. That failure line is the same
+ * client-only, non-persisted category as the ack — it is NOT a lock and NOT a
+ * terminal state: the buttons stay live and pressing Submit again retries.
+ *
  * Two resolve paths, identical across single- and multi-action cards:
  *   • Submit / Do it — concatenate the selected payloads into one user turn.
  *     Disabled when nothing is selected (nothing to send).
@@ -34,6 +42,7 @@ import {
   ChatCircleDotsIcon,
   ArrowRightIcon,
   ListChecksIcon,
+  WarningCircleIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { ActionChecklistCard as ActionChecklistCardData } from "../../server/shared/types.js";
@@ -47,8 +56,11 @@ export interface ActionChecklistCardProps {
   /**
    * Send one user message (queue-aware) — wired to the same follow-up sender the
    * rest of the chat uses, so Submit starts a turn when idle or queues mid-turn.
+   *
+   * MUST return whether the message was accepted for delivery; the card's ack is
+   * gated on it. An absent `onSubmit` is by definition undeliverable.
    */
-  onSubmit?: (text: string) => void;
+  onSubmit?: (text: string) => boolean;
 }
 
 /** How long the transient "Submitted · N sent" ack lingers before fading. */
@@ -67,6 +79,9 @@ export function ActionChecklistCard({ card, onSubmit }: ActionChecklistCardProps
 
   // Transient post-Submit acknowledgement — client-only, never persisted.
   const [ackCount, setAckCount] = useState<number | null>(null);
+  // Transient "the send didn't reach the wire" notice — same category as the
+  // ack. Never a lock: Submit stays enabled so the user can just press again.
+  const [sendFailed, setSendFailed] = useState(false);
   const ackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // eslint-disable-next-line no-restricted-syntax -- clears the pending transient-ack timer on unmount so it can't fire setState after teardown; there is no event-handler/derived-state equivalent for unmount cleanup.
   useEffect(
@@ -80,6 +95,7 @@ export function ActionChecklistCard({ card, onSubmit }: ActionChecklistCardProps
     if (ackTimer.current) clearTimeout(ackTimer.current);
     ackTimer.current = null;
     setAckCount(null);
+    setSendFailed(false);
   }, []);
 
   const toggle = useCallback(
@@ -106,11 +122,21 @@ export function ActionChecklistCard({ card, onSubmit }: ActionChecklistCardProps
     // Snapshot the selection atomically here; never re-read checkbox state after.
     const chosen = isSingle ? card.actions : card.actions.filter((a) => selected.has(a.id));
     if (chosen.length === 0) return;
-    onSubmit?.(formatProposalMessage(card, chosen));
+    // `?? false` covers a card rendered with no sender wired at all: nothing was
+    // sent, so nothing is acknowledged.
+    const delivered = onSubmit?.(formatProposalMessage(card, chosen)) ?? false;
+    if (ackTimer.current) clearTimeout(ackTimer.current);
+    if (!delivered) {
+      // Keep the selection intact — the user must not have to re-tick to retry.
+      setAckCount(null);
+      setSendFailed(true);
+      ackTimer.current = setTimeout(() => setSendFailed(false), ACK_MS);
+      return;
+    }
     // Transient client-only ack: clear the boxes and confirm. Never persisted.
+    setSendFailed(false);
     setSelected(new Set());
     setAckCount(chosen.length);
-    if (ackTimer.current) clearTimeout(ackTimer.current);
     ackTimer.current = setTimeout(() => setAckCount(null), ACK_MS);
   }, [isSingle, card, selected, onSubmit]);
 
@@ -206,6 +232,15 @@ export function ActionChecklistCard({ card, onSubmit }: ActionChecklistCardProps
               </label>
             );
           })}
+        </div>
+      )}
+
+      {/* Transient not-delivered notice — client-only, dies on reload. The
+          selection above is deliberately still intact so Submit retries it. */}
+      {sendFailed && (
+        <div className="flex items-center gap-1.5 text-(--color-warning)" role="status">
+          <WarningCircleIcon size={ICON_SIZE.XS} weight="fill" />
+          <span>Couldn&apos;t send — not connected. Your selection is kept; press Submit to retry.</span>
         </div>
       )}
 

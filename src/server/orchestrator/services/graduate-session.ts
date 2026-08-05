@@ -43,6 +43,7 @@ import { generateSessionName, type SessionName } from "../session-namer.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import { providerAccountCredentialRoot } from "../provider-account-manager.js";
 import { getErrorMessage } from "../validation.js";
+import { isTitleLockedAgainst } from "./session-title.js";
 
 export interface GraduateSessionDeps {
   sessionManager: SessionManager;
@@ -329,12 +330,21 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
         await sessionGit.renameBranch(currentBranch, newBranchName);
         sessionManager.setBranch(sessionId, newBranchName);
       }
-      sessionManager.rename(sessionId, nameResult.title);
-      const updatedSession = sessionManager.get(sessionId);
-      if (updatedSession) {
-        const runner = runnerRegistry.get(sessionId);
-        runner?.emitMessage({ type: "session_renamed", session: updatedSession });
-        sseBroadcast("session_renamed", { session: updatedSession });
+      // docs/250 (requirement 8) — never overwrite a title the user or the agent
+      // has already set. The `session` read above is deliberately re-used here
+      // rather than the one captured before `nameAfterHeal()`: the CLI call is a
+      // multi-second window, and a rename landing inside it is the entire case
+      // this guard exists for. The branch rename above is NOT gated — a branch
+      // slug is a separate concern from the title, and skipping it would strand
+      // the branch on its random placeholder name forever.
+      if (!isTitleLockedAgainst(session, undefined)) {
+        sessionManager.rename(sessionId, nameResult.title);
+        const updatedSession = sessionManager.get(sessionId);
+        if (updatedSession) {
+          const runner = runnerRegistry.get(sessionId);
+          runner?.emitMessage({ type: "session_renamed", session: updatedSession });
+          sseBroadcast("session_renamed", { session: updatedSession });
+        }
       }
       await finalizeBranchRenamed();
     } catch (err) {

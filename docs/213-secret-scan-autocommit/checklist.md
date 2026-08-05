@@ -15,3 +15,16 @@
 - [x] `agentCreatePr` aborts on a secret refusal (typed `secretBlocked` from `flushPendingTurnCommit`)
 - [x] Use GitHub native secret scanning + push protection as the backstop instead of a custom gitleaks CI job (dropped the workflow + `.gitleaks.toml`)
 - [ ] (Settings, not code) Enable Secret scanning + Push protection in the ShipIt repo's Settings → Code security & analysis
+
+## SHI-315 — make a block visible and actionable
+
+- [x] `requirements.md` written retroactively (reqs 5–8 from the rework)
+- [x] `SessionSecretBlock` type + `sessions.secret_block` column + migration
+- [x] `SessionManager.get/setSecretBlock`
+- [x] `services/secret-block.ts` — record/clear, notify budget, remediation dispatch
+- [x] `prompts/secret-block-remediation.md` (forbids `gitleaks:allow`, req 8)
+- [x] `secret_block_status` WS message + re-send on attach/session-switch
+- [x] Client store field, handler, transcript-scope drop, `SecretBlockBanner`
+- [x] Clear gated on "the scan actually ran" (never on the conflict branch)
+- [x] Tests: state machine, post-turn wiring, banner render, session scoping
+- [x] `typecheck` + `lint:dev` clean

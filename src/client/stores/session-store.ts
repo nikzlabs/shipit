@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { saveDraftMessage } from "../utils/local-storage.js";
 import type { ChatMessage } from "../components/MessageList.js";
 import type { StreamingActivity } from "../components/StreamingIndicator.js";
-import type { SessionInfo, SessionCapabilities, TurnUsage, RescuePhase, WsRewindPreview, AgentId, ContainerFreshness } from "../../server/shared/types.js";
+import type { SessionInfo, SessionCapabilities, TurnUsage, RescuePhase, WsRewindPreview, AgentId, ContainerFreshness, SessionSecretBlock } from "../../server/shared/types.js";
 import { useUiStore } from "./ui-store.js";
 
 /**
@@ -143,6 +143,14 @@ interface SessionState {
   /** Runtime worker/orchestrator build comparison for the active session. */
   containerFreshness: ContainerFreshness | null;
   /**
+   * docs/213 / SHI-315 — non-null while the active session's auto-commit is
+   * refused because a likely credential sits in the working tree. Drives the
+   * sticky `SecretBlockBanner`; the accompanying chat notice is a separate,
+   * scrollable transcript row. Seeded on attach/session-switch from
+   * `secret_block_status` and cleared when a commit lands.
+   */
+  secretBlock: SessionSecretBlock | null;
+  /**
    * Per-turn usage history keyed by session ID. Populated from
    * `turn_usage_update` WS messages live, and seeded on session attach from
    * `GET /api/sessions/:id/history` (sourced from the `usage_turns` table).
@@ -173,6 +181,7 @@ interface SessionState {
   setPauseNotice: (notice: SessionState["pauseNotice"]) => void;
   setMemoryExhausted: (notice: SessionState["memoryExhausted"]) => void;
   setContainerFreshness: (freshness: ContainerFreshness | null) => void;
+  setSecretBlock: (block: SessionSecretBlock | null) => void;
   setSessions: (
     sessions: SessionInfo[] | ((prev: SessionInfo[]) => SessionInfo[]),
   ) => void;
@@ -305,6 +314,7 @@ const initialResettableState = {
   pauseNotice: null as SessionState["pauseNotice"],
   memoryExhausted: null as SessionState["memoryExhausted"],
   containerFreshness: null as ContainerFreshness | null,
+  secretBlock: null as SessionSecretBlock | null,
 };
 
 const initialTurnUsage: Record<string, TurnUsage[]> = {};
@@ -369,6 +379,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setMemoryExhausted: (memoryExhausted) => set({ memoryExhausted }),
 
   setContainerFreshness: (containerFreshness) => set({ containerFreshness }),
+  setSecretBlock: (secretBlock) => set({ secretBlock }),
 
   setSessions: (sessions) =>
     set((state) => ({

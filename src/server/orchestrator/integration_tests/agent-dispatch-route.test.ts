@@ -11,11 +11,13 @@
  *   - POST → idle session starts a turn (queued: false, agent runs).
  *   - POST → running session queues (queued: true, message_queued broadcast).
  *   - 400 for empty / oversized text and unknown permission mode.
- *   - 404 for sessions with no registered runner.
+ *   - 404 for unknown session ids (and for archived ones).
  *   - 401 when the active agent isn't authenticated.
+ *   - docs/131 — a cold session (no runner) is woken rather than 404'd, and its
+ *     turn is observable afterwards over `/status` and `/history`.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -137,7 +139,11 @@ describe("Integration: POST /api/sessions/:id/agent/dispatch", () => {
     client.close();
   });
 
-  it("404 — session with no registered runner returns not active", async () => {
+  it("404 — an unknown session id returns not active", async () => {
+    // Note the id genuinely doesn't exist. Since docs/131, "no runner" alone is
+    // no longer a 404 — a real session with a workspace gets woken instead (see
+    // the wake-on-dispatch block at the bottom of this file). What still 404s is
+    // an id with nothing behind it.
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/nonexistent-session/agent/dispatch`,
@@ -473,5 +479,108 @@ describe("Integration: POST /api/sessions/:id/agent/dispatch", () => {
     expect(secondClaude.lastPrompt).toBe("Drain me");
 
     client.close();
+  });
+
+  // ---- Wake-on-dispatch (docs/131 reqs 8–10) ----
+  //
+  // A session nobody currently has open has no runner: only the WS connect path
+  // called `getOrCreate`. That made HTTP dispatch reachable *only* for sessions
+  // a browser was already attached to, which is exactly the case the outer agent
+  // driving the inner dogfood ShipIt doesn't have. These pin the relaxation —
+  // and its limits.
+
+  it("cold session — dispatch wakes it and runs the turn (docs/131 req 8)", async () => {
+    // A session row with a workspace but no runner: what an earlier dogfood boot
+    // leaves behind, and what an idle-evicted session looks like.
+    const sessionDir = fs.mkdtempSync(path.join(tmpDir, "cold-"));
+    sessionManager.track("cold-session", "From an earlier boot", sessionDir);
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/cold-session/agent/dispatch`,
+      payload: { text: "Fix the failing test" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ ok: true, queued: false });
+    const claude = await waitForClaude(() => lastClaude);
+    expect(claude.lastPrompt).toBe("Fix the failing test");
+  });
+
+  it("a woken session reports running, then finished (docs/131 req 10)", async () => {
+    // Requirement 10 is "the outer agent can tell whether it's still working" —
+    // which only means anything if the flag actually flips around a turn the
+    // outer agent started over HTTP.
+    const sessionDir = fs.mkdtempSync(path.join(tmpDir, "cold-status-"));
+    sessionManager.track("status-session", "Cold", sessionDir);
+
+    const before = await app.inject({ method: "GET", url: "/api/sessions/status-session/status" });
+    expect(before.json()).toMatchObject({ running: false });
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/status-session/agent/dispatch`,
+      payload: { text: "Do the thing" },
+    });
+    const claude = await waitForClaude(() => lastClaude);
+
+    const during = await app.inject({ method: "GET", url: "/api/sessions/status-session/status" });
+    expect(during.json()).toMatchObject({ running: true, queueLength: 0 });
+
+    claude.emit("event", {
+      type: "result", subtype: "success", session_id: "s-cold", duration_ms: 10,
+    });
+    claude.emit("done", 0);
+    await vi.waitFor(async () => {
+      const after = await app.inject({ method: "GET", url: "/api/sessions/status-session/status" });
+      expect(after.json()).toMatchObject({ running: false });
+    });
+  });
+
+  it("a woken session's turn is readable from history afterwards (docs/131 req 9)", async () => {
+    const sessionDir = fs.mkdtempSync(path.join(tmpDir, "cold-history-"));
+    sessionManager.track("history-session", "Cold", sessionDir);
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/history-session/agent/dispatch`,
+      payload: { text: "Summarize the repo" },
+    });
+    const claude = await waitForClaude(() => lastClaude);
+    // FakeClaudeProcess emits raw Claude events; `mapClaudeEvent` translates.
+    claude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "It is a todo list." }] },
+    });
+    claude.emit("event", {
+      type: "result", subtype: "success", session_id: "s-hist", duration_ms: 10,
+    });
+    claude.emit("done", 0);
+
+    // The conversation the outer agent reads back is the persisted one, not a
+    // live WS stream — nobody is attached to this session.
+    await vi.waitFor(async () => {
+      const res = await app.inject({ method: "GET", url: "/api/sessions/history-session/history" });
+      const texts = (res.json().messages as AnyMsg[]).map((m) => m.text);
+      expect(texts).toContain("Summarize the repo");
+      expect(texts).toContain("It is a todo list.");
+    });
+  });
+
+  it("archived sessions stay unreachable — waking must not resurrect one", async () => {
+    // "Archived sessions receive nothing" is an invariant of the WS activation
+    // path; sharing that path is the reason wake-on-dispatch can't quietly
+    // reintroduce a way around it by booting a container for an archived id.
+    const sessionDir = fs.mkdtempSync(path.join(tmpDir, "archived-"));
+    sessionManager.track("archived-session", "Old work", sessionDir);
+    sessionManager.archive("archived-session");
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/archived-session/agent/dispatch`,
+      payload: { text: "wake up" },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(lastClaude).toBe(null);
   });
 });

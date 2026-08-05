@@ -4,7 +4,7 @@ import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { RepoStore } from "../repo-store.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { GitManager } from "../../shared/git.js";
-import type { SessionInfo, WsServerMessage } from "../../shared/types.js";
+import type { SessionInfo, SessionTitleSource, WsServerMessage } from "../../shared/types.js";
 
 // Drain microtasks until `predicate()` is true, or fail after `maxTicks`.
 async function flush(predicate: () => boolean, maxTicks = 50): Promise<void> {
@@ -18,6 +18,8 @@ async function flush(predicate: () => boolean, maxTicks = 50): Promise<void> {
 interface FakeSessionState {
   id: string;
   title: string;
+  /** docs/250 — provenance for `title`; drives the AI namer's overwrite guard. */
+  titleSource?: SessionTitleSource;
   branch?: string;
   workspaceDir?: string;
   remoteUrl?: string;
@@ -48,7 +50,9 @@ function buildDeps(initial: FakeSessionState) {
       return { ...state } as unknown as SessionInfo;
     }),
     list: vi.fn(() => [state as unknown as SessionInfo]),
-    rename: vi.fn((id: string, title: string) => { if (id === state.id) state.title = title; }),
+    rename: vi.fn((id: string, title: string, source?: SessionTitleSource) => {
+      if (id === state.id) { state.title = title; state.titleSource = source; }
+    }),
     setBranch: vi.fn((id: string, branch: string) => { if (id === state.id) state.branch = branch; }),
     setBranchRenamed: vi.fn((id: string, renamed: boolean) => { if (id === state.id) state.branchRenamed = renamed; }),
     setWarm: setWarmSpy,
@@ -180,6 +184,58 @@ describe("graduateSession", () => {
     expect(state.title).toBe("Fix flaky test");
     const types = spies.sseBroadcast.mock.calls.map((c) => c[0] as string);
     expect(types).toContain("session_renamed");
+  });
+
+  // docs/250 (requirement 8) — the AI naming CLI call is a multi-second window,
+  // and a rename landing inside it is exactly what these guard. The namer reads
+  // the session again after the call precisely so it sees such a rename.
+  it("does not overwrite a title the user set by hand while naming was in flight", async () => {
+    vi.doMock("../session-namer.js", () => ({
+      generateSessionName: vi.fn(async () => ({ slug: "fix-flaky", title: "Fix flaky test" })),
+    }));
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, spies, state } = buildDeps({
+      id: "s1",
+      title: "placeholder",
+      branch: "shipit/abc123",
+      workspaceDir: "/tmp/ws",
+      remoteUrl: "https://github.com/x/y.git",
+    });
+
+    graduateSession(deps, { sessionId: "s1", userText: "Fix the flaky test", agentId: "claude" });
+    // The user renames from the sidebar while the naming CLI is still running.
+    state.title = "My own name";
+    state.titleSource = "user";
+
+    await flush(() => state.branchRenamed === true);
+
+    expect(state.title).toBe("My own name");
+    // The branch slug is a separate concern and is NOT gated — skipping it would
+    // strand the branch on its random placeholder name forever.
+    expect(spies.renameBranch).toHaveBeenCalledWith("shipit/abc123", "shipit/fix-flaky-abc123");
+    expect(spies.sseBroadcast.mock.calls.map((c) => c[0] as string)).not.toContain("session_renamed");
+  });
+
+  it("does not overwrite a title the agent set while naming was in flight", async () => {
+    vi.doMock("../session-namer.js", () => ({
+      generateSessionName: vi.fn(async () => ({ slug: "fix-flaky", title: "Fix flaky test" })),
+    }));
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({
+      id: "s1",
+      title: "placeholder",
+      branch: "shipit/abc123",
+      workspaceDir: "/tmp/ws",
+      remoteUrl: "https://github.com/x/y.git",
+    });
+
+    graduateSession(deps, { sessionId: "s1", userText: "Fix the flaky test", agentId: "claude" });
+    state.title = "Agent's own name";
+    state.titleSource = "agent";
+
+    await flush(() => state.branchRenamed === true);
+
+    expect(state.title).toBe("Agent's own name");
   });
 
   // docs/150 — naming is a real provider call, so it must run on the account a

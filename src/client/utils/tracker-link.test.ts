@@ -24,7 +24,9 @@ describe("parseTrackerIssueLink", () => {
   it("parses a GitHub issue URL", () => {
     const link = parseTrackerIssueLink("https://github.com/owner/repo/issues/42");
     expect(link).toEqual({
-      tracker: "github",
+      // docs/247 — the link opens the inline viewer bound to the repository the
+      // href named, not whichever repo the active session happens to be on.
+      tracker: "github:owner/repo",
       identifier: "owner/repo#42",
       issueId: "42",
       url: "https://github.com/owner/repo/issues/42",
@@ -34,7 +36,7 @@ describe("parseTrackerIssueLink", () => {
   it("parses the GitHub owner/repo#N short form and resolves an absolute URL", () => {
     const link = parseTrackerIssueLink("owner/repo#42");
     expect(link).toEqual({
-      tracker: "github",
+      tracker: "github:owner/repo",
       identifier: "owner/repo#42",
       issueId: "42",
       url: "https://github.com/owner/repo/issues/42",

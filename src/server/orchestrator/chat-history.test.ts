@@ -66,6 +66,12 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     forcePushed: true,
     createdAt: "2026-06-05T00:00:00.000Z",
   },
+  sessionRenamed: {
+    cardId: "srn1",
+    from: "Add the session rename API",
+    to: "Agent session rename",
+    createdAt: "2026-06-05T00:00:00.000Z",
+  },
   issueWrite: {
     cardId: "iw1",
     tracker: "linear",

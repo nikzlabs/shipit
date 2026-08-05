@@ -136,6 +136,45 @@ describe("createRepoPrefetcher", () => {
     expect(fs.existsSync(path.join(cacheDir, ".shipit-last-fetch"))).toBe(false);
   });
 
+  // The bare cache is reclaimable by design — the steady-state janitor deletes
+  // cold ones and `ensureBareCache` re-clones lazily. So a missing cache dir is
+  // an ordinary state, not an error, and neither entry point may blow up on it.
+  it("coveredRecently returns false instead of throwing when the bare cache is missing", () => {
+    const cacheDir = path.join(tmpDir, "cache-deleted"); // never created
+    const repos: RepoInfo[] = [{ url: remoteUrl, status: "ready" } as RepoInfo];
+    const pf = createRepoPrefetcher({
+      repoStore: fakeRepoStore(repos),
+      getBareCacheDir: () => cacheDir,
+      createRepoGit,
+      githubAuthManager: fakeAuth,
+    });
+
+    // `RepoGit`'s constructor throws synchronously on a missing dir. Letting
+    // that escape turned POST /claim-session into a 500, which left the
+    // composer's send button permanently disabled on /repo/{slug}/new.
+    expect(() => pf.coveredRecently(remoteUrl)).not.toThrow();
+    expect(pf.coveredRecently(remoteUrl)).toBe(false);
+  });
+
+  it("prefetchRepo re-clones a bare cache that was deleted underneath it", async () => {
+    const cacheDir = path.join(tmpDir, "cache-gone");
+    execSync(`git clone --bare ${remoteDir} ${cacheDir}`, { stdio: "ignore" });
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+
+    const repos: RepoInfo[] = [{ url: remoteUrl, status: "ready" } as RepoInfo];
+    const pf = createRepoPrefetcher({
+      repoStore: fakeRepoStore(repos),
+      getBareCacheDir: () => cacheDir,
+      createRepoGit,
+      githubAuthManager: fakeAuth,
+    });
+
+    pf.prefetchRepo(remoteUrl);
+    const healed = await waitUntil(() => fs.existsSync(path.join(cacheDir, "HEAD")));
+    expect(healed).toBe(true);
+    expect(await waitUntil(() => pf.coveredRecently(remoteUrl))).toBe(true);
+  });
+
   it("start() schedules a sweep and stop() is idempotent", () => {
     const pf = createRepoPrefetcher({
       repoStore: fakeRepoStore([]),

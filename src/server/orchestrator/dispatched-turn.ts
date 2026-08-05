@@ -334,7 +334,7 @@ export async function runDispatchedTurn(
       // without an `agent_result` is NOT a completed turn. Auto-retry once
       // (the user's known "resend the prompt" workaround), then surface a
       // visible error so the failure can never silently vanish again.
-      onNoResultExit: async (code) => {
+      onNoResultExit: async (code, stderrDetail) => {
         // A turn that streamed visible work (assistant text / tool calls) before
         // exiting WITHOUT an `agent_result` — the OOM/SIGHUP case (exit 137/129
         // under memory pressure) — DID run, and must NOT be retried:
@@ -392,18 +392,18 @@ export async function runDispatchedTurn(
         // groups (so the visible work is preserved on reload); phrase the message
         // as "stopped before finishing" rather than "without running", which only
         // fits the genuinely-empty case.
-        agent.emit(
-          "error",
-          new Error(
-            producedPartialWork
-              ? (code !== null && code !== 0
-                  ? `The agent stopped before finishing (exit ${code}). The work so far is preserved — send your message again to continue.`
-                  : "The agent stopped before finishing. The work so far is preserved — send your message again to continue.")
-              : (code !== null && code !== 0
-                  ? `The agent exited with code ${code} without running. Please send your message again.`
-                  : "The agent stopped without doing any work. Please send your message again."),
-          ),
-        );
+        const summary = producedPartialWork
+          ? (code !== null && code !== 0
+              ? `The agent stopped before finishing (exit ${code}). The work so far is preserved — send your message again to continue.`
+              : "The agent stopped before finishing. The work so far is preserved — send your message again to continue.")
+          : (code !== null && code !== 0
+              ? `The agent exited with code ${code} without running. Please send your message again.`
+              : "The agent stopped without doing any work. Please send your message again.");
+        // Name the cause when the CLI left one on stderr — same reason the WS
+        // path appends it (`turn-executor.ts`): without it, every distinct way a
+        // dispatched turn can die reads as the same exit code. Already redacted
+        // and length-bounded by `agent-stderr-tail.ts`.
+        agent.emit("error", new Error(stderrDetail ? `${summary} (${stderrDetail})` : summary));
         return true;
       },
     });

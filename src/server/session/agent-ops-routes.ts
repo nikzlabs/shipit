@@ -650,6 +650,16 @@ export function registerAgentOpsRoutes(
     async (_request, reply) => relay("POST", "/notify-on-merge-self", {}, reply),
   );
 
+  // POST /agent-ops/session/rename — docs/250. Retitle THIS session so the
+  // sidebar keeps describing what it is about past its first PR. No session id
+  // in the path: the worker injects the caller's own id, so an agent can only
+  // ever rename itself. The orchestrator owns validation and the "the user
+  // renamed this by hand" refusal; this relay just moves the body across.
+  app.post<{ Body: { title?: string } }>(
+    "/agent-ops/session/rename",
+    async (request, reply) => relay("POST", "/rename", request.body ?? {}, reply),
+  );
+
   // POST /agent-ops/branch/reset-to-base — docs/239. The explicit branch reset
   // the self-merge wake turn runs first. Destructive-looking but gated: the
   // orchestrator refuses unless the branch provably carries nothing unmerged.

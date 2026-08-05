@@ -136,10 +136,33 @@ export interface ClaudeTaskNotificationEvent {
   tool_use_id?: string;
   /** e.g. `"completed"`. */
   status?: string;
-  /** Path (inside the container) the CLI wrote the task's output to. */
+  /**
+   * Path (inside the container) the CLI wrote the task's output to.
+   *
+   * NOT a report, and deliberately not read: for a backgrounded subagent this
+   * is the **full JSONL transcript** of that subagent, which the CLI's own
+   * launch acknowledgement warns against reading ("it is the full subagent
+   * JSONL transcript and reading it will overflow your context"). The report
+   * lives in {@link summary}. Verified against CLI 2.1.219, see
+   * `docs/109-subagent-transparency/plan.md`.
+   */
   output_file?: string;
-  /** Human-readable one-liner, e.g. `Background command "npm test" completed (exit code 0)`. */
+  /**
+   * What finished, in the backend's words. Its shape depends on the task type,
+   * and both shapes matter here:
+   *
+   *  - a background **shell** task gets a one-liner
+   *    (`Background command "npm test" completed (exit code 0)`);
+   *  - a background **subagent** gets its **whole final report** — the CLI sets
+   *    the task's terminal summary to the agent's joined final text.
+   *
+   * So this is the report source for docs/109 requirement 11. Because the two
+   * shapes are indistinguishable by content, the consumer keys off the tool
+   * that started the task ({@link tool_use_id}), never off this string.
+   */
   summary?: string;
+  /** Subagent accounting, when the backend has it — the docs/109 req 5 chips. */
+  usage?: { total_tokens?: number; tool_uses?: number; duration_ms?: number };
 }
 
 /**

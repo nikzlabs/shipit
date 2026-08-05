@@ -43,6 +43,7 @@ import type { LocalAgentFactory } from "./local-agent-home.js";
 import { resolveLocalAgentHome } from "./local-agent-home.js";
 import type { LocalAgentMcpDeps } from "./local-agent-mcp.js";
 import { applyLocalMcp } from "./local-agent-mcp.js";
+import { stopLocalAgentOpsHost } from "./local-agent-ops.js";
 import { refuseIfAlreadyConnected } from "./provider-account-identity.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { AgentId, AgentProcess, LogSource, LogRingEntry } from "../shared/types.js";
@@ -600,6 +601,9 @@ export function buildRunnerFactory(
           return credentialStore
             ? applyLocalMcp(agent, {
               credentialStore,
+              // docs/251 — also carries this session's `/agent-ops` host address
+              // into the spawn, which is what makes the `gh` shim work here.
+              sessionId: o.sessionId,
               onServerFailed: (name, reason) => {
                 runner.emitMessage({
                   type: "mcp_server_status",
@@ -613,6 +617,22 @@ export function buildRunnerFactory(
             : agent;
         };
       }
+      // docs/251 — close this session's `/agent-ops` host with the runner.
+      // `dispose()` emits before `removeAllListeners()`, so a `once` here fires.
+      //
+      // Swallowing here rather than `void`-ing the promise: this runs inside
+      // `disposeAll()` on the shutdown path, where anything that escapes
+      // surfaces as an unhandled rejection while the process is already on its
+      // way down — noise that reads like a shutdown failure and buries whatever
+      // actually went wrong. A host we could not close is not worth failing a
+      // shutdown over; the process is about to exit and take the socket with it.
+      runner.once("disposed", () => {
+        stopLocalAgentOpsHost(o.sessionId).catch((err: unknown) => {
+          console.warn(
+            `[local-agent-ops] ${o.sessionId} teardown failed: ${getErrorMessage(err)}`,
+          );
+        });
+      });
       return runner;
     };
   }

@@ -14,11 +14,13 @@ import { IssueWriteCard } from "../../IssueWriteCard.js";
 import { IssueRefCard } from "../../IssueRefCard.js";
 import { ActionChecklistCard } from "../../ActionChecklistCard.js";
 import { BranchUpdatedCard } from "../../BranchUpdatedCard.js";
+import { SessionRenamedCard } from "../../SessionRenamedCard.js";
 import { BranchSyncedCard } from "../../BranchSyncedCard.js";
 import { ReleaseLifecycleCard } from "../../ReleaseLifecycleCard.js";
 import type { ChatMessage } from "../types.js";
 import type { ReleaseMechanism } from "../../../../server/shared/types.js";
 import { SubAgentConsultCardRow } from "./SubAgentCards.js";
+import type { TrackerId } from "../../../../server/shared/types.js";
 
 /** Callbacks the inline transcript cards may invoke. */
 export interface MessageCardCallbacks {
@@ -39,7 +41,7 @@ export interface MessageCardCallbacks {
   onUndoIssueWrite?: (cardId: string) => void;
   /** docs/189 — open an issue's inline detail view from a chat card. */
   onOpenIssue?: (ref: {
-    tracker: "linear" | "github";
+    tracker: TrackerId;
     id?: string;
     identifier: string;
     title?: string;
@@ -47,7 +49,8 @@ export interface MessageCardCallbacks {
     /** Comment to scroll to + highlight once the thread lands (SHI-103). */
     anchorCommentId?: string;
   }) => void;
-  onSendFollowUp?: (text: string) => void;
+  /** Returns whether the message actually reached the wire (see `sendUserMessage`). */
+  onSendFollowUp?: (text: string) => boolean;
   /** docs/171 — confirm a proposed release (sends the "yes, ship it" reply). */
   onReleaseConfirm?: (version: string, mechanism: ReleaseMechanism) => void;
   /** docs/171 — cancel a proposed release (sends the cancel reply). */
@@ -296,6 +299,20 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
       <div className="flex justify-start">
         <div className="max-w-2xl w-full">
           <BranchUpdatedCard card={msg.branchAutoReset} />
+        </div>
+      </div>
+    );
+  }
+
+  // docs/250 — session-renamed card. Carries no chat text of its own; renders the
+  // static `SessionRenamedCard` straight from the message payload (no store, no
+  // lifecycle). Shown at the point in the turn where the agent retitled the
+  // session, so a name that changed mid-session is explainable after the fact.
+  if (msg.sessionRenamed) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <SessionRenamedCard card={msg.sessionRenamed} />
         </div>
       </div>
     );

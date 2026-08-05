@@ -43,15 +43,18 @@ import type { GitHubAuthManager } from "./github-auth.js";
 import type { SessionManager } from "./sessions.js";
 import type { TrackerId, TrackerIssue, IssueWriteCard, IssueRefCard } from "../shared/types.js";
 import { parseGitHubRemote } from "./git-utils.js";
+import { resolveShipitConfig, type DeclaredTracker } from "../shared/shipit-config.js";
+import { isGitHubTracker } from "../shared/tracker-id.js";
 import { getErrorMessage } from "./validation.js";
 import { emitChatCard } from "./chat-card-persistence.js";
 
 /**
  * Resolve the GitHub tracker context for a request: ShipIt's existing GitHub
- * token plus the repo derived from a session's remote. Either piece may be null
- * (GitHub not connected, no session, or a non-GitHub remote) — the adapter then
- * reports unconfigured. Exported so the undo WS handler resolves it the same
- * way the routes do.
+ * token, the repo derived from a session's remote, and the additional trackers
+ * that session's repository declares in its `shipit.yaml` (docs/247). Any piece
+ * may be null/empty (GitHub not connected, no session, a non-GitHub remote, no
+ * declarations) — the adapter then reports unconfigured. Exported so the undo WS
+ * handler resolves it the same way the routes do.
  */
 export function resolveGitHubTrackerContext(
   githubAuthManager: GitHubAuthManager,
@@ -59,9 +62,36 @@ export function resolveGitHubTrackerContext(
   sessionId?: string,
 ): GitHubTrackerContext {
   const token = githubAuthManager.getToken();
-  const remoteUrl = sessionId ? sessionManager.get(sessionId)?.remoteUrl : undefined;
-  const parsed = remoteUrl ? parseGitHubRemote(remoteUrl) : null;
-  return { token, repo: parsed ? { owner: parsed.owner, repo: parsed.repo } : null };
+  const session = sessionId ? sessionManager.get(sessionId) : undefined;
+  const parsed = session?.remoteUrl ? parseGitHubRemote(session.remoteUrl) : null;
+  return {
+    token,
+    repo: parsed ? { owner: parsed.owner, repo: parsed.repo } : null,
+    declared: readDeclaredTrackers(session?.workspaceDir),
+  };
+}
+
+/**
+ * docs/247 — read `issues.trackers` from the session workspace's `shipit.yaml`.
+ *
+ * Read fresh per request rather than cached: the file is committed, so editing
+ * it must change which tabs appear on the next request without a restart, and a
+ * cache keyed by session would go stale exactly when the user is iterating on
+ * the declaration. The read is a single small local file.
+ *
+ * Never throws. `resolveShipitConfig` raises on a malformed *document* (bad
+ * YAML, a bad `release` block), and an issue-list request is the wrong place to
+ * surface that — the session's own config diagnostics already report it. Failing
+ * here would break the Issues tab for a repo whose problem is elsewhere in the
+ * file, so a parse failure degrades to "no declared trackers".
+ */
+function readDeclaredTrackers(workspaceDir: string | undefined): DeclaredTracker[] {
+  if (!workspaceDir) return [];
+  try {
+    return resolveShipitConfig(workspaceDir).issues.trackers;
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -634,7 +664,7 @@ export async function registerIssueRoutes(
       title: "",
       verb: "label",
       summary: creation.summary,
-      attribution: trackerId === "github" ? "user" : "workspace",
+      attribution: isGitHubTracker(trackerId) ? "user" : "workspace",
       undo: creation.undo,
       undoState: "available",
       createdAt: new Date().toISOString(),
@@ -711,7 +741,7 @@ export async function registerIssueRoutes(
       ...(outcome.content ? { content: outcome.content } : {}),
       // GitHub writes use the acting user's own token; Linear writes use the
       // deployment-wide PAT (attributed to the workspace, not the acting user).
-      attribution: trackerId === "github" ? "user" : "workspace",
+      attribution: isGitHubTracker(trackerId) ? "user" : "workspace",
       undo: outcome.undo,
       undoState: "available",
       createdAt: new Date().toISOString(),

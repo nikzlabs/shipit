@@ -1,4 +1,4 @@
-import type { PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionMergeWatch } from "../shared/types.js";
+import type { PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionMergeWatch, SessionSecretBlock, SessionTitleSource } from "../shared/types.js";
 import { normalizeCapabilities } from "../shared/types.js";
 import { parseTimestampMs } from "../shared/utils.js";
 import type { DatabaseManager } from "../shared/database.js";
@@ -9,6 +9,8 @@ interface SessionRow {
   id: string;
   agent_session_id: string | null;
   title: string;
+  /** docs/250 — 'user' | 'agent' | NULL. Who set `title`; NULL = automatic. */
+  title_source: string | null;
   created_at: string;
   last_used_at: string;
   workspace_dir: string | null;
@@ -56,6 +58,8 @@ interface SessionRow {
   keep_preview_running: number;
   /** docs/196 — JSON `SessionMergeWatch` for the notify-on-merge watch, or NULL. */
   merge_watch: string | null;
+  /** docs/213 — JSON `SessionSecretBlock` while auto-commit is refused, or NULL. */
+  secret_block: string | null;
   /** docs/194 — JSON string[] of applied merge→issue-lifecycle effect keys, or NULL. */
   merge_issue_effects: string | null;
   /** docs/202 — JSON `PreviousMergedPr` breadcrumb retained after re-arm, or NULL. */
@@ -286,6 +290,7 @@ export class SessionManager {
       lastUsedAt: row.last_used_at,
       remoteUrl: row.remote_url ?? "",
     };
+    if (row.title_source === "user" || row.title_source === "agent") info.titleSource = row.title_source;
     if (row.agent_session_id) info.agentSessionId = row.agent_session_id;
     if (row.workspace_dir) info.workspaceDir = row.workspace_dir;
     if (row.conversation_replay) info.conversationReplay = row.conversation_replay;
@@ -338,6 +343,14 @@ export class SessionManager {
         info.previousMergedPr = JSON.parse(row.previous_merged_pr) as SessionInfo["previousMergedPr"];
       } catch {
         // Corrupt/legacy JSON — drop the breadcrumb rather than crashing reads.
+      }
+    }
+    if (row.secret_block) {
+      try {
+        info.secretBlock = JSON.parse(row.secret_block) as SessionInfo["secretBlock"];
+      } catch {
+        // Corrupt/legacy JSON — treat as unblocked rather than crashing reads.
+        // Safe to lose: the next auto-commit re-scans and re-arms the block.
       }
     }
     if (row.merged_head_sha) info.mergedHeadSha = row.merged_head_sha;
@@ -461,9 +474,24 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET remote_url = ? WHERE id = ?").run(remoteUrl ?? null, id);
   }
 
-  /** Rename a session. Returns the updated session, or null if not found. */
-  rename(id: string, title: string): SessionInfo | null {
-    const result = this.db.prepare("UPDATE sessions SET title = ? WHERE id = ?").run(title, id);
+  /**
+   * Rename a session. Returns the updated session, or null if not found.
+   *
+   * docs/250 — `source` records WHO set the title so the two automatic writers
+   * can tell whether they may overwrite it later. Omit it for an automatic or
+   * born-with title (graduation placeholder, AI namer, `explicitTitle`); those
+   * write NULL and stay replaceable. Pass `"user"` for a hand rename (final) or
+   * `"agent"` for `shipit session rename` (the AI namer must not clobber it).
+   *
+   * The write is unconditional by design — precedence is the caller's decision,
+   * expressed once in {@link isTitleLockedAgainst} (`services/session-title.ts`),
+   * because the two gated writers need to *skip their whole flow*, not just this
+   * one statement (the AI namer must not rename the branch either).
+   */
+  rename(id: string, title: string, source?: SessionTitleSource): SessionInfo | null {
+    const result = this.db
+      .prepare("UPDATE sessions SET title = ?, title_source = ? WHERE id = ?")
+      .run(title, source ?? null, id);
     if (result.changes === 0) return null;
     return this.get(id) ?? null;
   }
@@ -958,6 +986,22 @@ export class SessionManager {
   /** docs/196 — read the notify-on-merge watch for a session, if any. */
   getMergeWatch(id: string): SessionMergeWatch | undefined {
     return this.get(id)?.mergeWatch;
+  }
+
+  /**
+   * docs/213 / SHI-315 — set (or clear, with `null`) the secret-scan commit
+   * block. Persisted so the banner survives the runner being disposed on idle:
+   * the credential is in the working tree, which outlives the container, so the
+   * warning must too.
+   */
+  setSecretBlock(id: string, block: SessionSecretBlock | null): void {
+    const json = block === null ? null : JSON.stringify(block);
+    this.db.prepare("UPDATE sessions SET secret_block = ? WHERE id = ?").run(json, id);
+  }
+
+  /** docs/213 — read the current secret-scan commit block for a session, if any. */
+  getSecretBlock(id: string): SessionSecretBlock | undefined {
+    return this.get(id)?.secretBlock;
   }
 
   /**

@@ -19,7 +19,11 @@ function makeCtx(kind?: SessionInfo["kind"]) {
   const ctx = {
     createGitManager,
     chatHistoryManager: { updateLastMessage: vi.fn(), indexOfMessageId: vi.fn() },
-    sessionManager: { get: vi.fn(() => (kind ? ({ id: "s1", kind } as SessionInfo) : undefined)) },
+    sessionManager: {
+      get: vi.fn(() => (kind ? ({ id: "s1", kind } as SessionInfo) : undefined)),
+      getSecretBlock: vi.fn(() => undefined),
+      setSecretBlock: vi.fn(),
+    },
     scheduleAutoPush,
   } as unknown as Parameters<typeof postTurnCommit>[0];
   return { ctx, autoCommit, scheduleAutoPush, createGitManager };
@@ -84,7 +88,11 @@ describe("postTurnCommit — ops sessions never auto-push", () => {
     const ctx = {
       createGitManager,
       chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1) },
-      sessionManager: { get: vi.fn(() => (kind ? ({ id: "s1", kind } as SessionInfo) : undefined)) },
+      sessionManager: {
+      get: vi.fn(() => (kind ? ({ id: "s1", kind } as SessionInfo) : undefined)),
+      getSecretBlock: vi.fn(() => undefined),
+      setSecretBlock: vi.fn(),
+    },
       scheduleAutoPush,
     } as unknown as Parameters<typeof postTurnCommit>[0];
     return { ctx, autoCommit, scheduleAutoPush };
@@ -125,7 +133,11 @@ describe("postTurnCommit — ops sessions never auto-push", () => {
         diffRange: vi.fn(async () => "diff --git a/ok.ts b/ok.ts\n+const x = 1;"),
       })),
       chatHistoryManager: { updateLastMessage: vi.fn(), indexOfMessageId: vi.fn(), append: vi.fn() },
-      sessionManager: { get: vi.fn(() => ({ id: "s1", kind: "ops" } as SessionInfo)) },
+      sessionManager: {
+        get: vi.fn(() => ({ id: "s1", kind: "ops" } as SessionInfo)),
+        getSecretBlock: vi.fn(() => undefined),
+        setSecretBlock: vi.fn(),
+      },
       scheduleAutoPush,
     } as unknown as Parameters<typeof postTurnCommit>[0];
 
@@ -165,7 +177,11 @@ describe("postTurnCommit — agent self-commit (moved HEAD) secret guard", () =>
     const ctx = {
       createGitManager,
       chatHistoryManager: { updateLastMessage: vi.fn(), indexOfMessageId: vi.fn(), append },
-      sessionManager: { get: vi.fn(() => undefined) },
+      sessionManager: {
+        get: vi.fn(() => undefined),
+        getSecretBlock: vi.fn(() => undefined),
+        setSecretBlock: vi.fn(),
+      },
       scheduleAutoPush,
     } as unknown as Parameters<typeof postTurnCommit>[0];
     return { ctx, scheduleAutoPush, append, isAncestor, diffRange };
@@ -240,6 +256,8 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
           ...opts.session,
         } as SessionInfo)),
         getPrStatus: vi.fn(() => opts.prStatus ?? { prNumber: 1963, baseBranch: "main" }),
+        getSecretBlock: vi.fn(() => undefined),
+        setSecretBlock: vi.fn(),
       },
       scheduleAutoPush,
     } as unknown as Parameters<typeof postTurnCommit>[0];
@@ -306,5 +324,115 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
     expect(scheduleAutoPush).not.toHaveBeenCalled();
     expect(err).toHaveBeenCalled();
     err.mockRestore();
+  });
+});
+
+/**
+ * SHI-315 — the refusal has to reach BOTH actors from the real post-turn path,
+ * not just the transcript. These pin the wiring; `services/secret-block.test.ts`
+ * pins the state machine itself.
+ */
+describe("postTurnCommit — a secret-blocked commit is sticky and announced", () => {
+  const FINDING = {
+    rule: "github-pat",
+    description: "GitHub personal access token",
+    file: "src/config.ts",
+    line: 11,
+    redacted: "ghp_…[redacted, 40 chars]",
+  };
+
+  function makeSecretCtx(opts: { findings?: unknown[]; commitHash?: string | null } = {}) {
+    const setSecretBlock = vi.fn();
+    let stored: unknown;
+    const autoCommit = vi.fn(async () => ({
+      commitHash: opts.commitHash ?? null,
+      conflictedFiles: [],
+      rebaseInProgress: false,
+      secretFindings: opts.findings ?? [FINDING],
+    }));
+    const append = vi.fn();
+    const emit = vi.fn();
+    const dispatch = vi.fn();
+    const ctx = {
+      createGitManager: vi.fn(() => ({
+        autoCommit,
+        getHeadHash: vi.fn(async () => null),
+      })),
+      chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append },
+      sessionManager: {
+        get: vi.fn(() => ({ id: "s1" } as SessionInfo)),
+        getSecretBlock: vi.fn(() => stored),
+        setSecretBlock: vi.fn((_id: string, b: unknown) => {
+          stored = b ?? undefined;
+          setSecretBlock(_id, b);
+        }),
+      },
+      scheduleAutoPush: vi.fn(),
+    } as unknown as Parameters<typeof postTurnCommit>[0];
+    return { ctx, emit, append, dispatch, setSecretBlock };
+  }
+
+  it("persists the block, broadcasts the banner, and dispatches a remediation turn", async () => {
+    const { ctx, emit, append, dispatch, setSecretBlock } = makeSecretCtx();
+    const hash = await postTurnCommit(ctx, {
+      sessionDir: "/workspace",
+      sessionId: "s1",
+      emit,
+      turnSummary: "pasted a token",
+      runner: { dispatch, running: false } as never,
+    });
+
+    expect(hash).toBeNull();
+    // 1. Sticky state — survives the runner and a reload.
+    expect(setSecretBlock).toHaveBeenCalledWith("s1", expect.objectContaining({ notifyCount: 1 }));
+    // 2. The banner.
+    expect(emit).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "secret_block_status", sessionId: "s1" }),
+    );
+    // 3. The transcript row (unchanged behavior).
+    expect(append).toHaveBeenCalled();
+    // 4. The agent is told its work did not land — the part that was missing.
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the block once a commit lands", async () => {
+    const { ctx, emit } = makeSecretCtx({ findings: [], commitHash: "abc1234" });
+    // Pre-arm a standing block so the clear has something to retire.
+    ctx.sessionManager.setSecretBlock("s1", { findings: [FINDING], at: "x", notifyCount: 2 } as never);
+    emit.mockClear();
+
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "scrubbed it",
+    });
+
+    expect(emit).toHaveBeenCalledWith({ type: "secret_block_status", sessionId: "s1", block: null });
+  });
+
+  it("does NOT clear the block on a conflict refusal — that path never scanned", async () => {
+    // `autoCommit` returns before staging when the tree is conflicted, so a
+    // secret may still be sitting there unscanned. Clearing here would retire
+    // the banner on a lie.
+    const setSecretBlock = vi.fn();
+    const ctx = {
+      createGitManager: vi.fn(() => ({
+        autoCommit: vi.fn(async () => ({
+          commitHash: null, conflictedFiles: ["a.ts"], rebaseInProgress: false, secretFindings: [],
+        })),
+        getHeadHash: vi.fn(async () => null),
+      })),
+      chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append: vi.fn() },
+      sessionManager: {
+        get: vi.fn(() => ({ id: "s1" } as SessionInfo)),
+        getSecretBlock: vi.fn(() => ({ findings: [FINDING], at: "x", notifyCount: 2 })),
+        setSecretBlock,
+      },
+      scheduleAutoPush: vi.fn(),
+    } as unknown as Parameters<typeof postTurnCommit>[0];
+
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "conflicted",
+    });
+
+    expect(setSecretBlock).not.toHaveBeenCalled();
   });
 });

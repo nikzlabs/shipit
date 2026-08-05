@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>docs/250 — session-renamed transcript card</title>
+<style>
+  :root {
+    --color-bg-primary: #030712;
+    --color-bg-secondary: #111827;
+    --color-bg-tertiary: #1f2937;
+    --color-text-primary: #f3f4f6;
+    --color-text-secondary: #9ca3af;
+    --color-text-tertiary: #6b7280;
+    --color-border-secondary: #374151;
+    --color-accent: #3b82f6;
+    --color-accent-subtle: rgba(59, 130, 246, 0.15);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px 24px;
+    background: var(--color-bg-primary);
+    color: var(--color-text-primary);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+  .sub { color: var(--color-text-secondary); font-size: 13px; margin: 0 0 28px; }
+  .label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+           color: var(--color-text-tertiary); margin: 28px 0 8px; }
+
+  /* Mirrors SessionRenamedCard.tsx */
+  .card {
+    width: 100%; border-radius: 8px;
+    border: 1px solid var(--color-border-secondary);
+    background: var(--color-bg-secondary);
+    overflow: hidden; font-size: 12px;
+  }
+  .row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; }
+  .icon {
+    flex-shrink: 0; margin-top: 2px;
+    display: grid; place-items: center;
+    width: 28px; height: 28px; border-radius: 8px;
+    background: var(--color-accent-subtle); color: var(--color-accent);
+    border: 1px solid var(--color-border-secondary);
+  }
+  .body { min-width: 0; flex: 1; }
+  .title { font-weight: 500; color: var(--color-text-primary); }
+  .desc { margin-top: 4px; color: var(--color-text-secondary); }
+  .names { margin-top: 8px; display: flex; flex-wrap: wrap; align-items: center;
+           gap: 8px; color: var(--color-text-tertiary); }
+  .old { text-decoration: line-through; }
+  .new { color: var(--color-text-primary); }
+
+  /* Sidebar fragment, for the before/after this card explains. */
+  .side { width: 260px; border: 1px solid var(--color-border-secondary);
+          border-radius: 8px; background: var(--color-bg-secondary); padding: 6px; }
+  .item { padding: 7px 9px; border-radius: 6px; font-size: 13px; }
+  .item.active { background: var(--color-bg-tertiary); }
+  .item .meta { color: var(--color-text-tertiary); font-size: 11px; margin-top: 2px; }
+  .cols { display: flex; gap: 24px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>docs/250 — “renamed this session” transcript card</h1>
+  <p class="sub">
+    Requirement 9. Rendered inline in the chat transcript at the point in the turn where the agent
+    retitled the session, so a name that changed mid-session is explainable after the fact.
+  </p>
+
+  <div class="label">The card</div>
+  <div class="card">
+    <div class="row">
+      <span class="icon">
+        <!-- PencilSimpleIcon, Phosphor, 16px -->
+        <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true">
+          <path d="M227.31,73.37,182.63,28.68a16,16,0,0,0-22.63,0L36.69,152A15.86,15.86,0,0,0,32,163.31V208a16,16,0,0,0,16,16H92.69A15.86,15.86,0,0,0,104,219.31L227.31,96a16,16,0,0,0,0-22.63ZM92.69,208H48V163.31l88-88L180.69,120ZM192,108.68,147.31,64l24-24L216,84.68Z"/>
+        </svg>
+      </span>
+      <div class="body">
+        <div class="title">Renamed this session</div>
+        <div class="desc">
+          The session had moved on from what it was first named after. Rename it yourself any time —
+          your name is kept and never changed again.
+        </div>
+        <div class="names">
+          <span class="old">Fix the flaky auth test</span>
+          <span aria-hidden="true">→</span>
+          <span class="new">Harden the CI pipeline</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="label">What it explains — the sidebar entry, before and after</div>
+  <div class="cols">
+    <div>
+      <div class="label" style="margin-top:0">Before</div>
+      <div class="side">
+        <div class="item active">
+          Fix the flaky auth test
+          <div class="meta">3 PRs · shipit/fix-flaky-auth-a1b2c3</div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="label" style="margin-top:0">After</div>
+      <div class="side">
+        <div class="item active">
+          Harden the CI pipeline
+          <div class="meta">3 PRs · shipit/fix-flaky-auth-a1b2c3</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="sub" style="margin-top:12px">
+    The branch name is deliberately unchanged (requirement 10) — a PR is usually already open on it.
+  </p>
+</div>
+</body>
+</html>

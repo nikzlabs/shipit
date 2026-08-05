@@ -9,7 +9,7 @@ import { CredentialStore } from "../credential-store.js";
 import { ProviderAccountManager } from "../provider-account-manager.js";
 import { RepoStore } from "../repo-store.js";
 import { GitManager } from "../../shared/git.js";
-import { createHeadlessSession } from "./headless-sessions.js";
+import { createHeadlessSession, seedFromIssueRef } from "./headless-sessions.js";
 import type { GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
@@ -50,6 +50,62 @@ function initWorkspace(dir: string): void {
     { cwd: dir, stdio: "ignore" },
   );
 }
+
+
+/**
+ * docs/247 req 1 — the pushed branch name must never carry the issue title.
+ *
+ * A branch is pushed to a public remote, so a title from a private planning
+ * issue would be published there. The rule is unconditional: ShipIt has no
+ * signal for which repositories are private (a declared planning repo may be
+ * public; a session's own code repo may be private), so a rule scoped to
+ * "private" issues would be a guess. These cover the pointer shapes a seed can
+ * arrive with.
+ */
+describe("seedFromIssueRef — branch names carry the pointer only", () => {
+  it("omits a Linear issue title from the branch", () => {
+    const seed = seedFromIssueRef({
+      tracker: "linear",
+      identifier: "SHI-304",
+      title: "Acquire competitor before Q3 board meeting",
+    });
+    expect(seed.branch).toBe("shi-304");
+    expect(seed.branch).not.toMatch(/acquire|competitor|board/);
+  });
+
+  it("omits a GitHub issue title from the branch, keeping the qualified pointer", () => {
+    const seed = seedFromIssueRef({
+      tracker: "github:acme/planning",
+      identifier: "acme/planning#42",
+      title: "Secret roadmap item",
+    });
+    expect(seed.branch).toBe("acme-planning-42");
+    expect(seed.branch).not.toMatch(/secret|roadmap/);
+  });
+
+  it("keeps the title in the session title and seed prompt — both stay inside ShipIt", () => {
+    const seed = seedFromIssueRef({
+      tracker: "linear",
+      identifier: "SHI-304",
+      title: "Secret plan",
+      description: "Details",
+    });
+    expect(seed.title).toBe("SHI-304: Secret plan");
+    expect(seed.prompt).toContain("Secret plan");
+    expect(seed.prompt).toContain("Details");
+  });
+
+  it("falls back to a generated branch when the pointer slugifies to nothing", () => {
+    const seed = seedFromIssueRef({ tracker: "linear", identifier: "###", title: "T" });
+    expect(seed.branch).not.toBe("");
+    expect(seed.branch).not.toContain("#");
+  });
+
+  it("stays a pure function of the issue, so collisions are unchanged", () => {
+    const ref = { tracker: "linear" as const, identifier: "SHI-1", title: "A" };
+    expect(seedFromIssueRef(ref).branch).toBe(seedFromIssueRef({ ...ref, title: "B" }).branch);
+  });
+});
 
 describe("createHeadlessSession", () => {
   let tmpDir: string;
@@ -401,10 +457,13 @@ describe("createHeadlessSession", () => {
       graduationDeps,
     );
 
-    // Branch derived from the identifier + title slug; title prefixed by id.
-    expect(result.branch).toBe("shi-67-inline-tracker-issues-tab");
+    // docs/247 req 1 — the branch is the POINTER ONLY. A branch gets pushed to a
+    // public remote, so the issue title must not appear in it. The session title
+    // and the seed prompt still carry it: both stay inside ShipIt.
+    expect(result.branch).toBe("shi-67");
+    expect(result.branch).not.toContain("inline");
     expect(result.session.title).toBe("SHI-67: Inline tracker Issues tab");
-    expect(result.session.branch).toBe("shi-67-inline-tracker-issues-tab");
+    expect(result.session.branch).toBe("shi-67");
     // The first dispatched prompt carries the issue context.
     const text = registry.get(result.sessionId)?.dispatch.mock.calls[0][0].text as string;
     expect(text).toContain("SHI-67: Inline tracker Issues tab");

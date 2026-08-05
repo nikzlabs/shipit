@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
+import path from "node:path";
 import type { AgentId } from "../shared/types.js";
+import { ensureCodexHomeInitialized } from "./agents/codex/home-init.js";
 
 export interface SessionName {
   slug: string;
@@ -68,11 +70,22 @@ export async function generateSessionName(
   }
 }
 
-function callAgentCli(agentId: AgentId, prompt: string, credentialRoot?: string): Promise<string | null> {
+async function callAgentCli(agentId: AgentId, prompt: string, credentialRoot?: string): Promise<string | null> {
   switch (agentId) {
     case "claude":
       return callCli("claude", ["-p", prompt, "--output-format", "text"], agentId, credentialRoot);
     case "codex":
+      // Naming is one of the two `codex` processes that start against the same
+      // config root on a session's first message — the other is the turn's own
+      // agent — and Codex's first-run initialization of that root is not
+      // concurrency-safe, so whichever loses exits 1 before doing any work. Both
+      // spawners await the same gate, which initializes a cold root exactly once
+      // and is a directory read thereafter. See `agents/codex/home-init.ts`.
+      //
+      // Awaited BEFORE the spawn, not around it: the point is to be the only
+      // process in the root while it is cold, not to serialize naming against
+      // turns generally.
+      if (credentialRoot) await ensureCodexHomeInitialized(path.join(credentialRoot, ".codex"));
       // We run from /tmp (a one-shot prompt unrelated to any repo). Codex >=0.130
       // refuses `exec` outside a trusted git repo unless this flag is passed.
       return callCli("codex", ["exec", "--skip-git-repo-check", prompt], agentId, credentialRoot);
