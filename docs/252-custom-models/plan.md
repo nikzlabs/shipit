@@ -377,6 +377,22 @@ explicit setting is also the only version that can be *shown* to the user as bro
 when its service stops working. This is the one place with no existing seam at all, and
 the largest single piece of work here.
 
+**Retiring a catalogue entry** (req 16). Curation means removal is routine, so the
+catalogue carries a map from retired `(serviceId, modelId)` pairs to their successors.
+A session pinned to a retired pair resolves through that map at the point the model is
+read, and runs on the successor; the picker offers only current pairs.
+
+There is precedent to copy rather than a mechanism to invent: `normalizeCodexModelId`
+(`agent-registry.ts:141`) already does exactly this for one model, mapping the retired
+`gpt-5.6` slug onto `gpt-5.6-sol` "at the boundary before Codex turns so legacy sessions
+run the intended Sol model". Req 16 generalizes that one-off shim into a catalogue-owned
+map keyed by pair rather than by bare model id — which is also why it must be keyed by
+pair: two services can retire the same model id toward different successors.
+
+Because the session now reports the successor, req 14 makes the remap visible rather
+than silent — the picker and attribution show what is actually running, not what was
+originally chosen.
+
 **Usage** (req 13) is reported per service. The existing types are partway there but
 less far than this doc first claimed: the wire shape is **`AgentId` → `routeId` →
 limits** (`usage-limits-types.ts:74`), so it is keyed by provider *and* route, and

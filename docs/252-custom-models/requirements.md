@@ -53,9 +53,7 @@ No open questions remain.
    entries. Breadth of the subset is a judgement ShipIt makes and revises over time.
 
 9. When a new harness is added to ShipIt later, the services that already speak its API
-   style become usable with it as far as the catalogue's declarations reach, with **no
-   work by the user at all**. Extending those declarations to models not yet covered is
-   ShipIt's work, never the user's.
+   style become usable with it as far as the catalogue's declarations reach.
 
 10. A user chooses which of ShipIt's services they use, in their own Settings, by
     supplying a credential for each — no administrator and no involvement from anyone
@@ -78,8 +76,8 @@ No open questions remain.
     credential for.
 
 12. The work ShipIt does outside a turn — naming a session, writing a pull-request
-    description — runs on a service the user configures explicitly for it, chosen
-    independently of whatever model a session is using. It must not silently depend
+    description — runs on a service the user chooses explicitly for it, independently of
+    whatever model a session is using. It must not silently depend
     on a credential the user has stopped having.
 
     When that service fails, the surrounding operation still completes with a fallback
@@ -118,11 +116,24 @@ No open questions remain.
     When no subscription is left to fail over to, ShipIt stops and says so, exactly as
     it does for a key.
 
+16. Models leave the catalogue as ShipIt revises which ones are worth carrying (req 8).
+    A session already pinned to a removed service-and-model pair keeps working: ShipIt
+    maintains a mapping from retired pairs to their successors and moves the session
+    onto the successor. The session then reports what it is actually running (req 14) —
+    a remap is never invisible, and never leaves a session unable to take a turn.
+
 ## Open questions
 
 _None._
 
 ## Resolved questions
+
+- 2026-08-05 — What happens to a session pinned to a model that later leaves the
+  catalogue? **Chosen: maintain a fallback map from retired pairs to their successors,
+  and move the session onto the successor.** Not "keep running on the removed pair",
+  which was the agent's suggestion — that leaves sessions on models ShipIt has stopped
+  standing behind. Requirement 16. The gap only exists because curation (req 8) makes
+  removal a deliberate, recurring act rather than an accident.
 
 - 2026-08-05 — How do compact declarations coexist with per-model metadata? **Chosen:
   (c) ship only an explicitly maintained subset of a large service's models.** Only a
@@ -305,6 +316,12 @@ human, but most of the mechanism did not. What the human actually said, in order
   scope of this feature for now" → req 7's key-authentication limit.
 - "there should be only ShipIt-supported ('hardcoded') services" → reqs 7 and 10, which
   had still described users adding services of their own.
+- "we need to maintain the fallback map (old pair -> new pair) and make sure it works"
+  → req 16.
+- "yes, update" (req 12's wording) and "simplify" (req 9) → both applied; the agent's
+  suggestion to move req 12's third paragraph out was declined, the human judging the
+  factual context worth keeping since it states a fact rather than prescribing an
+  implementation.
 - "(a) keep the existing fallbacks and surface a dismissible notice" → req 12's failure
   behavior.
 - "sounds good" (req 6) and "good" (req 14) → both confirmed as requirements.

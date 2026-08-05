@@ -80,6 +80,12 @@
       key-based service renders nothing rather than an empty pill.
 - [ ] Surface the active model, active service, and whether it bills a key or a
       subscription (req 14).
+- [ ] Retired-pair fallback map (req 16): `(serviceId, modelId)` → successor, resolved
+      where the session's model is read. Generalize `normalizeCodexModelId`
+      (`agent-registry.ts:141`) rather than adding a second shim; key by pair, since two
+      services can retire the same model id toward different successors.
+- [ ] Guard test: a session pinned to a retired pair takes a turn on the successor and
+      reports the successor (req 14), and the retired pair is absent from the picker.
 - [ ] Verify req 6 concretely on a non-vendor service: tools, skills, MCP servers, live
       steering, permission modes, plan mode, transcript — establishing that ShipIt adds
       no limitation the harness and model do not already have.
