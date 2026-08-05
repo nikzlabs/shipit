@@ -44,4 +44,6 @@
 Remaining:
 
 - [ ] Complete a fresh-context requirements review.
-- [ ] Resolve requirement 10's open questions (which form ShipIt emits, whether the session's own repo is covered, and rename-vs-re-point for recorded destinations), then design and implement rename-proof references. Blocked on the human answers — no implementation while the questions are open.
+- [x] Resolve requirement 10's open questions (which form ShipIt emits, whether the session's own repo is covered, and rename-vs-re-point for recorded destinations).
+- [ ] Design and implement alias references (requirement 10), including the two behavior changes the answers imply: ShipIt emits the alias form wherever it generates a reference (requirement 7), and a declaration matching the session's own repository is honored as an alias rather than skipped.
+- [ ] Re-check the shipped surfaces that requirement 3's simplification changes: a recorded destination is no longer pinned to the `owner/repo` it resolved to when written.
