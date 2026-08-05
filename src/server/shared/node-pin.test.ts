@@ -126,6 +126,36 @@ describe("parseRange / satisfies", () => {
     expect(matches("", "24.15.0")).toBe(true);
   });
 
+  it("accepts an operator written with a space before its operand", () => {
+    // `">= 20"` is valid npm syntax and appears in real engines fields; naive
+    // whitespace tokenization would reject it and silently leave the repo on
+    // the image's Node.
+    expect(matches(">= 20", "24.15.0")).toBe(true);
+    expect(matches(">= 20", "18.0.0")).toBe(false);
+    expect(matches("^ 22", "22.20.1")).toBe(true);
+    expect(matches(">= 20 < 23", "22.0.0")).toBe(true);
+    expect(matches(">= 20 < 23", "23.1.0")).toBe(false);
+  });
+
+  it("rejects a trailing operator with nothing to bind to", () => {
+    expect(parseRange(">=")).toBeNull();
+    expect(parseRange("20 >=")).toBeNull();
+  });
+
+  it("rejects a concrete component to the right of a wildcard", () => {
+    // `20.x.3` is not valid npm semver. Reading it as `>=20.0.3 <21` would
+    // activate a Node the repo never asked for.
+    expect(parseRange("20.x.3")).toBeNull();
+    expect(parseRange("x.2.3")).toBeNull();
+  });
+
+  it("rejects leading-zero components", () => {
+    expect(parseRange("020")).toBeNull();
+    expect(parseRange("20.01")).toBeNull();
+    // A genuine zero component is still fine.
+    expect(parseRange("20.0.1")).not.toBeNull();
+  });
+
   it("returns null for forms it does not implement, rather than guessing", () => {
     // Aliases and hyphen ranges must surface as `unsupported` upstream — a
     // silently-wrong match would activate the wrong Node, which is worse than

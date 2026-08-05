@@ -12,8 +12,11 @@ import os from "node:os";
 import path from "node:path";
 import {
   MIN_ACTIVATABLE_MAJOR,
+  PATH_HANDOFF_FILE,
   distArch,
+  findComposeNodeConflicts,
   installDirName,
+  isMountPoint,
   listCachedVersions,
   provisionNodeRuntime,
   resetNodeRuntimeForTests,
@@ -77,6 +80,7 @@ describe("node-runtime provisioning", () => {
     const status = await provisionNodeRuntime({ workspaceDir: workspace, cacheDir, deps: deps() });
     expect(status.state).toBe("no-pin");
     expect(status.mismatch).toBe(false);
+    expect(status.composeNodeConflicts).toEqual([]);
     expect(installed).toEqual([]);
     expect(process.env.SHIPIT_PINNED_NODE).toBeUndefined();
   });
@@ -215,6 +219,130 @@ describe("node-runtime provisioning", () => {
   });
 });
 
+// docs/248 review finding 1 — Codex runs every tool command as `bash -lc`, and
+// Debian's /etc/profile overwrites PATH. The profile.d snippet reads this file,
+// so publishing it correctly is what makes the pin reach those commands.
+describe("login-shell PATH handoff", () => {
+  let workspace: string;
+  let cacheDir: string;
+  let stateDir: string;
+  let originalPath: string | undefined;
+
+  const fakeInstall = async (version: { major: number; minor: number; patch: number }, dir: string) =>
+    seedCached(dir, `${version.major}.${version.minor}.${version.patch}`);
+
+  beforeEach(() => {
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "node-rt-hw-"));
+    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "node-rt-hc-"));
+    stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "node-rt-hs-"));
+    originalPath = process.env.PATH;
+    resetNodeRuntimeForTests();
+  });
+
+  afterEach(() => {
+    process.env.PATH = originalPath;
+    delete process.env.SHIPIT_PINNED_NODE;
+    for (const d of [workspace, cacheDir, stateDir]) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  it("publishes the pinned bin dir for login shells", async () => {
+    fs.writeFileSync(path.join(workspace, ".nvmrc"), "22");
+    await provisionNodeRuntime({
+      workspaceDir: workspace,
+      cacheDir,
+      stateDir,
+      deps: {
+        currentVersion: () => "v24.15.0",
+        listRemoteVersions: async () => [v("22.20.1")],
+        install: fakeInstall,
+      },
+    });
+    const published = fs.readFileSync(path.join(stateDir, PATH_HANDOFF_FILE), "utf-8");
+    expect(published).toBe(path.join(cacheDir, installDirName(v("22.20.1"), ARCH), "bin"));
+  });
+
+  it("retracts a stale handoff when the repo no longer pins anything", async () => {
+    // A previous container pinned 22; the repo has since dropped its .nvmrc.
+    // Leaving the file would keep login shells on a Node we aren't using.
+    fs.writeFileSync(path.join(stateDir, PATH_HANDOFF_FILE), "/stale/bin");
+    const status = await provisionNodeRuntime({
+      workspaceDir: workspace,
+      cacheDir,
+      stateDir,
+      deps: { currentVersion: () => "v24.15.0" },
+    });
+    expect(status.state).toBe("no-pin");
+    expect(fs.existsSync(path.join(stateDir, PATH_HANDOFF_FILE))).toBe(false);
+  });
+
+  it("retracts the handoff when the pin can't be honored", async () => {
+    fs.writeFileSync(path.join(stateDir, PATH_HANDOFF_FILE), "/stale/bin");
+    fs.writeFileSync(path.join(workspace, ".nvmrc"), "18");
+    const status = await provisionNodeRuntime({
+      workspaceDir: workspace,
+      cacheDir,
+      stateDir,
+      deps: {
+        currentVersion: () => "v24.15.0",
+        listRemoteVersions: async () => [v("18.20.4")],
+        install: fakeInstall,
+      },
+    });
+    expect(status.state).toBe("below-floor");
+    expect(fs.existsSync(path.join(stateDir, PATH_HANDOFF_FILE))).toBe(false);
+  });
+});
+
+// docs/248 requirement 5 — reported, never resolved: a Compose image is
+// deliberately not a pin source, so the disagreement has to be visible.
+describe("findComposeNodeConflicts", () => {
+  let workspace: string;
+
+  beforeEach(() => {
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "node-rt-compose-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  function writeCompose(body: string): void {
+    fs.writeFileSync(path.join(workspace, "docker-compose.yml"), body);
+  }
+
+  it("reports a service pinned to a different Node major", () => {
+    writeCompose("services:\n  web:\n    image: node:22\n");
+    expect(findComposeNodeConflicts(workspace, 24)).toEqual([
+      { service: "web", image: "node:22", major: 22 },
+    ]);
+  });
+
+  it("says nothing when the majors agree", () => {
+    writeCompose("services:\n  web:\n    image: node:22-alpine\n");
+    expect(findComposeNodeConflicts(workspace, 22)).toEqual([]);
+  });
+
+  it("handles tag suffixes and registry prefixes", () => {
+    writeCompose(
+      "services:\n  a:\n    image: node:20-bookworm-slim\n  b:\n    image: docker.io/library/node:18.20.4\n",
+    );
+    expect(findComposeNodeConflicts(workspace, 24).map((c) => c.major).sort()).toEqual([18, 20]);
+  });
+
+  it("ignores services that pin no Node major", () => {
+    writeCompose(
+      "services:\n  db:\n    image: postgres:16\n  app:\n    image: node:latest\n  built:\n    build: .\n",
+    );
+    expect(findComposeNodeConflicts(workspace, 24)).toEqual([]);
+  });
+
+  it("is silent when there is no compose file or it is unparseable", () => {
+    expect(findComposeNodeConflicts(workspace, 24)).toEqual([]);
+    writeCompose("services: [this is not: a map\n");
+    expect(findComposeNodeConflicts(workspace, 24)).toEqual([]);
+  });
+});
+
 describe("listCachedVersions", () => {
   let cacheDir: string;
 
@@ -253,20 +381,28 @@ describe("listCachedVersions", () => {
 });
 
 describe("resolveNodeCacheDir", () => {
-  it("prefers the shared dep cache mount so hosts share one download", () => {
-    const depCache = fs.mkdtempSync(path.join(os.tmpdir(), "dep-cache-"));
-    try {
-      expect(resolveNodeCacheDir(depCache, "/session-state")).toBe(
-        path.join(depCache, "node-versions"),
-      );
-    } finally {
-      fs.rmSync(depCache, { recursive: true, force: true });
-    }
+  it("prefers the shared dep cache when it is a real mount", () => {
+    expect(resolveNodeCacheDir("/dep-cache", "/session-state", () => true)).toBe(
+      "/dep-cache/node-versions",
+    );
   });
 
   it("falls back to the state dir when the mount is absent", () => {
-    expect(resolveNodeCacheDir("/definitely/not/mounted", "/session-state")).toBe(
+    expect(resolveNodeCacheDir("/dep-cache", "/session-state", () => false)).toBe(
       path.join("/session-state", "node-versions"),
     );
+  });
+
+  it("does not treat a plain directory as the shared cache", () => {
+    // The container entrypoint `mkdir -p`s /dep-cache unconditionally, so mere
+    // existence would park ~200 MB on the container's writable layer, shared
+    // with nobody and discarded on the next container.
+    const plain = fs.mkdtempSync(path.join(os.tmpdir(), "dep-cache-"));
+    try {
+      expect(isMountPoint(plain)).toBe(false);
+      expect(resolveNodeCacheDir(plain, "/session-state")).toBe("/session-state/node-versions");
+    } finally {
+      fs.rmSync(plain, { recursive: true, force: true });
+    }
   });
 });

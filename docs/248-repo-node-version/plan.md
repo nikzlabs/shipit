@@ -20,24 +20,39 @@ pinned for the same mounted workspace (req 5).
 
 ## Shape
 
-One mechanism does the work: **resolve the pin at worker boot and prepend the
-matching toolchain's `bin/` to the worker's own `process.env.PATH`.** The
-terminal, the agent CLI, and `agent.install` are all spawned by that worker and
-inherit its environment, so a single assignment covers every place req 4 cares
-about. There is no per-process env plumbing, no shim layer, and no `shipit.yaml`
-key (req 1: automatic for every repo).
+The primary mechanism: **resolve the pin at worker boot and prepend the matching
+toolchain's `bin/` to the worker's own `process.env.PATH`.** The terminal, the
+agent CLI, `agent.install`, and the MCP package installs are all spawned by that
+worker and inherit its environment, so one assignment covers everything that
+reads the inherited env. There is no `shipit.yaml` key (req 1: automatic for
+every repo).
+
+That is necessary but **not sufficient**, and the gap is invisible if you only
+test the terminal: Codex runs every tool command as `bash -lc`, and Debian's
+`/etc/profile` *overwrites* `PATH` outright. So `node -v` in the terminal and in
+the diagnostics panel reported the pinned Node while `npm test` under Codex
+silently ran the image's — the same invisible mismatch the bug is about. The
+second half of the mechanism is therefore a baked
+`/etc/profile.d/10-shipit-node.sh` that re-prepends the pinned bin inside login
+shells, reading the path the worker publishes to `/session-state/node-bin` (the
+snippet needs root, so it is baked; the value depends on the repo, so it is
+written at runtime). An absent file means no pin and the snippet no-ops.
 
 ```
 worker boot ──> startNodeRuntimeProvisioning()   (not awaited)
                   │
                   ├─ readNodePin(/workspace)          .nvmrc → engines.node
+                  ├─ retract any stale /session-state/node-bin
                   ├─ already satisfied? ──────────────> done, PATH untouched
                   ├─ resolve: cached versions first, then nodejs.org/dist
                   ├─ below Node 20? ──────────────────> report, PATH untouched
                   ├─ download + SHA256-verify + extract into /dep-cache
-                  └─ PATH = <toolchain>/bin : PATH ; SHIPIT_PINNED_NODE=<ver>
+                  ├─ PATH = <toolchain>/bin : PATH ; SHIPIT_PINNED_NODE=<ver>
+                  └─ publish <toolchain>/bin to /session-state/node-bin
+                                                     (login shells, via profile.d)
 
-/install, /terminal/start, /agent/start ──> await whenNodeRuntimeReady()
+/install, /terminal/start, /agent/start,
+/mcp/install, /mcp/test  ────────────────> await whenNodeRuntimeReady()
 GET /node-runtime ────> orchestrator diagnostics ────> panel "Node runtime"
 ```
 
@@ -46,8 +61,10 @@ GET /node-runtime ────> orchestrator diagnostics ────> panel "No
 **Provisioning does not block `listen()`.** The orchestrator gives a worker 30s
 to report healthy (`waitForWorkerHealth`) before failing container creation. A
 cold download is ~50 MB from `nodejs.org`; blocking boot on it would turn a slow
-network into a failed session. Instead the three paths that must not run on the
-wrong Node await the shared promise individually. `/node-runtime` deliberately
+network into a failed session. Instead every path that must not run on the wrong
+Node awaits the shared promise individually — `/install`, `/terminal/start`,
+`/agent/start`, and (because session activation fires them in parallel with the
+install, not after it) `/mcp/install` and `/mcp/test`. `/node-runtime` deliberately
 does *not* await — it reports `pending` — so a diagnostics panel can't hang on a
 download.
 
@@ -72,11 +89,15 @@ is reclaimed with it, and only a repo that actually pins an off-image version
 pays it.
 
 **A floor at Node 20 (`MIN_ACTIVATABLE_MAJOR`).** The pinned Node leads PATH for
-everything the worker spawns, including the `claude` and `codex` CLIs, whose
-shebangs resolve `node` the same way; both need 20+. Honoring a Node 14 pin would
-trade a wrong-ABI warning for a session with no working agent. Below the floor the
-pin takes req 6's reporting path instead. Node 20 went EOL in April 2026, so this
-excludes essentially nothing a live repo pins.
+everything the worker spawns, so anything on PATH with a `#!/usr/bin/env node`
+shebang runs under it. Checked against the shipped artifacts rather than assumed:
+the binding constraint is `playwright-mcp`, whose `playwright` / `playwright-core`
+deps declare `engines.node >= 20`; `@playwright/mcp` itself wants `>= 18` and the
+`codex` JS launcher `>= 16`. The `claude` bin is a *native executable*
+(`bin/claude.exe`), so it is unaffected either way — an earlier draft of this doc
+claimed both agent CLIs were the constraint, which the lockfile does not support.
+Below the floor the pin takes req 6's reporting path instead. Node 20 went EOL in
+April 2026, so this excludes essentially nothing a live repo pins.
 
 **Range support is a deliberate subset, and unparseable is a reported outcome.**
 `>=`, `>`, `<=`, `<`, `=`, `^`, `~`, x-ranges, `*`, intersections and `||` unions
@@ -98,8 +119,9 @@ invoke them via the absolute `/usr/local/bin/node` instead of the shebang's
 
 ## Scope boundary
 
-The pin applies to the agent's shell, the terminal, and `agent.install`. It does
-**not** apply to the session-worker process itself — it is already running, and
+The pin applies to the agent's shell, the terminal, `agent.install`, the MCP
+package installs, and Codex's login shells. It does **not** apply to the
+session-worker process itself — it is already running, and
 its native addons are compiled for the image's ABI. `imageVersion` in the status
 payload is therefore always the worker's own `process.version`.
 
@@ -107,6 +129,15 @@ Changing `.nvmrc` mid-session does not re-provision: the pin is resolved once at
 container start. A container restart picks it up. The install marker *does*
 notice, because the resolved version is in the runtime key (below), so a pin
 change forces a reinstall rather than reusing addons built under the old ABI.
+
+**Resolution is cache-first, which is a deliberate deviation from "newest
+satisfying".** The resolved receipt says a range resolves to the newest available
+version satisfying it; here "available" means *available to this host*, and an
+already-extracted 22.9.0 wins over a downloadable 22.23.2. The trade is a warm
+start that needs no network at all (~1ms, and the only thing that makes a
+network-off sandbox work on its second session) against a pin that can sit a few
+patch releases behind. `NODE_MODULE_VERSION` is per-major, so the ABI is
+unaffected; a container restart after the cache is swept picks up the newer one.
 
 ## Runtime key
 
@@ -118,6 +149,52 @@ appends `|node<version>` from `SHIPIT_PINNED_NODE`.
 Appended **only when a pin is active**: an unconditional extra segment would
 change every key in the fleet at once and force a global cold reinstall for a
 feature almost no repo uses.
+
+## Overlay base scope
+
+`overlayRuntimeKey` describes the *image's* ABI, and the orchestrator picks the
+overlay `lowerdir` before the container exists. Once a repo can pin a different
+Node, that is no longer sufficient: a base whose native addons were built under
+the image's Node must not be mounted into a session running another major. The
+worker-side marker mismatch does force `agent.install` to re-run, but a plain
+`npm install` over an already-complete `node_modules` does **not** rebuild an
+addon that is already present — so the marker is not the backstop the docs/183
+comment claims it is for this case. (Before this feature the case could not
+arise: a base-image Node bump changes `BASE_IMAGE_DIGEST`, which rotates the
+scope.)
+
+`resolveOverlayScope` therefore appends a `|pin<raw>` segment. Two details make
+it safe:
+
+- **It keys on the pin text, not the resolved version.** The orchestrator has no
+  network budget here and resolves nothing. Two sessions on `.nvmrc: 22` months
+  apart may run different patch releases, but `NODE_MODULE_VERSION` is per-major,
+  so sharing one base is correct.
+- **It is empty whenever the pin doesn't move the runtime** — no pin, an
+  unparseable pin (the worker won't switch either), or a pin the image's Node
+  already satisfies. That last case needs the image's own Node version, which the
+  orchestrator now reads from the worker image's `NODE_VERSION` env at startup
+  (`resolveWorkerNodeVersion`, mirroring `resolveWorkerBaseDigest`). Without it,
+  `>=20` on a Node-24 image would look like a scope change and split the base for
+  most repos that declare `engines.node` at all. When the image's version is
+  unknown, a pin splits the scope — erring toward isolation costs one cold
+  install instead of risking an ABI mismatch.
+
+## Requirement 5 — the Compose cross-check
+
+Honoring `.nvmrc`/`engines.node` makes install and preview agree for a repo that
+pins consistently. A repo that pins *only* through its Compose image (`image:
+node:22`, no `.nvmrc`, no `engines.node`) is not covered — the resolved question
+fixed the pin sources at those two files, and adding the Compose image as a third
+source would overrule a human decision rather than implement one.
+
+So `findComposeNodeConflicts` detects the disagreement and reports it, the same
+treatment req 6 prescribes for a pin that can't be honored: the panel names the
+service and its image and suggests adding a `.nvmrc`. Best-effort throughout — a
+missing, unreadable, or exotic compose file yields no conflicts rather than an
+error. **This is a partial satisfaction of req 5 and is called out as such**; if
+the Compose image should become a real pin source, that is a new question for the
+requirements doc, not an inference to make here.
 
 ## Diagnostics (req 6)
 
@@ -142,7 +219,11 @@ so this section exists to make the discrepancy legible even on the happy path.
 | `session/install-runtime.ts` | `runtimeKey()` appends the pinned version |
 | `orchestrator/services/diagnostics.ts` | Probes the worker, adds `nodeRuntime` to the payload |
 | `client/components/SessionDiagnosticsPanel.tsx` | "Node runtime" section |
-| `docker/Dockerfile.session-worker.{prod,dev}` | Shims invoke the image's `node` by absolute path |
+| `session/node-runtime.ts` (`findComposeNodeConflicts`) | Req 5's Compose cross-check |
+| `orchestrator/overlay-session.ts` | `overlayPinSegment` splits the base scope on the pin |
+| `orchestrator/container-overlay-provisioner.ts`, `session-container.ts`, `app-lifecycle.ts` | Resolve + publish the worker image's own Node version |
+| `docker/session-worker/profile-node-pin.sh` | Re-applies the pin inside `bash -lc` login shells |
+| `docker/Dockerfile.session-worker.{prod,dev}` | Shims invoke the image's `node` by absolute path; bake the profile.d snippet |
 | `shared/fs-constants.ts` | `DEP_CACHE_CONTAINER_PATH` moved here (session code needs it) |
 
 ## Tests
@@ -151,7 +232,12 @@ so this section exists to make the discrepancy legible even on the happy path.
   excluded ecosystem pin files.
 - `session/node-runtime.test.ts` — the outcome table with network and tar
   injected: no-pin, provisioned (the reported repro), satisfied, warm cache,
-  unsupported, below-floor, failed download, offline, unsatisfiable.
+  unsupported, below-floor, failed download, offline, unsatisfiable; the
+  login-shell handoff (published, retracted when the pin goes away, retracted
+  when it can't be honored); the Compose cross-check; and that a plain directory
+  is not mistaken for the shared cache mount.
+- `orchestrator/overlay-session.test.ts` — the pin segment is empty for every
+  case that doesn't move the runtime, splits when it does, and differs per pin.
 - `session/install-runtime.test.ts` — the key is byte-identical without a pin,
   and changes when the pin changes.
 - `orchestrator/services/diagnostics.test.ts` — probe against a real stand-in

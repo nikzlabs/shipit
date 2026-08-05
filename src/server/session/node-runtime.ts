@@ -18,9 +18,14 @@
  *   4. Download + SHA256-verify + extract it into the shared dependency cache,
  *      then prepend its `bin/` to the worker's own `process.env.PATH`.
  *
- * Step 4's PATH mutation is the whole mechanism. The terminal, the agent CLI,
+ * Step 4's PATH mutation is the primary mechanism. The terminal, the agent CLI,
  * and `agent.install` are all spawned by this worker and inherit its
- * environment, so one assignment covers every place requirement 4 cares about.
+ * environment, so one assignment covers everything that reads the inherited
+ * env. It is NOT sufficient on its own: Codex runs each tool command as
+ * `bash -lc`, and Debian's `/etc/profile` overwrites `PATH` outright — so the
+ * pinned bin is also published to {@link PATH_HANDOFF_FILE} for the baked
+ * `/etc/profile.d/10-shipit-node.sh` to re-prepend inside login shells.
+ *
  * Deliberately NOT covered: the worker process itself (already running, and its
  * `/app/node_modules` native addons are compiled for the image's ABI) and the
  * `gh`/`shipit`/`shipit-git-credential` shims, which the Dockerfile pins to the
@@ -47,17 +52,31 @@ import {
   satisfies,
   type NodeVersion,
 } from "../shared/node-pin.js";
-import type { NodeRuntimeState, NodeRuntimeStatus } from "../shared/types/node-runtime-types.js";
+import type {
+  ComposeNodeConflict,
+  NodeRuntimeState,
+  NodeRuntimeStatus,
+} from "../shared/types/node-runtime-types.js";
+import { parse as parseYaml } from "yaml";
+import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { getErrorMessage } from "../shared/utils.js";
 
 /**
  * Majors below this are resolved and *reported* but never activated.
  *
- * The pinned Node leads PATH for every process the worker spawns, and that
- * includes the `claude` and `codex` CLIs, whose shebangs resolve `node` the
- * same way. Both require Node 20+. Honoring a Node 14 pin would therefore
- * trade a wrong-ABI warning for a session with no working agent — a strictly
- * worse outcome, so the pin falls back to the reporting path (requirement 6).
+ * The pinned Node leads PATH for every process the worker spawns, so anything
+ * on PATH with a `#!/usr/bin/env node` shebang runs under it. The binding
+ * constraint is the baked `playwright-mcp` bin, whose `playwright` /
+ * `playwright-core` deps declare `engines.node >= 20`; `@playwright/mcp` itself
+ * wants >= 18 and the `codex` JS launcher >= 16. (The `claude` bin is a native
+ * executable, so it is unaffected either way — an earlier version of this
+ * comment claimed both CLIs were the constraint, which the shipped artifacts do
+ * not support.)
+ *
+ * Honoring a Node 14 pin would therefore trade a wrong-ABI warning for a
+ * session with broken browser tooling, so the pin falls back to the reporting
+ * path (requirement 6) instead. Node 20 reached EOL in April 2026, so this
+ * excludes essentially nothing a live repo pins.
  */
 export const MIN_ACTIVATABLE_MAJOR = 20;
 
@@ -68,10 +87,17 @@ const METADATA_TIMEOUT_MS = 20_000;
 
 const DIST_BASE_URL = "https://nodejs.org/dist";
 
-export type { NodeRuntimeState, NodeRuntimeStatus };
+export type { ComposeNodeConflict, NodeRuntimeState, NodeRuntimeStatus };
 
 export interface ProvisionOptions {
   workspaceDir: string;
+  /**
+   * ShipIt's per-session state dir (`/session-state`). The pinned toolchain's
+   * `bin/` path is written here for `/etc/profile.d/10-shipit-node.sh` to read
+   * — see {@link PATH_HANDOFF_FILE}. Optional so tests and local mode can skip
+   * the handoff entirely.
+   */
+  stateDir?: string;
   /**
    * Where extracted toolchains live. `/dep-cache/node-versions` in a real
    * session (shared across every session of the repo on that host, and swept
@@ -162,13 +188,32 @@ export function listCachedVersions(cacheDir: string, arch: string): NodeVersion[
  * own clock. Falls back to the session state dir when the mount is absent
  * (local mode, tests), where it is merely per-session rather than broken.
  */
-export function resolveNodeCacheDir(depCacheDir: string, stateDir: string): string {
-  try {
-    if (fs.statSync(depCacheDir).isDirectory()) return path.join(depCacheDir, "node-versions");
-  } catch {
-    // Not mounted.
-  }
+export function resolveNodeCacheDir(
+  depCacheDir: string,
+  stateDir: string,
+  isMount: (dir: string) => boolean = isMountPoint,
+): string {
+  // Existence is NOT the test: the container entrypoint `mkdir -p`s /dep-cache
+  // unconditionally so it can chown it, so the directory is always there even
+  // when the orchestrator bound no cache (a session with no `remoteUrl`). An
+  // existence check would then park ~200 MB on the container's writable layer,
+  // shared with nobody and thrown away on the next container. `isMountPoint`
+  // asks the question we actually mean.
+  if (isMount(depCacheDir)) return path.join(depCacheDir, "node-versions");
   return path.join(stateDir, "node-versions");
+}
+
+/**
+ * Whether `dir` is a real mount (bind or volume) rather than a plain directory
+ * on the container's own filesystem. A mount has a different `st_dev` from its
+ * parent — the standard check, and enough for both mount kinds here.
+ */
+export function isMountPoint(dir: string): boolean {
+  try {
+    return fs.statSync(dir).dev !== fs.statSync(path.dirname(dir)).dev;
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -304,6 +349,59 @@ function runTar(tarPath: string, destDir: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Compose cross-check (requirement 5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compose services pinning a `node:<major>` image that disagrees with
+ * `activeMajor`.
+ *
+ * Requirement 5 asks that the Node installing `node_modules` agree with the
+ * Node a Compose preview service pins for the same mounted workspace. Honoring
+ * `.nvmrc`/`engines.node` gets a consistently-pinned repo there. A repo that
+ * pins ONLY through its Compose image is not covered — the human's resolved
+ * question fixed the pin sources at those two files, so adding the Compose
+ * image as a third source would overrule a decision, not implement one.
+ *
+ * So this detects and reports the disagreement rather than resolving it, which
+ * is the same treatment requirement 6 prescribes for a pin that can't be
+ * honored. Best-effort throughout: a missing, unreadable, or exotic compose
+ * file yields no conflicts rather than an error.
+ */
+export function findComposeNodeConflicts(workspaceDir: string, activeMajor: number): ComposeNodeConflict[] {
+  let composeFile: string;
+  try {
+    composeFile = resolveShipitConfig(workspaceDir).compose?.file ?? "docker-compose.yml";
+  } catch {
+    composeFile = "docker-compose.yml";
+  }
+
+  let doc: unknown;
+  try {
+    doc = parseYaml(fs.readFileSync(path.join(workspaceDir, composeFile), "utf-8"));
+  } catch {
+    return [];
+  }
+
+  const services = (doc as { services?: unknown } | null)?.services;
+  if (typeof services !== "object" || services === null) return [];
+
+  const conflicts: ComposeNodeConflict[] = [];
+  for (const [service, raw] of Object.entries(services as Record<string, unknown>)) {
+    const image = (raw as { image?: unknown } | null)?.image;
+    if (typeof image !== "string") continue;
+    // `node:22`, `node:22.3`, `node:22-alpine`, `docker.io/library/node:22`.
+    // A bare `node` or `node:latest` pins nothing, so it can't conflict.
+    const match = /(?:^|\/)node:(\d+)(?:[.-]|$)/.exec(image.trim());
+    if (!match) continue;
+    const major = Number(match[1]);
+    if (major === activeMajor) continue;
+    conflicts.push({ service, image: image.trim(), major });
+  }
+  return conflicts;
+}
+
+// ---------------------------------------------------------------------------
 // Resolution
 // ---------------------------------------------------------------------------
 
@@ -326,6 +424,19 @@ const DEFAULT_DEPS: ProvisionDeps = {
  * not a session that failed to start.
  */
 export async function provisionNodeRuntime(opts: ProvisionOptions): Promise<NodeRuntimeStatus> {
+  const status = await resolveAndActivate(opts);
+  // Requirement 5's reporting half. Computed once, from the version the session
+  // actually ends up installing with, so it reflects the post-provisioning
+  // truth rather than the image default.
+  const activeMajor = parseVersion(status.activeVersion)?.major;
+  return {
+    ...status,
+    composeNodeConflicts:
+      activeMajor === undefined ? [] : findComposeNodeConflicts(opts.workspaceDir, activeMajor),
+  };
+}
+
+async function resolveAndActivate(opts: ProvisionOptions): Promise<NodeRuntimeStatus> {
   const deps: ProvisionDeps = { ...DEFAULT_DEPS, ...opts.deps };
   const imageVersionRaw = deps.currentVersion();
   const imageVersion = imageVersionRaw.replace(/^v/, "");
@@ -338,7 +449,14 @@ export async function provisionNodeRuntime(opts: ProvisionOptions): Promise<Node
     imageVersion,
     reason: null,
     mismatch: false,
+    composeNodeConflicts: [],
   };
+
+  // Retract any handoff from a previous container on this session's state dir
+  // BEFORE resolving. Every path below either re-publishes it (on success) or
+  // leaves it absent, so a pin that was removed or downgraded can't leave a
+  // login shell pointing at a toolchain we are no longer using.
+  writePathHandoff(opts.stateDir, null);
 
   const pin = readNodePin(opts.workspaceDir);
   if (!pin) return base;
@@ -390,13 +508,13 @@ export async function provisionNodeRuntime(opts: ProvisionOptions): Promise<Node
         ...withPin,
         state: "below-floor",
         resolvedVersion: formatVersion(target),
-        reason: `Node ${formatVersion(target)} is below the minimum this container can run (${MIN_ACTIVATABLE_MAJOR}) — the agent CLIs resolve \`node\` through the same PATH and require ${MIN_ACTIVATABLE_MAJOR}+. Running on ${imageVersion} instead.`,
+        reason: `Node ${formatVersion(target)} is below the minimum this container can run (${MIN_ACTIVATABLE_MAJOR}) — the baked Node tooling on PATH (Playwright) requires ${MIN_ACTIVATABLE_MAJOR}+. Running on ${imageVersion} instead.`,
         mismatch: true,
       };
     }
 
     const installDir = await deps.install(target, opts.cacheDir);
-    activateNodeDir(path.join(installDir, "bin"), target);
+    activateNodeDir(path.join(installDir, "bin"), target, opts.stateDir);
 
     return {
       ...withPin,
@@ -415,6 +533,45 @@ export async function provisionNodeRuntime(opts: ProvisionOptions): Promise<Node
 }
 
 /**
+ * Name of the file, inside the session state dir, holding the pinned
+ * toolchain's `bin/` path.
+ *
+ * Mutating the worker's `process.env.PATH` covers every process the worker
+ * spawns — but NOT what those processes do next. Codex runs every tool command
+ * as `bash -lc` (`codex-tool-normalizer.ts`), and Debian's `/etc/profile`
+ * **unconditionally overwrites** `PATH` with the system default. So a login
+ * shell threw the pinned Node away: `node -v` in the terminal and in the
+ * diagnostics panel said 22 while `npm test` under Codex silently ran 24 —
+ * exactly the invisible mismatch this feature exists to remove.
+ *
+ * The fix is a baked `/etc/profile.d/10-shipit-node.sh` that re-prepends this
+ * path after `/etc/profile` has had its say. The snippet is baked (it needs
+ * root); the *value* is written here at runtime, because the pin isn't known
+ * until the workspace is mounted. Absent file = no pin = the snippet no-ops.
+ */
+export const PATH_HANDOFF_FILE = "node-bin";
+
+/**
+ * Publish (or retract) the pinned `bin/` for login shells. Best-effort: a
+ * session that can't write its state dir should degrade to "Codex sees the
+ * image's Node", not fail to start.
+ */
+function writePathHandoff(stateDir: string | undefined, binDir: string | null): void {
+  if (!stateDir) return;
+  const file = path.join(stateDir, PATH_HANDOFF_FILE);
+  try {
+    if (binDir === null) {
+      fs.rmSync(file, { force: true });
+      return;
+    }
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(file, binDir, "utf-8");
+  } catch (err) {
+    console.warn(`[node-runtime] could not publish the login-shell PATH handoff: ${getErrorMessage(err)}`);
+  }
+}
+
+/**
  * Put a provisioned toolchain first on PATH for everything this worker spawns.
  *
  * `SHIPIT_PINNED_NODE` is read back by `install-runtime.ts:runtimeKey()`, which
@@ -424,11 +581,12 @@ export async function provisionNodeRuntime(opts: ProvisionOptions): Promise<Node
  * ONLY when a pin is active, so unpinned repos keep their existing key and
  * don't all take one cold reinstall on deploy.
  */
-function activateNodeDir(binDir: string, version: NodeVersion): void {
+function activateNodeDir(binDir: string, version: NodeVersion, stateDir?: string): void {
   const existing = process.env.PATH ?? "";
   const segments = existing.split(path.delimiter).filter((s) => s !== binDir);
   process.env.PATH = [binDir, ...segments].join(path.delimiter);
   process.env.SHIPIT_PINNED_NODE = formatVersion(version);
+  writePathHandoff(stateDir, binDir);
 }
 
 // ---------------------------------------------------------------------------
@@ -464,6 +622,7 @@ export function startNodeRuntimeProvisioning(opts: ProvisionOptions): void {
         imageVersion: v,
         reason: getErrorMessage(err),
         mismatch: true,
+        composeNodeConflicts: [],
       };
     }
     current = status;
@@ -506,6 +665,7 @@ function unstartedStatus(): NodeRuntimeStatus {
     imageVersion: v,
     reason: null,
     mismatch: false,
+    composeNodeConflicts: [],
   };
 }
 

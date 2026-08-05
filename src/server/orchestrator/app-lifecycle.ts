@@ -199,6 +199,21 @@ export async function setupContainerManager(
           console.log(`[server] Overlay runtime scope pinned to base image ${baseDigest}`);
         }
       }
+      // docs/248 — the overlay scope must also split when a repo's Node pin
+      // moves the session off the image's Node, or a base of addons built under
+      // the image's ABI would be mounted into a differently-pinned session (a
+      // plain `npm install` does not rebuild an addon that is already present).
+      // Resolving the image's own Node version here is what lets the scope tell
+      // "this pin changes the runtime" from "this repo merely has an
+      // `engines.node` field the image already satisfies" — without it, the
+      // second case would rotate the scope for most of the fleet.
+      if (isOverlayEnabled() && !process.env.WORKER_IMAGE_NODE_VERSION) {
+        const nodeVersion = await containerManager.resolveWorkerNodeVersion();
+        if (nodeVersion) {
+          process.env.WORKER_IMAGE_NODE_VERSION = nodeVersion;
+          console.log(`[server] Worker image runs Node ${nodeVersion}`);
+        }
+      }
       const activeIds = new Set(sessionManager.allIds());
       const orphans = await containerManager.cleanupOrphans(activeIds);
       if (orphans > 0) console.log(`[server] Cleaned up ${orphans} orphan container(s)`);

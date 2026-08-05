@@ -518,6 +518,21 @@ function NodeRuntimeRows({ runtime }: { runtime: NodeRuntimeStatus | null }) {
           valueClass="text-(--color-error) whitespace-pre-wrap"
         />
       )}
+      {/* Requirement 5 — a Compose service pinning a different Node major than
+          the one that installed this workspace's dependencies. Reported rather
+          than resolved: a Compose image is deliberately not a pin source. */}
+      {runtime.composeNodeConflicts.length > 0 && (
+        <KvRow
+          label="compose conflict"
+          value={
+            `${runtime.composeNodeConflicts
+              .map((c) => `${c.service} (${c.image})`)
+              .join(", ")} — pinned to a different Node major than the v${runtime.activeVersion} ` +
+            `this workspace's dependencies are installed with. Add a .nvmrc or engines.node to align them.`
+          }
+          valueClass="text-(--color-warning) whitespace-pre-wrap"
+        />
+      )}
     </>
   );
 }

@@ -246,6 +246,12 @@ export class InstallController {
       if (!Array.isArray(packages) || packages.some((p) => typeof p !== "string")) {
         return reply.code(400).send({ error: "packages must be an array of strings" });
       }
+      // docs/248 — MCP packages are npm-installed and can carry native addons,
+      // and activation fires this in parallel with `agent.install` rather than
+      // after it. Without this gate a cold Node-22 provision could compile an
+      // addon under the image's Node 24 and then launch it under 22.
+      await whenNodeRuntimeReady();
+
       const installed = this.readMcpInstalledMarker();
       const pending = [...new Set(packages)].filter((p) => p && !installed.has(p));
       if (pending.length === 0) {
@@ -280,6 +286,9 @@ export class InstallController {
       if (!config || typeof config !== "object") {
         return reply.code(400).send({ error: "config is required" });
       }
+      // Same reason as `/mcp/install`: this spawns the configured stdio server,
+      // which must see the same Node the package was installed under.
+      await whenNodeRuntimeReady();
       const { testMcpServer } = await import("./mcp-test.js");
       const resolved = this.deps.mcpConfig.resolveMcpServerConfig(config);
       if (!resolved.ok) {

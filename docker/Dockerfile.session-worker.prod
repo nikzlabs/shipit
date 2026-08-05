@@ -290,6 +290,12 @@ EXPOSE 9100
 # `Cmd: ["node", …]`, and dockerode's Cmd overrides the Dockerfile CMD but NOT
 # the ENTRYPOINT — without this line the script never runs and the worker boots
 # as root.
+# docs/248 — re-apply the repo's pinned Node inside login shells. Codex runs
+# every tool command as `bash -lc`, and Debian's /etc/profile overwrites PATH,
+# so the worker's PATH mutation alone does not reach those commands.
+COPY docker/session-worker/profile-node-pin.sh /etc/profile.d/10-shipit-node.sh
+RUN chmod 0644 /etc/profile.d/10-shipit-node.sh
+
 COPY docker/session-worker/entrypoint.sh /usr/local/bin/shipit-entrypoint
 RUN chmod 0755 /usr/local/bin/shipit-entrypoint
 ENTRYPOINT ["/usr/local/bin/shipit-entrypoint"]

@@ -770,12 +770,11 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
   // healthy, and a slow nodejs.org must not turn a version pin into a failed
   // container. The paths that must not run on the wrong Node await
   // `whenNodeRuntimeReady()` themselves.
+  const nodeStateDir = process.env.SHIPIT_SESSION_STATE_DIR ?? CONTAINER_SESSION_STATE_DIR;
   startNodeRuntimeProvisioning({
     workspaceDir,
-    cacheDir: resolveNodeCacheDir(
-      DEP_CACHE_CONTAINER_PATH,
-      process.env.SHIPIT_SESSION_STATE_DIR ?? CONTAINER_SESSION_STATE_DIR,
-    ),
+    stateDir: nodeStateDir,
+    cacheDir: resolveNodeCacheDir(DEP_CACHE_CONTAINER_PATH, nodeStateDir),
   });
 
   const address = await worker.start();

@@ -97,12 +97,17 @@ function parsePartial(text: string): { major: number; minor: number | null; patc
       nums.push(null);
       continue;
     }
-    if (!/^\d+$/.test(part)) return null;
+    // No leading zeros: `020` is not a valid semver component, and silently
+    // reading it as 20 would activate a Node the repo never asked for.
+    if (!/^(0|[1-9]\d*)$/.test(part)) return null;
     nums.push(Number(part));
   }
   const [major, minor = null, patch = null] = nums;
   // `x.2.3` is meaningless — a wildcard major with a concrete minor.
   if (major === null || major === undefined) return null;
+  // Same for `20.x.3`: once a position is a wildcard, everything right of it
+  // must be too. npm rejects these; so do we, rather than inventing a meaning.
+  if (minor === null && patch !== null) return null;
   return { major, minor, patch };
 }
 
@@ -125,10 +130,12 @@ export function parseRange(text: string): RangeSpec | null {
   const unions = trimmed.split("||");
   const spec: Comparator[][] = [];
   for (const union of unions) {
-    const tokens = union.trim().split(/\s+/).filter(Boolean);
-    if (tokens.length === 0) return null;
+    const raw = union.trim().split(/\s+/).filter(Boolean);
+    if (raw.length === 0) return null;
     // A hyphen range (`18 - 22`) arrives as three tokens; not implemented.
-    if (tokens.includes("-")) return null;
+    if (raw.includes("-")) return null;
+    const tokens = joinLooseOperators(raw);
+    if (!tokens) return null;
     const set: Comparator[] = [];
     for (const token of tokens) {
       const comparators = parseComparator(token);
@@ -138,6 +145,30 @@ export function parseRange(text: string): RangeSpec | null {
     spec.push(set);
   }
   return spec;
+}
+
+/**
+ * Re-attach an operator that was written with a space after it.
+ *
+ * `">= 20"` is valid npm syntax and appears in real `engines.node` fields, but
+ * splitting on whitespace turns it into a bare `>=` with no operand — which
+ * would be rejected as `unsupported` and quietly leave the repo on the image's
+ * Node. Returns null for a trailing operator with nothing to bind to.
+ */
+function joinLooseOperators(tokens: string[]): string[] | null {
+  const out: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (/^(>=|<=|>|<|=|\^|~)$/.test(token)) {
+      const operand = tokens[i + 1];
+      if (operand === undefined) return null;
+      out.push(token + operand);
+      i++;
+      continue;
+    }
+    out.push(token);
+  }
+  return out;
 }
 
 /** Expand a single token (`^20.1`, `>=18`, `22.x`) into concrete comparators. */

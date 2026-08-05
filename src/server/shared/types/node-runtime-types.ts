@@ -42,4 +42,25 @@ export interface NodeRuntimeStatus {
   reason: string | null;
   /** True when a pin exists and the active Node does not satisfy it. */
   mismatch: boolean;
+  /**
+   * Requirement 5 — Compose services whose `node:<major>` image disagrees with
+   * the Node the session installs dependencies with, for the same mounted
+   * workspace. Empty when they agree or when no service pins a Node image.
+   *
+   * Reported, never acted on: the human's resolved question fixed the pin
+   * sources at `.nvmrc` and `engines.node`, so a Compose image is deliberately
+   * NOT a third source. A repo that pins only via its Compose image therefore
+   * still installs under the container's Node — and this is how that becomes
+   * visible instead of silent.
+   */
+  composeNodeConflicts: ComposeNodeConflict[];
+}
+
+export interface ComposeNodeConflict {
+  /** Compose service name. */
+  service: string;
+  /** The image reference as written, e.g. `node:22-alpine`. */
+  image: string;
+  /** The Node major that image pins. */
+  major: number;
 }

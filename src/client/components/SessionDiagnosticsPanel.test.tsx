@@ -101,6 +101,7 @@ const samplePayload = {
     imageVersion: "24.15.0",
     reason: null,
     mismatch: false,
+    composeNodeConflicts: [],
   },
 };
 
@@ -335,6 +336,7 @@ describe("SessionDiagnosticsPanel", () => {
           imageVersion: "24.15.0",
           reason: "could not provision Node for `22`: getaddrinfo EAI_AGAIN nodejs.org",
           mismatch: true,
+          composeNodeConflicts: [],
         },
       });
       render(
@@ -344,6 +346,28 @@ describe("SessionDiagnosticsPanel", () => {
         expect(screen.getByText(/EAI_AGAIN nodejs.org/)).toBeTruthy();
       });
       expect(screen.getByText(/could not provision the pinned Node/)).toBeTruthy();
+    });
+
+    it("warns when a Compose service pins a different Node major (requirement 5)", async () => {
+      mockOk({
+        ...samplePayload,
+        nodeRuntime: {
+          ...samplePayload.nodeRuntime,
+          state: "no-pin",
+          pinSource: null,
+          pinRaw: null,
+          resolvedVersion: null,
+          activeVersion: "24.15.0",
+          composeNodeConflicts: [{ service: "web", image: "node:22", major: 22 }],
+        },
+      });
+      render(
+        <SessionDiagnosticsPanel sessionId="sess-1" open={true} onOpenChange={() => {}} />,
+      );
+      await waitFor(() => {
+        expect(screen.getByText(/web \(node:22\)/)).toBeTruthy();
+      });
+      expect(screen.getByText(/different Node major/)).toBeTruthy();
     });
 
     it("says so when there is no worker to ask", async () => {
