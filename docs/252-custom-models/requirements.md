@@ -22,13 +22,13 @@ No open questions remain.
 5. A user can switch models within a session while keeping the same harness, as far
    as that harness supports it.
 
-6. Everything ShipIt normally does inside a session keeps working on any model, as far
-   as the harness and the model support it: tools, skills, MCP servers, live steering,
-   permission modes, plan mode, and the transcript. Both qualifiers are load-bearing —
-   Codex declares no permission-mode or image support, and a model that cannot call
-   tools cannot run skills or MCP servers no matter which harness drives it. ShipIt
-   promises to add no limitation of its own, not to add capability the harness or model
-   lacks.
+6. ShipIt makes its normal session features available on any model on a **best-effort**
+   basis: tools, skills, MCP servers, live steering, permission modes, plan mode, and
+   the transcript. It adds no limitation of its own — but it cannot fix a harness or a
+   model either. Codex declares no permission-mode or image support; a model that cannot
+   call tools cannot run skills or MCP servers whichever harness drives it; a model that
+   uses tools poorly will use them poorly. Those are properties of the harness and the
+   model, not defects in ShipIt, and this requirement does not promise otherwise.
 
 7. The thing a user adds is a **service** — not a model, and not a harness. Harness and
    service are fully separate concepts throughout, and Anthropic and OpenAI are services
@@ -136,8 +136,10 @@ _None._
 - 2026-08-05 — Confirm or strike requirements 6 and 14, both agent-supplied. **Chosen:
   both kept.** Req 6 additionally gained a *model*-capability qualifier alongside the
   harness one: a model that cannot call tools cannot run skills or MCP servers whatever
-  the harness does, so the requirement is that ShipIt adds no limitation of its own —
-  not that every model gains every capability.
+  the harness does. Refined further the same day, on the human's framing — "ShipIt works
+  best effort for models/harnesses, it can't fix them" — so the requirement is now
+  explicitly best-effort. It does not promise a given model works well, only that ShipIt
+  imposes nothing extra. A model that handles tools badly is not a ShipIt defect.
 
 - 2026-08-05 — Can one service offer different models to different harnesses?
   **Chosen: (b) — a service declares which of its models work under which API style.**
@@ -258,6 +260,8 @@ human, but most of the mechanism did not. What the human actually said, in order
 - "(a) keep the existing fallbacks and surface a dismissible notice" → req 12's failure
   behavior.
 - "sounds good" (req 6) and "good" (req 14) → both confirmed as requirements.
+- "ShipIt works 'best effort' for models/harnesses, it can't fix them" → req 6's
+  best-effort framing.
 - Answers of 2026-08-05 → reqs 6, 7, 8, 10, 11, 12, 13, 14, 15.
 
 Reqs 6 and 14 are the agent's reading of "works like any other session" and of

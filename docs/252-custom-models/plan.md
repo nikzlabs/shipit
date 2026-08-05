@@ -20,6 +20,14 @@ agent integration — the tool map, the event parsing, skills disclosure, MCP co
 steering, permission modes, plan mode — belongs to the harness and is untouched
 (req 6).
 
+Untouched is not the same as guaranteed. Req 6 is **best-effort**: ShipIt adds no
+limitation of its own, and it cannot fix a harness or model either. This is worth
+knowing when triaging — a model that calls tools badly, ignores a plan-mode
+instruction, or produces weaker diffs is behaving as that model behaves. It is not a
+ShipIt defect and should not be filed or designed against as one. What *would* be a
+ShipIt defect is a capability the harness and model both support failing to reach
+them.
+
 ## The actual problem: `AgentId` conflates harness and service
 
 `AgentId` (`"claude" | "codex"`) is used as three different things at once:
