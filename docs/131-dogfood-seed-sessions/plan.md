@@ -149,9 +149,12 @@ A checked-in `scripts/dogfood-seed.json`:
 ```
 
 - Checked in so the fixture is reproducible and self-documenting (req 2). One
-  entry satisfies req 1, so the committed file ships with a single small public
-  repo — every extra entry is another bare-cache clone at boot, and multi-entry
-  handling is a unit-test concern rather than a default.
+  entry satisfies req 1, so the committed file ships with a single small repo
+  (`nicolasalt-shipit/todo-list`) — every extra entry is another bare-cache
+  clone at boot, and multi-entry handling is a unit-test concern rather than a
+  default. That repo is not publicly readable, so seeding it needs the inner
+  ShipIt's `GITHUB_TOKEN` secret; without it the seed logs req 7's warning and
+  the clone fails, which is the behavior req 7 exists to make legible.
 - `DOGFOOD_SEED=0` disables seeding entirely (req 3).
 - The committed file is the **only** input. An earlier draft added a gitignored
   `scripts/dogfood-seed.local.json` override plus a `DOGFOOD_SEED_FILE` escape
@@ -229,7 +232,11 @@ So the work for reqs 8–10 is:
 - **Wake-on-dispatch.** Let the HTTP dispatch path activate a session that has
   no runner, the way a WS connect does, instead of 404ing. This is the whole of
   the new behavior, and it belongs to the existing route rather than to a second
-  one.
+  one. Implemented by lifting the materialization out of `activateSession` into
+  `services/materialize-runner.ts` and calling it from both sides, so the
+  archived guard and the SHI-179 workspace restore cannot drift between
+  transports. What still 404s: an id with no session row, an archived session,
+  and a session with no workspace.
 - **Trust, at seed time.** The 403 trust gate (`session-runner.ts:336`) is the
   other thing between a seeded repo and a working dispatch; the seed script
   calling `POST /api/repos/trust` covers it, which is why it's in the seeding
@@ -251,15 +258,31 @@ be a second surface to keep in sync with the routes. A short section in
 | File | Change |
 |---|---|
 | `scripts/seed-inner-sessions.js` | New. Add repo → poll `ready` → trust, per fixture entry, keyed for idempotency on `GET /api/repos`. Non-fatal on error, honors `DOGFOOD_SEED`. Plain Node (no deps) so it runs before/independent of the build. |
-| `scripts/dogfood-seed.json` | New. Default fixture — one small public repo. |
-| `docker-compose.yml` | Add the background seed step to the `dev` service's `command:`. |
+| `scripts/dogfood-seed.json` | New. Default fixture — one repo. |
+| `docker-compose.yml` | Background seed step in the `dev` service's `command:`, detached so Vite is not held up. |
 | `docs/118-shipit-ui-local/plan.md` | Cross-link this doc from the dogfooding section. **Done.** |
-| `CLAUDE.md` | The "Dogfooding ShipIt in ShipIt" paragraph: one line on the seed, plus the calls the outer agent uses to drive the inner ShipIt. |
-| `services/agent.ts` | Wake-on-dispatch: activate a session that has no runner instead of returning 404. The only orchestrator change reqs 8–10 need. |
+| `CLAUDE.md` | The "Dogfooding ShipIt in ShipIt" paragraph: the seed, plus the four calls the outer agent uses to drive the inner ShipIt. |
+| `services/materialize-runner.ts` | New. The runner-materialization core lifted out of `activateSession` — archived guard, agent reconciliation, workspace restore, `getOrCreate` — so WS connect and HTTP dispatch bring a session up the same way. |
+| `services/agent.ts` | Wake-on-dispatch: an optional `wakeSession` dep, used when the registry has no runner, instead of returning 404. |
+| `api-routes-agent.ts` | Supplies `wakeSession` from `materializeRunner`. |
+| `route-registry.ts` | `activateSession` delegates to the shared helper. |
 
 Reqs 1–7 need no orchestrator/client/shared code changes — both routes the seed
 script drives already exist. Reqs 8–10 add **no new route**; they change one
 existing behavior (dispatch against a session with no runner).
+
+### Why the materialization split is sync + async
+
+`materializeRunnerSync` does everything that doesn't touch the disk and returns
+`needs-restore` for the one case that does; `materializeRunner` awaits that tail
+for HTTP callers, and `activateSession` drives the two halves itself. That is
+not incidental structure. `activateSession` is invoked as `void
+activateSession(sid)` and the connect handler keeps sending frames immediately
+after, so making the *common* path async pushes
+`session_container_freshness` behind them — `connection.test.ts` failed on
+exactly that during implementation. Before the extraction, only a session with a
+remote ever awaited; the split preserves that. `materialize-runner.test.ts`
+pins it.
 
 ## Tests
 

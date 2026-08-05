@@ -34,7 +34,7 @@ import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
 import { emitChatCard, emitNoticePostTurn } from "./chat-card-persistence.js";
-import { TURN_COMPLETED, turnErrored, turnNoResult, type TurnOutcome } from "./turn-settlement.js";
+import { TURN_COMPLETED, turnErrored, turnInterrupted, turnNoResult, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 
 /**
@@ -232,6 +232,12 @@ export async function executeAgentTurn(
   // that flag by the time the superseded attempt unwinds.
   let agentErrored = false;
   let turnCompleteFired = false;
+  /**
+   * SHI-316 — a newer spawn took this turn's agent slot (see the `superseded`
+   * event on `AgentProcessEvents`). Latched rather than settled inline so the
+   * outcome is built by the one `finishTurn` chain below.
+   */
+  let wasSuperseded = false;
   const settleTurn = (outcome: TurnOutcome): void => {
     if (turnCompleteFired) return;
     turnCompleteFired = true;
@@ -262,12 +268,32 @@ export async function executeAgentTurn(
     // error") so the existing `{ errored }` consumers — the rebase driver, the
     // CI auto-fix loop — are unaffected; `status` carries the finer distinction
     // for consumers that opt into it.
+    //
+    // SHI-316 — a turn that RAN and was then cut short settles as `interrupted`,
+    // not `no-result`. The two look identical from here (no `agent_result` ever
+    // arrived) but mean opposite things to a delivery supervisor: `no-result` is
+    // "the work never reached anyone, try again", while `interrupted` is "the
+    // prompt reached a live agent and a human — or a newer turn — stopped it".
+    // Re-delivering the latter is a duplicate notification, not a recovery,
+    // which is exactly how a self-merge wake got sent twice from one merge.
+    // Two shapes, one meaning:
+    //   • `wasSuperseded` — a newer spawn took the agent slot, so this turn's
+    //     own terminal event will be ignored as stale (docs/146).
+    //   • `runner.wasInterrupted` — the user pressed stop, or the orchestrator
+    //     interrupted the CLI to wait on AskUserQuestion / plan approval.
+    // The flags are checked in that order because `resetRunnerTurnState` clears
+    // `wasInterrupted` when the DISPLACING turn starts, so it is unreliable
+    // (already false) by the time a superseded turn unwinds.
     settleTurn(
       agentErrored
         ? turnErrored()
         : receivedResult
           ? TURN_COMPLETED
-          : turnNoResult("agent process exited without producing a turn result"),
+          : wasSuperseded
+            ? turnInterrupted("a newer turn took the agent slot before this one finished")
+            : (runner?.wasInterrupted ?? false)
+              ? turnInterrupted("the turn was interrupted before it produced a result")
+              : turnNoResult("agent process exited without producing a turn result"),
     );
   };
 
@@ -660,6 +686,21 @@ export async function executeAgentTurn(
   const stderrTail = createAgentStderrTail();
   agent.on("log", (source: string, text: string) => { stderrTail.record(source, text); });
 
+  // SHI-316 — a newer spawn took this turn's agent slot. SETTLE ONLY: the turn
+  // that displaced this one owns the runner, the `_agent` slot and the working
+  // tree, so this one must not clear `running`, drain the queue, broadcast a
+  // finished-SSE or run a post-turn commit — doing any of that alongside a live
+  // turn is precisely the interference the docs/146 stale-spawn guard exists to
+  // prevent (and the displacing turn's own `git add -A` sweeps the tree anyway).
+  // What it MUST do is stop pretending to be pending: an unsettled system turn
+  // strands `systemTurnInProgress` (suppressing live steering for the rest of
+  // the session) and, for a wake-turn, strands its merge-watch at
+  // `merge-observed` where the retry supervisor re-delivers it.
+  agent.on("superseded", () => {
+    wasSuperseded = true;
+    finishTurn();
+  });
+
   let tokenSyncFired = false;
   const trySyncToken = (): void => {
     if (tokenSyncFired) return;
@@ -720,7 +761,12 @@ export async function executeAgentTurn(
           emit,
         });
       }
-      // Fallback for minimal test setups that wire `autoCommit` but not `commitTurn`.
+      // Fallback for minimal test setups that wire `autoCommit` but not
+      // `commitTurn`. Both production paths (`agent-execution.ts` and
+      // `runner-registry-factory.ts`) wire `commitTurn` → `postTurnCommit`, which
+      // is where the SHI-315 banner state + remediation turn live; this path
+      // keeps the notice only, and deliberately has no `sessionManager` to
+      // persist block state into.
       const result = await deps.autoCommit(runner.sessionDir, summary);
       if (result.secretFindings.length > 0) {
         emitNoticePostTurn(

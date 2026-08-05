@@ -1,7 +1,8 @@
 # shipit.yaml Reference
 
 Place `shipit.yaml` at the workspace root (`/workspace/shipit.yaml`) to
-configure the agent container, install commands, and compose file path.
+configure the agent container, install commands, the compose file path, and the
+issue trackers the repository declares.
 
 If no `shipit.yaml` exists, ShipIt auto-detects `docker-compose.yml` or
 `compose.yml` at the workspace root. If no compose file is found, the
@@ -18,6 +19,12 @@ agent:
     - npx prisma generate
 
 compose: docker-compose.yml
+
+issues:
+  trackers:
+    - kind: github
+      repo: owner/planning
+      label: Planning
 ```
 
 ## Sections
@@ -216,6 +223,46 @@ When true, Docker socket mounts (`/var/run/docker.sock`) in the compose file
 are allowed instead of being rejected. Required for projects whose compose
 services need to create Docker containers at runtime (e.g., ShipIt running
 inside ShipIt). Other security policies still apply.
+
+### `issues` (optional)
+
+Additional issue trackers this repository works with, each rendered as its own
+tab in ShipIt's Issues panel alongside Linear and the repository's own GitHub
+Issues.
+
+```yaml
+issues:
+  trackers:
+    - kind: github           # which tracker backs this tab
+      repo: owner/planning   # GitHub Issues: `owner/name`
+      label: Planning        # optional; defaults to the repository name
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `kind` | string | required | Which tracker backs the tab. `github` is the only kind supported today. |
+| `repo` | string | required for `github` | The `owner/name` slug of the GitHub repository. |
+| `label` | string | the repository name | Tab label. |
+
+Entries are a tagged union on `kind`: the identifying fields belong to the kind,
+so a tracker identified by something other than a repository can be added later
+without reshaping the block. An entry whose `kind` this version of ShipIt does
+not recognize is **ignored with a warning** rather than failing the session, so a
+config written against a newer ShipIt degrades gracefully. The same is true of a
+`github` entry with a missing or malformed `repo`, and of a duplicate
+declaration.
+
+Declaring a repository controls **which tabs appear** — it is not an access
+grant and not an allow-list. Tracker requests use the same GitHub credential as
+ShipIt's other GitHub operations, and GitHub authorizes that credential against
+the repository; a repository it cannot reach shows an inline error on its tab.
+The agent's `shipit issue --repo owner/name` can already target any repository
+the credential reaches, declared or not.
+
+ShipIt performs no check that a declared repository exists, is private, or has
+Issues enabled — there is no connect step at which to check. Note that on a
+**public** code repository, a declaration discloses the declared repository's
+slug in a committed file.
 
 ## Config resolution
 

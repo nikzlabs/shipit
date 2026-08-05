@@ -1,4 +1,4 @@
-import type { PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionMergeWatch, SessionTitleSource } from "../shared/types.js";
+import type { PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionMergeWatch, SessionSecretBlock, SessionTitleSource } from "../shared/types.js";
 import { normalizeCapabilities } from "../shared/types.js";
 import { parseTimestampMs } from "../shared/utils.js";
 import type { DatabaseManager } from "../shared/database.js";
@@ -58,6 +58,8 @@ interface SessionRow {
   keep_preview_running: number;
   /** docs/196 — JSON `SessionMergeWatch` for the notify-on-merge watch, or NULL. */
   merge_watch: string | null;
+  /** docs/213 — JSON `SessionSecretBlock` while auto-commit is refused, or NULL. */
+  secret_block: string | null;
   /** docs/194 — JSON string[] of applied merge→issue-lifecycle effect keys, or NULL. */
   merge_issue_effects: string | null;
   /** docs/202 — JSON `PreviousMergedPr` breadcrumb retained after re-arm, or NULL. */
@@ -341,6 +343,14 @@ export class SessionManager {
         info.previousMergedPr = JSON.parse(row.previous_merged_pr) as SessionInfo["previousMergedPr"];
       } catch {
         // Corrupt/legacy JSON — drop the breadcrumb rather than crashing reads.
+      }
+    }
+    if (row.secret_block) {
+      try {
+        info.secretBlock = JSON.parse(row.secret_block) as SessionInfo["secretBlock"];
+      } catch {
+        // Corrupt/legacy JSON — treat as unblocked rather than crashing reads.
+        // Safe to lose: the next auto-commit re-scans and re-arms the block.
       }
     }
     if (row.merged_head_sha) info.mergedHeadSha = row.merged_head_sha;
@@ -976,6 +986,22 @@ export class SessionManager {
   /** docs/196 — read the notify-on-merge watch for a session, if any. */
   getMergeWatch(id: string): SessionMergeWatch | undefined {
     return this.get(id)?.mergeWatch;
+  }
+
+  /**
+   * docs/213 / SHI-315 — set (or clear, with `null`) the secret-scan commit
+   * block. Persisted so the banner survives the runner being disposed on idle:
+   * the credential is in the working tree, which outlives the container, so the
+   * warning must too.
+   */
+  setSecretBlock(id: string, block: SessionSecretBlock | null): void {
+    const json = block === null ? null : JSON.stringify(block);
+    this.db.prepare("UPDATE sessions SET secret_block = ? WHERE id = ?").run(json, id);
+  }
+
+  /** docs/213 — read the current secret-scan commit block for a session, if any. */
+  getSecretBlock(id: string): SessionSecretBlock | undefined {
+    return this.get(id)?.secretBlock;
   }
 
   /**

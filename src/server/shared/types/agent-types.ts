@@ -484,10 +484,26 @@ export interface AgentBackgroundTasksEvent {
 export interface AgentSelfWakeEvent {
   type: "agent_self_wake";
   taskId?: string;
-  /** Backend's one-line description of what finished. */
+  /**
+   * What finished, in the backend's words. A background **shell** task supplies
+   * a one-liner; a background **subagent** supplies its whole final report (the
+   * CLI sets the task's terminal summary to the agent's joined final text). The
+   * two are indistinguishable by content, so a consumer that wants the report
+   * must key off {@link toolUseId} — never off the shape of this string.
+   */
   summary?: string;
-  /** e.g. `"completed"`. */
+  /** e.g. `"completed"`. Terminal in every case: `completed | failed | stopped`. */
   status?: string;
+  /**
+   * The tool call that STARTED the finished task, when the backend correlates
+   * one — for a backgrounded `Task`/`Agent` this is the very tool_use id whose
+   * `tool_result` is sitting in the transcript as the CLI's launch
+   * acknowledgement. It is what lets the orchestrator find that card and retire
+   * it (docs/109 reqs 10–11); without it the completion is only a liveness edge.
+   */
+  toolUseId?: string;
+  /** Subagent accounting, when the backend has it — the docs/109 req 5 chips. */
+  usage?: { totalTokens?: number; toolUses?: number; durationMs?: number };
 }
 
 export type AgentEvent =
@@ -680,6 +696,27 @@ export interface AgentProcessEvents {
    * tracking which entries dropped out of a partial update.
    */
   mcp_status: [McpServerStatus[]];
+  /**
+   * SHI-316 — this process no longer owns its runner's agent slot: a NEWER
+   * spawn took the slot while this one had not reached a terminal event.
+   *
+   * Emitted by the RUNNER (not by the adapter) at the moment of displacement,
+   * because that is the moment the displaced turn loses its ability to settle
+   * itself. Its own `agent_done` / `agent_error` will arrive late and be
+   * IGNORED by the docs/146 stale-spawn guard (`isStaleSpawnEvent`) — correct
+   * for the SSE relay, since emitting them would run the displaced turn's
+   * teardown against the live turn's slot, but it left the displaced turn's
+   * settlement pending forever. A wake-turn stranded that way looked, to the
+   * notify-on-merge retry supervisor, exactly like a delivery that never
+   * happened, so it was re-delivered — a duplicate wake that also retired the
+   * session's resident process.
+   *
+   * `executeAgentTurn` listens for this and SETTLES ONLY: no `setAgent(null)`,
+   * no queue drain, no post-turn commit. The turn that displaced this one owns
+   * the runner and the working tree; running this turn's teardown alongside it
+   * is exactly the interference docs/146 exists to prevent.
+   */
+  superseded: [];
 }
 
 /**

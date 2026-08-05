@@ -44,6 +44,7 @@ import {
 import { resolveGitHubTrackerContext } from "./api-routes-issues.js";
 import type { GitHubTrackerContext } from "./trackers/index.js";
 import { parseIssueRef } from "../shared/issue-ref.js";
+import { isGitHubTracker } from "../shared/tracker-id.js";
 import { parsePrBodyIssueRefs } from "../shared/pr-issue-refs.js";
 
 /** Shared collaborators the lifecycle writes need (all orchestrator-side). */
@@ -105,7 +106,7 @@ function surfaceWriteCard(
     verb: outcome.verb,
     summary: outcome.summary,
     ...(outcome.content ? { content: outcome.content } : {}),
-    attribution: trackerId === "github" ? "user" : "workspace",
+    attribution: isGitHubTracker(trackerId) ? "user" : "workspace",
     undo: outcome.undo,
     undoState: "available",
     createdAt: new Date().toISOString(),

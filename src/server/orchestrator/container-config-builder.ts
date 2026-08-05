@@ -113,7 +113,12 @@ export function readAgentConfig(workspaceDir: string): ShipitConfig {
       `[shipit-config] Failed to parse shipit.yaml in ${workspaceDir} — ` +
         `falling back to default agent config: ${detail}`,
     );
-    return { agent: { install: [], depDirs: ["node_modules"], installInputs: null }, hostMounts: [], warnings: [] };
+    return {
+      agent: { install: [], depDirs: ["node_modules"], installInputs: null },
+      hostMounts: [],
+      issues: { trackers: [] },
+      warnings: [],
+    };
   }
 }
 

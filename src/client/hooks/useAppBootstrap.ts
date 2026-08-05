@@ -21,7 +21,8 @@ import { useSessionStore } from "../stores/session-store.js";
  */
 export function useAppBootstrap(params: {
   status: string;
-  send: (msg: WsClientMessage) => void;
+  /** Returns whether the frame reached the wire — see `useWebSocket.send`. */
+  send: (msg: WsClientMessage) => boolean;
   lastMessage: MessageEvent | null;
   drainMessages: () => MessageEvent[];
   terminalRef: RefObject<InteractiveTerminalHandle | null>;

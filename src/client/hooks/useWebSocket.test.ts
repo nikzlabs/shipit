@@ -91,15 +91,48 @@ describe("useWebSocket", () => {
     const { result } = renderHook(() => useWebSocket("ws://test"));
     const ws = latestWs();
     act(() => ws.simulateOpen());
-    act(() => result.current.send({ type: "test" }));
+    act(() => { result.current.send({ type: "test" }); });
     expect(ws.send).toHaveBeenCalledWith('{"type":"test"}');
   });
 
   it("does not send when not connected", () => {
     const { result } = renderHook(() => useWebSocket("ws://test"));
     const ws = latestWs();
-    act(() => result.current.send({ type: "test" }));
+    act(() => { result.current.send({ type: "test" }); });
     expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  // A dropped frame used to be indistinguishable from a delivered one, which is
+  // what let the action-checklist card render "Submitted · N sent" for a message
+  // that never left the browser. `send` now reports what it actually did.
+  it("reports true only when the bytes went to an OPEN socket", () => {
+    const { result } = renderHook(() => useWebSocket("ws://test"));
+    const ws = latestWs();
+
+    let delivered: boolean | undefined;
+    act(() => { delivered = result.current.send({ type: "test" }); });
+    expect(delivered).toBe(false); // still CONNECTING
+
+    act(() => ws.simulateOpen());
+    act(() => { delivered = result.current.send({ type: "test" }); });
+    expect(delivered).toBe(true);
+
+    act(() => ws.simulateClose());
+    act(() => { delivered = result.current.send({ type: "test" }); });
+    expect(delivered).toBe(false);
+  });
+
+  it("reports false when the socket throws mid-write", () => {
+    const { result } = renderHook(() => useWebSocket("ws://test"));
+    const ws = latestWs();
+    act(() => ws.simulateOpen());
+    ws.send.mockImplementationOnce(() => {
+      throw new DOMException("InvalidStateError");
+    });
+
+    let delivered: boolean | undefined;
+    act(() => { delivered = result.current.send({ type: "test" }); });
+    expect(delivered).toBe(false);
   });
 
   it("sets lastMessage on incoming message", () => {

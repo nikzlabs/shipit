@@ -65,6 +65,7 @@ import { handleRewindComplete } from "./rewind-complete.js";
 import { handleRewindPreview } from "./rewind-preview.js";
 import { handleRewindRestored } from "./rewind-restored.js";
 import { handleRewindSnapshotAvailable } from "./rewind-snapshot-available.js";
+import { handleSecretBlockStatus } from "./secret-block-status.js";
 import { handleSecretsStatus } from "./secrets-status.js";
 import { handleServiceList } from "./service-list.js";
 import { handleServiceStatus } from "./service-status.js";
@@ -80,6 +81,7 @@ import { handleSessionStatus } from "./session-status.js";
 import { handleSessionContainerFreshness } from "./session-container-freshness.js";
 import { handleSubAgentConsultCard } from "./sub-agent-consult-card.js";
 import { handleSubAgentSpawn } from "./sub-agent-spawn.js";
+import { handleSubagentReportUpdate } from "./subagent-report-update.js";
 import { handleSystemNotice } from "./system-notice.js";
 import { handleSystemUserMessage } from "./system-user-message.js";
 import { handleTemplateApplied } from "./template-applied.js";
@@ -182,6 +184,7 @@ export const messageHandlers: MessageHandlerMap = {
   rewind_preview: handleRewindPreview,
   rewind_restored: handleRewindRestored,
   rewind_snapshot_available: handleRewindSnapshotAvailable,
+  secret_block_status: handleSecretBlockStatus,
   secrets_status: handleSecretsStatus,
   service_list: handleServiceList,
   service_status: handleServiceStatus,
@@ -197,6 +200,7 @@ export const messageHandlers: MessageHandlerMap = {
   session_container_freshness: handleSessionContainerFreshness,
   sub_agent_consult_card: handleSubAgentConsultCard,
   sub_agent_spawn: handleSubAgentSpawn,
+  subagent_report_update: handleSubagentReportUpdate,
   system_notice: handleSystemNotice,
   system_user_message: handleSystemUserMessage,
   template_applied: handleTemplateApplied,
@@ -254,8 +258,10 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "session_spawn_failed",
   "session_spawned",
   "session_container_freshness",
+  "secret_block_status",
   "sub_agent_consult_card",
   "sub_agent_spawn",
+  "subagent_report_update",
   "system_notice",
   "system_user_message",
   "message_steered",

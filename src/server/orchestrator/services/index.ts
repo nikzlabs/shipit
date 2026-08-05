@@ -16,6 +16,7 @@ export * from "./session-report.js";
 export * from "./spawn-telemetry.js";
 export * from "./claim-session.js";
 export * from "./graduate-session.js";
+export * from "./materialize-runner.js";
 export * from "./headless-sessions.js";
 export * from "./git.js";
 export * from "./github.js";

@@ -147,6 +147,51 @@ wake turn settles, so without it an old settlement marks the new watch delivered
 Delivery, retry and restart recovery are docs/196's, unchanged; `reconcilePending`
 branches on `kind`.
 
+### One merge, one wake — even when the wake turn is cut short (SHI-316)
+
+In production a single merge produced **two** identical wake turns 7.5 minutes apart.
+The wake ran, the user interrupted it, and the session's next message spawned a fresh
+agent that took the runner's `_agent` slot. The wake spawn's late `agent_done` then
+arrived with a stale `runToken` and was dropped by the docs/146 relay guard — right for
+the relay, since emitting it would run the dead turn's teardown against the live turn's
+slot — but nothing else told the wake turn it was over. Its settlement stayed pending,
+so the watch sat at `merge-observed`, which the SHI-258 supervisor cannot distinguish
+from "the container never booted". Neither `settleAsDropped` net covered it: the runner
+was alive (no `disposed`) and the worker truthfully reported an agent running (no
+`turn_abandoned`).
+
+Three changes, each closing one link of that chain:
+
+- **Displacement settles the superseded turn.** When a new spawn takes a runner's agent
+  slot from a proxy that never reached a terminal event, the runner emits `superseded`
+  on the displaced proxy and `executeAgentTurn` settles — **settlement only**. No
+  `setAgent(null)`, no drain, no finished-SSE, no post-turn commit: the turn that
+  displaced this one owns the runner and the working tree, and its own `git add -A`
+  sweeps the tree. The docs/146 relay guard itself is untouched.
+- **`interrupted` is a distinct outcome.** A turn that ran and was cut short — the user
+  pressed stop, the orchestrator interrupted the CLI for an AskUserQuestion / plan
+  approval, or a newer turn took the slot — no longer settles as `no-result`. The two
+  are indistinguishable from inside the executor (no `agent_result` ever arrived) but
+  mean opposite things to a delivery supervisor: `no-result` is "nobody saw it, try
+  again"; `interrupted` is "the prompt reached a live agent and a human stopped it".
+  `buildDeliverySettlement` therefore treats `interrupted` as **terminal** (`delivered`),
+  because re-sending a notification the human already read is a duplicate, not a
+  recovery. `no-result` / `errored` / `dropped` stay retryable.
+- **The retry asks ground truth before dispatching.** `dispatch` queues politely while
+  `runner.running` is true, but that flag is a local mirror; when it is stale-false the
+  retry takes the start-now branch and a system turn's spawn boundary
+  (`dispatched-turn.ts`'s `systemTurn && !reuse`) **kills the resident process**. The
+  supervisor is the one dispatcher with no human in the loop, so it now reads the
+  worker's `turnActive` via `runner.hasTurnInFlight()` and defers a tick when a turn is
+  genuinely in flight. Fails open — an unreachable worker is the failure the retry
+  exists for.
+
+The wider `systemTurn && !reuse` preemption is **not** fixed here: its comment ("only
+reachable with no turn in flight — `dispatchOnRunner` enqueues while `running`") is
+accurate as far as the flag goes, and every other system-turn dispatcher (rebase
+resolution, CI auto-fix) is user-initiated with a human watching. Gating the timer-driven
+path was the smaller, verifiable change.
+
 The wake prompt stays terse: it names the merged PR, gives the guarded reset
 command and failure rule, then says how to continue and re-arm. The transcript
 and persisted lifecycle card already hold the surrounding context and PR URL.
@@ -256,7 +301,9 @@ reordered call site.
 |---|---|---|
 | Watch | `sessions.ts`, `shared/types/domain-types/session.ts` | `kind`/`watchId`/`prNumber` on `SessionMergeWatch` |
 | Arm / cancel | `agent-shim/shipit-session.ts`, `agent-ops-routes.ts`, session routes | `--self`; live open-PR lookup; cancel with `watchId` |
-| Delivery | `merge-watch.ts` | Self branch: anchor comparison, closed-note, `watchId` settlement check, `reconcilePending` branch |
+| Delivery | `merge-watch.ts` | Self branch: anchor comparison, closed-note, `watchId` settlement check, `reconcilePending` branch; SHI-316 `interrupted` is terminal + the retry's `hasTurnInFlight` gate |
+| Settlement | `turn-settlement.ts`, `turn-executor.ts` | SHI-316 `interrupted` outcome; settle on the `superseded` event |
+| Slot displacement | `container-session-runner.ts`, `session-runner.ts`, `proxy-agent-process.ts` | SHI-316 emit `superseded` on a proxy pushed out by a newer spawn |
 | Wake | `wake-session.ts` | Restore the checkout if missing |
 | Reset | `services/pre-turn-reset.ts` | Explicit mode: setting-blind, idempotent, strict push failure, ownership handback |
 | Prompt | `orchestrator/prompts/self-merge-wake.md` | Co-located template |

@@ -41,8 +41,23 @@ import type { QueuedMessage } from "./session-runner.js";
  *                    there is no separate completion to wait for.
  *   - `dropped`    — the turn was discarded before it ever ran: its queue entry
  *                    was cleared (user interrupt) or the runner was disposed.
+ *   - `interrupted`— the turn RAN — its prompt reached a live agent process —
+ *                    and was then cut short by activity in the session: the
+ *                    human pressed stop, the orchestrator interrupted the CLI to
+ *                    wait on an AskUserQuestion / plan approval, or a newer turn
+ *                    took the runner's agent slot out from under it
+ *                    (`superseded`). Distinct from `dropped` / `no-result`
+ *                    because those mean the work never reached the human, which
+ *                    is precisely the condition a re-delivery supervisor exists
+ *                    to recover — see `MergeWatchManager.buildDeliverySettlement`.
  */
-export type TurnOutcomeStatus = "completed" | "errored" | "no-result" | "steered" | "dropped";
+export type TurnOutcomeStatus =
+  | "completed"
+  | "errored"
+  | "no-result"
+  | "steered"
+  | "dropped"
+  | "interrupted";
 
 export interface TurnOutcome {
   readonly status: TurnOutcomeStatus;
@@ -86,6 +101,19 @@ export function turnNoResult(detail?: string): TurnOutcome {
 
 export function turnDropped(detail?: string): TurnOutcome {
   return { status: "dropped", errored: true, ...(detail ? { detail } : {}) };
+}
+
+/**
+ * The turn ran and was then cut short (user interrupt, an AskUserQuestion /
+ * plan-approval interrupt, or a newer turn taking the agent slot).
+ *
+ * `errored` stays FALSE: the pre-docs/240 consumers that read the legacy flag
+ * (the rebase driver, the CI auto-fix loop) saw `errored: false` for an
+ * interrupted turn before this status existed — it surfaced as `no-result` —
+ * so widening the flag here would be a silent behavior change for them.
+ */
+export function turnInterrupted(detail?: string): TurnOutcome {
+  return { status: "interrupted", errored: false, ...(detail ? { detail } : {}) };
 }
 
 /**

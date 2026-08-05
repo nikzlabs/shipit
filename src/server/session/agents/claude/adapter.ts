@@ -214,11 +214,27 @@ export class ClaudeAdapter
             // is waking itself. On the wire this is immediately followed by a
             // fresh `init` and eventually a `result`, with no user message in
             // between — i.e. a turn the orchestrator never started.
+            //
+            // `tool_use_id` and `usage` are carried, not dropped: for a
+            // backgrounded subagent this event is the ONLY completion signal on
+            // the wire (no second `tool_result` ever arrives for the Task), so
+            // the id is what lets the orchestrator retire that card and the
+            // summary is the report itself. docs/109 reqs 10–11.
             return {
               type: "agent_self_wake",
               taskId: raw.task_id,
               summary: raw.summary,
               status: raw.status,
+              ...(raw.tool_use_id ? { toolUseId: raw.tool_use_id } : {}),
+              ...(raw.usage
+                ? {
+                    usage: {
+                      ...(typeof raw.usage.total_tokens === "number" ? { totalTokens: raw.usage.total_tokens } : {}),
+                      ...(typeof raw.usage.tool_uses === "number" ? { toolUses: raw.usage.tool_uses } : {}),
+                      ...(typeof raw.usage.duration_ms === "number" ? { durationMs: raw.usage.duration_ms } : {}),
+                    },
+                  }
+                : {}),
             };
           case "task_started":
           case "task_updated":

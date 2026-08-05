@@ -24,6 +24,7 @@ import type {
   WsAgentEvent,
   WsTurnSnapshot,
   WsSubAgentSpawn,
+  WsSubagentReportUpdate,
   WsModelInfo,
   WsMessageQueued,
   WsQueueUpdated,
@@ -64,6 +65,7 @@ import type {
   WsSessionRenamed,
   WsContainerRestarting,
   WsSessionContainerFreshness,
+  WsSecretBlockStatus,
   WsFullResetComplete,
   WsSessionStatus,
   WsBackgroundTasks,
@@ -185,6 +187,7 @@ export type WsServerMessage =
   | WsTemplateApplied
   | WsGlobalSettings
   | WsSubAgentSpawn
+  | WsSubagentReportUpdate
   | WsFilesChanged
   | WsGitHubStatus
   | WsGitHubPushResult
@@ -205,6 +208,7 @@ export type WsServerMessage =
   | WsAgentInterrupted
   | WsContainerRestarting
   | WsSessionContainerFreshness
+  | WsSecretBlockStatus
   | WsFullResetComplete
   | WsTurnDiff
   | WsSessionStatus

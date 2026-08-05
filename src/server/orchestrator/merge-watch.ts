@@ -602,6 +602,30 @@ export class MergeWatchManager {
         this.markDelivered(childSessionId, observedAt);
         return;
       }
+      // SHI-316 — `interrupted` is terminal, NOT retryable. The retry supervisor
+      // exists for a wake that never reached the session: a container that would
+      // not boot, an unreachable worker, a queue entry dropped before it ran.
+      // `interrupted` means the opposite — the prompt reached a live agent, and
+      // then a human pressed stop, answered an AskUserQuestion, or simply sent
+      // the session's next message (whose spawn superseded the wake turn). The
+      // human has read the notification; re-sending it is a duplicate, not a
+      // recovery. In production this is exactly what happened: one merge, two
+      // identical "Your PR #NNNN … merged" turns 7.5 minutes apart, the second
+      // of which retired the session's resident process.
+      //
+      // Deliberately `delivered` rather than a new watch state: the wake WAS
+      // delivered, and `delivered` is already the fire-once terminal state every
+      // other path (`reconcilePending`, the polling gate, `handleSelfMerge`)
+      // reads. The reason is logged rather than modelled — nothing downstream
+      // branches on it.
+      if (outcome.status === "interrupted") {
+        console.warn(
+          `[merge-watch] wake-turn for ${childSessionId} reached the agent and was then cut short `
+          + `(${outcome.detail ?? "interrupted"}) — treating the wake as delivered, not re-delivering`,
+        );
+        this.markDelivered(childSessionId, observedAt);
+        return;
+      }
       this.recordDeliveryOutcomeFailure(
         childSessionId,
         attempts,
@@ -652,9 +676,20 @@ export class MergeWatchManager {
    *      stays busy. This is the guard that makes "retry on a timer" safe at
    *      all; a naive per-poll reconcile without it spams duplicate turns at
    *      exactly the busiest parents.
-   *   2. **Backoff** — the last attempt is too recent. Spaces out retries
+   *   2. **Parent busy** (SHI-316) — some OTHER turn is in flight in the parent
+   *      right now. Unlike (1) this is asked of the WORKER, not of the local
+   *      `runner.running` mirror, because a retry that starts while `running` is
+   *      stale-false does not queue politely: `dispatchOnRunner` takes the
+   *      start-now branch, and `runDispatchedTurn`'s `systemTurn && !reuse`
+   *      block then RETIRES (kills) the session's resident process to get a
+   *      clean spawn boundary. That block's comment asserts it is "only
+   *      reachable with no turn in flight", which is only as true as the flag.
+   *      A timer-driven system turn is the one dispatcher with no human in the
+   *      loop to notice, so it asks ground truth. Costs one HTTP GET per stalled
+   *      watch per tick, and a stalled watch is rare.
+   *   3. **Backoff** — the last attempt is too recent. Spaces out retries
    *      against a parent whose container keeps failing to boot.
-   *   3. **Budget** — the attempt cap is spent, so the watch fails terminally
+   *   4. **Budget** — the attempt cap is spent, so the watch fails terminally
    *      (surfacing a card) instead of being retried forever.
    *
    * Public so tests — and any future caller that wants an immediate pass — can
@@ -672,6 +707,7 @@ export class MergeWatchManager {
     const now = Date.now();
     for (const { childSessionId, watch } of stalled) {
       if (this.isDeliveryInFlight(childSessionId, watch)) continue;
+      if (await this.isParentTurnInFlight(watch)) continue;
 
       const attempts = watch.deliveryAttempts ?? 0;
       const lastAt = Date.parse(watch.lastAttemptAt ?? watch.observedAt ?? watch.registeredAt);
@@ -716,6 +752,39 @@ export class MergeWatchManager {
     const runner = this.deps.runnerRegistry.get(watch.parentSessionId);
     if (!runner || runner.disposed) return false;
     return runner.hasDelivery(watch.deliveryId);
+  }
+
+  /**
+   * SHI-316 — is some OTHER turn running in the parent right now?
+   *
+   * Distinct from {@link isDeliveryInFlight}, which asks about THIS watch's own
+   * delivery. This asks whether re-dispatching now would land on a busy session.
+   * `dispatch` already enqueues politely when `runner.running` is true, so the
+   * only case that matters is `running` being stale-false while the worker is
+   * genuinely mid-turn — and there the retry does not queue, it starts, and a
+   * system turn's spawn boundary retires the resident process on the way in.
+   *
+   * `hasTurnInFlight` is the worker's own `turnActive`, i.e. ground truth rather
+   * than a local mirror. It is optional on the interface: a runner without it
+   * (the in-process `SessionRunner`, test fakes) has no worker to be out of sync
+   * with, so `running` is authoritative there. Fails OPEN — an unreachable
+   * worker reads as "not busy", because "the container is unreachable" is the
+   * very failure this supervisor exists to retry through.
+   */
+  private async isParentTurnInFlight(watch: SessionMergeWatch): Promise<boolean> {
+    const runner = this.deps.runnerRegistry.get(watch.parentSessionId);
+    if (!runner || runner.disposed) return false;
+    if (runner.running) return true;
+    if (!runner.hasTurnInFlight) return false;
+    try {
+      return await runner.hasTurnInFlight();
+    } catch (err) {
+      console.warn(
+        `[merge-watch] could not read turn state for ${watch.parentSessionId}; assuming idle:`,
+        err,
+      );
+      return false;
+    }
   }
 
   /**

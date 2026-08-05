@@ -77,6 +77,50 @@ sentence **and** a structural corroborator (`agentId:` or `output_file:` on its
 own line), because the CLI owns that string and a false positive would hide a
 real report — this repo's own docs quote the sentence.
 
+**…and it stays a running row until the subagent finishes** (reqs 10–11, added
+2026-08-04 from a production incident). The acknowledgement is the *only*
+`tool_result` a backgrounded Task ever gets — nothing supersedes it — so the
+running row was permanent: the card promised a report that could never arrive,
+across reloads, after the parent agent had already acted on the output. This was
+an unowned gap between two features rather than a regression in either. docs/109
+was scoped to "don't claim it finished"; docs/235 was scoped to liveness, and
+mapped the CLI's `task_notification` to `agent_self_wake` while dropping the one
+field that correlates it with a card.
+
+The completion signal is on the wire and carries everything needed. Verified
+against CLI 2.1.219 by running the exact `StreamingClaudeProcess` invocation and
+backgrounding a subagent (trace reproduced in `subagent-completion.ts`):
+`system/task_notification` arrives with `tool_use_id` (the Task's own id),
+`status`, `usage`, and — the useful surprise — a `summary` that for a subagent is
+its **whole final report**, because the CLI sets a finished agent's terminal
+summary to its joined final text. `output_file` is deliberately *not* read: it is
+the subagent's full JSONL transcript, which the acknowledgement itself warns
+against reading.
+
+So the fix retires the card by rewriting the stored `tool_result` in place. Once
+the content is a real report, `isBackgroundLaunchAck` stops matching and every
+existing piece of this feature does its normal job unchanged — badge, panel,
+chips, clamp, modal, lazy fetch. The alternative (a card state meaning
+"backgrounded, but finished") would have re-implemented all five.
+
+Two stores hold that row and neither subsumes the other, so both are patched:
+committed history via `ChatHistoryManager.retireBackgroundSubagentResult`, and
+the runner's live `chatMessageGroups`. The accumulator is not an edge case — in
+the probe the notification arrived **168ms before its launching turn's
+`result`** — and a database-only patch would be undone by the next tool-result
+boundary's `replaceInProgress`. Live viewers get a `subagent_report_update`
+carrying the projected result; a viewer that misses it is corrected by the
+persisted row on its next load.
+
+Three guards keep the rewrite from damaging anything else, each in
+`retireBackgroundSubagentResult`: the tool must be in
+`SUBAGENT_REPORT_TOOL_NAMES` (a background *shell* command's notification
+carries its Bash call's `tool_use_id` and a one-line summary — rewriting that
+would replace real command output), the result must still *be* the
+acknowledgement (which is what makes a repeat notification idempotent; the CLI
+warns that "the same task-id may notify more than once"), and an unrecognised
+status is ignored rather than guessed at.
+
 **The report is quoted output, so it reads like it** (reqs 3–5). A bordered
 panel with a label row separates it from the parent agent's prose; the
 accounting footer becomes duration / tools / tokens chips on that row, and
@@ -228,6 +272,9 @@ Component tests for `SubagentCall` covering each disclosure level.
 | `src/server/shared/subagent-report.ts` | Isomorphic report code — `parseSubagentReport` (structural parse: `startsWith("[")` → `JSON.parse` → inspect block types, matching `parseContentForImages`; the footer has no structural marker, so it is recognized narrowly — last block only, every line a `key: value` with a known key — because a false positive would eat someone's report), `parseReportMeta`, `isBackgroundLaunchAck`, `sliceSubagentReport` |
 | `src/server/shared/transcript-slice-tools.ts` | `SUBAGENT_TOOL_NAMES` (layout) + `SUBAGENT_REPORT_TOOL_NAMES` (report / report-shaped slice) |
 | `src/server/orchestrator/transcript-projection.ts` | Route the report set through `sliceSubagentReport` |
+| `src/server/orchestrator/subagent-completion.ts` | reqs 10–11 — what replaces a finished background subagent's acknowledgement, and the three guards on rewriting it. Shared by the history writer and the live accumulator patch |
+| `src/server/orchestrator/ws-handlers/subagent-retire.ts` | Plumbing: patch both stores off `agent_self_wake`, emit `subagent_report_update` |
+| `src/client/hooks/message-handlers/subagent-report-update.ts` | Swap the result in the loaded transcript so the card retires live |
 
 ## Implementation notes (post-shipping)
 

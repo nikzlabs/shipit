@@ -42,17 +42,26 @@ export function seedFromIssueRef(issueRef: IssueRef): {
   const identifier = issueRef.identifier.trim();
   const titleText = issueRef.title.trim();
 
-  // Branch: "<identifier>-<title-slug>", lowercased, kebab, capped so it stays
-  // a valid, readable git ref (assertValidBranchName rejects spaces/specials).
+  // Branch: the issue's **pointer only**, lowercased and kebabbed so it stays a
+  // valid git ref (assertValidBranchName rejects spaces/specials).
+  //
+  // docs/247 req 1 — the issue title is deliberately NOT in the branch name. A
+  // branch gets pushed to a public remote, so a title from a private planning
+  // issue would be published there. The rule is unconditional rather than scoped
+  // to "private" issues because ShipIt has no signal for which repositories are
+  // private: a declared planning repo may be public and a session's own code
+  // repo may be private, so any narrower rule would be a guess. The cost — a
+  // less readable branch for Linear and code-repo issues too — was accepted
+  // explicitly (see the requirements doc's resolved questions).
+  //
+  // Determinism is unchanged: the branch was already a pure function of the
+  // issue, so two sessions on one issue collide exactly as they did before.
   const slugify = (s: string) =>
     s
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "");
-  const idSlug = slugify(identifier);
-  const titleSlug = slugify(titleText).split("-").slice(0, 8).join("-");
-  const branch = [idSlug, titleSlug].filter(Boolean).join("-").slice(0, 60).replace(/-+$/g, "")
-    || generateBranchPrefix();
+  const branch = slugify(identifier).slice(0, 60).replace(/-+$/g, "") || generateBranchPrefix();
 
   // Seed prompt: identifier + title + description + link, so the first agent
   // turn has the full issue context without the user re-typing it.

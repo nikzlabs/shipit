@@ -23,6 +23,7 @@ import { useMessageScroll } from "./hooks/useMessageScroll.js";
 import { MessageToolElement } from "./MessageToolUse.js";
 import { renderMessageCard } from "./cards/MessageCards.js";
 import { SubAgentSpawnChipRow } from "./cards/SubAgentCards.js";
+import type { TrackerId } from "../../../server/shared/types.js";
 
 function defaultSessionNameFor(value: string): string {
   const cleaned = value.trim().replace(/\s+/g, " ").slice(0, 80);
@@ -53,8 +54,10 @@ export function MessageList({
   isLoading: boolean;
   searchMatches?: SearchMatch[];
   currentMatch?: SearchMatch;
-  onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>, text: string) => void;
-  onSendFollowUp?: (text: string) => void;
+  /** Returns whether the answer actually reached the wire (see `sendUserMessage`). */
+  onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>, text: string) => boolean;
+  /** Returns whether the message actually reached the wire (see `sendUserMessage`). */
+  onSendFollowUp?: (text: string) => boolean;
   rewindPreviews?: Record<string, WsRewindPreview>;
   sessionTitle?: string;
   onRequestRewindPreview?: (gapPosition: number, action: RewindGapAction) => void;
@@ -71,7 +74,7 @@ export function MessageList({
    * write). Switches the right panel to the Issues tab and loads the issue.
    */
   onOpenIssue?: (ref: {
-    tracker: "linear" | "github";
+    tracker: TrackerId;
     id?: string;
     identifier: string;
     title?: string;

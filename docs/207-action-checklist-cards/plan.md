@@ -304,7 +304,36 @@ These were open questions; the following are the settled answers.
   **Add comment…** does **not** trigger this — it moves the action into the
   composer, so the card is correctly left untouched.
 
+- **The ack is conditional on delivery (fix, 2026-08-04).** As first shipped the
+  ack was *unconditional*: `handleSubmit` called `onSubmit` (whose return was
+  `void`) and then cleared the selection and rendered "Submitted · N sent"
+  regardless. `useWebSocket.send` is a silent no-op when the socket isn't OPEN,
+  so a dropped frame produced a confident ack for a message the agent never
+  received — and, because the clear wiped the ticked boxes including the
+  `RECOMMENDED` defaults, the user couldn't even retry without re-ticking. An
+  operator hit exactly this. `onSubmit` now returns whether the message reached
+  the wire; only `true` clears + acks, and `false` **keeps the selection
+  untouched** and shows a transient "Couldn't send — not connected. Your
+  selection is kept; press Submit to retry." line. That failure line is in the
+  same client-only, never-persisted category as the ack: it is **not** a lock and
+  **not** a terminal state — the buttons stay live and a second press retries the
+  same subset — so the no-lifecycle contract above is unchanged. Caveat: the
+  boolean proves the bytes went to an OPEN socket, not that the server got them
+  (a backgrounded mobile socket can read OPEN after the OS killed it); closing
+  that needs a server-side ack keyed on `requestId` — see *Still open*.
+
 ## Still open
+
+- **Server-side delivery ack** (tracked in SHI-312). The delivery signal today is client-local
+  (`useWebSocket.send`'s boolean). It catches every `readyState !== OPEN` drop
+  but not the zombie-socket case, where a backgrounded mobile socket still reads
+  OPEN after the OS killed the connection and `ws.send()` "succeeds" locally
+  while the bytes never arrive. The fix is an ack from the orchestrator keyed on
+  the `requestId` that `sendUserMessage` already mints (today `requestId` is
+  consumed only on the *error* path, `hooks/message-handlers/error.ts`), with the
+  card's ack and the composer's spinner resolving on it and timing out into a
+  visible failure. That pays off for every `sendUserMessage` callsite, not just
+  this card.
 
 - **Codex parity — done.** Like `ask` (docs/147), `propose_actions` is registered
   for both backends (it's in both `SHIPIT_MCP_TOOLS` lists), so Claude and Codex

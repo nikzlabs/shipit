@@ -60,6 +60,8 @@ export class ProxyAgentProcess extends EventEmitter<{
   error: [Error];
   auth_required: [];
   log: [source: string, text: string];
+  /** SHI-316 — a newer spawn took this proxy's runner slot. See `AgentProcessEvents`. */
+  superseded: [];
 }> implements AgentProcess {
   readonly agentId: AgentId;
   /**

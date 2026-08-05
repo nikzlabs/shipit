@@ -8,6 +8,35 @@ import { FileWatcher } from "./file-watcher.js";
 // watches before events are reliably delivered for synchronous writes.
 const settle = () => new Promise<void>((r) => setTimeout(r, 100));
 
+/**
+ * How long to keep listening AFTER the expected event has arrived, to give an
+ * event that should have been ignored a chance to show up. Asserting absence
+ * requires actually waiting; without this window, returning the instant the
+ * expected file lands would let a broken ignore matcher slip through.
+ */
+const absenceWindow = () => new Promise<void>((r) => setTimeout(r, 300));
+
+/**
+ * Poll until `predicate` holds, or give up after `timeoutMs`.
+ *
+ * A fixed sleep races the watcher: chokidar's inotify delivery is not bounded
+ * by any wall-clock budget the test controls, so on a loaded runner a
+ * slow-but-correct delivery blows a 500ms budget and fails the build (which is
+ * exactly how "ignores node_modules changes" went red in CI). Polling keeps
+ * every assertion identical and only raises the ceiling — an event that never
+ * arrives still fails the test, just later.
+ */
+async function waitUntil(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+/** Every path the spy has been handed so far, flattened across batches. */
+const seenPaths = (spy: { mock: { calls: unknown[][] } }): string[] =>
+  spy.mock.calls.flatMap((c) => c[0] as string[]);
+
 // These tests rely on the underlying chokidar watcher (inotify on Linux)
 // reliably delivering events for synchronous file writes. Under heavy
 // parallel load, the per-uid inotify queue can overflow and silently drop
@@ -108,8 +137,10 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
     fs.writeFileSync(path.join(tmpDir, "b.txt"), "b");
     fs.writeFileSync(path.join(tmpDir, "c.txt"), "c");
 
-    // Wait for debounce to fire
-    await new Promise((r) => setTimeout(r, 500));
+    // Wait for the debounce to fire, then keep listening: a split batch would
+    // arrive after the first one, and that is what this test exists to catch.
+    await waitUntil(() => emitSpy.mock.calls.length > 0);
+    await absenceWindow();
 
     // Should have emitted exactly once with all changes batched
     expect(emitSpy).toHaveBeenCalledTimes(1);
@@ -161,11 +192,12 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
     // Also write a non-ignored file to verify the watcher is working
     fs.writeFileSync(path.join(tmpDir, "app.ts"), "export {}");
 
-    await new Promise((r) => setTimeout(r, 500));
+    await waitUntil(() => seenPaths(emitSpy).includes("app.ts"));
+    await absenceWindow();
 
     // The changes should include app.ts but NOT anything under node_modules
     expect(emitSpy).toHaveBeenCalled();
-    const allChanges: string[] = emitSpy.mock.calls.flatMap((c) => c[0]);
+    const allChanges = seenPaths(emitSpy);
     expect(allChanges).toContain("app.ts");
     expect(allChanges.some((p) => p.includes("node_modules"))).toBe(false);
 
@@ -192,11 +224,13 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
     // Also write a non-ignored file in the same package
     fs.writeFileSync(path.join(pkgDir, "main.ts"), "export {}");
 
-    await new Promise((r) => setTimeout(r, 500));
+    const mainRel = path.join("packages", "app", "main.ts");
+    await waitUntil(() => seenPaths(emitSpy).some((p) => p.endsWith(mainRel)));
+    await absenceWindow();
 
     expect(emitSpy).toHaveBeenCalled();
-    const allChanges: string[] = emitSpy.mock.calls.flatMap((c) => c[0]);
-    expect(allChanges.some((p) => p.endsWith(path.join("packages", "app", "main.ts")))).toBe(true);
+    const allChanges = seenPaths(emitSpy);
+    expect(allChanges.some((p) => p.endsWith(mainRel))).toBe(true);
     expect(allChanges.some((p) => p.includes("node_modules"))).toBe(false);
 
     watcher.stop();
@@ -219,10 +253,11 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
     // Also write a non-ignored file
     fs.writeFileSync(path.join(tmpDir, "readme.md"), "# Hello");
 
-    await new Promise((r) => setTimeout(r, 500));
+    await waitUntil(() => seenPaths(emitSpy).includes("readme.md"));
+    await absenceWindow();
 
     expect(emitSpy).toHaveBeenCalled();
-    const allChanges: string[] = emitSpy.mock.calls.flatMap((c) => c[0]);
+    const allChanges = seenPaths(emitSpy);
     expect(allChanges).toContain("readme.md");
     expect(allChanges.some((p) => p.includes(".git"))).toBe(false);
 
@@ -243,10 +278,11 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
     fs.writeFileSync(path.join(histDir, "session.json"), "[]");
     fs.writeFileSync(path.join(tmpDir, "index.ts"), "console.log('hi')");
 
-    await new Promise((r) => setTimeout(r, 500));
+    await waitUntil(() => seenPaths(emitSpy).includes("index.ts"));
+    await absenceWindow();
 
     expect(emitSpy).toHaveBeenCalled();
-    const allChanges: string[] = emitSpy.mock.calls.flatMap((c) => c[0]);
+    const allChanges = seenPaths(emitSpy);
     expect(allChanges).toContain("index.ts");
     expect(allChanges.some((p) => p.includes(".vibe-chat-history"))).toBe(false);
 
@@ -264,10 +300,11 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
     fs.writeFileSync(path.join(tmpDir, ".shipit-usage.json"), "{}");
     fs.writeFileSync(path.join(tmpDir, "src.ts"), "export {}");
 
-    await new Promise((r) => setTimeout(r, 500));
+    await waitUntil(() => seenPaths(emitSpy).includes("src.ts"));
+    await absenceWindow();
 
     expect(emitSpy).toHaveBeenCalled();
-    const allChanges: string[] = emitSpy.mock.calls.flatMap((c) => c[0]);
+    const allChanges = seenPaths(emitSpy);
     expect(allChanges).toContain("src.ts");
     expect(allChanges.some((p) => p.includes(".shipit-usage.json"))).toBe(false);
 
@@ -302,7 +339,10 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
 
     fs.writeFileSync(path.join(tmpDir, "once.txt"), "data");
 
-    await new Promise((r) => setTimeout(r, 500));
+    // Wait for the first batch, then keep listening — a duplicate watcher would
+    // emit a second one, which is the whole point of this test.
+    await waitUntil(() => emitSpy.mock.calls.length > 0);
+    await absenceWindow();
 
     // Should only emit once, not twice (from two watchers)
     expect(emitSpy).toHaveBeenCalledTimes(1);
