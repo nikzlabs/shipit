@@ -318,6 +318,30 @@ Vite ≥ 5 enforces a `Host` header allowlist on its dev server (defaulting to l
 
 `vite.config.ts` sets `server.allowedHosts: true` to disable the check. The trust model is fine: the dev server only ever sits behind ShipIt's preview proxy, never directly on the public internet. The setting only affects `vite dev`; production `vite build` is unaffected.
 
+### Vite's dep-optimizer cache cannot live on the overlayfs `node_modules`
+
+Committing a dep-optimizer run is a pair of **directory** renames inside the
+cache dir: `deps` → `deps_temp_<hash>`, then the processing dir → `deps`
+(`vite/dist/node/chunks/node.js`, `commit()`). In the dogfood, `node_modules` is
+an overlayfs mount — the docs/183 overlay dep store, a shared read-only base
+plus a per-session upper layer — and overlayfs refuses to rename a directory
+that still lives in its lower layer, failing with `EXDEV: cross-device link not
+permitted` even though both paths are on the same device. Vite has no fallback
+for that rename, so the optimizer died in a loop and the inner dev server served
+no client at all.
+
+The trigger is anything that re-runs optimization, most commonly
+`Re-optimizing dependencies because lockfile has changed` — so a plain rebase
+onto a `main` that touched `package-lock.json` was enough to break the dogfood.
+Note the first optimization can succeed (nothing to rename aside), which is why
+this presents as "it worked yesterday".
+
+`vite.config.ts` honors `VITE_CACHE_DIR`, and the `dev` service sets it to
+`/workspace/.inner-shipit/vite-cache` — the state dir is a plain bind mount on
+ext4, already gitignored, and survives a service restart, so both sides of those
+renames land on one ordinary filesystem. Vite's default (`node_modules/.vite`)
+is unchanged everywhere else.
+
 ### All-manual compose stacks must lazy-join the orchestrator network
 
 `ServiceManager.start()` skips `composeUp` entirely when every service in the compose file is `x-shipit-preview: manual` (the dogfood case — only `dev` exists, and it's manual). Compose only materializes the per-session `shipit-session-<id>` network during an `up`, so when `start()` then calls `networkJoinFn`, the network doesn't exist yet and the call silently fails. The user clicks "Start" → `startService()` → `composeUpService()` finally creates the network and attaches the dev container — but historically `networkJoinFn` was never re-invoked, so the **orchestrator** never joined. The preview proxy resolved a correct container IP that the orchestrator had no route to, surfacing as `Preview unreachable on port 3000 — connect ETIMEDOUT 172.x.y.z:3000` in the outer UI. Auto-preview repos worked fine because their `composeUp` at startup creates the network before the join attempt.

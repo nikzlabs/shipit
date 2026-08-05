@@ -136,6 +136,23 @@ services:
       # host filesystem can be lossy depending on the host platform.
       CHOKIDAR_USEPOLLING: "1"
       CHOKIDAR_INTERVAL: "1000"
+      # Move Vite's dep-optimizer cache OFF the overlayfs `node_modules`.
+      #
+      # Committing an optimizer run renames directories inside the cache dir
+      # (`deps` → `deps_temp_<hash>`, then the processing dir → `deps`), and
+      # overlayfs refuses to rename a directory that still lives in its lower
+      # layer — `EXDEV: cross-device link not permitted`, despite both paths
+      # being on one device. `node_modules` here is exactly that: the docs/183
+      # overlay dep store, a shared read-only base plus a per-session upper.
+      # Vite has no fallback for that rename, so re-optimization failed in a
+      # loop and the inner dev server served no client at all. Any lockfile
+      # change re-triggers optimization, so a rebase was enough to hit it.
+      #
+      # The state dir is plain ext4 (it is a bind mount, not the overlay),
+      # already gitignored, and survives a service restart — so both sides of
+      # those renames land on one ordinary filesystem. `vite.config.ts` reads
+      # this and otherwise leaves Vite's default alone.
+      VITE_CACHE_DIR: /workspace/.inner-shipit/vite-cache
     volumes:
       # Required: without this, /workspace inside the dev container is
       # empty. Bind-mounting the outer session's workspace lets the inner
