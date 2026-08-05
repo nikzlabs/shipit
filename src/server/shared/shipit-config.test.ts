@@ -716,7 +716,10 @@ issues:
     expect(config.warnings.some((w) => w.includes("duplicate tracker name"))).toBe(true);
   });
 
-  it("allows the same repository under two different names", () => {
+  // req 6, the other direction — a DESTINATION is declared at most once. Two
+  // names for one repository are not an alias: `TrackerId` is the destination, so
+  // both entries collapse onto one id and one tab shadows the other.
+  it("drops a second declaration of a destination already declared", () => {
     const config = parse(`
 issues:
   trackers:
@@ -726,6 +729,53 @@ issues:
     - kind: github
       repo: acme/planning
       name: alias
+`);
+    expect(config.issues.trackers).toHaveLength(1);
+    expect(config.issues.trackers[0]).toMatchObject({ name: "planning" });
+    expect(config.warnings.some((w) => w.includes("already declared as `planning`"))).toBe(true);
+  });
+
+  // Destination identity is case-insensitive, like every other comparison of it —
+  // GitHub treats `Acme/Planning` and `acme/planning` as the same repository.
+  it("drops a duplicate destination written with different casing", () => {
+    const config = parse(`
+issues:
+  trackers:
+    - kind: github
+      repo: acme/planning
+      name: planning
+    - kind: github
+      repo: Acme/Planning
+      name: alias
+`);
+    expect(config.issues.trackers).toHaveLength(1);
+  });
+
+  it("drops a second declaration of a Linear team already declared", () => {
+    const config = parse(`
+issues:
+  trackers:
+    - kind: linear
+      team: SHI
+      name: roadmap
+    - kind: linear
+      team: shi
+      name: backlog
+`);
+    expect(config.issues.trackers).toHaveLength(1);
+    expect(config.issues.trackers[0]).toMatchObject({ name: "roadmap" });
+  });
+
+  it("keeps two declarations that name genuinely different destinations", () => {
+    const config = parse(`
+issues:
+  trackers:
+    - kind: github
+      repo: acme/planning
+      name: planning
+    - kind: linear
+      team: SHI
+      name: roadmap
 `);
     expect(config.issues.trackers).toHaveLength(2);
   });

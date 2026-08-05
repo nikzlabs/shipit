@@ -47,6 +47,11 @@ the `name#id` form (`planning#42`, `roadmap#SHI-304`). It survives the
 declaration being re-pointed at a different repository or team, and it is the
 form ShipIt itself emits.
 
+In that form **the name wins**: if the declaration is re-pointed and the id you
+wrote no longer matches it — `roadmap#SHI-304` after `roadmap` moves to team
+`OPS` — the reference resolves to `OPS-304` rather than failing. The name is what
+identifies the destination; the id inside it is a convenience for readers.
+
 A canonical address resolves through the declaration it identifies: a Linear key
 by its team prefix, a GitHub address by its `owner/repo`. **A reference that
 identifies no declared tracker fails closed** with an error naming the declared

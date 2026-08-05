@@ -250,6 +250,10 @@ issues:
 |-------|------|-----------|-------------|
 | `kind` | string | required | Which backend: `github` or `linear`. |
 | `name` | string | required | How every reference and operation addresses this tracker. Unique within the repository. Letters, digits, `.`, `_`, `-` — it has to be writable as `name#42`. |
+
+Each *destination* may also be declared only once: two entries pointing at the
+same repository or the same Linear team are not an alias, and the second is
+ignored with a warning. Give a destination one name and use it.
 | `repo` | string | `github` | The `owner/name` slug of the GitHub repository. |
 | `team` | string | `linear` | The Linear team key (`SHI`) — also the prefix its issue keys carry, which is what lets a bare `SHI-304` resolve to this declaration. |
 

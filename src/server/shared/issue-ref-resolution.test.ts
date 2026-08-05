@@ -165,8 +165,9 @@ describe("resolveIssueRef — fail closed (req 11)", () => {
     expect(resolveIssueRef("#42", [OWN, PLANNING]).ok).toBe(false);
   });
 
-  // A name form whose suffix doesn't fit the named backend named two different
-  // things; coercing either way would be the substitution req 17 forbids.
+  // Still fails closed, and is NOT the name-wins case below: a GitHub tracker's
+  // issues are numbered, so `SHI-3` names no issue there at all. There is nothing
+  // to prefer the name *to*, which is the difference from a Linear team key.
   it("rejects a Linear-shaped suffix on a GitHub tracker", () => {
     const result = resolveIssueRef("planning#SHI-3", [OWN, PLANNING]);
     expect(result.ok).toBe(false);
@@ -174,11 +175,26 @@ describe("resolveIssueRef — fail closed (req 11)", () => {
     expect(result.reason).toBe("mismatched");
   });
 
-  it("rejects a key from another team on a Linear tracker", () => {
+  // req 16 — in a name form the NAME wins and an embedded backend id is
+  // advisory. This is what lets `roadmap#SHI-304`, written before `roadmap` was
+  // re-pointed to another team, keep resolving instead of failing on the stale
+  // key. Deliberately an exception to reqs 11/17: nothing is guessed, one of two
+  // stated things is preferred, and the name still identifies exactly one
+  // declared destination.
+  it("re-targets a key from another team to the name's current team", () => {
     const result = resolveIssueRef("roadmap#OPS-3", [OWN, ROADMAP]);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.reason).toBe("mismatched");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.ref.issueId).toBe("SHI-3");
+    expect(result.ref.identifier).toBe("roadmap#SHI-3");
+  });
+
+  it("resolves the same issue whether the name form carries the team key or not", () => {
+    const keyed = resolveIssueRef("roadmap#SHI-304", [OWN, ROADMAP]);
+    const bare = resolveIssueRef("roadmap#304", [OWN, ROADMAP]);
+    expect(keyed.ok && bare.ok).toBe(true);
+    if (!keyed.ok || !bare.ok) return;
+    expect(keyed.ref.issueId).toBe(bare.ref.issueId);
   });
 
   it("declares nothing helpful when the repository declares nothing", () => {

@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { IssueRefCard } from "./IssueRefCard.js";
 import type { IssueRefCard as IssueRefCardData } from "../../server/shared/types.js";
+import { useIssuesStore } from "../stores/issues-store.js";
 
 /**
  * Tests for the read-only `IssueRefCard` (docs/188, docs/189). The card renders
@@ -47,5 +48,50 @@ describe("IssueRefCard", () => {
       title: "An open issue",
       url: "https://github.com/octocat/hello/issues/42",
     });
+  });
+
+  // docs/248 req 16 — a reference resolves when it is USED. A read card records
+  // the name it was addressed through, so re-pointing that name in shipit.yaml
+  // re-targets the card, exactly as it re-targets a write card.
+  it("opens the name's CURRENT destination after a re-point", () => {
+    useIssuesStore.setState({
+      trackers: [
+        {
+          id: "github:acme/moved",
+          kind: "github",
+          label: "planning",
+          name: "planning",
+          configured: true,
+        },
+      ],
+    });
+    const onOpen = vi.fn();
+    render(
+      <IssueRefCard
+        card={card({ tracker: "github:acme/original", trackerName: "planning" })}
+        onOpen={onOpen}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("issue-ref-card"));
+    expect(onOpen).toHaveBeenCalledWith(
+      expect.objectContaining({ tracker: "github:acme/moved" }),
+    );
+  });
+
+  // The name is gone from shipit.yaml entirely — fall back to the destination the
+  // read actually reached rather than dropping the affordance.
+  it("falls back to the recorded destination when the name is no longer declared", () => {
+    useIssuesStore.setState({ trackers: [] });
+    const onOpen = vi.fn();
+    render(
+      <IssueRefCard
+        card={card({ tracker: "github:acme/original", trackerName: "planning" })}
+        onOpen={onOpen}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("issue-ref-card"));
+    expect(onOpen).toHaveBeenCalledWith(
+      expect.objectContaining({ tracker: "github:acme/original" }),
+    );
   });
 });

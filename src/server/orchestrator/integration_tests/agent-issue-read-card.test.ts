@@ -211,4 +211,49 @@ describe("Integration: issue read navigation card (docs/188)", () => {
 
     client.close();
   });
+
+  // docs/248 req 16 — the card records the declared NAME it was addressed
+  // through, not just the destination it resolved to, so a later re-point
+  // re-targets it. Persisted with the card (it rides the existing `issue_ref`
+  // JSON blob, so no schema change), which is what makes it survive a reload.
+  it("records the declared tracker name on the read card", async () => {
+    fs.writeFileSync(
+      path.join(sessionManager.get(sessionId)!.workspaceDir!, "shipit.yaml"),
+      "issues:\n  trackers:\n    - kind: github\n      repo: octocat/hello-world\n      name: planning\n",
+    );
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+    markTurnRunning();
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/issue/view?tracker=${encodeURIComponent("github:octocat/hello-world")}&id=42`,
+    });
+    expect(res.statusCode).toBe(200);
+
+    const card = (await client.receiveType("issue_ref_card")) as WsIssueRefCard;
+    expect(card.card.trackerName).toBe("planning");
+
+    const history = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    const refCards = (history.json() as { messages: { issueRef?: { trackerName?: string } }[] }).messages
+      .map((m) => m.issueRef)
+      .filter(Boolean);
+    expect(refCards[0]?.trackerName).toBe("planning");
+
+    client.close();
+  });
+
+  // The session's own repository is reachable unnamed (req 12), so a card for it
+  // carries no name and keeps resolving through its destination.
+  it("records no tracker name for the session's own unnamed repository", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+    markTurnRunning();
+
+    await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/issue/view?tracker=github&id=42` });
+    const card = (await client.receiveType("issue_ref_card")) as WsIssueRefCard;
+    expect(card.card.trackerName).toBeUndefined();
+
+    client.close();
+  });
 });

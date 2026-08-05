@@ -384,6 +384,35 @@ reading the callers rather than the rule. Three findings were reported that are
 name a destination, which a qualified id does), and two the checklist already
 recorded as open.
 
+### Three precedence rules the review forced into the open
+
+The review's remaining findings were not defects but *unstated* rules — cases
+where two requirements were each satisfiable alone and silently disagreed
+together. The user settled all three; they are now requirements 6 and 16.
+
+- **A destination is declared at most once.** `TrackerId` *is* the destination,
+  so two names for one repository collapse onto one id no matter what the UI
+  does. Refusing the configuration (`parseIssuesConfig`, warn-and-skip) was
+  chosen over making a *declaration* the unit of identity, which would have
+  threaded a new id through tabs, cards, routes and persisted rows to support
+  something nobody wanted.
+- **In a name form, the name wins.** `roadmap#SHI-304` re-targets after `roadmap`
+  moves to team `OPS`, rather than failing on the stale key. This is the feature's
+  one deliberate departure from fail-closed, and it is narrow on purpose: the name
+  already identifies exactly one declared destination, so the rule *prefers one of
+  two stated things* rather than guessing among candidates. It lives in
+  `resolveNamedSuffix` and nowhere else — notably not on the undo path, which
+  still acts on the issue its write actually touched.
+- **A read card is a reference.** `IssueRefCard` gained `trackerName` and
+  re-resolves on click, matching the write card. It rides the existing
+  `issue_ref` JSON blob, so — like the write card's `trackerName` — the "schema
+  change" the design anticipated turned out to be no schema change at all.
+
+The pattern behind all three: `TrackerId` being the *physical destination* is what
+made this feature cheap (one id round-trips through every surface), and it is also
+what makes each of these cases pinch. That trade was worth taking, but it is the
+thing to check first when a new tracker question comes up.
+
 ### Live run against two real repositories
 
 Run against the dogfood inner ShipIt (`docs/118`), which serves this branch's

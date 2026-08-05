@@ -6,7 +6,10 @@
  * the read-path sibling of `IssueWriteCard`: any agent issue interaction — not
  * just edits — leaves a quick jump-to-issue affordance in the transcript. Unlike
  * the write card it has NO lifecycle (no undo), so the full payload arrives on
- * the chat message and the component renders straight from props — no store.
+ * the chat message and the component **renders** straight from props. The one
+ * store read is in the click handler, where docs/248 req 16 re-resolves the
+ * recorded tracker name against today's declarations — so the card still holds
+ * no subscription and never re-renders on store changes.
  *
  * docs/189 — clicking the card opens ShipIt's inline single-issue view (the
  * Issues tab's detail pane), NOT the external tracker. The deep link to Linear/
