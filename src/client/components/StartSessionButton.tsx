@@ -17,10 +17,11 @@
  * When more than one repo is registered the button becomes a **split control**:
  * the main half starts in the default repo (one click, exactly as before) and a
  * caret half opens a menu of every repo so the user can start the issue in a
- * *different* one. Linear issues are workspace-wide, so the issue you want to
- * work on frequently belongs to a repo other than the session you're sitting
- * in; without this the user has to switch repos in the sidebar, open a new
- * session, come back to the Issues tab and find the issue again.
+ * *different* one. A declared tracker is frequently a planning repository or a
+ * Linear team shared across projects (docs/248), so the issue you want to work
+ * on often belongs to a repo other than the session you're sitting in; without
+ * this the user has to switch repos in the sidebar, open a new session, come
+ * back to the Issues tab and find the issue again.
  *
  * The caret is a separate `<Button>` rather than a wrapping menu so the primary
  * action keeps its single-click cost — the picker is the deliberate detour, not

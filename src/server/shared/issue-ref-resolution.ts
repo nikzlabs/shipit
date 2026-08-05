@@ -284,7 +284,7 @@ function resolveNamedSuffix(
     if (!team) {
       return fail(`The Linear tracker \`${name}\` has no usable team key in its declaration.`);
     }
-    const keyed = /^([A-Za-z]+)-(\d+)$/.exec(suffix);
+    const keyed = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/.exec(suffix);
     if (keyed) {
       if (normalizeLinearTeamKey(keyed[1]) !== team) {
         return fail(

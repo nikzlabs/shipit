@@ -1,13 +1,15 @@
 /**
  * Issue tracker routes (docs/170 — inline tracker Issues tab; SHI-80).
  *
- * These are global `/api/...` routes, not `/api/sessions/:id/...`, because
- * Linear is deployment-wide. GitHub Issues, however, are **per-repo**, so the
- * read routes accept an optional `?sessionId` and resolve that session's GitHub
- * remote + token into a `GitHubTrackerContext` for the registry. Linear ignores
- * the session entirely (its binding is the workspace team). Read-only +
- * connect/bind for Linear; write-back and the GitHub `/shipit` push trigger
- * remain out of scope (SHI-43 / docs/156).
+ * These are global `/api/...` routes, not `/api/sessions/:id/...`, because they
+ * predate per-session tracker scoping. Since docs/248 that scoping is what they
+ * actually need: **every** tracker is declared in the session repository's
+ * `shipit.yaml`, so the read routes take an optional `?sessionId` and resolve
+ * that session's remote, token and declarations into a `GitHubTrackerContext`
+ * for the registry — Linear included, since a Linear tracker is a declaration
+ * now and not a deployment-wide binding. A request with no `sessionId` therefore
+ * sees no declarations at all, which is correct rather than degraded: with no
+ * session there is no repository to have declared anything.
  */
 
 import { randomUUID, createHash } from "node:crypto";
@@ -620,6 +622,28 @@ export async function registerIssueRoutes(
   // Linear is workspace-wide. Tokens stay in `CredentialStore`; only the result
   // (and the undo snapshot, on the persisted card) returns to the container.
 
+  /**
+   * docs/248 req 13 — a create ALWAYS names its destination. The shim enforces
+   * this by requiring `--tracker <name>`, but `/agent-ops/issue/*` is reachable
+   * from the session container by anything the agent runs (a `curl` bypasses the
+   * shim entirely), so the rule needs a server-side backstop or it is only a
+   * convention. The bare `"github"` id is precisely "the destination nobody
+   * named": for a public code repository that is the *public* repo, which is the
+   * disclosure this requirement exists to make impossible.
+   *
+   * Returns an error message when the create must be refused, or null to proceed.
+   * Mirrors the same shim-plus-backstop pattern `--priority` and `--parent` use.
+   */
+  function rejectUnnamedCreateDestination(trackerId: string): string | null {
+    if (trackerId !== "github") return null;
+    return (
+      "A create must name the tracker it files into: `github` is this session's own repository, " +
+      "which it reaches without being named. Pass a declared tracker's name instead — for a public " +
+      "code repository the unnamed destination is the public repo. Declare one in shipit.yaml under " +
+      "`issues.trackers` if none fits."
+    );
+  }
+
   function sendServiceError(reply: FastifyReply, err: unknown, fallback: string): void {
     if (err instanceof ServiceError) {
       reply.code(err.statusCode).send({ error: err.message });
@@ -822,6 +846,11 @@ export async function registerIssueRoutes(
         reply.code(400).send({ error: "tracker and title are required" });
         return;
       }
+      const unnamed = rejectUnnamedCreateDestination(tracker);
+      if (unnamed) {
+        reply.code(400).send({ error: unnamed });
+        return;
+      }
       // Create can only SET a parent (a new issue has no prior relation to
       // detach), so a `null`/detach sentinel is a no-op here — fold to undefined.
       const parentToSet = parent ?? undefined;
@@ -850,6 +879,13 @@ export async function registerIssueRoutes(
       const { tracker, trackerName, name, color, description } = request.body ?? {};
       if (!tracker || !name?.trim()) {
         reply.code(400).send({ error: "tracker and name are required" });
+        return;
+      }
+      // Creating a label mutates a tracker's configuration, so req 13's rule
+      // applies to it too — same backstop, same reasoning.
+      const unnamedLabel = rejectUnnamedCreateDestination(tracker);
+      if (unnamedLabel) {
+        reply.code(400).send({ error: unnamedLabel });
         return;
       }
       const sessionId = request.params.sessionId;

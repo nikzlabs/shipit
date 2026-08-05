@@ -368,6 +368,31 @@ GraphQL API. The deployment that runs the dogfood loop has a GitHub token and no
 Linear credential, so no end-to-end Linear run was possible; requirements 3–5 rest
 on unit and integration coverage with fakes.
 
+## How requirement 22 came to be held on both paths
+
+Worth recording, because the gap was invisible until someone checked. Requirement
+22 says the pushed branch name comes from the reference only, never from the issue
+title. `seedFromIssueRef` (`headless-sessions.ts`) does exactly that, and this
+document once listed it as "carries over" — but that was a claim about a
+*mechanism*, not a verified guarantee, and checking it showed the in-app path had
+stopped going through that mechanism.
+
+Clicking **Start session** on an issue did not fire a seeded headless session.
+`App.tsx`'s `handleIssueStartSession`, reshaped by docs/236, **pre-filled the chat
+input** with `You are working on issue <ref>: <title>` so the user could edit it
+before sending. That prompt became the session's first message, and ordinary
+graduation fed the first message to `generateSessionName` (`session-namer.ts`),
+whose slug became the branch (`graduate-session.ts`). So the issue title could
+reach a pushed branch name — exactly what requirement 22 forbids, and
+unconditionally, since the rule is not scoped to private trackers. The same root
+cause meant the session carried no `issueRef`, so the seed-time **→ started**
+transition never fired from the Issues tab either.
+
+Closed in SHI-320 by `issue-seeded-session.ts`, which keeps docs/236's prefill and
+pins the branch and title at warm graduation instead. The lesson generalizes past
+this feature: an inherited guarantee is a claim until you read the code that would
+have to hold for it, and "carries over" is where that claim usually hides.
+
 ## Out of scope
 
 Backend capability differences — status workflows beyond Open/Closed, priority

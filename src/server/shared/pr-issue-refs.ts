@@ -17,12 +17,20 @@
  * automatic issue activity (the multi-PR case: intermediate PRs simply omit
  * `Closes`). See docs/194 "Where this respects the multi-PR thread."
  *
- * The pointer is the same tracker-neutral form `shipit issue` understands
- * (`SHI-43`, `owner/repo#42`, or a full Linear/GitHub issue URL), parsed by the
- * shared {@link parseIssueRef}. A token whose shape doesn't resolve to a known
- * tracker is ignored. We deliberately do NOT support GitHub's bare `#42` form:
- * it's tracker-ambiguous without a repo and `parseIssueRef` doesn't accept it —
- * keeping one uniform pointer vocabulary across both trackers.
+ * The pointer is the same reference form `shipit issue` understands, in any of
+ * docs/248's three shapes — a declared tracker's name (`planning#42`,
+ * `roadmap#SHI-304`) or the backend's own address (`SHI-43`, `owner/repo#42`, a
+ * full issue URL) — parsed by the shared {@link parseIssueRef}. A token whose
+ * shape isn't a reference at all is ignored. We deliberately do NOT support
+ * GitHub's bare `#42` form: it names no destination, and `parseIssueRef` doesn't
+ * accept it.
+ *
+ * This module stays **context-free**: it finds the tokens, it does not decide
+ * where they point. A name form parses with no `tracker` by design — only the
+ * declarations can resolve one — so this parser must NOT filter on `tracker`,
+ * or every `Closes planning#42` would be dropped before anything could resolve
+ * it. `issue-lifecycle.ts` resolves what this returns, and drops what doesn't
+ * resolve (docs/248 req 11).
  *
  * This is pure and tracker-agnostic so it can be unit-tested in isolation and
  * reused by the orchestrator merge path without dragging in tracker plumbing.
@@ -52,9 +60,10 @@ function cleanToken(raw: string): string {
 }
 
 /**
- * Collect the resolvable pointers following each occurrence of `re` in `body`,
- * de-duplicated by `tracker:issueId`. Tokens that don't resolve to a known
- * tracker (unknown shape) are dropped.
+ * Collect the issue references following each occurrence of `re` in `body`,
+ * de-duplicated by destination + id. A token that isn't a reference shape at all
+ * is dropped; a **name** form is kept even though it carries no `tracker`, since
+ * resolving it is the caller's job (see the module docstring).
  */
 function collect(body: string, re: RegExp, seen: Set<string>): ParsedIssueRef[] {
   const out: ParsedIssueRef[] = [];
@@ -62,8 +71,9 @@ function collect(body: string, re: RegExp, seen: Set<string>): ParsedIssueRef[] 
     const token = cleanToken(match[1] ?? "");
     if (!token) continue;
     const parsed = parseIssueRef(token);
-    if (parsed.tracker === "unknown" || !parsed.issueId) continue;
-    const key = `${parsed.tracker}:${parsed.issueId}`;
+    if (!parsed.issueId) continue;
+    if (parsed.tracker === "unknown" && !parsed.trackerName) continue;
+    const key = `${parsed.trackerName ?? parsed.tracker}:${parsed.issueId}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(parsed);

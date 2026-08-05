@@ -67,7 +67,7 @@ function issueNode(over: Record<string, unknown> = {}) {
     priorityLabel: "Urgent",
     state: { name: "In Progress", type: "started" },
     assignee: { id: "u1", name: "nik", displayName: "Nik", avatarUrl: "http://a" },
-    team: { states: { nodes: [{ id: "s1", name: "Todo", type: "unstarted", position: 0 }] } },
+    team: { key: "SHI", states: { nodes: [{ id: "s1", name: "Todo", type: "unstarted", position: 0 }] } },
     ...over,
   };
 }
@@ -172,6 +172,43 @@ describe("LinearTracker", () => {
     await expect(tracker.listIssues()).rejects.toThrow(/boom/);
   });
 
+  // docs/248 reqs 11/17 — Linear's `issue(id:)` is workspace-global, so an id for
+  // another team resolves. An operation that named THIS tracker must not act on
+  // it: the reference resolver cannot close this, because a raw `tracker=`+`id=`
+  // pair over the agent relay never passes through the resolver.
+  it("refuses an issue that belongs to a different team than the declared one", async () => {
+    const fetchImpl = routerFetch([
+      { match: "query Issue", data: { issue: issueNode({ identifier: "ENG-7", team: { key: "ENG" } }) } },
+    ]);
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    await expect(tracker.getIssue("ENG-7")).rejects.toThrow(/belongs to team `ENG`, not to `SHI`/);
+  });
+
+  it("refuses a cross-team id on a WRITE, before the mutation runs", async () => {
+    const fetchImpl = routerFetch([
+      { match: "IssueId", data: { issue: { id: "uuid-eng", team: { key: "ENG" } } } },
+      { match: "issueUpdate", data: { issueUpdate: { success: true, issue: issueNode() } } },
+    ]);
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    await expect(tracker.addComment("ENG-7", "hi")).rejects.toThrow(/not to `SHI`/);
+    // The mutation never fired — no substitution, and no write to the wrong team.
+    const wrote = fetchImpl.mock.calls.some((c) =>
+      ((JSON.parse(((c[1] as RequestInit | undefined)?.body as string) ?? "{}") as { query?: string }).query ?? "")
+        .includes("AddComment"),
+    );
+    expect(wrote).toBe(false);
+  });
+
+  // A response that carried no team is unverifiable, so it is refused for the
+  // same reason rather than waved through.
+  it("refuses an issue whose team the response did not carry", async () => {
+    const fetchImpl = routerFetch([
+      { match: "query Issue", data: { issue: issueNode({ identifier: "SHI-1", team: null }) } },
+    ]);
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    await expect(tracker.getIssue("SHI-1")).rejects.toThrow(/belongs to team `unknown`/);
+  });
+
   it("throws when listing without configuration", async () => {
     await expect(new LinearTracker({ token: null, teamKey: null }).listIssues()).rejects.toThrow(/not configured/);
   });
@@ -244,7 +281,7 @@ describe("resolveLinearStateId (docs/177 status mapping)", () => {
 describe("LinearTracker writes (docs/177)", () => {
   it("creates a comment and returns its id for undo", async () => {
     const fetchImpl = routerFetch([
-      { match: "IssueId", data: { issue: { id: "uuid-1" } } },
+      { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "SHI" } } } },
       { match: "commentCreate", data: { commentCreate: { success: true, comment: { id: "c1", url: "http://c", body: "hi" } } } },
     ]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
@@ -253,7 +290,7 @@ describe("LinearTracker writes (docs/177)", () => {
 
   it("enriches a created comment with author + timestamp when present", async () => {
     const fetchImpl = routerFetch([
-      { match: "IssueId", data: { issue: { id: "uuid-1" } } },
+      { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "SHI" } } } },
       {
         match: "commentCreate",
         data: {
@@ -292,6 +329,7 @@ describe("LinearTracker writes (docs/177)", () => {
         match: "IssueComments",
         data: {
           issue: {
+            team: { key: "SHI" },
             comments: {
               nodes: [
                 {
@@ -393,7 +431,7 @@ describe("LinearTracker writes (docs/177)", () => {
 
   it("creates a sub-issue with a resolved parentId (SHI-206)", async () => {
     const fetchImpl = routerFetch([
-      { match: "IssueId", data: { issue: { id: "uuid-parent" } } },
+      { match: "IssueId", data: { issue: { id: "uuid-parent", team: { key: "SHI" } } } },
       { match: "issueCreate", data: { issueCreate: { success: true, issue: issueNode({ identifier: "SHI-9" }) } } },
     ]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
@@ -406,7 +444,7 @@ describe("LinearTracker writes (docs/177)", () => {
 
   it("reparents via issueUpdate with a resolved parentId (SHI-206)", async () => {
     const fetchImpl = routerFetch([
-      { match: "IssueId", data: { issue: { id: "uuid-1" } } },
+      { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "SHI" } } } },
       { match: "issueUpdate", data: { issueUpdate: { success: true, issue: issueNode() } } },
     ]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
@@ -419,7 +457,7 @@ describe("LinearTracker writes (docs/177)", () => {
 
   it("detaches a sub-issue with parentId: null on --parent none (SHI-206)", async () => {
     const fetchImpl = routerFetch([
-      { match: "IssueId", data: { issue: { id: "uuid-1" } } },
+      { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "SHI" } } } },
       { match: "issueUpdate", data: { issueUpdate: { success: true, issue: issueNode() } } },
     ]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
@@ -523,7 +561,7 @@ describe("LinearTracker writes (docs/177)", () => {
 
   it("edits title/description via issueUpdate", async () => {
     const fetchImpl = routerFetch([
-      { match: "IssueId", data: { issue: { id: "uuid-1" } } },
+      { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "SHI" } } } },
       { match: "issueUpdate", data: { issueUpdate: { success: true, issue: issueNode({ title: "New" }) } } },
     ]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
@@ -535,7 +573,7 @@ describe("LinearTracker writes (docs/177)", () => {
 
   it("sets status by normalized type → resolved stateId", async () => {
     const fetchImpl = routerFetch([
-      { match: "IssueStates", data: { issue: { id: "uuid-1", team: { states: { nodes: STATES } } } } },
+      { match: "IssueStates", data: { issue: { id: "uuid-1", team: { key: "SHI", states: { nodes: STATES } } } } },
       { match: "issueUpdate", data: { issueUpdate: { success: true, issue: issueNode() } } },
     ]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
@@ -546,7 +584,7 @@ describe("LinearTracker writes (docs/177)", () => {
 
   it("rejects an unknown status with the valid options (no write)", async () => {
     const fetchImpl = routerFetch([
-      { match: "IssueStates", data: { issue: { id: "uuid-1", team: { states: { nodes: STATES } } } } },
+      { match: "IssueStates", data: { issue: { id: "uuid-1", team: { key: "SHI", states: { nodes: STATES } } } } },
     ]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
     await expect(tracker.setStatus("SHI-1", "frobnicate")).rejects.toThrow(TrackerResolutionError);
@@ -556,7 +594,7 @@ describe("LinearTracker writes (docs/177)", () => {
 
   it("resolves assignee `me` to the viewer id", async () => {
     const fetchImpl = routerFetch([
-      { match: "IssueId", data: { issue: { id: "uuid-1" } } },
+      { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "SHI" } } } },
       { match: "Viewer", data: { viewer: { id: "me-id" } } },
       { match: "issueUpdate", data: { issueUpdate: { success: true, issue: issueNode() } } },
     ]);
@@ -568,7 +606,7 @@ describe("LinearTracker writes (docs/177)", () => {
 
   it("resolves assignee by display name to an assigneeId", async () => {
     const fetchImpl = routerFetch([
-      { match: "IssueId", data: { issue: { id: "uuid-1" } } },
+      { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "SHI" } } } },
       { match: "Users", data: { users: { nodes: [{ id: "u9", name: "nik", displayName: "Nik Z", email: "n@x" }] } } },
       { match: "issueUpdate", data: { issueUpdate: { success: true, issue: issueNode() } } },
     ]);
@@ -580,7 +618,7 @@ describe("LinearTracker writes (docs/177)", () => {
 
   it("returns candidates when an assignee name has no match", async () => {
     const fetchImpl = routerFetch([
-      { match: "IssueId", data: { issue: { id: "uuid-1" } } },
+      { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "SHI" } } } },
       { match: "Users", data: { users: { nodes: [{ id: "u9", name: "nik", displayName: "Nik Z", email: "n@x" }] } } },
     ]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
@@ -592,7 +630,7 @@ describe("LinearTracker writes (docs/177)", () => {
 
   it("unassigns with null (no name resolution)", async () => {
     const fetchImpl = routerFetch([
-      { match: "IssueId", data: { issue: { id: "uuid-1" } } },
+      { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "SHI" } } } },
       { match: "issueUpdate", data: { issueUpdate: { success: true, issue: issueNode() } } },
     ]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
@@ -603,7 +641,7 @@ describe("LinearTracker writes (docs/177)", () => {
 
   it("assigns a raw internal id verbatim (undo replay — no resolution)", async () => {
     const fetchImpl = routerFetch([
-      { match: "IssueId", data: { issue: { id: "uuid-1" } } },
+      { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "SHI" } } } },
       { match: "issueUpdate", data: { issueUpdate: { success: true, issue: issueNode() } } },
     ]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
@@ -616,7 +654,7 @@ describe("LinearTracker writes (docs/177)", () => {
 
   it("getIssue surfaces assigneeId and availableStatuses for the agent", async () => {
     const fetchImpl = routerFetch([
-      { match: "query Issue", data: { issue: issueNode({ team: { states: { nodes: STATES } } }) } },
+      { match: "query Issue", data: { issue: issueNode({ team: { key: "SHI", states: { nodes: STATES } } }) } },
     ]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
     const issue = await tracker.getIssue("SHI-1");

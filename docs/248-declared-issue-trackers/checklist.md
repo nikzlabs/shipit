@@ -87,6 +87,13 @@ pointer-derived destinations, `seedFromIssueRef`'s pointer-only branch names
 - [x] The break with existing behavior — accepted (req 20).
 - ~~`issues.default`~~ — superseded. Req 1 removes implicit destinations, so `shipit issue create` has no fallback left to point anywhere.
 
+## Open — found during implementation, not closed here
+
+- [ ] **The browser's declaration view can go stale.** `fetchTrackers` runs on
+  session change and on Issues-tab activation, so editing `shipit.yaml` with the
+  tab already open doesn't re-resolve names until one of those happens. The
+  server reads the file per request, so only the client is affected.
+
 ## Follow-on
 
 - [ ] `shipit issue list` on Linear queries `first: 100` with no pagination, so it cannot enumerate a tracker larger than that. Out of scope here; blocks [247](../247-shipit-private-planning/checklist.md)'s export step.

@@ -131,6 +131,7 @@ describe("getIssueForTracker (docs/175)", () => {
           issue: {
             id: "abc",
             identifier: "TRACKER-28",
+            team: { key: "SHI" },
             title: "Decouple priorities",
             url: "https://linear.app/example/issue/TRACKER-28",
             description: "Body",
@@ -430,7 +431,7 @@ describe("user-initiated inline writes (docs/191)", () => {
     };
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
-      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1" } } });
+      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI" } } } });
       if (query.includes("issueUpdate")) return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
       // docs/248 — every Linear call first resolves the declared team key to a team id.
       if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
@@ -624,15 +625,20 @@ function linearFetch(states: { id: string; name: string; type: string; position:
   const node = {
     id: "uuid-1", identifier: "SHI-9", title: "New doc", url: "https://linear.app/x/SHI-9",
     priority: 0, state: { name: "Todo", type: "unstarted" }, assignee: null,
-    team: { states: { nodes: states } },
+    team: { key: "SHI", states: { nodes: states } },
   };
   return vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
     const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
     if (query.includes("IssueStates")) {
-      return jsonResponse({ data: { issue: { id: "uuid-1", team: { states: { nodes: states } } } } });
+      return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI", states: { nodes: states } } } } });
     }
     if (query.includes("issueUpdate")) {
       return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
+    }
+    // `IssueId` resolves a key/UUID for a mutation; the docs/248 team guard reads
+    // the team off it, so the stub has to carry one.
+    if (query.includes("IssueId")) {
+      return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI" } } } });
     }
     // docs/248 — every Linear call first resolves the declared team key to a team id.
     if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
@@ -831,7 +837,7 @@ describe("issue write services (docs/177)", () => {
     };
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
-      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-prior" } } });
+      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-prior", team: { key: "SHI" } } } });
       if (query.includes("issueUpdate")) return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
       // docs/248 — every Linear call first resolves the declared team key to a team id.
       if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
@@ -852,7 +858,7 @@ describe("issue write services (docs/177)", () => {
         const node = {
       id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
       priority: 2, priorityLabel: "High", state: { name: "Todo", type: "unstarted" }, assignee: null,
-      labels: { nodes: [] },
+      labels: { nodes: [] }, team: { key: "SHI" },
     };
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
@@ -860,7 +866,7 @@ describe("issue write services (docs/177)", () => {
         // Prior issue has priority level "low" (numeric 4).
         return jsonResponse({ data: { issue: { ...node, priority: 4, priorityLabel: "Low" } } });
       }
-      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1" } } });
+      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI" } } } });
       if (query.includes("issueUpdate")) return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
       // docs/248 — every Linear call first resolves the declared team key to a team id.
       if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
@@ -878,7 +884,7 @@ describe("issue write services (docs/177)", () => {
         const node = {
       id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
       priority: 2, priorityLabel: "High", state: { name: "Todo", type: "unstarted" }, assignee: null,
-      labels: { nodes: [] },
+      labels: { nodes: [] }, team: { key: "SHI" },
     };
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
@@ -886,7 +892,7 @@ describe("issue write services (docs/177)", () => {
         // Prior issue already nests under SHI-100 → its internal id is snapshotted.
         return jsonResponse({ data: { issue: { ...node, parent: { id: "uuid-old", identifier: "SHI-100" } } } });
       }
-      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1" } } });
+      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI" } } } });
       if (query.includes("issueUpdate")) {
         return jsonResponse({ data: { issueUpdate: { success: true, issue: { ...node, parent: { id: "uuid-204", identifier: "SHI-204" } } } } });
       }
@@ -909,13 +915,13 @@ describe("issue write services (docs/177)", () => {
         const node = {
       id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
       priority: 0, priorityLabel: "No priority", state: { name: "Todo", type: "unstarted" }, assignee: null,
-      labels: { nodes: [] },
+      labels: { nodes: [] }, team: { key: "SHI" },
     };
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
       // Prior issue has no parent → previousParentId is null (undo would detach).
       if (query.includes("query Issue")) return jsonResponse({ data: { issue: node } });
-      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1" } } });
+      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI" } } } });
       if (query.includes("issueUpdate")) return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
       // docs/248 — every Linear call first resolves the declared team key to a team id.
       if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
