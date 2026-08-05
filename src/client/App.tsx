@@ -575,10 +575,19 @@ export default function App() {
           void navigate(`/session/${currentSessionId}`, { replace: true });
         }
 
+        // SHI-320 — first message of a session the Issues tab seeded from an
+        // issue. Only the session it was seeded for may claim it: prefilling
+        // doesn't pin the user to that session, and the ref must not follow
+        // them into an unrelated one.
+        const pendingIssue = useSessionStore.getState().pendingIssueRef;
+        const issueRef =
+          pendingIssue?.sessionId === currentSessionId ? pendingIssue.ref : undefined;
+
         const message = {
           type: "send_message" as const,
           text,
           sessionId: currentSessionId,
+          ...(issueRef ? { issueRef } : {}),
           files:
             settings.pendingFiles.length > 0
               ? settings.pendingFiles
@@ -592,7 +601,7 @@ export default function App() {
           ...(resetMergedBranch !== undefined ? { resetMergedBranch } : {}),
         };
 
-        sendUserMessage({
+        const sent = sendUserMessage({
           bubble: {
             role: "user",
             text,
@@ -618,6 +627,11 @@ export default function App() {
             return true;
           },
         });
+        // Consumed: the ref belongs to the frame now (including the stashed-
+        // for-reconnect case). Left in place on a dropped send so the retry
+        // still carries it — `sendUserMessage` returns false only when nothing
+        // reached the wire.
+        if (issueRef && sent) useSessionStore.getState().setPendingIssueRef(undefined);
       } else {
         // No session — can't send without one (sessions are created via claim-session).
         // Still append the optimistic bubble so the user sees what they typed,
@@ -1280,7 +1294,7 @@ export default function App() {
   // than firing a headless session that auto-sends, it seeds the chat input with
   // the issue's context so the user can edit/augment the prompt before sending.
   const handleIssueStartSession = useCallback(
-    async (issue: TrackerIssue, pickedRepoUrl?: string) => {
+    async (issue: TrackerIssue, tracker: TrackerId, pickedRepoUrl?: string) => {
       const { messages, sessions, sessionId } = useSessionStore.getState();
       const defaultRepoUrl =
         sessions.find((s) => s.id === sessionId)?.remoteUrl ??
@@ -1312,6 +1326,28 @@ export default function App() {
       if (issue.description?.trim()) lines.push("", issue.description.trim());
       if (issue.url?.trim()) lines.push("", `Issue link: ${issue.url.trim()}`);
       useSessionStore.getState().setPrefillText(lines.join("\n"));
+
+      // SHI-320 — the prompt above is not enough for the server to know this
+      // session came from an issue, and inferring it from the text would be
+      // guesswork (the user is free to rewrite it). Park the ref against the
+      // session we just landed in; `handleSend` attaches it to the first
+      // message, which is where the branch gets pinned to the pointer
+      // (docs/248 req 22) and the issue moves to started.
+      const seededSessionId = useSessionStore.getState().sessionId;
+      useSessionStore.getState().setPendingIssueRef(
+        seededSessionId
+          ? {
+            sessionId: seededSessionId,
+            ref: {
+              tracker,
+              identifier: issue.identifier,
+              title: issue.title,
+              ...(issue.url ? { url: issue.url } : {}),
+              ...(issue.description ? { description: issue.description } : {}),
+            },
+          }
+          : undefined,
+      );
       useUiStore.getState().setMobilePanel("chat");
     },
     [handleNewSessionForRepo],

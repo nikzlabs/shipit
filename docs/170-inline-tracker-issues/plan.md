@@ -211,6 +211,19 @@ The server-side `seedFromIssueRef()` / `createHeadlessSession({ issueRef })`
 seeding primitive is retained for the **push** trigger (docs/156) — only the
 in-app **pull** path stopped calling it.
 
+**The issue still reaches the server, just later (SHI-320).** Prefilled text is
+not enough: two server behaviors are owed to a session *started from an issue*
+regardless of what the user types — the branch must come from the issue's
+pointer and never its title (docs/248 req 22), and the issue must move to
+**started**. Neither can be inferred from a prompt the user is free to rewrite.
+So `handleIssueStartSession` parks the ref in the session store
+(`pendingIssueRef`, scoped to the session it seeded) and `handleSend` attaches
+it to the **first** message as `send_message.issueRef`. Warm graduation is the
+only thing that reads it: it renames the branch via
+`services/issue-seeded-session.ts` (which reuses `seedFromIssueRef`, so both
+paths derive the same branch) and fires `markIssueStartedFromSeed`. A message to
+an already-graduated session ignores the field.
+
 ## Key files
 
 Server:

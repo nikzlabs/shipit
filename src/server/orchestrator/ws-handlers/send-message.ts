@@ -3,6 +3,8 @@ import type { WsClientMessage, ImageAttachment, FileAttachment, FileContextRef, 
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { validateImages, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
 import { graduateSession } from "../services/graduate-session.js";
+import { pinIssueSeededSession } from "../services/issue-seeded-session.js";
+import { markIssueStartedFromSeed } from "../issue-lifecycle.js";
 import { recordSteeredMessage, persistTurnInProgress } from "./agent-listeners.js";
 import { runAgentWithMessage, saveImagesToUploadsDir, assembleAgentPrompt } from "./agent-execution.js";
 import { resolveRunner } from "./resolve-runner.js";
@@ -413,6 +415,19 @@ export async function handleSendMessage(
     // not inline setWarm / track / setBranchRenamed / scheduleSessionNaming /
     // repoStore.touch / sseBroadcast("session_list") here.
     if (session?.warm) {
+      // SHI-320 — this message is the first one of a session the Issues tab
+      // started from an issue, so the issue reaches ShipIt here rather than at
+      // creation. Pin the branch to the pointer (docs/248 req 22) BEFORE
+      // graduating: the pins are what stop AI naming from deriving a branch
+      // slug from this very text, which opens with the issue's title.
+      const issuePins = msg.issueRef
+        ? await pinIssueSeededSession(
+          { sessionManager: ctx.sessionManager, createGitManager: ctx.createGitManager },
+          effectiveSessionId,
+          msg.issueRef,
+        )
+        : undefined;
+
       graduateSession(
         {
           sessionManager: ctx.sessionManager,
@@ -430,8 +445,30 @@ export async function handleSendMessage(
           sessionId: effectiveSessionId,
           userText,
           agentId: session.agentId ?? ctx.getActiveAgentId(),
+          ...(issuePins ? { explicitBranch: issuePins.branch, explicitTitle: issuePins.title } : {}),
         },
       );
+
+      // SHI-320 / docs/194 — seed path → started. The headless route fires this
+      // at creation from the same pointer; the in-app path's "creation" is this
+      // first message, so it fires here. Fire-and-forget and fully best-effort:
+      // a tracker that isn't connected must never delay or fail the turn.
+      if (msg.issueRef) {
+        void markIssueStartedFromSeed(
+          {
+            credentialStore: ctx.credentialStore,
+            ...(ctx.trackerFetchImpl ? { trackerFetchImpl: ctx.trackerFetchImpl } : {}),
+            githubAuthManager: ctx.githubAuthManager,
+            sessionManager: ctx.sessionManager,
+            chatHistoryManager: ctx.chatHistoryManager,
+            runnerRegistry: ctx.getRunnerRegistry(),
+          },
+          effectiveSessionId,
+          msg.issueRef,
+        ).catch((err: unknown) => {
+          console.warn("[send-message] seed 'started' failed:", err);
+        });
+      }
 
       // Warm-graduation is the only surface that doesn't reach graduation via
       // `claimSessionService.claim`, so the warm pool's single warm clone was

@@ -287,6 +287,15 @@ Current state; each is a rework site unless noted.
   fallback in `resolveTrackerFlag` both go; verbs take a tracker name.
 - `src/server/orchestrator/services/headless-sessions.ts` — `seedFromIssueRef`
   builds the branch from the identifier alone (req 22). **Carries over.**
+- `src/server/orchestrator/services/issue-seeded-session.ts` — the same
+  derivation applied on the **in-app** path (SHI-320). The Issues tab prefills
+  the composer rather than creating the session (docs/236), so the issue reaches
+  ShipIt on the first message; `handleSendMessage`'s warm graduation renames the
+  claimed branch to `seedFromIssueRef`'s pointer slug and pins the title, which
+  is what stops AI naming from deriving a branch from a prompt that opens with
+  the issue's title. The same message fires `markIssueStartedFromSeed`.
+  **Carries over**, with req 22 now held on both session-start paths rather than
+  only the headless one.
 - Agent-facing docs: `src/server/shipit-docs/issues.md`,
   `shipit-docs/shipit-yaml.md`, and `agent-instructions` for the reference form.
 

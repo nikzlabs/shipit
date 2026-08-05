@@ -165,4 +165,8 @@ still governs the control as a whole.
   `docs/156`) would remove the choice rather than surface it. Complementary, not
   a substitute: a default still needs an override, and this is the override.
 - **`POST /api/sessions/headless`'s `issueRef`** stays unused by this path; the
-  prefill flow from docs/170 is deliberate and unchanged.
+  prefill flow from docs/170 is deliberate and unchanged. (SHI-320 later found
+  that the *ref* still had to reach the server even though the *route* didn't:
+  it now rides the first `send_message`. See docs/170 § "The issue still reaches
+  the server, just later". The picker's `onStartSession` gained the tracker id
+  as its second argument for that.)

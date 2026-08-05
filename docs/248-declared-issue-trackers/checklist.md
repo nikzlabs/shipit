@@ -67,8 +67,18 @@ Listed so absence is not mistaken for oversight: `tracker-id.ts`'s qualified-id
 vocabulary, the per-request `shipit.yaml` read in `resolveGitHubTrackerContext`,
 `accessError()`'s missing-vs-inaccessible wording, `issue-lifecycle.ts`'s
 pointer-derived destinations, `seedFromIssueRef`'s pointer-only branch names
-(req 22), and the `kind`-discriminated parse that warns and skips rather than
-failing a session (req 7).
+(req 22) — now applied on the in-app session-start path too, see below — and the
+`kind`-discriminated parse that warns and skips rather than failing a session
+(req 7).
+
+## Closed after this doc's requirements landed
+
+- [x] Req 22 on the **in-app** path (SHI-320). The Issues tab's "Start session"
+  stopped going through `seedFromIssueRef` when docs/236 made it prefill the
+  composer, so the branch was AI-named from a prompt beginning with the issue
+  title, and no `issueRef` reached `markIssueStartedFromSeed`. Both now ride the
+  first message: `issue-seeded-session.ts` pins branch + title at warm
+  graduation, and the `→ started` one-shot fires there.
 
 ## Settled earlier
 
