@@ -21,7 +21,7 @@ depends on is merged to `main` but not deployed.
 ShipIt's source repository is public. Planning work — roadmap, half-formed ideas,
 competitive notes, security work in progress — is not something to publish as a
 side effect of tracking it. A separate private repository keeps planning inline in
-ShipIt (req 2) without putting it in the public repo's Issues.
+ShipIt (req 4) without putting it in the public repo's Issues.
 
 Choosing GitHub Issues means accepting its feature set rather than passing a
 parity gate; the comparison that led here is the
@@ -30,7 +30,7 @@ parity gate; the comparison that led here is the
 ## What stays public
 
 The in-product bug-report flow keeps filing user reports in ShipIt's public
-repository (req 5). It sits outside the tracker registry entirely
+repository (req 6). It sits outside the tracker registry entirely
 (`services/bug-report.ts`), so declaring a planning tracker cannot re-route it —
 worth stating because "all issues now go to the planning repo" is exactly the
 wrong summary of this change.
@@ -70,7 +70,7 @@ shape conflicts with every open branch.
 
 ### Steps
 
-1. **Create the private repository** (req 3 — the user does this) and confirm the
+1. **Create the private repository** (req 5 — the user does this) and confirm the
    deployment's GitHub credential reaches it. The credential is account-wide
    (`githubAuthManager.getToken()`), not the repo-scoped installation token, so a
    fine-grained PAT limited to the source repository fails here. One
@@ -85,12 +85,12 @@ shape conflicts with every open branch.
 4. **Copy into the planning repository** in key order, so numbering lands
    predictably. Each body carries its `SHI-N` origin; comments are replayed with
    their original author and date in the text, since the API attributes every
-   comment to the copying account (req 7); labels are created as needed; closed
+   comment to the copying account (req 9); labels are created as needed; closed
    and canceled issues are closed after creation. The output is the
    `SHI-N → planning#M` mapping, which everything downstream depends on.
-5. **Rewrite every reference** from that mapping in one PR (req 8): doc `issue:`
+5. **Rewrite every reference** from that mapping in one PR (req 10): doc `issue:`
    frontmatter, inline doc mentions, code comments, `CLAUDE.md`.
-6. **Retire Linear** for ShipIt's own planning (req 9) and rewrite `CLAUDE.md`'s
+6. **Retire Linear** for ShipIt's own planning (req 11) and rewrite `CLAUDE.md`'s
    tracker-sync section.
 
 ### Numbering does not survive
@@ -103,7 +103,7 @@ rather than a side effect — and why step 5 cannot start until step 4 completes
 ### Aliases make this a one-time cost
 
 The reference rewrite is expensive enough to be worth paying only once. Writing
-the rewritten references in the **alias** form (`planning#123`, requirement 6 of
+the rewritten references in the **alias** form (`planning#123`, requirements 10–11 of
 [248](../248-declared-issue-trackers/plan.md)) means a later rename of the
 planning repository is a one-line `shipit.yaml` edit rather than a second sweep of
 ~2,400 mentions. Alias support is therefore worth landing **before** step 5,

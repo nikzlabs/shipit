@@ -1,6 +1,6 @@
 # Declared issue trackers — checklist
 
-## Shipped (requirements 1–5, 7–10)
+## Shipped (requirements 1–9, 15–19)
 
 - [x] Preserve structured repository identity through parsing and all issue operations.
 - [x] Add `--repo owner/name` to `shipit issue`; no-`--repo` keeps meaning the session's code repo. *(The agent-ops relay passes `tracker` through verbatim, so no schema change was needed.)*
@@ -15,14 +15,14 @@
 - [x] Represent unsupported normalized operations and GitHub feature differences honestly.
 - [x] Run focused tests, the full suite, `npm run lint:dev`, and `npm run typecheck`.
 
-## Aliases (requirement 6) — designed, not implemented
+## Aliases (requirements 10–14) — designed, not implemented
 
 - [ ] Decide the mechanism open points: duplicate/conflicting aliases across declarations, alias-vs-owner-name collisions, and how an unresolvable alias renders (fail closed, stay legible).
-- [ ] Add `alias` to the `issues.trackers` schema and to `shipit-docs/shipit-yaml.md`.
+- [ ] Add `alias` to the `issues.trackers` schema (req 10) and to `shipit-docs/shipit-yaml.md`.
 - [ ] Resolve alias pointers in a layer above `parseIssueRef`, keeping the parser pure and context-free; audit every call site.
 - [ ] Emit the alias form everywhere ShipIt generates a reference (PR bodies and comments, provenance and read cards, `shipit issue` output, doc frontmatter) through a single formatter rather than per-call-site.
 - [ ] Honor a self-declaration: remove the registry's skip of a declaration matching the session's own repo, without producing a duplicate tab.
-- [ ] Audit the places that assume a recorded target is immutable — requirement 2 removes that guarantee.
+- [ ] Audit the places that assume a recorded target is immutable — requirement 14 removes that guarantee.
 - [ ] Add the alias test coverage listed in `plan.md` → Validation.
 
 ## Follow-on
