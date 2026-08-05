@@ -70,6 +70,20 @@ export function trackerDestinations(): TrackerDestination[] {
 }
 
 /**
+ * Signature of the declared-tracker view — everything the sub-tabs and
+ * {@link trackerDestinations} read out of a `TrackerInfo`. `fetchTrackers`
+ * compares it across a refresh so a caller can tell a real declaration change
+ * from a no-op refresh (SHI-321): a `shipit.yaml` edit that touched
+ * `agent.install` or the compose path re-reads the (cheap, local) tracker list
+ * without also spending a tracker-API round-trip on the issue list.
+ */
+function declarationSignature(trackers: TrackerInfo[]): string {
+  return JSON.stringify(
+    trackers.map((t) => [t.id, t.kind, t.name ?? null, t.binding?.key ?? null, t.configured]),
+  );
+}
+
+/**
  * docs/248 reqs 10/11 — resolve a reference the UI holds (a doc's `issue:`
  * frontmatter, a markdown href) against the declared destinations. Fails closed:
  * callers render an unresolvable reference legibly (plain text, or the external
@@ -227,7 +241,14 @@ interface IssuesState {
   commentsError: string | null;
 
   setActiveTracker: (id: TrackerId) => void;
-  fetchTrackers: () => Promise<void>;
+  /**
+   * Re-read the declared-tracker view from `GET /api/trackers` (a local
+   * `shipit.yaml` read server-side — no tracker API round-trip). Resolves to
+   * whether the declared set actually changed, so a caller refreshing on a
+   * `shipit.yaml` edit (SHI-321) can skip the far more expensive issue-list
+   * fetch when the edit touched something else in the file.
+   */
+  fetchTrackers: () => Promise<boolean>;
   fetchIssues: (trackerId?: TrackerId) => Promise<void>;
   /**
    * Fetch + cache the tracker's full available-label set (name + color). Lazy:
@@ -377,9 +398,10 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       const res = await fetch(`/api/trackers${params ? `?${params}` : ""}`, {
         headers: { Accept: "application/json" },
       });
-      if (!res.ok) return;
+      if (!res.ok) return false;
       const data = (await res.json()) as { trackers?: TrackerInfo[] };
       const trackers = data.trackers ?? [];
+      const changed = declarationSignature(get().trackers) !== declarationSignature(trackers);
       set((state) => {
         const infoByTracker = { ...state.infoByTracker };
         for (const t of trackers) infoByTracker[t.id] = t;
@@ -389,8 +411,10 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
           : (trackers[0]?.id ?? "github");
         return { trackers, infoByTracker, activeTracker };
       });
+      return changed;
     } catch (err) {
       console.error("[issues-store] fetchTrackers failed:", err);
+      return false;
     }
   },
 
