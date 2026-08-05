@@ -43,9 +43,13 @@
       representation with the picker's `(service, model)` identity.
 - [ ] Regression test: switching the same model id between two services forces a
       respawn and the next turn uses the new endpoint and credential.
-- [ ] Explicit user-configured service for non-turn work (req 12), designed as **two**
-      paths: session naming (has an implicit agent-bound seam today) and PR
-      descriptions via `generateText` (returns empty in containerized production).
+- [ ] Explicit user-selected **(service, model)** for non-turn work (req 12) — a service
+      alone is not callable. Designed as **two** paths: session naming (has an implicit
+      agent-bound seam today) and PR descriptions via `generateText` (returns empty in
+      containerized production).
+- [ ] Surface that selection as its own visible setting, with a ShipIt-supplied default
+      so the feature works unconfigured (req 12). The visibility is the requirement —
+      a default that cannot be seen is the hidden dependency req 12 exists to remove.
 - [ ] Session naming already degrades correctly (placeholder retained on `null`) — add
       only the notice (req 12).
 - [ ] Normalize a **blank** PR description into the generic fallback (req 12). Today
@@ -80,12 +84,14 @@
       key-based service renders nothing rather than an empty pill.
 - [ ] Surface the active model, active service, and whether it bills a key or a
       subscription (req 14).
-- [ ] Retired-pair fallback map (req 16): `(serviceId, modelId)` → successor, resolved
-      where the session's model is read. Generalize `normalizeCodexModelId`
-      (`agent-registry.ts:141`) rather than adding a second shim; key by pair, since two
-      services can retire the same model id toward different successors.
-- [ ] Guard test: a session pinned to a retired pair takes a turn on the successor and
-      reports the successor (req 14), and the retired pair is absent from the picker.
+- [ ] Retired-model fallback map (req 16): a **per-service** map of retired model id →
+      successor model id, resolved where the session's model is read. Generalize
+      `normalizeCodexModelId` (`agent-registry.ts:141`) rather than adding a second shim.
+      The map must not be able to express a cross-service successor — that is what keeps
+      a remap from stranding a session on a service with no credential.
+- [ ] Guard test: a session pinned to a retired model takes a turn on the successor,
+      keeps the same service and credential, reports the successor (req 14), and the
+      retired model is absent from the picker.
 - [ ] Verify req 6 concretely on a non-vendor service: tools, skills, MCP servers, live
       steering, permission modes, plan mode, transcript — establishing that ShipIt adds
       no limitation the harness and model do not already have.

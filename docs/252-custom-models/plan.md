@@ -167,7 +167,7 @@ OpenAI-style-only service surfaces under Codex alone.
    review: session naming *does* have a credential seam, selecting the route a turn
    would use and passing that account's credential root
    (`graduate-session.ts:250`, `session-namer.ts:28`); it is implicit and agent-bound,
-   not absent. What it lacks is an *explicit, service-configured* choice (req 12). PR
+   not absent. What it lacks is an *explicit, user-selected* model (req 12). PR
    descriptions go through `generateText`, which in containerized production has no
    in-process factory and returns an empty string rather than spawning at all
    (`app-di.ts:485`) — so it degrades silently instead of failing.
@@ -345,9 +345,12 @@ subscription-backed vendors keep their current path unchanged.
 **Spawn shaping** sets the base URL and credential at both spawn sites, after the
 scrub, from the *selected model's* service rather than from a model-id prefix.
 
-**Non-turn work** (req 12) — session naming and PR descriptions run on a service the
-user configures **explicitly for that purpose**, resolved independently of whatever the
-session is using.
+**Non-turn work** (req 12) — session naming and PR descriptions run on a model the user
+chooses **for that purpose**, resolved independently of whatever the session is using.
+It is a `(service, model)` selection like any other, not a service alone: a service does
+not identify something callable. It surfaces as its own setting, and ShipIt ships a
+default so the feature works unconfigured — the setting being *visible* is what stops
+that default from re-creating the hidden dependency this requirement exists to remove.
 
 The two halves are not symmetric, and an earlier draft wrongly said both merely preserve
 today's behavior:
@@ -377,17 +380,28 @@ explicit setting is also the only version that can be *shown* to the user as bro
 when its service stops working. This is the one place with no existing seam at all, and
 the largest single piece of work here.
 
-**Retiring a catalogue entry** (req 16). Curation means removal is routine, so the
-catalogue carries a map from retired `(serviceId, modelId)` pairs to their successors.
-A session pinned to a retired pair resolves through that map at the point the model is
-read, and runs on the successor; the picker offers only current pairs.
+**Retiring a catalogue entry** (req 16). Curation means removal is routine, so each
+service's catalogue row carries a map from its own retired model ids to their
+successors. A session pinned to a retired model resolves through its service's map at
+the point the model is read, and runs on the successor; the picker offers only current
+models.
+
+The map lives **inside a service and maps model id to model id** — it never crosses
+services. That is a requirement (req 16), and it is also what makes the mechanism
+trivial: because `serviceId` is unchanged by a remap, the credential, the endpoint, the
+API style and the price are all unchanged too, so a remap cannot strand a session on a
+service the user has no credential for. An earlier draft keyed the map by
+`(serviceId, modelId)` pair *and* allowed a cross-service successor, which is what
+created that hole; scoping the map per service closes it by construction rather than by
+a check. Two services retiring the same model id toward different successors is still
+handled — each states its own successor in its own row.
 
 There is precedent to copy rather than a mechanism to invent: `normalizeCodexModelId`
 (`agent-registry.ts:141`) already does exactly this for one model, mapping the retired
 `gpt-5.6` slug onto `gpt-5.6-sol` "at the boundary before Codex turns so legacy sessions
-run the intended Sol model". Req 16 generalizes that one-off shim into a catalogue-owned
-map keyed by pair rather than by bare model id — which is also why it must be keyed by
-pair: two services can retire the same model id toward different successors.
+run the intended Sol model". Req 16 generalizes that one-off shim from a hardcoded
+per-`AgentId` special case into a per-service catalogue field resolved at the same
+boundary.
 
 Because the session now reports the successor, req 14 makes the remap visible rather
 than silent — the picker and attribution show what is actually running, not what was

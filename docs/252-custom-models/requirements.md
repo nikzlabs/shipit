@@ -76,9 +76,15 @@ No open questions remain.
     credential for.
 
 12. The work ShipIt does outside a turn — naming a session, writing a pull-request
-    description — runs on a service the user chooses explicitly for it, independently of
-    whatever model a session is using. It must not silently depend
-    on a credential the user has stopped having.
+    description — runs on a model the user chooses for it, independently of whatever
+    model a session is using. It is a model like any other, chosen the same way (req 4),
+    so it names both a service and a model rather than a service alone.
+
+    That choice is **visible in the UI as its own setting**, and ShipIt supplies a
+    reasonable default so nobody has to configure it before ShipIt works. A default is
+    acceptable where a hidden dependency is not: the user can see what non-turn work
+    runs on and change it. It must not silently depend on a credential the user has
+    stopped having.
 
     When that service fails, the surrounding operation still completes with a fallback
     — a session keeps its placeholder title, and a pull request gets a generic
@@ -117,16 +123,35 @@ No open questions remain.
     it does for a key.
 
 16. Models leave the catalogue as ShipIt revises which ones are worth carrying (req 8).
-    A session already pinned to a removed service-and-model pair keeps working: ShipIt
-    maintains a mapping from retired pairs to their successors and moves the session
-    onto the successor. The session then reports what it is actually running (req 14) —
-    a remap is never invisible, and never leaves a session unable to take a turn.
+    A session already pinned to a removed model keeps working: each service maps its own
+    retired models to their successors, and the session moves onto the successor. A
+    successor is always another model **of the same service** — a retirement never moves
+    a session to a different service, which would change the credential it needs, the
+    price it pays, and who provides it. The session then reports what it is actually
+    running (req 14) — a remap is never invisible, and never leaves a session unable to
+    take a turn.
 
 ## Open questions
 
 _None._
 
 ## Resolved questions
+
+- 2026-08-05 — Can a retirement move a session to a different service? **Chosen: no —
+  the map is between models of a single service.** Review found req 16 as first written
+  promised a session "never left unable to take a turn" while allowing a successor on any
+  service, including one the user has no credential for, which req 11 would then refuse
+  to offer. Scoping the map inside a service removes the contradiction at its source
+  rather than patching it: the credential, the price and the provider are all unchanged
+  by a remap, so there is nothing left to fail. Requirement 16; the design's
+  "keyed by pair" framing goes with it.
+
+- 2026-08-05 — Non-turn work names a *service*, but running it needs a model. **Chosen:
+  make it explicit in the UI, with a reasonable ShipIt-supplied default.** It is a model
+  choice like any other (req 4), naming a service and a model. The default is what keeps
+  this from being configuration everyone must do before ShipIt works; making the setting
+  visible is what keeps the default from being the silent dependency req 12 exists to
+  prevent. Requirement 12.
 
 - 2026-08-05 — What happens to a session pinned to a model that later leaves the
   catalogue? **Chosen: maintain a fallback map from retired pairs to their successors,
@@ -318,6 +343,10 @@ human, but most of the mechanism did not. What the human actually said, in order
   had still described users adding services of their own.
 - "we need to maintain the fallback map (old pair -> new pair) and make sure it works"
   → req 16.
+- "the map should be between models on a single service, not between pairs" → req 16's
+  same-service constraint.
+- "we should make it explicit in the UI, with shipit providing a reasonable default"
+  → req 12's visible setting and default.
 - "yes, update" (req 12's wording) and "simplify" (req 9) → both applied; the agent's
   suggestion to move req 12's third paragraph out was declined, the human judging the
   factual context worth keeping since it states a fact rather than prescribing an
@@ -327,7 +356,6 @@ human, but most of the mechanism did not. What the human actually said, in order
 - "sounds good" (req 6) and "good" (req 14) → both confirmed as requirements.
 - "ShipIt works 'best effort' for models/harnesses, it can't fix them" → req 6's
   best-effort framing.
-
 - "There are only so many models at any point of time that can do good coding" → req 8's
   maintained-subset framing, replacing the compactness constraint.
 - "ShipIt as a product doesn't provide guarantees that all model/harness combinations
@@ -337,7 +365,6 @@ Reqs 7, 9 and 12 were corrected on 2026-08-05 after review found they still desc
 the *superseded* model in which users authored declarations and added services outright,
 and claimed a pull-request fallback that does not exist today. Those are corrections to
 the agent's drafting, not new decisions.
-- Answers of 2026-08-05 → reqs 6, 7, 8, 10, 11, 12, 13, 14, 15.
 
 Reqs 6 and 14 are the agent's reading of "works like any other session" and of
 ShipIt's existing product principles. They are stated as requirements rather than open
