@@ -2,7 +2,7 @@
 
 The design that implements these requirements is in [`plan.md`](./plan.md).
 
-**Status: no open questions — implementation is unblocked.**
+No open questions remain.
 
 ## Requirements
 
@@ -31,14 +31,15 @@ The design that implements these requirements is in [`plan.md`](./plan.md).
    like any other and work the same way; harness and service are fully separate
    concepts throughout.
 
-8. A service may speak more than one API style, and a harness speaks one. A
-   service's models are usable in **every** harness whose API style that service
-   speaks. A service that speaks both is usable in both Claude Code and Codex; a
-   service that only speaks the OpenAI style is usable in Codex only.
+8. A service may speak more than one API style, and a harness speaks one. A service
+   declares which of its models work under which API style — a service can speak a
+   style without every one of its models being usable there. A model is offered on a
+   harness when the service speaks that harness's style **and** declares that model
+   for it.
 
-9. When a new harness is added to ShipIt later, every already-configured service
-   that speaks its API style becomes usable with it, with no further work by the
-   user.
+9. When a new harness is added to ShipIt later, the services that already speak its
+   API style become usable with it as far as their declarations reach, with no
+   further work by the user beyond declaring any models they had not covered yet.
 
 10. A user adds and manages their own services, in their own Settings. Trying a new
     service or model does not require an administrator, a code change, or a release.
@@ -62,20 +63,41 @@ The design that implements these requirements is in [`plan.md`](./plan.md).
     model and which service are in use, and whether that service bills a key or a
     subscription.
 
+15. When a service's credential stops working mid-session — revoked, expired, rate
+    limited — ShipIt stops and says so. It does not run a recovery or re-prompt flow
+    of its own; handling a bad credential is the harness's job. The one exception is
+    the thing harnesses do not do: ShipIt manages a user's **multiple subscriptions**,
+    including routing a turn between them, and that existing behavior is unchanged.
+
 ## Open questions
 
 _None._
 
 ## Resolved questions
 
+- 2026-08-05 — Can one service offer different models to different harnesses?
+  **Chosen: (b) — a service declares which of its models work under which API style.**
+  Compatibility is therefore a property of *service × model × harness*, not service ×
+  harness. Reqs 8 and 9 were narrowed accordingly: req 9's "no further work by the
+  user" now holds only as far as a service's declarations already reach. The cost is
+  more configuration per service; the alternative was offering models that are listed
+  and then fail, which is the failure mode req 12 exists to prevent elsewhere.
+
+- 2026-08-05 — What should happen when a configured service's credential stops working
+  mid-session? **Chosen: stop, and report it — nothing more.** Recovering from a bad
+  credential is the harness's responsibility, not ShipIt's. ShipIt's involvement in
+  credentials is deliberately limited to the one thing harnesses do not do: letting a
+  user run several subscriptions and routing between them. Requirement 15. This
+  *removes* designed behavior rather than adding it — the plan had proposed a
+  service-aware re-prompt flow, which is now explicitly out of scope.
+
 - 2026-08-05 — What should the indicator show for a service that has no quota to
-  report? **Chosen: (a) render no indicator.** This is the status quo rather than a
-  new behavior — a key-based route (`claude-api-key`) already renders no pill today,
-  because snapshot-less routes are omitted and reserved routes have no account row to
-  fall back on. Showing accumulated spend or token counts in that slot was considered
-  and rejected *for this feature*: ShipIt already records per-turn cost and tokens, so
-  it is buildable, but it is a separate feature and should not be decided as a side
-  effect of this one. Folded into requirement 13.
+  report? **Chosen: (a) render no indicator.** This preserves what a key-based
+  credential already does today rather than introducing a new behavior. Showing
+  accumulated spend or token counts there was considered and rejected *for this
+  feature* — it is buildable, but it is a separate feature and should not be decided
+  as a side effect of this one. Folded into requirement 13. (Why it is the status quo,
+  in code terms, is in `plan.md`.)
 
 - 2026-08-05 — How far should "any custom model" reach: only providers already
   serving a harness-compatible API, or also OpenAI-compatible ones through a
@@ -114,8 +136,9 @@ _None._
 - 2026-08-05 — What should the usage indicator show for a custom model? **Chosen:
   the question was mis-framed.** Usage belongs to the service, not the model, and a
   service may have its own subscription that ShipIt supports later — so the
-  abstraction has to be flexible enough to carry that. Requirement 13. A narrower
-  residual question, about services that report nothing, remains open above.
+  abstraction has to be flexible enough to carry that. Requirement 13. The narrower
+  residual question it left — services that report nothing — was resolved the same day
+  (first receipt above).
 
 ## Requirement provenance
 
@@ -145,7 +168,12 @@ human, but most of the mechanism did not. What the human actually said, in order
   → req 13.
 - "(a) render no indicator, which is what a key-based route does today" → the closing
   sentence of req 13.
-- Answers of 2026-08-05 → reqs 10, 11, 12, 13.
+- "(b) narrow them so a service declares which of its models work on which API style"
+  → the narrowing of reqs 8 and 9.
+- "We just stop. This is the harness' responsibility to handle such cases. ShipIt only
+  helps with using multiple subscriptions, because harnesses don't handle it." → req 15,
+  including its scope boundary and the carve-out for multi-subscription routing.
+- Answers of 2026-08-05 → reqs 10, 11, 12, 13, 15.
 
 Reqs 6 and 14 are the agent's reading of "works like any other session" and of
 ShipIt's existing product principles. They are stated as requirements rather than open

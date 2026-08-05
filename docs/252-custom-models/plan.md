@@ -6,8 +6,7 @@ description: Separate harness from service so a user can run any configured serv
 
 # 252 — Custom models
 
-Implements [`requirements.md`](./requirements.md), which has no open questions
-remaining — the design below is settled and implementation is unblocked.
+Implements [`requirements.md`](./requirements.md), which has no open questions.
 
 ## The idea
 
@@ -39,12 +38,30 @@ gap. Resolving it is the real work; DeepSeek is just the first case that forces 
 |---|---|---|
 | **Harness** | a CLI to spawn, speaking exactly one API style | `claude`, `codex` |
 | **Service** | a credential + endpoint, speaking one or more API styles | its API key or subscription |
-| **Model** | a model id a service offers | `deepseek-v4-flash` |
+| **Model** | a model id a service offers | the pair (service, model id) |
 
-Compatibility is then **derived, not declared**: a service's models are offered on
-every harness whose API style that service speaks. Nothing has to enumerate
-harness×service pairs, which is what makes req 9 fall out for free — a harness added
-later immediately picks up every already-configured service that speaks its style.
+A model id alone is **not** a global identifier: the same model is reachable through
+DeepSeek directly and through a gateway like OpenRouter, at different prices and
+possibly different API styles. Whatever the picker persists must therefore carry the
+service identity, or "the selected model's service" cannot be resolved and req 14
+cannot say which service billed a turn. This is a change from the spike, which keyed
+everything off a bare model id.
+
+Compatibility is **partly derived, partly declared** (reqs 8–9). Speaking a style is
+necessary but not sufficient: a service also declares *which of its models* work under
+each style it speaks. A model is offered on a harness when the service speaks that
+harness's style and lists that model for it.
+
+The declaration is not bureaucracy — it is the only honest way to express reality.
+DeepSeek speaks both styles yet supports only `deepseek-v4-flash` under Codex, and
+Codex additionally wants per-model metadata (context window, tool format, reasoning
+settings) beyond a bare id. A purely derived rule would list `deepseek-v4-pro` under
+Codex and let the turn fail, which is precisely the listed-but-broken failure mode
+req 12 exists to prevent elsewhere.
+
+What still falls out cheaply is req 9: a new harness picks up every configured service
+that speaks its style, limited to the models already declared for it. Nothing has to
+enumerate harness×service pairs by hand.
 
 This is also why "should we support OpenAI-compatible providers?" was the wrong
 question. It is not a scope boundary; it is a property of each service, and it decides
@@ -54,14 +71,30 @@ which harnesses that service appears under rather than whether it is supported a
 
 All verified against the code on this branch, not inferred.
 
-### The credential pipe already exists, end to end
+### The credential pipe exists, but does not reach every session
 
 `CredentialStore.agentEnv` → `selectAgentEnvForPush` (`session-agent-env.ts:217`) →
-`PUT /secrets` on the worker → worker `process.env` → `spawnEnv = {...process.env}`.
-Gated by one predicate, `isAllowedAgentEnvKey` (`agent-registry.ts:314`). Adding a key
-name to `ALLOWED_ENV_KEYS` covers **both** delivery paths — containerized sessions via
-the push above, local mode via `app-di.ts:421`'s startup load into `process.env`
-(req 10).
+`PUT /secrets` on the worker → worker `process.env` → `spawnEnv = {...process.env}`,
+gated by `isAllowedAgentEnvKey` (`agent-registry.ts:314`).
+
+**Two corrections found by review, both load-bearing:**
+
+1. That path only applies to a **compose-less** session. When the runner has a
+   `ServiceManager`, `selectAgentEnvForPush` returns the ServiceManager snapshot
+   instead, which merges compose-declared secrets with MCP secrets — and
+   `collectMcpAgentEnv` filters to keys starting with `mcp__` (`secret-resolver.ts:308`).
+   An ordinary top-level key stored in Settings therefore **does not** reach a
+   containerized session that has a compose stack. Any design that relies on this pipe
+   has to extend it, not merely add a key name.
+
+2. `ALLOWED_ENV_KEYS` is a **compile-time constant** (`agent-registry.ts:303`). One key
+   name per service means one code change and one release per service, which directly
+   contradicts req 10. The feature needs a *runtime* service-credential mechanism; the
+   allowlist is a dead end for it, and this doc previously proposed exactly that dead
+   end.
+
+Neither correction changes the requirements — they change what the design has to
+build, from "add a string" to "add a delivery path".
 
 ### The credential-scrub only applies to local mode
 
@@ -90,10 +123,16 @@ ordering is load-bearing, and is pinned by a test.
 ### API style is a property of the service, and services differ
 
 DeepSeek V4 Flash is served by DeepSeek, DeepInfra, Parasail, Fireworks and
-SiliconFlow, aggregated by OpenRouter, plus open weights for self-hosting. Only
-DeepSeek's own surface is Anthropic-style (`/anthropic`); the others are OpenAI-style,
-so pointing the Claude Code CLI at them fails at the **wire format**, not at auth —
-a failure that looks nothing like a bad key.
+SiliconFlow, aggregated by OpenRouter, plus open weights for self-hosting. API style
+varies per service and is not inferable from the model: DeepSeek exposes an
+Anthropic-style surface (`/anthropic`), OpenRouter exposes an Anthropic Messages
+endpoint *and* OpenAI-style ones, while several others are OpenAI-style only. Pointing
+a harness at a service that does not speak its style fails at the **wire format**, not
+at auth — a failure that looks nothing like a bad key.
+
+(An earlier draft claimed only DeepSeek served an Anthropic-style surface. That was
+wrong, and the correction strengthens the case for storing style per service rather
+than hardcoding one endpoint.)
 
 DeepSeek itself speaks **both** — the `/anthropic` endpoint and, per its own docs, the
 OpenAI Responses API with a Codex adaptation. So one DeepSeek key should surface its
@@ -106,10 +145,16 @@ service rather than treating it as a global scope decision.
 1. **A 401 triggers the wrong recovery.** `AUTH_ERROR_PATTERNS` (`process.ts:43`)
    matches `"unauthorized"` / `"authentication_error"`, so a bad custom key kicks the
    session into the *harness vendor's* OAuth re-auth flow, which cannot fix it.
-2. **Non-turn CLI spawns fail.** Session naming and PR-description generation spawn
-   the CLI outside the turn path, so they get no custom routing and no vendor
-   credential. Observed as `[session-namer] claude CLI failed`; sessions fall back to a
-   truncated-prompt title.
+2. **Non-turn CLI spawns fail — but the two are not the same path.** Corrected on
+   review: session naming *does* have a credential seam, selecting the route a turn
+   would use and passing that account's credential root
+   (`graduate-session.ts:250`, `session-namer.ts:28`); it is implicit and agent-bound,
+   not absent. What it lacks is an *explicit, service-configured* choice (req 12). PR
+   descriptions go through `generateText`, which in containerized production has no
+   in-process factory and returns an empty string rather than spawning at all
+   (`app-di.ts:485`) — so it degrades silently instead of failing.
+   The observed `[session-namer] claude CLI failed` was the *local-mode* path, where a
+   reserved route resolves no account root. These are two designs, not one.
 
 Both are code that assumes a service identity the type system cannot express — the
 same gap as above, surfacing twice. Neither should be patched individually.
@@ -160,6 +205,10 @@ DeepSeek key runs the Claude Code harness with no Anthropic account anywhere in 
 system — so `providerAccountManager`'s per-`AgentId` account model has to become a
 per-*service* one, not gain a fallback branch.
 
+**Credential failure is not ShipIt's to recover** (req 15). The design deliberately has
+no service re-prompt flow; an earlier draft proposed one. See the findings note above
+for what has to be *removed* to satisfy this.
+
 **Eligibility** (req 11) moves from `hasAnyAuthForProvider(provider)` to a per-model
 question: *is there a configured service offering this model for this harness?* With
 Anthropic as an ordinary service, "Claude with no account connected" and "DeepSeek with
@@ -171,15 +220,29 @@ mechanism: the model is already a per-turn spawn argument, and `AgentCapabilitie
 already carries per-harness flags. A switch that crosses *services* additionally
 re-resolves the credential and base URL for the next spawn.
 
-One implementation unknown, to settle by reading the code rather than by deciding:
-whether a resident `StreamingClaudeProcess` can change model mid-session without a
-respawn, or whether a switch must force one. This affects the mechanism, not the
-requirement — req 5 is satisfied either way, and "as far as the harness supports it"
-is what makes a forced respawn acceptable.
+This was flagged as an open implementation unknown; review settled it from the code.
+ShipIt already forces the boundary: `releaseResidentOnModelChange`
+(`resident-model-guard.ts`) kills a resident process whose spawn-time model no longer
+matches the selection, and the turn respawns with the new `--model` and
+`--resume <session>` (`agent-execution.ts:291`). A model change is rare and
+user-initiated, so one respawn was judged cheaper than mid-stream model switching.
+A service change rides the same boundary — so req 5 needs no new lifecycle mechanism,
+only the credential and base URL re-resolved on that respawn.
 
-**Credential delivery** reuses the existing pipe: a per-service key name in
-`ALLOWED_ENV_KEYS`, carried to a container by `selectAgentEnvForPush` and to local mode
-by `app-di.ts`'s startup load. No new transport.
+Note the correction this implies for "the model is already a per-turn spawn argument":
+for a **resident** process it is not. Later turns are injected without spawning until
+that guard forces a boundary, which is precisely why the guard exists.
+
+**Credential delivery** cannot reuse the existing pipe as-is — see the two corrections
+under Findings. It needs a runtime, per-service credential mechanism (the allowlist is
+compile-time, which contradicts req 10) that also reaches compose-backed containerized
+sessions (which today receive only compose-declared and `mcp__*` secrets).
+
+**Subscription-backed services are a second, unbuilt path.** Req 7 makes a subscription
+a first-class way to identify a service, but subscription credentials travel through
+account credential roots and filesystem mounts, not `agentEnv` — so "add a service"
+covers two quite different flows: store a key, or run a login. Only the first is
+designed here; the second is on the checklist and is not yet specified.
 
 **Spawn shaping** sets the base URL and credential at both spawn sites, after the
 scrub, from the *selected model's* service rather than from a model-id prefix.
@@ -194,12 +257,14 @@ explicit setting is also the only version that can be *shown* to the user as bro
 when its service stops working. This is the one place with no existing seam at all, and
 the largest single piece of work here.
 
-**Usage** (req 13) is reported per service, and the existing types are already most of
-the way there: `SubscriptionLimits` is keyed by `routeId`, not by provider, because
-"quota belongs to the subscription, not the provider" (its own comment) — the same
-argument req 13 makes one level up. What is still per-`AgentId` is `LimitsProvider`,
-which becomes per service and must accommodate a service exposing its own subscription
-later without reshaping the interface again.
+**Usage** (req 13) is reported per service. The existing types are partway there but
+less far than this doc first claimed: the wire shape is **`AgentId` → `routeId` →
+limits** (`usage-limits-types.ts:74`), so it is keyed by provider *and* route, and
+`LimitsProvider`/`LimitsRegistry` are selected by `AgentId` first
+(`agents/types.ts:22`, `limits-registry.ts:39`). An individual snapshot carries a
+`routeId` and its comment does say "quota belongs to the subscription, not the
+provider" — but that is the inner key only. Moving to services touches the map shape
+and the registry, not just `LimitsProvider`.
 
 Note this is two distinct things, and only the first is at issue: **quota telemetry**
 (`SubscriptionLimits` — plan tier, rolling and weekly windows, `usedPct`, `resetAt`,
@@ -211,11 +276,24 @@ service, which is what a key-based route already does today — so this is inher
 behavior to preserve, not new behavior to build. Putting spend in that slot is
 deliberately out of scope; the data exists, but it is its own feature.
 
-**The three known-wrong behaviors** are then not three fixes, and one is not a fix at
-all: eligibility subsumes the auth-flow misfire (a 401 from a service should re-prompt
-for *that service's* credential), req 12 subsumes the non-turn failures, and the "empty
-usage pill" turns out to be correct behavior once the pill is per-service — a service
-with no quota should show nothing. Only the first two are work.
+**The known-wrong behaviors** resolve unevenly:
+
+- The **empty usage pill** is not a bug at all once the indicator is per-service — a
+  service with no quota should show nothing (req 13).
+- The **non-turn failures** are covered by req 12, though as two separate paths rather
+  than one.
+- The **401 misfire** is fixed by *deleting* behavior, not adding it (req 15). When a
+  service's credential fails, ShipIt stops and reports it — recovering from a bad
+  credential belongs to the harness. So the work is to stop intercepting: today
+  `AUTH_ERROR_PATTERNS` (`process.ts:43`) catches auth-shaped text and drives ShipIt's
+  own re-auth flow, which for a non-vendor service is both wrong and unfixable. That
+  interception must not apply to a service credential.
+
+  The carve-out is deliberate and narrow: ShipIt keeps managing **multiple
+  subscriptions** and routing turns between them, because harnesses do not do that.
+  Quota failover and the existing account-level auth recovery (docs/142, docs/150)
+  stay exactly as they are. The distinction to encode is *"which subscription should
+  this turn use"* (ShipIt's job) versus *"this credential is bad"* (the harness's).
 
 ## Key files
 
