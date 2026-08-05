@@ -586,13 +586,20 @@ export class LinearTracker implements Tracker {
   async deleteUnusedLabel(id: string, name: string): Promise<void> {
     // Usage check first: undo must never strip a label off issues that adopted
     // it — one carrier is enough to refuse, so fetch a single node.
-    const data = await this.gql<{ issueLabel: { issues: { nodes: { identifier: string }[] } } | null }>(
+    const data = await this.gql<{
+      issueLabel: { team: { key: string } | null; issues: { nodes: { identifier: string }[] } } | null;
+    }>(
       `query LabelUsage($id: String!) {
-        issueLabel(id: $id) { issues(first: 1) { nodes { identifier } } }
+        issueLabel(id: $id) { team { key } issues(first: 1) { nodes { identifier } } }
       }`,
       { id },
     );
     if (!data.issueLabel) return; // already gone — undo is idempotent
+    // Same workspace-global reach as `deleteComment` — a label id resolves
+    // across teams, and a re-pointed name (req 16) can hand this adapter a label
+    // belonging to the team it used to name. A workspace-level label has no
+    // team, and is left to the usage check below rather than refused outright.
+    if (data.issueLabel.team) this.assertOwnTeam(id, data.issueLabel.team.key);
     const carrier = data.issueLabel.issues.nodes[0];
     if (carrier) {
       throw new Error(
@@ -627,6 +634,19 @@ export class LinearTracker implements Tracker {
   }
 
   async deleteComment(commentId: string): Promise<void> {
+    // docs/248 req 17 — a comment id is workspace-global, so this mutation can
+    // reach a comment on ANY team's issue. That matters on the undo path: a
+    // recorded write re-resolves through its declared NAME first (req 16), so a
+    // `roadmap` re-pointed from SHI to OPS hands the undo an OPS-bound adapter
+    // holding a comment id that still lives on an SHI issue. Deleting it would
+    // mutate a destination this adapter does not name. Check ownership first;
+    // the read is the same one `assertOwnTeam` guards everywhere else.
+    const owner = await this.gql<{ comment: { issue: { team: { key: string } | null } | null } | null }>(
+      `query CommentTeam($id: String!) { comment(id: $id) { issue { team { key } } } }`,
+      { id: commentId },
+    );
+    if (!owner.comment) return; // already gone — undo is idempotent
+    this.assertOwnTeam(commentId, owner.comment.issue?.team?.key ?? null);
     const data = await this.gql<{ commentDelete: { success: boolean } }>(
       `mutation DeleteComment($id: String!) { commentDelete(id: $id) { success } }`,
       { id: commentId },

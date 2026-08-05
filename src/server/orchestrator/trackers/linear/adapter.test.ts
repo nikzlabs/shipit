@@ -318,9 +318,34 @@ describe("LinearTracker writes (docs/177)", () => {
   });
 
   it("deletes a comment", async () => {
-    const fetchImpl = routerFetch([{ match: "commentDelete", data: { commentDelete: { success: true } } }]);
+    const fetchImpl = routerFetch([
+      { match: "CommentTeam", data: { comment: { issue: { team: { key: "SHI" } } } } },
+      { match: "commentDelete", data: { commentDelete: { success: true } } },
+    ]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
     await expect(tracker.deleteComment("c1")).resolves.toBeUndefined();
+  });
+
+  // docs/248 req 17 — a comment id is workspace-global, and the undo path hands
+  // this adapter one recorded before its declared name was re-pointed. Deleting
+  // it would mutate a team this adapter does not name.
+  it("refuses to delete a comment belonging to another team", async () => {
+    const fetchImpl = routerFetch([
+      { match: "CommentTeam", data: { comment: { issue: { team: { key: "OPS" } } } } },
+      { match: "commentDelete", data: { commentDelete: { success: true } } },
+    ]);
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    await expect(tracker.deleteComment("c1")).rejects.toThrow(/belongs to team `OPS`/);
+    expect(
+      fetchImpl.mock.calls.some((c) => (c[1] as { body: string }).body.includes("commentDelete")),
+    ).toBe(false);
+  });
+
+  // Already gone — undo stays idempotent rather than throwing on the guard read.
+  it("treats a missing comment as already deleted", async () => {
+    const fetchImpl = routerFetch([{ match: "CommentTeam", data: { comment: null } }]);
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    await expect(tracker.deleteComment("gone")).resolves.toBeUndefined();
   });
 
   it("lists an issue's comments oldest-first with author + timestamp (docs/189)", async () => {

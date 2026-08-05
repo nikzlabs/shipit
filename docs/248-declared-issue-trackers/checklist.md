@@ -88,12 +88,38 @@ pointer-derived destinations, `seedFromIssueRef`'s pointer-only branch names
 - [x] The break with existing behavior — accepted (req 20).
 - ~~`issues.default`~~ — superseded. Req 1 removes implicit destinations, so `shipit issue create` has no fallback left to point anywhere.
 
+## Closed in review (cross-agent adversarial pass)
+
+- [x] **A write's `tracker` and `trackerName` are checked against each other** before the write runs. They arrive as independent caller-supplied fields on a container-accessible route, and Undo re-resolves through the *name* first — so an incoherent pair wrote to one destination and undid against another. Rejected at write time; the pair is still deliberately allowed to drift apart later, because that drift is req 16's re-point.
+- [x] **Linear's Undo mutations assert team ownership.** `deleteComment` and `deleteUnusedLabel` take workspace-global ids, so a re-pointed name handed the new team's adapter an id belonging to the old one. The read-side guard already existed; these two were the gap.
+- [x] **The merge-effect key and the deterministic card id carry the destination.** Without it a PR naming `alpha#42` and `beta#42` completed only one of them — the second looked like an already-applied effect. The docstring already claimed the tracker was in the key; the code did not.
+- [x] **Merge-time resolution and reachability failures reach the transcript** (req 19) instead of only `console.warn`. Fire-once, so a re-fire on reconnect doesn't append a fresh copy.
+- [x] **A bare Linear key declared by two trackers renders as plain text** rather than opening the first match — the client badge bypassed the resolver's ambiguity rule.
+
 ## Open — found during implementation, not closed here
 
 Filed; the tracker holds its status from here.
 
 - [ ] **The browser's declaration view can go stale.**
-  ([SHI-321](https://linear.app/shipit-ai/issue/SHI-321)) `fetchTrackers` runs on
+  ([SHI-321](https://linear.app/shipit-ai/issue/SHI-321))
+- [ ] **Two declarations naming the same destination collide.** `TrackerId` is
+  the physical destination, so `alpha` and `beta` both bound to `owner/repo`
+  produce one id: `get()` returns whichever was declared first, the two tabs
+  share a React key, and `beta`'s operations emit `alpha`-form references. Names
+  resolve correctly (each still finds its own declaration) and writes still land
+  on the right repository — what breaks is telling the two apart in the UI. A
+  degenerate configuration, but nothing rejects it.
+- [ ] **A Linear name-form reference does not survive a re-point (req 16).**
+  ShipIt emits `roadmap#SHI-304`, which carries the team key; re-pointing
+  `roadmap` from `SHI` to `OPS` makes that reference fail closed as a team
+  mismatch instead of re-targeting to `OPS-304`. Fixing it means emitting
+  `roadmap#304` for Linear (re-pointable, less recognizable) or teaching
+  resolution that a name form's own key is advisory — a requirements question,
+  not an implementation one. GitHub is unaffected (its name form carries only a
+  number).
+- [ ] **Read cards (`IssueRefCard`) record only the resolved destination**, not
+  the name — so a re-pointed name doesn't re-target an existing read card the way
+  it re-targets a write card. Same fix shape as the write card's `trackerName`. `fetchTrackers` runs on
   session change and on Issues-tab activation, so editing `shipit.yaml` with the
   tab already open doesn't re-resolve names until one of those happens. The
   server reads the file per request, so only the client is affected.

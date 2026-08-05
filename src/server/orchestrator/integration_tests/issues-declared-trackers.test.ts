@@ -379,6 +379,51 @@ describe("Integration: declared issue trackers (docs/248)", () => {
     expect(requestedUrls.some((u) => u.includes("/repos/"))).toBe(false);
   });
 
+  // The write body carries `tracker` (where the write goes) and `trackerName`
+  // (the name it was addressed through) as independent caller-supplied fields.
+  // Undo re-resolves through the NAME first (req 16), so an incoherent pair
+  // writes to one destination and, on Undo, applies that snapshot to another —
+  // the wrong-target bug this feature exists to prevent. The shim always derives
+  // both from one resolution, but this endpoint is container-accessible.
+  it("refuses a write whose trackerName names a different destination than its tracker", async () => {
+    writeConfig(DECLARE_PLANNING);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/sess/issue/comment",
+      payload: { tracker: "github:code-owner/app", trackerName: "planning", id: "42", body: "hi" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.stringify(res.json())).toMatch(/other than the one it was addressed through/i);
+    expect(requestedUrls.some((u) => u.includes("/repos/"))).toBe(false);
+  });
+
+  it("refuses a write naming a trackerName this repository does not declare", async () => {
+    writeConfig(DECLARE_PLANNING);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/sess/issue/comment",
+      payload: { tracker: "github:planning-owner/planning", trackerName: "roadmap", id: "42", body: "hi" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(requestedUrls.some((u) => u.includes("/repos/"))).toBe(false);
+  });
+
+  // The mirror of the two above: a COHERENT pair must get past the check. This
+  // harness has no attached runner, so the write then stops at the 409 that
+  // guards card emission — which is precisely the evidence wanted here, since a
+  // rejected pair never reaches it. The completed write is covered in
+  // `agent-issue-access.test.ts`, which runs with a runner.
+  it("lets a write whose trackerName and tracker agree past the coherence check", async () => {
+    writeConfig(DECLARE_PLANNING);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/sess/issue/comment",
+      payload: { tracker: "github:planning-owner/planning", trackerName: "planning", id: "42", body: "hi" },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.stringify(res.json())).not.toMatch(/addressed through/i);
+  });
+
   it("rejects the retired bare `linear` id rather than reading a stored team", async () => {
     credentialStore.setLinearToken("lin_api_x");
     const res = await app.inject({ method: "GET", url: "/api/issues?tracker=linear&sessionId=sess" });

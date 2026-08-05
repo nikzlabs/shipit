@@ -363,6 +363,27 @@ Added for the rework, and passing:
 | ShipIt-emitted references carrying the name form | `issues-declared-trackers.test.ts`, `issues-routes.test.ts`, `issues.test.ts` |
 | Declaration warnings and resolution failures in CLI output | `agent-issue-access.test.ts`, `issues-declared-trackers.test.ts` |
 
+### What an adversarial cross-agent review changed
+
+A second reviewer (a different backend, given the requirements as the oracle and
+told to find defects) found five that the tests did not. All are fixed; each was
+a case where a *rule* held in the resolver but a *caller* reached around it:
+
+| Defect | Why the tests missed it |
+|---|---|
+| A write's `tracker` and `trackerName` were never checked against each other, while Undo re-resolves through the name first — so an incoherent pair wrote to one destination and undid against another | Every test built the pair the way the shim does, from one resolution, so the two always agreed |
+| Linear's `deleteComment` / `deleteUnusedLabel` took workspace-global ids with no team assertion, so a re-pointed name let the new team's adapter mutate the old team's data | The read-side guard was tested; the two undo-only mutations were not |
+| The merge-effect key and deterministic card id omitted the destination, so a PR naming `alpha#42` and `beta#42` completed only one | No test merged a PR naming two trackers — and the docstring already *claimed* the tracker was in the key |
+| Merge-time resolution failures reached only `console.warn`, so a `Closes` that resolved to nothing silently did nothing (req 19) | Assertions checked that the wrong destination was *not* written, never that the user was told |
+| The client's bare-Linear-key badge picked the first matching declaration instead of failing closed on ambiguity | The resolver's ambiguity rule was tested; this caller doesn't use the resolver |
+
+The pattern worth keeping: a centralized rule is only as good as the number of
+callers that go through it, and the reviewer that finds the exceptions is the one
+reading the callers rather than the rule. Three findings were reported that are
+*not* defects — a qualified tracker id on `create` (req 13 asks the caller to
+name a destination, which a qualified id does), and two the checklist already
+recorded as open.
+
 ### Live run against two real repositories
 
 Run against the dogfood inner ShipIt (`docs/118`), which serves this branch's

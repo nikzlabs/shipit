@@ -42,9 +42,10 @@ function openIssueInPanel(ref: OpenIssueRef): void {
  * when the token resolves to a **declared** Linear tracker whose team key it
  * carries (docs/248 req 5) and that tracker is connected. Anything else renders
  * as the raw text — no badge, no dead click. Since docs/248 removed the built-in
- * Linear binding, that gate is now "does this repository declare a `kind: linear`
- * tracker for team `SHI`", which is also req 11's fail-closed rule: a key for an
- * undeclared team stays plain text rather than becoming a link to nowhere. This
+ * Linear binding, that gate is now "does this repository declare **exactly one**
+ * `kind: linear` tracker for team `SHI`", which is also req 11's fail-closed
+ * rule: a key for an undeclared team — or for an ambiguous one, declared twice —
+ * stays plain text rather than becoming a link to nowhere or to a guess. This
  * is the one render-time store read in this module (the link branches read in
  * their click handlers instead); it's a scoped leaf subscription that only
  * re-renders this badge when the tracker set changes, so it doesn't defeat the
@@ -57,11 +58,19 @@ function openIssueInPanel(ref: OpenIssueRef): void {
  */
 function IssueBadge({ issueKey, children }: { issueKey: string; children?: React.ReactNode }) {
   const teamPrefix = issueKey.slice(0, issueKey.indexOf("-")).toUpperCase();
-  const tracker = useIssuesStore((s) =>
-    s.trackers.find(
+  const tracker = useIssuesStore((s) => {
+    // Exactly one, never the first of several (req 11): two declarations bound
+    // to the same team make a bare key ambiguous, and picking one would route
+    // the click at a destination the key does not identify. Ambiguous keys fall
+    // back to plain text, the same as undeclared ones. `filter` allocates, but
+    // what's RETURNED is an element of the store's own array (or undefined), so
+    // the subscription stays identity-stable and the badge still only re-renders
+    // when the tracker set changes.
+    const matches = s.trackers.filter(
       (t) => t.kind === "linear" && t.configured && t.binding?.key?.toUpperCase() === teamPrefix,
-    ),
-  );
+    );
+    return matches.length === 1 ? matches[0] : undefined;
+  });
 
   if (!tracker) return <>{children}</>;
 

@@ -76,7 +76,7 @@ export interface MergedPrInfo {
  *
  * `cardId` is optional. The seed path mints a random id (it fires exactly once at
  * session creation). The merge path passes a DETERMINISTIC id (docs/194 Layer 2)
- * keyed by `(sessionId, prNumber, issueId, verb)`, so that even if the effect-
+ * keyed by `(sessionId, prNumber, tracker, issueId, verb)`, so that even if the effect-
  * level guard ever regresses, the client store's idempotent-by-cardId upsert
  * collapses a re-fired card instead of rendering a duplicate.
  */
@@ -224,12 +224,80 @@ async function runMergeEffect(
     deps.sessionManager.markAppliedMergeIssueEffect(sessionId, key);
   } catch (err) {
     console.warn(`[issue-lifecycle] merge effect ${key} failed:`, err);
+    // docs/248 req 19 — an unreachable destination is a failure the user must
+    // see, not just a server log. The effect itself stays retryable (its key is
+    // unrecorded), so the REPORT gets its own fire-once key: a transient failure
+    // that later succeeds leaves one note behind, not one per reconnect re-fire.
+    surfaceLifecycleFailure(
+      deps,
+      sessionId,
+      `${key}:reported`,
+      `Could not apply a merge update to \`${key.split(":")[2] ?? "the issue"}\`: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
   }
 }
 
-/** Deterministic card id for a merge-driven write (docs/194 Layer 2). */
-function mergeCardId(sessionId: string, prNumber: number, issueId: string, verb: string): string {
-  return `issue-write-${sessionId}-${prNumber}-${issueId}-${verb}`;
+/**
+ * Report a lifecycle failure into the session's transcript (docs/248 req 19: a
+ * failure "is never silently dropped"). These fire outside any turn, so — like
+ * {@link surfaceWriteCard} — the message is appended straight to chat history
+ * (durable, rehydrates on reload) and broadcast only if a viewer is attached.
+ *
+ * Plain text rather than a typed card on purpose: a card would need the whole
+ * persisted-card recipe in `CLAUDE.md` (new field, column, migration,
+ * `CARD_MESSAGE_FIELDS`), and this carries no state, no action and no undo —
+ * there is nothing for the user to do but read it.
+ *
+ * History-only, with no live broadcast: there is no generic "assistant text" WS
+ * message to emit, and minting one (plus its client handler and
+ * `TRANSCRIPT_SCOPED_MESSAGES` entry) buys very little here — a merge effect
+ * fires long after the turn, usually with no viewer attached. Persisted is the
+ * transcript; an attached viewer sees it on its next rehydrate.
+ *
+ * `key` makes it fire once. Merge effects re-fire on every viewer reconnect, so
+ * without it a permanently-unresolvable reference would append a fresh copy of
+ * the same sentence each time the session is reopened.
+ */
+function surfaceLifecycleFailure(
+  deps: IssueLifecycleDeps,
+  sessionId: string,
+  key: string,
+  text: string,
+): void {
+  const session = deps.sessionManager.get(sessionId);
+  if (!session || session.archived || session.userArchived) return;
+  if (deps.sessionManager.hasAppliedMergeIssueEffect(sessionId, key)) return;
+  deps.sessionManager.markAppliedMergeIssueEffect(sessionId, key);
+  deps.chatHistoryManager.append(sessionId, { role: "assistant", text });
+}
+
+/**
+ * Natural identity of one merge→issue effect. The DESTINATION is part of it
+ * (docs/248): a PR may legitimately name `alpha#42` and `beta#42`, which are two
+ * different issues in two different trackers. Keyed on the issue number alone,
+ * the second one looks like an already-applied effect and is silently skipped —
+ * so one of the two issues never gets completed.
+ */
+function effectKey(prNumber: number, tracker: TrackerId, issueId: string, verb: string): string {
+  return `${prNumber}:${tracker}:${issueId}:${verb}`;
+}
+
+/**
+ * Deterministic card id for a merge-driven write (docs/194 Layer 2). Carries the
+ * destination for the same reason {@link effectKey} does — without it the two
+ * cards for `alpha#42` and `beta#42` collide on one id, and the second write's
+ * card overwrites the first's in the transcript.
+ */
+function mergeCardId(
+  sessionId: string,
+  prNumber: number,
+  tracker: TrackerId,
+  issueId: string,
+  verb: string,
+): string {
+  return `issue-write-${sessionId}-${prNumber}-${tracker}-${issueId}-${verb}`;
 }
 
 /**
@@ -264,6 +332,16 @@ export async function applyMergedPrIssueRefs(
       console.warn(
         `[issue-lifecycle] PR #${info.prNumber} names \`${ref.identifier}\`, which does not resolve: ${resolution.message}`,
       );
+      // req 19 — this drop is PERMANENT (re-firing re-derives the same failure
+      // from the same PR body), so a log alone would mean the user's `Closes`
+      // silently did nothing: the PR merges, the issue stays open, and nothing
+      // anywhere says why.
+      surfaceLifecycleFailure(
+        deps,
+        info.sessionId,
+        `${info.prNumber}:${ref.identifier}:unresolved`,
+        `PR #${info.prNumber} names \`${ref.identifier}\`, but ShipIt could not act on it: ${resolution.message}`,
+      );
       return null;
     }
     return resolution.ref;
@@ -278,7 +356,7 @@ export async function applyMergedPrIssueRefs(
     const issueId = ref.issueId;
     // Status flip + provenance card — guarded so a reconnect-driven re-fire
     // can't re-promote an already-completed issue or re-card it.
-    await runMergeEffect(deps, info.sessionId, `${info.prNumber}:${issueId}:completed`, async () => {
+    await runMergeEffect(deps, info.sessionId, effectKey(info.prNumber, ref.tracker, issueId, "completed"), async () => {
       const outcome = await setIssueStatusForTracker(
         deps.credentialStore,
         ref.tracker,
@@ -294,13 +372,13 @@ export async function applyMergedPrIssueRefs(
         ref.trackerName,
         issueId,
         outcome,
-        mergeCardId(info.sessionId, info.prNumber, issueId, "completed"),
+        mergeCardId(info.sessionId, info.prNumber, ref.tracker, issueId, "completed"),
       );
     });
     // Resolved-by comment — supplementary (no card), so it rides under its OWN
     // guard key. This keeps the original "post the comment even if the status
     // flip failed" semantics (independent effects) while making it fire once.
-    await runMergeEffect(deps, info.sessionId, `${info.prNumber}:${issueId}:resolved-comment`, async () => {
+    await runMergeEffect(deps, info.sessionId, effectKey(info.prNumber, ref.tracker, issueId, "resolved-comment"), async () => {
       await commentOnIssueForTracker(
         deps.credentialStore,
         ref.tracker,
@@ -318,7 +396,7 @@ export async function applyMergedPrIssueRefs(
     const issueId = ref.issueId;
     // Progress comment + card — same root cause re-fires this on reconnect, so
     // it gets its own guard key and a deterministic card id too.
-    await runMergeEffect(deps, info.sessionId, `${info.prNumber}:${issueId}:referenced-comment`, async () => {
+    await runMergeEffect(deps, info.sessionId, effectKey(info.prNumber, ref.tracker, issueId, "referenced-comment"), async () => {
       const outcome = await commentOnIssueForTracker(
         deps.credentialStore,
         ref.tracker,
@@ -334,7 +412,7 @@ export async function applyMergedPrIssueRefs(
         ref.trackerName,
         issueId,
         outcome,
-        mergeCardId(info.sessionId, info.prNumber, issueId, "refs"),
+        mergeCardId(info.sessionId, info.prNumber, ref.tracker, issueId, "refs"),
       );
     });
   }

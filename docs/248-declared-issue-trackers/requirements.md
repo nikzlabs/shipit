@@ -135,7 +135,33 @@ off Linear — is a separate feature
 
 ## Open questions
 
-None.
+Raised by an adversarial review of the implementation. Each is a gap between two
+requirements that only shows up in a case neither anticipated — not an
+implementation defect.
+
+- **May two declarations name the same destination?** Requirement 6 makes `name`
+  unique and requirement 9 gives each declaration a tab, but nothing says whether
+  `alpha` and `beta` may both point at `owner/repo`. Today nothing rejects it and
+  the two are indistinguishable downstream: one tab shadows the other, and
+  operations addressed to `beta` emit `alpha`-form references. Either the
+  configuration is refused, or a declaration — rather than the destination it
+  points at — has to become the thing ShipIt identifies.
+
+- **Should a Linear reference ShipIt wrote survive a re-point?** Requirement 15
+  has ShipIt write the `name` form; requirement 10 blesses both `roadmap#SHI-304`
+  and `roadmap#304`; requirement 16 says re-pointing a name re-targets every
+  reference written against it. For Linear these collide: the first form carries
+  the team key, so re-pointing `roadmap` from `SHI` to `OPS` leaves a reference
+  that names one team by name and a different one by key. It currently fails
+  closed. GitHub is unaffected — its name form carries only a number.
+
+- **Is a recorded *read* card a reference for the purposes of requirement 16?**
+  Write cards record the name they were addressed through, so a re-point
+  re-targets them. The jump-to-issue card a read leaves in the transcript records
+  only the destination it resolved to, so it keeps pointing at the old one.
+  Requirement 16 says "every reference written against it, recorded ones
+  included", which reads as covering it — but read cards may equally be
+  navigation aids rather than references.
 
 ## Resolved questions
 

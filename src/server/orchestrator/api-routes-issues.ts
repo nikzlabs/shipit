@@ -47,6 +47,7 @@ import type { TrackerId, TrackerIssue, IssueWriteCard, IssueRefCard } from "../s
 import { parseGitHubRemote } from "./git-utils.js";
 import { resolveShipitConfig, type DeclaredTracker } from "../shared/shipit-config.js";
 import { isGitHubTracker } from "../shared/tracker-id.js";
+import { resolveDestinationByName } from "../shared/issue-ref-resolution.js";
 import { getErrorMessage } from "./validation.js";
 import { emitChatCard } from "./chat-card-persistence.js";
 
@@ -644,6 +645,45 @@ export async function registerIssueRoutes(
     );
   }
 
+  /**
+   * The write body carries `tracker` (the destination the write executes
+   * against) and `trackerName` (the declared name it was addressed through).
+   * The shim derives both from ONE resolution, so they always agree — but this
+   * endpoint is container-accessible and the two fields arrive as independent,
+   * caller-supplied strings.
+   *
+   * They must be checked against each other, because they are consumed by
+   * different operations at different times: the write goes to `tracker`, while
+   * `undoIssueWrite` resolves through the recorded `trackerName` FIRST so that a
+   * re-pointed name re-targets the undo (req 16). A body pairing
+   * `tracker: github:acme/a` with `trackerName: beta` (declared as `acme/b`)
+   * therefore writes to A and, on Undo, applies A's recorded snapshot to B's
+   * issue of the same number — an operation touching a destination the caller
+   * never named, which is the one thing this feature exists to prevent.
+   *
+   * Checked at WRITE time only. At undo time the pair is deliberately allowed to
+   * have drifted apart: that drift IS req 16's re-point.
+   */
+  function rejectMismatchedTrackerName(
+    sessionId: string,
+    trackerId: string,
+    trackerName: string | undefined,
+  ): string | null {
+    if (!trackerName) return null;
+    const github = resolveGitHubContext(sessionId);
+    const { destinations } = listTrackerDestinations(credentialStore, trackerFetchImpl, github);
+    const found = resolveDestinationByName(destinations, trackerName);
+    if (!found.ok) return found.message;
+    if (found.destination.id !== trackerId) {
+      return (
+        `\`${trackerName}\` is declared as \`${found.destination.id}\`, but this write names ` +
+        `\`${trackerId}\`. ShipIt does not record a write against a destination other than the ` +
+        `one it was addressed through.`
+      );
+    }
+    return null;
+  }
+
   function sendServiceError(reply: FastifyReply, err: unknown, fallback: string): void {
     if (err instanceof ServiceError) {
       reply.code(err.statusCode).send({ error: err.message });
@@ -746,6 +786,15 @@ export async function registerIssueRoutes(
     dedup: { verb: string; content: string },
     run: (github: GitHubTrackerContext) => Promise<IssueWriteOutcome>,
   ): Promise<unknown> {
+    // Coherence of the request body first: an incoherent pair is a malformed
+    // request whatever the session's runner state, and rejecting it here means a
+    // bad write never even reaches the runner lookup. Same position as
+    // `rejectUnnamedCreateDestination`, which its routes apply before this call.
+    const mismatch = rejectMismatchedTrackerName(sessionId, trackerId, trackerName);
+    if (mismatch) {
+      reply.code(400).send({ error: mismatch });
+      return;
+    }
     const runner = deps.runnerRegistry.get(sessionId);
     if (!runner) {
       reply.code(409).send({ error: "Session is not active — open it to record the write." });
@@ -879,6 +928,13 @@ export async function registerIssueRoutes(
       const { tracker, trackerName, name, color, description } = request.body ?? {};
       if (!tracker || !name?.trim()) {
         reply.code(400).send({ error: "tracker and name are required" });
+        return;
+      }
+      // Same name/destination coherence check `handleWrite` applies — this route
+      // mints its own card (with its own Undo) without going through it.
+      const labelMismatch = rejectMismatchedTrackerName(request.params.sessionId, tracker, trackerName);
+      if (labelMismatch) {
+        reply.code(400).send({ error: labelMismatch });
         return;
       }
       // Creating a label mutates a tracker's configuration, so req 13's rule
