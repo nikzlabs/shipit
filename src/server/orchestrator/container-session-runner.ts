@@ -510,9 +510,40 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   getAgent(): AgentProcess | null { return this._agent; }
 
+  /**
+   * SHI-316 — tell the proxy that is being pushed out of the `_agent` slot by a
+   * DIFFERENT, newer one that its turn has been superseded.
+   *
+   * This is the moment the displaced turn loses its ability to settle itself:
+   * its own `agent_done` / `agent_error` will arrive after the slot moved on and
+   * be ignored by {@link isStaleSpawnEvent} (docs/146). That guard is right — it
+   * stops a stale exit from tearing down the live turn — but nothing then told
+   * the displaced turn it was over, so its settlement stayed pending forever. In
+   * production that stranded a self-merge wake at `merge-observed`, which the
+   * retry supervisor could not distinguish from a delivery that never reached
+   * the session, so it re-delivered the identical wake prompt 7.5 minutes later.
+   *
+   * Deliberately only fired for a REPLACEMENT (`a !== null`), never for
+   * `setAgent(null)`: clearing the slot is the normal end-of-turn teardown (the
+   * proxy has already emitted `done`), and the two paths that clear it without a
+   * terminal event — `verifyRunningState` and `dispose` — have their own,
+   * correctly-`dropped` settlement signals (`turn_abandoned` / `disposed`). A
+   * superseded turn is the opposite case: it RAN.
+   */
+  private supersedeDisplacedAgent(next: ProxyAgentProcess | null): void {
+    const previous = this._agent;
+    if (!next || !previous || previous === next) return;
+    console.warn(
+      `[container-runner:${this.sessionId}] agent slot taken by runToken=${next.runToken} `
+      + `while runToken=${previous.runToken} was still installed — settling the superseded turn`,
+    );
+    previous.emit("superseded");
+  }
+
   setAgent(a: AgentProcess | null): void {
     // When the orchestrator sets the agent, it's creating a new one to run.
     // For the container runner, we create a proxy that receives events via SSE.
+    this.supersedeDisplacedAgent(a as ProxyAgentProcess | null);
     this._agent = a as ProxyAgentProcess | null;
     // See SessionRunner.setAgent — dropping the ref normally invalidates the
     // previously-applied permission mode so the next turn re-applies cleanly.
@@ -550,6 +581,25 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   hasDelivery(deliveryId: string): boolean {
     if (this.activeDeliveryId === deliveryId) return true;
     return this.turn.messageQueue.some((m) => m.deliveryId === deliveryId);
+  }
+
+  /**
+   * SHI-316 — see `SessionRunnerInterface.hasTurnInFlight`.
+   *
+   * Reads the worker's `turnActive`, NOT its `running`: `running` is
+   * `agent !== null`, which stays true for a resident streaming process between
+   * turns (that is the whole point of live steering), so it would report a
+   * perfectly idle session as busy and block a legitimate retry forever.
+   * `turnActive` is the worker's own turn bracket (`beginTurn` / `endTurn`).
+   *
+   * A legacy worker that doesn't publish `turnActive` falls back to `running`,
+   * which is the conservative answer for the one thing this gates: not spawning
+   * over a live process.
+   */
+  async hasTurnInFlight(): Promise<boolean> {
+    if (this._isRunning) return true;
+    const status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as WorkerAgentStatus;
+    return status.turnActive ?? status.running;
   }
 
   // --- Terminal ---
@@ -914,6 +964,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    */
   createAgent(agentId: AgentId, opts?: { runToken?: string; deliveryId?: string }): ProxyAgentProcess {
     const proxy = new ProxyAgentProcess(agentId, this, opts);
+    // SHI-316 — this is one of the two places a spawn can take the slot from a
+    // proxy that never reached a terminal event; the displaced turn has to be
+    // told, or it can never settle. See `supersedeDisplacedAgent`.
+    this.supersedeDisplacedAgent(proxy);
     this._agent = proxy;
     return proxy;
   }
@@ -1215,6 +1269,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
     await this._waitForInstallBeforeAgent();
     const proxy = new ProxyAgentProcess(agentId, this);
+    this.supersedeDisplacedAgent(proxy);
     this._agent = proxy;
 
     await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken: proxy.runToken }, { timeoutMs: 0 });

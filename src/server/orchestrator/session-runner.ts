@@ -1070,6 +1070,23 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * `/agent/status`) cannot drift: no runner, no delivery.
    */
   hasDelivery(deliveryId: string): boolean;
+  /**
+   * SHI-316 — GROUND TRUTH for "is a turn in flight in this session right now?",
+   * asked of whatever actually owns the agent process.
+   *
+   * `running` is the orchestrator's local mirror of that fact, and every bug in
+   * this family has been the mirror going stale: a terminal event dropped on the
+   * way from the worker leaves it true, and a superseded turn's late teardown
+   * can clear it while another turn is live. Callers that merely want to be
+   * polite (queue behind a busy session) can keep reading `running`; callers for
+   * whom a wrong answer means DESTROYING work — a timer-driven system turn, whose
+   * spawn boundary retires the resident process — should ask this instead.
+   *
+   * Optional: implemented by `ContainerSessionRunner` (the worker's `turnActive`
+   * from `/agent/status`). The in-process `SessionRunner` owns the process
+   * directly, so `running` is already ground truth there and it omits this.
+   */
+  hasTurnInFlight?(): Promise<boolean>;
 
   // Terminal
   getTerminal(): TerminalProcess | null;
@@ -1451,6 +1468,14 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
 
   getAgent(): AgentProcess | null { return this.agent; }
   setAgent(a: AgentProcess | null): void {
+    // SHI-316 — a DIFFERENT, newer process taking this slot means the one being
+    // pushed out will never settle its own turn (its terminal event, if it ever
+    // arrives, is ignored as stale). Tell it, so `executeAgentTurn` can settle
+    // the superseded turn as `interrupted`. Mirrors `ContainerSessionRunner`
+    // (see `supersedeDisplacedAgent` there for the full rationale); only fired
+    // for a replacement, never for `setAgent(null)`, which is the ordinary
+    // end-of-turn teardown.
+    if (a && this.agent && this.agent !== a) this.agent.emit("superseded");
     this.agent = a;
     // Dropping the agent reference normally means the next turn either reuses a
     // newly-set agent (which `runAgentWithMessage` re-tracks at spawn) or
