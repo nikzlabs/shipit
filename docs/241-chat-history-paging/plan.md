@@ -73,12 +73,14 @@ With that framing, measured against the source:
   describes, but it is re-walked on every switch *and every foreground
   reconnect*, putting a floor under switch latency that windowing cannot touch.
   §0 must measure it.
-- **Rows are large.** `tool_results` holds verbatim tool output (a `git diff`, a
-  test log, a whole file read); `tool_use` holds raw tool input, so a `Write`
-  carries the entire file body; `images` are inline base64; `subagent_events`
-  carries an entire subagent transcript. The only truncation in the path is a
-  1 MB cap applied to the *live* copy (`agent-event.ts:122`) — the persisted
-  copy is uncapped.
+- **Rows are large at rest, but no longer on the wire.** `tool_results`,
+  `tool_use` inputs, base64 `images` and `subagent_events` are all still stored
+  in full — but **SHI-267 has landed** (`docs/244-lazy-tool-result-bodies`) and a
+  serve-path projection (`transcript-projection.ts`) now strips those bodies
+  before they reach the client, substituting fetch-on-demand URLs. This removes
+  the byte axis from the problem almost entirely, and is why the remaining case
+  for paging is per-row work rather than payload size. See
+  [Composing with lazy bodies](#composing-with-lazy-bodies-shi-267-landed).
 - **The client re-fetches more often than you would think.** A foreground
   reconnect forces a fresh socket and therefore another full load
   (`useWebSocket.ts:160-200`).
@@ -100,26 +102,29 @@ building, instrument one real long session:
 - How often a foreground reconnect actually fires in normal use, since it
   multiplies everything.
 
-**Decision criterion — key on time, not bytes.** The design is justified on
-time-to-interactive, so that is what should decide the ordering. If mount/render
-of many rows dominates, paging is correct and goes first. If instead a handful of
-heavy rows dominate *and* the time is going into transfer and parse rather than
-mount, SHI-267 (lazy bodies) is the higher-leverage first move and this design
-resequences behind it. Bytes are the secondary signal, not the trigger.
+**The ordering question this gate existed to answer has been settled by events.**
+It read: if a handful of heavy rows dominate bytes, do SHI-267 first and
+resequence paging behind it. SHI-267 shipped first, so that branch is taken and
+closed. What the measurement is now *for* is narrower: confirm that what remains
+after the projection is dominated by **row count** — React mount and markdown
+parse across several hundred bubbles, plus the refetch amplifier — rather than by
+the file-tree walk or something else nobody has looked at. If row count does not
+dominate the residual, this design should be reconsidered rather than tuned.
 
 ## Requirements
 
-Confirmed with the user; deliberately not widened.
+This feature is under requirements discipline — **`requirements.md` in this
+folder is the source of truth** for what it must do. Everything in this document
+is design: the mechanism chosen to satisfy those requirements.
 
-1. Initial load returns the latest N turns, not the whole transcript (see §2 —
-   rows are not what a user means by "messages").
-2. Older messages load when the user **scrolls up**.
-3. In-chat search (Ctrl+F) keeps working across the whole conversation.
-4. **Download chat must still export the whole history**, not the loaded window.
-5. **Paging only.** Lazy-loading of heavy row bodies is out of scope (SHI-267).
+`requirements.md` currently has **open questions**, so implementation is blocked
+until they are answered. Design work continues meanwhile. In summary the feature
+must load only a recent portion of the transcript (reqs 1–2), let the user reach
+older parts by scrolling up (req 3), keep search and export covering the whole
+conversation (reqs 4–5), and never open a window mid-group (req 6).
 
-Non-requirements: no virtualization, no transcript summarization/TOC, no change
-to what is persisted, no page eviction.
+Non-requirements, recorded so they are not smuggled in: no virtualization, no
+transcript summarization/TOC, no change to what is persisted, no page eviction.
 
 ## The key schema fact: persisted rows are self-contained
 
@@ -537,16 +542,59 @@ The hydration race is therefore **back in scope**: it was dismissed as
 pre-existing, but once window coordinates feed destructive actions it stops being
 cosmetic.
 
-## Follow-up, not in this design
+## Composing with lazy bodies (SHI-267, landed)
 
-**SHI-267** — lazy-loading heavy row bodies not displayed inline (`tool_results`
-content, `tool_use` inputs, `subagent_events`, base64 `images`). Complementary:
-paging avoids transferring untouched history, lazy bodies reduce the weight of the
-pages actually loaded. Must keep per-result metadata inline (`toolUseId`,
-existence, error state, `durationMs`) — `AskUserQuestion` renders the answer from
-result content, `ExitPlanMode` keys off result existence, Present extracts its
-artifact id, and subagent reports come from parent tool output
-(`message-tools.tsx:125`).
+SHI-267 was filed as this design's follow-up and **shipped first**
+(`docs/244-lazy-tool-result-bodies`, commit `f576ff81`). That changes what this
+design is for, and adds three obligations.
+
+**What it did.** A projection on the **serve path** (`transcript-projection.ts`)
+strips heavy bodies before they reach the client — tool-result bodies sliced,
+Write/Edit inputs replaced by a `truncated` marker, base64 images substituted
+with hash-addressed URLs (`/api/sessions/:id/images/:hash`) — and serves the real
+bodies on demand from `/tool-results/:toolUseId`, `/tool-inputs/:toolUseId`,
+`/images/:hash`. Full bodies stay in SQLite; the write path is untouched.
+
+**What that means for paging.** The byte argument is largely gone: a history load
+now transfers kilobytes of projected rows rather than megabytes of bodies. What
+remains, and what this design still addresses, is **row count** — React mount and
+markdown parse per bubble, and the refetch amplifier that repays that cost on
+every foreground reconnect. Paging is now a narrower, clearer feature than when
+it was written.
+
+**Three obligations this creates:**
+
+1. **Every page must go through the projection.** The landed work has *three*
+   projection sites (history load, live turn, reconnect `turn_snapshot`); the
+   messages-only page endpoint would be a fourth. An unprojected older page would
+   silently reintroduce full bodies — the exact regression SHI-267 removed.
+2. **Older pages may strip maximally.** The projection's governing rule is that a
+   body may only leave the wire once its row is *committed* (the
+   `allRowsPersisted` argument), because stripping replaces a body with a fetch
+   that 404s if the row is not on disk. Every row in an older page is committed
+   by construction, so a load-older page can pass `allRowsPersisted: true`
+   unconditionally — the strictest case, and the easy one.
+3. **The running-turn exemption now has a second reason.** §3 already exempts the
+   running turn from the row cap so `turn_snapshot` cannot reintroduce rows below
+   the window. The projection gives the same exemption a second justification:
+   the snapshot is a projection site with *different* stripping rules (nested
+   subagent results and Edit/Write inputs are not yet committed, so they are
+   stripped on the history path only). Window and snapshot must not disagree
+   about the same turn.
+
+**A cost paging does not fix, and slightly sharpens.** The lazy-body endpoints
+read `ChatHistoryManager.load()` directly — a full-history scan and decode **per
+body fetch** (`api-routes-lazy-bodies.ts`). That is O(history) per modal open, on
+exactly the transcripts this doc is about. Paging does not touch it; if §0's
+measurement shows modal opens are slow on long sessions, that lookup wants an
+indexed query, tracked separately.
+
+**Still open in the landed work**, and worth not re-deriving: requirement 1 of
+docs/244 ("don't transfer information that isn't visible without a click") is
+documented as not fully met — ordinary results still ship a 40-line head slice
+the transcript no longer previews, and `Skill`/`Agent` results are exempted from
+size bounds without ever being displayed. Those are docs/244's gaps, not this
+design's, and paging neither helps nor hinders them.
 
 ## Key files
 
