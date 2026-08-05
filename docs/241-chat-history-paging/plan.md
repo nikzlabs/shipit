@@ -120,12 +120,13 @@ This feature is under requirements discipline — **`requirements.md` in this
 folder is the source of truth** for what it must do. Everything in this document
 is design: the mechanism chosen to satisfy those requirements.
 
-`requirements.md` currently has **open questions**, so implementation is blocked
-until they are answered. Design work continues meanwhile. In summary the feature
+`requirements.md` has **no open questions**; implementation is unblocked. In
+summary the feature
 must load only a recent portion of the transcript (reqs 1–2), let the user reach
 older parts by scrolling up (req 3), keep search and export covering the whole
-conversation (reqs 4–5), never open a window mid-group (req 6), and make the
-window's edge visible with a retry and a way back to the latest (reqs 7–8).
+conversation (reqs 4–5), never open a window mid-group (req 6), make the window's
+edge visible with a retry and a way back to the latest (reqs 7–8), and make
+tab focus/blur a visual no-op (req 9).
 
 Non-requirements, recorded so they are not smuggled in: no virtualization, no
 transcript summarization/TOC, no change to what is persisted, no page eviction.
@@ -385,15 +386,35 @@ egress `:198`, issue-write `:209`. Run the same scans over each prepended page,
 card by `cardId` — under paging, an update to an unloaded old card would teleport
 it to the bottom of the transcript. Guard: drop when not found and `hasMore`.
 
-**Reconnect must preserve the loaded span.** This is the one bug the design would
-otherwise ship. A foreground reconnect resets `historyLoadedRef` and re-runs
-`loadSessionHistory` (`useConnectionSync.ts:60-100`), which `setMessages`-*replaces*
-the transcript. Today that is invisible because the array is identical. Under
-paging it would collapse a 500-row loaded span back to the window — destroying
-every page the user scrolled to load, and their reading position with it. On
-mobile, backgrounding for five seconds would throw away ten pages. The refetch
-must request `limit = max(window, currentlyLoadedCount)` (or merge rather than
-replace).
+**Focus/blur must be a visual no-op — req 9.** This is the one bug the design
+would otherwise ship, and the requirement is stronger than "don't lose the pages":
+returning to the tab must leave the view exactly as it was left, scroll position
+included.
+
+A foreground reconnect resets `historyLoadedRef` and re-runs
+`loadSessionHistory` (`useConnectionSync.ts:60-100`), which
+`setMessages`-*replaces* the transcript. Today that happens to be invisible — the
+replacement array is identical and the keys are array indices, so React
+reconciles without touching the DOM. That is luck, not design, and paging removes
+it: the array shrinks from the loaded span back to the window, the DOM above the
+viewport is destroyed, and the scroll position goes with it.
+
+Req 9 is stated as an *observable outcome*, which leaves two ways to satisfy it,
+and the design should use both:
+
+1. **Don't refetch when nothing changed.** A conditional request returning `304`
+   (SHI-322) makes the common case — alt-tab away, alt-tab back, nothing
+   happened — trivially satisfy req 9, because no state is replaced at all. This
+   is the cheaper and more robust half.
+2. **When content genuinely did change, reconcile rather than replace.** Request
+   `limit = max(window, currentlyLoadedCount)` so the span is not narrowed, and
+   merge into the existing array rather than swapping it, so unchanged rows keep
+   their DOM nodes and the scroll anchor survives.
+
+Note req 9 also forbids subtler regressions a "preserve the span" framing would
+have missed: a reconnect must not collapse expanded tool groups, move the view
+to the bottom, or drop the user out of an open search — all of which are UI state
+that a wholesale `setMessages` can disturb.
 
 **The prepend must not yank the view to the bottom.** `useMessageScroll` re-pins
 whenever the message count grows *and* the last row is a user message

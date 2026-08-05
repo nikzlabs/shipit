@@ -16,18 +16,26 @@
    the start of the conversation.
 8. The user can get back to the latest messages without scrolling all the way
    down.
+9. Switching focus away from the tab and back never changes or breaks the UI.
+   That includes the scroll position in the conversation and how much of the
+   conversation is loaded: returning to the tab leaves the view exactly as it
+   was left.
 
 ## Open questions
 
-- **Must scrolling-up progress survive a reconnect?** Today every tab
-  focus/foreground event refetches history and replaces the transcript, which
-  would discard everything the user scroll-loaded. Req 3 does not say whether
-  that progress must persist. *Recommendation: yes, preserve it — otherwise
-  backgrounding the tab for a few seconds silently undoes req 3.* (The separate
-  question of whether that refetch should happen at all when nothing changed is
-  SHI-322, and does not depend on this answer.)
+None. Implementation is unblocked.
+
 ## Resolved questions
 
+- 2026-08-05 — *Must scrolling-up progress survive a reconnect?* Answered with a
+  **broader** requirement than the question asked: switching focus away from the
+  tab and back must never change or break the UI at all, including the scroll
+  position — not merely preserve the loaded span. Became req 9. Two consequences
+  worth recording: the requirement constrains more than paging (it is a
+  statement about focus/blur generally, and SHI-322 is one way to satisfy it),
+  and it is stated as an observable outcome, so "the transcript is refetched but
+  nothing visibly moves" satisfies it just as well as "the transcript is not
+  refetched".
 - 2026-08-05 — *Should the ~10-turn window also carry a row floor and cap?*
   Chosen: **no — turn count only.** No requirement changed; this rules the extra
   bounds out of scope. It also simplifies the design: with no cap there is no

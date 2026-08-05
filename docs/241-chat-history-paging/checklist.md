@@ -2,8 +2,7 @@
 
 Design only so far — nothing implemented. No schema change, no migration.
 
-**Blocked:** `requirements.md` has open questions. Implementation waits on them;
-design work continues. Items below marked *(open)* depend on an unanswered one.
+`requirements.md` has no open questions — implementation is unblocked.
 
 ## 0. Measure first
 - [ ] Instrument one real long session: total `/history` payload split by component — message columns (`tool_results` / `tool_use` / `images` / `subagent_events`) **and** fileTree / commits / turnUsage
@@ -42,7 +41,8 @@ design work continues. Items below marked *(open)* depend on an unanswered one.
 - [ ] Scroll-top trigger → fetch previous page → prepend, behind a single in-flight latch
 - [ ] Scroll anchoring on prepend (element anchor; `content-visibility: visible` during correction)
 - [ ] Prepend signal in `useMessageScroll` — must also suppress the `appendedUserMessage` branch (`:143-145`), which bypasses the scrolled-away guard
-- [ ] *(open)* **Reconnect preserves the loaded span**: refetch with `limit = max(window, loadedCount)`, or merge instead of replace — pending the requirements question. Related but separate: SHI-322 makes the refetch conditional
+- [ ] **Focus/blur is a visual no-op (req 9)** — refetch with `limit = max(window, loadedCount)` AND merge instead of replace, so unchanged rows keep their DOM nodes
+- [ ] Req 9 covers more than the span: a reconnect must not collapse expanded tool groups, jump to the bottom, or drop an open search
 - [ ] Card-store seeding runs per prepended page, seed-if-absent
 - [ ] `handleReleaseCard`: drop when card not found and `hasMore` (do not append)
 - [ ] Client starts sending `limit` — only after §2 and the search/export items below
@@ -66,7 +66,8 @@ design work continues. Items below marked *(open)* depend on an unanswered one.
 - [ ] A page and a `turn_snapshot` covering the same turn agree on which bodies were stripped (different projection sites, different rules)
 - [ ] An older page ships no full tool-result / tool-input / image bodies
 - [ ] A tool-heavy turn loads whole rather than being cut (turn-counted, no cap)
-- [ ] Foreground reconnect does not collapse a scrolled-open span
+- [ ] Foreground reconnect is a visual no-op: scroll position, loaded span, expanded groups and open search all survive (req 9)
+- [ ] Same, on mobile backgrounding — the case that makes req 9 bite
 - [ ] Prepend during the send→first-output window does not yank to the bottom
 - [ ] Load-older is stable while a turn is appending
 - [ ] Scroll position holds on prepend, with and without images in the batch
