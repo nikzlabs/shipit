@@ -35,7 +35,7 @@ The current requirements changed three things that invalidate parts of it:
   also why a Linear declaration carries its team key (req 5) and why that binding
   moves out of Settings (req 4).
 
-Requirement 17 settles the cost question: nothing is preserved for compatibility
+Requirement 19 settles the cost question: nothing is preserved for compatibility
 unless a requirement names it, so the rework is free to break the current CLI
 surface, the implicit Linear destination, and the `--tracker` flag. Sections below
 marked *(as built)* describe what exists today, not what the requirements now ask
@@ -106,7 +106,7 @@ a display identifier while downstream services received a bare issue number and
 reconstructed context from the code remote — so a pointer such as
 `other-owner/other-repo#42` could mutate code-repository issue `#42`.
 
-### Branch names (req 20)
+### Branch names (req 21)
 
 Sessions seeded from an issue keep the title in ShipIt — it is still the session
 title and still opens the seed prompt — but the **pushed branch name is the
@@ -171,7 +171,7 @@ Tracker calls use the same contextual GitHub credential as ShipIt's other GitHub
 operations: the deployment credential initially, the owning Project's credential
 after Projects phase 1c. There is no second tracker credential, no tracker ACL,
 and no per-viewer GitHub-membership check — GitHub authorizes the credential, not
-the viewer (req 22). For GitHub App authentication the installation must include
+the viewer (req 23). For GitHub App authentication the installation must include
 the repository; for a user token, that token must grant Issues access there.
 
 Note the credential is the **account-wide** token (`githubAuthManager.getToken()`),
@@ -260,7 +260,7 @@ closed and stay legible, not silently degrade to a broken link).
 - `src/server/session/agent-shim/shipit-issue.ts` — `--repo` on every verb, via
   `resolveTrackerFlag` / `resolveIssuePointer`.
 - `src/server/orchestrator/services/headless-sessions.ts` — `seedFromIssueRef`
-  builds the branch from the identifier alone (req 20).
+  builds the branch from the identifier alone (req 21).
 - Agent-facing docs: `src/server/shipit-docs/issues.md` (repository-resolution
   rules) and `shipit-docs/shipit-yaml.md` (the `issues:` block).
 
@@ -286,19 +286,13 @@ name without a duplicate tab; ShipIt-generated PR bodies containing the name
 form rather than the qualified slug (req 14); and an unresolvable name failing
 closed.
 
-## Known GitHub feature differences
+## Out of scope
 
-Accepted without a parity gate (req 24), represented honestly rather than
-emulated:
-
-- workflow beyond Open/Closed needs an explicit status convention;
-- priority writes need an agreed label convention — **out of scope here**, tracked
-  as [SHI-310](https://linear.app/shipit-ai/issue/SHI-310), because the adapter
-  already reads priority from labels but rejects `--priority` on writes for every
-  GitHub destination, so fixing it in one place would leave the two destinations
-  behaving differently for the same flag;
-- parent/sub-issue reads and writes need GitHub API mapping;
-- automatic Started cannot be represented by native Open/Closed state.
+Backend capability differences — status workflows beyond Open/Closed, priority
+conventions, parent/sub-issue mapping — are not part of this feature. Priority
+writes in particular are tracked as
+[SHI-310](https://linear.app/shipit-ai/issue/SHI-310), because they are a property
+of the shared GitHub adapter rather than of any declaration.
 
 ## Non-goals
 

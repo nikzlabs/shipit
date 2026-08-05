@@ -53,7 +53,7 @@ function initWorkspace(dir: string): void {
 
 
 /**
- * docs/248 req 20 — the pushed branch name must never carry the issue title.
+ * docs/248 req 21 — the pushed branch name must never carry the issue title.
  *
  * A branch is pushed to a public remote, so a title from a private planning
  * issue would be published there. The rule is unconditional: ShipIt has no
@@ -457,7 +457,7 @@ describe("createHeadlessSession", () => {
       graduationDeps,
     );
 
-    // docs/248 req 20 — the branch is the POINTER ONLY. A branch gets pushed to a
+    // docs/248 req 21 — the branch is the POINTER ONLY. A branch gets pushed to a
     // public remote, so the issue title must not appear in it. The session title
     // and the seed prompt still carry it: both stay inside ShipIt.
     expect(result.branch).toBe("shi-67");

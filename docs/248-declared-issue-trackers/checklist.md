@@ -4,7 +4,7 @@
 
 - [x] Settle the reference syntax for Linear. *(All three forms are recognized — req 10.)*
 - [x] Decide whether GitHub's `owner/repo#42` stays recognized. *(Generalized: every backend's canonical address format is supported — req 10.)*
-- [x] Confirm the break with existing behavior. *(Accepted — req 18: nothing survives unless a requirement names it.)*
+- [x] Confirm the break with existing behavior. *(Accepted — req 19: nothing survives unless a requirement names it.)*
 
 ## Built against the earlier requirements
 
@@ -19,8 +19,7 @@ still stands unless a requirement below supersedes it.
 - [x] Add same-numbered code/tracker repository regression coverage.
 - [x] Destination-qualified deduplication, lifecycle-card, and persisted effect keys.
 - [x] Preserve destinations through agent operations and persisted Undo cards.
-- [x] Derive pushed branch names from the reference only, for every tracker issue (req 20).
-- [x] Represent unsupported normalized operations and backend feature differences honestly (req 24).
+- [x] Derive pushed branch names from the reference only, for every tracker issue (req 21).
 
 ## Rework required by the current requirements
 
