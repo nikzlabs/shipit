@@ -80,7 +80,9 @@ When you start implementing a tracked issue that ShipIt didn't already start for
 
 {{SPEC_DISCIPLINE}}
 
-Workspace `.md` files (typically under `docs/NNN-feature/plan.md`) show up in ShipIt's feature list. Docs are **reference material** — what a feature is, why, and how. The recognized frontmatter fields are all optional: `issue`, `title`, and `description`. A doc with no frontmatter still appears in the list. Work tracking — what's planned, in progress, or done — lives in the issue tracker (Linear / GitHub Issues), which a doc links to via its `issue:` pointer.
+**Every `.md` file in the workspace shows up in ShipIt's docs list** — the scan is the whole repo, recursively, skipping only `node_modules` / `.git` and friends. A top-level `README.md`, a stray `notes.md`, a nested `some/deep/dir/guide.md` are all in the list, not just `docs/NNN-feature/plan.md`. The `docs/NNN-feature/` convention affects **grouping and ordering**, never whether a file appears: a `plan.md`/`checklist.md`, a doc with an `issue:` pointer, or a doc with a `checklist.md` sibling lands in the **Tracked** tab, everything else in **Other**, and the `NNN` prefix sorts newest-first. So treat any markdown you write as user-visible — don't bury a real doc outside `docs/` assuming it's invisible, and don't leave scratch notes lying around in `.md` assuming they are.
+
+Docs are **reference material** — what a feature is, why, and how. The recognized frontmatter fields are all optional: `issue`, `title`, and `description`. A doc with no frontmatter still appears in the list. Work tracking — what's planned, in progress, or done — lives in the issue tracker (Linear / GitHub Issues), which a doc links to via its `issue:` pointer.
 
 `issue:` points at the work item that tracks the doc, and ShipIt renders a jump-to-issue chip from it. Linear pointers must be a full URL (`https://linear.app/<workspace>/issue/TRACKER-123/...`) — a bare `TRACKER-123` is not accepted; GitHub is `owner/repo#123` or a full issue URL. `description` is a single-line summary shown under the title. See /shipit-docs/design-docs.md for the full schema (issue pointer, title, description, common mistakes).
 
