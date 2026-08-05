@@ -70,11 +70,12 @@ shape conflicts with every open branch.
 
 ### Steps
 
-1. **Create the private repository** (req 5 — the user does this) and confirm the
-   deployment's GitHub credential reaches it. The credential is account-wide
+1. **Create the private repository** (req 5 — the user does this; recommended
+   slug `nikzlabs/shipit-planning`) and confirm the deployment's GitHub credential
+   reaches it. The credential is account-wide
    (`githubAuthManager.getToken()`), not the repo-scoped installation token, so a
    fine-grained PAT limited to the source repository fails here. One
-   `shipit issue list --repo <slug>` settles it; a 403/404 surfaces as the inline
+   `shipit issue list` against it settles that; a 403/404 surfaces as the inline
    access error.
 2. **Release and deploy** the merged `--repo` support, then re-probe from a fresh
    session to confirm the shim has it.
@@ -84,10 +85,11 @@ shape conflicts with every open branch.
    it holds private planning content.
 4. **Copy into the planning repository** in key order, so numbering lands
    predictably. Each body carries its `SHI-N` origin; comments are replayed with
-   their original author and date in the text, since the API attributes every
-   comment to the copying account (req 9); labels are created as needed; closed
-   and canceled issues are closed after creation. The output is the
-   `SHI-N → planning#M` mapping, which everything downstream depends on.
+   their original date in the text (req 9) — authorship needs no preservation,
+   since the copying account and the original author are the same person; labels
+   are created as needed; closed and canceled issues are closed after creation.
+   The output is the `SHI-N → planning#M` mapping, which everything downstream
+   depends on.
 5. **Rewrite every reference** from that mapping in one PR (req 10): doc `issue:`
    frontmatter, inline doc mentions, code comments, `CLAUDE.md`.
 6. **Retire Linear** for ShipIt's own planning (req 11) and rewrite `CLAUDE.md`'s

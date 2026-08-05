@@ -2,7 +2,8 @@
 
 ## Blocked on the human
 
-- [ ] Create the private planning repository and confirm the deployment's GitHub credential reaches it (requirement 3; open question 1).
+- [ ] Create the private planning repository — recommended slug `nikzlabs/shipit-planning` — and confirm the deployment's GitHub credential reaches it (req 5).
+- [ ] Fix the tracker name before the reference rewrite, not after. `planning` (req 1) is written into every reference, so changing it later means sweeping ~620 files again; the repository slug, by contrast, stays a one-line edit.
 - [x] Confirm whether "fully retire Linear" is scoped to ShipIt's own planning or extends to removing Linear support from the product. *(Answered by 248 req 3: `linear` becomes a declared kind, so support stays in the product and ShipIt retires it for itself by not declaring it.)*
 
 ## Migration
