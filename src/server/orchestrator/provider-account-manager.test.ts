@@ -411,6 +411,32 @@ describe("ProviderAccountManager", () => {
     expect(mgr.selectRouteForTurn("claude")).toEqual({ kind: "reserved", id: "claude-env-oauth" });
   });
 
+  describe("generated account labels", () => {
+    it("names the first account after the provider and numbers the rest", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+
+      expect(mgr.create("claude").label).toBe("Claude");
+      expect(mgr.create("claude").label).toBe("Claude 2");
+      expect(mgr.create("claude").label).toBe("Claude 3");
+      // Numbering is per provider — Codex starts over at its own name.
+      expect(mgr.create("codex").label).toBe("Codex");
+      expect(mgr.create("codex").label).toBe("Codex 2");
+    });
+
+    it("skips labels already taken, including user-typed ones", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      const first = mgr.create("claude", "Work");
+      mgr.rename("claude", first.id, "Claude");
+
+      expect(mgr.create("claude").label).toBe("Claude 2");
+    });
+
+    it("leaves a supplied label alone", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      expect(mgr.create("claude", "Work").label).toBe("Work");
+    });
+  });
+
   describe("account-scoped auth flows (docs/150)", () => {
     function setup() {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });

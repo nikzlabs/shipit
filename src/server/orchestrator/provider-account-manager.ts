@@ -392,7 +392,7 @@ export class ProviderAccountManager {
     const account: ProviderAccount = {
       id: `acct_${randomUUID()}`,
       provider,
-      label: supplied ?? `${PROVIDER_LABEL[provider]} account ${existing.length + 1}`,
+      label: supplied ?? generatedAccountLabel(provider, existing),
       // req 22 — a generated label is ShipIt's placeholder until the provider
       // reports who this account actually is; a supplied one is the user's.
       labelIsGenerated: supplied === null,
@@ -1063,6 +1063,25 @@ export function providerAccountCredentialRoot(
 
 export function providerDisplayLabel(provider: AgentId): string {
   return PROVIDER_LABEL[provider];
+}
+
+/**
+ * The placeholder label for a newly created account: the provider's own name
+ * ("Claude", "Codex") for the first one, then "Claude 2", "Claude 3", … The
+ * common case is a single account per provider, and there "Claude account 1"
+ * read as machine-generated bookkeeping for a number the user never chose.
+ *
+ * Suffixes skip labels already in use — including user-typed ones — so a row
+ * renamed to "Claude" doesn't collide with the next generated placeholder.
+ */
+function generatedAccountLabel(provider: AgentId, existing: readonly ProviderAccount[]): string {
+  const base = PROVIDER_LABEL[provider];
+  const taken = new Set(existing.map((account) => account.label));
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n++) {
+    const candidate = `${base} ${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
 }
 
 function normalizeLabel(label: string | undefined): string | null {
