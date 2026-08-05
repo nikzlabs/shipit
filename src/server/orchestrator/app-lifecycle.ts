@@ -619,8 +619,19 @@ export function buildRunnerFactory(
       }
       // docs/251 — close this session's `/agent-ops` host with the runner.
       // `dispose()` emits before `removeAllListeners()`, so a `once` here fires.
+      //
+      // Swallowing here rather than `void`-ing the promise: this runs inside
+      // `disposeAll()` on the shutdown path, where anything that escapes
+      // surfaces as an unhandled rejection while the process is already on its
+      // way down — noise that reads like a shutdown failure and buries whatever
+      // actually went wrong. A host we could not close is not worth failing a
+      // shutdown over; the process is about to exit and take the socket with it.
       runner.once("disposed", () => {
-        void stopLocalAgentOpsHost(o.sessionId);
+        stopLocalAgentOpsHost(o.sessionId).catch((err: unknown) => {
+          console.warn(
+            `[local-agent-ops] ${o.sessionId} teardown failed: ${getErrorMessage(err)}`,
+          );
+        });
       });
       return runner;
     };
