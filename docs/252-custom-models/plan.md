@@ -1,7 +1,7 @@
 ---
 issue: https://linear.app/shipit-ai/issue/SHI-319
 title: Custom models
-description: Run a session on a model the agent backend's vendor did not make, reusing the existing harness rather than adding a backend.
+description: Separate harness from service so a user can run any configured service's models on any compatible harness.
 ---
 
 # 252 — Custom models
@@ -15,14 +15,14 @@ those answers decide.
 ShipIt integrates **harnesses**, not models. `AgentProcess` spawns a CLI and
 normalizes its event stream; the model is a `--model` argument that CLI forwards to
 an API. So running a different vendor's model does not need a new backend — it needs
-the same CLI pointed at a different endpoint (req 1, req 2).
+the same CLI pointed at a different endpoint (reqs 1, 3).
 
 That is the whole mechanism, and it is why this is cheap. Everything expensive in an
 agent integration — the tool map, the event parsing, skills disclosure, MCP config,
 steering, permission modes, plan mode — belongs to the harness and is untouched
-(req 4).
+(req 6).
 
-## The actual problem: `AgentId` conflates harness and provider
+## The actual problem: `AgentId` conflates harness and service
 
 `AgentId` (`"claude" | "codex"`) is used as three different things at once:
 
@@ -34,17 +34,17 @@ A custom model keeps the first, replaces the second, and extends the third. Ther
 no way to say that today, and every awkwardness below is a symptom of that single
 gap. Resolving it is the real work; DeepSeek is just the first case that forces it.
 
-**The split the requirements settle on is three-way, not two-way** (reqs 8–10):
+**The split the requirements settle on is three-way, not two-way** (reqs 7–9):
 
 | Concept | Is | Identified by |
 |---|---|---|
 | **Harness** | a CLI to spawn, speaking exactly one API style | `claude`, `codex` |
-| **Service** | a credential + endpoint, speaking one or more API styles | its API key |
+| **Service** | a credential + endpoint, speaking one or more API styles | its API key or subscription |
 | **Model** | a model id a service offers | `deepseek-v4-flash` |
 
 Compatibility is then **derived, not declared**: a service's models are offered on
 every harness whose API style that service speaks. Nothing has to enumerate
-harness×service pairs, which is what makes req 10 fall out for free — a harness added
+harness×service pairs, which is what makes req 9 fall out for free — a harness added
 later immediately picks up every already-configured service that speaks its style.
 
 This is also why "should we support OpenAI-compatible providers?" was the wrong
@@ -62,7 +62,7 @@ All verified against the code on this branch, not inferred.
 Gated by one predicate, `isAllowedAgentEnvKey` (`agent-registry.ts:314`). Adding a key
 name to `ALLOWED_ENV_KEYS` covers **both** delivery paths — containerized sessions via
 the push above, local mode via `app-di.ts:421`'s startup load into `process.env`
-(req 5).
+(req 10).
 
 ### The credential-scrub only applies to local mode
 
@@ -98,14 +98,14 @@ a failure that looks nothing like a bad key.
 
 DeepSeek itself speaks **both** — the `/anthropic` endpoint and, per its own docs, the
 OpenAI Responses API with a Codex adaptation. So one DeepSeek key should surface its
-models under both harnesses (req 9), while an OpenAI-style-only service surfaces under
+models under both harnesses (req 8), while an OpenAI-style-only service surfaces under
 Codex alone. This concrete asymmetry is the evidence for modelling API style per
 service rather than treating it as a global scope decision.
 
 ### Three things break, all from the same root
 
 1. **The usage pill is empty.** `ClaudeLimitsProvider` is event-fed from
-   `agent_rate_limits`, which a custom provider does not emit.
+   `agent_rate_limits`, which a non-Anthropic service does not emit.
 2. **A 401 triggers the wrong recovery.** `AUTH_ERROR_PATTERNS` (`process.ts:43`)
    matches `"unauthorized"` / `"authentication_error"`, so a bad custom key kicks the
    session into the *backend vendor's* OAuth re-auth flow, which cannot fix it.
@@ -114,7 +114,7 @@ service rather than treating it as a global scope decision.
    credential. Observed as `[session-namer] claude CLI failed`; sessions fall back to a
    truncated-prompt title.
 
-Each is code that assumes a provider identity the type system cannot express — the
+Each is code that assumes a service identity the type system cannot express — the
 same gap as above, surfacing three times. None should be patched individually.
 
 ### Prompt caching is not portable
@@ -127,8 +127,8 @@ comparable to the tuned path, in either direction.
 ## Relationship to the spike
 
 PR #1997 on this branch is an **experimental spike**, written before this document, to
-answer "does this work at all" (req 7). It is not an implementation of these
-requirements and should not be treated as one. It hardcodes a single model id in
+answer "does this work at all". It is not an implementation of these requirements and
+should not be treated as one. It hardcodes a single model id in
 `CLAUDE_MODELS`, hardcodes DeepSeek's endpoint, and makes
 `hasAnyAuthForProvider`/`reservedRouteFor` treat a DeepSeek key as a Claude-provider
 route — deliberately accepting the overstatement in the third open question.
@@ -141,21 +141,34 @@ spike is scaffolding.
 
 ## Design
 
-_Partly deferred_ — the usage-indicator question is still open, so the pill's behavior
-is unwritten. The rest of the shape is settled by the 2026-08-05 answers.
+_Partly deferred_ — the residual usage-indicator question is open, so one resting state
+is unwritten. The rest of the shape is settled.
 
-**Data model.** A user-owned list of **services** (req 11), each carrying a display
-name, a credential, a base URL, the API style(s) it speaks, and the model ids it
-offers. `AgentId` keeps meaning *harness* only, and gains a declared API style. The
+**Data model.** A user-owned list of **services** (req 10), each carrying a display
+name, a credential (key *or* subscription), a base URL, the API style(s) it speaks, and
+the model ids it offers. Anthropic and OpenAI are rows in that list, not special cases
+(req 7). `AgentId` keeps meaning *harness* only, and gains a declared API style. The
 picker's model list becomes derived — for the active harness, every model from every
-configured service whose style set includes that harness's style (reqs 8–10, 12).
+configured service whose style set includes that harness's style (reqs 7–9, 11).
 
-**Eligibility** (req 12) moves from `hasAnyAuthForProvider(provider)` to a per-model
-question: *is there a configured service offering this model for this harness?* The
-backend's own account becomes one service among several rather than a special case, so
-"Claude with no account connected" and "DeepSeek with no key" are the same condition,
-answered by the same code. This retires the spike's overstatement rather than patching
-it, and is what makes the picker honest generally.
+**Full separation is the point.** No code path should ask "which vendor's agent is
+this?" to decide anything about credentials. Concretely, req 2 means a user with only a
+DeepSeek key runs the Claude Code harness with no Anthropic account anywhere in the
+system — so `providerAccountManager`'s per-`AgentId` account model has to become a
+per-*service* one, not gain a fallback branch.
+
+**Eligibility** (req 11) moves from `hasAnyAuthForProvider(provider)` to a per-model
+question: *is there a configured service offering this model for this harness?* With
+Anthropic as an ordinary service, "Claude with no account connected" and "DeepSeek with
+no key" become the same condition answered by the same code. This retires the spike's
+overstatement rather than patching it.
+
+**Mid-session model switching** (req 5) is a capability question per harness, not a new
+mechanism: the model is already a per-turn spawn argument, and `AgentCapabilities`
+already carries per-harness flags. A switch that crosses *services* additionally
+re-resolves the credential and base URL for the next spawn. What needs checking before
+design is settled is whether a resident streaming process can change model without a
+respawn, or whether the switch has to force one.
 
 **Credential delivery** reuses the existing pipe: a per-service key name in
 `ALLOWED_ENV_KEYS`, carried to a container by `selectAgentEnvForPush` and to local mode
@@ -164,14 +177,25 @@ by `app-di.ts`'s startup load. No new transport.
 **Spawn shaping** sets the base URL and credential at both spawn sites, after the
 scrub, from the *selected model's* service rather than from a model-id prefix.
 
-**Non-turn work** (req 13) — session naming and PR descriptions must resolve the same
-service as the turn path, instead of spawning with ambient credentials. This is the one
-place the current code has no seam at all; it is the largest single piece of work here.
+**Non-turn work** (req 12) — session naming and PR descriptions run on a service the
+user configures **explicitly for that purpose**, resolved independently of whatever the
+session is using. Deliberately not "follow the session's model": the failure this
+requirement comes from was a credential disappearing underneath work that assumed it
+(a lapsed Claude subscription while working in Codex), and inheriting the session's
+model would leave that same implicit dependency in place, merely pointed elsewhere. An
+explicit setting is also the only version that can be *shown* to the user as broken
+when its service stops working. This is the one place with no existing seam at all, and
+the largest single piece of work here.
+
+**Usage** (req 13) is reported per service. The current `LimitsProvider` is per
+`AgentId` and event-fed from harness-specific rate-limit events; it becomes per service,
+and must accommodate a service that exposes a subscription of its own later without
+reshaping the interface again.
 
 **The three known-wrong behaviors** are then not three fixes: eligibility subsumes the
 auth-flow misfire (a 401 from a service should re-prompt for *that service's*
-credential), req 13 subsumes the non-turn failures, and only the usage pill remains,
-pending the open question.
+credential), req 12 subsumes the non-turn failures, and the usage pill is req 13 plus
+the one open question.
 
 ## Key files
 
@@ -186,9 +210,10 @@ pending the open question.
 | `shared/model-windows.ts` | First-frame context window |
 | `client/components/ModelAgentSelector.tsx` | Picker, `METERED_MODELS` |
 
-## Verifying a custom model without shipping it
+## Verifying a service in dogfood
 
-Requirement 7's path, as exercised: declare the credential in the `dev` service's
+Not a requirement — a working note, kept because it is how this branch was validated
+and it is not obvious. Declare the credential in the `dev` service's
 `x-shipit-secrets`, set it in the **outer** Settings → Secrets, `shipit service restart dev`
 (a running service does not pick up a newly declared secret), then drive the inner
 instance over its API — `POST /api/sessions/headless` with `model`, then
