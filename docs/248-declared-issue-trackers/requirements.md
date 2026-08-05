@@ -28,7 +28,7 @@ off Linear — is a separate feature
          name: roadmap
    ```
 
-   The workspace comes from the credential (req 21), not the declaration, so a
+   The workspace comes from the credential (req 23), not the declaration, so a
    `linear` entry identifies itself by team.
 
 3. Both `github` and `linear` are supported kinds, and each is declared the same
@@ -68,59 +68,69 @@ off Linear — is a separate feature
     outside the declarations except the session's own repository. Where more than
     one declaration matches, the reference is ambiguous and fails closed rather than
     resolving to one of them.
-12. An operation names its tracker by `name`. The single exception is the session's
-    own repository's GitHub Issues, which needs no declaration and no name.
-13. Renaming a tracking repository requires editing only that declaration's
+
+    Undoing a recorded write is the one exception: the card carries the destination
+    its write reached, and reversing it stays available even after that destination
+    stops being declared. Reversing a write grants no access the write did not
+    already have.
+12. An operation that acts on an existing issue names its tracker by `name`. The
+    single exception is the session's own repository's GitHub Issues, which needs
+    no declaration and no name — though a repository may declare its own
+    repository in order to give it one.
+13. Creating an issue always names its destination. There is no default and no
+    unnamed exception for a create, so an issue cannot be filed somewhere the
+    caller did not name.
+14. Renaming a tracking repository requires editing only that declaration's
     identifying field. No existing reference to its issues has to change.
-14. Wherever ShipIt writes a reference itself, it writes the `name` form, and it
+15. Wherever ShipIt writes a reference itself, it writes the `name` form, and it
     instructs the agent to use that form in the text the agent authors — doc
     frontmatter, PR bodies and comments, chat prose. Any recognized form the agent
     writes still resolves (req 10); the instruction is what keeps generated
     references consistent, not a restriction enforced on the agent's text.
-15. A reference resolves when it is used, not when it is written. Re-pointing a
+16. A reference resolves when it is used, not when it is written. Re-pointing a
     name at a different destination re-targets every reference written against it,
     recorded ones included, and the UI shows what it now resolves to.
 
 ## Routing safety
 
-16. A named destination is used as named. ShipIt never substitutes another
+17. A named destination is used as named. ShipIt never substitutes another
     tracker for it, and never retries a failure against a fallback.
-17. A destination that cannot be reached fails closed with an error that does not
+18. A destination that cannot be reached fails closed with an error that does not
     guess at the cause where the backend is ambiguous — GitHub returns the same
     response for "missing" and "inaccessible".
-18. Every failure in requirements 11 and 17 — unresolvable reference, ambiguous
+19. Every failure in requirements 11 and 18 — unresolvable reference, ambiguous
     reference, unreachable destination — surfaces where the operation was
     initiated: inline in the Issues UI for a user action, and in `shipit` CLI
     output for an agent action, alongside the declaration warnings of requirement 8.
     A failure is never silently dropped and never resolved to a guess.
-19. These requirements are the whole specification. Behavior they do not state is
+20. These requirements are the whole specification. Behavior they do not state is
     not guaranteed, and anything that must hold is written here.
 
 ## Naming and disclosure
 
-20. ShipIt itself writes an issue's details into three kinds of text: the pushed
+21. ShipIt itself writes an issue's details into three kinds of text: the pushed
     branch name, the comments it posts on an issue when a PR references or merges,
     and the cards it renders in its own UI. Where that text leaves both ShipIt and
     the tracker, it carries the reference and no other issue field — no title,
     body, comments, status, labels, or assignees. The branch name is the only such
-    surface, and requirement 21 states its rule; ShipIt's own UI and the comments
+    surface, and requirement 22 states its rule; ShipIt's own UI and the comments
     it posts back into the tracker are not restricted, since neither publishes
     anything the reader could not already see.
-21. When a session starts from a tracker issue, the pushed branch name comes from
+22. When a session starts from a tracker issue, the pushed branch name comes from
     the reference only, never from the issue title. This applies to every tracker
     issue: ShipIt cannot tell which trackers are private, so the rule is
     unconditional rather than a guess.
 
 ## Authorization
 
-22. Tracker credentials are configured at deployment scope, and at Project scope
+23. Tracker credentials are configured at deployment scope, and at Project scope
     once [Projects](../231-projects/requirements.md) ships. A declaration names a
     destination; it does not carry a credential.
-23. The tracker's own service authorizes the credential; ShipIt adds no separate
+24. The tracker's own service authorizes the credential; ShipIt adds no separate
     per-viewer membership check or tracker ACL. Anyone who can use the deployment —
     the Project, later — can therefore read and write a declared tracker regardless
     of their personal membership in it.
-24. The user creates the tracker or repository and declares it. ShipIt neither
+25. The user creates the tracker or repository and declares it. ShipIt neither
     creates nor initializes it.
 
 ## Open questions
@@ -133,6 +143,31 @@ Receipts are carried forward from the superseded `247-private-github-issue-track
 doc, which held these requirements before the split; its full deliberation history
 remains in git.
 
+- 2026-08-05 — Asked where a bare `shipit issue create` should file once there is
+  no implicit fallback, the user chose to **require an explicit destination**
+  (req 13), rather than letting it inherit req 12's unnamed exception or adding a
+  declarable default. The reason is a footgun rather than tidiness: for a public
+  code repository the unnamed destination is the *public* repo, so a forgotten flag
+  would file a planning issue publicly — the thing
+  [247](../247-shipit-private-planning/requirements.md) exists to prevent. A
+  declarable create-default was rejected as re-introducing the implicit destination
+  requirement 1 removes.
+- 2026-08-05 — Asked whether Undo should still work on a card whose destination is
+  no longer declared, the user chose **yes** — recorded in requirement 11 as its one
+  exception. Reversing a write grants no access the write did not already have,
+  since the card could only exist if the destination was declared when it was
+  written; failing closed would instead strand every recorded action behind a
+  config edit. This resolves the card-schema question that was open: a card records
+  both the name it was written with (so req 16's re-point re-targets it) and the
+  resolved destination (so an undeclared target stays undoable).
+- 2026-08-05 — Asked how deployments losing their Linear tab should be handled, the
+  user chose a **clean break**: no migration warning and no auto-generated
+  declaration. Writing to the user's `shipit.yaml` unprompted was rejected as
+  something no other config path does.
+- 2026-08-05 — Restored the self-declaration allowance to requirement 12. It had
+  been recorded as a decision below and then dropped from the numbered list during
+  an earlier restructuring, leaving only the receipt — so the requirement it
+  documents was, briefly, not stated anywhere.
 - 2026-08-05 — Reviewing this document, the user asked that requirements not
   describe how things used to work, since a reader would then need to know the
   previous implementation to follow them. Requirements 3, 4, 19 and 22 were
@@ -142,10 +177,10 @@ remains in git.
   instead of "existing behavior may break".
 - 2026-08-05 — Asked what "ShipIt-generated text" meant, the vague phrase was
   replaced with the three places ShipIt actually writes an issue's details
-  (req 20): the pushed branch name, the comments it posts on an issue at PR
+  (req 21): the pushed branch name, the comments it posts on an issue at PR
   reference or merge (`issue-lifecycle.ts`), and its own UI cards. Only the branch
   name leaves both ShipIt and the tracker, so it is the only one the rule binds —
-  which also corrected requirement 14, whose earlier wording claimed ShipIt writes
+  which also corrected requirement 15, whose earlier wording claimed ShipIt writes
   references into PR bodies and docs. Those are agent-authored; ShipIt instructs
   the agent which form to use rather than writing them.
 - 2026-08-05 — Asked where failures like an ambiguous reference surface, the user
@@ -169,20 +204,20 @@ remains in git.
   **recognize all three forms** — `roadmap#SHI-304`, `roadmap#304`, and the bare
   `SHI-304` — rather than pick one (req 10), noting that the UI highlight and other
   surfaces need to match any of them and that the agent can simply be instructed
-  which form to write (req 14). The user also moved the **Linear team binding out
+  which form to write (req 15). The user also moved the **Linear team binding out
   of the UI and into the declaration** (req 4), observing that the team prefix could
   be defined there — which is what makes the bare `SHI-304` resolvable to a
   declaration (req 5).
 - 2026-08-05 — Asked whether the break with existing behavior is accepted, the
   user answered that ShipIt can "break everything, unless a specific behavior is in
-  these requirements". Recorded as requirement 19, which inverts the usual default:
+  these requirements". Recorded as requirement 20, which inverts the usual default:
   compatibility is not assumed anywhere, and each surviving behavior is named. No
   migration path is owed for repositories that declare nothing, for
   `--tracker linear|github`, or for `shipit issue create`'s Linear default.
 - 2026-08-05 — Reviewing this document, the user generalized it from GitHub to
   **all** issue trackers: `linear` becomes a declared `kind` and its built-in
   fallback is retired (req 3), and authorization is described per credential scope —
-  global now, per Project later — rather than as a GitHub-specific gate (req 22).
+  global now, per Project later — rather than as a GitHub-specific gate (req 23).
 - 2026-08-05 — The user replaced `--repo owner/name` with **naming the tracker**,
   and made the declaration field **mandatory** (reqs 4, 8), with the session's own
   GitHub Issues as the one exception that needs no declaration. Offered `name` or
@@ -197,7 +232,7 @@ remains in git.
   it with the user rather than the warning being swallowed.
 - 2026-08-05 — Asked which form ShipIt writes when it generates a reference
   itself, the user chose **the tracker name everywhere** — "this slug needs to work
-  inside ShipIt, in the conversation, in PR body/comments, in docs" (req 14).
+  inside ShipIt, in the conversation, in PR body/comments, in docs" (req 15).
   Emitting it only on in-repo surfaces while keeping a fully qualified slug in
   public PR bodies, and treating it as an input-only form, were both rejected. Two
   accepted costs: GitHub cannot linkify `planning#42`, so the reference is plain
@@ -210,14 +245,14 @@ remains in git.
   repo, so a self-declaration is currently discarded.
 - 2026-08-05 — Asked what happens to already-recorded references when a name is
   later pointed at a different repository, the user chose **the links resolve to
-  the new destination and the UI shows it** (req 15), replacing an earlier
+  the new destination and the UI shows it** (req 16), replacing an earlier
   guarantee that a recorded destination stays valid for what it resolved to when
   written. The accepted consequence is that re-pointing re-targets history,
   including a persisted Undo card's target. Freezing persisted routing while
   letting text follow the name, and freezing everything, were both rejected as more
   machinery than the case warrants.
 - 2026-08-04 — Asked which issues get pointer-only branch names, the user chose
-  **every issue** (req 21), so title-derived readable branch names go away for
+  **every issue** (req 22), so title-derived readable branch names go away for
   every tracker. Scoping the rule to declared trackers, adding an explicit
   `private: true` opt-in, and dropping the requirement were all rejected. Public PR
   *titles* are not covered: the agent writes them with `gh pr create -t`, so ShipIt
@@ -239,7 +274,7 @@ remains in git.
   break an older one.
 - 2026-08-04 — To keep authorization simple, ShipIt relies on ordinary tracker
   requests rather than proactive access or privacy polling, and does not verify
-  each viewer's membership independently of the credential (req 23).
+  each viewer's membership independently of the credential (req 24).
 - 2026-08-04 — The user removed priority-label writing from this feature as
   orthogonal. Priority writes are tracked under
   [SHI-310](https://linear.app/shipit-ai/issue/SHI-310).

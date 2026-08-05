@@ -21,7 +21,7 @@ destination lives in the tracker id. Everything else — how trackers come into
 existence, how an operation names one, and what a reference resolves through —
 changes.
 
-Requirement 19 means the rework owes nothing to the current CLI surface, the
+Requirement 20 means the rework owes nothing to the current CLI surface, the
 implicit Linear destination, or the `--tracker` flag.
 
 ## What carries over: the destination lives in the tracker id
@@ -54,10 +54,10 @@ turned into an id — rather than spread through the operation paths.
 
 Unchanged from the shipped design, and still the point of the feature:
 
-1. A destination named by an operation is used as named, verbatim (req 16).
+1. A destination named by an operation is used as named, verbatim (req 17).
 2. ShipIt never substitutes one destination for another, and never retries a
-   failure against a fallback (req 16).
-3. An unreachable destination fails closed with no fallback (req 17).
+   failure against a fallback (req 17).
+3. An unreachable destination fails closed with no fallback (req 18).
 4. Every identity key derived from an issue — parser deduplication, persisted
    merge-effect guards, deterministic card IDs — includes the destination as well
    as the issue number.
@@ -93,14 +93,20 @@ repository. `kind: linear` becomes a declared backend identified by its team key
   declare two Linear trackers on different teams. Its `isConfigured()` already
   requires a token and a team; the team now arrives from config rather than
   storage.
-- Deployments that have a stored team lose their Linear tab until the repository
-  declares one. Req 19 permits this; it is worth calling out because it is the
-  one change a user notices without doing anything.
+- Deployments with a stored team lose their Linear tab until the repository
+  declares one. That is a **clean break** by decision: no auto-generated
+  declaration, no migration warning. It is the one change a user notices without
+  doing anything, and the only signal is the tab's absence.
 
 ### 2. A destination is addressed by name (reqs 6, 12)
 
 `--repo owner/name` goes away, replaced by the declared name. The session's own
-repository stays the one unnamed destination.
+repository stays the one unnamed destination for operations that act on an
+existing issue — but **`create` always names its destination** (req 13). Without
+that carve-out, a forgotten flag files into the session's own repository, which for
+a public repo means filing a planning issue publicly; the whole point of
+[247](../247-shipit-private-planning/plan.md) is that this cannot happen by
+omission.
 
 This inverts an asymmetry the shipped registry documents at length. `get()`
 currently **synthesizes** a tracker for any well-formed `github:owner/repo` id it
@@ -109,14 +115,31 @@ see. Req 11 forbids exactly that: an address identifying no declared tracker fai
 closed. So the synthesizer is deleted and `get()` narrows to the registered set —
 `list()` and `get()` stop disagreeing.
 
-That deletion has a consequence worth stating, because the registry docstring
-currently sells the synthesizer as load-bearing: it is what let a persisted Undo
-card resolve `github:owner/repo` with no extra state. After the change, a card
-whose destination is no longer declared fails closed on Undo. That is req 11
-applied consistently rather than a regression, but it is a behavior change to the
-Undo path and needs its own test.
+Undo is carved out of that (req 11). The registry docstring currently sells the
+synthesizer as load-bearing precisely because it let a persisted card resolve
+`github:owner/repo` with no extra state, and dropping it would have stranded every
+Undo written against a destination the repository later stopped declaring.
+Reversing a write grants no access the write did not already have — the card could
+only exist if the destination was declared when it was written — so an Undo
+resolves against the destination recorded on the card, declared or not. That path
+keeps its own resolution and needs its own test.
 
-### 3. References resolve through the declarations (reqs 10, 11, 14, 15)
+**What a card therefore stores.** Two requirements pull in different directions
+and together settle the schema:
+
+- Req 16 — a *re-pointed* name re-targets recorded references, so the card must
+  remember the **name** it was written with, or it would stay pinned to the old
+  destination.
+- Req 11 — an *undeclared* destination must still be undoable, so the card must
+  also remember the **resolved destination**, or it would have nothing to fall
+  back to.
+
+So a card records both, and Undo prefers the name when it still resolves and falls
+back to the recorded destination when it does not. A card written from a canonical
+address has no name and simply uses the destination. This is the one part of the
+rework that touches the persisted card schema.
+
+### 3. References resolve through the declarations (reqs 10, 11, 15, 16)
 
 Three forms resolve: `planning#123`, `roadmap#304`, and each backend's canonical
 address (`SHI-304`, `owner/repo#42`).
@@ -152,29 +175,29 @@ The client sites need the declarations in the browser. They are already fetched
 for the tab list, so the resolver should read from that same store rather than a
 second fetch.
 
-**Emitting the name (req 14).** Only two places in the codebase produce a
+**Emitting the name (req 15).** Only two places in the codebase produce a
 reference string: `parseIssueRef`'s four branches, and `github/adapter.ts`, which
 builds `${owner}/${repo}#${number}` from an API response. That is a much smaller
 surface than "everywhere a reference is shown", and it is the argument for a single
 formatter — both producers should call it, so a name is rendered wherever the
 destination has one. The agent's own text is not rewritten; ShipIt instructs it
-which form to write (req 14), which is an `agent-instructions` change, not a code
+which form to write (req 15), which is an `agent-instructions` change, not a code
 path.
 
-**Resolution happens at use (req 15).** Nothing pins a name to what it resolved to
+**Resolution happens at use (req 16).** Nothing pins a name to what it resolved to
 when written, including persisted Undo targets. Since a card stores a tracker id
 and not a name, this needs care: storing the *resolved id* freezes the
-destination, which is what req 15 forbids for a name-written reference. The design
+destination, which is what req 16 forbids for a name-written reference. The design
 question is whether a card records the name it was written with alongside the
 resolved id. That is a persisted-field change, so it is the one place this rework
 touches the database.
 
-### 4. Failures surface where the operation started (reqs 8, 18)
+### 4. Failures surface where the operation started (reqs 8, 19)
 
 Declaration warnings today reach two places, neither of them the agent:
 `service-manager-setup.ts` posts a "shipit.yaml needs migration" chat message, and
 `diagnostics.ts` exposes `cfg.warnings`. Req 8 puts them in `shipit` CLI output so
-the agent can repair a declaration; req 18 extends the same rule to resolution and
+the agent can repair a declaration; req 19 extends the same rule to resolution and
 reachability failures — inline in the Issues UI for a user action (the viewer
 already renders an inline error bar), in CLI output for an agent action.
 
@@ -207,7 +230,7 @@ Tracker calls use the same contextual credential as ShipIt's other operations
 against that backend: the deployment credential now, the owning Project's after
 Projects phase 1c. There is no second tracker credential, no tracker ACL, and no
 per-viewer membership check — the backend authorizes the credential, not the
-viewer (req 23).
+viewer (req 24).
 
 For GitHub the credential is the **account-wide** token
 (`githubAuthManager.getToken()`), not the repo-scoped installation token, so a
@@ -263,7 +286,7 @@ Current state; each is a rework site unless noted.
 - `src/server/session/agent-shim/shipit-issue.ts` — `--repo` and the `"linear"`
   fallback in `resolveTrackerFlag` both go; verbs take a tracker name.
 - `src/server/orchestrator/services/headless-sessions.ts` — `seedFromIssueRef`
-  builds the branch from the identifier alone (req 21). **Carries over.**
+  builds the branch from the identifier alone (req 22). **Carries over.**
 - Agent-facing docs: `src/server/shipit-docs/issues.md`,
   `shipit-docs/shipit-yaml.md`, and `agent-instructions` for the reference form.
 
@@ -284,9 +307,9 @@ The rework needs:
 - an ambiguous reference failing rather than resolving to one match;
 - a self-declaration producing a name without a duplicate tab;
 - a name re-pointed at a different destination re-targeting an existing recorded
-  card (req 15);
-- ShipIt-emitted references carrying the name form (req 14);
-- declaration warnings and resolution failures appearing in CLI output (reqs 8, 18).
+  card (req 16);
+- ShipIt-emitted references carrying the name form (req 15);
+- declaration warnings and resolution failures appearing in CLI output (reqs 8, 19).
 
 ## Out of scope
 

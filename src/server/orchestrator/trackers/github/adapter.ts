@@ -602,7 +602,7 @@ export class GitHubTracker implements Tracker {
   }
 
   /**
-   * docs/248 req 17 — fail closed with an error that names **both**
+   * docs/248 req 18 — fail closed with an error that names **both**
    * possibilities. GitHub deliberately returns `404` rather than `403` for a
    * private repository the credential cannot see, so "missing" and
    * "inaccessible" are genuinely indistinguishable from the response; claiming
