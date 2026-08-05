@@ -60,6 +60,7 @@ each item is where it is.
 - [x] ShipIt-emitted references carry the name form (req 15).
 - [x] Declaration warnings and resolution failures appear in CLI output (reqs 8, 19).
 - [x] The shipped two-repository `#42` fixture still passes — the regression guard for the routing invariant that carries over.
+- [x] Live run against two real GitHub repositories through the dogfood inner ShipIt — routing, req 13, req 15, fail-closed, ambiguity, self-declaration, the Undo carve-out and declaration warnings all confirmed end to end. Linear stays fake-only. See plan.md → *Live run against two real repositories*.
 
 ## Carries over unchanged
 
@@ -89,7 +90,10 @@ pointer-derived destinations, `seedFromIssueRef`'s pointer-only branch names
 
 ## Open — found during implementation, not closed here
 
-- [ ] **The browser's declaration view can go stale.** `fetchTrackers` runs on
+Filed; the tracker holds its status from here.
+
+- [ ] **The browser's declaration view can go stale.**
+  ([SHI-321](https://linear.app/shipit-ai/issue/SHI-321)) `fetchTrackers` runs on
   session change and on Issues-tab activation, so editing `shipit.yaml` with the
   tab already open doesn't re-resolve names until one of those happens. The
   server reads the file per request, so only the client is affected.
