@@ -30,16 +30,16 @@ No open questions remain.
    uses tools poorly will use them poorly. Those are properties of the harness and the
    model, not defects in ShipIt, and this requirement does not promise otherwise.
 
-7. The thing a user connects is a **service** — not a model, and not a harness. Harness
-   and service are fully separate concepts throughout, and Anthropic and OpenAI are
-   services like any other rather than privileged defaults. The user does not invent a
-   service: they supply a credential for one ShipIt already knows about (req 8, req 10).
+7. **Services are defined by ShipIt, not invented by users.** A service is a first-class
+   concept, fully separate from a harness, and Anthropic and OpenAI are services like
+   any other rather than privileged defaults. What a user does is supply a credential
+   for a service ShipIt already defines (req 10) — they never describe a new one.
 
-   A service is authenticated either by an API key or by a subscription. **A service the
-   user adds themselves is key-authenticated.** Subscription-backed services are those
-   ShipIt implements support for, because each subscription needs its own login,
-   refresh, and account handling that cannot be inferred from configuration. Adding a
-   new subscription-backed service is out of scope for this feature.
+   A service is authenticated by an API key or by a subscription, and which it is
+   belongs to ShipIt's definition of that service. Supporting a subscription takes
+   per-service work on ShipIt's side — its own login, refresh, and account handling —
+   so this feature adds **key-authenticated** services; subscription-backed services
+   remain the ones ShipIt already implements.
 
 8. A service may speak more than one API style, and a harness speaks one. Which of a
    service's models work under which API style is **declared in ShipIt, by ShipIt's
@@ -57,9 +57,10 @@ No open questions remain.
    work by the user at all**. Extending those declarations to models not yet covered is
    ShipIt's work, never the user's.
 
-10. A user adds and manages their own services in their own Settings by supplying
-    credentials for them — no administrator, and no involvement from anyone else, to
-    start using a service ShipIt knows about.
+10. A user chooses which of ShipIt's services they use, in their own Settings, by
+    supplying a credential for each — no administrator and no involvement from anyone
+    else to start using a service ShipIt defines. What the user owns is the credential;
+    the service itself is ShipIt's.
 
     The catalogue itself — which services exist, which API styles each speaks, and which
     of their models work where — ships with ShipIt (req 8). So a service or model ShipIt
@@ -154,8 +155,19 @@ _None._
   is the **credential**, and the catalogue is ShipIt's. The two answers are recorded
   separately rather than merged, because the second changes the first.
 
+- 2026-08-05 — What is "a service the user adds"? **Chosen: there is no such thing.**
+  Services are ShipIt-defined ("hardcoded"); a user supplies credentials for them and
+  never describes a new one. This is the same conclusion the catalogue answer reached
+  from the other direction — if ShipIt authors the catalogue, a user-invented service
+  was never coherent — but reqs 7 and 10 still carried the older phrasing. Both
+  rewritten. It also simplifies the receipt below: the scope limit is not "user-added
+  services are key-authenticated" but simply that this feature adds key-authenticated
+  services to ShipIt's catalogue.
+
 - 2026-08-05 — Are user-added *subscription* services in scope? **Chosen: no, out of
-  scope for now.** Each subscription needs custom ShipIt-side support — its own login,
+  scope for now.** *(Phrasing superseded by the receipt above — there are no user-added
+  services at all; the substance, that this feature adds only key-authenticated
+  services, is unchanged.)* Each subscription needs custom ShipIt-side support — its own login,
   refresh, and account handling — which cannot be inferred from configuration. A service
   a user adds is key-authenticated; subscription-backed services remain the ones ShipIt
   implements. Requirement 7.
@@ -291,6 +303,8 @@ human, but most of the mechanism did not. What the human actually said, in order
   this originally added was later replaced by curation — see the receipt.)
 - "each subscription would require custom support from the ShipIt side. So it is out of
   scope of this feature for now" → req 7's key-authentication limit.
+- "there should be only ShipIt-supported ('hardcoded') services" → reqs 7 and 10, which
+  had still described users adding services of their own.
 - "(a) keep the existing fallbacks and surface a dismissible notice" → req 12's failure
   behavior.
 - "sounds good" (req 6) and "good" (req 14) → both confirmed as requirements.

@@ -210,10 +210,11 @@ spike is scaffolding.
 
 ## Design
 
-Settled by the 2026-08-05 answers. **User-added services are key-authenticated**
-(req 7): a subscription needs its own login, refresh and account handling, which cannot
-come from configuration, so adding subscription-backed services is out of scope here.
-Subscriptions remain first-class for the vendors ShipIt already implements.
+Settled by the 2026-08-05 answers. **Every service is ShipIt-defined** (req 7) — there
+is no user-authored service, only user-supplied credentials for services ShipIt ships.
+This feature adds **key-authenticated** services to that set; a subscription needs its
+own login, refresh and account handling, which is per-service ShipIt work, so
+subscription-backed services remain the vendors already implemented.
 
 **Data model — two layers, with different owners.**
 
@@ -335,8 +336,8 @@ nothing, and no runtime dynamic-key mechanism is warranted. What does still need
 building is the compose path — a compose-backed containerized session receives only
 compose-declared and `mcp__*` secrets, so a stored service key never reaches it.
 
-**Subscription credentials are out of scope for user-added services** (req 7), which
-is what keeps credential delivery to one flow. Subscriptions travel through account
+**Subscription credentials are out of scope for the services this feature adds**
+(req 7), which is what keeps credential delivery to one flow. Subscriptions travel through account
 credential roots and filesystem mounts rather than `agentEnv`, and each needs its own
 login and refresh — the reason req 7 draws the line where it does. Existing
 subscription-backed vendors keep their current path unchanged.
