@@ -48,13 +48,16 @@ SHI-303) would break requirement 5.
 
 ## Open questions
 
-- **Should the `shipit` shim be installed alongside `gh`?** It shares the same
-  missing plumbing, so it comes almost free — but unlike `gh` it would only
-  work in part. `shipit issue`, `shipit release`, `shipit branch` and
-  `shipit source` are relays and would work; `shipit service` needs a
-  ServiceManager and local mode runs no Compose stacks; `shipit agent run`
-  spawns a sub-agent. The human asked only about `gh`.
+_(none)_
 
 ## Resolved questions
 
-_(none yet)_
+- **2026-08-05 — Should the `shipit` shim be installed alongside `gh`?**
+  Asked because it shares the same missing plumbing and would come almost free,
+  but unlike `gh` it would only work in part (`shipit issue` / `release` /
+  `branch` / `source` are relays and would work; `shipit service` needs a
+  ServiceManager and local mode runs no Compose stacks; `shipit agent run`
+  spawns a sub-agent). **Nik: `gh` only.** So this feature installs the `gh`
+  shim and nothing else; the `shipit` shim stays absent and remains tracked by
+  SHI-303 along with the worker-served tools. Requirements 1–3 are unchanged —
+  they already named only `gh`.
