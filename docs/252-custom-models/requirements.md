@@ -62,12 +62,17 @@ The design that implements these requirements is in [`plan.md`](./plan.md).
 
 ## Open questions
 
-- **What should the usage indicator show for a service that reports no usage data at
-  all?** Requirement 13 settles that the indicator is per-service, but a service with
-  no quota telemetry still needs a defined resting state. Options: (a) show no
-  indicator for that service; (b) show an explicit "not reported" state; (c) show
-  accumulated token spend computed by ShipIt. *Recommendation: (a) — an empty
-  indicator reads as a bug, and (c) is a larger feature than it appears.*
+- **What should the indicator show for a service that has no quota to report?**
+  Requirement 13 settles that the indicator is per-service. "Quota" here means what
+  the header pill shows today — a plan tier, a rolling window, a percentage consumed
+  and a reset time. A service authenticated by a plain API key has none of these:
+  there is no window and nothing resets. It does still produce per-turn token counts
+  and cost, which ShipIt already records for every turn.
+
+  So: (a) render no indicator, which is what a key-based route does today; (b) render
+  an explicit "no quota" state; (c) put accumulated spend or token counts in that slot
+  instead. *Recommendation: (a) — it is the status quo rather than a new behavior, and
+  (c) is a separate feature that should not be decided as a side effect of this one.*
 
 ## Resolved questions
 

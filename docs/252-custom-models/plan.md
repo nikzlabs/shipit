@@ -187,10 +187,21 @@ explicit setting is also the only version that can be *shown* to the user as bro
 when its service stops working. This is the one place with no existing seam at all, and
 the largest single piece of work here.
 
-**Usage** (req 13) is reported per service. The current `LimitsProvider` is per
-`AgentId` and event-fed from harness-specific rate-limit events; it becomes per service,
-and must accommodate a service that exposes a subscription of its own later without
-reshaping the interface again.
+**Usage** (req 13) is reported per service, and the existing types are already most of
+the way there: `SubscriptionLimits` is keyed by `routeId`, not by provider, because
+"quota belongs to the subscription, not the provider" (its own comment) — the same
+argument req 13 makes one level up. What is still per-`AgentId` is `LimitsProvider`,
+which becomes per service and must accommodate a service exposing its own subscription
+later without reshaping the interface again.
+
+Note this is two distinct things, and only the first is at issue: **quota telemetry**
+(`SubscriptionLimits` — plan tier, rolling and weekly windows, `usedPct`, `resetAt`,
+fed by `rate_limit_event` or `/api/oauth/usage`) versus **token and cost accounting**
+(`RecordedTurn` — `costUsd`, input/output tokens, cache reads, context occupancy),
+which ShipIt already records per turn for every provider. A key-based service has no
+quota to report but full token accounting, and a key-based route already renders no
+pill today — so the open question is a confirmation of existing behavior, not a new
+decision.
 
 **The three known-wrong behaviors** are then not three fixes: eligibility subsumes the
 auth-flow misfire (a 401 from a service should re-prompt for *that service's*
