@@ -44,11 +44,6 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "haiku": 200_000,
   "claude-haiku": 200_000,
   "opus-1m": 1_000_000,
-  // DeepSeek spike — served through the Claude Code CLI against DeepSeek's
-  // Anthropic-compatible endpoint, so the CLI's `modelUsage.contextWindow` may
-  // report whatever that endpoint claims. This static entry is the first-frame
-  // fallback and matches DeepSeek-V4-Flash's advertised 1M window.
-  "deepseek-v4-flash": 1_000_000,
   // Codex / GPT-5 family. Use Codex's context window rather than the model's
   // larger API-advertised maximum: ShipIt runs these models through Codex,
   // whose app-server assigns and reports a 272K window. Runtime telemetry can

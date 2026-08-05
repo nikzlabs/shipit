@@ -174,12 +174,15 @@ comparable to the tuned path, in either direction.
 
 ## Relationship to the spike
 
-PR #1997 on this branch is an **experimental spike**, written before this document, to
-answer "does this work at all". It is not an implementation of these requirements and
-should not be treated as one. It hardcodes a single model id in
-`CLAUDE_MODELS`, hardcodes DeepSeek's endpoint, and makes
-`hasAnyAuthForProvider`/`reservedRouteFor` treat a DeepSeek key as a Claude-provider
-route — an overstatement it accepted deliberately, and which req 11 now rules out.
+An **experimental spike** was written before this document, to answer "does this work at
+all", and **removed from this branch on 2026-08-05** once it had. It was never an
+implementation of these requirements: it hardcoded a single model id in `CLAUDE_MODELS`,
+hardcoded DeepSeek's endpoint, and made `hasAnyAuthForProvider`/`reservedRouteFor` treat
+a DeepSeek key as a Claude-provider route — an overstatement it accepted deliberately,
+and which req 11 now rules out. It was deleted rather than kept because shipping a
+design alongside an implementation that contradicts it is worse than shipping neither.
+The code is recoverable from this branch's history if anyone wants to re-run the
+experiment.
 
 **It did establish that the approach works.** A full session ran on DeepSeek V4 Flash
 through the unmodified Claude Code harness: multi-step tool use, correct output, a

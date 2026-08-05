@@ -620,19 +620,6 @@ export class ProviderAccountManager {
     if (provider === "claude") {
       if (process.env.ANTHROPIC_AUTH_TOKEN?.trim()) return { kind: "reserved", id: "claude-env-oauth" };
       if (process.env.ANTHROPIC_API_KEY?.trim()) return { kind: "reserved", id: "claude-api-key" };
-      // EXPERIMENTAL SPIKE — a DeepSeek key is a real, usable route for the
-      // Claude *harness*: `applyDeepSeekRouteEnv` runs the same CLI against
-      // DeepSeek's endpoint. Reuses the `claude-api-key` id rather than adding
-      // one, because it is the same thing structurally — a metered env key with
-      // no account root, which is what keeps `resolveLocalAgentHome` returning
-      // `undefined` (and so keeps the env scrub off this route).
-      //
-      // KNOWN OVERSTATEMENT: this reports the *provider* as configured, so with
-      // only a DeepSeek key set the picker still offers `claude-*` models and
-      // those turns fail at the API with no auth prompt. That is the
-      // harness/provider conflation this spike exists to expose, not a bug to
-      // paper over here — a real fix needs per-model route eligibility.
-      if (process.env.DEEPSEEK_API_KEY?.trim()) return { kind: "reserved", id: "claude-api-key" };
     }
     if (provider === "codex" && process.env.OPENAI_API_KEY?.trim()) {
       return { kind: "reserved", id: "codex-api-key" };
@@ -789,13 +776,7 @@ export class ProviderAccountManager {
   hasAnyAuthForProvider(provider: AgentId): boolean {
     if (this.list(provider).some((account) => account.status === "ready")) return true;
     if (provider === "claude") {
-      // DEEPSEEK_API_KEY: see reservedRouteFor — spike scaffolding, and the same
-      // known overstatement applies (claude-* models look authed but are not).
-      return Boolean(
-        process.env.ANTHROPIC_API_KEY?.trim()
-        || process.env.ANTHROPIC_AUTH_TOKEN?.trim()
-        || process.env.DEEPSEEK_API_KEY?.trim(),
-      );
+      return Boolean(process.env.ANTHROPIC_API_KEY?.trim() || process.env.ANTHROPIC_AUTH_TOKEN?.trim());
     }
     return Boolean(process.env.OPENAI_API_KEY?.trim());
   }

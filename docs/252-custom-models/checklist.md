@@ -42,5 +42,6 @@
       subscription (req 14).
 - [ ] Verify req 6 concretely on a non-vendor service: tools, skills, MCP servers, live
       steering, permission modes, plan mode, transcript.
-- [ ] Retire or generalize the PR #1997 spike — it must not ship as-is.
+- [x] Retire the spike — removed from this branch on 2026-08-05, leaving the docs as
+      the only content. Its findings are recorded in `plan.md`.
 - [ ] Fresh-context review of the branch diff against every numbered requirement.

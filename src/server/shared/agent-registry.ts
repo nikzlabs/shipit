@@ -42,28 +42,17 @@ const execFileAsync = promisify(execFile);
  * picker and first-frame context-window fallback are correct even before a
  * freshly-bumped CLI's local alias table is trusted.
  *
- * `claude-fable-5` is ordered near the END on purpose: it is Anthropic's most
- * capable public model but bills per token (usage-based) rather than against the
+ * `claude-fable-5` is listed LAST on purpose: it is Anthropic's most capable
+ * public model but bills per token (usage-based) rather than against the
  * subscription plan limit, so it's a deliberate opt-in, not the default. The
  * picker flags it with a $ icon (see `METERED_MODELS` in
  * `ModelAgentSelector.tsx`). It's an explicit versioned id (no CLI alias); the
  * CLI forwards `--model` as-is, verified working on CLI 2.1.162.
  *
- * `deepseek-v4-flash` is an EXPERIMENTAL SPIKE and is listed last. It is not an
- * Anthropic model: selecting it makes `applyDeepSeekRouteEnv`
- * (`session/agents/claude/process.ts`) point the CLI at DeepSeek's
- * Anthropic-compatible endpoint, so the harness stays Claude Code while the model
- * behind it changes. It belongs to this list — not a separate agent — precisely
- * because the harness is unchanged; ShipIt has no way to express
- * "same CLI, different provider" today, which is the design question the spike
- * exists to inform. It bills against a user-supplied `DEEPSEEK_API_KEY`, so it is
- * flagged metered like `claude-fable-5`, and a turn fails plainly if that key is
- * unset. Do not treat its presence here as a shipped, supported backend.
- *
  * Consumed by both the orchestrator-side `AGENT_DEFS` and the session-side
  * `ClaudeAdapter.capabilities` — keep this the only place to add a model.
  */
-export const CLAUDE_MODELS = ["claude-opus-5", "claude-sonnet-5", "haiku", "claude-fable-5", "deepseek-v4-flash"];
+export const CLAUDE_MODELS = ["claude-opus-5", "claude-sonnet-5", "haiku", "claude-fable-5"];
 
 export const CLAUDE_TOOL_NAMES = [
   "Agent",
@@ -310,13 +299,8 @@ export function getAuthEnvKey(agentId: AgentId): string | null {
  * these via {@link isAllowedAgentEnvKey} — prefer that predicate over direct
  * `.has()` checks. The set is kept exported because tests and re-export sites
  * still reference it directly.
- *
- * `DEEPSEEK_API_KEY` is the experimental DeepSeek spike's credential (see
- * `CLAUDE_MODELS`). One entry covers both delivery paths: a containerized session
- * gets it via `selectAgentEnvForPush` → `PUT /secrets` → worker `process.env`, and
- * local mode via `app-di.ts`'s startup load of `CredentialStore.agentEnv`.
  */
-export const ALLOWED_ENV_KEYS = new Set(["OPENAI_API_KEY", "DEEPSEEK_API_KEY"]);
+export const ALLOWED_ENV_KEYS = new Set(["OPENAI_API_KEY"]);
 
 /** Prefix reserved for MCP server secrets (docs/088-mcp-integration). */
 const MCP_ENV_KEY_PREFIX = "mcp__";
