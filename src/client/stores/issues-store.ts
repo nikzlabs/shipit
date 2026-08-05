@@ -35,6 +35,11 @@ import {
   saveSortPrefs,
 } from "../utils/local-storage.js";
 import { useSessionStore } from "./session-store.js";
+import type { TrackerDestination } from "../../server/shared/declared-tracker.js";
+import {
+  resolveIssueRef,
+  type IssueRefResolution,
+} from "../../server/shared/issue-ref-resolution.js";
 
 /**
  * The GitHub tracker is per-repo, so its issues are scoped to the active
@@ -48,10 +53,38 @@ function sessionIdParam(): string {
 }
 
 /**
- * GitHub identifiers are `owner/repo#123`; the tracker-native lookup id the
- * detail fetch wants is the bare number after `#`. Linear identifiers (`SHI-1`,
- * no `#`) ARE the lookup id, so they pass through unchanged. Mirrors the
- * server's `parseIssueRef`, kept here so a card (which only carries the display
+ * docs/248 — the reference-resolution context, derived from the tracker list the
+ * store already fetched for the sub-tabs. The browser never sees `shipit.yaml`,
+ * so this list IS its view of the declarations: `TrackerInfo` carries the
+ * declared `name`, the destination `id`, the backend `kind`, and the backend's
+ * own identity in `binding.key` — everything `resolveIssueRef` matches on. That
+ * is why the resolver reads from here rather than adding a second fetch.
+ */
+export function trackerDestinations(): TrackerDestination[] {
+  return useIssuesStore.getState().trackers.map((t) => ({
+    id: t.id,
+    kind: t.kind,
+    ...(t.name ? { name: t.name } : {}),
+    ...(t.binding?.key ? { key: t.binding.key } : {}),
+  }));
+}
+
+/**
+ * docs/248 reqs 10/11 — resolve a reference the UI holds (a doc's `issue:`
+ * frontmatter, a markdown href) against the declared destinations. Fails closed:
+ * callers render an unresolvable reference legibly (plain text, or the external
+ * link it already was) rather than an in-app link that would 404.
+ */
+export function resolveUiIssueRef(pointer: string): IssueRefResolution {
+  return resolveIssueRef(pointer, trackerDestinations());
+}
+
+/**
+ * GitHub identifiers are `owner/repo#123` (or `planning#123` once the repository
+ * declares a name for that destination); the tracker-native lookup id the detail
+ * fetch wants is the bare number after `#`. Linear identifiers (`SHI-1`, no `#`)
+ * ARE the lookup id, so they pass through unchanged. Mirrors the server's
+ * `parseIssueRef`, kept here so a card (which only carries the display
  * identifier) can open the detail view without a round-trip to resolve the id.
  */
 export function issueLookupId(identifier: string): string {
@@ -304,7 +337,10 @@ function pruneFilters(filters: IssueFilters, issues: TrackerIssue[]): IssueFilte
 
 export const useIssuesStore = create<IssuesState>((set, get) => ({
   trackers: [],
-  activeTracker: "linear",
+  // docs/248 — no built-in tracker, so there is no meaningful default until
+  // `fetchTrackers` lands. The session's own repository is the one destination
+  // that always exists when there is a repo at all, so it is the safe seed.
+  activeTracker: "github",
   issuesByTracker: {},
   infoByTracker: {},
   statusesByTracker: {},
@@ -350,7 +386,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
         // Keep the active sub-tab valid if the configured set changed.
         const activeTracker = trackers.some((t) => t.id === state.activeTracker)
           ? state.activeTracker
-          : (trackers[0]?.id ?? "linear");
+          : (trackers[0]?.id ?? "github");
         return { trackers, infoByTracker, activeTracker };
       });
     } catch (err) {

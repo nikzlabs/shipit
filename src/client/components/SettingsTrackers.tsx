@@ -3,7 +3,6 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "./ui/button.js";
 import { ManagedByShipItBadge } from "./ManagedByShipItBadge.js";
 import { useIssuesStore } from "../stores/issues-store.js";
-import type { TrackerInfo } from "../../server/shared/types.js";
 
 interface LinearTeam {
   id: string;
@@ -12,37 +11,60 @@ interface LinearTeam {
 }
 
 /**
- * Linear connection settings (docs/170). A Linear workspace is deployment-wide,
- * so the binding lives here in settings rather than as a per-repo fact. v1 is
- * the simplest read-only path: paste a Linear API token, pick a team. No OAuth
- * app registration / webhooks (that's the docs/156 push trigger, not this read
- * surface). The token is write-only — the server never echoes it back.
+ * Linear **credential** settings (docs/170, reworked by docs/248 req 4).
+ *
+ * This surface holds the API token and nothing that identifies a destination.
+ * Which Linear team a repository's Issues tab shows is part of that repository's
+ * declaration:
+ *
+ * ```yaml
+ * issues:
+ *   trackers:
+ *     - kind: linear
+ *       team: SHI
+ *       name: roadmap
+ * ```
+ *
+ * so the team picker that used to persist a deployment-wide binding is gone. The
+ * team list is still fetched, but as a **lookup**: it answers "which team keys
+ * can this credential reach?", which is what someone needs in order to write the
+ * declaration. Nothing here writes to anyone's `shipit.yaml` — deployments that
+ * had a stored team simply lose their Linear tab until a repository declares one,
+ * which is the clean break the requirements chose over a migration.
+ *
+ * Connection state is derived from the teams lookup rather than from the tracker
+ * list, because after docs/248 a connected credential with no declaration
+ * produces no Linear tracker at all — the absence of a tab is not the absence of
+ * a credential.
  */
 export function SettingsTrackers({ embedded = false, logo }: { embedded?: boolean; logo?: ReactNode } = {}) {
-  const [info, setInfo] = useState<TrackerInfo | null>(null);
   const [token, setToken] = useState("");
-  const [teams, setTeams] = useState<LinearTeam[]>([]);
+  const [teams, setTeams] = useState<LinearTeam[] | null>(null);
+  const [connected, setConnected] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [changingTeam, setChangingTeam] = useState(false);
 
-  const loadInfo = async () => {
+  const loadTeams = async () => {
     try {
-      const res = await fetch("/api/trackers", { headers: { Accept: "application/json" } });
-      if (!res.ok) return;
-      const data = (await res.json()) as { trackers?: TrackerInfo[] };
-      setInfo(data.trackers?.find((t) => t.id === "linear") ?? null);
+      const res = await fetch("/api/trackers/linear/teams", { headers: { Accept: "application/json" } });
+      if (!res.ok) {
+        // 400 "Connect Linear first" is the no-credential case, not an error to show.
+        setConnected(false);
+        setTeams(null);
+        return;
+      }
+      const data = (await res.json()) as { teams?: LinearTeam[] };
+      setConnected(true);
+      setTeams(data.teams ?? []);
     } catch {
-      /* ignore */
+      /* ignore — the card falls back to the connect form */
     }
   };
 
-  // eslint-disable-next-line no-restricted-syntax -- one-shot load of tracker status when the tab opens
+  // eslint-disable-next-line no-restricted-syntax -- one-shot load of credential status when the tab opens
   useEffect(() => {
-    void loadInfo();
+    void loadTeams();
   }, []);
-
-  const tokenConfigured = Boolean(info?.configured) || teams.length > 0;
 
   const handleConnect = async () => {
     setBusy(true);
@@ -59,48 +81,10 @@ export function SettingsTrackers({ embedded = false, logo }: { embedded?: boolea
         return;
       }
       setTeams(data.teams ?? []);
+      setConnected(true);
       setToken("");
-      await loadInfo();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleChangeTeam = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/trackers/linear/teams", { headers: { Accept: "application/json" } });
-      const data = (await res.json().catch(() => ({}))) as { error?: string; teams?: LinearTeam[] };
-      if (!res.ok) {
-        setError(data.error ?? "Failed to list teams");
-        return;
-      }
-      setTeams(data.teams ?? []);
-      setChangingTeam(true);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleSelectTeam = async (team: LinearTeam) => {
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/trackers/linear/team", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify(team),
-      });
-      const data = (await res.json().catch(() => ({}))) as { error?: string; tracker?: TrackerInfo };
-      if (!res.ok) {
-        setError(data.error ?? "Failed to bind team");
-        return;
-      }
-      setInfo(data.tracker ?? null);
-      setTeams([]);
-      setChangingTeam(false);
-      // Refresh the Issues tab's sub-tab metadata + list.
+      // A repository that already declares a `kind: linear` tracker becomes
+      // reachable the moment the credential lands, so refresh the sub-tabs.
       void useIssuesStore.getState().fetchTrackers();
     } finally {
       setBusy(false);
@@ -112,21 +96,16 @@ export function SettingsTrackers({ embedded = false, logo }: { embedded?: boolea
     setError(null);
     try {
       await fetch("/api/trackers/linear/disconnect", { method: "POST", headers: { Accept: "application/json" } });
-      setTeams([]);
-      setChangingTeam(false);
-      await loadInfo();
+      setConnected(false);
+      setTeams(null);
       void useIssuesStore.getState().fetchTrackers();
     } finally {
       setBusy(false);
     }
   };
 
-  const connected = Boolean(info?.configured) && !changingTeam;
-
   // Disconnect is an integration-level action, so it sits in the card header
-  // (top-right) — the same place GitHub's Disconnect lives. "Change team" is
-  // team-scoped, so it lives on the team's own line in the detail below, not
-  // up here far from the team it acts on.
+  // (top-right) — the same place GitHub's Disconnect lives.
   const headerActions = connected ? (
     <div className="ml-auto shrink-0">
       <Button variant="ghost" size="md" disabled={busy} onClick={handleDisconnect} data-testid="trackers-disconnect">
@@ -135,44 +114,47 @@ export function SettingsTrackers({ embedded = false, logo }: { embedded?: boolea
     </div>
   ) : null;
 
-  // The integration's own state/settings, rendered inside the same card below a
-  // divider — not as a separate floating card.
   const detail = connected ? (
-    <div className="flex items-center gap-3">
-      <span className="w-2.5 h-2.5 rounded-full bg-(--color-success) shrink-0" />
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium text-(--color-text-primary)">
-          {info?.binding?.name ?? "Linear"}
-          {info?.binding && (
-            <span className="ml-1 text-(--color-text-tertiary) font-mono text-xs">{info.binding.key}</span>
-          )}
-        </p>
-        <p className="text-xs text-(--color-text-secondary)">Connected</p>
-      </div>
-      <Button variant="secondary" size="md" disabled={busy} onClick={handleChangeTeam} className="ml-auto shrink-0">
-        Change team
-      </Button>
-    </div>
-  ) : tokenConfigured || changingTeam ? (
-    <div className="space-y-3">
-      <p className="text-xs text-(--color-text-secondary)">Pick the team whose issues you want to see:</p>
-      {teams.length === 0 ? (
-        <p className="text-xs text-(--color-text-tertiary)">No teams found for this token.</p>
-      ) : (
-        <div className="flex flex-col gap-1">
-          {teams.map((team) => (
-            <button
-              key={team.id}
-              disabled={busy}
-              onClick={() => void handleSelectTeam(team)}
-              className="flex items-center gap-2 px-3 py-2 text-left text-sm rounded-md border border-(--color-border-secondary) bg-(--color-bg-elevated) hover:bg-(--color-bg-hover) text-(--color-text-primary) disabled:opacity-50"
-            >
-              <span className="font-mono text-xs text-(--color-text-tertiary)">{team.key}</span>
-              <span className="truncate">{team.name}</span>
-            </button>
-          ))}
+    <div className="space-y-3" data-testid="linear-connected">
+      <div className="flex items-center gap-3">
+        <span className="w-2.5 h-2.5 rounded-full bg-(--color-success) shrink-0" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-(--color-text-primary)">Linear</p>
+          <p className="text-xs text-(--color-text-secondary)">Credential connected</p>
         </div>
-      )}
+      </div>
+      <div className="space-y-2">
+        <p className="text-xs text-(--color-text-secondary)">
+          Declare a team in a repository&apos;s <code>shipit.yaml</code> to give it an Issues tab:
+        </p>
+        <pre className="text-xs font-mono text-(--color-text-secondary) bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded p-2 overflow-x-auto">
+{`issues:
+  trackers:
+    - kind: linear
+      team: ${teams?.[0]?.key ?? "SHI"}
+      name: roadmap`}
+        </pre>
+        {teams && teams.length > 0 && (
+          <div className="space-y-1">
+            <p className="text-xs text-(--color-text-tertiary)">Teams this token can reach:</p>
+            <div className="flex flex-wrap gap-1">
+              {teams.map((team) => (
+                <span
+                  key={team.id}
+                  title={team.name}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-(--color-border-secondary) bg-(--color-bg-elevated) text-xs"
+                >
+                  <span className="font-mono text-(--color-text-primary)">{team.key}</span>
+                  <span className="text-(--color-text-tertiary) truncate max-w-40">{team.name}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        {teams?.length === 0 && (
+          <p className="text-xs text-(--color-text-tertiary)">No teams found for this token.</p>
+        )}
+      </div>
     </div>
   ) : (
     <div className="space-y-3">
@@ -211,8 +193,9 @@ export function SettingsTrackers({ embedded = false, logo }: { embedded?: boolea
             <ManagedByShipItBadge />
           </div>
           <p className="text-xs text-(--color-text-secondary) mt-1">
-            Connect Linear to see your prioritized issues in the Issues tab and start a session from
-            any of them. Read-only: ShipIt never changes your issues.
+            Connect a Linear API key so repositories that declare a Linear tracker can show their
+            issues in the Issues tab. The credential lives here; which team it reads lives in each
+            repository&apos;s <code>shipit.yaml</code>.
           </p>
         </div>
         {headerActions}

@@ -42,8 +42,10 @@ import {
   type IssueWriteOutcome,
 } from "./services/issues.js";
 import { resolveGitHubTrackerContext } from "./api-routes-issues.js";
-import type { GitHubTrackerContext } from "./trackers/index.js";
+import { buildTrackerRegistry, type GitHubTrackerContext } from "./trackers/index.js";
 import { parseIssueRef } from "../shared/issue-ref.js";
+import { resolveParsedIssueRef } from "../shared/issue-ref-resolution.js";
+import type { TrackerDestination } from "../shared/declared-tracker.js";
 import { isGitHubTracker } from "../shared/tracker-id.js";
 import { parsePrBodyIssueRefs } from "../shared/pr-issue-refs.js";
 
@@ -82,6 +84,7 @@ function surfaceWriteCard(
   deps: IssueLifecycleDeps,
   sessionId: string,
   trackerId: TrackerId,
+  trackerName: string | undefined,
   issueId: string,
   outcome: IssueWriteOutcome,
   cardId?: string,
@@ -99,6 +102,10 @@ function surfaceWriteCard(
   const card: IssueWriteCard = {
     cardId: cardId ?? `issue-write-${randomUUID()}`,
     tracker: trackerId,
+    // docs/248 — the name the write was addressed by, so Undo follows a
+    // re-pointed name (req 16) while still reaching an un-declared destination
+    // through `tracker` (req 11).
+    ...(trackerName ? { trackerName } : {}),
     issueId: issueId || outcome.issue.id,
     identifier: outcome.issue.identifier,
     title: outcome.issue.title,
@@ -124,6 +131,26 @@ function githubContext(deps: IssueLifecycleDeps, sessionId: string): GitHubTrack
 }
 
 /**
+ * docs/248 — the destinations this session can reach, for resolving the
+ * references a PR body names. Built from the same registry the routes use, so a
+ * `Closes planning#42` resolves through the same declarations an interactive
+ * operation would, and an undeclared one fails closed here rather than being
+ * routed at the session's own repository (req 11).
+ */
+function destinationsFor(deps: IssueLifecycleDeps, sessionId: string): TrackerDestination[] {
+  return buildTrackerRegistry(
+    deps.credentialStore,
+    deps.trackerFetchImpl,
+    githubContext(deps, sessionId),
+  ).destinations();
+}
+
+/** The declared name of a destination, when it has one — for the card (req 16). */
+function nameForTracker(destinations: TrackerDestination[], trackerId: TrackerId): string | undefined {
+  return destinations.find((d) => d.id === trackerId)?.name;
+}
+
+/**
  * Seed path → started. Fire a single brokered `status started` from the pointer
  * the session was created with. Best-effort and idempotent: a tracker that isn't
  * connected, an unresolvable pointer, or an already-started issue must never
@@ -142,8 +169,19 @@ export async function markIssueStartedFromSeed(
   // number for GitHub, the key for Linear) — the display identifier itself isn't
   // a valid `getIssue` id.
   const parsed = parseIssueRef(issueRef.url ?? issueRef.identifier);
-  if (parsed.tracker === "unknown" || !parsed.issueId) return;
+  if (!parsed.issueId) return;
+  // The destination comes from the seed payload, which the Issues tab already
+  // resolved to a declared tracker — not re-resolved here, because this fires at
+  // session creation, before the workspace clone is guaranteed to hold the
+  // repository's `shipit.yaml`. Only the display name is looked up, and only
+  // best-effort.
   const trackerId = issueRef.tracker;
+  let trackerName: string | undefined;
+  try {
+    trackerName = nameForTracker(destinationsFor(deps, sessionId), trackerId);
+  } catch {
+    /* the card degrades to the destination id — never block the status flip */
+  }
   try {
     const outcome = await setIssueStatusForTracker(
       deps.credentialStore,
@@ -156,7 +194,7 @@ export async function markIssueStartedFromSeed(
     // Skip the card when nothing actually moved (e.g. an already-open GitHub
     // issue) — a no-op transition isn't worth a transcript row.
     if (outcome.content?.status && outcome.content.status.from === outcome.content.status.to) return;
-    surfaceWriteCard(deps, sessionId, trackerId, parsed.issueId, outcome);
+    surfaceWriteCard(deps, sessionId, trackerId, trackerName, parsed.issueId, outcome);
   } catch (err) {
     console.warn(`[issue-lifecycle] seed 'started' for ${issueRef.identifier} failed:`, err);
   }
@@ -212,12 +250,30 @@ export async function applyMergedPrIssueRefs(
   const { closes, refs } = parsePrBodyIssueRefs(info.body);
   if (closes.length === 0 && refs.length === 0) return;
 
+  // docs/248 reqs 10/11 — a PR body may name a destination by declared name
+  // (`Closes planning#42`) or by canonical address. Both resolve through the
+  // session repository's declarations; one that identifies no declared
+  // destination is dropped rather than routed at the session's own repository,
+  // which is the wrong-target bug this feature exists to prevent.
+  const destinations = destinationsFor(deps, info.sessionId);
+  const resolveRef = (ref: (typeof closes)[number]) => {
+    const resolution = resolveParsedIssueRef(ref, destinations);
+    if (!resolution.ok) {
+      console.warn(
+        `[issue-lifecycle] PR #${info.prNumber} names \`${ref.identifier}\`, which does not resolve: ${resolution.message}`,
+      );
+      return null;
+    }
+    return resolution.ref;
+  };
+
   const resolvedBy = `Resolved by ShipIt on merge of PR #${info.prNumber}: ${info.prTitle}\n\n${info.prUrl}`;
   const referencedBy = `Referenced by merged PR #${info.prNumber}: ${info.prTitle}\n\n${info.prUrl}`;
 
-  for (const ref of closes) {
+  for (const parsedRef of closes) {
+    const ref = resolveRef(parsedRef);
+    if (!ref) continue;
     const issueId = ref.issueId;
-    if (!issueId) continue;
     // Status flip + provenance card — guarded so a reconnect-driven re-fire
     // can't re-promote an already-completed issue or re-card it.
     await runMergeEffect(deps, info.sessionId, `${info.prNumber}:${issueId}:completed`, async () => {
@@ -232,7 +288,8 @@ export async function applyMergedPrIssueRefs(
       surfaceWriteCard(
         deps,
         info.sessionId,
-        ref.tracker as TrackerId,
+        ref.tracker,
+        ref.trackerName,
         issueId,
         outcome,
         mergeCardId(info.sessionId, info.prNumber, issueId, "completed"),
@@ -253,9 +310,10 @@ export async function applyMergedPrIssueRefs(
     });
   }
 
-  for (const ref of refs) {
+  for (const parsedRef of refs) {
+    const ref = resolveRef(parsedRef);
+    if (!ref) continue;
     const issueId = ref.issueId;
-    if (!issueId) continue;
     // Progress comment + card — same root cause re-fires this on reconnect, so
     // it gets its own guard key and a deterministic card id too.
     await runMergeEffect(deps, info.sessionId, `${info.prNumber}:${issueId}:referenced-comment`, async () => {
@@ -270,7 +328,8 @@ export async function applyMergedPrIssueRefs(
       surfaceWriteCard(
         deps,
         info.sessionId,
-        ref.tracker as TrackerId,
+        ref.tracker,
+        ref.trackerName,
         issueId,
         outcome,
         mergeCardId(info.sessionId, info.prNumber, issueId, "refs"),

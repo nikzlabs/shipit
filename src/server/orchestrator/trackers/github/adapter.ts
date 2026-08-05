@@ -32,6 +32,7 @@ import type {
   IssuePriorityLevel,
 } from "../../../shared/types.js";
 import { githubHeaders, parseGitHubError } from "../../github-api.js";
+import { formatIssueReference } from "../../../shared/issue-ref.js";
 import {
   TrackerResolutionError,
   type ListIssuesOptions,
@@ -64,13 +65,15 @@ export interface GitHubTrackerConfig {
   fetchImpl?: FetchImpl;
   /**
    * docs/248 — tracker id, defaulting to the bare `"github"` (the session's own
-   * code repository). A tracker bound to an explicitly *named* repository — a
-   * `shipit.yaml` declaration or an operation's `--repo` — takes the qualified
-   * `github:owner/repo` id instead, so the repository stays attached to every
-   * surface the id reaches (route query, persisted Undo card, sub-tab).
+   * code repository, req 12's one unnamed destination). A tracker bound to a
+   * *declared* repository takes the qualified `github:owner/repo` id instead, so
+   * the repository stays attached to every surface the id reaches (route query,
+   * persisted Undo card, sub-tab).
    */
   id?: TrackerId;
-  /** docs/248 — sub-tab label. Defaults to `"GitHub"` for the session's repo. */
+  /** docs/248 req 2 — the declared `name` this tracker is addressed by. */
+  name?: string;
+  /** docs/248 — sub-tab label. Defaults to the name, then to `"GitHub"`. */
   label?: string;
 }
 
@@ -182,13 +185,25 @@ function issueLabels(node: GitHubIssueNode): IssueLabel[] {
     .filter((l): l is IssueLabel => l !== null);
 }
 
-function toTrackerIssue(node: GitHubIssueNode, ref: GitHubRepoRef): TrackerIssue {
+/**
+ * `formatRef` renders an issue number in the destination's reference form
+ * (docs/248 req 15): `planning#42` when the repository declared this tracker
+ * under a name, `owner/repo#42` otherwise. This adapter is one of only two
+ * places in the codebase that produce a reference string (the other is
+ * `parseIssueRef`), which is why routing both through one formatter is enough to
+ * satisfy req 15 without auditing every display site.
+ */
+function toTrackerIssue(
+  node: GitHubIssueNode,
+  ref: GitHubRepoRef,
+  formatRef: (issueNumber: string) => string,
+): TrackerIssue {
   const assigneeName = node.assignee?.login ?? undefined;
   const isClosed = node.state === "closed";
   const labels = issueLabels(node);
   return {
     id: String(node.number),
-    identifier: `${ref.owner}/${ref.repo}#${node.number}`,
+    identifier: formatRef(String(node.number)),
     title: node.title,
     url: node.html_url,
     ...(node.body ? { description: node.body } : {}),
@@ -249,14 +264,16 @@ export class GitHubTracker implements Tracker {
 
   private token: string | null;
   private repo: GitHubRepoRef | null;
+  private refName: string | undefined;
   private fetchImpl: FetchImpl;
 
   constructor(config: GitHubTrackerConfig) {
     this.token = config.token;
     this.repo = config.repo;
+    this.refName = config.name;
     this.fetchImpl = config.fetchImpl ?? fetch;
     this.id = config.id ?? "github";
-    this.label = config.label ?? "GitHub";
+    this.label = config.label ?? config.name ?? "GitHub";
   }
 
   isConfigured(): boolean {
@@ -269,9 +286,20 @@ export class GitHubTracker implements Tracker {
       id: this.id,
       label: this.label,
       configured: this.isConfigured(),
+      kind: "github",
+      ...(this.refName ? { name: this.refName } : {}),
       ...(slug ? { binding: { key: slug, name: slug } } : {}),
     };
   }
+
+  /** Render an issue number in this destination's reference form (req 15). */
+  private formatRef = (issueNumber: string): string =>
+    formatIssueReference({
+      trackerName: this.refName,
+      kind: "github",
+      ...(this.repo ? { key: `${this.repo.owner}/${this.repo.repo}` } : {}),
+      issueId: issueNumber,
+    });
 
   async listIssues(options?: ListIssuesOptions): Promise<TrackerIssue[]> {
     if (!this.token || !this.repo) {
@@ -287,7 +315,7 @@ export class GitHubTracker implements Tracker {
     const nodes = await this.fetchIssues(url);
     return nodes
       .filter((n) => !n.pull_request) // the issues endpoint also returns PRs — drop them
-      .map((n) => toTrackerIssue(n, ref))
+      .map((n) => toTrackerIssue(n, ref, this.formatRef))
       .sort((a, b) => a.priority.sortOrder - b.priority.sortOrder || a.identifier.localeCompare(b.identifier));
   }
 
@@ -311,7 +339,7 @@ export class GitHubTracker implements Tracker {
     if (node.pull_request) return null; // a PR number, not an issue
     // Surface the fixed Open/Closed targets so the agent can pick a valid
     // `setStatus` value up front (docs/177) — read path only.
-    return { ...toTrackerIssue(node, ref), availableStatuses: GITHUB_AVAILABLE_STATUSES };
+    return { ...toTrackerIssue(node, ref, this.formatRef), availableStatuses: GITHUB_AVAILABLE_STATUSES };
   }
 
   async listStatuses(): Promise<{ name: string; type?: string; color?: string }[]> {
@@ -355,7 +383,7 @@ export class GitHubTracker implements Tracker {
       body.labels = await this.resolveLabels(input.labels);
     }
     const node = await this.api<GitHubIssueNode>("POST", "issues", body);
-    return toTrackerIssue(node, ref);
+    return toTrackerIssue(node, ref, this.formatRef);
   }
 
   async createLabel(input: { name: string; color?: string; description?: string }): Promise<IssueLabel & { id: string }> {
@@ -442,7 +470,7 @@ export class GitHubTracker implements Tracker {
   private async patchIssue(id: string, body: Record<string, unknown>): Promise<TrackerIssue> {
     const ref = this.requireRepo();
     const node = await this.api<GitHubIssueNode>("PATCH", `issues/${encodeURIComponent(id)}`, body);
-    return toTrackerIssue(node, ref);
+    return toTrackerIssue(node, ref, this.formatRef);
   }
 
   /**

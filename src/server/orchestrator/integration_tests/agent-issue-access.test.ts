@@ -41,8 +41,6 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-const TEAM = { id: "team-1", key: "SHI", name: "ShipIt" };
-
 describe("Integration: agent issue access (docs/175)", () => {
   let app: FastifyInstance;
   let tmpDir: string;
@@ -52,6 +50,12 @@ describe("Integration: agent issue access (docs/175)", () => {
   let githubAuthManager: StubGitHubAuthManager;
   let trackerFetch: ReturnType<typeof vi.fn>;
   let sessionId: string;
+  let workspaceDir: string;
+
+  /** Rewrite the session workspace's shipit.yaml (declarations are read per request). */
+  const writeConfig = (yaml: string) => {
+    fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), yaml);
+  };
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -63,6 +67,10 @@ describe("Integration: agent issue access (docs/175)", () => {
       // Linear GraphQL — routed by query content.
       if (url.includes("linear.app")) {
         const query = (JSON.parse((init?.body as string) ?? "{}") as { query?: string }).query ?? "";
+        // docs/248 — the declared team KEY is resolved to Linear's team id first.
+        if (query.includes("TeamByKey")) {
+          return jsonResponse({ data: { teams: { nodes: [{ id: "team-1", key: "TRACKER" }] } } });
+        }
         if (query.includes("TeamIssues")) {
           // A mixed working set: one open, one completed. With includeDone the
           // tracker returns both; the route post-filters for `--state closed`.
@@ -138,6 +146,18 @@ describe("Integration: agent issue access (docs/175)", () => {
           },
         ]);
       }
+      if (url.includes("/repos/acme/planning/issues/7")) {
+        return jsonResponse({
+          id: 7,
+          number: 7,
+          title: "A planning issue",
+          html_url: "https://github.com/acme/planning/issues/7",
+          state: "open",
+          labels: [],
+          body: "The planning body.",
+          assignee: null,
+        });
+      }
       if (/\/issues\/\d+/.test(url)) {
         return jsonResponse({
           id: 1,
@@ -178,8 +198,19 @@ describe("Integration: agent issue access (docs/175)", () => {
       trackerFetchImpl: trackerFetch as unknown as typeof fetch,
     });
 
+    // docs/248 — the trackers a session can reach are the ones its repository
+    // declares, so the session gets a workspace with a `shipit.yaml`. `roadmap`
+    // is the Linear team `TRACKER`; `planning` is a second GitHub repository.
+    workspaceDir = path.join(tmpDir, "workspace");
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    writeConfig(
+      "issues:\n  trackers:\n" +
+        "    - kind: linear\n      team: TRACKER\n      name: roadmap\n" +
+        "    - kind: github\n      repo: acme/planning\n      name: planning\n",
+    );
+
     sessionId = "gh-sess";
-    sessionManager.track(sessionId, "GH session");
+    sessionManager.track(sessionId, "GH session", workspaceDir);
     sessionManager.setRemoteUrl(sessionId, "https://github.com/octocat/hello-world.git");
   });
 
@@ -237,7 +268,7 @@ describe("Integration: agent issue access (docs/175)", () => {
   });
 
   it("view 42 with --tracker github resolves the bare number", async () => {
-    const { stdout, exitCode } = await runIssueShim(["issue", "view", "42", "--tracker", "github"]);
+    const { stdout, exitCode } = await runIssueShim(["issue", "view", "42"]);
     expect(exitCode).toBe(0);
     expect(stdout).toContain("octocat/hello-world#42");
   });
@@ -252,8 +283,7 @@ describe("Integration: agent issue access (docs/175)", () => {
 
   it("view TRACKER-28 reads the Linear issue with the same output shape", async () => {
     credentialStore.setLinearToken("lin_api_x");
-    credentialStore.setLinearTeam(TEAM);
-    const { stdout, exitCode } = await runIssueShim(["issue", "view", "TRACKER-28"]);
+        const { stdout, exitCode } = await runIssueShim(["issue", "view", "TRACKER-28"]);
     expect(exitCode).toBe(0);
     // Same shaped output as GitHub — that is the tracker-neutral guarantee.
     expect(stdout).toContain("TRACKER-28");
@@ -289,8 +319,7 @@ describe("Integration: agent issue access (docs/175)", () => {
 
   it("view --comments reads the Linear thread with the same shape (SHI-137)", async () => {
     credentialStore.setLinearToken("lin_api_x");
-    credentialStore.setLinearTeam(TEAM);
-    const { stdout, exitCode } = await runIssueShim(["issue", "view", "TRACKER-28", "--comments"]);
+        const { stdout, exitCode } = await runIssueShim(["issue", "view", "TRACKER-28", "--comments"]);
     expect(exitCode).toBe(0);
     // Tracker-neutral: identical rendered shape to the GitHub thread above.
     expect(stdout).toContain("The Linear body.");
@@ -320,31 +349,29 @@ describe("Integration: agent issue access (docs/175)", () => {
 
   it("list --state closed returns only finished issues (no open over-return)", async () => {
     credentialStore.setLinearToken("lin_api_x");
-    credentialStore.setLinearTeam(TEAM);
-    const { stdout, exitCode } = await runIssueShim([
-      "issue", "list", "--tracker", "linear", "--state", "closed", "--json",
+        const { stdout, exitCode } = await runIssueShim([
+      "issue", "list", "--tracker", "roadmap", "--state", "closed", "--json",
     ]);
     expect(exitCode).toBe(0);
     const issues = JSON.parse(stdout) as { identifier: string }[];
     // The fake returns TRACKER-1 (open) + TRACKER-2 (completed); `closed` keeps only the
     // done one. `includeDone` alone would have over-returned the open issue.
-    expect(issues.map((i) => i.identifier)).toEqual(["TRACKER-2"]);
+    expect(issues.map((i) => i.identifier)).toEqual(["roadmap#TRACKER-2"]);
   });
 
   it("list --state all keeps both open and finished issues", async () => {
     credentialStore.setLinearToken("lin_api_x");
-    credentialStore.setLinearTeam(TEAM);
-    const { stdout, exitCode } = await runIssueShim([
-      "issue", "list", "--tracker", "linear", "--state", "all", "--json",
+        const { stdout, exitCode } = await runIssueShim([
+      "issue", "list", "--tracker", "roadmap", "--state", "all", "--json",
     ]);
     expect(exitCode).toBe(0);
     const issues = JSON.parse(stdout) as { identifier: string }[];
-    expect(issues.map((i) => i.identifier).sort()).toEqual(["TRACKER-1", "TRACKER-2"]);
+    expect(issues.map((i) => i.identifier).sort()).toEqual(["roadmap#TRACKER-1", "roadmap#TRACKER-2"]);
   });
 
   it("GitHub list --state open returns open issues only", async () => {
     const { stdout, exitCode } = await runIssueShim([
-      "issue", "list", "--tracker", "github", "--state", "open", "--json",
+      "issue", "list", "--state", "open", "--json",
     ]);
     expect(exitCode).toBe(0);
     const issues = JSON.parse(stdout) as { identifier: string }[];
@@ -353,7 +380,7 @@ describe("Integration: agent issue access (docs/175)", () => {
 
   it("GitHub list --state closed returns closed issues only", async () => {
     const { stdout, exitCode } = await runIssueShim([
-      "issue", "list", "--tracker", "github", "--state", "closed", "--json",
+      "issue", "list", "--state", "closed", "--json",
     ]);
     expect(exitCode).toBe(0);
     const issues = JSON.parse(stdout) as { identifier: string }[];
@@ -364,7 +391,7 @@ describe("Integration: agent issue access (docs/175)", () => {
 
   it("GitHub list --state all returns both open and closed issues", async () => {
     const { stdout, exitCode } = await runIssueShim([
-      "issue", "list", "--tracker", "github", "--state", "all", "--json",
+      "issue", "list", "--state", "all", "--json",
     ]);
     expect(exitCode).toBe(0);
     const issues = JSON.parse(stdout) as { identifier: string }[];
@@ -379,7 +406,7 @@ describe("Integration: agent issue access (docs/175)", () => {
     // the orchestrator create route. This harness has no active runner, so the
     // route declines with 409 — which proves the call reached it rather than being
     // rejected at the shim with the old "does not support" message.
-    const { stderr, exitCode } = await runIssueShim(["issue", "create", "--title", "x", "--tracker", "github"]);
+    const { stderr, exitCode } = await runIssueShim(["issue", "create", "--title", "x", "--tracker", "planning"]);
     expect(stderr).not.toContain("does not support");
     expect(exitCode).not.toBe(0);
     // The 409 from the create route (no active runner) — proof it reached the broker.
@@ -391,7 +418,7 @@ describe("Integration: agent issue access (docs/175)", () => {
     // active runner, so the label route declines with 409 — the shim parsed the
     // verb, defaulted nothing wrong, and relayed POST /agent-ops/issue/label/create.
     const { stderr, exitCode } = await runIssueShim([
-      "issue", "label", "create", "--name", "t3code", "--tracker", "github",
+      "issue", "label", "create", "--name", "t3code", "--tracker", "planning",
     ]);
     expect(stderr).not.toContain("only `label create` is supported");
     expect(exitCode).not.toBe(0);
@@ -402,5 +429,107 @@ describe("Integration: agent issue access (docs/175)", () => {
     const { stderr, exitCode } = await runIssueShim(["issue", "label", "delete", "t3code"]);
     expect(exitCode).not.toBe(0);
     expect(stderr).toContain("only `label create` is supported");
+  });
+
+  // -- docs/248: naming the destination ---------------------------------------
+
+  describe("declared trackers (docs/248)", () => {
+    // req 10 — all three reference forms reach the same issue, end to end.
+    it.each([
+      ["tracker name + backend id", "planning#7"],
+      ["the backend's canonical address", "acme/planning#7"],
+      ["a bare id with --tracker", "7"],
+    ])("resolves a declared GitHub tracker by %s", async (_label, reference) => {
+      const argv = reference === "7"
+        ? ["issue", "view", "7", "--tracker", "planning", "--json"]
+        : ["issue", "view", reference, "--json"];
+      const { stdout, exitCode } = await runIssueShim(argv);
+      expect(exitCode).toBe(0);
+      const issue = JSON.parse(stdout) as { identifier: string; title: string };
+      expect(issue.title).toBe("A planning issue");
+      // req 15 — ShipIt echoes the name form back.
+      expect(issue.identifier).toBe("planning#7");
+    });
+
+    it.each([
+      ["tracker name + backend id", "roadmap#TRACKER-28"],
+      ["tracker name + number", "roadmap#28"],
+      ["the backend's canonical address", "TRACKER-28"],
+    ])("resolves a declared Linear tracker by %s", async (_label, reference) => {
+      credentialStore.setLinearToken("lin_api_x");
+      const { stdout, exitCode } = await runIssueShim(["issue", "view", reference]);
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("Decouple priorities");
+    });
+
+    // req 11 — a well-formed address naming no declared tracker fails closed,
+    // and must never fall through to the session's own repository.
+    it("fails closed on a canonical address for an undeclared repository", async () => {
+      const { stderr, exitCode } = await runIssueShim(["issue", "view", "someone/else#7"]);
+      expect(exitCode).not.toBe(0);
+      expect(stderr).toMatch(/does not declare/i);
+      // The declared names are in the message, so the agent can correct itself.
+      expect(stderr).toContain("planning");
+    });
+
+    it("fails closed on a name nobody declared", async () => {
+      const { stderr, exitCode } = await runIssueShim(["issue", "view", "nope#7"]);
+      expect(exitCode).not.toBe(0);
+      expect(stderr).toMatch(/No issue tracker named/i);
+    });
+
+    it("fails closed on an ambiguous canonical address", async () => {
+      writeConfig(
+        "issues:\n  trackers:\n" +
+          "    - kind: github\n      repo: acme/planning\n      name: planning\n" +
+          "    - kind: github\n      repo: acme/planning\n      name: alias\n",
+      );
+      const { stderr, exitCode } = await runIssueShim(["issue", "view", "acme/planning#7"]);
+      expect(exitCode).not.toBe(0);
+      expect(stderr).toMatch(/more than one declared tracker/i);
+    });
+
+    // req 13 — a create always names where it files. Without this, a forgotten
+    // flag files into the session's own (possibly public) repository.
+    it("refuses `issue create` with no --tracker", async () => {
+      const { stderr, exitCode } = await runIssueShim(["issue", "create", "--title", "x"]);
+      expect(exitCode).not.toBe(0);
+      expect(stderr).toContain("--tracker <name> is required");
+      expect(stderr).toContain("planning");
+    });
+
+    it("refuses `issue label create` with no --tracker", async () => {
+      const { stderr, exitCode } = await runIssueShim(["issue", "label", "create", "--name", "x"]);
+      expect(exitCode).not.toBe(0);
+      expect(stderr).toContain("--tracker <name> is required");
+    });
+
+    // req 8 — declaration warnings reach the agent on every command, including
+    // the ones that succeed, so a silently-dropped entry is still visible.
+    it("prints declaration warnings on stderr even when the command succeeds", async () => {
+      writeConfig(
+        "issues:\n  trackers:\n" +
+          "    - kind: github\n      repo: acme/planning\n      name: planning\n" +
+          "    - kind: jira\n      project: X\n      name: jira\n",
+      );
+      const { stderr, exitCode } = await runIssueShim(["issue", "view", "planning#7"]);
+      expect(exitCode).toBe(0);
+      expect(stderr).toContain("jira");
+    });
+
+    // req 12 — the session's own repository stays reachable unnamed.
+    it("still reaches the session's own repository with a bare number", async () => {
+      const { stdout, exitCode } = await runIssueShim(["issue", "view", "42", "--json"]);
+      expect(exitCode).toBe(0);
+      expect((JSON.parse(stdout) as { title: string }).title).toBe("An open issue");
+    });
+
+    it("rejects `--repo`, which no longer exists", async () => {
+      const { stderr, exitCode } = await runIssueShim([
+        "issue", "list", "--repo", "acme/planning",
+      ]);
+      expect(exitCode).not.toBe(0);
+      expect(stderr).toContain("Unsupported flag");
+    });
   });
 });

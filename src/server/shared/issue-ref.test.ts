@@ -7,7 +7,7 @@ describe("parseIssueRef", () => {
       "https://linear.app/example/issue/TRACKER-28/decouple-priorities-from-documents",
     );
     expect(ref).toEqual({
-      tracker: "linear",
+      tracker: "linear:TRACKER",
       identifier: "TRACKER-28",
       issueId: "TRACKER-28",
       url: "https://linear.app/example/issue/TRACKER-28/decouple-priorities-from-documents",
@@ -17,7 +17,7 @@ describe("parseIssueRef", () => {
   it("parses a bare Linear key into the native key", () => {
     // The form a doc's `issue:` pointer (or "work on TRACKER-28") most often holds.
     expect(parseIssueRef("TRACKER-28")).toEqual({
-      tracker: "linear",
+      tracker: "linear:TRACKER",
       identifier: "TRACKER-28",
       issueId: "TRACKER-28",
     });
@@ -25,7 +25,7 @@ describe("parseIssueRef", () => {
 
   it("upper-cases a lowercase bare Linear key", () => {
     expect(parseIssueRef("tracker-28")).toEqual({
-      tracker: "linear",
+      tracker: "linear:TRACKER",
       identifier: "TRACKER-28",
       issueId: "TRACKER-28",
     });
@@ -93,7 +93,7 @@ describe("extractIssueRefsFromText", () => {
     const refs = extractIssueRefsFromText(seed);
     // The URL and the `issue SHI-90` lead-in name the same issue → deduped to one.
     expect(refs).toHaveLength(1);
-    expect(refs[0]).toMatchObject({ tracker: "linear", identifier: "SHI-90", issueId: "SHI-90" });
+    expect(refs[0]).toMatchObject({ tracker: "linear:SHI", identifier: "SHI-90", issueId: "SHI-90" });
   });
 
   it("extracts a Linear key after an `issue` lead-in (with assorted separators)", () => {

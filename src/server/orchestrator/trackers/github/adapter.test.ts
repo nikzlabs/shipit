@@ -40,6 +40,7 @@ describe("GitHubTracker", () => {
     expect(info).toEqual({
       id: "github",
       label: "GitHub",
+      kind: "github",
       configured: true,
       binding: { key: "octocat/hello-world", name: "octocat/hello-world" },
     });

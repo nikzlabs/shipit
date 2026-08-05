@@ -15,7 +15,7 @@ import { remarkLinkifyPaths } from "../utils/linkify-paths.js";
 import { remarkLinkifyIssues, ISSUE_LINK_SCHEME } from "../utils/linkify-issues.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
-import { useIssuesStore } from "../stores/issues-store.js";
+import { trackerDestinations, useIssuesStore } from "../stores/issues-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 
 /**
@@ -39,12 +39,16 @@ function openIssueInPanel(ref: OpenIssueRef): void {
  *
  * The team-key gate lives here, not in the parse: a bare `[A-Z]+-\d+` token
  * collides with everyday strings (`GPT-4`, `UTF-8`), so we only paint a badge
- * when Linear is connected AND the token's team prefix matches the bound team
- * key (`binding.key`, e.g. `TRACKER`). Anything else renders as the raw text — no
- * badge, no dead click. This is the one render-time store read in this module
- * (the link branches read in their click handlers instead); it's a scoped leaf
- * subscription that only re-renders this badge when the tracker set changes, so
- * it doesn't defeat the `MarkdownContent` memo that guards streaming re-parses.
+ * when the token resolves to a **declared** Linear tracker whose team key it
+ * carries (docs/248 req 5) and that tracker is connected. Anything else renders
+ * as the raw text — no badge, no dead click. Since docs/248 removed the built-in
+ * Linear binding, that gate is now "does this repository declare a `kind: linear`
+ * tracker for team `SHI`", which is also req 11's fail-closed rule: a key for an
+ * undeclared team stays plain text rather than becoming a link to nowhere. This
+ * is the one render-time store read in this module (the link branches read in
+ * their click handlers instead); it's a scoped leaf subscription that only
+ * re-renders this badge when the tracker set changes, so it doesn't defeat the
+ * `MarkdownContent` memo that guards streaming re-parses.
  *
  * Styling keeps the badge within the surrounding line box — `text-[0.85em]`
  * with `leading-none` and only horizontal padding — so it reads as a pill
@@ -52,18 +56,27 @@ function openIssueInPanel(ref: OpenIssueRef): void {
  * push prose lines apart).
  */
 function IssueBadge({ issueKey, children }: { issueKey: string; children?: React.ReactNode }) {
-  const linear = useIssuesStore((s) => s.trackers.find((t) => t.id === "linear"));
-  const boundKey = linear?.binding?.key?.toUpperCase();
   const teamPrefix = issueKey.slice(0, issueKey.indexOf("-")).toUpperCase();
-  const isIssue = (linear?.configured ?? false) && !!boundKey && teamPrefix === boundKey;
+  const tracker = useIssuesStore((s) =>
+    s.trackers.find(
+      (t) => t.kind === "linear" && t.configured && t.binding?.key?.toUpperCase() === teamPrefix,
+    ),
+  );
 
-  if (!isIssue) return <>{children}</>;
+  if (!tracker) return <>{children}</>;
 
   return (
     <button
       type="button"
       title={`Open ${issueKey}`}
-      onClick={() => openIssueInPanel({ tracker: "linear", id: issueKey, identifier: issueKey })}
+      onClick={() =>
+        openIssueInPanel({
+          tracker: tracker.id,
+          id: issueKey.toUpperCase(),
+          // req 15 — render the destination's name form when it has one.
+          identifier: tracker.name ? `${tracker.name}#${issueKey.toUpperCase()}` : issueKey.toUpperCase(),
+        })
+      }
       className="inline-flex items-center align-middle rounded px-1 text-[0.85em] font-mono font-medium leading-none border border-(--color-accent)/30 bg-(--color-accent)/10 text-(--color-accent) hover:bg-(--color-accent)/20 transition-colors cursor-pointer"
     >
       {issueKey}
@@ -116,7 +129,10 @@ function MarkdownLink({
     return <IssueBadge issueKey={href.slice(ISSUE_LINK_SCHEME.length)}>{children}</IssueBadge>;
   }
 
-  const issueLink = parseTrackerIssueLink(href);
+  // docs/248 — the destinations are read at render time from the tracker list
+  // the store already holds, so an href only becomes an in-app link when it
+  // resolves to something this session's repository actually declares (req 11).
+  const issueLink = parseTrackerIssueLink(href, trackerDestinations());
   if (issueLink) {
     const openIssueInApp = (e: React.MouseEvent) => {
       const connected =
