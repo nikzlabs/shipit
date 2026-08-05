@@ -32,6 +32,7 @@ import { parse as parseYaml } from "yaml";
 import type { ReleaseMechanism } from "./types/release-types.js";
 import { normalizeLinearTeamKey, parseOwnerRepo } from "./tracker-id.js";
 import type { DeclaredTracker } from "./declared-tracker.js";
+import { declaredTrackerKey } from "./declared-tracker.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -378,6 +379,7 @@ function parseIssuesConfig(raw: unknown, warnings: string[]): IssuesConfig {
 
   const trackers: DeclaredTracker[] = [];
   const seenNames = new Set<string>();
+  const seenDestinations = new Map<string, string>();
   for (let i = 0; i < rawTrackers.length; i++) {
     const entry = parseDeclaredTracker(rawTrackers[i], i, warnings);
     if (!entry) continue;
@@ -391,7 +393,23 @@ function parseIssuesConfig(raw: unknown, warnings: string[]): IssuesConfig {
       );
       continue;
     }
+    // req 6, the other direction — a DESTINATION is declared at most once. Two
+    // names for one repository or team are not an alias: `TrackerId` is the
+    // destination, so both entries would collapse onto one id, one tab would
+    // shadow the other, and the shadowed name's operations would emit the
+    // survivor's reference form. Refusing the second is what the user chose over
+    // making a declaration (rather than its destination) the thing ShipIt
+    // identifies.
+    const destinationKey = declaredTrackerKey(entry).toLowerCase();
+    const claimedBy = seenDestinations.get(destinationKey);
+    if (claimedBy) {
+      warnings.push(
+        `Ignoring \`issues.trackers[${i}]\`: \`${declaredTrackerKey(entry)}\` is already declared as \`${claimedBy}\` — a destination may only be declared once.`,
+      );
+      continue;
+    }
     seenNames.add(nameKey);
+    seenDestinations.set(destinationKey, entry.name);
     trackers.push(entry);
   }
   return { trackers };

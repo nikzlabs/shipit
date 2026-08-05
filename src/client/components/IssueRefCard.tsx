@@ -16,6 +16,7 @@
 import { CaretRightIcon, EyeIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { IssueRefCard as IssueRefCardData } from "../../server/shared/types.js";
+import { useIssuesStore } from "../stores/issues-store.js";
 
 export interface IssueRefCardProps {
   card: IssueRefCardData;
@@ -31,13 +32,23 @@ function isDone(statusType?: string): boolean {
 export function IssueRefCard({ card, onOpen }: IssueRefCardProps) {
   const done = isDone(card.statusType);
 
-  const open = () =>
+  const open = () => {
+    // docs/248 req 16 — resolve at USE, not at write. The card records the name
+    // it was addressed through; if that name now points somewhere else, the card
+    // opens the new destination. `card.tracker` is the fallback for a card
+    // written without a name (the session's own repository) and for a name that
+    // is no longer declared at all. Read in the click handler rather than at
+    // render so the card keeps its no-subscription property.
+    const repointed = card.trackerName
+      ? useIssuesStore.getState().trackers.find((t) => t.name === card.trackerName)
+      : undefined;
     onOpen?.({
-      tracker: card.tracker,
+      tracker: repointed?.id ?? card.tracker,
       identifier: card.identifier,
       ...(card.title ? { title: card.title } : {}),
       ...(card.url ? { url: card.url } : {}),
     });
+  };
 
   return (
     <button

@@ -157,9 +157,16 @@ export async function registerIssueRoutes(
         c.message.issueRef?.identifier === issue.identifier,
     );
     if (carded) return;
+    // req 16 — record the declared NAME alongside the destination, so clicking
+    // the card later re-resolves through whatever that name points at now. The
+    // name is derived here rather than passed in because every caller (shim and
+    // UI alike) already addressed a destination this session can reach, and req 6
+    // makes the id → name mapping unique.
+    const trackerName = declaredNameFor(sessionId, trackerId);
     const card: IssueRefCard = {
       cardId: `issue-ref-${randomUUID()}`,
       tracker: trackerId as TrackerId,
+      ...(trackerName ? { trackerName } : {}),
       identifier: issue.identifier,
       title: issue.title,
       ...(issue.url ? { url: issue.url } : {}),
@@ -664,6 +671,13 @@ export async function registerIssueRoutes(
    * Checked at WRITE time only. At undo time the pair is deliberately allowed to
    * have drifted apart: that drift IS req 16's re-point.
    */
+  /** The declared name of a destination this session can reach, if it has one. */
+  function declaredNameFor(sessionId: string, trackerId: string): string | undefined {
+    const github = resolveGitHubContext(sessionId);
+    const { destinations } = listTrackerDestinations(credentialStore, trackerFetchImpl, github);
+    return destinations.find((d) => d.id === trackerId)?.name;
+  }
+
   function rejectMismatchedTrackerName(
     sessionId: string,
     trackerId: string,

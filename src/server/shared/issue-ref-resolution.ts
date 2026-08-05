@@ -252,10 +252,17 @@ function canonicalMatches(dest: TrackerDestination, id: TrackerId): boolean {
  *
  * GitHub wants a bare number. Linear wants a key, so `roadmap#304` is completed
  * from the declaration's team (`SHI-304`) — that completion is the whole reason
- * requirement 5 puts the team key in the declaration. A suffix that doesn't fit
- * the backend (`planning#SHI-3` on a GitHub tracker, `roadmap#ABC-3` on team
- * `SHI`) fails closed rather than being coerced: the caller named two different
- * things, which is a mistake, not a precedence question.
+ * requirement 5 puts the team key in the declaration.
+ *
+ * Where the suffix carries a team key of its OWN and it disagrees with the
+ * declaration (`roadmap#ABC-3` on team `SHI`), the **name wins** and the suffix's
+ * key is discarded (req 16). That is a precedence rule, not a guess: the name
+ * already identifies exactly one declared destination, and preferring it is what
+ * lets a reference written before a re-point keep resolving.
+ *
+ * A suffix that doesn't fit the backend at all still fails closed —
+ * `planning#SHI-3` on a GitHub tracker names no issue number, so there is nothing
+ * to prefer the name *to*.
  */
 function resolveNamedSuffix(
   destination: TrackerDestination,
@@ -285,17 +292,18 @@ function resolveNamedSuffix(
       return fail(`The Linear tracker \`${name}\` has no usable team key in its declaration.`);
     }
     const keyed = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/.exec(suffix);
-    if (keyed) {
-      if (normalizeLinearTeamKey(keyed[1]) !== team) {
-        return fail(
-          `\`${identifier}\` names the Linear tracker \`${name}\` (team ${team}), but ` +
-            `\`${suffix.toUpperCase()}\` belongs to a different team.`,
-        );
-      }
-      issueId = `${team}-${keyed[2]}`;
-    } else {
-      issueId = `${team}-${suffix}`;
-    }
+    // req 16 — in a name form the NAME is authoritative and an embedded backend
+    // id is advisory. `roadmap#SHI-304` written before `roadmap` was re-pointed
+    // to team OPS resolves to `OPS-304` rather than failing on the stale key,
+    // which is what lets requirement 15's emitted form survive a re-point.
+    //
+    // This is the one place ShipIt deliberately resolves past a reference whose
+    // two halves disagree — a chosen exception to reqs 11/17, not an oversight.
+    // It is safe here because the name still identifies exactly one declared
+    // destination: nothing is guessed, one of two stated things is preferred.
+    // Reversing a recorded write does NOT come through here (see `undoIssueWrite`),
+    // so an undo still acts on the issue its write actually touched.
+    issueId = keyed ? `${team}-${keyed[2]}` : `${team}-${suffix}`;
   }
 
   return {

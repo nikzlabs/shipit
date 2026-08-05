@@ -300,6 +300,15 @@ export interface IssueRefCard {
   /** Stable id — dedupes the live append vs the reconnect/reload replay. */
   cardId: string;
   tracker: TrackerId;
+  /**
+   * The declared name this read was addressed through, when it had one (docs/248
+   * req 16). Recorded for the same reason `IssueWriteCard.trackerName` is: the
+   * card outlives the declaration it was written against, so clicking it must
+   * re-resolve through whatever the NAME points at today rather than the
+   * destination it happened to resolve to then. `tracker` stays as the fallback
+   * for a card written without a name.
+   */
+  trackerName?: string;
   /** Display identifier, e.g. "SHI-28" or "owner/repo#42". */
   identifier: string;
   /** Issue title at view time, for the card line. */
