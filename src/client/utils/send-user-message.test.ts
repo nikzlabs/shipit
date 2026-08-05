@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { sendUserMessage } from "./send-user-message.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -140,5 +140,72 @@ describe("sendUserMessage — undelivered send rolls back", () => {
     expect(useSessionStore.getState().activity?.label).toBe("Reviewing...");
     // The mark predates this send, so the rollback must leave it in place.
     expect(useSessionStore.getState().activeRunnerSessions.has("sess-1")).toBe(true);
+  });
+});
+
+/**
+ * The same silent-drop class as the block above, one layer earlier — and this
+ * one never even reached `dispatch`, so the delivery boolean could not catch it.
+ *
+ * A ShipIt instance reached over plain HTTP on a non-localhost origin is not a
+ * secure context, so the browser withholds `crypto.randomUUID`. Minting the
+ * request id used to call it directly: the `TypeError` aborted the send before
+ * `dispatch` ran, while `MessageInput.handleSubmit` (which does not await
+ * `onSend`) went on to clear the textarea. The user saw the composer empty with
+ * no bubble, no spinner and no toast — every send, on every http:// deployment.
+ */
+describe("sendUserMessage — insecure context (no crypto.randomUUID)", () => {
+  const bubble: ChatMessage = { role: "user", text: "hello" };
+
+  beforeEach(() => {
+    useSessionStore.getState().reset();
+    useSessionStore.setState({ activeRunnerSessions: new Set<string>() });
+    useUiStore.setState({ toast: null });
+    vi.stubGlobal("crypto", {
+      getRandomValues: <T extends ArrayBufferView>(arr: T): T => {
+        const bytes = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+        for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 37 + 11) % 256;
+        return arr;
+      },
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("still dispatches the message with a request id", () => {
+    useSessionStore.setState({ sessionId: "sess-1" });
+    const dispatched: string[] = [];
+
+    let ok: boolean | undefined;
+    expect(() => {
+      ok = sendUserMessage({
+        bubble,
+        activity: "Thinking...",
+        dispatch: (requestId) => {
+          dispatched.push(requestId);
+          return true;
+        },
+      });
+    }).not.toThrow();
+
+    expect(ok).toBe(true);
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0]).toBeTruthy();
+    // And the optimistic UI still reflects an in-flight turn.
+    expect(useSessionStore.getState().isLoading).toBe(true);
+    expect(useSessionStore.getState().messages).toHaveLength(1);
+    expect(useUiStore.getState().toast).toBeNull();
+  });
+
+  it("still rolls back an undelivered send", () => {
+    useSessionStore.setState({ sessionId: "sess-1" });
+
+    const ok = sendUserMessage({ bubble, activity: "Thinking...", dispatch: () => false });
+
+    expect(ok).toBe(false);
+    expect(useSessionStore.getState().messages).toHaveLength(0);
+    expect(useUiStore.getState().toast?.message).toMatch(/wasn't sent/i);
   });
 });
