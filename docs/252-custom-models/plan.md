@@ -45,8 +45,12 @@ gap. Resolving it is the real work; DeepSeek is just the first case that forces 
 | Concept | Is | Identified by |
 |---|---|---|
 | **Harness** | a CLI to spawn, speaking exactly one API style | `claude`, `codex` |
-| **Service** | a credential + endpoint, speaking one or more API styles | its API key or subscription |
-| **Model** | a model id a service offers | the pair (service, model id) |
+| **Service** | a catalogue entry: endpoints, API styles, and the models declared for each | a `serviceId` such as `openrouter` |
+| **Model** | a model id a service offers | the pair (serviceId, model id) |
+
+A service is *not* the credential. One service holds zero or more user-supplied
+credential routes — see the ownership table under Design, which req 15's "another
+subscription of the same service" depends on.
 
 A model id alone is **not** a global identifier: the same model is reachable through
 DeepSeek directly and through a gateway like OpenRouter, at different prices and
@@ -64,7 +68,9 @@ The declaration is not bureaucracy — it is the only honest way to express real
 DeepSeek speaks both styles yet supports only `deepseek-v4-flash` under Codex, and
 Codex additionally wants per-model metadata (context window, tool format, reasoning
 settings) beyond a bare id. A purely derived rule would list `deepseek-v4-pro` under
-Codex and let the turn fail, which is precisely what req 11 forbids.
+Codex and let the turn fail. Nothing forbids that at runtime — req 11 is only about
+credentials — so the catalogue is where it has to be prevented, by not listing the pair
+in the first place (req 8).
 
 What still falls out cheaply is req 9: a new harness picks up every configured service
 that speaks its style, limited to the models already declared for it. Nothing has to
@@ -94,14 +100,18 @@ gated by `isAllowedAgentEnvKey` (`agent-registry.ts:314`).
    containerized session that has a compose stack. Any design that relies on this pipe
    has to extend it, not merely add a key name.
 
-2. `ALLOWED_ENV_KEYS` is a **compile-time constant** (`agent-registry.ts:303`). One key
-   name per service means one code change and one release per service, which directly
-   contradicts req 10. The feature needs a *runtime* service-credential mechanism; the
-   allowlist is a dead end for it, and this doc previously proposed exactly that dead
-   end.
+2. `ALLOWED_ENV_KEYS` is a **compile-time constant** (`agent-registry.ts:303`), so one
+   key name per service means one code change per service.
 
-Neither correction changes the requirements — they change what the design has to
-build, from "add a string" to "add a delivery path".
+   This *used* to contradict req 10, when req 10 promised that trying a new service
+   needed no release. It no longer does: the catalogue ships with ShipIt, so a new
+   service is already a ShipIt change, and adding its key name in the same change costs
+   nothing extra. **The requirement that justified building a runtime credential
+   mechanism has disappeared, so the mechanism should not survive it** — a compile-time
+   key name per catalogue service is now the simpler and sufficient answer.
+
+The compose gap in (1) is unaffected and still has to be closed, on its own merits
+rather than as a consequence of req 10.
 
 ### The credential-scrub only applies to local mode
 
@@ -210,13 +220,35 @@ Subscriptions remain first-class for the vendors ShipIt already implements.
 *ShipIt ships the catalogue* (req 8): which services exist, which API styles each
 speaks, and per style, which of its models work there plus any metadata that style needs
 (Codex wants context window, tool format and reasoning settings). This must be
-expressible compactly — a rule covering a whole model family, not one row per model, or
-an aggregator's catalogue becomes unmaintainable. A per-style endpoint belongs here too:
+a **maintained subset**, not a mirror of everything a service offers (req 8). Only a
+handful of models are worth using for coding at any time, so an aggregator advertising
+400+ models contributes a short curated list rather than 400 rows.
+
+That choice dissolves a tension rather than managing it. Per-model metadata — Codex's
+context window, tool format and reasoning settings — is only awkward when there are
+hundreds of models to state it for. With a curated subset it is simply stated per model,
+and no generation, family-rule scheme, or defaults-plus-exceptions machinery is needed.
+The cost is a judgement call ShipIt owns and revises: which models are worth carrying. A per-style endpoint belongs here too:
 one base URL per service is wrong for a service whose styles live at different paths.
 
 *The user supplies credentials* (req 10) for the services they want to use. That is the
 whole of what they own; they are not authoring catalogue entries. The consequence is
 explicit in req 10 — a service ShipIt does not know about needs a ShipIt change.
+
+**Four distinct identities, which an earlier draft blurred into one.** This doc first
+called a service "a credential + endpoint" and later a ShipIt-owned catalogue row; those
+are different things, and req 15's "another subscription of the same service" only makes
+sense once they are separated:
+
+| Thing | Owner | Example |
+|---|---|---|
+| `serviceId` | ShipIt catalogue | `openrouter` |
+| credential route | the user — one key, or one subscription account, belonging to that service | a stored key, or `acct_…` |
+| selected model | the session | `(serviceId, modelId)` |
+| turn route | resolved per turn from the credential routes of that service | which key/account this turn used |
+
+One catalogue service can therefore hold several credential routes, which is exactly the
+case req 15 fails over between.
 
 Anthropic and OpenAI are catalogue rows like any other, not special cases (req 7).
 `AgentId` keeps meaning *harness* only, and gains a declared API style.
@@ -257,10 +289,15 @@ subscription is unavailable (docs/150 req 12, `:605`). The work is to lift that 
 per-`AgentId` accounts to per-service credentials, not to invent a policy.
 
 **Eligibility** (req 11) moves from `hasAnyAuthForProvider(provider)` to a per-model
-question: *is there a configured service offering this model for this harness?* With
-Anthropic as an ordinary service, "Claude with no account connected" and "DeepSeek with
-no key" become the same condition answered by the same code. This retires the spike's
-overstatement rather than patching it.
+question: *does the service offering this model have a credential?* With Anthropic as an
+ordinary service, "Claude with no account connected" and "DeepSeek with no key" become
+the same condition answered by the same code. This retires the spike's overstatement
+rather than patching it.
+
+Note the narrow scope: eligibility is a **credential** check and nothing more. It does
+not assert the model will work — that is req 6's best-effort territory — so there is no
+runtime validation to build and no staleness policy to maintain. A model that stops
+working at its service is a catalogue update in the next ShipIt release.
 
 **Mid-session model switching** (req 5) is a capability question per harness, not a new
 mechanism: the model is already a per-turn spawn argument, and `AgentCapabilities`
@@ -291,10 +328,12 @@ Note the correction this implies for "the model is already a per-turn spawn argu
 for a **resident** process it is not. Later turns are injected without spawning until
 that guard forces a boundary, which is precisely why the guard exists.
 
-**Credential delivery** cannot reuse the existing pipe as-is — see the two corrections
-under Findings. It needs a runtime, per-service credential mechanism (the allowlist is
-compile-time, which contradicts req 10) that also reaches compose-backed containerized
-sessions (which today receive only compose-declared and `mcp__*` secrets).
+**Credential delivery** reuses the existing pipe with **one** correction, not two. A
+compile-time key name per catalogue service is sufficient: req 10's narrowing means a
+new service already implies a ShipIt change, so naming its key in that same change costs
+nothing, and no runtime dynamic-key mechanism is warranted. What does still need
+building is the compose path — a compose-backed containerized session receives only
+compose-declared and `mcp__*` secrets, so a stored service key never reaches it.
 
 **Subscription credentials are out of scope for user-added services** (req 7), which
 is what keeps credential delivery to one flow. Subscriptions travel through account
@@ -307,12 +346,29 @@ scrub, from the *selected model's* service rather than from a model-id prefix.
 
 **Non-turn work** (req 12) — session naming and PR descriptions run on a service the
 user configures **explicitly for that purpose**, resolved independently of whatever the
-session is using. When that service fails, the operation still completes on its existing
-fallback (placeholder title, generic PR description) and ShipIt shows a dismissible
-notice naming the failed service. That deliberately preserves today's behavior — naming
-is silent best-effort (`session-namer.ts:19`) and PR descriptions fall back to generic
-prose (`services/github.ts:1412`) — and adds only the notice, so background failure
-never blocks the operation but is never silent either. Deliberately not "follow the session's model": the failure this
+session is using.
+
+The two halves are not symmetric, and an earlier draft wrongly said both merely preserve
+today's behavior:
+
+- *Session naming already behaves as required.* `generateSessionName` returns `null` on
+  any failure and is documented as silent best-effort (`session-namer.ts:19`);
+  graduation installs a placeholder first (`graduate-session.ts:158`) and keeps it when
+  naming returns `null` (`graduate-session.ts:311`). Only the notice is new.
+- *PR descriptions do not.* `generatePrDescriptionFromContext` returns whatever
+  `generateText` returns (`services/github.ts:1412`), and in containerized production
+  that is the empty string (`app-di.ts:485`) — the generic prose lives only in the
+  `catch`, so it is reached on a thrown error and not on a blank result. Satisfying
+  req 12 therefore means **normalizing a blank generation into the generic fallback**,
+  with separate tests for the rejection path and the blank-success path.
+
+**The notice has to be durable, not a toast.** Session naming is fire-and-forget: it can
+finish while the user is looking at another session or with no viewer attached at all, so
+a transient toast would be silent in exactly the case req 12 exists to prevent. It should
+be transcript content, which brings it under ShipIt's persistence and session-scoping
+rules — persisted via `emitChatCard`, carrying its owning `sessionId`, registered in
+`TRANSCRIPT_SCOPED_MESSAGES` (see `docs/188`, `docs/191`). Dismissal is state on that
+row, not the absence of one. Deliberately not "follow the session's model": the failure this
 requirement comes from was a credential disappearing underneath work that assumed it
 (a lapsed Claude subscription while working in Codex), and inheriting the session's
 model would leave that same implicit dependency in place, merely pointed elsewhere. An

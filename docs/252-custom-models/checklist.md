@@ -2,12 +2,16 @@
 
 `requirements.md` has no open questions.
 
-- [ ] ShipIt-shipped service catalogue (req 8): services, the API styles each speaks,
-      and per style the models that work there plus any style-required metadata
-      (Codex needs context window, tool format, reasoning settings). Endpoint is
-      per-style, not one base URL per service.
-- [ ] Make catalogue entries compact (req 8) — a rule covering a model family, not one
-      row per model, so an aggregator is no more work than a single-model service.
+- [ ] ShipIt-shipped service catalogue (req 8): services keyed by `serviceId`, the API
+      styles each speaks, and per style the models that work there plus any
+      style-required metadata (Codex needs context window, tool format, reasoning
+      settings). Endpoint is per-style, not one base URL per service.
+- [ ] Separate the four identities the design depends on: `serviceId` (catalogue),
+      credential route (user-owned, several per service), selected model
+      `(serviceId, modelId)`, and the turn's resolved route.
+- [ ] Curate the catalogue to a maintained subset per service (req 8) — the models
+      worth using for coding, not everything a service advertises. Per-model metadata is
+      stated per model; no generation or family-rule scheme is needed.
 - [ ] User-supplied credentials only, key-authenticated (reqs 7, 10). Subscription-backed
       services stay limited to the vendors ShipIt already implements.
 - [ ] Identify a selected model by **(service, model id)**, not by model id alone — the
@@ -17,12 +21,17 @@
 - [ ] Give `AgentId` a declared API style; stop treating it as a service identity.
 - [ ] Per-service declaration of which models work under which API style (req 8), and
       derive the picker's list from that plus the harness's style (req 9).
-- [ ] Replace `hasAnyAuthForProvider` with per-model eligibility (req 11).
+- [ ] Replace `hasAnyAuthForProvider` with per-model **credential** eligibility
+      (req 11) — a credential check only. No runtime model validation and no catalogue
+      staleness policy: a model that stops working is a catalogue update.
 - [ ] Settings surface for supplying, editing, and removing service credentials
       (req 10) — key entry only; no subscription-login flow in this feature.
-- [ ] Runtime per-service credential delivery. `ALLOWED_ENV_KEYS` is compile-time and
-      cannot satisfy req 10; the compose path (`ServiceManager` snapshot) carries only
-      compose-declared and `mcp__*` secrets, so it needs extending too.
+- [ ] Per-catalogue-service credential key names. A compile-time entry per service is
+      now sufficient — req 10's narrowing means a new service is already a ShipIt
+      change. Do NOT build a runtime dynamic-key mechanism; its justification is gone.
+- [ ] Close the compose delivery gap on its own merits: the `ServiceManager` snapshot
+      carries only compose-declared and `mcp__*` secrets, so a stored service key does
+      not reach a compose-backed containerized session.
 - [ ] Confirm existing subscription-backed vendors keep their current credential path
       unchanged (req 7) — this feature adds key delivery, it does not touch theirs.
 - [ ] Spawn shaping at both spawn sites, after the scrub, resolved from the selected
@@ -37,9 +46,17 @@
 - [ ] Explicit user-configured service for non-turn work (req 12), designed as **two**
       paths: session naming (has an implicit agent-bound seam today) and PR
       descriptions via `generateText` (returns empty in containerized production).
-- [ ] On non-turn service failure, keep the existing fallback (placeholder title,
-      generic PR description) and show a dismissible notice naming the failed service
-      (req 12). Never block the surrounding operation; never fail silently.
+- [ ] Session naming already degrades correctly (placeholder retained on `null`) — add
+      only the notice (req 12).
+- [ ] Normalize a **blank** PR description into the generic fallback (req 12). Today
+      `generatePrDescriptionFromContext` returns `generateText`'s value verbatim, which
+      is `""` in containerized production; generic prose is reached only from the
+      `catch`. Separate tests for the rejection path and the blank-success path.
+- [ ] Make the failure notice **durable**, not a toast: naming is fire-and-forget and
+      can complete with no viewer attached. Persist it as transcript content via
+      `emitChatCard`, scoped by `sessionId` and registered in
+      `TRANSCRIPT_SCOPED_MESSAGES` (docs/188, docs/191); dismissal is state on the row.
+- [ ] Guard test: the notice survives a reload and a session switch.
 - [ ] Branch credential-failure handling on **credential type, not error text**
       (req 15): a key-authenticated service stops the turn with a plain report;
       `AUTH_ERROR_PATTERNS` must not route its 401 into vendor re-auth.

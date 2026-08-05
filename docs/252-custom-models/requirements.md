@@ -30,9 +30,10 @@ No open questions remain.
    uses tools poorly will use them poorly. Those are properties of the harness and the
    model, not defects in ShipIt, and this requirement does not promise otherwise.
 
-7. The thing a user adds is a **service** — not a model, and not a harness. Harness and
-   service are fully separate concepts throughout, and Anthropic and OpenAI are services
-   like any other rather than privileged defaults.
+7. The thing a user connects is a **service** — not a model, and not a harness. Harness
+   and service are fully separate concepts throughout, and Anthropic and OpenAI are
+   services like any other rather than privileged defaults. The user does not invent a
+   service: they supply a credential for one ShipIt already knows about (req 8, req 10).
 
    A service is authenticated either by an API key or by a subscription. **A service the
    user adds themselves is key-authenticated.** Subscription-backed services are those
@@ -46,13 +47,15 @@ No open questions remain.
    usable there. A model is offered on a harness when the service speaks that harness's
    style **and** is declared to support that model there.
 
-   Writing those declarations must not mean one entry per model: it must be possible to
-   cover many models of a service with a single piece of configuration, so that a
-   service offering hundreds of models is no more work than one offering three.
+   The catalogue does not mirror everything a service offers. ShipIt lists a
+   **maintained subset** — at any moment only a handful of models are worth using for
+   coding — so a service advertising hundreds of models does not become hundreds of
+   entries. Breadth of the subset is a judgement ShipIt makes and revises over time.
 
-9. When a new harness is added to ShipIt later, the services that already speak its
-   API style become usable with it as far as their declarations reach, with no
-   further work by the user beyond declaring any models they had not covered yet.
+9. When a new harness is added to ShipIt later, the services that already speak its API
+   style become usable with it as far as the catalogue's declarations reach, with **no
+   work by the user at all**. Extending those declarations to models not yet covered is
+   ShipIt's work, never the user's.
 
 10. A user adds and manages their own services in their own Settings by supplying
     credentials for them — no administrator, and no involvement from anyone else, to
@@ -63,20 +66,31 @@ No open questions remain.
     does not yet know about does require a ShipIt change. This is a deliberate narrowing
     of an earlier answer; see the receipts.
 
-11. ShipIt only offers models it can actually run. A model whose service has no
-    configured credential is not selectable — this is one rule applying uniformly to
-    every service, with no service treated as the default or built-in one.
+11. A model is selectable only when its service has a credential configured. One rule
+    applies uniformly to every service, with none treated as a default or built-in: so
+    "Claude with no account connected" and "DeepSeek with no key" are the same
+    condition, and neither is offered.
+
+    This is about credentials, and nothing else. Whether a selectable model then works
+    *well* is req 6's best-effort territory — ShipIt does not guarantee that every
+    model and harness combination performs, only that it never offers a model it has no
+    credential for.
 
 12. The work ShipIt does outside a turn — naming a session, writing a pull-request
     description — runs on a service the user configures explicitly for it, chosen
     independently of whatever model a session is using. It must not silently depend
     on a credential the user has stopped having.
 
-    When that service fails, the surrounding operation still completes on its existing
-    fallback — a session keeps its placeholder title, a pull request gets its generic
-    description — and ShipIt shows a dismissible notice saying which service failed.
-    Failure of background work never blocks the operation around it, and is never
-    silent either.
+    When that service fails, the surrounding operation still completes with a fallback
+    — a session keeps its placeholder title, and a pull request gets a generic
+    description rather than an empty one — and ShipIt shows a dismissible notice saying
+    which service failed. Failure of background work never blocks the operation around
+    it, and is never silent either.
+
+    The pull-request half is a **change**, not a preserved behavior: today a failed or
+    unavailable generation yields an empty description, and the generic text exists only
+    for a thrown error. The notice must also still be findable after a reload or a
+    session switch — a message that vanishes with the tab is silent in practice.
 
 13. Usage is reported per **service**, not per model. A service may expose its own
     quota or subscription, and the indicator reflects whatever the service in use
@@ -108,6 +122,25 @@ No open questions remain.
 _None._
 
 ## Resolved questions
+
+- 2026-08-05 — How do compact declarations coexist with per-model metadata? **Chosen:
+  (c) ship only an explicitly maintained subset of a large service's models.** Only a
+  handful of models are worth using for coding at any time, so the catalogue carries
+  those rather than mirroring a service's full offering. This *removed* a requirement
+  rather than adding one: req 8's "one piece of configuration must cover many models"
+  constraint is gone, and with it the need for build-time generation or a
+  defaults-plus-exceptions scheme. Per-model metadata is no longer in tension with
+  anything, because there are few enough models to state it per model.
+
+- 2026-08-05 — What does req 11 promise, and for how long? **Chosen: strip the promise.**
+  The requirement bundled two things — a vague "only offers models it can actually run",
+  and the credential-eligibility rule chosen earlier the same day. The first is what made
+  it unclear and what a stale catalogue could not honour; ShipIt does not guarantee that
+  every model and harness combination works (req 6 is best-effort). Req 11 now states
+  only the credential rule, which is the part that does real work: it is why the picker
+  stops offering `claude-*` models on an install whose only credential is a DeepSeek key.
+  With the guarantee gone, no staleness policy is needed — a model that stops working is
+  a catalogue update, and req 6 covers the interim.
 
 - 2026-08-05 — Who authors a service's per-model declarations, and what keeps them
   fresh? **Chosen: ShipIt's developers author them, with configuration that can cover
@@ -254,7 +287,8 @@ human, but most of the mechanism did not. What the human actually said, in order
 - "failover between subscriptions of the same service" → its scoping to a single
   service.
 - "ShipIt developers (me), with a convenient way to cover many models with a single
-  config" → req 8's authorship and compactness constraints, and the narrowing of req 10.
+  config" → req 8's authorship, and the narrowing of req 10. (The compactness constraint
+  this originally added was later replaced by curation — see the receipt.)
 - "each subscription would require custom support from the ShipIt side. So it is out of
   scope of this feature for now" → req 7's key-authentication limit.
 - "(a) keep the existing fallbacks and surface a dismissible notice" → req 12's failure
@@ -262,6 +296,16 @@ human, but most of the mechanism did not. What the human actually said, in order
 - "sounds good" (req 6) and "good" (req 14) → both confirmed as requirements.
 - "ShipIt works 'best effort' for models/harnesses, it can't fix them" → req 6's
   best-effort framing.
+
+- "There are only so many models at any point of time that can do good coding" → req 8's
+  maintained-subset framing, replacing the compactness constraint.
+- "ShipIt as a product doesn't provide guarantees that all model/harness combinations
+  will work … maybe strip it?" → req 11 reduced to the credential rule.
+
+Reqs 7, 9 and 12 were corrected on 2026-08-05 after review found they still described
+the *superseded* model in which users authored declarations and added services outright,
+and claimed a pull-request fallback that does not exist today. Those are corrections to
+the agent's drafting, not new decisions.
 - Answers of 2026-08-05 → reqs 6, 7, 8, 10, 11, 12, 13, 14, 15.
 
 Reqs 6 and 14 are the agent's reading of "works like any other session" and of
