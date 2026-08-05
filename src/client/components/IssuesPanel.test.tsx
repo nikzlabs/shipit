@@ -126,7 +126,9 @@ describe("IssuesPanel repo picker (docs/236)", () => {
 
     expect(onStartSession).toHaveBeenCalledTimes(1);
     expect(onStartSession.mock.calls[0]![0]).toMatchObject({ identifier: "SHI-1" });
-    expect(onStartSession.mock.calls[0]![1]).toBe(website.url);
+    // SHI-320 — the tracker rides along so App can build a resolvable IssueRef.
+    expect(onStartSession.mock.calls[0]![1]).toBe("linear");
+    expect(onStartSession.mock.calls[0]![2]).toBe(website.url);
   });
 
   it("omits hidden repos, but keeps the current target even when hidden", async () => {
@@ -152,8 +154,9 @@ describe("IssuesPanel repo picker (docs/236)", () => {
     await userEvent.click(screen.getByRole("button", { name: /^start session$/i }));
 
     expect(onStartSession).toHaveBeenCalledTimes(1);
+    expect(onStartSession.mock.calls[0]![1]).toBe("linear");
     // No explicit repo — App resolves the session's own repo, as it always has.
-    expect(onStartSession.mock.calls[0]![1]).toBeUndefined();
+    expect(onStartSession.mock.calls[0]![2]).toBeUndefined();
   });
 });
 

@@ -54,7 +54,7 @@ export function IssuesPanel({
   onStartSession,
   onConnect,
 }: {
-  onStartSession: (issue: TrackerIssue, repoUrl?: string) => void;
+  onStartSession: (issue: TrackerIssue, tracker: TrackerId, repoUrl?: string) => void;
   onConnect: () => void;
 }) {
   const trackers = useIssuesStore((s) => s.trackers);
@@ -155,7 +155,10 @@ export function IssuesPanel({
   // startable, even before any repo has become "active".
   const handleStartSession = (issue: TrackerIssue, targetRepoUrl?: string) => {
     if (!targetRepoUrl && !effectiveRepoUrl) return;
-    onStartSession(issue, targetRepoUrl);
+    // SHI-320 — the tracker the issue was read from travels with it, so the new
+    // session can carry a resolvable `IssueRef` (branch pin + `→ started`).
+    // `selected` wins because the detail view can outlive a tab switch.
+    onStartSession(issue, selected?.tracker ?? activeTracker, targetRepoUrl);
   };
 
   // Master-detail (docs/189): a selected issue replaces the list with the

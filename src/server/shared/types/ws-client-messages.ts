@@ -1,5 +1,6 @@
 import type { ImageAttachment, FileContextRef, PermissionMode, UploadRef } from "./attachment-types.js";
 import type { AgentId } from "../../session/agents/agent-process.js";
+import type { IssueRef } from "./domain-types/issue.js";
 import type { WsTerminalStart, WsTerminalInput, WsTerminalResize, WsSubscribeLogs, WsLogClear } from "./terminal-types.js";
 
 export interface WsSendMessage {
@@ -25,6 +26,17 @@ export interface WsSendMessage {
    * per-message choice, never persisted.
    */
   resetMergedBranch?: boolean;
+  /**
+   * SHI-320 — the tracker issue this session was started from, carried on the
+   * FIRST message only (the Issues tab's "Start session" prefills the composer
+   * rather than dispatching, so creation and the first message are two separate
+   * user actions). Acted on solely by warm graduation, which pins the branch to
+   * the reference-derived name (docs/248 req 22) and fires the one-shot
+   * `→ started` transition. A message to an already-graduated session ignores
+   * it — the ref describes how the session was *created*, not what this message
+   * is about.
+   */
+  issueRef?: IssueRef;
 }
 
 export interface WsAnswerQuestion {

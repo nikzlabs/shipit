@@ -308,8 +308,8 @@ ShipIt keeps a tracked issue's status in sync with the session that implements
 it, so you rarely set status by hand. Two transitions:
 
 - **→ started.** A session launched **from** an issue (the Issues tab's "Start
-  session", a tracker trigger) is moved to **started** automatically at
-  creation — you don't need to do anything. If instead you're working an issue
+  session", a tracker trigger) is moved to **started** automatically when it
+  begins — you don't need to do anything. If instead you're working an issue
   the session was *not* seeded with (the user pasted a pointer in chat), mark it
   yourself when you begin: `shipit issue status <pointer> started`.
 
