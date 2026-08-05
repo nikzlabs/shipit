@@ -260,6 +260,66 @@ describe("Integration: warm session lifecycle", () => {
       expect(readmeMtime <= claimedCreatedAt).toBe(true);
     }, 15000);
 
+    // End-to-end cover for the state a reclaimed cache leaves behind: the janitor
+    // can delete `repo-cache/<hash>` at any time and the claim must still hand
+    // back a usable workspace.
+    //
+    // Scope, stated honestly: this does NOT reproduce the 500 that made a repo
+    // permanently un-startable. That one came from `refreshClaimedSession`
+    // consulting the prefetcher's `coveredRecently`, which built a `RepoGit` on
+    // the cache dir — and `simpleGit(dir)` throws SYNCHRONOUSLY on a missing
+    // dir, escaping `claim()` in ~2ms before the slow path's `ensureBareCache`
+    // could self-heal. `bootstrap-managers.ts` hard-nulls `repoPrefetcher` under
+    // `isTestMode`, so `shouldSkipClaimFetch` is never wired here and no
+    // integration test can reach that branch; the guard for it is
+    // `repo-prefetch.test.ts`'s "coveredRecently returns false instead of
+    // throwing when the bare cache is missing", which does fail without the fix.
+    it("still claims when the bare cache was reclaimed underneath it", async () => {
+      await waitFor(
+        () => !!repoStore.get(REPO_URL)?.warmSessionId,
+        10000,
+        "warm session",
+      );
+
+      // Exactly what the steady-state janitor's cold-cache sweep does.
+      const cacheDir = getRepoCacheDir(tmpDir, REPO_URL);
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+      expect(fs.existsSync(cacheDir)).toBe(false);
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/repos/${encodeURIComponent(REPO_URL)}/claim-session`,
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.sessionId).toBeTruthy();
+      expect(fs.existsSync(path.join(body.workspaceDir, ".git"))).toBe(true);
+    }, 20000);
+
+    // The other half of the same failure: `lastUsedAt` was stamped only at
+    // graduation, so a repo the user opened over and over but never sent a first
+    // message in kept `lastUsedAt == addedAt`, aged past the janitor's cold
+    // cutoff, and had its cache deleted out from under the very claims that kept
+    // recreating it. Claiming a workspace IS using the repo.
+    it("stamps the repo's lastUsedAt on claim, not only on graduation", async () => {
+      await waitFor(
+        () => !!repoStore.get(REPO_URL)?.warmSessionId,
+        10000,
+        "warm session",
+      );
+      const before = repoStore.get(REPO_URL)!.lastUsedAt;
+      await new Promise((r) => setTimeout(r, 5));
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/repos/${encodeURIComponent(REPO_URL)}/claim-session`,
+      });
+      expect(res.statusCode).toBe(200);
+
+      expect(repoStore.get(REPO_URL)!.lastUsedAt > before).toBe(true);
+    }, 15000);
+
     it("triggers re-warming after claim", async () => {
       await waitFor(
         () => !!repoStore.get(REPO_URL)?.warmSessionId,

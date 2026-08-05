@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { LineComment } from "../../server/shared/types.js";
 import { getLocalStorageObject } from "../utils/local-storage.js";
+import { randomId } from "../utils/random-id.js";
 
 /**
  * Legacy file-comment store used by DiffPanel for per-staged-change line
@@ -38,7 +39,7 @@ export const useCommentStore = create<FileCommentState>((set, get) => ({
 
   addLineComment: (sessionId, filePath, line, text) => {
     const comment: LineComment = {
-      id: crypto.randomUUID(),
+      id: randomId(),
       kind: "line",
       filePath,
       line,

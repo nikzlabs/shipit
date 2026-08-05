@@ -22,6 +22,7 @@
 
 import type { ChatMessage } from "../components/MessageList.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { randomId } from "./random-id.js";
 
 export interface SendUserMessageOptions {
   /**
@@ -42,7 +43,9 @@ export interface SendUserMessageOptions {
 
 export function sendUserMessage({ bubble, activity, dispatch }: SendUserMessageOptions): void {
   const session = useSessionStore.getState();
-  const requestId = crypto.randomUUID();
+  // `randomId`, not `crypto.randomUUID` — the latter is undefined on a plain
+  // HTTP origin, and a throw here silently kills the send (see random-id.ts).
+  const requestId = randomId();
   session.setMessages((prev) => [...prev, { ...bubble, clientRequestId: requestId }]);
   session.setIsLoading(true);
   session.setActivity({ label: activity });

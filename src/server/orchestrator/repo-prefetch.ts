@@ -30,7 +30,7 @@
  */
 
 import type { RepoStore } from "./repo-store.js";
-import type { RepoGit } from "./repo-git.js";
+import { ensureBareCache, type RepoGit } from "./repo-git.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import { getErrorMessage } from "./validation.js";
 import { fetchLfsIntoCache } from "./git-lfs-store.js";
@@ -86,7 +86,16 @@ export function createRepoPrefetcher(deps: RepoPrefetcherDeps): RepoPrefetcher {
     if (repo?.status !== "ready") return;
     inFlight.add(repoUrl);
     try {
-      const cacheGit = createRepoGit(getBareCacheDir(repoUrl));
+      // Self-heal a missing or corrupt cache instead of failing the sweep
+      // forever. `createRepoGit` alone throws synchronously on a missing dir,
+      // which used to leave a reclaimed cache permanently un-refetched — every
+      // sweep logging "non-fatal" while the repo's default branch never
+      // resolved and nothing ever put the cache back.
+      const { git: cacheGit } = await ensureBareCache(
+        getBareCacheDir(repoUrl),
+        repoUrl,
+        createRepoGit,
+      );
       // Normalize the cache's origin to the plain URL so the global git
       // credential helper supplies the token at fetch time — mirrors the
       // warm-pool and slow-path. Embedding the token in the URL would leak
@@ -141,8 +150,32 @@ export function createRepoPrefetcher(deps: RepoPrefetcherDeps): RepoPrefetcher {
     coveredRecently(repoUrl: string): boolean {
       const repo = repoStore.get(repoUrl);
       if (repo?.status !== "ready") return false;
-      const ageMs = createRepoGit(getBareCacheDir(repoUrl)).lastFetchAgeMs();
-      return ageMs !== null && ageMs <= CLAIM_SKIP_WINDOW_MS;
+      try {
+        const ageMs = createRepoGit(getBareCacheDir(repoUrl)).lastFetchAgeMs();
+        return ageMs !== null && ageMs <= CLAIM_SKIP_WINDOW_MS;
+      } catch {
+        // `RepoGit`'s constructor calls `simpleGit(dir)`, which throws
+        // SYNCHRONOUSLY ("Cannot use simple-git on a directory that does not
+        // exist") when the bare cache is gone — and the cache legitimately can
+        // be gone: the steady-state janitor reclaims cold caches, and
+        // `ensureBareCache` is designed to re-clone one lazily on next touch.
+        //
+        // This predicate is consulted from `refreshClaimedSession` OUTSIDE any
+        // try/catch, so the throw escaped `claim()` and became a 500 on
+        // `POST /api/repos/:url/claim-session` — 2ms, before the slow path's
+        // `ensureBareCache` self-heal could ever run. The browser's
+        // `claimSession` returns null on !res.ok, so `sessionId` was never set,
+        // the per-session WS never connected, and the composer's send button
+        // stayed disabled forever on `/repo/{slug}/new`. Observed live: a repo
+        // whose `lastUsedAt` had aged past the janitor's cold cutoff became
+        // permanently unusable, with the only clue a recurring
+        // "[prefetch] Bare-cache fetch failed (non-fatal)".
+        //
+        // Failing closed here is also the semantically right answer: no readable
+        // cache means the prefetcher has NOT covered this repo, so the claim must
+        // do its own synchronous fetch.
+        return false;
+      }
     },
   };
 }
