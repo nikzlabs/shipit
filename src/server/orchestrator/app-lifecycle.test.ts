@@ -14,6 +14,11 @@ import {
   markProviderAccountReauthenticated,
   resolveAutoStartDeps,
 } from "./app-lifecycle.js";
+import {
+  ensureLocalAgentOpsHost,
+  localAgentOpsSpawnEnv,
+  resetLocalAgentOpsForTests,
+} from "./local-agent-ops.js";
 import { SessionRunner, SessionRunnerRegistry } from "./session-runner.js";
 import type { SystemTurnDeps } from "./session-runner.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
@@ -680,6 +685,36 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     // onRunnerCreated wiring falls through to the process-level agentFactory.
     expect(runner.createAgent).toBeUndefined();
     runner.dispose({ force: true });
+  });
+
+  // docs/251 — the `/agent-ops` host is per session and must not outlive its
+  // runner. This also covers the wiring itself: the teardown is a `once`
+  // listener in the factory, so a missing import or a renamed export shows up
+  // here rather than as an unhandled rejection during `disposeAll()` on the
+  // shutdown path (which is exactly how it surfaced in the dogfood).
+  it("local mode closes the session's /agent-ops host when the runner is disposed", async () => {
+    const factory = buildRunnerFactory({
+      deps: {},
+      containerManager: null,
+      credentialsDir: "/credentials",
+      runtimeMode: "local",
+    });
+    const runner = factory!({
+      sessionId: "ops-teardown",
+      sessionDir: "/tmp/ops-teardown",
+      defaultAgentId: "claude" as AgentId,
+    });
+
+    const url = await ensureLocalAgentOpsHost({ sessionId: "ops-teardown" });
+    expect(localAgentOpsSpawnEnv("ops-teardown")).toEqual({ SHIPIT_AGENT_OPS_URL: url });
+
+    runner.dispose({ force: true });
+    // Teardown is async behind the sync `disposed` emit.
+    await vi.waitFor(() => {
+      expect(localAgentOpsSpawnEnv("ops-teardown")).toEqual({});
+    });
+
+    await resetLocalAgentOpsForTests();
   });
 
   // docs/150 — local mode has no per-session credentials mount, so the account

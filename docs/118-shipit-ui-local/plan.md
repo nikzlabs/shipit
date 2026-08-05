@@ -124,7 +124,9 @@ These were sold as "unchanged" in earlier drafts but actually require container-
 
   What that buys: **Playwright** (the browser) and **user-configured MCP servers** (docs/088), including their secrets. Neither needs anything from ShipIt at run time. The dogfood image gained the browser itself in the same change — `playwright-mcp` was already on PATH, but `node:24-slim` has neither Chromium nor the ~50 shared libs it links against, so `Dockerfile.dogfood` now carries the same `playwright install-deps` + `install-browser chrome-for-testing` layer as `Dockerfile.session-worker.prod`.
 
-  What it does **not** buy, deliberately: the internal `shipit` bridge, hence no `present`, `voice_note`, `propose_actions`, `report_shipit_bug`, `permission_prompt`. Every tool on that bridge is a *transport* — each POSTs to `http://127.0.0.1:$WORKER_PORT/agent-ops/…`, and the worker either serves the request (present, permission, ask) or relays it to the orchestrator with the trusted `SESSION_ID` injected (voice, bug, propose_actions). Local mode has no worker, so nothing listens there. Configuring the bridge anyway would be worse than omitting it: the bridge process would start (it is repo code), advertise its tools, and fail every call with ECONNREFUSED — and `writeMcpConfig()` would point Claude's `--permission-prompt-tool` at an unreachable broker. Giving local mode these tools means giving it an `/agent-ops` host, which is the same missing piece that leaves `Dockerfile.dogfood` without the `gh` and `shipit` shims. Tracked separately (SHI-303).
+  What it does **not** buy, deliberately: the internal `shipit` bridge, hence no `present`, `voice_note`, `propose_actions`, `report_shipit_bug`, `permission_prompt`. Every tool on that bridge is a *transport* — each POSTs to `http://127.0.0.1:$WORKER_PORT/agent-ops/…`, and the worker either serves the request (present, permission, ask) or relays it to the orchestrator with the trusted `SESSION_ID` injected (voice, bug, propose_actions). Local mode has no worker, so nothing listens there. Configuring the bridge anyway would be worse than omitting it: the bridge process would start (it is repo code), advertise its tools, and fail every call with ECONNREFUSED — and `writeMcpConfig()` would point Claude's `--permission-prompt-tool` at an unreachable broker. Giving local mode these tools means giving it an `/agent-ops` host. Tracked separately (SHI-303).
+
+  **Update (docs/251): the `gh` half of that is done.** The shims were assumed to need the same host as the bridge, but they do not: every endpoint `gh` uses is a pure relay to `/api/sessions/:id/…`, whereas `present` / `permission_prompt` / `ask` are served by the worker itself. `orchestrator/local-agent-ops.ts` now starts a session-bound loopback host per local session and `Dockerfile.dogfood` installs the `gh` shim, so dogfood turns can open PRs and read CI. The `shipit` shim and the MCP bridge are still absent — SHI-303 now covers only the worker-served tools.
 - **No isolation between inner sessions.** Inner sessions share the inner orch's process and filesystem. If one breaks `node_modules`, others see it.
 - **`agent.install` from inner-session repos does not run.** `runInstall` is `instanceof ContainerSessionRunner`-gated. For v1 dogfooding (only the ShipIt repo) this is fine; an inner session opening a *different* repo will not have its install honored. Inner UI surfaces "install skipped (local mode)" rather than pretending.
 - **No resource caps on inner sessions.** A runaway agent can exhaust the dev compose service's resources.
@@ -315,6 +317,30 @@ Add `.inner-shipit/` to outer's `.gitignore` alongside `sessions/` and `.shipit/
 Vite ≥ 5 enforces a `Host` header allowlist on its dev server (defaulting to localhost / 127.0.0.1 / the bound IP). The dogfood `dev` Compose service is reached through ShipIt's preview proxy, which forwards requests with `Host: <sessionId>--3000.<preview-domain>`. To Vite that is an unknown host, so it answers every request with `403 Blocked request. This host is not allowed.` From the user's side this looks like "the preview never loads" — the inner orch and Vite are both healthy, the page just never gets served.
 
 `vite.config.ts` sets `server.allowedHosts: true` to disable the check. The trust model is fine: the dev server only ever sits behind ShipIt's preview proxy, never directly on the public internet. The setting only affects `vite dev`; production `vite build` is unaffected.
+
+### Vite's dep-optimizer cache cannot live on the overlayfs `node_modules`
+
+Committing a dep-optimizer run is a pair of **directory** renames inside the
+cache dir: `deps` → `deps_temp_<hash>`, then the processing dir → `deps`
+(`vite/dist/node/chunks/node.js`, `commit()`). In the dogfood, `node_modules` is
+an overlayfs mount — the docs/183 overlay dep store, a shared read-only base
+plus a per-session upper layer — and overlayfs refuses to rename a directory
+that still lives in its lower layer, failing with `EXDEV: cross-device link not
+permitted` even though both paths are on the same device. Vite has no fallback
+for that rename, so the optimizer died in a loop and the inner dev server served
+no client at all.
+
+The trigger is anything that re-runs optimization, most commonly
+`Re-optimizing dependencies because lockfile has changed` — so a plain rebase
+onto a `main` that touched `package-lock.json` was enough to break the dogfood.
+Note the first optimization can succeed (nothing to rename aside), which is why
+this presents as "it worked yesterday".
+
+`vite.config.ts` honors `VITE_CACHE_DIR`, and the `dev` service sets it to
+`/workspace/.inner-shipit/vite-cache` — the state dir is a plain bind mount on
+ext4, already gitignored, and survives a service restart, so both sides of those
+renames land on one ordinary filesystem. Vite's default (`node_modules/.vite`)
+is unchanged everywhere else.
 
 ### All-manual compose stacks must lazy-join the orchestrator network
 

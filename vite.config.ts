@@ -20,6 +20,25 @@ function resolveBuildId(): string | undefined {
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   root: path.resolve(__dirname, "src/client"),
+  // Where the dep-optimizer cache lives. Defaults to Vite's own
+  // `node_modules/.vite`; overridable because that default is unusable in the
+  // dogfood (docs/118).
+  //
+  // Committing an optimizer run is `rename(deps, deps_temp_X)` followed by
+  // `rename(<processing dir>, deps)` — renames of DIRECTORIES, next to each
+  // other inside the cache dir. In the dogfood, `node_modules` is an overlayfs
+  // mount (the docs/183 overlay dep store: a shared read-only base plus a
+  // per-session upper layer), and overlayfs cannot rename a directory that
+  // still lives in its lower layer — it fails with `EXDEV: cross-device link
+  // not permitted` even though both paths are on the same device. Vite has no
+  // fallback for that rename, so every re-optimization died and the inner dev
+  // server served no client. It reproduces on any lockfile change, which is
+  // what re-triggers optimization.
+  //
+  // Pointing the cache at a plain directory (the dogfood sets this to a path
+  // under its bind-mounted, gitignored state dir) puts both sides of those
+  // renames on ordinary ext4, where they are a normal same-directory rename.
+  ...(process.env.VITE_CACHE_DIR ? { cacheDir: path.resolve(process.env.VITE_CACHE_DIR) } : {}),
   define: {
     __SHIPIT_CLIENT_BUILD_ID__: JSON.stringify(resolveBuildId()),
   },

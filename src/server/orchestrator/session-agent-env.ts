@@ -57,6 +57,7 @@ import { routeFromSelection } from "./provider-route-preflight.js";
 import { failoverNotice, failoverPinnedSession } from "./services/provider-account-switch.js";
 import { emitNoticeInTurn } from "./chat-card-persistence.js";
 import { ensureCodexHomeInitialized } from "./agents/codex/home-init.js";
+import { ensureLocalAgentOpsHost } from "./local-agent-ops.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { collectMcpAgentEnv } from "./secret-resolver.js";
 import { buildConversationReplay } from "./services/replay.js";
@@ -509,6 +510,20 @@ export async function prepareSessionAgentEnvironment(
         path.join(providerAccountCredentialRoot(deps.credentialsDir, agentId, accountId), ".codex"),
       );
     }
+
+    // The `/agent-ops` host that makes the `gh` shim work here (docs/251).
+    //
+    // A containerized turn reaches `gh` through the worker's broker; local mode
+    // has no worker, so `Dockerfile.dogfood` shipped no shim and a dogfood turn
+    // could not open a PR. This starts a session-bound loopback host whose URL
+    // reaches the CLI as `SHIPIT_AGENT_OPS_URL` (`local-agent-mcp.ts`).
+    //
+    // Awaited here for the same reason as the Codex gate above: the adapters
+    // spawn synchronously, so the URL has to be in the registry BEFORE the
+    // spawn reads it. Single-flight, so a session's later turns are a map hit.
+    // Fails open — a host that cannot start leaves `gh` unavailable for the
+    // turn rather than killing it.
+    await ensureLocalAgentOpsHost({ sessionId });
 
     // Step 1c (docs/118, SHI-59): the local-mode workspace-trust write — the third
     // container-gated writer this mode was missing, after SHI-282 and SHI-298.
