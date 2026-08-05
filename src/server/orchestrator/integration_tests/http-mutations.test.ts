@@ -133,6 +133,95 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
   });
 
+  // docs/250 — the agent's own rename, and the precedence between the two routes.
+  describe("POST /api/sessions/:id/rename (agent)", () => {
+    it("renames the session and records the agent as the source", async () => {
+      await createSession("s1", "Fix the flaky test");
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/rename",
+        payload: { title: "Harden the CI pipeline" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({
+        sessionId: "s1",
+        previousTitle: "Fix the flaky test",
+        title: "Harden the CI pipeline",
+      });
+      const session = sessionManager.get("s1");
+      expect(session?.title).toBe("Harden the CI pipeline");
+      expect(session?.titleSource).toBe("agent");
+    });
+
+    it("refuses with 409 once the user has renamed by hand, and changes nothing", async () => {
+      await createSession("s1", "Auto name");
+      await app.inject({ method: "PATCH", url: "/api/sessions/s1", payload: { title: "My name" } });
+      expect(sessionManager.get("s1")?.titleSource).toBe("user");
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/rename",
+        payload: { title: "Agent name" },
+      });
+      expect(res.statusCode).toBe(409);
+      expect(sessionManager.get("s1")?.title).toBe("My name");
+    });
+
+    it("lets the user rename over an agent title, and that then locks it", async () => {
+      await createSession("s1", "Auto name");
+      await app.inject({ method: "POST", url: "/api/sessions/s1/rename", payload: { title: "Agent name" } });
+
+      const patch = await app.inject({
+        method: "PATCH",
+        url: "/api/sessions/s1",
+        payload: { title: "User wins" },
+      });
+      expect(patch.statusCode).toBe(200);
+      expect(sessionManager.get("s1")?.titleSource).toBe("user");
+
+      const retry = await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/rename",
+        payload: { title: "Agent tries again" },
+      });
+      expect(retry.statusCode).toBe(409);
+      expect(sessionManager.get("s1")?.title).toBe("User wins");
+    });
+
+    it("rejects an over-length title rather than truncating it", async () => {
+      await createSession("s1", "Old");
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/rename",
+        payload: { title: "x".repeat(61) },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(sessionManager.get("s1")?.title).toBe("Old");
+    });
+
+    it("returns 400 for a missing title and 404 for an unknown session", async () => {
+      await createSession("s1", "Old");
+      const noTitle = await app.inject({ method: "POST", url: "/api/sessions/s1/rename", payload: {} });
+      expect(noTitle.statusCode).toBe(400);
+
+      const missing = await app.inject({
+        method: "POST",
+        url: "/api/sessions/nope/rename",
+        payload: { title: "T" },
+      });
+      expect(missing.statusCode).toBe(404);
+    });
+
+    it("leaves the session's branch untouched (req 10)", async () => {
+      await createSession("s1", "Old");
+      sessionManager.setBranch("s1", "shipit/keep-me-abc123");
+
+      await app.inject({ method: "POST", url: "/api/sessions/s1/rename", payload: { title: "Different work" } });
+
+      expect(sessionManager.get("s1")?.branch).toBe("shipit/keep-me-abc123");
+    });
+  });
+
   describe("docs/110: POST/DELETE /api/sessions/:id/pin", () => {
     it("pins then unpins a session, returning the updated session", async () => {
       await createSession("s1", "Session 1");

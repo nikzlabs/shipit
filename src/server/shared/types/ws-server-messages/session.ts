@@ -1,4 +1,4 @@
-import type { SessionInfo, SessionMessageOrigin } from "../domain-types.js";
+import type { SessionInfo, SessionMessageOrigin, SessionSecretBlock } from "../domain-types.js";
 import type { AgentInterfaceProvenance } from "../../agent-interface-sdk/protocol.js";
 
 export interface WsSessionList {
@@ -71,6 +71,23 @@ export interface WsSessionContainerFreshness {
   type: "session_container_freshness";
   sessionId: string;
   freshness: ContainerFreshness;
+}
+
+/**
+ * docs/213 — sticky "auto-commit is blocked by a secret" state for one session.
+ *
+ * Unlike the `system_notice` row that accompanies it, this is *state*, not
+ * transcript content: it stays on screen for as long as the block holds and
+ * disappears the moment a commit lands. The notice scrolled away under later
+ * turns, which is exactly how the block went unnoticed while every subsequent
+ * turn silently failed to commit (SHI-315).
+ *
+ * `block: null` clears the banner.
+ */
+export interface WsSecretBlockStatus {
+  type: "secret_block_status";
+  sessionId: string;
+  block: SessionSecretBlock | null;
 }
 
 /** Server → Client: full reset completed successfully. */

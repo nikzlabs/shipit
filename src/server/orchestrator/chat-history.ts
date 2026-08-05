@@ -1,9 +1,15 @@
 import crypto from "node:crypto";
 import type { DatabaseManager } from "../shared/database.js";
 import type { SubagentEvent, ToolResultEntry } from "./session-runner.js";
-import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SelfMergeWatchCard, SessionReportCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, BranchAutoResetCard, BranchSyncedCard, SessionMessageOrigin } from "../shared/types.js";
+import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SelfMergeWatchCard, SessionReportCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, BranchAutoResetCard, BranchSyncedCard, SessionRenamedCard, SessionMessageOrigin } from "../shared/types.js";
 import type { ReleaseStatusSummary } from "../shared/types/release-types.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
+import { retireBackgroundSubagentResult } from "./subagent-completion.js";
+import type {
+  BackgroundSubagentCompletion,
+  RetiredSubagentHit,
+  RetiredSubagentResult,
+} from "./subagent-completion.js";
 
 export type RewindSnapshotAction = "chat" | "code" | "both" | "fork";
 
@@ -269,6 +275,15 @@ export interface PersistedMessage {
    */
   branchSynced?: BranchSyncedCard;
   /**
+   * docs/250 — when set, this message renders an inline "renamed this session"
+   * card recording that the agent retitled the session with
+   * `shipit session rename` (requirement 9). A side-channel card off the
+   * agent-event stream (it relays over HTTP mid-turn), recorded in-band via
+   * `emitChatCard` and persisted here so the record survives a switch/reload.
+   * Immutable static payload — written once on emit, never patched.
+   */
+  sessionRenamed?: SessionRenamedCard;
+  /**
    * docs/196 — when set, this message renders an inline "Child PR merged /
    * closed" card in the PARENT session's transcript. Surfaced from a PR-poller
    * event (a watched child's PR reached a terminal state) — outside any turn, so
@@ -411,6 +426,7 @@ interface MessageRow {
   action_checklist: string | null;
   branch_auto_reset: string | null;
   branch_synced: string | null;
+  session_renamed: string | null;
   child_merged: string | null;
   self_merge_watch: string | null;
   session_report: string | null;
@@ -439,8 +455,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, action_checklist, branch_auto_reset, branch_synced, child_merged, self_merge_watch, session_report, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id, agent_interface, message_origin)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @action_checklist, @branch_auto_reset, @branch_synced, @child_merged, @self_merge_watch, @session_report, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id, @agent_interface, @message_origin)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, action_checklist, branch_auto_reset, branch_synced, session_renamed, child_merged, self_merge_watch, session_report, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id, agent_interface, message_origin)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @action_checklist, @branch_auto_reset, @branch_synced, @session_renamed, @child_merged, @self_merge_watch, @session_report, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id, @agent_interface, @message_origin)
 `;
 
 const UPDATE_SQL = `
@@ -449,10 +465,22 @@ const UPDATE_SQL = `
     in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
-    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, action_checklist=@action_checklist, branch_auto_reset=@branch_auto_reset, branch_synced=@branch_synced, child_merged=@child_merged, self_merge_watch=@self_merge_watch, session_report=@session_report, release_card=@release_card,
+    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, action_checklist=@action_checklist, branch_auto_reset=@branch_auto_reset, branch_synced=@branch_synced, session_renamed=@session_renamed, child_merged=@child_merged, self_merge_watch=@self_merge_watch, session_report=@session_report, release_card=@release_card,
     spawned_session=@spawned_session, spawn_failed=@spawn_failed, agent_review=@agent_review, ai_review=@ai_review, user_review=@user_review, notice_id=@notice_id, agent_interface=@agent_interface, message_origin=@message_origin
   WHERE id = @id
 `;
+
+/**
+ * Escape the LIKE metacharacters so a literal string matches literally.
+ *
+ * Load-bearing rather than defensive: a Claude tool_use id is `toolu_…`, and
+ * `_` is LIKE's single-character wildcard. Without this the prefilter would
+ * quietly match neighbouring ids — harmless today (the structural check behind
+ * it rejects them) but a trap for anyone who later trusts the query alone.
+ */
+function likeEscape(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
 
 export class ChatHistoryManager {
   private db;
@@ -460,6 +488,7 @@ export class ChatHistoryManager {
   private stmtUpdate;
   private stmtLoadAll;
   private stmtLoadSubAgentCards;
+  private stmtLoadByToolUseId;
   private stmtLoadAllPendingSubAgentCards;
   private stmtLoadLast;
   private stmtDeleteBySession;
@@ -480,6 +509,17 @@ export class ChatHistoryManager {
     // transition on that path.
     this.stmtLoadSubAgentCards = this.db.prepare(
       "SELECT sub_agent_consult FROM messages WHERE session_id = ? AND sub_agent_consult IS NOT NULL ORDER BY id",
+    );
+    // docs/109 reqs 10–11 — narrowed to the (at most one) row that could hold a
+    // given tool_use id, rather than the whole transcript. This runs on EVERY
+    // background-task completion, including the `Bash(run_in_background)` jobs
+    // that will never match, so a full-row scan per completion would be real
+    // work repeated for nothing on a long session. The `LIKE` is a prefilter
+    // only — it hands back candidates and `retireBackgroundSubagentResult` still
+    // does the structural check — so a false positive costs one `fromRow`.
+    this.stmtLoadByToolUseId = this.db.prepare(
+      "SELECT * FROM messages WHERE session_id = ? AND tool_results IS NOT NULL "
+      + "AND tool_use LIKE ? ESCAPE '\\' ORDER BY id",
     );
     // SHI-307 — the boot reconcile's cross-session read. No `in_progress`
     // filter, for the same reason as the per-session query above: a consult
@@ -535,6 +575,7 @@ export class ChatHistoryManager {
       sub_agent_consult: msg.subAgentConsult ? JSON.stringify(msg.subAgentConsult) : null,
       action_checklist: msg.actionChecklist ? JSON.stringify(msg.actionChecklist) : null,
       branch_auto_reset: msg.branchAutoReset ? JSON.stringify(msg.branchAutoReset) : null,
+      session_renamed: msg.sessionRenamed ? JSON.stringify(msg.sessionRenamed) : null,
       branch_synced: msg.branchSynced ? JSON.stringify(msg.branchSynced) : null,
       child_merged: msg.childMerged ? JSON.stringify(msg.childMerged) : null,
       self_merge_watch: msg.selfMergeWatch ? JSON.stringify(msg.selfMergeWatch) : null,
@@ -584,6 +625,7 @@ export class ChatHistoryManager {
     if (row.sub_agent_consult) msg.subAgentConsult = JSON.parse(row.sub_agent_consult) as SubAgentConsultCard;
     if (row.action_checklist) msg.actionChecklist = JSON.parse(row.action_checklist) as ActionChecklistCard;
     if (row.branch_auto_reset) msg.branchAutoReset = JSON.parse(row.branch_auto_reset) as BranchAutoResetCard;
+    if (row.session_renamed) msg.sessionRenamed = JSON.parse(row.session_renamed) as SessionRenamedCard;
     if (row.branch_synced) msg.branchSynced = JSON.parse(row.branch_synced) as BranchSyncedCard;
     if (row.child_merged) msg.childMerged = JSON.parse(row.child_merged) as ChildMergedCard;
     if (row.self_merge_watch) msg.selfMergeWatch = JSON.parse(row.self_merge_watch) as SelfMergeWatchCard;
@@ -778,6 +820,40 @@ export class ChatHistoryManager {
         return true;
       }
       return false;
+    })();
+  }
+
+  /**
+   * docs/109 reqs 10–11 — replace a backgrounded subagent's launch
+   * acknowledgement with what it actually reported, keyed by the Task's
+   * `tool_use_id`.
+   *
+   * Unlike the card patches above this rewrites a *tool result* rather than a
+   * card column, so it walks `toolResults` — and it does not stop at the last
+   * row, because the notification routinely arrives turns after the launch. All
+   * the "is this the right result to touch" reasoning lives in
+   * {@link retireBackgroundSubagentResult}, which is also what the runner's live
+   * accumulator is patched through; this method only supplies the rows and
+   * writes the hit back. Returns the rewritten entry, or null if no row held an
+   * un-retired acknowledgement for that id (a duplicate notification, a Bash
+   * background task, or a session that never launched one).
+   */
+  retireBackgroundSubagentResult(
+    sessionId: string,
+    completion: BackgroundSubagentCompletion,
+    built: RetiredSubagentResult,
+  ): RetiredSubagentHit | null {
+    const pattern = `%${likeEscape(JSON.stringify(completion.toolUseId))}%`;
+    return this.db.transaction(() => {
+      const rows = this.stmtLoadByToolUseId.all(sessionId, pattern) as MessageRow[];
+      for (const row of rows) {
+        const msg = this.fromRow(row);
+        const hit = retireBackgroundSubagentResult(msg, completion, built);
+        if (!hit) continue;
+        this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        return hit;
+      }
+      return null;
     })();
   }
 

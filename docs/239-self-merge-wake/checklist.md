@@ -67,6 +67,21 @@ it has been cut — see the plan's "Resolved decisions".
 - [x] Reset: force-push failure is not success; agent can edit files afterwards
 - [x] SHI-263: a dispatch whose setup throws settles `errored` and is retried to
       `delivery-failed` without an orchestrator restart
+- [x] SHI-316: a wake turn whose agent slot is taken by a newer turn settles
+      (`interrupted`) instead of hanging, and runs no teardown of its own
+- [x] SHI-316: a user-interrupted wake settles `interrupted`, not `no-result`;
+      a genuinely-never-ran wake still settles `no-result`
+- [x] SHI-316: an `interrupted` wake is terminal — the retry supervisor never re-sends it
+- [x] SHI-316: a retry defers while the worker reports a turn in flight, and proceeds
+      once the session is idle
+
+## Duplicate-wake fix (SHI-316)
+
+- [x] Runner emits `superseded` when a newer spawn displaces a live proxy (both runners)
+- [x] `executeAgentTurn` settles on `superseded` — settlement only, no teardown
+- [x] `interrupted` `TurnOutcome`; `no-result` reserved for "never ran"
+- [x] `merge-watch` treats `interrupted` as terminal (`delivered`), not retryable
+- [x] `retryStalledDeliveries` gates on the worker's `turnActive` (`hasTurnInFlight`)
 
 ## Docs
 

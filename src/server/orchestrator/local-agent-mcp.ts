@@ -51,6 +51,7 @@ import type {
 } from "../shared/types/agent-types.js";
 import type { CredentialStore } from "./credential-store.js";
 import { selectAgentEnvForPush } from "./session-agent-env.js";
+import { localAgentOpsSpawnEnv } from "./local-agent-ops.js";
 import { getErrorMessage } from "../shared/utils.js";
 
 /**
@@ -81,6 +82,12 @@ export const LOCAL_SHIPIT_BRIDGE: AgentMcpBridge | null = null;
 export interface LocalAgentMcpDeps {
   /** Source of the MCP env — the same store the worker push reads from. */
   credentialStore: Pick<CredentialStore, "getAllAgentEnv" | "getAllMcpOAuthTokens">;
+  /**
+   * Session whose `/agent-ops` host address should reach the spawn (docs/251).
+   * Omit and no `SHIPIT_AGENT_OPS_URL` is set, which is the pre-docs/251
+   * behavior: the shims fall back to a worker that isn't there.
+   */
+  sessionId?: string;
   /**
    * Report a server that had to be dropped (missing secret), mirroring the
    * worker's `mcp_server_status` SSE broadcast. Optional: without it a dropped
@@ -156,7 +163,15 @@ function withTemporaryEnv<T>(values: Record<string, string>, fn: () => T): T {
 export function applyLocalMcp(agent: AgentProcess, deps: LocalAgentMcpDeps): AgentProcess {
   const innerRun = agent.run.bind(agent);
   agent.run = (params: AgentRunParams): void => {
-    withTemporaryEnv(localMcpSpawnEnv(deps.credentialStore), () => {
+    // docs/251 — the `gh` shim's broker address rides the same temporary-env
+    // window. Not an MCP value, but this is the one seam a local spawn has for
+    // per-session env, and `session-agent-env.ts` has already awaited the host
+    // so the lookup is a hit by the time we get here.
+    const spawnEnv = {
+      ...localMcpSpawnEnv(deps.credentialStore),
+      ...(deps.sessionId ? localAgentOpsSpawnEnv(deps.sessionId) : {}),
+    };
+    withTemporaryEnv(spawnEnv, () => {
       let write: AgentMcpWriteResult = {};
       try {
         write = agent.writeMcpConfig({

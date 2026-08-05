@@ -4,7 +4,7 @@
  * remove, claim-session.
  */
 
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir, rm, stat } from "node:fs/promises";
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 
@@ -74,9 +74,9 @@ export async function registerSessionReposRoutes(
           const repoUrl = repo.url;
           const cacheDir = deps.getSharedRepoDir(repoUrl);
           void (async () => {
+            // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom
+            const exists = await stat(cacheDir).then(() => true, () => false);
             try {
-              // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom
-              const exists = await stat(cacheDir).then(() => true, () => false);
               if (!exists) {
                 await mkdir(cacheDir, { recursive: true });
                 const cacheGit = createRepoGit(cacheDir);
@@ -101,6 +101,19 @@ export async function registerSessionReposRoutes(
               if (warmFn) await warmFn(repoUrl);
             } catch (err) {
               console.error("[repos] Background clone failed:", getErrorMessage(err));
+              // Drop the half-written cache we just created. `git clone --bare`
+              // leaves the directory behind on failure, and the existence check
+              // above is the ONLY guard on the clone — so a retry (the user
+              // pressing Add again, or the dogfood seed on the next boot) would
+              // skip cloning, call `setReady`, and publish a repo whose bare
+              // cache is empty. Every session claimed from it then clones from
+              // nothing. Only remove a directory this call created: a
+              // concurrent add that already has a good cache must not lose it.
+              if (!exists) {
+                await rm(cacheDir, { recursive: true, force: true }).catch((rmErr: unknown) => {
+                  console.error("[repos] Could not remove failed cache:", getErrorMessage(rmErr));
+                });
+              }
               deps.sseBroadcast("error", { message: `Failed to clone repository: ${getErrorMessage(err)}` });
             }
           })();

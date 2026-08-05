@@ -18,10 +18,31 @@
  *    `/repos/{owner}/{repo}/issues/${id}`), and the **key** for Linear. The
  *    combined `identifier` is NOT what `getIssue` wants — passing `owner/repo#42`
  *    to GitHub yields `/issues/owner%2Frepo%2342` → 404.
+ *
+ * The repository half of a GitHub pointer is NOT discarded: it rides on
+ * `tracker` as a qualified `github:owner/repo` id (docs/247), which is what
+ * routes the operation to the repository the pointer actually named.
  */
+
+import type { TrackerId } from "./types/domain-types/issue.js";
+import { githubTrackerId } from "./tracker-id.js";
 export interface ParsedIssueRef {
-  /** Tracker inferred from the pointer shape. */
-  tracker: "linear" | "github" | "unknown";
+  /**
+   * Tracker **destination** inferred from the pointer shape — a full
+   * {@link TrackerId}, not just the tracker kind.
+   *
+   * docs/247: a GitHub pointer always names its repository (`owner/repo#42`, a
+   * `github.com/owner/repo/issues/42` URL), so it resolves to the qualified
+   * `github:owner/repo` id rather than the bare `"github"`. That is what stops a
+   * pointer into one repository from operating on the *session's* repository —
+   * the wrong-target bug the design targets — and it is why the repository is
+   * carried here rather than reconstructed downstream from `identifier`, which
+   * is display text.
+   *
+   * The bare `"github"` is never produced by this parser; it survives only as
+   * the meaning of an operation that names no repository at all.
+   */
+  tracker: TrackerId | "unknown";
   /** Short identifier for display (e.g. "SHI-28", "owner/repo#42"). */
   identifier: string;
   /**
@@ -51,7 +72,7 @@ export function parseIssueRef(raw: string): ParsedIssueRef {
   const ghUrl = GITHUB_URL_RE.exec(issue);
   if (ghUrl) {
     return {
-      tracker: "github",
+      tracker: githubTrackerId({ owner: ghUrl[1], repo: ghUrl[2] }),
       identifier: `${ghUrl[1]}/${ghUrl[2]}#${ghUrl[3]}`,
       issueId: ghUrl[3],
       url: issue,
@@ -61,7 +82,7 @@ export function parseIssueRef(raw: string): ParsedIssueRef {
   const ghShort = GITHUB_SHORT_RE.exec(issue);
   if (ghShort) {
     return {
-      tracker: "github",
+      tracker: githubTrackerId({ owner: ghShort[1], repo: ghShort[2] }),
       identifier: `${ghShort[1]}/${ghShort[2]}#${ghShort[3]}`,
       issueId: ghShort[3],
       url: `https://github.com/${ghShort[1]}/${ghShort[2]}/issues/${ghShort[3]}`,
@@ -106,6 +127,8 @@ export function parseIssueRef(raw: string): ParsedIssueRef {
  *    `SHI-90` with no `issue` lead-in is deliberately NOT matched.
  *
  * Deduped by `tracker:issueId` in first-seen order; unresolvable tokens drop.
+ * Because a GitHub `tracker` is repository-qualified (docs/247), that key is
+ * qualified too — `a/x#42` and `b/y#42` are two refs, not one.
  */
 export function extractIssueRefsFromText(text: string | null | undefined): ParsedIssueRef[] {
   if (!text) return [];

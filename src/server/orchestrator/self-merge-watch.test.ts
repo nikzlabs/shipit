@@ -19,7 +19,14 @@ import { ChatHistoryManager } from "./chat-history.js";
 import { MergeWatchManager } from "./merge-watch.js";
 import { armSelfMergeWatch, cancelSelfMergeWatch } from "./services/self-merge-watch.js";
 import { ServiceError } from "./services/types.js";
-import { createTurnSettlement, TURN_COMPLETED, type TurnHandle, type TurnOutcome } from "./turn-settlement.js";
+import {
+  createTurnSettlement,
+  TURN_COMPLETED,
+  turnInterrupted,
+  turnNoResult,
+  type TurnHandle,
+  type TurnOutcome,
+} from "./turn-settlement.js";
 import type { AgentDispatchOptions, SessionRunnerInterface, SessionRunnerRegistry } from "./session-runner.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { GitManager } from "../shared/git.js";
@@ -42,6 +49,12 @@ class FakeRunner {
   lastPersistedBufferIndex = 0;
   /** SHI-264 — the delivery of the held wake-turn, so liveness is derivable. */
   activeDeliveryId: string | undefined;
+  /**
+   * SHI-316 — the worker's `turnActive`, i.e. ground truth for "is a turn in
+   * flight?". Deliberately independent of `running`: in production the local
+   * mirror is exactly the thing that goes stale.
+   */
+  workerTurnActive = false;
   private pending: ((o: TurnOutcome) => void)[] = [];
 
   dispatch(opts: AgentDispatchOptions): TurnHandle {
@@ -52,6 +65,7 @@ class FakeRunner {
     return settlement;
   }
   hasDelivery(deliveryId: string): boolean { return this.activeDeliveryId === deliveryId; }
+  async hasTurnInFlight(): Promise<boolean> { return this.running || this.workerTurnActive; }
   /** Settle every held wake-turn — models the turn actually running. */
   completeTurns(outcome: TurnOutcome = TURN_COMPLETED): void {
     const pending = this.pending;
@@ -319,5 +333,82 @@ describe("delivering a self merge wake (docs/239)", () => {
     // `armed` and nothing in memory knows about it.
     await ctx.manager.reconcilePending();
     expect(ctx.runner.dispatched).toHaveLength(1);
+  });
+});
+
+/**
+ * SHI-316 — one merge must produce exactly one wake, even when the wake turn is
+ * cut short.
+ *
+ * The production incident: the wake ran for seven minutes, the user interrupted
+ * it, and the retry supervisor — which cannot tell "the human stopped it" from
+ * "the container never booted" — re-sent the identical prompt on its next tick,
+ * retiring the session's resident agent process on the way in.
+ */
+describe("a wake that reached the agent is not re-delivered (SHI-316)", () => {
+  let ctx: ReturnType<typeof makeCtx>;
+  beforeEach(() => { ctx = makeCtx(); });
+
+  /** Fire the wake and leave the watch at `merge-observed`, one attempt spent. */
+  async function deliverWake(): Promise<void> {
+    await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    markMerged(ctx, 43);
+    await ctx.manager.handleSelfMerge(SESSION_ID);
+    expect(ctx.runner.dispatched).toHaveLength(1);
+  }
+
+  /** Push `lastAttemptAt` past the 60s first-retry backoff. */
+  function expireBackoff(): void {
+    const watch = ctx.sessionManager.getMergeWatch(SESSION_ID)!;
+    ctx.sessionManager.setMergeWatch(SESSION_ID, {
+      ...watch,
+      lastAttemptAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+    });
+  }
+
+  it("an interrupted wake turn is terminal — the retry supervisor never re-sends it", async () => {
+    await deliverWake();
+
+    // The human read the wake prompt and stopped the turn (or its spawn was
+    // superseded by the session's next message — same outcome, same meaning).
+    ctx.runner.completeTurns(turnInterrupted("the turn was interrupted before it produced a result"));
+
+    expect(ctx.sessionManager.getMergeWatch(SESSION_ID)?.state).toBe("delivered");
+    expireBackoff();
+    await ctx.manager.retryStalledDeliveries();
+    expect(ctx.runner.dispatched).toHaveLength(1);
+  });
+
+  it("a wake that genuinely never ran is still retried", async () => {
+    // The guard above must not disable the supervisor: a `no-result` wake is the
+    // case SHI-258 exists for and stays retryable.
+    await deliverWake();
+    ctx.runner.completeTurns(turnNoResult("agent process exited without producing a turn result"));
+    expect(ctx.sessionManager.getMergeWatch(SESSION_ID)?.state).toBe("merge-observed");
+
+    expireBackoff();
+    await ctx.manager.retryStalledDeliveries();
+    expect(ctx.runner.dispatched).toHaveLength(2);
+  });
+
+  it("a retry does not dispatch over a turn the worker reports in flight", async () => {
+    await deliverWake();
+    ctx.runner.completeTurns(turnNoResult("agent process exited without producing a turn result"));
+    expireBackoff();
+
+    // `running` is the stale local mirror — false — while the worker is midway
+    // through the user's turn. Dispatching here does NOT queue politely: it takes
+    // `dispatchOnRunner`'s start-now branch, and a system turn's spawn boundary
+    // then retires the session's resident process.
+    ctx.runner.running = false;
+    ctx.runner.workerTurnActive = true;
+    await ctx.manager.retryStalledDeliveries();
+    expect(ctx.runner.dispatched).toHaveLength(1);
+
+    // Once the session is genuinely idle the retry proceeds as before — the gate
+    // defers a retry, it does not cancel it.
+    ctx.runner.workerTurnActive = false;
+    await ctx.manager.retryStalledDeliveries();
+    expect(ctx.runner.dispatched).toHaveLength(2);
   });
 });

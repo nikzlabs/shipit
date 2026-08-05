@@ -19,6 +19,7 @@ import type {
 } from "../shared/types.js";
 import {
   dispatchAgentMessage,
+  materializeRunner,
   runSubAgent,
   getSubAgentResult,
   waitForSubAgentResult,
@@ -68,6 +69,22 @@ export async function registerAgentRoutes(
               ...(deps.ensureAgentTokenFresh ? { ensureAgentTokenFresh: deps.ensureAgentTokenFresh } : {}),
             },
             ...(deps.warmSessionForRepo ? { warmSessionForRepo: deps.warmSessionForRepo } : {}),
+            // docs/131 reqs 8–10 — a dispatch at a session nobody has open
+            // wakes it instead of 404ing. Same materialization the WS connect
+            // path runs (archived guard, workspace restore, agent
+            // reconciliation), so the two transports can't drift.
+            wakeSession: (sessionId) => materializeRunner(
+              {
+                sessionManager: deps.sessionManager,
+                runnerRegistry: deps.runnerRegistry,
+                createRepoGit: deps.createRepoGit,
+                getBareCacheDir: deps.getSharedRepoDir,
+                githubAuthManager: deps.githubAuthManager,
+                repoStore: deps.repoStore,
+              },
+              sessionId,
+              deps.defaultAgentId,
+            ),
           },
           request.params.id,
           {

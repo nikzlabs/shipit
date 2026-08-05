@@ -4,6 +4,7 @@
  */
 
 import http from "node:http";
+import { workerAuthHeaders } from "./worker-auth.js";
 
 /**
  * Default timeout for worker HTTP calls. Every endpoint these helpers reach
@@ -169,7 +170,8 @@ export async function workerPost(baseUrl: string, path: string, body?: unknown, 
   return new Promise((resolve, reject) => {
     const url = new URL(path, baseUrl);
     const payload = body !== undefined ? JSON.stringify(body) : undefined;
-    const headers: Record<string, string | number> = {};
+    // SHI-311 — prove we're the orchestrator, not a peer session container.
+    const headers: Record<string, string | number> = { ...workerAuthHeaders(baseUrl) };
     if (payload) {
       headers["Content-Type"] = "application/json";
       headers["Content-Length"] = Buffer.byteLength(payload);
@@ -247,7 +249,8 @@ export async function workerPut(baseUrl: string, path: string, body?: unknown, o
   return new Promise((resolve, reject) => {
     const url = new URL(path, baseUrl);
     const payload = body !== undefined ? JSON.stringify(body) : undefined;
-    const headers: Record<string, string | number> = {};
+    // SHI-311 — see workerPost.
+    const headers: Record<string, string | number> = { ...workerAuthHeaders(baseUrl) };
     if (payload) {
       headers["Content-Type"] = "application/json";
       headers["Content-Length"] = Buffer.byteLength(payload);
@@ -299,6 +302,8 @@ export async function workerGet(baseUrl: string, path: string, opts?: WorkerHttp
         port: url.port,
         path: url.pathname,
         method: "GET",
+        // SHI-311 — see workerPost.
+        headers: workerAuthHeaders(baseUrl),
         ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
       },
       (res) => attachWorkerResponseHandler(res, resolve, reject),

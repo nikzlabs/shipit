@@ -24,6 +24,7 @@ import type {
   WsAgentEvent,
   WsTurnSnapshot,
   WsSubAgentSpawn,
+  WsSubagentReportUpdate,
   WsModelInfo,
   WsMessageQueued,
   WsQueueUpdated,
@@ -64,6 +65,7 @@ import type {
   WsSessionRenamed,
   WsContainerRestarting,
   WsSessionContainerFreshness,
+  WsSecretBlockStatus,
   WsFullResetComplete,
   WsSessionStatus,
   WsBackgroundTasks,
@@ -114,6 +116,7 @@ import type {
   WsActionChecklistCard,
   WsBranchAutoResetCard,
   WsBranchSyncedCard,
+  WsSessionRenamedCard,
 } from "./cards.js";
 import type {
   WsError,
@@ -148,6 +151,7 @@ export type WsServerMessage =
   | WsActionChecklistCard
   | WsBranchAutoResetCard
   | WsBranchSyncedCard
+  | WsSessionRenamedCard
   | WsBugReportCard
   | WsBugReportFiled
   | WsBugReportFailed
@@ -183,6 +187,7 @@ export type WsServerMessage =
   | WsTemplateApplied
   | WsGlobalSettings
   | WsSubAgentSpawn
+  | WsSubagentReportUpdate
   | WsFilesChanged
   | WsGitHubStatus
   | WsGitHubPushResult
@@ -203,6 +208,7 @@ export type WsServerMessage =
   | WsAgentInterrupted
   | WsContainerRestarting
   | WsSessionContainerFreshness
+  | WsSecretBlockStatus
   | WsFullResetComplete
   | WsTurnDiff
   | WsSessionStatus

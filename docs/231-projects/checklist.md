@@ -40,7 +40,7 @@ Phasing from plan.md, twice re-cut after two rounds of adversarial review (Codex
 - [ ] Per-project `.gitconfig` (identity via `setGitIdentity`-equivalent, credential helper; migrate the legacy raw `gitIdentity` blob key); `checkCredentials` stops mutating global state
 - [ ] Container path: broker resolves the session's project manager; `writeContainerGitConfig` takes project identity; re-provision scaffolds on identity change; `git_identity_required` gate + settings identity read per project
 - [ ] `GitHubAuthManager` per project via `ProjectContext`; App registration stays host-global (installation tokens repo-derived — existing cache key stays valid)
-- [ ] Private planning GitHub tracker binding per Project, resolved with that Project's GitHub identity; preserve the separate public ShipIt bug-report destination
+- [x] ~~Private planning GitHub tracker binding per Project~~ — not needed: trackers are declared per repository in `shipit.yaml` (doc 247 req 5), so they are already Project-scoped. Only the separate public ShipIt bug-report destination still needs preserving, covered by the `services/bug-report.ts` row below.
 - [ ] Pollers / auto-push / prefetch / auto-merge / auto-fix-CI per `(projectId, repo)` job; per-project rate-limit state + `markTokenInvalid`
 - [ ] Re-key bare-`repoKey` caches: `releasedByKey`, `lastPolledAt`, `ci-grace-tracker` observed-checks
 - [ ] `services/bug-report.ts` files under the invoking session's project token

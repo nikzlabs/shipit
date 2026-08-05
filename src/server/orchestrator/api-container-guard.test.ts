@@ -246,6 +246,9 @@ const GOLDEN_CONTAINER_ROUTES = [
   // release — shipit release plan/prepare (docs/214)
   "POST /api/sessions/:id/release/plan",
   "POST /api/sessions/:id/release/prepare",
+  // docs/250 — shipit session rename. Own-session scoped: the worker injects the
+  // caller's own id, so an agent can only ever retitle itself.
+  "POST /api/sessions/:id/rename",
   // issues — shipit issue
   "GET /api/sessions/:id/issue/view",
   "GET /api/sessions/:id/issue/list",

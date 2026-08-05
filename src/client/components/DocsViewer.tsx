@@ -13,6 +13,7 @@ import type { DocEntry } from "../../server/shared/types.js";
 import { compareDocsByRecency } from "../../server/shared/doc-sort.js";
 import { hasTrackedPlanSibling, hasTrackedSibling, isTracked } from "../utils/doc-paths.js";
 import { parseIssueRef } from "../../server/shared/issue-ref.js";
+import type { TrackerId } from "../../server/shared/types.js";
 
 /**
  * Open a doc's linked issue in ShipIt's inline issue view (docs/189). Mirrors
@@ -21,7 +22,7 @@ import { parseIssueRef } from "../../server/shared/issue-ref.js";
  * derives it from the identifier when absent).
  */
 export type OpenDocIssue = (ref: {
-  tracker: "linear" | "github";
+  tracker: TrackerId;
   id?: string;
   identifier: string;
   title?: string;

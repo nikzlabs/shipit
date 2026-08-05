@@ -11,6 +11,7 @@
  */
 
 import { parseIssueRef } from "../../shared/issue-ref.js";
+import { githubTrackerId, isGitHubTracker, parseOwnerRepo } from "../../shared/tracker-id.js";
 import { wrapUntrustedContent } from "../../shared/untrusted-input.js";
 import {
   asString,
@@ -28,17 +29,44 @@ import { REJECTED_HELP, formatError, type RunDeps } from "./shipit.js";
  * tracker-native issue id via the shared `parseIssueRef`. `--tracker` overrides
  * an ambiguous/unknown shape; when overriding, the raw pointer (minus a leading
  * `#`) is used as the id.
+ *
+ * docs/247 — a qualified pointer already names its repository, so `parseIssueRef`
+ * hands back a `github:owner/repo` id and the operation lands there rather than
+ * on the session's own repo. `--repo` names a repository for a pointer that does
+ * NOT carry one (a bare `#42`); passing both is only allowed when they agree,
+ * because silently preferring either one is exactly the substitution req 3
+ * forbids — an operation that names two different repositories is a mistake, not
+ * a precedence question.
  */
 function resolveIssuePointer(
   io: ShimIO,
   pointer: string | undefined,
   override: string | undefined,
+  repoFlag?: string,
 ): { tracker: string; id: string } {
   if (!pointer) {
     fail(io, "shipit issue: a pointer is required (e.g. SHI-28, owner/repo#42, or an issue URL).");
   }
   const parsed = parseIssueRef(pointer);
-  const tracker = override || (parsed.tracker !== "unknown" ? parsed.tracker : "");
+
+  let repoTracker: string | undefined;
+  if (repoFlag !== undefined) {
+    if (override !== undefined && override.toLowerCase() !== "github") {
+      fail(io, `shipit issue: --repo names a GitHub repository and cannot be combined with --tracker ${override}.`);
+    }
+    const ref = parseOwnerRepo(repoFlag);
+    if (!ref) fail(io, `shipit issue: --repo must be an 'owner/name' slug (got '${repoFlag}').`);
+    repoTracker = githubTrackerId(ref);
+    if (isGitHubTracker(parsed.tracker) && parsed.tracker !== "github" && parsed.tracker !== repoTracker) {
+      fail(
+        io,
+        `shipit issue: --repo ${repoFlag} contradicts the repository in "${pointer}". ` +
+          `Drop --repo, or pass a bare issue number with it.`,
+      );
+    }
+  }
+
+  const tracker = repoTracker || override || (parsed.tracker !== "unknown" ? parsed.tracker : "");
   if (!tracker) {
     fail(
       io,
@@ -46,8 +74,32 @@ function resolveIssuePointer(
     );
   }
   const raw = pointer.replace(/^#/, "").trim();
-  const id = override && override !== parsed.tracker ? raw : (parsed.issueId ?? raw);
+  // The parsed id is right whenever the pointer's own shape was honored. It is
+  // wrong only when an explicit --tracker redirected to a DIFFERENT kind of
+  // tracker, in which case the raw pointer is the native id for that tracker.
+  const redirected = override !== undefined && !trackerKindMatches(override, parsed.tracker);
+  const id = redirected ? raw : (parsed.issueId ?? raw);
   return { tracker, id };
+}
+
+/** Whether an explicit `--tracker` names the same tracker *kind* as a parsed pointer. */
+function trackerKindMatches(override: string, parsed: string): boolean {
+  const kind = override.toLowerCase();
+  if (kind === "github") return isGitHubTracker(parsed);
+  return kind === parsed;
+}
+
+/**
+ * Provenance label for the untrusted-input envelope, e.g. `linear:SHI-28` or
+ * `github:octocat/hello#42`.
+ *
+ * Uses the tracker *kind*, not the full id: a GitHub `identifier` is already
+ * `owner/repo#N`, so a qualified `github:owner/repo` id would render the
+ * repository twice (docs/247).
+ */
+function provenanceLabel(tracker: string, identifier: string): string {
+  const kind = isGitHubTracker(tracker) ? "github" : tracker;
+  return `${kind}:${identifier}`;
 }
 
 /** Read a write body from `--body` (inline) or `--body-file` (file / `-` stdin). */
@@ -63,6 +115,54 @@ async function readIssueBody(
 }
 
 const VALID_TRACKERS = new Set(["github", "linear"]);
+
+/**
+ * docs/247 — resolve the effective tracker id from `--tracker` and `--repo`.
+ *
+ * `--repo owner/name` names a GitHub repository explicitly. It is not a third
+ * tracker: it *qualifies* the `github` tracker, producing the id
+ * `github:owner/name`, which is what the orchestrator routes on. An operation
+ * naming no `--repo` keeps its current meaning — the active session's own code
+ * repository — so no existing command changes destination (req 3).
+ *
+ * The repository is deliberately NOT checked against a known set. `--repo`
+ * accepts any repository the deployment's GitHub credential can reach, and
+ * GitHub authorization is the only gate; the shim validates the *shape* only, so
+ * a real access failure is reported by GitHub rather than pre-empted by a
+ * guess here. The accepted consequence, recorded in the requirements, is that a
+ * mistyped-but-real slug reaches a real repository.
+ *
+ * Returns the tracker id to send as `?tracker=`, or fails the command.
+ */
+function resolveTrackerFlag(
+  io: RunDeps["io"],
+  verb: string,
+  trackerFlag: string | undefined,
+  repoFlag: string | undefined,
+  fallback: "github" | "linear",
+): string {
+  const tracker = (trackerFlag ?? fallback).toLowerCase();
+  if (!VALID_TRACKERS.has(tracker)) {
+    fail(io, `shipit issue ${verb}: --tracker must be 'github' or 'linear' (got '${trackerFlag}').`);
+  }
+  if (repoFlag === undefined) return tracker;
+  // `--repo` names a GitHub repository, so on its own it *selects* GitHub —
+  // otherwise `shipit issue create --repo acme/planning` would be rejected
+  // purely because `create` happens to default to Linear, which is a defaulting
+  // artifact and not something the agent said. Only an EXPLICIT `--tracker
+  // linear` genuinely contradicts `--repo`.
+  if (trackerFlag !== undefined && tracker !== "github") {
+    fail(
+      io,
+      `shipit issue ${verb}: --repo names a GitHub repository and cannot be combined with --tracker ${tracker}.`,
+    );
+  }
+  const ref = parseOwnerRepo(repoFlag);
+  if (!ref) {
+    fail(io, `shipit issue ${verb}: --repo must be an 'owner/name' slug (got '${repoFlag}').`);
+  }
+  return githubTrackerId(ref);
+}
 
 /** Normalized priority levels accepted by `--priority` (Linear-only). */
 const VALID_PRIORITIES = new Set(["urgent", "high", "medium", "low", "none"]);
@@ -81,7 +181,7 @@ function validatePriority(
   tracker: string,
 ): string | undefined {
   if (priority === undefined) return undefined;
-  if (tracker === "github") {
+  if (isGitHubTracker(tracker)) {
     fail(
       io,
       `shipit issue ${verb}: --priority is not supported on GitHub (no native priority field). ` +
@@ -118,7 +218,7 @@ function validateParent(
   tracker: string,
 ): string | null | undefined {
   if (parent === undefined) return undefined;
-  if (tracker === "github") {
+  if (isGitHubTracker(tracker)) {
     fail(
       io,
       `shipit issue ${verb}: --parent is not supported on GitHub (issues are flat — no sub-issues). ` +
@@ -139,7 +239,7 @@ function validateParent(
 
 export async function handleIssueView(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
-    values: { "--tracker": "tracker" },
+    values: { "--tracker": "tracker", "--repo": "repo" },
     booleans: { "--json": "json", "--comments": "comments" },
   });
   if (parsed.unsupported.length > 0) {
@@ -159,7 +259,28 @@ export async function handleIssueView(args: string[], deps: RunDeps): Promise<vo
   }
 
   const ref = parseIssueRef(pointer);
-  const tracker = override ?? (ref.tracker === "unknown" ? undefined : ref.tracker);
+  // docs/247 — `--repo` names the repository for a pointer that doesn't carry
+  // one; a qualified pointer already resolves to its own `github:owner/repo`.
+  // Contradicting the two is an error, not a precedence question.
+  let repoTracker: string | undefined;
+  if (parsed.values.repo !== undefined) {
+    if (override && override !== "github") {
+      fail(deps.io, `shipit issue view: --repo cannot be combined with --tracker ${override}.`);
+    }
+    const repoRef = parseOwnerRepo(parsed.values.repo);
+    if (!repoRef) {
+      fail(deps.io, `shipit issue view: --repo must be an 'owner/name' slug (got '${parsed.values.repo}').`);
+    }
+    repoTracker = githubTrackerId(repoRef);
+    if (isGitHubTracker(ref.tracker) && ref.tracker !== "github" && ref.tracker !== repoTracker) {
+      fail(
+        deps.io,
+        `shipit issue view: --repo ${parsed.values.repo} contradicts the repository in "${pointer}".`,
+      );
+    }
+  }
+
+  const tracker = repoTracker ?? override ?? (ref.tracker === "unknown" ? undefined : ref.tracker);
   if (!tracker) {
     fail(
       deps.io,
@@ -222,16 +343,19 @@ export async function handleIssueView(args: string[], deps: RunDeps): Promise<vo
 
 export async function handleIssueList(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
-    values: { "--tracker": "tracker", "--state": "state" },
+    values: { "--tracker": "tracker", "--repo": "repo", "--state": "state" },
     booleans: { "--json": "json", "--full": "full" },
   });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit issue list: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
-  const tracker = (parsed.values.tracker ?? "github").toLowerCase();
-  if (!VALID_TRACKERS.has(tracker)) {
-    fail(deps.io, `shipit issue list: --tracker must be 'github' or 'linear' (got '${parsed.values.tracker}').`);
-  }
+  const tracker = resolveTrackerFlag(
+    deps.io,
+    "list",
+    parsed.values.tracker,
+    parsed.values.repo,
+    "github",
+  );
   const state = parsed.values.state?.toLowerCase();
   if (state && !["open", "closed", "all"].includes(state)) {
     fail(deps.io, `shipit issue list: --state must be 'open', 'closed', or 'all' (got '${parsed.values.state}').`);
@@ -308,16 +432,19 @@ function leanListRow(issue: Record<string, unknown>): Record<string, unknown> {
  */
 export async function handleIssueLabels(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
-    values: { "--tracker": "tracker" },
+    values: { "--tracker": "tracker", "--repo": "repo" },
     booleans: { "--json": "json" },
   });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit issue labels: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
-  const tracker = (parsed.values.tracker ?? "github").toLowerCase();
-  if (!VALID_TRACKERS.has(tracker)) {
-    fail(deps.io, `shipit issue labels: --tracker must be 'github' or 'linear' (got '${parsed.values.tracker}').`);
-  }
+  const tracker = resolveTrackerFlag(
+    deps.io,
+    "labels",
+    parsed.values.tracker,
+    parsed.values.repo,
+    "github",
+  );
   const res = await deps.call(
     "GET",
     `/agent-ops/issue/labels?tracker=${encodeURIComponent(tracker)}`,
@@ -351,16 +478,19 @@ export async function handleIssueLabels(args: string[], deps: RunDeps): Promise<
  */
 export async function handleIssueStatuses(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
-    values: { "--tracker": "tracker" },
+    values: { "--tracker": "tracker", "--repo": "repo" },
     booleans: { "--json": "json" },
   });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit issue statuses: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
-  const tracker = (parsed.values.tracker ?? "github").toLowerCase();
-  if (!VALID_TRACKERS.has(tracker)) {
-    fail(deps.io, `shipit issue statuses: --tracker must be 'github' or 'linear' (got '${parsed.values.tracker}').`);
-  }
+  const tracker = resolveTrackerFlag(
+    deps.io,
+    "statuses",
+    parsed.values.tracker,
+    parsed.values.repo,
+    "github",
+  );
   const res = await deps.call(
     "GET",
     `/agent-ops/issue/statuses?tracker=${encodeURIComponent(tracker)}`,
@@ -447,7 +577,7 @@ function renderIssue(issue: Record<string, unknown>, tracker: string): string {
   const envelope = wrapUntrustedContent({
     source: "issue",
     content: capped,
-    provenance: `${tracker}:${identifier}`,
+    provenance: provenanceLabel(tracker, identifier),
     truncated,
   });
   return [meta.join("\n"), "", envelope].join("\n");
@@ -481,7 +611,7 @@ function renderComments(
   return wrapUntrustedContent({
     source: "issue",
     content: capped,
-    provenance: `${tracker}:${identifier} comments — lower trust than the body; anyone may post`,
+    provenance: `${provenanceLabel(tracker, identifier)} comments — lower trust than the body; anyone may post`,
     truncated,
   });
 }
@@ -531,7 +661,7 @@ export async function handleIssueLabel(args: string[], deps: RunDeps): Promise<v
       "--color": "color",
       "--description": "description",
       "-d": "description",
-      "--tracker": "tracker",
+      "--tracker": "tracker", "--repo": "repo",
     },
     booleans: { "--json": "json" },
   });
@@ -543,10 +673,13 @@ export async function handleIssueLabel(args: string[], deps: RunDeps): Promise<v
     fail(deps.io, "shipit issue label create: --name is required.");
   }
   // No pointer to infer from, so default to Linear — same rule as `issue create`.
-  const tracker = (parsed.values.tracker ?? "linear").toLowerCase();
-  if (!VALID_TRACKERS.has(tracker)) {
-    fail(deps.io, `shipit issue label create: --tracker must be 'github' or 'linear' (got '${parsed.values.tracker}').`);
-  }
+  const tracker = resolveTrackerFlag(
+    deps.io,
+    "label create",
+    parsed.values.tracker,
+    parsed.values.repo,
+    "linear",
+  );
   const color = parsed.values.color;
   if (color !== undefined && !LABEL_COLOR_RE.test(color.trim())) {
     fail(deps.io, `shipit issue label create: --color must be a 6-digit hex like '#0ea5e9' (got '${color}').`);
@@ -570,7 +703,7 @@ export async function handleIssueCreate(args: string[], deps: RunDeps): Promise<
       "--body": "body",
       "-F": "bodyFile",
       "--body-file": "bodyFile",
-      "--tracker": "tracker",
+      "--tracker": "tracker", "--repo": "repo",
       "--priority": "priority",
       "--parent": "parent",
     },
@@ -587,10 +720,13 @@ export async function handleIssueCreate(args: string[], deps: RunDeps): Promise<
   // No pointer to infer from, so default to Linear (the workspace-wide tracker,
   // and the design-doc convention). Pass `--tracker github` to file on the
   // session's repo instead.
-  const tracker = (parsed.values.tracker ?? "linear").toLowerCase();
-  if (!VALID_TRACKERS.has(tracker)) {
-    fail(deps.io, `shipit issue create: --tracker must be 'github' or 'linear' (got '${parsed.values.tracker}').`);
-  }
+  const tracker = resolveTrackerFlag(
+    deps.io,
+    "create",
+    parsed.values.tracker,
+    parsed.values.repo,
+    "linear",
+  );
   const labels = normalizeLabels(parsed.arrays.label);
   const priority = validatePriority(deps.io, "create", parsed.values.priority, tracker);
   const parent = validateParent(deps.io, "create", parsed.values.parent, tracker);
@@ -613,13 +749,13 @@ export async function handleIssueCreate(args: string[], deps: RunDeps): Promise<
 
 export async function handleIssueComment(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
-    values: { "-b": "body", "--body": "body", "-F": "bodyFile", "--body-file": "bodyFile", "--tracker": "tracker" },
+    values: { "-b": "body", "--body": "body", "-F": "bodyFile", "--body-file": "bodyFile", "--tracker": "tracker", "--repo": "repo" },
     booleans: { "--json": "json" },
   });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit issue comment: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
-  const { tracker, id } = resolveIssuePointer(deps.io, parsed.positional[0], parsed.values.tracker);
+  const { tracker, id } = resolveIssuePointer(deps.io, parsed.positional[0], parsed.values.tracker, parsed.values.repo);
   const body = await readIssueBody(parsed.values, deps);
   if (!body?.trim()) {
     fail(deps.io, "shipit issue comment: -b/--body (or --body-file -) is required.");
@@ -638,7 +774,7 @@ export async function handleIssueEdit(args: string[], deps: RunDeps): Promise<vo
       "-b": "body",
       "--body": "body",
       "--body-file": "bodyFile",
-      "--tracker": "tracker",
+      "--tracker": "tracker", "--repo": "repo",
       "--priority": "priority",
       "--parent": "parent",
     },
@@ -648,7 +784,7 @@ export async function handleIssueEdit(args: string[], deps: RunDeps): Promise<vo
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit issue edit: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
-  const { tracker, id } = resolveIssuePointer(deps.io, parsed.positional[0], parsed.values.tracker);
+  const { tracker, id } = resolveIssuePointer(deps.io, parsed.positional[0], parsed.values.tracker, parsed.values.repo);
   const body = await readIssueBody(parsed.values, deps);
   const title = parsed.values.title;
   const labels = normalizeLabels(parsed.arrays.label);
@@ -675,13 +811,13 @@ export async function handleIssueEdit(args: string[], deps: RunDeps): Promise<vo
 
 export async function handleIssueStatus(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
-    values: { "--tracker": "tracker" },
+    values: { "--tracker": "tracker", "--repo": "repo" },
     booleans: { "--json": "json" },
   });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit issue status: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
-  const { tracker, id } = resolveIssuePointer(deps.io, parsed.positional[0], parsed.values.tracker);
+  const { tracker, id } = resolveIssuePointer(deps.io, parsed.positional[0], parsed.values.tracker, parsed.values.repo);
   const status = parsed.positional[1];
   if (!status) {
     fail(deps.io, "shipit issue status: a target status is required (a normalized type like `completed`, or a native state name).");
@@ -695,13 +831,13 @@ export async function handleIssueStatus(args: string[], deps: RunDeps): Promise<
 
 export async function handleIssueAssign(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
-    values: { "--tracker": "tracker" },
+    values: { "--tracker": "tracker", "--repo": "repo" },
     booleans: { "--json": "json", "--none": "none" },
   });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit issue assign: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
-  const { tracker, id } = resolveIssuePointer(deps.io, parsed.positional[0], parsed.values.tracker);
+  const { tracker, id } = resolveIssuePointer(deps.io, parsed.positional[0], parsed.values.tracker, parsed.values.repo);
   const none = parsed.booleans.has("none");
   const assignee = none ? null : parsed.positional[1];
   if (!none && !assignee) {

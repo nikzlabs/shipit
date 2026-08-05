@@ -28,16 +28,83 @@ commit-time guard anyway.
 
 ## What it does
 
+Implements [`requirements.md`](./requirements.md).
+
 Before the post-turn auto-commit lands, ShipIt scans the **staged diff** for a
 small set of high-signal credential patterns. If any are found:
 
-1. **The whole commit is refused.** Nothing is committed, nothing is pushed, and
-   the secret-bearing change is left in the working tree for the agent to fix.
+1. **The whole commit is refused** (req 1, 2). Nothing is committed, nothing is
+   pushed, and the secret-bearing change is left in the working tree.
 2. A **persisted** `warn` system-notice is surfaced in the transcript, listing
-   each finding (file, line, rule, **redacted** match) and how to proceed.
+   each finding (file, line, rule, **redacted** match) and how to proceed (req 3).
+3. A **sticky banner** renders above the composer for as long as the block holds
+   (req 5, 6), backed by state on the session row.
+4. A **bounded remediation turn** is dispatched so the agent knows its work did
+   not land and can scrub the credential (req 7), under a prompt that forbids
+   silencing the scanner (req 8).
 
 Because no commit hash comes back, the downstream auto-push and PR-lifecycle
 flow short-circuit naturally (they only run on a non-null commit).
+
+### The rework: a refusal is state, not an announcement (SHI-315)
+
+Steps 3 and 4 were added after the guard was found to fail in the field in a way
+the original design did not anticipate. The failure had two halves that compound:
+
+- **The notice scrolled.** It renders with the weight of any other chat row, so a
+  block announced before a few long agent turns is several screens up. The user
+  who hit this found it by accident, days later.
+- **Nobody who could act was told.** Nothing feeds a `system_notice` into an
+  agent prompt, and the refusal fires *post*-turn — so the agent finished
+  believing its edits shipped and kept building on the branch.
+
+And the blast radius is not the offending change. `autoCommit` does `git add -A`
+and scans the **whole** staged diff, so while that credential sits in the working
+tree **every subsequent turn re-stages it, re-trips the scan, and commits nothing
+at all** — including the unrelated work of every later turn. Auto-push and the PR
+card short-circuit on the null hash, so the branch just stops advancing, with no
+error anywhere. The original write-up's recovery story — "left in the working
+tree for the agent to fix" — had no actor: the agent didn't know, and the human
+saw a row that scrolled past.
+
+So the block is now modelled as **session state** rather than as a message.
+`services/secret-block.ts` is the single place that decides all three responses.
+
+**Why the state is persisted, not held on the runner.** The runner is disposed
+when a session goes idle, and the container with it — but the credential is in
+the working tree, which outlives both. A runner-held flag would render a clean
+session whose commits are still blocked, which is the same invisibility bug in a
+new place. So it is a column (`sessions.secret_block`, JSON `SessionSecretBlock`)
+and the WS attach path re-sends it on connect and on every session switch.
+
+**Why the clear is gated on "the scan actually ran".** `autoCommit` returns from
+its conflict/rebase branch *before* staging or scanning, so a secret may still be
+sitting there unscanned. Clearing on any null-hash return would retire the banner
+on a lie. Only "no findings, and nothing stopped us from looking" retires the
+block — which covers both a successful commit and a genuinely clean tree.
+
+**Why the remediation turn is bounded.** The block re-arises on every turn, so an
+unconditional "tell the agent" would dispatch a turn per turn until someone
+noticed — the same unbounded behaviour in a more expensive costume.
+`MAX_SECRET_BLOCK_NOTIFY` (2) caps it: enough for the agent to scrub an
+accidental paste and retry once if its first attempt missed. Re-blocking with the
+same findings keeps the spent budget and the original timestamp, so the banner
+doesn't reset its age and the agent isn't re-nagged; a *different* finding set is
+treated as a new block with a fresh budget, so a genuinely new leak after a
+partial fix doesn't inherit an exhausted one.
+
+**Why the prompt forbids the allow-marker (req 8).** The cheapest way for an
+agent to make a scanner error disappear is to append `gitleaks:allow` to the
+line, which silences the guard while looking exactly like a fix — it would
+convert a security feature into a rubber stamp. `prompts/secret-block-remediation.md`
+forbids it explicitly and routes suspected false positives back to the user, who
+is the only party who can legitimately decide a matched credential is fake. This
+is pinned by a test; if that assertion is ever relaxed the feature is actively
+harmful.
+
+**Why the banner has no dismiss control.** It renders a live blocking condition,
+not a notification. The only way out is to make the condition false. (This is the
+same posture as `RebaseBanner`, its neighbour in the bottom stack.)
 
 ## Design decisions
 
@@ -125,8 +192,21 @@ round-trips beyond a single `git diff --cached`. It does not stall a turn.
   helpers; `AutoCommitResult.secretFindings`.
 - `src/server/orchestrator/services/secret-scan-notice.ts` —
   `formatSecretScanNotice` builds the redacted, persisted warning text.
+- `src/server/orchestrator/services/secret-block.ts` — **the owner of the block
+  as state** (SHI-315): `recordSecretBlock` / `clearSecretBlock`, the notify
+  budget, and the remediation dispatch. Both post-turn paths call it.
+- `src/server/orchestrator/prompts/secret-block-remediation.md` — the
+  agent-facing remediation prompt, including the no-allow-marker clause (req 8).
 - `src/server/orchestrator/ws-handlers/post-turn.ts` — surfaces the notice on the
-  WS post-turn path.
+  WS post-turn path, records/clears the block.
+- `src/server/orchestrator/sessions.ts`, `src/server/shared/database.ts` —
+  `sessions.secret_block` column + `get/setSecretBlock`.
+- `src/server/orchestrator/route-registry.ts` — re-sends `secret_block_status` on
+  WS attach and session switch, so the banner survives a reload.
+- `src/client/components/SecretBlockBanner.tsx` — the sticky banner, rendered in
+  `App.tsx`'s bottom stack beside `RebaseBanner`.
+- `src/client/hooks/message-handlers/secret-block-status.ts`,
+  `src/client/stores/session-store.ts` — `secretBlock` state (reset per session).
 - `src/server/orchestrator/turn-executor.ts`,
   `src/server/orchestrator/services/github.ts` — surface the notice on the
   dispatched/system-turn fallback and the CI-fix commit.

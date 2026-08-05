@@ -3,6 +3,13 @@ import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { AskUserQuestion, type AskQuestionItem } from "./AskUserQuestion.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 
+/**
+ * `onAnswer` reports whether the answer reached the wire — the card's
+ * answered-state lock is gated on it (see `sendUserMessage`). Tests that expect
+ * the answered state must return `true`.
+ */
+type AnswerFn = (toolUseId: string, answers: Record<string, string>, text: string) => boolean;
+
 afterEach(() => {
   cleanup();
   // Reset the opt-in voice toggle so it never leaks between tests.
@@ -53,7 +60,7 @@ const multiSelectQuestion: AskQuestionItem[] = [
 describe("AskUserQuestion", () => {
   describe("rendering", () => {
     it("renders the question text and header", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -67,7 +74,7 @@ describe("AskUserQuestion", () => {
     });
 
     it("renders all options with labels and descriptions", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -83,7 +90,7 @@ describe("AskUserQuestion", () => {
     });
 
     it("renders the Other option", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -96,7 +103,7 @@ describe("AskUserQuestion", () => {
     });
 
     it("renders the container with data-testid", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -111,7 +118,7 @@ describe("AskUserQuestion", () => {
 
   describe("single-select interaction", () => {
     it("calls onAnswer immediately when an option is clicked (single question)", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -125,7 +132,7 @@ describe("AskUserQuestion", () => {
     });
 
     it("disables options after answering", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -141,7 +148,7 @@ describe("AskUserQuestion", () => {
     });
 
     it("hides the Other option after answering", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -158,7 +165,7 @@ describe("AskUserQuestion", () => {
 
   describe("multi-select interaction", () => {
     it("does not submit immediately on click", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -172,7 +179,7 @@ describe("AskUserQuestion", () => {
     });
 
     it("shows a submit button for multi-select", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -185,7 +192,7 @@ describe("AskUserQuestion", () => {
     });
 
     it("submits selected options when submit is clicked", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -201,7 +208,7 @@ describe("AskUserQuestion", () => {
     });
 
     it("toggles selection on repeated clicks", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -218,7 +225,7 @@ describe("AskUserQuestion", () => {
     });
 
     it("submit button is disabled when nothing is selected", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -234,7 +241,7 @@ describe("AskUserQuestion", () => {
 
   describe("Other option", () => {
     it("shows text input when Other is clicked", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -248,7 +255,7 @@ describe("AskUserQuestion", () => {
     });
 
     it("submits other text on Enter for single question", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -265,7 +272,7 @@ describe("AskUserQuestion", () => {
     });
 
     it("shows a submit button when Other is active for a single question", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -281,7 +288,7 @@ describe("AskUserQuestion", () => {
     });
 
     it("submits other text via the submit button for a single question", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -300,7 +307,7 @@ describe("AskUserQuestion", () => {
     });
 
     it("does not submit empty other text on Enter", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -336,7 +343,7 @@ describe("AskUserQuestion", () => {
 
   describe("disabled state", () => {
     it("does not call onAnswer when disabled", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -350,7 +357,7 @@ describe("AskUserQuestion", () => {
     });
 
     it("disables all option buttons", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -366,7 +373,7 @@ describe("AskUserQuestion", () => {
 
   describe("multiple questions", () => {
     it("renders all questions", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       const twoQuestions: AskQuestionItem[] = [
         {
           question: "Pick a cache?",
@@ -394,7 +401,7 @@ describe("AskUserQuestion", () => {
     });
 
     it("shows submit button for multiple questions even if single-select", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       const twoQuestions: AskQuestionItem[] = [
         {
           question: "Pick a cache?",
@@ -421,7 +428,7 @@ describe("AskUserQuestion", () => {
     });
 
     it("submits answers for multiple questions", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       const twoQuestions: AskQuestionItem[] = [
         {
           question: "Pick a cache?",
@@ -496,7 +503,7 @@ describe("AskUserQuestion", () => {
     });
 
     it("does not call onAnswer when clicking an option after reload", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -577,7 +584,7 @@ describe("AskUserQuestion", () => {
     });
 
     it("ignores resolvedAnswer once the user submits via the UI (local state wins)", () => {
-      const onAnswer = vi.fn();
+      const onAnswer = vi.fn<AnswerFn>(() => true);
       const { rerender } = render(
         <AskUserQuestion
           toolUseId="t1"
@@ -602,5 +609,55 @@ describe("AskUserQuestion", () => {
       const inMemoryBtn = screen.getByTestId("option-In-memory");
       expect(inMemoryBtn.className).toContain("bg-(--color-accent-subtle)");
     });
+  });
+});
+
+/**
+ * The answered-state lock must never outrun the wire. `useWebSocket.send` is a
+ * silent no-op when the socket isn't OPEN, so an unconditional lock rendered an
+ * answered card for an answer the agent never received — and, because the card
+ * has a real terminal state, the user could not re-answer it at all. Same
+ * defect class as the action-checklist card's "Submitted" ack.
+ */
+describe("AskUserQuestion — the answered lock is conditional on delivery", () => {
+  it("stays answerable when the send never reaches the wire", () => {
+    const onAnswer = vi.fn<AnswerFn>(() => false);
+    render(
+      <AskUserQuestion
+        toolUseId="t1"
+        questions={singleQuestion}
+        onAnswer={onAnswer}
+        disabled={false}
+      />
+    );
+    fireEvent.click(screen.getByTestId("option-Redis"));
+    expect(onAnswer).toHaveBeenCalledTimes(1);
+
+    // Not locked: the same option is still live and clicking re-sends.
+    const redis = screen.getByTestId("option-Redis");
+    expect(redis).toBeEnabled();
+    fireEvent.click(redis);
+    expect(onAnswer).toHaveBeenCalledTimes(2);
+  });
+
+  it("locks once a retry is delivered", () => {
+    const onAnswer = vi.fn<AnswerFn>();
+    onAnswer.mockReturnValueOnce(false).mockReturnValueOnce(true);
+    render(
+      <AskUserQuestion
+        toolUseId="t1"
+        questions={singleQuestion}
+        onAnswer={onAnswer}
+        disabled={false}
+      />
+    );
+    fireEvent.click(screen.getByTestId("option-Redis"));
+    fireEvent.click(screen.getByTestId("option-Redis"));
+    expect(onAnswer).toHaveBeenCalledTimes(2);
+
+    // Now answered — further clicks are inert.
+    fireEvent.click(screen.getByTestId("option-Redis"));
+    expect(onAnswer).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("option-Redis")).toBeDisabled();
   });
 });

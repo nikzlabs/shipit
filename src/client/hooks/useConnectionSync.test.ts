@@ -49,7 +49,7 @@ describe("useConnectionSync — pending message flush (docs/144 fix #2)", () => 
       pendingWsMessage: { type: "send_message", text: "first message" },
     });
 
-    const send = vi.fn();
+    const send = vi.fn(() => true);
     renderHook(() => useConnectionSync({ status: "open", send }));
 
     await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
@@ -62,13 +62,32 @@ describe("useConnectionSync — pending message flush (docs/144 fix #2)", () => 
     expect(useSessionStore.getState().pendingWsMessage).toBeUndefined();
   });
 
+  it("keeps the message stashed when the flush send is dropped", async () => {
+    // `status` can flip to "open" a tick before the socket is actually
+    // writable, and it can close again in between. Clearing the stash on a
+    // dropped send loses the user's first message with no trace.
+    useSessionStore.setState({
+      sessionId: "s1",
+      pendingWsMessage: { type: "send_message", text: "first message" },
+    });
+
+    const send = vi.fn(() => false);
+    renderHook(() => useConnectionSync({ status: "open", send }));
+
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(useSessionStore.getState().pendingWsMessage).toEqual({
+      type: "send_message",
+      text: "first message",
+    });
+  });
+
   it("does not send anything while the WS is still connecting", () => {
     useSessionStore.setState({
       sessionId: "s1",
       pendingWsMessage: { type: "send_message", text: "queued" },
     });
 
-    const send = vi.fn();
+    const send = vi.fn(() => true);
     renderHook(() => useConnectionSync({ status: "connecting", send }));
 
     expect(send).not.toHaveBeenCalled();
@@ -82,7 +101,7 @@ describe("useConnectionSync — pending message flush (docs/144 fix #2)", () => 
   it("is a no-op on open when there is no pending message", async () => {
     useSessionStore.setState({ sessionId: "s1", pendingWsMessage: undefined });
 
-    const send = vi.fn();
+    const send = vi.fn(() => true);
     renderHook(() => useConnectionSync({ status: "open", send }));
 
     // Give the history-load microtask a chance to run; still nothing to send.

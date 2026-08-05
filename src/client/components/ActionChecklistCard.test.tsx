@@ -45,7 +45,7 @@ describe("ActionChecklistCard — single action", () => {
   });
 
   it("Do it submits the lone action's payload with provenance", () => {
-    const onSubmit = vi.fn();
+    const onSubmit = vi.fn<(text: string) => boolean>(() => true);
     render(<ActionChecklistCard card={single()} onSubmit={onSubmit} />);
     fireEvent.click(screen.getByRole("button", { name: /Do it/ }));
     const msg = onSubmit.mock.calls[0][0] as string;
@@ -74,7 +74,7 @@ describe("ActionChecklistCard — multi action", () => {
   });
 
   it("submits only the ticked payloads (not labels) as one message, then shows a transient ack and clears boxes", () => {
-    const onSubmit = vi.fn();
+    const onSubmit = vi.fn<(text: string) => boolean>(() => true);
     render(<ActionChecklistCard card={card()} onSubmit={onSubmit} />);
     // tick a1 in addition to the default a3
     fireEvent.click(screen.getAllByRole("checkbox")[0]);
@@ -94,7 +94,7 @@ describe("ActionChecklistCard — multi action", () => {
   });
 
   it("Add comment seeds the composer with ONLY the selected payloads as bullets and never sends", () => {
-    const onSubmit = vi.fn();
+    const onSubmit = vi.fn<(text: string) => boolean>(() => true);
     render(<ActionChecklistCard card={card()} onSubmit={onSubmit} />);
     fireEvent.click(screen.getByRole("button", { name: /Add comment/ }));
 
@@ -106,5 +106,68 @@ describe("ActionChecklistCard — multi action", () => {
     expect(seeded).not.toContain("Open a PR for this change.");
     expect(seeded).not.toContain("[x]");
     expect(seeded).not.toContain("[ ]");
+  });
+});
+
+/**
+ * The ack must never outrun the wire. `onSubmit` reports whether the message was
+ * actually accepted for delivery (see `sendUserMessage` / `useWebSocket.send`,
+ * which drops silently on a non-OPEN socket); a `false` must leave the user's
+ * selection — including the RECOMMENDED defaults — exactly as it was so a retry
+ * is one click, not a re-tick. Reported by an operator: "I've sent a response
+ * from the card but it didn't do anything. 'Recommended' options were cleared."
+ */
+describe("ActionChecklistCard — ack is conditional on delivery", () => {
+  it("does not ack and does not clear the selection when the send never reaches the wire", () => {
+    const onSubmit = vi.fn<(text: string) => boolean>(() => false);
+    render(<ActionChecklistCard card={card()} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getAllByRole("checkbox")[0]); // a1 + default a3
+    fireEvent.click(screen.getByRole("button", { name: /Submit 2 actions/ }));
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/Submitted/)).not.toBeInTheDocument();
+    const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    expect(boxes[0].checked).toBe(true);
+    expect(boxes[2].checked).toBe(true);
+    // The RECOMMENDED badge survives — it is what the operator saw disappear.
+    expect(screen.getByText("RECOMMENDED")).toBeInTheDocument();
+  });
+
+  it("surfaces the failure and stays retryable — no lock, no terminal state", () => {
+    const onSubmit = vi.fn<(text: string) => boolean>(() => false);
+    render(<ActionChecklistCard card={card()} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("button", { name: /Submit 1 action/ }));
+
+    expect(screen.getByText(/Couldn't send/)).toBeInTheDocument();
+    // Same selection, same live button: pressing again re-sends the same subset.
+    const retry = screen.getByRole("button", { name: /Submit 1 action/ });
+    expect(retry).toBeEnabled();
+    fireEvent.click(retry);
+    expect(onSubmit).toHaveBeenCalledTimes(2);
+    expect(onSubmit.mock.calls[1][0]).toEqual(onSubmit.mock.calls[0][0]);
+  });
+
+  it("acks once delivery succeeds after an earlier drop, and drops the failure notice", () => {
+    const onSubmit = vi.fn<(text: string) => boolean>();
+    onSubmit.mockReturnValueOnce(false).mockReturnValueOnce(true);
+    render(<ActionChecklistCard card={card()} onSubmit={onSubmit} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Submit 1 action/ }));
+    expect(screen.getByText(/Couldn't send/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Submit 1 action/ }));
+    expect(screen.queryByText(/Couldn't send/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Submitted · 1 action sent/)).toBeInTheDocument();
+    for (const cb of screen.getAllByRole("checkbox")) {
+      expect((cb as HTMLInputElement).checked).toBe(false);
+    }
+  });
+
+  it("does not ack when no sender is wired at all — nothing was sent", () => {
+    render(<ActionChecklistCard card={single()} />);
+    fireEvent.click(screen.getByRole("button", { name: /Do it/ }));
+
+    expect(screen.queryByText(/Submitted/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Couldn't send/)).toBeInTheDocument();
   });
 });

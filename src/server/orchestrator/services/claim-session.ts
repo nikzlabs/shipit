@@ -458,6 +458,16 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
       // group would incorrectly list everything in the repo.
       deps.sessionManager.markStarted(result.sessionId);
 
+      // Claiming a workspace IS using the repo, so stamp `lastUsedAt` here and
+      // not only at graduation (`graduateSession`). The steady-state janitor
+      // reclaims a `repo-cache/<hash>` whose repo's `lastUsedAt` is past the
+      // cold cutoff; with the stamp landing only on the first *turn*, a repo the
+      // user opened repeatedly but never graduated kept `lastUsedAt == addedAt`
+      // and aged into "cold" while in active use. Its cache was then deleted out
+      // from under the very claims that were recreating it — an hourly
+      // delete/re-clone loop against a repo somebody was trying to work in.
+      deps.repoStore.touch(url);
+
       console.log(
         `[timing] claim-session for ${url} path=${claimPath} ` +
           `total=${Date.now() - claimStart}ms fetch=${result.fetchDurationMs}ms`,

@@ -217,3 +217,10 @@ widening a deliberate, reviewed, test-enforced act:
   container's ability to *trigger* them, which is the SHI-129 acceptance bar.
 - Per-session signed token (SHI-129 direction option b) as defense-in-depth for any future
   non-bridge topology — deferred; bridge-IP covers the current containerized model.
+- **The worker end of the same channel (SHI-311) — fixed separately.** This guard covers
+  agent→orchestrator. It says nothing about agent→**another agent's worker**, which is
+  reachable because agent containers share one bridge and each worker binds `0.0.0.0:9100`.
+  A request to B's worker is relayed onward by B's own `OrchestratorClient` with **B's**
+  session id injected, so it reaches this guard already looking like a legitimate
+  own-session call. Closed at the worker boundary instead — see
+  `docs/251-worker-trust-boundary/`.

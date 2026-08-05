@@ -4,6 +4,7 @@
  */
 
 import http from "node:http";
+import { workerAuthHeaders } from "./worker-auth.js";
 
 export interface SSEEvent {
   type: string;
@@ -86,7 +87,10 @@ export function connectSSE(
       // replay only events the consumer hasn't seen yet.
       path: `${parsedUrl.pathname}${parsedUrl.search}`,
       method: "GET",
-      headers: { Accept: "text/event-stream" },
+      // SHI-311 — `/events` is orchestrator-facing, so it carries the same
+      // per-session worker token the request helpers send. Keyed off the
+      // origin, not the full URL, since the registry is per worker base URL.
+      headers: { Accept: "text/event-stream", ...workerAuthHeaders(parsedUrl.origin) },
     },
     (res) => {
       let buffer = "";

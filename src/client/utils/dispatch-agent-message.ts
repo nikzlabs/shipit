@@ -13,6 +13,7 @@
 
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { randomId } from "./random-id.js";
 import type { ApiError } from "../hooks/useApi.js";
 import type { AgentInterfaceProvenance } from "../../server/shared/agent-interface-sdk/protocol.js";
 
@@ -27,7 +28,7 @@ export interface DispatchAgentMessageOptions {
 export async function dispatchAgentMessage(opts: DispatchAgentMessageOptions): Promise<void> {
   const { sessionId, text, activity, apiPost, agentInterface } = opts;
   const session = useSessionStore.getState();
-  const requestId = crypto.randomUUID();
+  const requestId = randomId();
 
   // Optimistic append — the server's `system_user_message` echo is deduped
   // against this bubble via the `pendingDispatch` flag.

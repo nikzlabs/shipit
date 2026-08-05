@@ -27,13 +27,14 @@
 
 import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage, SessionMessageOrigin } from "../shared/types.js";
 import { buildTurnMessages, wireAgentListeners } from "./ws-handlers/agent-listeners.js";
+import { createAgentStderrTail } from "./agent-stderr-tail.js";
 import { detectHardExhaustion } from "./ws-handlers/agent-rate-limits.js";
 import { resetRunnerTurnState } from "./session-runner.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
 import { emitChatCard, emitNoticePostTurn } from "./chat-card-persistence.js";
-import { TURN_COMPLETED, turnErrored, turnNoResult, type TurnOutcome } from "./turn-settlement.js";
+import { TURN_COMPLETED, turnErrored, turnInterrupted, turnNoResult, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 
 /**
@@ -145,8 +146,14 @@ export interface TurnInput {
    * error via the agent's error path) — the executor must NOT finalize this
    * turn as completed. Returning `false`/omitting it leaves the legacy
    * teardown in place.
+   *
+   * `stderrDetail` is the redacted, bounded tail of whatever the CLI wrote to
+   * stderr this turn (`agent-stderr-tail.ts`), or `undefined` when it wrote
+   * nothing. Passed rather than re-derived so the dispatch path's error text can
+   * name the cause for the same reason the WS path's row does — an exit code on
+   * its own makes every distinct failure read identically.
    */
-  onNoResultExit?: (code: number | null) => Promise<boolean>;
+  onNoResultExit?: (code: number | null, stderrDetail?: string) => Promise<boolean>;
   /**
    * docs/169 — post-turn policy. `"commit-push"` (default) runs the normal
    * commit/push/PR + queue drain. `"none"` elides auto-commit, auto-push, the
@@ -225,6 +232,12 @@ export async function executeAgentTurn(
   // that flag by the time the superseded attempt unwinds.
   let agentErrored = false;
   let turnCompleteFired = false;
+  /**
+   * SHI-316 — a newer spawn took this turn's agent slot (see the `superseded`
+   * event on `AgentProcessEvents`). Latched rather than settled inline so the
+   * outcome is built by the one `finishTurn` chain below.
+   */
+  let wasSuperseded = false;
   const settleTurn = (outcome: TurnOutcome): void => {
     if (turnCompleteFired) return;
     turnCompleteFired = true;
@@ -255,12 +268,32 @@ export async function executeAgentTurn(
     // error") so the existing `{ errored }` consumers — the rebase driver, the
     // CI auto-fix loop — are unaffected; `status` carries the finer distinction
     // for consumers that opt into it.
+    //
+    // SHI-316 — a turn that RAN and was then cut short settles as `interrupted`,
+    // not `no-result`. The two look identical from here (no `agent_result` ever
+    // arrived) but mean opposite things to a delivery supervisor: `no-result` is
+    // "the work never reached anyone, try again", while `interrupted` is "the
+    // prompt reached a live agent and a human — or a newer turn — stopped it".
+    // Re-delivering the latter is a duplicate notification, not a recovery,
+    // which is exactly how a self-merge wake got sent twice from one merge.
+    // Two shapes, one meaning:
+    //   • `wasSuperseded` — a newer spawn took the agent slot, so this turn's
+    //     own terminal event will be ignored as stale (docs/146).
+    //   • `runner.wasInterrupted` — the user pressed stop, or the orchestrator
+    //     interrupted the CLI to wait on AskUserQuestion / plan approval.
+    // The flags are checked in that order because `resetRunnerTurnState` clears
+    // `wasInterrupted` when the DISPLACING turn starts, so it is unreliable
+    // (already false) by the time a superseded turn unwinds.
     settleTurn(
       agentErrored
         ? turnErrored()
         : receivedResult
           ? TURN_COMPLETED
-          : turnNoResult("agent process exited without producing a turn result"),
+          : wasSuperseded
+            ? turnInterrupted("a newer turn took the agent slot before this one finished")
+            : (runner?.wasInterrupted ?? false)
+              ? turnInterrupted("the turn was interrupted before it produced a result")
+              : turnNoResult("agent process exited without producing a turn result"),
     );
   };
 
@@ -634,6 +667,40 @@ export async function executeAgentTurn(
   let sawAuthRequired = false;
   agent.on("auth_required", () => { sawAuthRequired = true; });
 
+  // Keep the tail of whatever the agent CLI wrote to stderr this turn, so a
+  // process that dies before producing an `agent_result` can say WHY in the
+  // transcript instead of only reporting its exit code.
+  //
+  // The reason has always been captured — both adapters forward stderr as a
+  // `log` event — but `log` is routed to the Logs panel and the durable
+  // `logs/agent.jsonl`, neither of which is the transcript. The persisted chat
+  // row is the artifact the user still has after a reload, and it carried only
+  // `Agent process exited with code 1`. That is how a Codex cold-start failure
+  // (`failed to initialize sqlite state runtime under <dir>`) reached
+  // the user as an unexplained dead turn.
+  //
+  // Listening here rather than in `wireAgentListeners` keeps this next to the
+  // `done` handler that consumes it, and works for both runtimes: a
+  // containerized turn's stderr arrives over SSE as the same `log` event
+  // (`container-session-runner.ts` re-emits it onto the proxy agent).
+  const stderrTail = createAgentStderrTail();
+  agent.on("log", (source: string, text: string) => { stderrTail.record(source, text); });
+
+  // SHI-316 — a newer spawn took this turn's agent slot. SETTLE ONLY: the turn
+  // that displaced this one owns the runner, the `_agent` slot and the working
+  // tree, so this one must not clear `running`, drain the queue, broadcast a
+  // finished-SSE or run a post-turn commit — doing any of that alongside a live
+  // turn is precisely the interference the docs/146 stale-spawn guard exists to
+  // prevent (and the displacing turn's own `git add -A` sweeps the tree anyway).
+  // What it MUST do is stop pretending to be pending: an unsettled system turn
+  // strands `systemTurnInProgress` (suppressing live steering for the rest of
+  // the session) and, for a wake-turn, strands its merge-watch at
+  // `merge-observed` where the retry supervisor re-delivers it.
+  agent.on("superseded", () => {
+    wasSuperseded = true;
+    finishTurn();
+  });
+
   let tokenSyncFired = false;
   const trySyncToken = (): void => {
     if (tokenSyncFired) return;
@@ -694,7 +761,12 @@ export async function executeAgentTurn(
           emit,
         });
       }
-      // Fallback for minimal test setups that wire `autoCommit` but not `commitTurn`.
+      // Fallback for minimal test setups that wire `autoCommit` but not
+      // `commitTurn`. Both production paths (`agent-execution.ts` and
+      // `runner-registry-factory.ts`) wire `commitTurn` → `postTurnCommit`, which
+      // is where the SHI-315 banner state + remediation turn live; this path
+      // keeps the notice only, and deliberately has no `sessionManager` to
+      // persist block state into.
       const result = await deps.autoCommit(runner.sessionDir, summary);
       if (result.secretFindings.length > 0) {
         emitNoticePostTurn(
@@ -964,9 +1036,16 @@ export async function executeAgentTurn(
         && !sawAuthRequired
         && !(runner?.wasInterrupted ?? false)
       ) {
-        const message = code !== 0
+        const base = code !== 0
           ? `Agent process exited with code ${code}`
           : "Agent process ended without a response";
+        // Append the CLI's own last words when it left any. This row is the
+        // whole user-visible outcome of a turn that produced nothing, so the
+        // exit code alone makes every distinct failure look identical — a bad
+        // `--resume`, a missing binary, and a Codex cold-start collision all
+        // read as "exited with code 1". Redacted + bounded by the tail itself.
+        const detail = stderrTail.describe();
+        const message = detail ? `${base}: ${detail}` : base;
         // SHI-277 — this writes a chat row; a SQLite failure here must not skip
         // the commit below (a dead turn's partial edits are the whole reason
         // this path commits at all).
@@ -1023,7 +1102,7 @@ export async function executeAgentTurn(
         // abandoning the sequence. Only a clean `true` hands the turn over.
         let handled = false;
         await postTurnStep("no-result-exit-hook", async () => {
-          handled = await input.onNoResultExit!(code);
+          handled = await input.onNoResultExit!(code, stderrTail.describe());
         });
         if (handled) return;
       }

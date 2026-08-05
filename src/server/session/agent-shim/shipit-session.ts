@@ -818,6 +818,64 @@ const REPORT_TARGETS = ["parent", "cohort"];
 const MAX_REPORT_BODY_CHARS = 10_000;
 
 /**
+ * `shipit session rename --title "<new title>" [--json]` (docs/250).
+ *
+ * Retitles THIS session. Takes no session id — the worker injects the calling
+ * container's own id, so an agent can only ever rename itself (requirement 3).
+ *
+ * The title a session is given at the start comes from its first message, so a
+ * session that goes on to do several rounds of work keeps a name describing only
+ * the first. Renaming is what keeps the sidebar honest past the first PR.
+ *
+ * The one refusal is "the user renamed this session by hand", which is final —
+ * the orchestrator phrases it, and the right response is to leave the name alone.
+ */
+export async function handleSessionRename(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: { "--title": "title" },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit session rename: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+
+  const title = parsed.values.title;
+  if (!title) {
+    fail(deps.io, 'shipit session rename: --title is required, e.g. shipit session rename --title "Add billing"');
+  }
+  // A positional argument here is almost always a session id the agent tried to
+  // pass out of muscle memory from the parent→child subcommands. Say so, rather
+  // than silently renaming the wrong thing... which it can't, but the agent
+  // doesn't know that.
+  if (parsed.positional.length > 0) {
+    fail(
+      deps.io,
+      "shipit session rename takes no session id — it always renames THIS session. "
+        + "You cannot rename another session, including one you spawned.",
+    );
+  }
+
+  const res = await deps.call("POST", "/agent-ops/session/rename", { title }, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to rename this session"), 1);
+  }
+
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  const from = asString(res.body.previousTitle);
+  const to = asString(res.body.title);
+  success(
+    deps.io,
+    from && from !== to
+      ? `renamed: ${from}\n     ->: ${to}`
+      : `title:   ${to} (unchanged)`,
+  );
+}
+
+/**
  * `shipit session whoami [--json]` (docs/233).
  *
  * Resolves the CALLING session — id, title, branch, status — plus its parent,

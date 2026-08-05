@@ -202,6 +202,37 @@ describe("ClaudeAdapter", () => {
       }]);
     });
 
+    /**
+     * docs/109 reqs 10–11 — for a backgrounded subagent this event is the ONLY
+     * completion signal on the wire (no second `tool_result` ever arrives for
+     * the Task), so dropping `tool_use_id` here is what left the card claiming
+     * "Running in the background" forever. Payload is the real CLI 2.1.219
+     * notification.
+     */
+    it("carries the tool_use_id and usage a backgrounded subagent reports", () => {
+      const { inner, events } = harness();
+
+      inner.emit("event", {
+        type: "system",
+        subtype: "task_notification",
+        task_id: "af0615944a51b4583",
+        tool_use_id: "toolu_013fUMwLfWGNwaaqVsj8ojXF",
+        status: "completed",
+        summary: "## Probe report\n\nThe number seven holds profound significance.",
+        output_file: "/tmp/claude-1000/x/tasks/af0615944a51b4583.output",
+        usage: { total_tokens: 10408, tool_uses: 0, duration_ms: 2757 },
+      } as ClaudeEvent);
+
+      expect(events).toEqual([{
+        type: "agent_self_wake",
+        taskId: "af0615944a51b4583",
+        toolUseId: "toolu_013fUMwLfWGNwaaqVsj8ojXF",
+        status: "completed",
+        summary: "## Probe report\n\nThe number seven holds profound significance.",
+        usage: { totalTokens: 10408, toolUses: 0, durationMs: 2757 },
+      }]);
+    });
+
     it("drops task_started / task_updated as redundant per-task deltas", () => {
       // Their effect is already covered by the authoritative
       // `background_tasks_changed` list emitted alongside them.
