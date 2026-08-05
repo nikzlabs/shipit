@@ -21,10 +21,23 @@
 7. When ShipIt adds a private planning issue reference to a public PR body, it uses a fully qualified GitHub pointer such as `owner/private-repo#42`. ShipIt-generated public text includes no other private issue fields. The user accepts disclosure of the repository slug, issue number, and issue existence in the public PR and its edit history; readers without repository access still cannot inspect the issue contents.
 8. GitHub's feature set is accepted without a separate parity gate. ShipIt does not emulate missing capabilities solely for wrapper parity. A normalized operation unavailable for this backend is omitted or disabled with an inline explanation and must never silently no-op or report false success.
 9. Declared tracker operations use the same GitHub credential as ShipIt's other GitHub operations. GitHub authorizes that credential against the repository; ShipIt adds no separate per-viewer repository-membership check or tracker ACL. Consequently, anyone who can use the deployment — the Project, once Projects ships — can use ShipIt to read and write a declared tracker regardless of their personal GitHub membership.
+10. Renaming a declared tracking repository does not require editing the existing references to its issues. References are written in a form that survives the rename, so the declaration is the single place the real `owner/repo` is named. The user's proposed mechanism is an `alias` on the declaration, with pointers written against the alias:
+
+    ```yaml
+    issues:
+      trackers:
+        - kind: github
+          repo: owner/planning
+          alias: planning        # pointers may be written `planning#123`
+    ```
+
+    so that `planning#123` resolves to issue 123 on the declared repository, and changing `repo:` is the only edit a rename requires. This covers every reference ShipIt itself resolves: a doc's `issue:` frontmatter, a `shipit issue` pointer, and the `Closes`/`Refs` pointers in a PR body.
 
 ## Open questions
 
-None.
+- **Which form does ShipIt *write* when it generates a reference itself?** The alias makes references rename-proof only if ShipIt emits it too. But requirement 7 governs the `Closes owner/private-repo#42` pointer in a public PR body, and an alias there changes what that public text discloses (`planning#42` names no repository) while also making it un-linkifiable by GitHub, which only understands `owner/repo#N`. Options: emit the alias everywhere; emit the alias in in-repo surfaces (docs, chat) but keep the qualified slug in public PR bodies; or keep emitting the qualified slug everywhere and treat the alias purely as an input form the user may write by hand.
+- **Does the alias cover only declared trackers, or the session's own code repository too?** A code repository can be renamed as well, and today its issues are referenced as `owner/repo#N` throughout. Extending aliases to it would need somewhere to declare that alias, since the session's own repo has no `issues.trackers` entry.
+- **A rename and a re-point are indistinguishable from the config.** An alias means every existing reference follows the declaration wherever it points — which is the requested behavior for a rename, but also silently re-targets historical references (including a persisted Undo card's target) if the alias is later pointed at a *different* repository. Requirement 3 currently guarantees the opposite for recorded destinations: they stay valid for their recorded `owner/repo`. Which of the two wins for an alias-written reference?
 
 ## Resolved questions
 
