@@ -481,15 +481,24 @@ describe("Integration: agent issue access (docs/175)", () => {
       expect(stderr).toMatch(/No issue tracker named/i);
     });
 
-    it("fails closed on an ambiguous canonical address", async () => {
+    // req 6 — a destination declared twice used to make its canonical address
+    // ambiguous at RESOLUTION time. The duplicate is now refused at DECLARATION
+    // time instead, which is the stronger guarantee: the ambiguity cannot be
+    // configured into existence, so the address resolves through the one
+    // surviving name and the agent is told why in the same output. (The
+    // resolver's ambiguity branch is still exercised directly in
+    // `issue-ref-resolution.test.ts`, which feeds destinations without a parser.)
+    it("refuses a duplicate destination at declaration time rather than resolving ambiguously", async () => {
       writeConfig(
         "issues:\n  trackers:\n" +
           "    - kind: github\n      repo: acme/planning\n      name: planning\n" +
           "    - kind: github\n      repo: acme/planning\n      name: alias\n",
       );
-      const { stderr, exitCode } = await runIssueShim(["issue", "view", "acme/planning#7"]);
-      expect(exitCode).not.toBe(0);
-      expect(stderr).toMatch(/more than one declared tracker/i);
+      const { stdout, stderr } = await runIssueShim(["issue", "view", "acme/planning#7"]);
+      expect(stderr).toMatch(/already declared as `planning`/i);
+      expect(stderr).not.toMatch(/more than one declared tracker/i);
+      // Resolved through the surviving declaration, in its name form (req 15).
+      expect(`${stdout}${stderr}`).toContain("planning#7");
     });
 
     // req 13 — a create always names where it files. Without this, a forgotten

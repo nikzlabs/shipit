@@ -395,7 +395,13 @@ together. The user settled all three; they are now requirements 6 and 16.
   does. Refusing the configuration (`parseIssuesConfig`, warn-and-skip) was
   chosen over making a *declaration* the unit of identity, which would have
   threaded a new id through tabs, cards, routes and persisted rows to support
-  something nobody wanted.
+  something nobody wanted. One consequence worth naming: with the duplicate
+  refused at *declaration* time, a canonical address can no longer match two
+  declarations, so the resolver's ambiguity branch became unreachable through the
+  config path. It is kept as a defensive invariant — `resolveIssueRef` takes its
+  destinations from callers, not only from the parser — and is now exercised
+  directly in `issue-ref-resolution.test.ts` rather than through a `shipit.yaml`
+  fixture, which is what the integration test used to do.
 - **In a name form, the name wins.** `roadmap#SHI-304` re-targets after `roadmap`
   moves to team `OPS`, rather than failing on the stale key. This is the feature's
   one deliberate departure from fail-closed, and it is narrow on purpose: the name
