@@ -34,7 +34,7 @@ describe("parseIssueRef", () => {
   it("parses a GitHub owner/repo#N short pointer into the bare number", () => {
     const ref = parseIssueRef("octocat/hello-world#42");
     expect(ref).toEqual({
-      // docs/247 — the repository the pointer named IS the destination, so it
+      // docs/248 — the repository the pointer named IS the destination, so it
       // rides on `tracker` rather than surviving only as display text.
       tracker: "github:octocat/hello-world",
       identifier: "octocat/hello-world#42",

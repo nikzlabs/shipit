@@ -24,7 +24,7 @@ describe("parseTrackerIssueLink", () => {
   it("parses a GitHub issue URL", () => {
     const link = parseTrackerIssueLink("https://github.com/owner/repo/issues/42");
     expect(link).toEqual({
-      // docs/247 — the link opens the inline viewer bound to the repository the
+      // docs/248 — the link opens the inline viewer bound to the repository the
       // href named, not whichever repo the active session happens to be on.
       tracker: "github:owner/repo",
       identifier: "owner/repo#42",

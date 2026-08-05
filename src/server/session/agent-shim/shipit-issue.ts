@@ -30,7 +30,7 @@ import { REJECTED_HELP, formatError, type RunDeps } from "./shipit.js";
  * an ambiguous/unknown shape; when overriding, the raw pointer (minus a leading
  * `#`) is used as the id.
  *
- * docs/247 — a qualified pointer already names its repository, so `parseIssueRef`
+ * docs/248 — a qualified pointer already names its repository, so `parseIssueRef`
  * hands back a `github:owner/repo` id and the operation lands there rather than
  * on the session's own repo. `--repo` names a repository for a pointer that does
  * NOT carry one (a bare `#42`); passing both is only allowed when they agree,
@@ -95,7 +95,7 @@ function trackerKindMatches(override: string, parsed: string): boolean {
  *
  * Uses the tracker *kind*, not the full id: a GitHub `identifier` is already
  * `owner/repo#N`, so a qualified `github:owner/repo` id would render the
- * repository twice (docs/247).
+ * repository twice (docs/248).
  */
 function provenanceLabel(tracker: string, identifier: string): string {
   const kind = isGitHubTracker(tracker) ? "github" : tracker;
@@ -117,7 +117,7 @@ async function readIssueBody(
 const VALID_TRACKERS = new Set(["github", "linear"]);
 
 /**
- * docs/247 — resolve the effective tracker id from `--tracker` and `--repo`.
+ * docs/248 — resolve the effective tracker id from `--tracker` and `--repo`.
  *
  * `--repo owner/name` names a GitHub repository explicitly. It is not a third
  * tracker: it *qualifies* the `github` tracker, producing the id
@@ -259,7 +259,7 @@ export async function handleIssueView(args: string[], deps: RunDeps): Promise<vo
   }
 
   const ref = parseIssueRef(pointer);
-  // docs/247 — `--repo` names the repository for a pointer that doesn't carry
+  // docs/248 — `--repo` names the repository for a pointer that doesn't carry
   // one; a qualified pointer already resolves to its own `github:owner/repo`.
   // Contradicting the two is an error, not a precedence question.
   let repoTracker: string | undefined;

@@ -63,14 +63,14 @@ export interface GitHubTrackerConfig {
   /** Injectable for tests; defaults to the global `fetch`. */
   fetchImpl?: FetchImpl;
   /**
-   * docs/247 — tracker id, defaulting to the bare `"github"` (the session's own
+   * docs/248 — tracker id, defaulting to the bare `"github"` (the session's own
    * code repository). A tracker bound to an explicitly *named* repository — a
    * `shipit.yaml` declaration or an operation's `--repo` — takes the qualified
    * `github:owner/repo` id instead, so the repository stays attached to every
    * surface the id reaches (route query, persisted Undo card, sub-tab).
    */
   id?: TrackerId;
-  /** docs/247 — sub-tab label. Defaults to `"GitHub"` for the session's repo. */
+  /** docs/248 — sub-tab label. Defaults to `"GitHub"` for the session's repo. */
   label?: string;
 }
 
@@ -602,7 +602,7 @@ export class GitHubTracker implements Tracker {
   }
 
   /**
-   * docs/247 req 3 — fail closed with an error that names **both**
+   * docs/248 req 17 — fail closed with an error that names **both**
    * possibilities. GitHub deliberately returns `404` rather than `403` for a
    * private repository the credential cannot see, so "missing" and
    * "inaccessible" are genuinely indistinguishable from the response; claiming

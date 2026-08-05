@@ -1,5 +1,5 @@
 /**
- * Tracker id vocabulary (docs/247).
+ * Tracker id vocabulary (docs/248).
  *
  * A tracker id names a *destination*, and for GitHub the destination is a
  * repository. `"github"` alone keeps its historical meaning — the active

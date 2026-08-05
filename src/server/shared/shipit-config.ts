@@ -10,7 +10,7 @@
  *     dep-dirs:         # dependency dirs eligible for the overlay store (docs/183)
  *       - node_modules
  *   compose: docker-compose.yml   # string or object form
- *   issues:             # additional issue trackers, as Issues tabs (docs/247)
+ *   issues:             # additional issue trackers, as Issues tabs (docs/248)
  *     trackers:
  *       - kind: github
  *         repo: owner/planning
@@ -138,7 +138,7 @@ export interface HostMount {
 }
 
 /**
- * docs/247 — one entry of the `issues.trackers` list: an additional issue
+ * docs/248 — one entry of the `issues.trackers` list: an additional issue
  * tracker the repository declares, rendered as its own tab in the Issues UI.
  *
  * A **tagged union discriminated on `kind`** (the discriminator name the issue
@@ -156,10 +156,10 @@ export interface DeclaredGitHubTracker {
   label: string;
 }
 
-/** docs/247 — a declared additional tracker. Only `github` is defined today. */
+/** docs/248 — a declared additional tracker. Only `github` is defined today. */
 export type DeclaredTracker = DeclaredGitHubTracker;
 
-/** docs/247 — the optional `issues:` block. */
+/** docs/248 — the optional `issues:` block. */
 export interface IssuesConfig {
   /** Declared additional trackers, in declaration order (drives tab order). */
   trackers: DeclaredTracker[];
@@ -181,7 +181,7 @@ export interface ShipitConfig {
   /** Optional release configuration block (docs/171 Phase 2). */
   release?: ReleaseConfig;
   /**
-   * docs/247 — additional issue trackers this repository declares. Always
+   * docs/248 — additional issue trackers this repository declares. Always
    * present (empty when the `issues:` block is absent) so callers never have to
    * branch on undefined to get the common "no declarations" case.
    */
@@ -312,7 +312,7 @@ export function parseShipitConfig(doc: unknown): ShipitConfig {
   // ---- release (docs/171) ----
   const release = parseReleaseConfig(raw.release, warnings);
 
-  // ---- issues (docs/247) ----
+  // ---- issues (docs/248) ----
   const issues = parseIssuesConfig(raw.issues, warnings);
 
   // ---- x-shipit-host-mounts (docs/128) ----
@@ -325,7 +325,7 @@ const KNOWN_ISSUES_KEYS = new Set(["trackers"]);
 const KNOWN_GITHUB_TRACKER_KEYS = new Set(["kind", "repo", "label"]);
 
 /**
- * docs/247 — parse the `issues:` block.
+ * docs/248 — parse the `issues:` block.
  *
  * ```yaml
  * issues:
