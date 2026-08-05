@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useIssuesStore, issueLookupId } from "./issues-store.js";
-import type { TrackerIssue } from "../../server/shared/types.js";
+import type { TrackerInfo, TrackerIssue } from "../../server/shared/types.js";
 
 /**
  * Tests for the issues-store master-detail layer (docs/189): the lookup-id
@@ -329,5 +329,59 @@ describe("issues-store status/priority writes (docs/191)", () => {
     expect(err).toBe("Unknown status");
     // The row object is unchanged (same reference).
     expect(useIssuesStore.getState().issuesByTracker.linear[0]).toBe(issue);
+  });
+});
+
+/**
+ * SHI-321 — `fetchTrackers` reports whether the declared set actually changed,
+ * so a caller refreshing on a `shipit.yaml` edit can skip the issue-list fetch
+ * (a real tracker-API round-trip) when the edit touched something else.
+ */
+describe("issues-store fetchTrackers change reporting (SHI-321)", () => {
+  const originalFetchLocal = globalThis.fetch;
+
+  function stub(trackers: TrackerInfo[]): void {
+    globalThis.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ trackers }), { status: 200 }),
+    ) as typeof fetch;
+  }
+
+  const gh: TrackerInfo = { id: "github", label: "GitHub", configured: true, kind: "github" };
+
+  beforeEach(() => {
+    useIssuesStore.setState({ trackers: [], infoByTracker: {} });
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetchLocal;
+    vi.restoreAllMocks();
+  });
+
+  it("reports a change when a declaration is added", async () => {
+    useIssuesStore.setState({ trackers: [gh] });
+    stub([gh, { id: "github:acme/planning", label: "planning", configured: true, kind: "github", name: "planning", binding: { key: "acme/planning", name: "acme/planning" } }]);
+    await expect(useIssuesStore.getState().fetchTrackers()).resolves.toBe(true);
+  });
+
+  it("reports a change when a name is re-pointed at another destination", async () => {
+    useIssuesStore.setState({
+      trackers: [{ id: "linear:SHI", label: "roadmap", configured: true, kind: "linear", name: "roadmap", binding: { key: "SHI", name: "ShipIt" } }],
+    });
+    stub([{ id: "linear:PLAT", label: "roadmap", configured: true, kind: "linear", name: "roadmap", binding: { key: "PLAT", name: "Platform" } }]);
+    await expect(useIssuesStore.getState().fetchTrackers()).resolves.toBe(true);
+  });
+
+  it("reports no change when the same declarations come back", async () => {
+    useIssuesStore.setState({ trackers: [gh] });
+    stub([gh]);
+    await expect(useIssuesStore.getState().fetchTrackers()).resolves.toBe(false);
+  });
+
+  it("reports no change when the request fails", async () => {
+    useIssuesStore.setState({ trackers: [gh] });
+    globalThis.fetch = vi.fn(async () => new Response("nope", { status: 500 })) as typeof fetch;
+    await expect(useIssuesStore.getState().fetchTrackers()).resolves.toBe(false);
+    // A failed refresh leaves the previous view in place rather than blanking it.
+    expect(useIssuesStore.getState().trackers).toEqual([gh]);
   });
 });

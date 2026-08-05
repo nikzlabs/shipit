@@ -115,11 +115,20 @@ pointer-derived destinations, `seedFromIssueRef`'s pointer-only branch names
 
 Filed; the tracker holds its status from here.
 
-- [ ] **The browser's declaration view can go stale.**
-  ([SHI-321](https://linear.app/shipit-ai/issue/SHI-321)) `fetchTrackers` runs on
+- [x] **The browser's declaration view can go stale.**
+  ([SHI-321](https://linear.app/shipit-ai/issue/SHI-321)) `fetchTrackers` ran on
   session change and on Issues-tab activation, so editing `shipit.yaml` with the
-  tab already open doesn't re-resolve names until one of those happens. The
-  server reads the file per request, so only the client is affected.
+  tab already open didn't re-resolve names until one of those happened. The
+  server reads the file per request, so only the client was affected. Fixed by
+  hanging the refresh off the `files_changed` batch the file watcher already
+  delivers — verified link by link rather than assumed: `FileWatcher` reports
+  `shipit.yaml` (it survives the ignore matcher), the worker broadcasts
+  `file_changes`, `ContainerSessionRunner` re-emits it as `files_changed` to
+  every viewer, and `handleFilesChanged` re-runs `fetchTrackers()`. The issue
+  list refetches only when the declared set actually changed *and* the tab is
+  showing, since that one is a tracker-API round-trip. Local mode runs no file
+  watcher, so the dogfood inner ShipIt keeps the old triggers — see plan.md
+  § req 16.
 - [x] **Undo does not follow a re-pointed name** — it acts on the destination it
   recorded, and refuses if that name now points elsewhere (req 11). Settled by the
   user: "undo is to fix something the agent did a few minutes ago, not in a few

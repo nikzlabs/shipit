@@ -205,6 +205,24 @@ The exception is the **Undo target**, which is not a reference but a reverse-wri
 against a specific issue: `getRecorded(id)` uses the recorded destination, and
 `undoIssueWrite` refuses when the recorded name has since moved (req 11).
 
+*Client follow-up (SHI-321).* "At use" holds server-side because
+`readDeclaredTrackers` re-reads `shipit.yaml` on every request, but the browser's
+copy of that list is a cached fetch, so an edit made with the app open used to
+resolve against the previous declarations until a session switch or an
+Issues-tab re-activation. The refresh now hangs off the change event the file
+watcher already delivers: `handleFilesChanged` (`client/hooks/message-handlers/
+files-changed.ts`) sees `shipit.yaml` in a `files_changed` batch and re-runs
+`fetchTrackers()`, which reports whether the declared set actually changed so the
+issue *list* — a real tracker-API round-trip, unlike the local-file
+`GET /api/trackers` — is refetched only when it did and the tab is showing.
+Subscribed consumers (the PR card reads `useIssuesStore((s) => s.trackers)`)
+re-resolve immediately; the render-time `getState()` readers (doc chips,
+markdown links, kept non-reactive so they don't defeat the `MarkdownContent`
+memo) resolve correctly from their next render on. Local mode (`RUNTIME_MODE=
+local`, the dogfood inner ShipIt) runs no file watcher at all, so there the older
+session-switch/tab-activation refresh remains the only trigger — the same
+documented degradation as the file tree and terminal.
+
 *Divergence from the design:* this was expected to need a database migration. It
 does not. `IssueWriteCard` is persisted as a JSON blob in the existing
 `issue_write` column (`chat-history.ts` `toRow`/`fromRow`), so a new optional
