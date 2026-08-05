@@ -58,12 +58,21 @@
       notifies; one that outlives it still does, announcing the reason it
       settled on
 
-## Deferred — tracked separately as [SHI-247](https://linear.app/shipit-ai/issue/SHI-247)
+## Split out as [SHI-247](https://linear.app/shipit-ai/issue/SHI-247) — now done
 
-- [ ] Re-arm the post-turn flow for a self-woken turn so its file changes are
+- [x] Re-arm the post-turn flow for a self-woken turn so its file changes are
       committed / pushed / surfaced on the PR card. `turn-executor`'s first-wins
       guards (`streamingPostTurnFired`, `drainFired`, `tokenSyncFired`) are
       scoped to one `runTurn` invocation, so a wake turn's `agent_result`
-      returns early today. Touches auto-commit and PR creation, so it wants its
-      own change and its own tests. Until then a self-woken turn's edits are
-      picked up by the next user turn's commit.
+      returned early. Touches auto-commit and PR creation, so it got its own
+      change and its own tests (`turn-self-wake-commit.test.ts`).
+- [x] Gate that re-arm on `useStreaming` — a non-streaming turn cannot be woken,
+      and it drains at `agent_result` but commits in `done`, so clearing
+      `drainFired` between the two would double-drain
+- [x] Gate it on `streamingPostTurnFired` (the executor-local stand-in for
+      `agent-listeners`' `!runner.running`, which has already flipped by the time
+      this listener runs) so the docs/237 mid-turn `task_notification` can't
+      re-run a live turn's post-turn flow
+- [x] Wait the in-flight post-turn sequence out before clearing the memoized
+      commit/PR promises, so a wake landing mid-flow can't be handed an
+      already-settled flow and commit nothing
