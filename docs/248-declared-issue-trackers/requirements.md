@@ -24,8 +24,12 @@ off Linear — is a separate feature
          repo: owner/planning
          name: planning
        - kind: linear
+         team: SHI                # Linear binds a tracker to one team
          name: roadmap
    ```
+
+   The workspace comes from the credential (req 16), not the declaration, so a
+   `linear` entry identifies itself by team.
 
 3. Both `github` and `linear` are supported kinds. Linear is declared like any
    other tracker; it is no longer a built-in destination or a default.
@@ -85,12 +89,16 @@ off Linear — is a separate feature
 
 ## Open questions
 
-- **What does a reference to a Linear issue look like?** Requirement 8 assumes
-  `name#number`, which fits GitHub because issue numbers are per-repository. Linear
-  issues already carry globally unique keys (`SHI-304`) rather than per-tracker
-  numbers, so `roadmap#304`, `roadmap#SHI-304`, and keeping the bare `SHI-304` are
-  all coherent and they read very differently in a PR body. This has to be settled
-  before Linear can be declared.
+- **What goes after the `#` for a Linear issue?** A Linear key like `SHI-304` is
+  unique only within its workspace: the team prefix is unique per workspace, and
+  the number per team. Today ShipIt binds one token and one team, so a bare
+  `SHI-304` happens to be unambiguous — but once Linear is declared like any other
+  tracker, a repository can declare two of them, and the bare key collides exactly
+  the way GitHub's bare `#42` does. Requirement 8 already answers *that* half: the
+  reference names its tracker. What is unsettled is the tail — `roadmap#SHI-304`
+  keeps the key legible and searchable, `roadmap#304` is consistent with GitHub and
+  puts the team wholly in the declaration. This has to be settled before Linear can
+  be declared.
 - **Requirements 1, 3 and 8 are a breaking change — is that accepted, and does
   anything keep working?** Today every repository edited inside ShipIt gets Linear
   and its own GitHub Issues without declaring anything, `shipit issue create`
