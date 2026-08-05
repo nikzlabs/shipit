@@ -343,6 +343,17 @@ export class ServiceManager extends EventEmitter {
   private postGateServices = new Set<string>();
 
   /**
+   * Services with a `docker compose up` currently in flight, reference-counted
+   * by overlapping calls (a user-initiated start can race a retry attempt for
+   * the same service). Read by the poller's missing-container reconciliation
+   * (SHI-314): a service being brought up legitimately has no container yet —
+   * for minutes, if an image is building — and must not be reconciled to
+   * `stopped` in that window. Always mutated via {@link withUpInFlight} so the
+   * count is released even when compose throws.
+   */
+  private upInFlight = new Map<string, number>();
+
+  /**
    * In-flight `docker compose stop` for a mid-session re-install teardown, or
    * `null`. The gate-open path awaits it before releasing gated services so the
    * teardown's own SIGKILL is still observed while the service is gated — and
@@ -410,6 +421,8 @@ export class ServiceManager extends EventEmitter {
       composeArgs: (...extra) => this.compose.args(...extra),
       isGated: (name) => this.gatedServices.has(name),
       getService: (name) => this.services.get(name),
+      listServices: () => [...this.services.values()],
+      isStartInFlight: (name) => this.upInFlight.has(name),
       setContainerIp: (name, ip) => {
         const svc = this.services.get(name);
         if (svc) svc.containerIp = ip;
@@ -892,7 +905,7 @@ export class ServiceManager extends EventEmitter {
       // `stopped` and gated services stay `starting` until install completes.
       const autoNames = startNow.map(s => s.name);
       if (autoNames.length > 0) {
-        await this.compose.up(autoNames);
+        await this.withUpInFlight(autoNames, () => this.compose.up(autoNames));
       }
       this._started = true;
 
@@ -949,7 +962,7 @@ export class ServiceManager extends EventEmitter {
     this.retry.resetOomBudget(name);
     this.updateServiceStatus(name, "starting");
     try {
-      await this.compose.upService(name);
+      await this.withUpInFlight([name], () => this.compose.upService(name));
       // The first manual-service start is the moment the compose network
       // actually gets created (compose materializes the network on `up`,
       // not just when the file is parsed). If this stack is all-manual,
@@ -978,7 +991,7 @@ export class ServiceManager extends EventEmitter {
     this.updateServiceStatus(name, "starting");
     try {
       await this.compose.stop(name);
-      await this.compose.upService(name);
+      await this.withUpInFlight([name], () => this.compose.upService(name));
       // Defensive: if a previous all-manual `start()` skipped the network
       // join (see startService comment), the first restartService after
       // adoption could be the first time the orchestrator gets attached.
@@ -1231,7 +1244,7 @@ export class ServiceManager extends EventEmitter {
       .map(s => s.name);
     if (autoNames.length === 0) return;
     try {
-      await this.compose.up(autoNames);
+      await this.withUpInFlight(autoNames, () => this.compose.up(autoNames));
       await this.poller.pollOnce();
     } catch (err) {
       console.warn(`[compose:${this.sessionId}] refreshSecrets compose up failed:`, (err as Error).message);
@@ -1242,13 +1255,34 @@ export class ServiceManager extends EventEmitter {
   // Private helpers
   // -----------------------------------------------------------------------
 
+  /**
+   * Mark `names` as having a `compose up` in flight for the duration of `fn`
+   * (SHI-314). Every `compose up`/`up <service>` call goes through this so the
+   * poller can tell "this service has no container because it is still coming
+   * up" from "this service's container disappeared".
+   */
+  private async withUpInFlight<T>(names: string[], fn: () => Promise<T>): Promise<T> {
+    for (const name of names) {
+      this.upInFlight.set(name, (this.upInFlight.get(name) ?? 0) + 1);
+    }
+    try {
+      return await fn();
+    } finally {
+      for (const name of names) {
+        const next = (this.upInFlight.get(name) ?? 1) - 1;
+        if (next > 0) this.upInFlight.set(name, next);
+        else this.upInFlight.delete(name);
+      }
+    }
+  }
+
   /** Run a single restart attempt for a service in retry-backoff. */
   private async runRetryNow(name: string): Promise<void> {
     if (this._disposed) return;
     const svc = this.services.get(name);
     if (!svc) return;
     try {
-      await this.compose.upService(name);
+      await this.withUpInFlight([name], () => this.compose.upService(name));
       // See `startService` — first manual-service start is the moment
       // the network actually exists, so re-attempt the orchestrator
       // network join here too. Idempotent on subsequent retries.
@@ -1336,7 +1370,7 @@ export class ServiceManager extends EventEmitter {
   private async startGatedBatch(names: string[]): Promise<void> {
     if (this._disposed) return;
     try {
-      await this.compose.up(names);
+      await this.withUpInFlight(names, () => this.compose.up(names));
       // First `up` for an otherwise all-gated/all-manual stack is the moment
       // the compose network materializes — attach the orchestrator + agent.
       await this.joinSessionNetwork();
