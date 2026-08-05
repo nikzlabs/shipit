@@ -111,6 +111,13 @@ Connect more than one account per provider — and the agent harness is pluggabl
 - [Codex CLI](https://github.com/openai/codex) — ChatGPT subscription or an OpenAI API key
 - More to come — the backend is agent-agnostic by design, so new runtimes can slot in
 
+**Quota failover across accounts.** Accounts form a prioritized list per provider, and each usage
+window (the short one and the weekly cap) has a cutoff you set — 90% by default. Reaching either
+cutoff moves the next turn to the next eligible account; an account that hits a hard limit is
+benched until it resets, and a turn that runs out mid-flight retries once on the next account.
+Failover applies to sessions already in progress, with chat history and workspace preserved, and the
+usage pills name the account they belong to.
+
 ## Features
 
 ### Build
@@ -120,13 +127,37 @@ Connect more than one account per provider — and the agent harness is pluggabl
   driving a shell
 - **Compose-native live preview** — embedded iframes show your app updating as it changes, with HMR
   proxied through ShipIt, multi-port support, and Docker Compose services managed per session
+- **Agent-controlled services** — the agent starts, stops, restarts, and tails any Compose service
+  the project declares, including the manual ones it needs on demand (a database to migrate, a cache
+  to flush, an emulator to drive), so a debug dependency never waits on a click from you
+- **Always-on previews** — pin a session with **Keep preview running** and its container and
+  auto-preview services stay up with no viewer attached and no turn in flight, so an early-stage app
+  stays reachable without a separate deployment
+- **Android build, test & preview** — the session image bakes a JDK, the Android SDK, and Gradle, so
+  the agent builds Gradle projects (including web/Android monorepos), runs JVM and Paparazzi snapshot
+  tests, and reads the PNG diffs; declare an emulator as a Compose service and the running app shows
+  up live in the preview panel
+- **Git LFS support** — LFS-tracked assets are materialized during provisioning instead of checked
+  out as pointer stubs, objects are shared across every session on the host rather than downloaded
+  per session, and LFS images render as images in the diff viewer
+- **Dependency auto-reinstall** — a rebase, rollback, or pull that changes a lockfile or manifest
+  re-runs the install and restarts the services that depend on it, so the preview doesn't break on a
+  module the agent never installed
 - **Project templates** — quick-start scaffolding for React, Vue, Next.js, Svelte, and more
 - **File upload & image input** — drop files into the chat; the agent reads them as context
 - **Interactive terminal** — a full terminal inside each session container for ad-hoc debugging
 - **Persistent logs** — agent-container and preview-service logs are kept in a durable, disk-backed
   store, so full history survives container restarts, idle eviction, and orchestrator restarts
 - **File viewer with diffs** — browse files with syntax highlighting and review changes as inline
-  diffs
+  diffs, including image and SVG diffs rendered visually instead of as text
+- **Presented artifacts** — the agent renders diagrams, charts, mockups, prototypes, and formatted
+  markdown into a dedicated Present tab, no dev server required, browsable as a gallery
+- **Agent Interface SDK** — JavaScript in a preview or a presented artifact can compose and send
+  messages back to the agent that owns the session, so an agent-built interface is something you
+  interact with rather than only look at
+- **Sub-agent transparency** — when the agent fans work out to sub-agents, their prompt, work
+  timeline, and final report render inline instead of an opaque tool call, and any in-flight tool
+  call opens a live-updating output dialog
 - **MCP integration** — connect Model Context Protocol servers to extend the agent's tools
 
 ### Plan & track
@@ -136,11 +167,18 @@ Connect more than one account per provider — and the agent harness is pluggabl
   and priority (Linear) inline from the list or its detail view
 - **Filters & search** — narrow by status, priority, and assignee (multi-select) or free-text
   search, applied across every connected tracker
+- **Extra tracker tabs** — a repository can declare additional GitHub issue trackers in its
+  `shipit.yaml`, each getting its own tab, so a separate planning repo sits alongside the code repo's
+  issues instead of in another browser window
 - **Start a session from an issue** — kick off an isolated session straight from an issue row, with
-  the issue as context, instead of copy-pasting the body into chat
-- **Agent issue access** — the agent reads and updates issues (view, comment, edit, set status and
-  assignee) through a tracker-neutral, ShipIt-brokered interface, so tracker tokens never enter the
-  session container
+  the issue as context, instead of copy-pasting the body into chat; pick which repository it starts
+  in when the issue isn't tracked in the one you're looking at
+- **Agent issue access** — the agent reads and writes issues (view, list, comment, edit, set status
+  and assignee, create issues and labels, nest Linear sub-issues) through a tracker-neutral,
+  ShipIt-brokered interface, so tracker tokens never enter the session container
+- **Requirements before code** — opt a feature into requirements discipline and the agent writes down
+  what the feature must do in your words first, asks its open questions as one batched prompt, and
+  holds off on implementation until you've answered
 
 ### Review & ship
 
@@ -151,7 +189,9 @@ Connect more than one account per provider — and the agent harness is pluggabl
   inline in the same conversation
 - **Cross-agent second opinions** — opt in to let the session's agent consult a *different* model for
   a one-shot review or sub-task ("have Codex review this diff"); it runs inline in the same turn with
-  full context and returns its findings to the conversation, no separate session required
+  full context and returns its findings to the conversation, no separate session required. A long
+  consult can run in the background as a card you can watch, cancel, or come back to — and it
+  survives an orchestrator restart rather than hanging as a permanent spinner
 - **Inline diffs** — file changes displayed as collapsible red/green diff blocks in the chat
 - **Auto-deploy on push** — deploy status surfaces inline on the PR card via the GitHub Deployments
   API
@@ -162,28 +202,51 @@ Connect more than one account per provider — and the agent harness is pluggabl
   surfaced inline so the agent (and you) can act on the failure without leaving chat
 - **Auto-resolve merge conflicts** — when your branch conflicts with its base and the agent is idle,
   ShipIt auto-rebases and runs an agent turn to resolve the conflicts for you
+- **Stay current with the base** — a behind-the-base branch gets an inline nudge and a one-click sync
+  that also advances the session's local base ref, with the rebase's progress shown live in chat and a
+  persistent card recording that it happened
 - **PR approval merge gate** — merge eligibility reflects GitHub's review-approval status, surfaced
   inline on the PR card so you don't merge ahead of required reviews
 - **Arm merge-on-green at creation** — opt a trivial task into auto-merging once checks pass, set
   right when you start the session
+- **Continue when your own PR merges** — a session can opt into being woken the moment its PR lands:
+  it resets to the freshly merged base and keeps going on its own, so you can ship a chain of PRs
+  without shepherding each merge by hand
 
 ### Iterate safely
 
 - **Git as undo** — every agent turn auto-commits; rewind to any previous state, and fork into a new
   branch from any point
 - **Parallel PR-shaped sessions** — spawn separate workspaces with their own branch, container, and
-  chat history; review each as its own PR
+  chat history; review each as its own PR. A spawned session can push a finding back to the session
+  that started it (and its siblings) as a card plus a queued turn, so a blocker one agent hits
+  reaches the others instead of sitting in a PR nobody has opened
+- **Work survives updates and restarts** — an update replaces only the orchestrator, so running
+  sessions keep going and a turn that was mid-flight is adopted and finished, including its commit,
+  push, and PR flow. Containers left on an older build are flagged inline with a restart suggestion,
+  and idle ones rotate themselves
+- **No lost turns** — a turn that dies to a crash or an OOM kill still commits the work it did rather
+  than leaving it uncommitted in the working tree, and a container that fails to start is retried
+  instead of stranding the turn with a connection error
+- **Destructive-git guardrails** — while a session sits on a branch whose work already merged,
+  hand-rolled destructive git is blocked in favor of a brokered reset that keeps its safety checks and
+  leaves a record; a commit that would introduce a recognized secret is blocked and surfaced with
+  what to do about it
 - **Fully isolated sessions** — every session on the same repo gets its own clone and its own
   containerized environment, so its agent and services never share state with another session
 - **Sandbox sessions** — start a repo-less session from an empty workspace; the agent clones what it
   needs, with Git and session-scoped Docker granted as explicit capability toggles at creation
 - **Permission modes** — choose how much autonomy the agent has per session
 - **Live steering** — interrupt and redirect the agent mid-turn without losing context
-- **Session sidebar** — pinned sessions, AI-generated session names, status indicators
+- **Session sidebar** — pinned sessions, AI-generated session names the agent keeps current as the
+  work changes (until you rename one yourself), status indicators, and a hide toggle for repositories
+  you're not working in right now
 
 ### Everywhere
 
 - **Mobile-first layout** — a focused tab view on phones, resizable split panels on desktop
+- **Installable app** — install ShipIt to your phone's home screen and it runs standalone, full-screen
+  with no address bar, and always boots the latest code rather than a cached build
 - **Voice in and out** — dictate prompts, hear a spoken note when an agent needs you, and tap play to
   hear a completed turn read aloud
 - **Background notifications** — optional browser notification/sound when the agent finishes
@@ -201,7 +264,8 @@ The everyday essentials you'd expect from a serious agent IDE:
 - **Skill & command invocation** — type `/` in the composer to invoke a project skill, with
   autocomplete
 - **Subscription usage** — header badges show your Claude/Codex rate-limit usage (5-hour window,
-  weekly cap, reset clock) inline
+  weekly cap, reset clock) inline, named per account when you've connected several, with weekly and
+  per-month spend trends in the usage detail view
 
 ## Known limitations
 
@@ -209,7 +273,9 @@ The everyday essentials you'd expect from a serious agent IDE:
   put it behind Cloudflare Zero Trust, Tailscale, or another access layer you control; the VPS
   install script can help configure Cloudflare Tunnel/Zero Trust and Tailscale during setup.
 - Expect meaningful Docker resource use: local production startup rebuilds ShipIt images, and each
-  active session runs an agent container plus any Compose services your project declares.
+  active session runs an agent container plus any Compose services your project declares. Session
+  containers are sized automatically from the host's capacity, so there's normally nothing to tune —
+  but a small host means fewer sessions can be active at once.
 - The VPS installer targets Ubuntu. Other Linux distributions may work, but the one-command setup
   script is tuned for Ubuntu hosts.
 - The full review-and-ship loop depends on GitHub. You can work locally without it, but PRs, CI,
@@ -231,6 +297,8 @@ powerful but only semi-trusted actor. The headline defenses:
   compromised agent has no network path out to exfiltrate your credentials.
 - **Brokered credentials** — GitHub and tracker tokens are handed out on demand, not stored at rest
   inside the session container; with a GitHub App, git uses short-lived, single-repo-scoped tokens.
+- **Session-scoped control plane** — each session worker's HTTP surface is authenticated, so a
+  compromised agent can drive its own container and not its neighbors'.
 - **Commit-time secret scanning** — the post-turn auto-commit blocks commits that would introduce a
   recognized credential, keeping known secret leaks out of your history.
 
