@@ -64,10 +64,19 @@ No open questions remain.
     subscription.
 
 15. When a service's credential stops working mid-session — revoked, expired, rate
-    limited — ShipIt stops and says so. It does not run a recovery or re-prompt flow
-    of its own; handling a bad credential is the harness's job. The one exception is
-    the thing harnesses do not do: ShipIt manages a user's **multiple subscriptions**,
-    including routing a turn between them, and that existing behavior is unchanged.
+    limited — what ShipIt does depends on **how that service is authenticated**, not on
+    what the error says:
+
+    - **Subscriptions fail over.** If the user has more than one subscription to that
+      same service, ShipIt moves the turn to another of them, as it does today.
+      Failover never crosses to a *different* service: two subscriptions to one service
+      are interchangeable, but another service means a different model at a different
+      price, which is the user's choice to make and not ShipIt's.
+    - **API keys do not fail over.** ShipIt stops and says so. Recovering from a bad
+      key is the harness's job; ShipIt runs no recovery or re-prompt flow of its own.
+
+    When no subscription is left to fail over to, ShipIt stops and says so, exactly as
+    it does for a key.
 
 ## Open questions
 
@@ -82,6 +91,16 @@ _None._
   user" now holds only as far as a service's declarations already reach. The cost is
   more configuration per service; the alternative was offering models that are listed
   and then fail, which is the failure mode req 12 exists to prevent elsewhere.
+
+- 2026-08-05 — At the moment a credential failure arrives, can ShipIt tell a spent
+  subscription apart from a bad key? **Chosen: it does not have to.** The rule keys on
+  how the service is authenticated — subscriptions fail over, API keys do not — which
+  ShipIt knows statically from its own configuration, instead of having to classify an
+  error whose text is not reliable. Failover is scoped to subscriptions of the *same*
+  service, because that is the only case that is lossless: the model and price are
+  unchanged and the user need not be consulted. This generalizes an existing rule
+  rather than inventing one — ShipIt already excludes metered API-key routes from quota
+  tracking and never fails over onto them (docs/150 req 12). Requirement 15 rewritten.
 
 - 2026-08-05 — What should happen when a configured service's credential stops working
   mid-session? **Chosen: stop, and report it — nothing more.** Recovering from a bad
@@ -173,6 +192,9 @@ human, but most of the mechanism did not. What the human actually said, in order
 - "We just stop. This is the harness' responsibility to handle such cases. ShipIt only
   helps with using multiple subscriptions, because harnesses don't handle it." → req 15,
   including its scope boundary and the carve-out for multi-subscription routing.
+- "I'd say that subscriptions should fail over but not API keys" → the rule in req 15.
+- "failover between subscriptions of the same service" → its scoping to a single
+  service.
 - Answers of 2026-08-05 → reqs 10, 11, 12, 13, 15.
 
 Reqs 6 and 14 are the agent's reading of "works like any other session" and of

@@ -28,12 +28,15 @@
       paths: session naming (has an implicit agent-bound seam today) and PR
       descriptions via `generateText` (returns empty in containerized production).
 - [ ] Surface non-turn work as broken when its configured service stops working (req 12).
-- [ ] Stop intercepting auth failures for a *service* credential: a failing service
-      ends the turn with a plain report and no ShipIt recovery flow (req 15).
-      `AUTH_ERROR_PATTERNS` must not route a service 401 into vendor re-auth.
-- [ ] Preserve the carve-out: multi-subscription routing, quota failover and
-      account-level auth recovery (docs/142, docs/150) are unchanged (req 15). Guard
-      test that a service-credential failure does *not* trigger them.
+- [ ] Branch credential-failure handling on **credential type, not error text**
+      (req 15): a key-authenticated service stops the turn with a plain report;
+      `AUTH_ERROR_PATTERNS` must not route its 401 into vendor re-auth.
+- [ ] Failover between subscriptions **of the same service** only (req 15) — never
+      across services, which would change model and price mid-session. Lift the
+      existing per-`AgentId` account failover to per-service without widening it.
+- [ ] Guard test: an API-keyed service failure triggers no failover and no re-auth
+      flow, while a subscription failure still fails over as today (docs/142, docs/150
+      behavior unchanged).
 - [ ] Per-service quota reporting: the map is `AgentId → routeId → limits` and the
       registry is keyed by `AgentId`, so this touches more than `LimitsProvider`. No
       indicator for a service with no quota (req 13), with a guard test that a

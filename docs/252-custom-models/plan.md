@@ -211,9 +211,21 @@ DeepSeek key runs the Claude Code harness with no Anthropic account anywhere in 
 system — so `providerAccountManager`'s per-`AgentId` account model has to become a
 per-*service* one, not gain a fallback branch.
 
-**Credential failure is not ShipIt's to recover** (req 15). The design deliberately has
-no service re-prompt flow; an earlier draft proposed one. See the findings note above
-for what has to be *removed* to satisfy this.
+**Credential failure branches on credential type, not on the error** (req 15). This is
+the load-bearing simplification: ShipIt does not classify the failure, it looks at how
+the failing service is authenticated — a fact it holds statically in the service row.
+A subscription fails over to another subscription *of the same service*; an API key
+does not fail over at all, and the turn stops.
+
+That also means there is no service re-prompt flow to build; an earlier draft proposed
+one. See the findings note above for what has to be *removed* instead.
+
+The rule generalizes rather than invents. Today `provider-account-manager.ts` already
+refuses to mark a reserved API-key route exhausted ("they are metered billing, not a
+subscription window", `:642`), treats reserved routes as always usable (`:720`), skips
+them when stamping exhaustion (`:800`), and never routes onto pay-as-you-go because a
+subscription is unavailable (docs/150 req 12, `:605`). The work is to lift that from
+per-`AgentId` accounts to per-service credentials, not to invent a policy.
 
 **Eligibility** (req 11) moves from `hasAnyAuthForProvider(provider)` to a per-model
 question: *is there a configured service offering this model for this harness?* With
@@ -288,18 +300,16 @@ deliberately out of scope; the data exists, but it is its own feature.
   service with no quota should show nothing (req 13).
 - The **non-turn failures** are covered by req 12, though as two separate paths rather
   than one.
-- The **401 misfire** is fixed by *deleting* behavior, not adding it (req 15). When a
-  service's credential fails, ShipIt stops and reports it — recovering from a bad
-  credential belongs to the harness. So the work is to stop intercepting: today
+- The **401 misfire** is fixed by *deleting* behavior, not adding it (req 15). Today
   `AUTH_ERROR_PATTERNS` (`process.ts:43`) catches auth-shaped text and drives ShipIt's
-  own re-auth flow, which for a non-vendor service is both wrong and unfixable. That
-  interception must not apply to a service credential.
+  own re-auth flow, which for an API-keyed service is both wrong and unfixable. That
+  interception must not apply to a key-authenticated service; the turn stops and says
+  so.
 
-  The carve-out is deliberate and narrow: ShipIt keeps managing **multiple
-  subscriptions** and routing turns between them, because harnesses do not do that.
-  Quota failover and the existing account-level auth recovery (docs/142, docs/150)
-  stay exactly as they are. The distinction to encode is *"which subscription should
-  this turn use"* (ShipIt's job) versus *"this credential is bad"* (the harness's).
+  Note what this does *not* require: ShipIt never has to decide whether a given error
+  means "quota spent" or "key is bad". The branch is on the credential type, which is
+  known before the turn starts. Subscription failover and account-level auth recovery
+  (docs/142, docs/150) are untouched.
 
 ## Key files
 
