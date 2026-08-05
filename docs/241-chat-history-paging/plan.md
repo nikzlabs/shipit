@@ -121,7 +121,8 @@ is design: the mechanism chosen to satisfy those requirements.
 until they are answered. Design work continues meanwhile. In summary the feature
 must load only a recent portion of the transcript (reqs 1–2), let the user reach
 older parts by scrolling up (req 3), keep search and export covering the whole
-conversation (reqs 4–5), and never open a window mid-group (req 6).
+conversation (reqs 4–5), never open a window mid-group (req 6), and make the
+window's edge visible with a retry and a way back to the latest (reqs 7–8).
 
 Non-requirements, recorded so they are not smuggled in: no virtualization, no
 transcript summarization/TOC, no change to what is persisted, no page eviction.
@@ -174,7 +175,7 @@ permanent identity does not mean rejecting SQLite ids as a paging cursor.
 `omittedBefore` is still returned, but as a **head-anchored count** (`COUNT(*)`
 of rows below the window), which does not move under tail appends.
 
-### 2. The window is counted in turns, floored and capped in rows
+### 2. The window is counted in turns — no row bounds
 
 **A persisted row is not what a user means by "a message."** Message groups break
 at *every tool-result boundary* (`agent-listeners.ts` sets `needsNewMessageGroup`
@@ -185,14 +186,23 @@ Counting rows would deliver least in precisely the sessions the complaint is
 about.
 
 So the window is **the last N user-visible turns** — walk back to the Nth-newest
-`role: "user"` row — with a **row floor** (never fewer than ~50 rows, so a short
-turn still fills the screen) and a **row cap** (never more than ~500, so one
-pathological turn cannot pull the whole transcript). N = 10 as the starting
-value, subject to §0.
+`role: "user"` row. N = 10.
 
-This costs nothing extra: locating user rows is the same machinery §3 needs for
-the snap, and the floor/cap is the same conversation as the snap's cap. It is
-also, in effect, what the original request asked for ("10 latest full turns").
+**No row floor, no row cap** (decided; see `requirements.md`). A window of tiny
+turns loads little, and a window containing one enormous turn loads that turn
+whole; both are accepted. This is not merely simpler arithmetic — dropping the
+cap removes an entire failure class, because no case remains in which the window
+*cuts* a turn:
+
+- No cap means no "snap forward past the cap", so §3's snap only ever extends
+  **backward** to a user row.
+- Which means a window can never bisect a *running* turn, so it can never
+  disagree with `turn_snapshot` about that turn's extent — a desync an earlier
+  draft had to special-case with a running-turn exemption.
+
+Locating user rows is the same machinery §3 needs for the snap, so this costs
+nothing extra. It is also, in effect, what the original request asked for
+("10 latest full turns").
 
 ### 3. Snap the window start to a user row — required, not polish
 
@@ -220,11 +230,10 @@ ship-without-it polish.
 
 **Fix: snap the window start to a `role: "user"` row.** A user row is already a
 flush point for all three constructs, so a window beginning there can never
-bisect a tool group or a prose run. Extend backward to the nearest preceding user
-row; if that exceeds a cap (a pathologically long run), snap *forward* to the
-next user row instead and show slightly less — either direction lands on a flush
-point, so the invariant holds in both. Only a single run longer than the cap in
-both directions forces a mid-group cut; that is rare enough to accept.
+bisect a tool group or a prose run. Extend **backward** to the nearest preceding
+user row — and, since there is no row cap (§2), that is the only direction ever
+needed. The earlier forward-snap case, and the `turn_snapshot` desync it caused,
+are both gone.
 
 **Two things the snap does NOT cover** — stated because an earlier draft claimed
 it covered everything:
@@ -235,14 +244,6 @@ it covered everything:
   fix is to persist the plan reference alongside `ExitPlanMode` rather than
   re-deriving it by scanning; failing that, the card must degrade visibly
   ("plan is earlier in this session") instead of silently blank.
-- **The forward-snap cap collides with `turn_snapshot`.** If a long *running*
-  turn is cut forward at a later steer, the HTTP window omits the turn's earlier
-  rows — but the attach snapshot appends the **entire** turn from memory
-  (`route-registry.ts:580`), reintroducing rows from below the window's own
-  coordinate. The client is then immediately not a suffix. And if the running
-  turn has no later user row, forward-snapping is impossible anyway. **The running
-  turn must be exempt from the cap** — the window always includes it whole.
-
 **This also mostly retires the turn-marker question.** The earlier draft worried
 that "nearest user row" cannot distinguish a turn-opening prompt from a live
 steer (steers persist as user rows inside a turn — `session-runner.ts:111-148`).
@@ -418,9 +419,9 @@ only — never tool output, never card content. Paging does not change that, but
 **Export** does the same one-shot full fetch and keeps its existing client-side
 serialization (`SessionItem.tsx:114-124`). No new export endpoint.
 
-**A visible seam, not an invisible one.** The design's instinct was that the
-window should be imperceptible. That is wrong here, and it is the biggest UX risk
-in the doc: every way paging can fail — a slow page, a failed fetch, a reconnect,
+**A visible seam, not an invisible one — reqs 7–8.** The design's instinct was
+that the window should be imperceptible. That was wrong, and it was the biggest
+UX risk in the doc: every way paging can fail — a slow page, a failed fetch, a reconnect,
 a search still loading — presents to the user as *a transcript that stops early*.
 Scrolling simply halts, with no way to tell "still loading" from "this is the
 start of the session" from "something broke." This codebase has spent real effort
@@ -503,7 +504,7 @@ were dropped are the useful part of this doc.
    has, and the change is small: log payload size by component, server timing, and
    client marks for parse vs mount. This is the first PR whichever way the gate
    decides.
-1. `loadWindow()` — turn-counted window with floor/cap and the user-row snap +
+1. `loadWindow()` — turn-counted window (no floor/cap) with the user-row snap +
    `?limit`/`&beforeId` on the existing route + the two metadata fields.
    Inert: no client sends `limit`, so every response is byte-identical to today.
 2. **`omittedBefore` translation for rewind and `commit_linked`**, plus the
@@ -522,8 +523,8 @@ of these must land first:
 1. A concurrency-safe older-page cursor (`beforeId`, not a tail offset).
 2. Cursor invalidation + window reload after any history rewrite, including the
    cross-tab broadcast path.
-3. `turn_snapshot` compatible with the window — the running turn exempt from the
-   cap, so the snapshot cannot reintroduce rows from below the window.
+3. `turn_snapshot` compatible with the window. With no row cap the window never
+   cuts a running turn, so this reduces to a test rather than a mechanism.
 4. Every index-bearing exchange handled: rewind preview request *and* response,
    the rewind action, `rewind_complete`, and `commit_linked` — including the
    distinction between absolute gap zero and window-local position zero.
@@ -574,13 +575,13 @@ it was written.
    that 404s if the row is not on disk. Every row in an older page is committed
    by construction, so a load-older page can pass `allRowsPersisted: true`
    unconditionally — the strictest case, and the easy one.
-3. **The running-turn exemption now has a second reason.** §3 already exempts the
-   running turn from the row cap so `turn_snapshot` cannot reintroduce rows below
-   the window. The projection gives the same exemption a second justification:
-   the snapshot is a projection site with *different* stripping rules (nested
-   subagent results and Edit/Write inputs are not yet committed, so they are
-   stripped on the history path only). Window and snapshot must not disagree
-   about the same turn.
+3. **Window and snapshot must agree about the running turn.** Since §2 dropped
+   the row cap, the window never cuts a running turn, so the *extent* half of
+   this is settled by construction. What remains is that `turn_snapshot` is a
+   projection site with *different* stripping rules — nested subagent results
+   and Edit/Write inputs are not yet committed there, so they are stripped on the
+   history path only. A page and a snapshot covering the same turn must not
+   disagree about which bodies were stripped.
 
 **A cost paging does not fix, and slightly sharpens.** The lazy-body endpoints
 read `ChatHistoryManager.load()` directly — a full-history scan and decode **per

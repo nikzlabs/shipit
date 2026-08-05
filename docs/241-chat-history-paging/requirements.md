@@ -10,35 +10,33 @@
    currently loaded.
 6. A loaded portion never begins in the middle of a grouped set of tool calls;
    it continues back to the nearest user message instead.
+7. The transcript shows when older messages exist above the loaded portion,
+   when they are being loaded, and when loading them failed — with a way to
+   retry. A window that stops early is never silently indistinguishable from
+   the start of the conversation.
+8. The user can get back to the latest messages without scrolling all the way
+   down.
 
 ## Open questions
 
-- **Window bounds beyond the turn count.** Req 2 fixes the window at ~10 turns.
-  A turn can be arbitrarily large (a 40-tool-call turn is ~40 stored rows), so
-  should the window also carry a row floor and cap — e.g. never fewer than ~50
-  rows so a short turn still fills the screen, never more than ~500 so one
-  runaway turn cannot pull in most of the transcript? *Recommendation: yes,
-  floor ~50 and cap ~500, with the currently-running turn exempt from the cap.*
-- **Should the user be able to see that a window exists?** The design currently
-  makes it invisible. Review argued that every failure mode — slow page, failed
-  fetch, reconnect — then looks identical to "my conversation is gone", and
-  proposed a visible element at the top of the loaded portion (label → spinner →
-  "couldn't load earlier messages · retry"), plus a "jump to latest" control
-  once the user is deep in the scrollback. *Recommendation: yes to both; a
-  silent stop is indistinguishable from data loss.*
 - **Must scrolling-up progress survive a reconnect?** Today every tab
   focus/foreground event refetches history and replaces the transcript, which
   would discard everything the user scroll-loaded. Req 3 does not say whether
   that progress must persist. *Recommendation: yes, preserve it — otherwise
   backgrounding the tab for a few seconds silently undoes req 3.*
-- **Is navigating a long session in scope?** Separate from loading it: "get me
-  back to the turn where the second PR opened". Paging slightly worsens it,
-  since older content must be fetched before it can be scrolled to or searched.
-  `docs/104-chat-toc-and-summaries` is an existing plan-only design for this.
-  *Recommendation: out of scope here; decide separately once the window ships.*
-
 ## Resolved questions
 
+- 2026-08-05 — *Should the ~10-turn window also carry a row floor and cap?*
+  Chosen: **no — turn count only.** No requirement changed; this rules the extra
+  bounds out of scope. It also simplifies the design: with no cap there is no
+  "snap forward past the cap" case, and therefore no way for a window to cut a
+  running turn (see `plan.md` §2–§3).
+- 2026-08-05 — *Should the user be able to see that a window exists?* Chosen:
+  **yes — a visible seam plus a jump-to-latest control.** Became reqs 7 and 8.
+- 2026-08-05 — *Is navigating a long session (a table of contents / per-turn
+  summaries) in scope?* Chosen: **out of scope here; decide separately once the
+  window ships.** No requirement changed; `docs/104-chat-toc-and-summaries`
+  stays shelved for now.
 - 2026-08-05 — *Window unit: a fixed message count, or whole turns?* Chosen:
   whole turns, ~10 (req 2). The stated rationale at the time — that a mid-turn
   cut orphans tool results and cards — was **wrong**: persisted rows are

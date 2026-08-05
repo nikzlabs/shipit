@@ -15,15 +15,13 @@ design work continues. Items below marked *(open)* depend on an unanswered one.
 
 ## 1. Server (inert until the client sends `limit`)
 - [ ] `ChatHistoryManager.loadWindow(sessionId, { limit, beforeId? })` — **id cursor, not a tail offset** (a tail offset shifts under concurrent appends); leave `load()` intact
-- [ ] Window counted in **turns** (back to the Nth-newest user row); N = 10
-- [ ] *(open)* Row floor (~50) and cap (~500) — pending the requirements question on window bounds
-- [ ] **Snap the window start to a `role: "user"` row** — extend back to the nearest preceding one; if past the cap, snap forward to the next one instead
+- [ ] Window counted in **turns** (back to the Nth-newest user row); N = 10, no row floor or cap
+- [ ] **Snap the window start to a `role: "user"` row** — backward only (no cap ⇒ no forward-snap case)
 - [ ] `?limit=N` on `GET /history`; absent ⇒ byte-identical to today
 - [ ] `&beforeId=` returns `{ messages, omittedBefore, hasMore }` only — skips git log + file tree
 - [ ] **Every page runs through `transcript-projection`** — an unprojected older page reintroduces the full bodies SHI-267 removed
 - [ ] Older pages pass `allRowsPersisted: true` (every row in an older page is committed by construction)
 - [ ] `omittedBefore` is a **head-anchored** count, not a tail offset
-- [ ] The running turn is exempt from the row cap (else `turn_snapshot` reintroduces rows below the window)
 - [ ] Cursor invalidation + window reload after any history rewrite, incl. the cross-tab broadcast path
 - [ ] `firstUserText` via `LIMIT 1` query (not via `load()`)
 - [ ] `sentUploadPaths` via targeted user-row scan (not via `load()`)
@@ -49,11 +47,10 @@ design work continues. Items below marked *(open)* depend on an unanswered one.
 - [ ] `handleReleaseCard`: drop when card not found and `hasMore` (do not append)
 - [ ] Client starts sending `limit` — only after §2 and the search/export items below
 
-## 4. Visible seam + navigation — *(all open)*
-Pending the requirements question on whether the window should be user-visible.
-- [ ] *(open)* Persistent element at the top of the window: label → spinner → "Couldn't load earlier messages · Retry"
-- [ ] *(open)* Nothing shown when `hasMore` is false (short sessions look exactly like today)
-- [ ] *(open)* "Jump to latest" control when the user is far from the bottom (none exists today)
+## 4. Visible seam + navigation (reqs 7–8)
+- [ ] Persistent element at the top of the window: label → spinner → "Couldn't load earlier messages · Retry"
+- [ ] Nothing shown when `hasMore` is false (short sessions look exactly like today)
+- [ ] "Jump to latest" control when the user is far from the bottom (none exists today)
 
 ## 5. Search and export
 - [ ] Ctrl+F fetches on **search-bar open**, not first query; via the messages-only endpoint
@@ -66,9 +63,9 @@ Pending the requirements question on whether the window should be user-visible.
 - [ ] A window never opens mid-run: a tool-group at the top shows its full item count
 - [ ] Snap works when the boundary is a live steer (a steer is a user row, so a valid flush point)
 - [ ] `ExitPlanMode` plan lookup: persist the plan reference, or degrade visibly — `findPlanContent` scans past user rows so the snap does not protect it
-- [ ] A window cut during a long running turn does not desync against `turn_snapshot` (which is itself a projection site with different stripping rules)
+- [ ] A page and a `turn_snapshot` covering the same turn agree on which bodies were stripped (different projection sites, different rules)
 - [ ] An older page ships no full tool-result / tool-input / image bodies
-- [ ] A tool-heavy turn does not consume the whole window (turn-counted, floor/cap respected)
+- [ ] A tool-heavy turn loads whole rather than being cut (turn-counted, no cap)
 - [ ] Foreground reconnect does not collapse a scrolled-open span
 - [ ] Prepend during the send→first-output window does not yank to the bottom
 - [ ] Load-older is stable while a turn is appending
