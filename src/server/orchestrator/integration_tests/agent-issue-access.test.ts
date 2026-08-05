@@ -93,6 +93,8 @@ describe("Integration: agent issue access (docs/175)", () => {
           return jsonResponse({
             data: {
               issue: {
+                // docs/248 — the team guard reads this off every id-taking read.
+                team: { key: "TRACKER" },
                 comments: {
                   nodes: [
                     { id: "c1", body: "first Linear comment", url: "lc1", createdAt: "2026-01-01T00:00:00Z", user: { displayName: "Nik" } },
@@ -109,6 +111,7 @@ describe("Integration: agent issue access (docs/175)", () => {
               issue: {
                 id: "abc",
                 identifier: "TRACKER-28",
+                team: { key: "TRACKER" },
                 title: "Decouple priorities",
                 url: "https://linear.app/example/issue/TRACKER-28",
                 description: "The Linear body.",

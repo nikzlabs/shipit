@@ -319,7 +319,9 @@ Current state; each is a rework site unless noted.
   failure be reported in CLI output with the declared names in hand (reqs 8, 19)
   instead of arriving as an opaque 404 from a write that should never have run.
 - `src/server/orchestrator/services/headless-sessions.ts` — `seedFromIssueRef`
-  builds the branch from the identifier alone (req 22). **Carries over.**
+  builds the branch from the identifier alone (req 22). **Carries over** — but
+  see *Requirement 22 is not actually held on the in-app path* below: the Issues
+  tab no longer routes through it.
 - `src/client/stores/issues-store.ts` — `trackerDestinations()` /
   `resolveUiIssueRef()` build the browser's resolution context from the
   `TrackerInfo[]` it already fetched for the tabs, rather than a second fetch.
@@ -358,6 +360,38 @@ Added for the rework, and passing:
 GraphQL API. The deployment that runs the dogfood loop has a GitHub token and no
 Linear credential, so no end-to-end Linear run was possible; requirements 3–5 rest
 on unit and integration coverage with fakes.
+
+## Requirement 22 is not actually held on the in-app path
+
+**Known, unfixed, and load-bearing.** Requirement 22 says the pushed branch name
+comes from the reference only, never from the issue title. `seedFromIssueRef`
+does exactly that (`headless-sessions.ts`) and this document previously listed it
+as "carries over" — but that is a claim about a mechanism, not a verified
+guarantee, and verifying it showed the in-app path stopped going through it.
+
+What actually happens when a user clicks **Start session** on an issue
+(`App.tsx` `handleIssueStartSession`, reshaped by docs/236): ShipIt does not fire
+a seeded headless session. It **pre-fills the chat input** with
+`You are working on issue <ref>: <title>` so the user can edit it before sending.
+That prompt is then the session's first message, and ordinary graduation feeds
+the first message to `generateSessionName` (`session-namer.ts`), whose slug
+becomes the branch (`graduate-session.ts`). So the issue **title** can reach a
+pushed branch name — precisely what requirement 22 forbids, and unconditionally,
+since the rule is not scoped to private trackers.
+
+Two consequences follow from the same root cause: the session also never carries
+an `issueRef`, so the seed-time **→ started** transition
+(`markIssueStartedFromSeed`) does not fire from the Issues tab either, though
+`shipit-docs/issues.md` still promises it.
+
+This is **pre-existing** — it predates this rework, which changed neither
+`seedFromIssueRef` nor the Start-session path — and closing it is not a
+declaration or resolution change: it needs the Start-session flow to carry the
+issue through to session creation so the branch is pinned (or the AI branch
+rename suppressed) rather than derived from a title-bearing prompt. It is
+tracked on the checklist rather than fixed here, because doing it properly means
+reworking docs/236's prefill flow, which this feature has no other reason to
+touch.
 
 ## Out of scope
 

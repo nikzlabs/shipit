@@ -350,6 +350,35 @@ describe("Integration: declared issue trackers (docs/248)", () => {
     expect(requestedUrls.some((u) => u.includes("/repos/"))).toBe(false);
   });
 
+  // req 13 — a create ALWAYS names its destination. The shim enforces it, but
+  // `/agent-ops/issue/*` is reachable from the session container by anything the
+  // agent runs, so a `curl` bypasses the shim entirely. Without a server-side
+  // backstop the rule would be a convention, not a guarantee — and the thing it
+  // guards against is filing a planning issue into a PUBLIC code repository.
+  it("refuses a create addressed at the unnamed own repository", async () => {
+    writeConfig(DECLARE_PLANNING);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/sess/issue/create",
+      payload: { tracker: "github", title: "Private planning item" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.stringify(res.json())).toMatch(/must name the tracker it files into/i);
+    // Nothing reached GitHub — the issue was never created anywhere.
+    expect(requestedUrls.some((u) => u.includes("/repos/"))).toBe(false);
+  });
+
+  it("refuses a label create addressed at the unnamed own repository", async () => {
+    writeConfig(DECLARE_PLANNING);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/sess/issue/label/create",
+      payload: { tracker: "github", name: "internal" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(requestedUrls.some((u) => u.includes("/repos/"))).toBe(false);
+  });
+
   it("rejects the retired bare `linear` id rather than reading a stored team", async () => {
     credentialStore.setLinearToken("lin_api_x");
     const res = await app.inject({ method: "GET", url: "/api/issues?tracker=linear&sessionId=sess" });

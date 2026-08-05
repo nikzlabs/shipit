@@ -82,11 +82,19 @@ export interface ParsedIssueRef {
   url?: string;
 }
 
-const LINEAR_URL_RE = /^https?:\/\/linear\.app\/[^/]+\/issue\/([A-Za-z]+)-(\d+)/i;
+const LINEAR_URL_RE = /^https?:\/\/linear\.app\/[^/]+\/issue\/([A-Za-z][A-Za-z0-9]*)-(\d+)/i;
 const GITHUB_URL_RE = /^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)/i;
 const GITHUB_SHORT_RE = /^([^/\s]+)\/([^/\s#]+)#(\d+)$/;
-/** A bare Linear key like `SHI-28` — the canonical address a Linear user writes. */
-const LINEAR_KEY_RE = /^([A-Za-z]+)-(\d+)$/;
+/**
+ * A bare Linear key like `SHI-28` — the canonical address a Linear user writes.
+ * The team prefix accepts digits after the first character because Linear team
+ * keys do (`T2`), and {@link normalizeLinearTeamKey} accepts the same shape: a
+ * narrower regex here would make a perfectly valid `team: T2` declaration
+ * unaddressable by its own issues' keys. Widening it costs nothing in practice —
+ * an accidental match now fails closed at resolution unless some repository
+ * genuinely declared that team.
+ */
+const LINEAR_KEY_RE = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
 /**
  * docs/248 req 10 — the two name forms, `planning#123` and `roadmap#SHI-304`.
  *
@@ -96,7 +104,7 @@ const LINEAR_KEY_RE = /^([A-Za-z]+)-(\d+)$/;
  * `acme/planning#3`) — the slash is what distinguishes them, and since the two
  * never collide, a name that resembles an owner is allowed without a warning.
  */
-const NAMED_REF_RE = /^([A-Za-z0-9][A-Za-z0-9._-]*)#([A-Za-z]+-\d+|\d+)$/;
+const NAMED_REF_RE = /^([A-Za-z0-9][A-Za-z0-9._-]*)#([A-Za-z][A-Za-z0-9]*-\d+|\d+)$/;
 
 export function parseIssueRef(raw: string): ParsedIssueRef {
   const issue = raw.trim();
@@ -224,16 +232,16 @@ export function extractIssueRefsFromText(text: string | null | undefined): Parse
     }
   };
   // Linear + GitHub issue URLs.
-  collect(/https?:\/\/linear\.app\/[^/\s]+\/issue\/[A-Za-z]+-\d+(?:\/[^\s)]*)?/gi, 0);
+  collect(/https?:\/\/linear\.app\/[^/\s]+\/issue\/[A-Za-z][A-Za-z0-9]*-\d+(?:\/[^\s)]*)?/gi, 0);
   collect(/https?:\/\/github\.com\/[^/\s]+\/[^/\s]+\/issues\/\d+/gi, 0);
   // GitHub short refs `owner/repo#n`. The lookbehind keeps it from biting into
   // a URL's path (`…/issues/5` has no `#`, but `github.com/o/r#5` would).
   collect(/(?<![\w/])[^/\s#]+\/[^/\s#]+#\d+/g, 0);
   // Bare Linear keys, gated on an `issue` lead-in (the separator allows
   // `issue SHI-9`, `issue: SHI-9`, `issue #SHI-9`).
-  collect(/\bissue\b[\s:#-]*([A-Za-z]+-\d+)/gi, 1);
+  collect(/\bissue\b[\s:#-]*([A-Za-z][A-Za-z0-9]*-\d+)/gi, 1);
   // docs/248 name refs, gated on the same lead-in (`issue planning#42`).
-  collect(/\bissue\b[\s:]*([A-Za-z0-9][A-Za-z0-9._-]*#(?:[A-Za-z]+-\d+|\d+))/gi, 1);
+  collect(/\bissue\b[\s:]*([A-Za-z0-9][A-Za-z0-9._-]*#(?:[A-Za-z][A-Za-z0-9]*-\d+|\d+))/gi, 1);
 
   candidates.sort((a, b) => a.index - b.index);
   for (const { token } of candidates) {

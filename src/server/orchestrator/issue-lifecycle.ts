@@ -203,7 +203,9 @@ export async function markIssueStartedFromSeed(
 /**
  * Run one merge→issue-lifecycle side effect under a persisted, effect-level
  * fire-once guard (docs/194 Layer 1). `key` is the effect's NATURAL identity
- * (`${prNumber}:${issueId}:${verb}`), NOT the poller's in-memory `mergedSessions`
+ * (`${prNumber}:${tracker}:${issueId}:${verb}` — see {@link effectKey}; the
+ * destination is part of it, so two repositories' `#42` are two effects, not one
+ * that skips the second), NOT the poller's in-memory `mergedSessions`
  * edge — that edge is wiped on every viewer reconnect (`trackSession`), which is
  * exactly what let each reconnect re-fire these writes and spam duplicate cards /
  * resolved-by comments. The key is recorded ONLY after `effect()` succeeds, so a

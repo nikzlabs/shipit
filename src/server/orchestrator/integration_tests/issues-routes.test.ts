@@ -80,6 +80,8 @@ describe("Integration: Issues tab routes (docs/170)", () => {
         return jsonResponse({
           data: {
             issue: {
+              // docs/248 — the team guard reads this off every id-taking read.
+              team: { key: "SHI" },
               comments: {
                 nodes: [
                   {
@@ -119,6 +121,7 @@ describe("Integration: Issues tab routes (docs/170)", () => {
             issue: {
               id: "a",
               team: {
+                key: "SHI",
                 states: {
                   nodes: [
                     { id: "s-todo", name: "Todo", type: "unstarted", position: 0 },
@@ -154,7 +157,7 @@ describe("Integration: Issues tab routes (docs/170)", () => {
       }
       // Resolve a key → UUID before a comment mutation (`addComment`).
       if (query.includes("IssueId")) {
-        return jsonResponse({ data: { issue: { id: "uuid-1" } } });
+        return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI" } } } });
       }
       // Create a comment (`addComment`) — backs POST /api/issue/comments.
       if (query.includes("AddComment")) {
@@ -187,7 +190,8 @@ describe("Integration: Issues tab routes (docs/170)", () => {
               priorityLabel: "Urgent",
               state: { name: "In Progress", type: "started" },
               assignee: { displayName: "Nik" },
-              team: { states: { nodes: [{ id: "s1", name: "Todo", type: "unstarted", position: 0 }] } },
+              // docs/248 — `key` is what the team guard checks; `states` powers availableStatuses.
+              team: { key: "SHI", states: { nodes: [{ id: "s1", name: "Todo", type: "unstarted", position: 0 }] } },
             },
           },
         });

@@ -135,23 +135,31 @@ Branch (docs/239):
                           branch is ready; nonzero = STOP and report (never reset
                           by hand).
 
-Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/177 + docs/187):
-  shipit issue view      <pointer> [--tracker github|linear] [--comments] [--json]
-  shipit issue list      [--tracker github|linear] [--state open|closed|all] [--full] [--json]
-  shipit issue labels    [--tracker github|linear] [--json]
-  shipit issue statuses  [--tracker github|linear] [--json]
-  shipit issue create    --title T [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--tracker github|linear] [--json]
-  shipit issue comment   <pointer> -b BODY | --body-file FILE [--tracker T] [--json]
-  shipit issue edit      <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--tracker T] [--json]
-  shipit issue status    <pointer> <state> [--tracker T] [--json]
-  shipit issue assign    <pointer> <user|me | --none> [--tracker T] [--json]
-  shipit issue label create --name NAME [--color '#rrggbb'] [--description TEXT] [--tracker github|linear] [--json]
+Issues (tracker-neutral; docs/175 + docs/177 + docs/187 + docs/248):
+  shipit issue view      <ref> [--tracker NAME] [--comments] [--json]
+  shipit issue list      [--tracker NAME] [--state open|closed|all] [--full] [--json]
+  shipit issue labels    [--tracker NAME] [--json]
+  shipit issue statuses  [--tracker NAME] [--json]
+  shipit issue create    --tracker NAME --title T [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--json]
+  shipit issue comment   <ref> -b BODY | --body-file FILE [--tracker NAME] [--json]
+  shipit issue edit      <ref> [--title T] [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--tracker NAME] [--json]
+  shipit issue status    <ref> <state> [--tracker NAME] [--json]
+  shipit issue assign    <ref> <user|me | --none> [--tracker NAME] [--json]
+  shipit issue label create --tracker NAME --name NAME [--color '#rrggbb'] [--description TEXT] [--json]
 
-  A <pointer> is whatever the user/doc gave you — SHI-28, owner/repo#42, or an
-  issue URL; the tracker is inferred from its shape. Writes are do-then-surface:
-  the change is made immediately and an inline provenance card with an Undo
-  button is posted in the chat. 'create' defaults to Linear (no pointer to infer
-  from); Undo cancels the new issue.
+  Every tracker this repository uses is declared in its shipit.yaml with a NAME;
+  there is no built-in tracker and no implicit fallback. Three reference forms
+  all work: 'planning#42' / 'roadmap#SHI-304' (name + backend id), 'roadmap#304'
+  (name + number), and the backend's own address ('SHI-304', 'owner/repo#42', an
+  issue URL). WRITE the name form yourself — it survives a declaration being
+  re-pointed. A reference naming no declared tracker fails with the declared
+  names listed; fix the reference or the declaration, never retry elsewhere.
+
+  Naming nothing means this session's own repository — except on 'create' and
+  'label create', which ALWAYS need --tracker NAME so a forgotten flag can't file
+  into a possibly-public repo. Writes are do-then-surface: the change is made
+  immediately and an inline provenance card with an Undo button is posted in the
+  chat; Undo cancels a newly created issue.
 
   --label is repeatable (or comma-separated) and resolves against the tracker's
   existing labels — an unknown name is rejected with the valid options, not

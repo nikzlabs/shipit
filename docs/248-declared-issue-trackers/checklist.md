@@ -77,6 +77,23 @@ failing a session (req 7).
 - [x] The break with existing behavior — accepted (req 20).
 - ~~`issues.default`~~ — superseded. Req 1 removes implicit destinations, so `shipit issue create` has no fallback left to point anywhere.
 
+## Open — found during implementation, not closed here
+
+- [ ] **Requirement 22 is not held on the in-app path.** The Issues tab's "Start
+  session" pre-fills the chat instead of calling `seedFromIssueRef`, so the
+  session's first message carries the issue **title** and the AI branch-namer
+  derives the pushed branch from it. Pre-existing (docs/236 reshaped that flow);
+  closing it means pinning the branch — or suppressing the branch rename — for a
+  session started from an issue. See plan.md → *Requirement 22 is not actually
+  held on the in-app path*.
+- [ ] **The seed-time → started transition does not fire from the Issues tab**
+  either, for the same root cause: the session carries no `issueRef`.
+  `shipit-docs/issues.md` still promises it.
+- [ ] **The browser's declaration view can go stale.** `fetchTrackers` runs on
+  session change and on Issues-tab activation, so editing `shipit.yaml` with the
+  tab already open doesn't re-resolve names until one of those happens. The
+  server reads the file per request, so only the client is affected.
+
 ## Follow-on
 
 - [ ] `shipit issue list` on Linear queries `first: 100` with no pagination, so it cannot enumerate a tracker larger than that. Out of scope here; blocks [247](../247-shipit-private-planning/checklist.md)'s export step.

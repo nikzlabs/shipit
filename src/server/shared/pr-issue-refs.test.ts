@@ -92,3 +92,35 @@ describe("parsePrBodyIssueRefs", () => {
     expect(closes).toEqual([]);
   });
 });
+
+describe("parsePrBodyIssueRefs — docs/248 name forms", () => {
+  // The regression the resolver split nearly introduced: a name form parses with
+  // NO tracker (only the declarations can resolve one), so a parser that filtered
+  // on `tracker` would drop every `Closes planning#42` before anything could
+  // resolve it — silently disabling the headline reference form on merge.
+  it("keeps a `name#number` reference for the caller to resolve", () => {
+    const { closes } = parsePrBodyIssueRefs("Closes planning#42");
+    expect(closes).toHaveLength(1);
+    expect(closes[0]).toMatchObject({ trackerName: "planning", issueId: "42", identifier: "planning#42" });
+  });
+
+  it("keeps a `name#KEY` reference", () => {
+    const { refs } = parsePrBodyIssueRefs("Refs roadmap#SHI-304");
+    expect(refs[0]).toMatchObject({ trackerName: "roadmap", issueId: "SHI-304" });
+  });
+
+  it("dedupes two name references to the same issue, closing intent winning", () => {
+    const { closes, refs } = parsePrBodyIssueRefs("Closes planning#42\nRefs planning#42");
+    expect(closes).toHaveLength(1);
+    expect(refs).toHaveLength(0);
+  });
+
+  it("keeps a name reference and a canonical address as two distinct references", () => {
+    const { closes } = parsePrBodyIssueRefs("Closes planning#42\nCloses acme/other#42");
+    expect(closes).toHaveLength(2);
+  });
+
+  it("still drops a token that is not a reference shape at all", () => {
+    expect(parsePrBodyIssueRefs("Closes the loop").closes).toEqual([]);
+  });
+});

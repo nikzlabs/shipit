@@ -137,7 +137,7 @@ interface LinearIssueNode {
   state?: { name: string; type?: string; color?: string } | null;
   assignee?: { id?: string | null; name?: string | null; displayName?: string | null; avatarUrl?: string | null } | null;
   /** Only fetched by `getIssue` (the team's workflow states) — drives `availableStatuses`. */
-  team?: { states?: { nodes: LinearStateNode[] } | null } | null;
+  team?: { key?: string | null; states?: { nodes: LinearStateNode[] } | null } | null;
 }
 
 /**
@@ -231,7 +231,7 @@ const ISSUE_FIELDS = `
 /** `getIssue` additionally pulls the team's workflow states for `availableStatuses`. */
 const ISSUE_FIELDS_WITH_STATES = `
   ${ISSUE_FIELDS}
-  team { states(first: 100) { nodes { id name type position color } } }
+  team { key states(first: 100) { nodes { id name type position color } } }
 `;
 
 /** Run a GraphQL query against Linear and return the typed `data` payload. */
@@ -414,7 +414,10 @@ export class LinearTracker implements Tracker {
       { id },
       this.fetchImpl,
     );
-    return data.issue ? toTrackerIssue(data.issue, this.formatRef) : null;
+    if (!data.issue) return null;
+    // Same team guard as `resolveUuid` — the read half of the same hole.
+    this.assertOwnTeam(id, data.issue.team?.key ?? null);
+    return toTrackerIssue(data.issue, this.formatRef);
   }
 
   async listStatuses(): Promise<{ name: string; type?: string; color?: string }[]> {
@@ -456,28 +459,58 @@ export class LinearTracker implements Tracker {
       throw new Error("Linear is not configured (missing token)");
     }
     const data = await this.gql<{
-      issue: { comments: { nodes: LinearCommentNode[] } } | null;
+      issue: { team?: { key?: string | null } | null; comments: { nodes: LinearCommentNode[] } } | null;
     }>(
       `query IssueComments($id: String!) {
         issue(id: $id) {
+          team { key }
           comments(first: 100) { nodes { ${COMMENT_FIELDS} } }
         }
       }`,
       { id },
     );
-    return (data.issue?.comments.nodes ?? []).map(toTrackerComment);
+    if (!data.issue) return [];
+    this.assertOwnTeam(id, data.issue.team?.key ?? null);
+    return data.issue.comments.nodes.map(toTrackerComment);
   }
 
   // ---- Writes (docs/177) ----------------------------------------------------
 
-  /** Resolve a key (`SHI-28`) or UUID to the issue's UUID — mutations want it. */
+  /**
+   * Resolve a key (`SHI-28`) or UUID to the issue's UUID — mutations want it.
+   *
+   * docs/248 reqs 11/17 — Linear's `issue(id:)` lookup is **workspace-global**,
+   * not team-scoped, so an id belonging to another team resolves happily. That
+   * would let an operation which named *this* tracker act on a destination the
+   * repository may not declare at all: exactly the wrong-target substitution this
+   * feature exists to prevent, and a hole the reference resolver alone cannot
+   * close, because a raw `tracker=` + `id=` pair over the agent relay never goes
+   * through it. So every id this adapter resolves is checked against the declared
+   * team before it is used.
+   */
   private async resolveUuid(id: string): Promise<string> {
-    const data = await this.gql<{ issue: { id: string } | null }>(
-      `query IssueId($id: String!) { issue(id: $id) { id } }`,
+    const data = await this.gql<{ issue: { id: string; team?: { key?: string | null } | null } | null }>(
+      `query IssueId($id: String!) { issue(id: $id) { id team { key } } }`,
       { id },
     );
     if (!data.issue) throw new Error(`Linear issue not found: ${id}`);
+    this.assertOwnTeam(id, data.issue.team?.key ?? null);
     return data.issue.id;
+  }
+
+  /**
+   * Fail closed when an issue belongs to a different team than the one this
+   * tracker was declared for (req 17: a named destination is used as named, and
+   * ShipIt never substitutes another for it). A response that carried no team is
+   * unverifiable, so it is refused for the same reason rather than waved through.
+   */
+  private assertOwnTeam(id: string, teamKey: string | null): void {
+    if (!this.teamKey) return;
+    if (teamKey?.toUpperCase() === this.teamKey) return;
+    throw new Error(
+      `Linear issue \`${id}\` belongs to team \`${teamKey ?? "unknown"}\`, not to \`${this.teamKey}\` — the ` +
+        `tracker this operation named. ShipIt does not act on a destination other than the one named.`,
+    );
   }
 
   async createIssue(input: {
@@ -626,11 +659,12 @@ export class LinearTracker implements Tracker {
   async setStatus(id: string, status: string): Promise<TrackerIssue> {
     const issue = await this.gql<{ issue: (LinearIssueNode & { team?: { states?: { nodes: LinearStateNode[] } | null } | null }) | null }>(
       `query IssueStates($id: String!) {
-        issue(id: $id) { id team { states(first: 100) { nodes { id name type position } } } }
+        issue(id: $id) { id team { key states(first: 100) { nodes { id name type position } } } }
       }`,
       { id },
     );
     if (!issue.issue) throw new Error(`Linear issue not found: ${id}`);
+    this.assertOwnTeam(id, issue.issue.team?.key ?? null);
     const states = (issue.issue.team?.states?.nodes ?? [])
       .slice()
       .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));

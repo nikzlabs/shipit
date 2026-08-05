@@ -166,7 +166,7 @@ function nativeIdFor(io: ShimIO, verb: string, target: ResolvedTarget, raw: stri
   }
   const team = target.tracker.replace(/^linear:/, "").toUpperCase();
   if (/^\d+$/.test(raw)) return `${team}-${raw}`;
-  if (/^[A-Za-z]+-\d+$/.test(raw)) return raw.toUpperCase();
+  if (/^[A-Za-z][A-Za-z0-9]*-\d+$/.test(raw)) return raw.toUpperCase();
   fail(io, `shipit issue ${verb}: "${raw}" is not a Linear issue key.`);
 }
 
@@ -687,8 +687,9 @@ const LABEL_COLOR_RE = /^#?[0-9a-fA-F]{6}$/;
 /**
  * `shipit issue label create` — mint a tracker label so `--label` can apply it
  * (SHI-230). Do-then-surface like the other writes: created immediately, with a
- * provenance card whose Undo deletes the label if it's still unused. Defaults
- * to Linear (no pointer to infer a tracker from, mirroring `issue create`).
+ * provenance card whose Undo deletes the label if it's still unused. It mutates a
+ * tracker's CONFIG, so docs/248 req 13's rule applies as it does to
+ * `issue create`: `--tracker <name>` is required, there is no default.
  * `label` is a verb group so future label verbs can slot in, but only `create`
  * exists — listing stays on `shipit issue labels`.
  */
