@@ -1,85 +1,104 @@
 # Declared issue trackers — product requirements
 
-A repository declares which issue trackers it uses, and every issue operation
-names the destination it acts on. This is the platform mechanism; it applies to
-any repository edited inside ShipIt. ShipIt's own use of it — a private planning
-repository, and the migration off Linear — is a separate feature
+A repository declares which issue trackers it uses, and every operation and
+reference names the tracker it acts on. This is the platform mechanism; it applies
+to any repository edited inside ShipIt and to every tracker backend, not just
+GitHub. ShipIt's own use of it — a private planning repository, and the migration
+off Linear — is a separate feature
 ([247](../247-shipit-private-planning/requirements.md)).
-
-## Routing
-
-1. Every issue operation names its destination repository. `--repo owner/name`
-   names it explicitly; an operation that names none means the active session's
-   code repository, exactly as today.
-2. A named repository is used as named. ShipIt never substitutes another
-   repository for it, and never retries a failure against a fallback.
-3. Any repository the GitHub credential can reach is reachable. ShipIt keeps no
-   allow-list, and a repository the credential cannot access fails closed with an
-   inline access error.
-4. A bare issue number resolves against whichever repository the operation
-   already resolved — never a different one.
 
 ## Declarations
 
-5. Additional trackers are declared in the repository's `shipit.yaml`, not
-   configured in ShipIt settings:
+1. Every issue tracker a repository uses is declared in its `shipit.yaml`. ShipIt
+   has no built-in tracker and no implicit fallback: the trackers available to a
+   session are the ones its repository declared, plus the one exception in
+   requirement 8.
+2. Each entry states its `kind` and its `name`. `kind` selects the backend; the
+   remaining fields are whatever that kind needs to identify itself; `name` is how
+   everything else addresses it.
 
    ```yaml
    issues:
      trackers:
-       - kind: github           # which tracker backs this tab
-         repo: owner/planning   # GitHub Issues: `owner/name`
-         label: Planning        # optional; defaults to the repository name
-         alias: planning        # optional; see requirement 10
+       - kind: github
+         repo: owner/planning
+         name: planning
+       - kind: linear
+         name: roadmap
    ```
 
-6. Each entry states its tracker `kind`, and the remaining fields are whatever
-   that kind needs to identify itself. `github` is the only kind defined now.
-7. An entry whose `kind` this version of ShipIt does not recognize is ignored with
+3. Both `github` and `linear` are supported kinds. Linear is declared like any
+   other tracker; it is no longer a built-in destination or a default.
+4. `name` is required, and unique within a repository.
+5. An entry whose `kind` this version of ShipIt does not recognize is ignored with
    a warning, rather than failing the session.
-8. Each declaration appears as its own tab in the Issues UI, in declaration order.
+6. Declaration warnings — an unrecognized `kind`, a malformed entry, a duplicate
+   `name` — surface in `shipit` CLI output, so the agent can fix the declaration
+   or raise it with the user.
+7. Each declaration appears as its own tab in the Issues UI, in declaration order.
    A repository may declare more than one.
-9. Declaring a tracker adds a destination and changes nothing else. Each code
-   repository keeps its own GitHub Issues tracker, and no existing operation
-   changes where it writes.
 
-## Aliases
+## Naming a destination
 
-10. A declaration may carry an `alias`. `planning#123` then means issue 123 on
-    that declared repository.
-11. Renaming a tracking repository requires editing only `repo:` in the
-    declaration. No existing reference to its issues has to change.
-12. ShipIt writes the alias form wherever it generates a reference: its own
+8. Every issue operation and every reference names its tracker by `name`, as
+   `planning#123`. The single exception is the session's own repository's GitHub
+   Issues, which needs no declaration and no name.
+9. Renaming a tracking repository requires editing only that declaration's
+   identifying field. No existing reference to its issues has to change.
+10. ShipIt writes the `name` form wherever it generates a reference: its own
     surfaces, the conversation, docs, and PR bodies and comments.
-13. A repository may declare its **own** repository, in order to give it an alias.
-14. A reference resolves when it is used, not when it is written. Re-pointing an
-    alias re-targets every reference written against it, recorded ones included,
-    and the UI shows the repository it now resolves to.
+11. A reference resolves when it is used, not when it is written. Re-pointing a
+    name at a different repository re-targets every reference written against it,
+    recorded ones included, and the UI shows what it now resolves to.
+
+## Routing safety
+
+12. A named destination is used as named. ShipIt never substitutes another
+    tracker for it, and never retries a failure against a fallback.
+13. A destination that cannot be reached fails closed with an inline error that
+    does not guess at the cause where the backend is ambiguous — GitHub returns
+    the same response for "missing" and "inaccessible".
 
 ## Naming and disclosure
 
-15. ShipIt-generated text includes no issue fields beyond the reference itself —
+14. ShipIt-generated text includes no issue fields beyond the reference itself —
     no title, body, comments, status, labels, or assignees.
-16. When a session starts from a tracker issue, the pushed branch name comes from
-    the pointer only, never from the issue title. This applies to every tracker
-    issue: ShipIt cannot tell which repositories are private, so the rule is
+15. When a session starts from a tracker issue, the pushed branch name comes from
+    the reference only, never from the issue title. This applies to every tracker
+    issue: ShipIt cannot tell which trackers are private, so the rule is
     unconditional rather than a guess.
 
 ## Authorization and feature set
 
-17. Tracker operations use the same GitHub credential as ShipIt's other GitHub
-    operations, and GitHub authorizes that credential rather than the viewer.
-    Anyone who can use the deployment can therefore read and write a declared
-    tracker, regardless of their personal GitHub membership.
-18. The user creates the repository and declares it. ShipIt neither creates it nor
-    initializes it.
-19. GitHub's feature set is accepted as-is; ShipIt does not emulate missing
+16. Tracker credentials are configured globally for the deployment today, and per
+    Project once [Projects](../231-projects/requirements.md) ships. A declaration
+    names a destination; it does not carry a credential.
+17. The tracker's own service authorizes the credential; ShipIt adds no separate
+    per-viewer membership check or tracker ACL. Anyone who can use the deployment —
+    the Project, later — can therefore read and write a declared tracker regardless
+    of their personal membership in it.
+18. The user creates the tracker or repository and declares it. ShipIt neither
+    creates nor initializes it.
+19. Each backend's feature set is accepted as-is; ShipIt does not emulate missing
     capabilities for parity. An unavailable operation is omitted or disabled with
     an inline explanation, and never silently no-ops or reports false success.
 
 ## Open questions
 
-None.
+- **What does a reference to a Linear issue look like?** Requirement 8 assumes
+  `name#number`, which fits GitHub because issue numbers are per-repository. Linear
+  issues already carry globally unique keys (`SHI-304`) rather than per-tracker
+  numbers, so `roadmap#304`, `roadmap#SHI-304`, and keeping the bare `SHI-304` are
+  all coherent and they read very differently in a PR body. This has to be settled
+  before Linear can be declared.
+- **Requirements 1, 3 and 8 are a breaking change — is that accepted, and does
+  anything keep working?** Today every repository edited inside ShipIt gets Linear
+  and its own GitHub Issues without declaring anything, `shipit issue create`
+  defaults to Linear, `--tracker linear|github` selects a backend, and pointers are
+  written `SHI-28` or `owner/repo#42`. Under these requirements a repository that
+  declares nothing has only its own GitHub Issues, and existing pointers name no
+  tracker. Whether the old pointer forms continue to resolve, and whether existing
+  repositories need a declaration added, are not decided here.
 
 ## Resolved questions
 
@@ -87,58 +106,67 @@ Receipts are carried forward from the superseded `247-private-github-issue-track
 doc, which held these requirements before the split; its full deliberation history
 remains in git.
 
+- 2026-08-05 — Reviewing this document, the user generalized it from GitHub to
+  **all** issue trackers: `linear` becomes a declared `kind` and its built-in
+  fallback is retired (req 3), and authorization is described per credential scope —
+  global now, per Project later — rather than as a GitHub-specific gate (req 16).
+- 2026-08-05 — The user replaced `--repo owner/name` with **naming the tracker**,
+  and made the declaration field **mandatory** (reqs 4, 8), with the session's own
+  GitHub Issues as the one exception that needs no declaration. Offered `name` or
+  `ref` for the field, this doc uses **`name`** — it names a destination, and it is
+  what both a declaration and a reference call it. This supersedes two earlier
+  decisions: that `--repo` may name **any** repository the credential can reach
+  (reachability is now what the repository declared), and that a declaration is
+  purely additive and cannot change where an existing operation writes (requirement
+  1 removes the implicit fallback, so it can).
+- 2026-08-05 — The user asked where declaration warnings surface and specified
+  `shipit` CLI output (req 6), so the agent can repair a bad declaration or raise
+  it with the user rather than the warning being swallowed.
 - 2026-08-05 — Asked which form ShipIt writes when it generates a reference
-  itself, the user chose **the alias everywhere** — "this slug needs to work
-  inside ShipIt, in the conversation, in PR body/comments, in docs". Emitting the
-  alias only on in-repo surfaces while keeping the qualified slug in public PR
-  bodies, and treating the alias as an input-only form, were both rejected. Two
-  accepted costs: GitHub cannot linkify `planning#42`, so the pointer is plain
-  text anywhere outside ShipIt; and the alias does not make a repository secret,
-  since the `alias → owner/repo` mapping is published in the committed
-  `shipit.yaml`.
-- 2026-08-05 — Asked whether aliases cover the session's own code repository, the
-  user scoped them to **declared trackers only**, and added that a repository must
-  be able to declare *its own* repository for alias purposes (req 13). That is a
-  behavior change, not just a scope answer: the shipped registry deliberately
-  skips a declaration matching the session's own repo, so a self-declaration is
-  currently discarded.
-- 2026-08-05 — Asked what happens to already-recorded references when an alias is
+  itself, the user chose **the tracker name everywhere** — "this slug needs to work
+  inside ShipIt, in the conversation, in PR body/comments, in docs" (req 10).
+  Emitting it only on in-repo surfaces while keeping a fully qualified slug in
+  public PR bodies, and treating it as an input-only form, were both rejected. Two
+  accepted costs: GitHub cannot linkify `planning#42`, so the reference is plain
+  text anywhere outside ShipIt; and a name does not make a repository secret, since
+  the `name → destination` mapping is published in the committed `shipit.yaml`.
+- 2026-08-05 — Asked whether names cover the session's own code repository, the
+  user scoped them to declared trackers, and added that a repository must be able
+  to declare *its own* repository to give it a name. That is a behavior change: the
+  shipped registry deliberately skips a declaration matching the session's own
+  repo, so a self-declaration is currently discarded.
+- 2026-08-05 — Asked what happens to already-recorded references when a name is
   later pointed at a different repository, the user chose **the links resolve to
-  the new repository and the UI shows it** (req 14), replacing an earlier
-  guarantee that a recorded destination stays valid for its recorded `owner/repo`.
-  The accepted consequence is that re-pointing re-targets history written against
-  the alias, including a persisted Undo card's target. Freezing persisted routing
-  while letting text follow the alias, and freezing everything, were both rejected
-  as more machinery than the case warrants.
+  the new destination and the UI shows it** (req 11), replacing an earlier
+  guarantee that a recorded destination stays valid for what it resolved to when
+  written. The accepted consequence is that re-pointing re-targets history,
+  including a persisted Undo card's target. Freezing persisted routing while
+  letting text follow the name, and freezing everything, were both rejected as more
+  machinery than the case warrants.
 - 2026-08-04 — Asked which issues get pointer-only branch names, the user chose
-  **every issue** (req 16), so title-derived readable branch names go away for
-  Linear and code-repository issues too. Scoping the rule to declared trackers,
-  adding an explicit `private: true` opt-in, and dropping the requirement were all
-  rejected. Public PR *titles* are not covered: the agent writes them with
-  `gh pr create -t`, so ShipIt generates no PR title to derive.
-- 2026-08-04 — Asked which repositories `--repo` may name, the user chose **any
-  repository the GitHub credential can reach** (req 3). An allow-list limited to
-  the session's code repository plus a configured binding was rejected, as was an
-  allow-list with an opt-in escape hatch. The accepted consequence is that a
-  mistyped `--repo` can write to a real repository the credential owns.
-- 2026-08-04 — The user replaced a planned separate tracker identity with an
-  explicit repository argument on the existing GitHub tracker (req 1), so no third
-  tracker id, sub-tab name, or `--tracker` value is introduced.
+  **every issue** (req 15), so title-derived readable branch names go away for
+  every tracker. Scoping the rule to declared trackers, adding an explicit
+  `private: true` opt-in, and dropping the requirement were all rejected. Public PR
+  *titles* are not covered: the agent writes them with `gh pr create -t`, so ShipIt
+  generates no PR title to derive.
+- 2026-08-04 — The user replaced a planned separate tracker identity with naming
+  the destination on the operation, so no extra tracker id or sub-tab name is
+  introduced. (The spelling later became the mandatory `name` — see above.)
 - 2026-08-04 — The user replaced a stored deployment-wide binding with a
-  declarative one (req 5). This removed the Settings connect flow, the
+  declarative one (req 1). This removed the Settings connect flow, the
   credential-store field, connection-time validation, and the migration; it also
   dissolved the per-Project binding question, since the declaration travels with
   the repository. Two accepted consequences: `TrackerId` stops being a closed
-  union, and with no connection step ShipIt no longer verifies that a declared
+  union, and with no connection step ShipIt does not verify that a declared
   repository is private.
 - 2026-08-04 — The user required the declaration syntax to name the tracker kind
-  explicitly rather than assuming GitHub Issues (req 6), citing Linear team
-  assignment as a plausible later case. An unrecognized `kind` is ignored with a
-  warning (req 7) so a config written for a newer ShipIt does not break an older
-  one.
-- 2026-08-04 — To keep authorization simple, ShipIt relies on ordinary GitHub
+  explicitly rather than assuming GitHub Issues (req 2), citing Linear as a
+  plausible later case — which requirement 3 now makes real. An unrecognized `kind`
+  is ignored with a warning (req 5) so a config written for a newer ShipIt does not
+  break an older one.
+- 2026-08-04 — To keep authorization simple, ShipIt relies on ordinary tracker
   requests rather than proactive access or privacy polling, and does not verify
-  each viewer's repository membership independently of the credential (req 17).
+  each viewer's membership independently of the credential (req 17).
 - 2026-08-04 — The user removed priority-label writing from this feature as
-  orthogonal. Priority writes are to be supported for **both** GitHub destinations
-  under [SHI-310](https://linear.app/shipit-ai/issue/SHI-310).
+  orthogonal. Priority writes are tracked under
+  [SHI-310](https://linear.app/shipit-ai/issue/SHI-310).

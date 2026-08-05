@@ -100,22 +100,26 @@ requests; they cannot be chosen. `SHI-137` will not become `planning#137`. The
 mapping is the only authority, which is why step 4 emits it as a durable artifact
 rather than a side effect — and why step 5 cannot start until step 4 completes.
 
-### Aliases make this a one-time cost
+### Tracker names make this a one-time cost
 
 The reference rewrite is expensive enough to be worth paying only once. Writing
-the rewritten references in the **alias** form (`planning#123`, requirements 10–11 of
-[248](../248-declared-issue-trackers/plan.md)) means a later rename of the
-planning repository is a one-line `shipit.yaml` edit rather than a second sweep of
-~2,400 mentions. Alias support is therefore worth landing **before** step 5,
-otherwise step 5 hard-codes a repository slug into most files in the repository.
+the rewritten references in the **name** form (`planning#123`, requirements 8–9 of
+[248](../248-declared-issue-trackers/plan.md)) means a later rename of the planning
+repository is a one-line `shipit.yaml` edit rather than a second sweep of ~2,400
+mentions. Name support is therefore a hard prerequisite for step 5, not an
+optimization: without it, step 5 hard-codes a repository slug into most files in
+the repository and the whole sweep has to be repeated on the first rename.
 
-## Blocking gap: `issues.default`
+## The Linear fallback closes itself
 
-`shipit issue create` hardcodes Linear as its fallback tracker (`resolveTrackerFlag`
-in `agent-shim/shipit-issue.ts`), and declaring a tracker does not change it. Once
-Linear is retired, a bare `shipit issue create` files into a tracker nobody reads —
-an error, not friction. Closing that needs an `issues.default` key, which is a new
-requirement with its own doc, sequenced **before** step 6.
+`shipit issue create` currently hardcodes Linear as its fallback tracker
+(`resolveTrackerFlag` in `agent-shim/shipit-issue.ts`), which would have meant a
+bare `create` filing into a retired tracker. An earlier version of this plan
+proposed an `issues.default` key to fix it. That is no longer needed:
+[248](../248-declared-issue-trackers/requirements.md) req 1 removes implicit
+destinations altogether and req 8 makes every operation name its tracker, so there
+is no fallback left to point anywhere. The dependency is on 248 landing, not on a
+separate feature.
 
 ## Non-goals
 

@@ -1,7 +1,7 @@
 ---
 issue: https://linear.app/shipit-ai/issue/SHI-318
 title: Declared issue trackers
-description: Declare additional issue trackers in shipit.yaml, route every operation to a named repository, and reference issues through rename-proof aliases.
+description: Declare additional issue trackers in shipit.yaml, route every operation to a named repository, and reference issues through rename-proof names.
 ---
 
 # 248 — Declared issue trackers
@@ -14,10 +14,27 @@ here is the [evaluation](../246-native-issue-tracker-evaluation/plan.md).
 
 ## Status
 
-**Requirements 1–9 and 15–19 ship.** Declarations, `--repo`, qualified routing,
-the extra Issues tab, the fail-closed access error, and pointer-only branch names
-are all built. **Aliases (requirements 10–14) are designed but not implemented**,
-and they change two shipped behaviors — see [Aliases](#aliases-requirements-1014).
+**The design below is behind the requirements and is being reworked.** A first
+implementation shipped — declarations, `--repo`, repository-qualified routing, the
+extra Issues tab, the fail-closed access error, and pointer-only branch names —
+against an earlier, GitHub-only, purely-additive version of the requirements.
+
+The current requirements changed three things that invalidate parts of it:
+
+- **All trackers are declared** (req 1, 3). Linear stops being a built-in
+  destination, and a repository that declares nothing has only its own GitHub
+  Issues. The shipped code treats Linear as always-present and `--repo` as an
+  addition to it.
+- **Destinations are named, and the name is mandatory** (req 4, 8). `--repo
+  owner/name` is replaced by the tracker's declared name, which also retires the
+  shipped rule that `--repo` may reach any repository the credential can see.
+- **References resolve at use** (req 11), removing the shipped guarantee that a
+  recorded destination stays pinned to what it resolved to when written.
+
+Two open questions block the rework — the reference syntax for a backend whose
+ids are not per-repository numbers, and whether the break with existing pointer
+forms is accepted. Sections below marked *(as built)* describe what exists today,
+not what the requirements now ask for.
 
 The hard part was never CRUD — it was preserving the authoritative repository
 target through every UI, CLI, Undo, session-start, and PR-lifecycle path, with
@@ -57,7 +74,7 @@ later. The resolver's rules:
 1. An operation that names a repository — `--repo owner/name`, or a qualified
    `owner/repo#number` pointer — uses **that** repository, verbatim. ShipIt does
    not check it against a known set: any repository the credential can reach is
-   reachable, and GitHub authorization is the only gate (req 3). A repository the
+   reachable, and GitHub authorization is the only gate (superseded: req 8 replaces `--repo` with a declared name, so reachability is now what the repository declared). A repository the
    credential cannot see fails closed with an inline access error naming both
    possibilities (missing or inaccessible).
 2. An operation that names none keeps its current meaning: the active session's
@@ -84,7 +101,7 @@ a display identifier while downstream services received a bare issue number and
 reconstructed context from the code remote — so a pointer such as
 `other-owner/other-repo#42` could mutate code-repository issue `#42`.
 
-### Branch names (req 16)
+### Branch names (req 15)
 
 Sessions seeded from an issue keep the title in ShipIt — it is still the session
 title and still opens the seed prompt — but the **pushed branch name is the
@@ -92,7 +109,7 @@ pointer alone** (`seedFromIssueRef`). A branch reaches a public remote, so a tit
 from a private issue would be published there.
 
 The rule is **unconditional**, not scoped to declared trackers. There is no
-connect step (req 5), and therefore nothing that could tell ShipIt which
+connect step (req 1), and therefore nothing that could tell ShipIt which
 repositories are private: a declared repo may be public and a session's own code
 repo may be private, so any narrower rule would be a guess dressed as a policy.
 The cost — `shi-67` instead of `shi-67-inline-tracker-issues-tab`, for every
@@ -103,7 +120,7 @@ derive from a pointer.
 
 ## Configuration
 
-**Trackers are declared, not connected** (req 5). Additional trackers are listed
+**Trackers are declared, not connected** (req 1). Additional trackers are listed
 in the repository's `shipit.yaml`, alongside the `agent`, `compose`, and `release`
 blocks it already carries. Each entry is a **tagged union discriminated on
 `kind`** (the same discriminator the issue domain types already use for
@@ -128,7 +145,7 @@ user operates. It buys three things at once:
 
 **There is no new fixed tracker identity either.** On the CLI the destination is a
 *repository*, named on the operation: `shipit issue … --tracker github --repo
-owner/name` (req 1). An operation naming no repository still resolves the active
+owner/name` (superseded by req 8). An operation naming no repository still resolves the active
 session's code remote, so neither a declaration nor a setting can silently change
 where an existing command writes. `--repo` accepts any repository the credential
 can reach, so it is not limited to what `shipit.yaml` declares; declarations drive
@@ -163,12 +180,12 @@ also access failures. Neither invalidates otherwise valid credentials; only an
 authentication failure may do that. There is no poller and no periodic
 membership/visibility check.
 
-## Aliases (requirements 10–14)
+## Tracker names (requirements 8–11)
 
-**Not implemented.** A declaration may carry an `alias`, and `planning#123` then
+**Not implemented.** A declaration may carry a `name`, and `planning#123` then
 resolves through it. Two things make this cheap and one makes it invasive.
 
-**Cheap:** `alias#123` is a free slot in the pointer grammar. `parseIssueRef`
+**Cheap:** `name#123` is a free slot in the pointer grammar. `parseIssueRef`
 matches `owner/repo#N` (`GITHUB_SHORT_RE` requires the slash), bare Linear keys,
 and full URLs, and deliberately rejects bare `#42` as tracker-ambiguous — so a
 single bare token before `#` matches nothing today. And the resolution target is
@@ -176,35 +193,35 @@ an existing qualified id, so everything downstream of the parser is unchanged.
 
 **Invasive:** `parseIssueRef` is currently **pure and context-free** — it takes a
 string and nothing else, which is why the client chip and the server shim can
-share it. An alias cannot be resolved without the declarations, so either the
-function grows a context parameter threaded through every call site, or alias
+share it. A name cannot be resolved without the declarations, so either the
+function grows a context parameter threaded through every call site, or name
 resolution happens in a thin layer above it that both consumers call. The second
 keeps the parser pure and is the shape to prefer; the call-site audit is the real
 work.
 
 Three consequences to design against, each following from a requirement:
 
-- **ShipIt emits the alias everywhere** (req 12). Every site that today
+- **ShipIt emits the name everywhere** (req 10). Every site that today
   formats a qualified pointer — the PR-body `Closes`/`Refs` writer, provenance and
   read cards, `shipit issue` output, doc `issue:` frontmatter written by the agent
-  — must render the alias when the target tracker has one. This is the bulk of the
+  — must render the name when the target tracker has one. This is the bulk of the
   work and it is spread across surfaces that currently format independently, so it
-  wants a single formatter rather than N call sites learning about aliases.
-- **A self-declaration must be honored** (req 13). `buildTrackerRegistry` currently
+  wants a single formatter rather than N call sites learning about names.
+- **A self-declaration must be honored** (req 8). `buildTrackerRegistry` currently
   *skips* a declaration whose `owner/repo` case-insensitively matches the
   session's own repo, on the reasoning that it duplicates the bare `github`
   tracker. That skip has to go: a self-declaration is how a code repository gets
-  an alias. The resulting entry must not produce a duplicate tab.
-- **Resolution happens at use, not at write** (req 14). Nothing pins an alias to
+  a name. The resulting entry must not produce a duplicate tab.
+- **Resolution happens at use, not at write** (req 11). Nothing pins a name to
   the repository it resolved to when written — including persisted Undo card
-  targets. Re-pointing an alias re-targets history written against it, and the UI
+  targets. Re-pointing a name re-targets history written against it, and the UI
   shows the repository it now resolves to. This *removes* a guarantee the shipped
   code currently provides, so the audit is for places that assume a recorded
   target is immutable.
 
 Open design points (not requirements questions — these are mechanism choices):
-duplicate/conflicting aliases across declarations, whether an alias may collide
-with a GitHub owner name, and what an unresolvable alias renders as (it must fail
+duplicate/conflicting names across declarations, whether a name may collide
+with a GitHub owner name, and what an unresolvable name renders as (it must fail
 closed and stay legible, not silently degrade to a broken link).
 
 ## Key files (as built)
@@ -218,7 +235,7 @@ closed and stay legible, not silently degrade to a broken link).
   unrecognized `kind` warns and skips.
 - `src/server/shared/issue-ref.ts` — `ParsedIssueRef.tracker` is a `TrackerId`, so
   a GitHub pointer resolves to its own repository. Pure and context-free; see
-  [Aliases](#aliases-requirement-6).
+  [Names](#names-requirement-6).
 - `src/server/shared/pr-issue-refs.ts` — `Refs`/`Closes`/`Fixes`/`Resolves`
   pointers inherit the qualified destination via `parseIssueRef`.
 - `src/server/orchestrator/trackers/registry.ts` — one tracker per declaration;
@@ -238,7 +255,7 @@ closed and stay legible, not silently degrade to a broken link).
 - `src/server/session/agent-shim/shipit-issue.ts` — `--repo` on every verb, via
   `resolveTrackerFlag` / `resolveIssuePointer`.
 - `src/server/orchestrator/services/headless-sessions.ts` — `seedFromIssueRef`
-  builds the branch from the identifier alone (req 16).
+  builds the branch from the identifier alone (req 15).
 - Agent-facing docs: `src/server/shipit-docs/issues.md` (repository-resolution
   rules) and `shipit-docs/shipit-yaml.md` (the `issues:` block).
 
@@ -255,13 +272,13 @@ and revoked access all failing without fallback and naming both "missing" and
 "inaccessible"; a malformed or absent `issues.trackers` block, a `github` entry
 missing `repo`, and an unrecognized `kind`, each warning and skipping; and an
 operation naming `--repo` versus one naming none each reaching the repository
-req 1 says it should.
+the requirements say it should.
 
-Alias coverage is not written yet. It needs, at minimum: an alias pointer
-resolving to its declared repository; an alias re-pointed to a second repository
-re-targeting an existing recorded card (req 14); a self-declaration producing an
-alias without a duplicate tab; ShipIt-generated PR bodies containing the alias
-form rather than the qualified slug (req 12); and an unresolvable alias failing
+Name coverage is not written yet. It needs, at minimum: a name pointer
+resolving to its declared repository; a name re-pointed to a second repository
+re-targeting an existing recorded card (req 11); a self-declaration producing an
+name without a duplicate tab; ShipIt-generated PR bodies containing the name
+form rather than the qualified slug (req 10); and an unresolvable name failing
 closed.
 
 ## Known GitHub feature differences

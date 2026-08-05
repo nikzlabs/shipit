@@ -2,7 +2,7 @@
 
 How ShipIt tracks its own planning work, and the migration off Linear. The
 platform mechanism this relies on — declared trackers, repository-qualified
-routing, aliases — is a separate feature
+routing, tracker names — is a separate feature
 ([248](../248-declared-issue-trackers/requirements.md)).
 
 ## The planning tracker
@@ -14,8 +14,8 @@ routing, aliases — is a separate feature
 3. Three disclosures are accepted:
    - a public PR body reveals a referenced issue's number and its existence;
    - the committed `shipit.yaml` publishes the planning repository's slug, and its
-     `alias → owner/repo` mapping where an alias is declared;
-   - a reference written without an alias discloses the repository slug too.
+     `name → destination` mapping;
+   - a reference to the session's own repository discloses that repository, which is already public.
 
    Readers without repository access still cannot inspect issue contents.
 4. All planning workflows are available inline in ShipIt. A GitHub link remains
@@ -39,8 +39,9 @@ routing, aliases — is a separate feature
     `issue:` frontmatter, inline mentions in docs, references in code comments,
     and `CLAUDE.md`.
 11. After the copy and the rewrite, ShipIt stops using Linear for its own
-    planning: no new issues are filed there, and the Linear tab is removed from
-    ShipIt's own sessions.
+    planning: it removes Linear from its own `shipit.yaml` declarations, so no new
+    issues are filed there and the tab disappears. Linear remains a supported
+    tracker kind for any repository that declares it.
 
 ## Open questions
 
@@ -49,11 +50,6 @@ routing, aliases — is a separate feature
   deployment's GitHub credential must also reach it — that credential is
   account-wide rather than repo-scoped, so a fine-grained token limited to the
   source repository would fail there.
-- **Does "fully retire Linear" extend to the product, or only to ShipIt's own
-  planning?** Requirement 11 states the latter. Removing `LinearTracker` from the
-  product is a different and much larger change, and other repositories edited
-  inside ShipIt depend on it. The distinction has not been confirmed.
-
 ## Resolved questions
 
 Receipts about the tracker *mechanism* live in
@@ -61,6 +57,11 @@ Receipts about the tracker *mechanism* live in
 to ShipIt's own planning. The full deliberation history of the superseded
 `247-private-github-issue-tracker` doc remains in git.
 
+- 2026-08-05 — "Does *fully retire Linear* extend to the product?" is answered by
+  the user's decision to make `linear` a declared tracker kind
+  ([248](../248-declared-issue-trackers/requirements.md) req 3): Linear support
+  stays in the product, and what is retired is its status as an implicit built-in
+  destination. ShipIt retires it *for itself* by not declaring it (req 11).
 - 2026-08-05 — Asked what happens to the ~316 existing Linear issues, the user
   chose to **copy everything, including comments, fix all references, and fully
   retire Linear**. Leaving the existing issues in Linear and cutting over only new
@@ -83,7 +84,7 @@ to ShipIt's own planning. The full deliberation history of the superseded
   afterward are tracker use rather than repository initialization.
 - 2026-08-04 — After reviewing the disclosure risks, the user accepted that a
   public PR reveals the referenced issue number and its existence. (The form that
-  reference takes was later changed to the alias — see 248's receipts.)
+  reference takes was later changed to the tracker name — see 248's receipts.)
 - 2026-08-04 — The user resolved that ShipIt's planning tracker uses the same
   GitHub token as other GitHub operations, and that ShipIt does not independently
   verify each viewer's repository membership.
