@@ -20,7 +20,10 @@ import type { ModelInfo } from "../utils/model-info.js";
  * Claude subscription plan limit. Flagged with a $ icon in the picker so the
  * cost is visible at selection time. Fable 5 is the first such model.
  */
-const METERED_MODELS = new Set(["claude-fable-5"]);
+// `deepseek-v4-flash` is metered for the same reason as `claude-fable-5` — it
+// bills per token against a user-supplied key (DEEPSEEK_API_KEY) rather than a
+// connected subscription. See CLAUDE_MODELS in agent-registry.ts.
+const METERED_MODELS = new Set(["claude-fable-5", "deepseek-v4-flash"]);
 
 interface ModelAgentSelectorProps {
   agents: AgentOption[];

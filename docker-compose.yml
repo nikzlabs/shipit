@@ -187,10 +187,21 @@ services:
     # secrets: the dogfooding developer sets them once in the outer ShipIt's
     # Settings → Secrets panel, keyed by these names. Use a long-lived
     # ANTHROPIC_API_KEY (it does not rotate) + a dedicated testing GITHUB_TOKEN.
+    #
+    # DEEPSEEK_API_KEY is the experimental DeepSeek-route spike's credential
+    # (`applyDeepSeekRouteEnv` in session/agents/claude/process.ts). It is
+    # declared here so the route can be exercised in the inner ShipIt before it
+    # is trusted in a real session: set it in the OUTER Settings → Secrets, pick
+    # `deepseek-v4-flash` in the inner model picker, and the inner in-process
+    # spawn picks it up from this container's env. Deliberately NOT
+    # ANTHROPIC_AUTH_TOKEN — that name is scrubbed on any account-scoped spawn,
+    # so the route would work or fail depending on how the inner install is
+    # signed in. Unset = the model simply fails, no effect on other models.
     x-shipit-secrets:
       - { name: ANTHROPIC_API_KEY }
       - { name: ANTHROPIC_AUTH_TOKEN }
       - { name: GITHUB_TOKEN }
+      - { name: DEEPSEEK_API_KEY }
 
   # Agent Interface SDK test preview (docs/242).
   #

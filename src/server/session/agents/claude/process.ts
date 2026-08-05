@@ -31,6 +31,69 @@ function scrubEnvAuthForScopedHome(env: Record<string, string>, scopedHome: stri
   delete env.ANTHROPIC_AUTH_TOKEN;
 }
 
+/** Model-id prefix that selects the DeepSeek route. */
+const DEEPSEEK_MODEL_PREFIX = "deepseek-";
+
+/** DeepSeek's Anthropic-compatible surface. Overridable for a proxy/gateway. */
+const DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic";
+
+/**
+ * EXPERIMENTAL SPIKE — run a `deepseek-*` model through DeepSeek's
+ * Anthropic-compatible endpoint while keeping the Claude Code CLI as the harness.
+ *
+ * The CLI speaks the Anthropic wire protocol and DeepSeek serves a compatible
+ * surface at `/anthropic`, so redirecting `ANTHROPIC_BASE_URL` is enough to run a
+ * turn on DeepSeek with ShipIt's tool allowlist, skills, MCP config and event
+ * parsing all unchanged. That reuse is the entire point of the spike — see the PR
+ * for the two behaviors that are knowingly wrong (rate-limit pill, 401 handling).
+ *
+ * Gated on the SELECTED MODEL, not on a global secret, so the model picker is the
+ * switch: a session on any `claude-*` model gets a byte-identical env, and one
+ * workspace can A/B the two. A bare `ANTHROPIC_BASE_URL` secret would instead flip
+ * every session at once, with no per-session escape.
+ *
+ * The key is read from `DEEPSEEK_API_KEY` rather than reusing `ANTHROPIC_AUTH_TOKEN`
+ * for two reasons:
+ *
+ *   1. {@link scrubEnvAuthForScopedHome} deletes `ANTHROPIC_AUTH_TOKEN` whenever a
+ *      scoped home applies — that is every local-mode turn routed to a provider
+ *      account, and no containerized turn. Reusing the name would make the route
+ *      work or fail based on how the install happens to be signed in, which is
+ *      unrelated to the thing under test.
+ *   2. An unscoped `generateText` spawn (session naming, PR descriptions) is never
+ *      scrubbed, so a DeepSeek key parked in `ANTHROPIC_AUTH_TOKEN` would be sent
+ *      to api.anthropic.com and 401 — unrelated failures next to the real ones.
+ *
+ * `DEEPSEEK_API_KEY` sits in neither path, so it behaves identically in local mode,
+ * in a container, and under the dogfood `dev` service.
+ *
+ * MUST be called AFTER `scrubEnvAuthForScopedHome`: when a scoped home applies the
+ * scrub would otherwise delete the token this just set. Reads the key from
+ * `process.env`, never from the (possibly already scrubbed) spawn env.
+ */
+export function applyDeepSeekRouteEnv(env: Record<string, string>, model: string | undefined): void {
+  if (!model?.startsWith(DEEPSEEK_MODEL_PREFIX)) return;
+
+  const key = process.env.DEEPSEEK_API_KEY?.trim();
+  if (!key) {
+    // Loud, because the alternative is a turn that quietly authenticates as
+    // whoever the session was already signed in as and reports a confusing 401.
+    console.warn(
+      `[claude] model "${model}" selected but DEEPSEEK_API_KEY is unset — `
+      + "leaving the env untouched, so this turn will run against the default "
+      + "Anthropic endpoint and fail. Set it in Settings → Secrets.",
+    );
+    return;
+  }
+
+  env.ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL?.trim() || DEEPSEEK_DEFAULT_BASE_URL;
+  env.ANTHROPIC_AUTH_TOKEN = key;
+  // The CLI prefers ANTHROPIC_API_KEY over ANTHROPIC_AUTH_TOKEN. On an unscoped
+  // spawn the scrub above is a no-op, so a real Anthropic key left in the env
+  // would win and get sent to DeepSeek's endpoint.
+  delete env.ANTHROPIC_API_KEY;
+}
+
 /**
  * Phrases that signal an auth failure in CLI output. Used both for non-JSON
  * stderr lines (startup auth prompts) and for the text of an error `result`
@@ -413,6 +476,8 @@ export class ClaudeProcess extends EventEmitter {
       NODE_ENV: "development",
     };
     scrubEnvAuthForScopedHome(spawnEnv, scopedHome);
+    // Ordering is load-bearing — see applyDeepSeekRouteEnv's docstring.
+    applyDeepSeekRouteEnv(spawnEnv, model);
     if (autoCreatePr) {
       spawnEnv.SHIPIT_AUTO_CREATE_PR = "1";
     } else {
@@ -660,6 +725,8 @@ export class StreamingClaudeProcess extends EventEmitter {
       NODE_ENV: "development",
     };
     scrubEnvAuthForScopedHome(spawnEnv, scopedHome);
+    // Ordering is load-bearing — see applyDeepSeekRouteEnv's docstring.
+    applyDeepSeekRouteEnv(spawnEnv, model);
     if (autoCreatePr) {
       spawnEnv.SHIPIT_AUTO_CREATE_PR = "1";
     } else {
