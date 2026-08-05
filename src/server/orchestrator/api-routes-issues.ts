@@ -51,7 +51,7 @@ import { emitChatCard } from "./chat-card-persistence.js";
 /**
  * Resolve the GitHub tracker context for a request: ShipIt's existing GitHub
  * token, the repo derived from a session's remote, and the additional trackers
- * that session's repository declares in its `shipit.yaml` (docs/247). Any piece
+ * that session's repository declares in its `shipit.yaml` (docs/248). Any piece
  * may be null/empty (GitHub not connected, no session, a non-GitHub remote, no
  * declarations) — the adapter then reports unconfigured. Exported so the undo WS
  * handler resolves it the same way the routes do.
@@ -72,7 +72,7 @@ export function resolveGitHubTrackerContext(
 }
 
 /**
- * docs/247 — read `issues.trackers` from the session workspace's `shipit.yaml`.
+ * docs/248 — read `issues.trackers` from the session workspace's `shipit.yaml`.
  *
  * Read fresh per request rather than cached: the file is committed, so editing
  * it must change which tabs appear on the next request without a restart, and a

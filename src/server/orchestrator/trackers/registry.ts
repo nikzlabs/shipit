@@ -1,5 +1,5 @@
 /**
- * Configured-tracker registry (docs/170, SHI-80; extended by docs/247).
+ * Configured-tracker registry (docs/170, SHI-80; extended by docs/248).
  *
  * Holds the set of trackers ShipIt knows about and drives the Issues tab's
  * sub-tabs. It registers Linear, GitHub Issues for the active session's own code
@@ -17,7 +17,7 @@
  *     sub-tab is auto-configured (no separate connect step) whenever a token
  *     and a GitHub repo are both present — and varies as the user switches
  *     sessions.
- *   - **Declared GitHub trackers** (docs/247) come from the session repository's
+ *   - **Declared GitHub trackers** (docs/248) come from the session repository's
  *     committed `shipit.yaml`, so they too vary per session and are read fresh
  *     on each request rather than stored.
  * An adapter instance captures its binding at construction, so a fresh registry
@@ -59,7 +59,7 @@ import { GitHubTracker, type GitHubRepoRef } from "./github/adapter.js";
 export interface GitHubTrackerContext {
   token: string | null;
   repo: GitHubRepoRef | null;
-  /** docs/247 — `issues.trackers` from the session repository's shipit.yaml. */
+  /** docs/248 — `issues.trackers` from the session repository's shipit.yaml. */
   declared?: DeclaredTracker[];
 }
 

@@ -20,7 +20,7 @@
  *    to GitHub yields `/issues/owner%2Frepo%2342` → 404.
  *
  * The repository half of a GitHub pointer is NOT discarded: it rides on
- * `tracker` as a qualified `github:owner/repo` id (docs/247), which is what
+ * `tracker` as a qualified `github:owner/repo` id (docs/248), which is what
  * routes the operation to the repository the pointer actually named.
  */
 
@@ -31,7 +31,7 @@ export interface ParsedIssueRef {
    * Tracker **destination** inferred from the pointer shape — a full
    * {@link TrackerId}, not just the tracker kind.
    *
-   * docs/247: a GitHub pointer always names its repository (`owner/repo#42`, a
+   * docs/248: a GitHub pointer always names its repository (`owner/repo#42`, a
    * `github.com/owner/repo/issues/42` URL), so it resolves to the qualified
    * `github:owner/repo` id rather than the bare `"github"`. That is what stops a
    * pointer into one repository from operating on the *session's* repository —
@@ -127,7 +127,7 @@ export function parseIssueRef(raw: string): ParsedIssueRef {
  *    `SHI-90` with no `issue` lead-in is deliberately NOT matched.
  *
  * Deduped by `tracker:issueId` in first-seen order; unresolvable tokens drop.
- * Because a GitHub `tracker` is repository-qualified (docs/247), that key is
+ * Because a GitHub `tracker` is repository-qualified (docs/248), that key is
  * qualified too — `a/x#42` and `b/y#42` are two refs, not one.
  */
 export function extractIssueRefsFromText(text: string | null | undefined): ParsedIssueRef[] {

@@ -4,7 +4,7 @@
  * Identifier for a configured issue tracker. Drives the Issues tab's sub-tab
  * switcher and the `?tracker=` query.
  *
- * Not a closed union (docs/247): `"github"` keeps its historical meaning — the
+ * Not a closed union (docs/248): `"github"` keeps its historical meaning — the
  * active session's own code repository — but a GitHub destination may also be
  * named explicitly as `` `github:${owner}/${repo}` ``. Those come from
  * `issues.trackers` declarations in a repository's `shipit.yaml` and from an

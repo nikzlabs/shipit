@@ -1684,7 +1684,7 @@ describe("shipit issue", () => {
     expect(out.stdout).toContain("A bug");
   });
 
-  // -- docs/247: --repo names the destination repository -------------------
+  // -- docs/248: --repo names the destination repository -------------------
 
   it("view routes a qualified pointer to the repository it named", async () => {
     // The core wrong-target fix: `octocat/hello#42` must reach octocat/hello's

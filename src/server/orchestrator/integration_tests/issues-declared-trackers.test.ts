@@ -1,5 +1,5 @@
 /**
- * Integration tests for declared additional issue trackers (docs/247, SHI-304).
+ * Integration tests for declared additional issue trackers (docs/248, SHI-304).
  *
  * Exercises the end-to-end path a `shipit.yaml` declaration takes: the config
  * parser → `resolveGitHubTrackerContext` → the tracker registry → the routes the
@@ -56,7 +56,7 @@ function ghIssue(owner: string, repo: string, number: number, title: string) {
   };
 }
 
-describe("Integration: declared issue trackers (docs/247)", () => {
+describe("Integration: declared issue trackers (docs/248)", () => {
   let app: FastifyInstance;
   let tmpDir: string;
   let workspaceDir: string;
