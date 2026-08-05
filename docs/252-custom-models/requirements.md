@@ -22,27 +22,46 @@ No open questions remain.
 5. A user can switch models within a session while keeping the same harness, as far
    as that harness supports it.
 
-6. Everything ShipIt normally does inside a session keeps working on any model:
-   tools, skills, MCP servers, live steering, permission modes, plan mode, and the
-   transcript.
+6. Everything ShipIt normally does inside a session keeps working on any model, as far
+   as the harness and the model support it: tools, skills, MCP servers, live steering,
+   permission modes, plan mode, and the transcript. Both qualifiers are load-bearing —
+   Codex declares no permission-mode or image support, and a model that cannot call
+   tools cannot run skills or MCP servers no matter which harness drives it. ShipIt
+   promises to add no limitation of its own, not to add capability the harness or model
+   lacks.
 
-7. The thing a user adds is a **service**, identified by its API key or its
-   subscription — not a model, and not a harness. Anthropic and OpenAI are services
-   like any other and work the same way; harness and service are fully separate
-   concepts throughout.
+7. The thing a user adds is a **service** — not a model, and not a harness. Harness and
+   service are fully separate concepts throughout, and Anthropic and OpenAI are services
+   like any other rather than privileged defaults.
 
-8. A service may speak more than one API style, and a harness speaks one. A service
-   declares which of its models work under which API style — a service can speak a
-   style without every one of its models being usable there. A model is offered on a
-   harness when the service speaks that harness's style **and** declares that model
-   for it.
+   A service is authenticated either by an API key or by a subscription. **A service the
+   user adds themselves is key-authenticated.** Subscription-backed services are those
+   ShipIt implements support for, because each subscription needs its own login,
+   refresh, and account handling that cannot be inferred from configuration. Adding a
+   new subscription-backed service is out of scope for this feature.
+
+8. A service may speak more than one API style, and a harness speaks one. Which of a
+   service's models work under which API style is **declared in ShipIt, by ShipIt's
+   developers** — a service can speak a style without every one of its models being
+   usable there. A model is offered on a harness when the service speaks that harness's
+   style **and** is declared to support that model there.
+
+   Writing those declarations must not mean one entry per model: it must be possible to
+   cover many models of a service with a single piece of configuration, so that a
+   service offering hundreds of models is no more work than one offering three.
 
 9. When a new harness is added to ShipIt later, the services that already speak its
    API style become usable with it as far as their declarations reach, with no
    further work by the user beyond declaring any models they had not covered yet.
 
-10. A user adds and manages their own services, in their own Settings. Trying a new
-    service or model does not require an administrator, a code change, or a release.
+10. A user adds and manages their own services in their own Settings by supplying
+    credentials for them — no administrator, and no involvement from anyone else, to
+    start using a service ShipIt knows about.
+
+    The catalogue itself — which services exist, which API styles each speaks, and which
+    of their models work where — ships with ShipIt (req 8). So a service or model ShipIt
+    does not yet know about does require a ShipIt change. This is a deliberate narrowing
+    of an earlier answer; see the receipts.
 
 11. ShipIt only offers models it can actually run. A model whose service has no
     configured credential is not selectable — this is one rule applying uniformly to
@@ -53,14 +72,20 @@ No open questions remain.
     independently of whatever model a session is using. It must not silently depend
     on a credential the user has stopped having.
 
+    When that service fails, the surrounding operation still completes on its existing
+    fallback — a session keeps its placeholder title, a pull request gets its generic
+    description — and ShipIt shows a dismissible notice saying which service failed.
+    Failure of background work never blocks the operation around it, and is never
+    silent either.
+
 13. Usage is reported per **service**, not per model. A service may expose its own
     quota or subscription, and the indicator reflects whatever the service in use
     reports. A service with no quota to report — an ordinary API key, which has no
     allowance and nothing that resets — shows no indicator at all, rather than an
     empty or placeholder one.
 
-14. ShipIt is honest about what a session is running on. The user can tell which
-    model and which service are in use, and whether that service bills a key or a
+14. ShipIt is honest about what a session is running on. The user can tell which model
+    and which service are in use, and whether that service bills a key or a
     subscription.
 
 15. When a service's credential stops working mid-session — revoked, expired, rate
@@ -84,13 +109,43 @@ _None._
 
 ## Resolved questions
 
+- 2026-08-05 — Who authors a service's per-model declarations, and what keeps them
+  fresh? **Chosen: ShipIt's developers author them, with configuration that can cover
+  many models at once.** Not user-authored and not auto-discovered. Requirement 8 gained
+  the authorship and the "one config covers many models" constraint, which is what keeps
+  an aggregator's hundreds of models from being hundreds of entries.
+
+  **This narrowed requirement 10.** That requirement previously said trying a new service
+  or model needs no code change or release; with the catalogue shipping in ShipIt, a
+  service ShipIt does not know about *does*. Req 10 was rewritten so what the user owns
+  is the **credential**, and the catalogue is ShipIt's. The two answers are recorded
+  separately rather than merged, because the second changes the first.
+
+- 2026-08-05 — Are user-added *subscription* services in scope? **Chosen: no, out of
+  scope for now.** Each subscription needs custom ShipIt-side support — its own login,
+  refresh, and account handling — which cannot be inferred from configuration. A service
+  a user adds is key-authenticated; subscription-backed services remain the ones ShipIt
+  implements. Requirement 7.
+
+- 2026-08-05 — What should failure of non-turn work look like? **Chosen: (a) keep the
+  existing fallbacks and surface a dismissible notice.** The operation still completes —
+  placeholder title, generic pull-request description — and the user is told which
+  service failed. Background failure neither blocks the operation nor passes silently.
+  Requirement 12.
+
+- 2026-08-05 — Confirm or strike requirements 6 and 14, both agent-supplied. **Chosen:
+  both kept.** Req 6 additionally gained a *model*-capability qualifier alongside the
+  harness one: a model that cannot call tools cannot run skills or MCP servers whatever
+  the harness does, so the requirement is that ShipIt adds no limitation of its own —
+  not that every model gains every capability.
+
 - 2026-08-05 — Can one service offer different models to different harnesses?
   **Chosen: (b) — a service declares which of its models work under which API style.**
   Compatibility is therefore a property of *service × model × harness*, not service ×
   harness. Reqs 8 and 9 were narrowed accordingly: req 9's "no further work by the
   user" now holds only as far as a service's declarations already reach. The cost is
   more configuration per service; the alternative was offering models that are listed
-  and then fail, which is the failure mode req 12 exists to prevent elsewhere.
+  and then fail, which is exactly what req 11 forbids.
 
 - 2026-08-05 — At the moment a credential failure arrives, can ShipIt tell a spent
   subscription apart from a bad key? **Chosen: it does not have to.** The rule keys on
@@ -127,7 +182,8 @@ _None._
   in both Claude Code and Codex; a service speaking only the OpenAI style yields
   Codex only; a harness added later automatically picks up the services that speak
   its style. Requirements 7, 8 and 9 were added; the gateway question is dropped as
-  not the axis.
+  not the axis. *(Later narrowed the same day — a service's models are not all usable
+  under every style it speaks; see the compatibility receipt above.)*
 
 - 2026-08-05 — Who decides which custom models exist? Chosen: each user, in their own
   Settings — not an admin-curated list and not the source tree. Requirement 10.
@@ -195,7 +251,14 @@ human, but most of the mechanism did not. What the human actually said, in order
 - "I'd say that subscriptions should fail over but not API keys" → the rule in req 15.
 - "failover between subscriptions of the same service" → its scoping to a single
   service.
-- Answers of 2026-08-05 → reqs 10, 11, 12, 13, 15.
+- "ShipIt developers (me), with a convenient way to cover many models with a single
+  config" → req 8's authorship and compactness constraints, and the narrowing of req 10.
+- "each subscription would require custom support from the ShipIt side. So it is out of
+  scope of this feature for now" → req 7's key-authentication limit.
+- "(a) keep the existing fallbacks and surface a dismissible notice" → req 12's failure
+  behavior.
+- "sounds good" (req 6) and "good" (req 14) → both confirmed as requirements.
+- Answers of 2026-08-05 → reqs 6, 7, 8, 10, 11, 12, 13, 14, 15.
 
 Reqs 6 and 14 are the agent's reading of "works like any other session" and of
 ShipIt's existing product principles. They are stated as requirements rather than open

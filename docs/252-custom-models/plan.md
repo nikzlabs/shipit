@@ -56,8 +56,7 @@ The declaration is not bureaucracy — it is the only honest way to express real
 DeepSeek speaks both styles yet supports only `deepseek-v4-flash` under Codex, and
 Codex additionally wants per-model metadata (context window, tool format, reasoning
 settings) beyond a bare id. A purely derived rule would list `deepseek-v4-pro` under
-Codex and let the turn fail, which is precisely the listed-but-broken failure mode
-req 12 exists to prevent elsewhere.
+Codex and let the turn fail, which is precisely what req 11 forbids.
 
 What still falls out cheaply is req 9: a new harness picks up every configured service
 that speaks its style, limited to the models already declared for it. Nothing has to
@@ -135,10 +134,11 @@ wrong, and the correction strengthens the case for storing style per service rat
 than hardcoding one endpoint.)
 
 DeepSeek itself speaks **both** — the `/anthropic` endpoint and, per its own docs, the
-OpenAI Responses API with a Codex adaptation. So one DeepSeek key should surface its
-models under both harnesses (req 8), while an OpenAI-style-only service surfaces under
-Codex alone. This concrete asymmetry is the evidence for modelling API style per
-service rather than treating it as a global scope decision.
+OpenAI Responses API with a Codex adaptation. So one DeepSeek key surfaces models under
+both harnesses — but *not necessarily the same models*: only `deepseek-v4-flash` is
+supported under Codex today, which is precisely why req 8 makes the per-model
+declaration part of the service rather than deriving it from the style set. An
+OpenAI-style-only service surfaces under Codex alone.
 
 ### Two things break — and a third that only looked broken
 
@@ -192,13 +192,26 @@ spike is scaffolding.
 
 ## Design
 
-Settled by the 2026-08-05 answers. Nothing here is deferred.
+Settled by the 2026-08-05 answers. **User-added services are key-authenticated**
+(req 7): a subscription needs its own login, refresh and account handling, which cannot
+come from configuration, so adding subscription-backed services is out of scope here.
+Subscriptions remain first-class for the vendors ShipIt already implements.
 
-**Data model.** A user-owned list of **services** (req 10), each carrying a display
-name, a credential (key *or* subscription), a base URL, and the API styles it speaks —
-with, per style, the models it declares as working there (req 8). Anthropic and OpenAI
-are rows in that list, not special cases (req 7). `AgentId` keeps meaning *harness*
-only, and gains a declared API style.
+**Data model — two layers, with different owners.**
+
+*ShipIt ships the catalogue* (req 8): which services exist, which API styles each
+speaks, and per style, which of its models work there plus any metadata that style needs
+(Codex wants context window, tool format and reasoning settings). This must be
+expressible compactly — a rule covering a whole model family, not one row per model, or
+an aggregator's catalogue becomes unmaintainable. A per-style endpoint belongs here too:
+one base URL per service is wrong for a service whose styles live at different paths.
+
+*The user supplies credentials* (req 10) for the services they want to use. That is the
+whole of what they own; they are not authoring catalogue entries. The consequence is
+explicit in req 10 — a service ShipIt does not know about needs a ShipIt change.
+
+Anthropic and OpenAI are catalogue rows like any other, not special cases (req 7).
+`AgentId` keeps meaning *harness* only, and gains a declared API style.
 
 The picker's list for the active harness is then every `(service, model)` pair the
 service declares under that harness's style, filtered to services with a usable
@@ -216,6 +229,14 @@ the load-bearing simplification: ShipIt does not classify the failure, it looks 
 the failing service is authenticated — a fact it holds statically in the service row.
 A subscription fails over to another subscription *of the same service*; an API key
 does not fail over at all, and the turn stops.
+
+Review confirmed this is the right axis and that the existing code already half-draws
+it — but found the gate is applied in **one** of the two places that need it. Account
+benching checks the route kind and bails for a reserved route
+(`bootstrap-managers.ts:442`), while the same-turn quota retry does not: it fires on
+`detectHardExhaustion(event.error)` alone (`turn-executor.ts:938`). A key-authenticated
+service answering "quota exceeded" would therefore be retried once on the same bad key,
+which is exactly what req 15 forbids. Both paths need the credential-kind gate.
 
 That also means there is no service re-prompt flow to build; an earlier draft proposed
 one. See the findings note above for what has to be *removed* instead.
@@ -238,14 +259,25 @@ mechanism: the model is already a per-turn spawn argument, and `AgentCapabilitie
 already carries per-harness flags. A switch that crosses *services* additionally
 re-resolves the credential and base URL for the next spawn.
 
-This was flagged as an open implementation unknown; review settled it from the code.
-ShipIt already forces the boundary: `releaseResidentOnModelChange`
-(`resident-model-guard.ts`) kills a resident process whose spawn-time model no longer
-matches the selection, and the turn respawns with the new `--model` and
-`--resume <session>` (`agent-execution.ts:291`). A model change is rare and
-user-initiated, so one respawn was judged cheaper than mid-stream model switching.
-A service change rides the same boundary — so req 5 needs no new lifecycle mechanism,
-only the credential and base URL re-resolved on that respawn.
+ShipIt already forces a respawn boundary for a *model* change:
+`releaseResidentOnModelChange` (`resident-model-guard.ts`) kills a resident process
+whose spawn-time model no longer matches the selection, and the turn respawns with the
+new `--model` and `--resume <session>` (`agent-execution.ts:291`).
+
+**But a service change does NOT ride that boundary, and an earlier draft of this doc
+wrongly said it did.** The guard compares two model *strings* — `runner.appliedModel`
+against the desired model (`resident-model-guard.ts:44`) — and `appliedModel` is set
+from `runParams.model` alone (`turn-executor.ts:1225`). Since the same model id can be
+offered by two services, switching `deepseek-v4-flash` from DeepSeek direct to
+OpenRouter leaves the strings equal, no kill fires, and the next turn runs on the
+**old process with the old endpoint and old credential** — silently billing the wrong
+service and contradicting req 14.
+
+So req 5 does need a change after all: the resident process's identity must be the
+whole spawn-relevant tuple — harness, service, API style, endpoint, credential route,
+model — not a model string. This is the same `(service, model id)` identity the picker
+needs, applied one layer down; the two should share a representation rather than each
+inventing one.
 
 Note the correction this implies for "the model is already a per-turn spawn argument":
 for a **resident** process it is not. Later turns are injected without spawning until
@@ -256,18 +288,23 @@ under Findings. It needs a runtime, per-service credential mechanism (the allowl
 compile-time, which contradicts req 10) that also reaches compose-backed containerized
 sessions (which today receive only compose-declared and `mcp__*` secrets).
 
-**Subscription-backed services are a second, unbuilt path.** Req 7 makes a subscription
-a first-class way to identify a service, but subscription credentials travel through
-account credential roots and filesystem mounts, not `agentEnv` — so "add a service"
-covers two quite different flows: store a key, or run a login. Only the first is
-designed here; the second is on the checklist and is not yet specified.
+**Subscription credentials are out of scope for user-added services** (req 7), which
+is what keeps credential delivery to one flow. Subscriptions travel through account
+credential roots and filesystem mounts rather than `agentEnv`, and each needs its own
+login and refresh — the reason req 7 draws the line where it does. Existing
+subscription-backed vendors keep their current path unchanged.
 
 **Spawn shaping** sets the base URL and credential at both spawn sites, after the
 scrub, from the *selected model's* service rather than from a model-id prefix.
 
 **Non-turn work** (req 12) — session naming and PR descriptions run on a service the
 user configures **explicitly for that purpose**, resolved independently of whatever the
-session is using. Deliberately not "follow the session's model": the failure this
+session is using. When that service fails, the operation still completes on its existing
+fallback (placeholder title, generic PR description) and ShipIt shows a dismissible
+notice naming the failed service. That deliberately preserves today's behavior — naming
+is silent best-effort (`session-namer.ts:19`) and PR descriptions fall back to generic
+prose (`services/github.ts:1412`) — and adds only the notice, so background failure
+never blocks the operation but is never silent either. Deliberately not "follow the session's model": the failure this
 requirement comes from was a credential disappearing underneath work that assumed it
 (a lapsed Claude subscription while working in Codex), and inheriting the session's
 model would leave that same implicit dependency in place, merely pointed elsewhere. An
@@ -308,8 +345,19 @@ deliberately out of scope; the data exists, but it is its own feature.
 
   Note what this does *not* require: ShipIt never has to decide whether a given error
   means "quota spent" or "key is bad". The branch is on the credential type, which is
-  known before the turn starts. Subscription failover and account-level auth recovery
-  (docs/142, docs/150) are untouched.
+  known before the turn starts — and it has to be, because the error cannot carry it:
+  Claude's matching output is reduced to a payload-free `auth_required` event
+  (`process.ts:173`), so the orchestrator already recovers the route separately
+  (`turn-executor.ts:365`).
+
+  An earlier draft said subscription failover and account recovery "stay exactly as they
+  are". That overstates today's coverage in two ways, both of which are work: the quota
+  retry is not route-gated (above), and this analysis covers only Claude's
+  `AUTH_ERROR_PATTERNS`. Codex classifies separately (`codex/adapter.ts:324`), and a
+  Codex `turn/start` quota failure can arrive as a rejected JSON-RPC request
+  (`codex/adapter.ts:723`) that becomes an adapter `error` rather than the
+  `agent_result` the quota retry watches. Per-harness coverage has to be established,
+  not assumed.
 
 ## Key files
 
