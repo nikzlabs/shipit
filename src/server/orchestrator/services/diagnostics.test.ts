@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import type { SessionContainerManager, SessionContainer } from "../session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { ServiceManager, ManagedService } from "../service-manager.js";
@@ -476,6 +478,109 @@ describe("getSessionDiagnostics", () => {
         "sess-1",
       );
       expect(result.providerRoute).toMatchObject({ routeId: "acct_1", label: "Work" });
+    });
+  });
+
+  // docs/248 — requirement 6's surface. A pin that can't be honored has to be
+  // VISIBLE; the reported bug was that it was silently assumed correct.
+  describe("nodeRuntime", () => {
+    const baseDeps = {
+      runnerRegistry: fakeRegistry(fakeRunner()),
+      serviceManagers: new Map<string, ServiceManager>(),
+      getLogBuffer: () => [],
+      getWorkspaceDir: () => null,
+    };
+
+    it("is null when there is no running container to ask", async () => {
+      const result = await getSessionDiagnostics(
+        { ...baseDeps, containerManager: fakeContainerManager({ container: null }) },
+        "sess-1",
+      );
+      expect(result.nodeRuntime).toBeNull();
+    });
+
+    /** A stand-in worker, since `workerGet` speaks http.request, not fetch. */
+    async function withFakeWorker(
+      handler: (req: http.IncomingMessage, res: http.ServerResponse) => void,
+      run: (workerUrl: string) => Promise<void>,
+    ): Promise<void> {
+      const server = http.createServer(handler);
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const { port } = server.address() as AddressInfo;
+      try {
+        await run(`http://127.0.0.1:${port}`);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    }
+
+    it("surfaces the worker's resolution", async () => {
+      const payload = {
+        state: "provisioned",
+        pinSource: ".nvmrc",
+        pinRaw: "22",
+        resolvedVersion: "22.20.1",
+        activeVersion: "22.20.1",
+        imageVersion: "24.15.0",
+        reason: null,
+        mismatch: false,
+      };
+      await withFakeWorker(
+        (req, res) => {
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify(req.url === "/node-runtime" ? payload : {}));
+        },
+        async (workerUrl) => {
+          const sc = { id: "abc", workerUrl, status: "running" } as SessionContainer;
+          const result = await getSessionDiagnostics(
+            { ...baseDeps, containerManager: fakeContainerManager({ container: sc }) },
+            "sess-1",
+          );
+          expect(result.nodeRuntime).toMatchObject({
+            state: "provisioned",
+            resolvedVersion: "22.20.1",
+            pinSource: ".nvmrc",
+          });
+        },
+      );
+    });
+
+    it("degrades to null rather than failing the whole panel when the endpoint is missing", async () => {
+      // A container that outlived a deploy (docs/113) predates the endpoint.
+      await withFakeWorker(
+        (_req, res) => {
+          res.statusCode = 404;
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({ error: "Not Found" }));
+        },
+        async (workerUrl) => {
+          const sc = { id: "abc", workerUrl, status: "running" } as SessionContainer;
+          const result = await getSessionDiagnostics(
+            { ...baseDeps, containerManager: fakeContainerManager({ container: sc }) },
+            "sess-1",
+          );
+          expect(result.nodeRuntime).toBeNull();
+          // The rest of the panel still renders — that is the point.
+          expect(result.sessionId).toBe("sess-1");
+        },
+      );
+    });
+
+    it("ignores a reply that isn't a runtime status", async () => {
+      await withFakeWorker(
+        (_req, res) => {
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({ status: "ok" }));
+        },
+        async (workerUrl) => {
+          const sc = { id: "abc", workerUrl, status: "running" } as SessionContainer;
+          const result = await getSessionDiagnostics(
+            { ...baseDeps, containerManager: fakeContainerManager({ container: sc }) },
+            "sess-1",
+          );
+          expect(result.nodeRuntime).toBeNull();
+        },
+      );
     });
   });
 });

@@ -35,6 +35,7 @@ import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { createDepSnapshotTar, safeDepDirRelpath } from "./dep-snapshot.js";
 import { INSTALL_MARKER_FILE } from "../shared/fs-constants.js";
+import { whenNodeRuntimeReady } from "./node-runtime.js";
 
 export interface InstallControllerDeps {
   workspaceDir: string;
@@ -104,6 +105,14 @@ export class InstallController {
       if (!Array.isArray(commands) || commands.length === 0) {
         return reply.code(400).send({ error: "commands array is required" });
       }
+
+      // docs/248 — wait for the repo's Node pin to be resolved BEFORE anything
+      // else in this route. Two reasons, both load-bearing: the install itself
+      // must compile native addons against the Node the project targets, and
+      // `runtimeKey()` below reads the resolved version out of the environment
+      // — computing the stamp first would key the install to the image's Node
+      // and let a tree built under the old pin survive a pin change.
+      await whenNodeRuntimeReady();
 
       // Check the stamped marker — skip only when it EXACTLY matches this
       // session's install context (source commit + runtime fingerprint +
@@ -237,6 +246,12 @@ export class InstallController {
       if (!Array.isArray(packages) || packages.some((p) => typeof p !== "string")) {
         return reply.code(400).send({ error: "packages must be an array of strings" });
       }
+      // docs/248 — MCP packages are npm-installed and can carry native addons,
+      // and activation fires this in parallel with `agent.install` rather than
+      // after it. Without this gate a cold Node-22 provision could compile an
+      // addon under the image's Node 24 and then launch it under 22.
+      await whenNodeRuntimeReady();
+
       const installed = this.readMcpInstalledMarker();
       const pending = [...new Set(packages)].filter((p) => p && !installed.has(p));
       if (pending.length === 0) {
@@ -271,6 +286,9 @@ export class InstallController {
       if (!config || typeof config !== "object") {
         return reply.code(400).send({ error: "config is required" });
       }
+      // Same reason as `/mcp/install`: this spawns the configured stdio server,
+      // which must see the same Node the package was installed under.
+      await whenNodeRuntimeReady();
       const { testMcpServer } = await import("./mcp-test.js");
       const resolved = this.deps.mcpConfig.resolveMcpServerConfig(config);
       if (!resolved.ok) {

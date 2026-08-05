@@ -58,7 +58,7 @@ Note: your own memory under `~/.claude/projects/<cwd>/memory/` is **not** restri
 
 ## Installed tools
 
-- **Node.js 24** (with npm; `pnpm` and `yarn` are available via corepack — it reads the repo's `packageManager` field and fetches the pinned version)
+- **Node.js** (with npm; `pnpm` and `yarn` are available via corepack — it reads the repo's `packageManager` field and fetches the pinned version). The container bakes Node 24, but **a repo's own Node pin wins** — see [Node version](#node-version) below.
 - **git**, **git-lfs**, **curl** (see [Git LFS](#git-lfs) below)
 - **python3**, **make**, **g++** (for native npm addons)
 - **Agent CLIs** — both `claude` (Claude Code) and `codex` (Codex) are installed; ShipIt invokes whichever the user selected for the session
@@ -69,6 +69,34 @@ Note: your own memory under `~/.claude/projects/<cwd>/memory/` is **not** restri
   - **`OPENAI_API_KEY` env var**. Bills against their OpenAI Platform account. ShipIt only injects this into the agent process when no ChatGPT login is present — when both are configured, the env var is stripped so the user isn't double-billed.
 - **Playwright** with headless Chrome (available via browser tools)
 - **Android build toolchain** — JDK 17 (`JAVA_HOME=/opt/java`), the Android SDK (`ANDROID_SDK_ROOT=/opt/android-sdk` — `sdkmanager`, `adb`, platforms 34/35, build-tools), and Gradle 8.7. Always present, so any Android/Gradle repo builds, lints, and runs JVM/snapshot tests with no per-repo setup (no `shipit.yaml` Android fields). See [android.md](android.md).
+
+## Node version
+
+ShipIt honors the repository's Node version pin. Before your first turn and
+before `agent.install` runs, it reads:
+
+1. **`.nvmrc`** at the workspace root — takes precedence.
+2. **`package.json` `engines.node`** — used when there is no `.nvmrc`.
+
+If the container's baked Node already satisfies the pin (the usual case for a
+range like `>=20`), nothing happens. Otherwise the matching version is
+downloaded, verified, and put first on `PATH`, so `node`, `npm`, and anything
+you build or run in the session use the version the project targets — native
+addons compile against the right ABI, and the Node that installs dependencies
+matches the Node a Compose service pins for the same workspace.
+
+Other pin files (`.node-version`, `volta.node`, `mise.toml`, `.tool-versions`)
+are **not** read. Neither is a pin honored when it resolves below Node 20 — the
+agent CLIs resolve `node` through the same `PATH` and require 20+.
+
+When a pin can't be honored — an unsupported form like `lts/*`, a version below
+that floor, or a failed download — the session keeps running on the container's
+Node and the mismatch is reported in **session diagnostics** (the panel behind
+the session health strip), under "Node runtime". It is never silently ignored.
+If `node -v` surprises you, that panel says why.
+
+Changing `.nvmrc` mid-session does not re-provision; the pin is resolved once at
+container start. Restart the container to pick up a new pin.
 
 ## Automatic behaviors
 

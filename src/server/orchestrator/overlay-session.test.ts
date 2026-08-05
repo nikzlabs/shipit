@@ -26,6 +26,7 @@ import {
   isOverlayEligible,
   isOverlayEnabled,
   liveOverlayScopeHashes,
+  overlayPinSegment,
   overlayRuntimeKey,
   resolveOverlayScope,
   validDepDirsForOverlay,
@@ -114,6 +115,69 @@ describe("overlayRuntimeKey (SHI-194 — pinned base digest, not the full image 
   it("a base-digest bump changes the scope key", () => {
     expect(overlayRuntimeKey({ BASE_IMAGE_DIGEST: "sha256:base-A" } as NodeJS.ProcessEnv))
       .not.toBe(overlayRuntimeKey({ BASE_IMAGE_DIGEST: "sha256:base-B" } as NodeJS.ProcessEnv));
+  });
+});
+
+// docs/248 — a repo's Node pin has to split the base scope, or a base of native
+// addons built under the image's Node gets mounted into a differently-pinned
+// session (the worker-side marker mismatch only triggers `npm install`, which
+// does not rebuild an addon that is already present).
+describe("overlayPinSegment (docs/248 — repo Node pin)", () => {
+  const ENV = { BASE_IMAGE_DIGEST: "sha256:base", WORKER_IMAGE_NODE_VERSION: "24.15.0" } as NodeJS.ProcessEnv;
+  let dir: string;
+
+  function ws(files: Record<string, string>): string {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "overlay-pin-"));
+    for (const [name, body] of Object.entries(files)) {
+      fs.writeFileSync(path.join(dir, name), body);
+    }
+    return dir;
+  }
+
+  afterEach(() => {
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("is empty when the repo pins nothing — every existing scope stays identical", () => {
+    expect(overlayPinSegment(ws({ "package.json": "{}" }), ENV)).toBe("");
+    expect(overlayPinSegment(undefined, ENV)).toBe("");
+  });
+
+  it("is empty when the image's Node already satisfies the pin", () => {
+    // The common case. Splitting here would rotate the base for most repos
+    // that merely declare an `engines.node` field.
+    const w = ws({ "package.json": JSON.stringify({ engines: { node: ">=20" } }) });
+    expect(overlayPinSegment(w, ENV)).toBe("");
+  });
+
+  it("is empty for a pin the resolver rejects — the worker won't switch either", () => {
+    expect(overlayPinSegment(ws({ ".nvmrc": "lts/jod" }), ENV)).toBe("");
+  });
+
+  it("splits the scope when the pin moves the session off the image's Node", () => {
+    expect(overlayPinSegment(ws({ ".nvmrc": "22" }), ENV)).toBe("|pin22");
+  });
+
+  it("splits when the image's Node version is unknown, erring toward isolation", () => {
+    const w = ws({ "package.json": JSON.stringify({ engines: { node: ">=20" } }) });
+    expect(overlayPinSegment(w, { BASE_IMAGE_DIGEST: "sha256:base" } as NodeJS.ProcessEnv))
+      .toBe("|pin>=20");
+  });
+
+  it("gives two different pins two different scopes", () => {
+    const a = overlayPinSegment(ws({ ".nvmrc": "22" }), ENV);
+    fs.rmSync(dir, { recursive: true, force: true });
+    const b = overlayPinSegment(ws({ ".nvmrc": "20" }), ENV);
+    expect(a).not.toBe(b);
+  });
+
+  it("threads through resolveOverlayScope", () => {
+    const session = { remoteUrl: "https://github.com/o/r" };
+    const unpinned = resolveOverlayScope(session, ENV, ws({ "package.json": "{}" }));
+    fs.rmSync(dir, { recursive: true, force: true });
+    const pinned = resolveOverlayScope(session, ENV, ws({ ".nvmrc": "22" }));
+    expect(unpinned?.runtimeKey).toBe(overlayRuntimeKey(ENV));
+    expect(pinned?.runtimeKey).toBe(`${overlayRuntimeKey(ENV)}|pin22`);
   });
 });
 

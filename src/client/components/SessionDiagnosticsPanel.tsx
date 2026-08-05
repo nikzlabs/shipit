@@ -27,6 +27,10 @@ import {
 import { CopyButton } from "./ui/copy-button.js";
 import { useApi, ApiError } from "../hooks/useApi.js";
 import { ICON_SIZE } from "../design-tokens.js";
+// docs/248 — the one payload field with a shared type. The rest of this file
+// mirrors the server shapes locally (see below); this one is imported so the
+// state union can't drift from the resolver that produces it.
+import type { NodeRuntimeStatus } from "../../server/shared/types.js";
 
 // ---- Server payload shape (mirrors services/diagnostics.ts) ----
 
@@ -121,6 +125,7 @@ interface DiagnosticsPayload {
   parsedConfig: ParsedShipitConfig | null;
   oomBreaker: OomBreakerState | null;
   providerRoute: ProviderRouteDiagnostic | null;
+  nodeRuntime: NodeRuntimeStatus | null;
 }
 
 const POLL_INTERVAL_MS = 2000;
@@ -213,6 +218,10 @@ export function SessionDiagnosticsPanel({ sessionId, open, onOpenChange }: Sessi
                       : null
                   }
                 />
+              </Section>
+
+              <Section title="Node runtime">
+                <NodeRuntimeRows runtime={data.nodeRuntime} />
               </Section>
 
               <Section title="Provider account">
@@ -458,6 +467,76 @@ function ParsedConfigRows({
  * The account's *name* is the answer; `route id` is below it for bug reports,
  * where the opaque `acct_…` is what correlates with the server logs.
  */
+/**
+ * docs/248 — how the repo's `.nvmrc` / `engines.node` was resolved.
+ *
+ * This is requirement 6's surface. The reported bug wasn't that a session ran
+ * the wrong Node major, it was that it did so *invisibly* — so the states that
+ * mean "your pin is not being honored" are rendered as errors with their
+ * reason, not folded into a terse "ok".
+ */
+function NodeRuntimeRows({ runtime }: { runtime: NodeRuntimeStatus | null }) {
+  if (!runtime) {
+    return (
+      <p className="text-(--color-text-tertiary)">
+        No running worker to report the Node runtime.
+      </p>
+    );
+  }
+
+  const summary: Record<NodeRuntimeStatus["state"], string> = {
+    pending: "resolving the repo's Node pin…",
+    "no-pin": "no .nvmrc or engines.node — running the container's Node",
+    satisfied: "the container's Node satisfies the repo's pin",
+    provisioned: "provisioned the repo's pinned Node",
+    unsupported: "pin not understood — running the container's Node",
+    "below-floor": "pin too old to run — running the container's Node",
+    failed: "could not provision the pinned Node — running the container's Node",
+  };
+
+  return (
+    <>
+      <KvRow
+        label="status"
+        value={`${runtime.state} — ${summary[runtime.state]}`}
+        valueClass={runtime.mismatch ? "text-(--color-error)" : undefined}
+      />
+      <KvRow label="active node" value={`v${runtime.activeVersion}`} />
+      {runtime.activeVersion !== runtime.imageVersion && (
+        <KvRow label="container node" value={`v${runtime.imageVersion}`} />
+      )}
+      {runtime.pinRaw && runtime.pinSource && (
+        <KvRow label="repo pin" value={`${runtime.pinRaw} (${runtime.pinSource})`} />
+      )}
+      {runtime.resolvedVersion && (
+        <KvRow label="pin resolves to" value={`v${runtime.resolvedVersion}`} />
+      )}
+      {runtime.reason && (
+        <KvRow
+          label="reason"
+          value={runtime.reason}
+          valueClass="text-(--color-error) whitespace-pre-wrap"
+        />
+      )}
+      {/* Requirement 5 — a Compose service pinning a different Node major than
+          the one that installed this workspace's dependencies. Reported rather
+          than resolved: a Compose image is deliberately not a pin source. */}
+      {runtime.composeNodeConflicts.length > 0 && (
+        <KvRow
+          label="compose conflict"
+          value={
+            `${runtime.composeNodeConflicts
+              .map((c) => `${c.service} (${c.image})`)
+              .join(", ")} — pinned to a different Node major than the v${runtime.activeVersion} ` +
+            `this workspace's dependencies are installed with. Add a .nvmrc or engines.node to align them.`
+          }
+          valueClass="text-(--color-warning) whitespace-pre-wrap"
+        />
+      )}
+    </>
+  );
+}
+
 function ProviderRouteRows({ route }: { route: ProviderRouteDiagnostic | null }) {
   if (!route) {
     return <p className="text-(--color-text-tertiary)">Not wired (test mode / local runtime).</p>;

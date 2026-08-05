@@ -20,6 +20,7 @@ import type { PermissionBroker } from "./permission-broker.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
 import { getErrorMessage } from "../shared/utils.js";
+import { whenNodeRuntimeReady } from "./node-runtime.js";
 import {
   runAgentToCompletion,
   buildSubAgentRunParams,
@@ -105,6 +106,12 @@ export class AgentController {
       if (!agentId || !params) {
         return reply.code(400).send({ error: "agentId and params are required" });
       }
+
+      // docs/248 — everything the agent runs (its bash tool, its builds, its
+      // test runs) inherits this worker's PATH, so the pinned Node has to be on
+      // it before the CLI spawns. Awaited outside the try: a provisioning
+      // failure is already folded into a reported status and never throws.
+      await whenNodeRuntimeReady();
 
       try {
         // docs/240 — mark the turn in flight BEFORE the adapter can emit
