@@ -301,6 +301,8 @@ docs/
     mockup.html    — Optional UI prototype committed as reference (or mockup.svg / mocks/)
 ```
 
+`docs/NNN-feature/` is this repo's **convention**, not the docs list's filter: the scan (`markdown.ts` → `findMarkdownFiles`) walks the whole workspace and surfaces **every** `.md` file, so `README.md`, `RELEASING.md`, `src/server/shipit-docs/*.md` and any nested markdown are all in the list too. The `NNN-` prefix and `plan.md`/`checklist.md`/`issue:` only decide Tracked-vs-Other grouping and newest-first ordering.
+
 Docs are **reference material** — what a feature is, why, and how (including planned-but-unimplemented designs); work tracking lives in the issue tracker. Features are numbered by creation order; read a feature's `plan.md` first, check its `checklist.md` for remaining work, create `docs/NNN-new-feature/plan.md` for a new one. Frontmatter (`issue`/`title`/`description`) is optional. A 100%-complete `checklist.md` folds the doc into collapsed **Done**, else **Active**. `issue:` shape selects the tracker — **Linear = full URL without the title slug** (a bare `TRACKER-28` is rejected), **GitHub = `owner/repo#123`** or a full URL.
 
 ### Every new feature is under requirements discipline
