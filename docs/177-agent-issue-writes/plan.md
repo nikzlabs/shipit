@@ -342,6 +342,49 @@ dropping into the Linear UI. SHI-206 adds **`--parent <pointer>`** on both
 folded alongside `labels`/`priority`. The `IssueWriteUndo` `edit` variant carries
 `previousParentId?: string | null`.
 
+## Proposed — editing and deleting a comment
+
+A comment is currently write-once. `shipit issue comment` posts one, and nothing
+takes it back: there is no `comment edit` and no `comment delete`. An agent that
+posts a wrong or stale comment can only post another one saying to ignore the
+first, which matters because `CLAUDE.md` has agents commenting on every design-doc
+update, so the mistakes accumulate in the surface meant to be read.
+
+Where the plumbing already stands:
+
+- **Delete exists at the adapter layer for both kinds** — `deleteComment` on the
+  GitHub and Linear adapters — but is reachable only through a write card's Undo,
+  so it expires with the card.
+- **Edit exists nowhere.** Neither adapter has an `updateComment`, so this is new
+  work at every layer: adapter method, service, route, shim subcommand, card.
+
+Comment ids are already available to a caller — `view --comments --json` returns
+each comment's `id` and `url` — so addressing one needs no new lookup.
+
+Two things to get right, and they pull in opposite directions:
+
+- **Delete is the risky half.** Both `deleteComment` implementations take a
+  backend-global comment id. docs/248's review had to add a team-ownership
+  assertion to the Linear one precisely because a re-pointed name could hand it an
+  id belonging to another team. Exposed as a shim command with no further guard,
+  an agent could delete any comment whose id it can name — including human
+  discussion it did not write. It wants an authorship check, not just a working
+  mutation.
+- **Undo is asymmetric.** An edit undoes cleanly by restoring the previous body,
+  which is the established snapshot pattern. A delete does not: re-posting the
+  text mints a new comment with a new id, author and timestamp, so "undo" would be
+  a visibly different object. That asymmetry should be stated in the card rather
+  than papered over.
+
+Edit is the clearly-useful half and carries neither problem; delete is worth
+having but should not ride in on edit's justification.
+
+**Not a prerequisite for docs/247's migration.** It was considered as insurance
+against the copy settling on a bad comment format across 1,344 comments, and it
+does not serve that purpose: editing them all costs another full pass, which is
+what the migration's pilot gate exists to avoid. Build this because the capability
+is independently useful, not to de-risk that.
+
 ## Key files
 
 - `src/server/orchestrator/trackers/tracker.ts` — add write methods + `TrackerComment`, optional `availableStatuses` on read types.

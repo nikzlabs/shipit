@@ -59,6 +59,12 @@ Settled: gating = do-then-surface + undo card; v1 scope = comment + edit + statu
 - [x] Docs: `shipit-docs/issues.md` Labels + Priority sections; per-tracker priority behavior documented
 - [x] Tests: adapter (label resolution, priority mapping, rejections), service (additive edit, undo, gh-priority 422), shim (flag parsing, gh-priority reject, --json), chat-history round-trip
 
+## Proposed — comment edit + delete
+See plan.md → *Proposed — editing and deleting a comment*.
+- [ ] `comment edit` — new `updateComment` on both adapters (neither has one), service + route + shim + card; undo restores the previous body, matching the existing edit snapshot pattern.
+- [ ] `comment delete` — adapters already have `deleteComment`, reachable today only via a card's Undo. Needs an authorship guard: the id is backend-global, so an unguarded command could delete human discussion the agent never wrote.
+- [ ] Decide how a delete's card presents undo, given that re-posting mints a new id, author and timestamp rather than restoring the original.
+
 ## Deferred
 - [ ] Jira adapter (transitions-based status) when the tracker lands
 - [ ] Tracker-specific richness (projects/cycles/documents) — not via the interface
