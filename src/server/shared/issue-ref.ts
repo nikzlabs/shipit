@@ -193,11 +193,35 @@ export function formatIssueReference(opts: {
 }
 
 /**
+ * The first message a session started from an issue is seeded with — the one
+ * text both seeding paths use (`seedFromIssueRef` on the headless/webhook path,
+ * the Issues tab's "Start session" prefill on the in-app one), so the two can't
+ * drift. Lives here, next to {@link extractIssueRefsFromText}, because that
+ * parser has to be able to read this text back.
+ *
+ * It is a **pointer, not a copy**. The seed used to paste the issue's whole
+ * description (and a link line) into the composer, which buried whatever the
+ * user actually wanted to add and froze a body the agent can read live anyway.
+ * The agent has `shipit issue view`, so the seed's only job is to name the
+ * issue and leave the composer short enough to append to before sending.
+ *
+ * Editing the wording: keep `issue <identifier>` adjacent — that lead-in is
+ * what makes a bare Linear key extractable below (a bare `SHI-90` with no
+ * `issue` before it is deliberately not matched).
+ */
+export function buildIssueSeedPrompt(issue: { identifier: string; title: string }): string {
+  const identifier = issue.identifier.trim();
+  const title = issue.title.trim();
+  const header = title ? `Work on issue ${identifier}: ${title}` : `Work on issue ${identifier}`;
+  return `${header}\n\nRead it with \`shipit issue view ${identifier}\` before starting.`;
+}
+
+/**
  * Extract issue references from FREE-FORM text — e.g. a session's first user
  * message — as opposed to the keyword-anchored PR-body parse
  * ({@link parsePrBodyIssueRefs}). Used to recover the issue a session was
- * *started from*: `seedFromIssueRef` plants `You are working on issue <ID>: …`
- * + `Issue link: <url>` as the first message (docs/206).
+ * *started from*: {@link buildIssueSeedPrompt} plants `Work on issue <ID>: …`
+ * as the first message (docs/206).
  *
  * Only UNAMBIGUOUS shapes are matched, on purpose. A bare Linear key pattern
  * (`[A-Z]+-\d+`) collides with everyday tokens — `UTF-8`, `ISO-8601`, `GPT-4`,

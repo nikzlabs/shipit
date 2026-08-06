@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseIssueRef, extractIssueRefsFromText } from "./issue-ref.js";
+import { parseIssueRef, extractIssueRefsFromText, buildIssueSeedPrompt } from "./issue-ref.js";
 
 describe("parseIssueRef", () => {
   it("parses a Linear issue URL into an uppercase identifier + native key", () => {
@@ -85,15 +85,24 @@ describe("extractIssueRefsFromText", () => {
     expect(extractIssueRefsFromText(undefined)).toEqual([]);
   });
 
-  it("extracts the pointer from a seedFromIssueRef first message", () => {
-    const seed =
-      "You are working on issue SHI-90: Durable egress allowlist\n\n" +
-      "Persist the allowlist.\n\n" +
-      "Issue link: https://linear.app/acme/issue/SHI-90/durable-egress-allowlist";
-    const refs = extractIssueRefsFromText(seed);
-    // The URL and the `issue SHI-90` lead-in name the same issue → deduped to one.
+  // The round trip that keeps the seed's wording honest: whatever
+  // `buildIssueSeedPrompt` writes, this parser has to read back as the issue
+  // the session was started from. It holds only because the seed keeps its
+  // `issue <identifier>` lead-in — a bare key is deliberately not matched.
+  it("extracts the pointer from a seeded first message", () => {
+    const refs = extractIssueRefsFromText(
+      buildIssueSeedPrompt({ identifier: "SHI-90", title: "Durable egress allowlist" }),
+    );
     expect(refs).toHaveLength(1);
     expect(refs[0]).toMatchObject({ tracker: "linear:SHI", identifier: "SHI-90", issueId: "SHI-90" });
+  });
+
+  it("extracts the pointer from a seeded first message for a GitHub issue", () => {
+    const refs = extractIssueRefsFromText(
+      buildIssueSeedPrompt({ identifier: "acme/planning#42", title: "Ship the thing" }),
+    );
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ identifier: "acme/planning#42", issueId: "42" });
   });
 
   it("extracts a Linear key after an `issue` lead-in (with assorted separators)", () => {
