@@ -283,6 +283,24 @@ function renderHostSession(s: Record<string, unknown>): string {
 }
 
 /**
+ * Read a PR number out of what an operator actually has in hand: `1744`,
+ * `#1744`, or a PR URL in any of its real forms.
+ *
+ * The `/pull/<n>` branch is checked FIRST and is why this isn't a one-liner. A
+ * plain "trailing digits" match reads `…/pull/1744/files` as no match at all
+ * and — worse — `…/pull/1744?x=1` as PR **1**, silently looking up the wrong
+ * PR. Both URLs are ordinary things to paste out of a browser.
+ */
+function parsePrNumber(raw: string): string | undefined {
+  const value = raw.trim();
+  const fromUrl = /\/pull\/(\d+)(?:[/?#]|$)/.exec(value)?.[1];
+  if (fromUrl) return fromUrl;
+  // Not a PR URL: accept `1744` or `#1744`, anchored so a stray number inside
+  // some other string can't be mistaken for the PR.
+  return /^#?(\d+)$/.exec(value)?.[1];
+}
+
+/**
  * docs/255 — `shipit session find --branch|--pr|--container|--id`.
  *
  * The one-step answer to "which session produced this?", for an Ops session
@@ -319,9 +337,7 @@ export async function handleSessionFind(args: string[], deps: RunDeps): Promise<
   if (parsed.values.container) params.set("container", parsed.values.container);
   if (parsed.values.id) params.set("id", parsed.values.id);
   if (parsed.values.pr) {
-    // Accept `--pr 1744`, `--pr #1744`, or a full PR URL — all three are what an
-    // operator actually has in hand when triaging.
-    const digits = /(\d+)\s*$/.exec(parsed.values.pr)?.[1];
+    const digits = parsePrNumber(parsed.values.pr);
     if (!digits) {
       fail(deps.io, `shipit session find: could not read a PR number from "${parsed.values.pr}".`);
     }
@@ -369,6 +385,23 @@ export async function handleSessionList(args: string[], deps: RunDeps): Promise<
   });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit session list: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+
+  // docs/255 — the host-inventory flags only mean anything alongside `--all`.
+  // Refuse rather than ignore: `shipit session list --include-warm` would
+  // otherwise quietly return the children list, which looks like a successful
+  // answer to a question it never asked.
+  const hostOnlyFlags = [
+    ...(parsed.booleans.has("includeWarm") ? ["--include-warm"] : []),
+    ...(parsed.booleans.has("includeArchived") ? ["--include-archived"] : []),
+    ...(parsed.values.offset ? ["--offset"] : []),
+  ];
+  if (!parsed.booleans.has("all") && hostOnlyFlags.length > 0) {
+    fail(
+      deps.io,
+      `shipit session list: ${hostOnlyFlags[0]} only applies to the host inventory.\n` +
+        "Add --all (Ops sessions only), or drop the flag to list this session's children.",
+    );
   }
 
   // docs/255 — `--all` switches to the HOST inventory (Ops-only). Without it the

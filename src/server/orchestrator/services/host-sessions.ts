@@ -30,7 +30,6 @@
 
 import type { SessionInfo } from "../../shared/types.js";
 import type { SessionManager } from "../sessions.js";
-import { stripUrlCredentials } from "../git-utils.js";
 import { ServiceError } from "./types.js";
 
 /** Default number of sessions returned when the caller doesn't pass `limit`. */
@@ -114,7 +113,8 @@ export interface HostSessionQuery {
   includeArchived?: boolean;
   /**
    * Include warm (ungraduated pool) sessions. Default false: they are
-   * pre-provisioned shells with no branch, no PR and no user, so they are noise
+   * pre-provisioned shells with no PR and no user (they DO carry a branch —
+   * `warm-pool-manager.ts` assigns one at warm time), so they are noise
    * in a triage listing. An explicit `id`/`container` lookup always resolves
    * them regardless, since naming a specific box IS asking about that box.
    */
@@ -135,51 +135,40 @@ export interface HostSessionQueryResult {
 }
 
 /**
- * A session id is a UUID, so any prefix of one is hex digits and hyphens, with
- * the first eight characters hex. Used to refuse names that CANNOT be a session
- * id rather than silently matching on them — see
- * {@link sessionIdPrefixFromContainerName}.
- */
-const UUID_PREFIX_RE = /^[0-9a-f]{1,8}(-[0-9a-f]{0,4})*$/i;
-
-/**
  * Reduce a host-visible container/volume/project name to the session-id prefix
- * it embeds, or null when the name cannot be one.
+ * it embeds, or null when the name is not one ShipIt generated.
  *
- * Handles, in one rule, every name ShipIt itself generates:
+ * Handles every name ShipIt itself produces:
  *   `/agent-83292266-744`              → `83292266-744` (docker inspect .Names)
  *   `agent-83292266-744`               → `83292266-744` (docker ps)
  *   `shipit-83292266-744-web-1`        → `83292266-744` (compose service)
  *   `shipit-83292266-744_node_modules` → `83292266-744` (compose volume)
- *   `83292266-7445-4a…`                → the id itself  (pasted from a log line)
  *
- * Both prefixes are stripped and the leading 12 characters kept, because that
- * is exactly `sessionId.slice(0, 12)` — the slice both namers use. A shorter
- * bare input (a truncated log line) is passed through and matches more broadly.
+ * The `agent-`/`shipit-` prefix is REQUIRED, and that is a deliberate
+ * narrowing. A project's own `docker-compose.yml` may set an explicit
+ * `container_name:`, which ShipIt's generated override does not rewrite, so a
+ * service container can appear in `docker ps` under any name at all. An earlier
+ * version accepted a bare hex-ish name as a session-id prefix, which meant
+ * `container_name: deadbeef` on session A resolved to session B whose UUID
+ * merely started with `deadbeef` — a confidently WRONG attribution, the one
+ * failure mode this whole surface exists to eliminate. A bare session id is not
+ * a container name; it belongs to `--id`, which cannot mis-attribute because it
+ * matches ids against ids.
  *
- * The `UUID_PREFIX_RE` check on an UNPREFIXED name is the important part. A
- * project's own `docker-compose.yml` may set an explicit `container_name:` and
- * ShipIt's generated override does not remove it, so a service container can
- * appear in `docker ps` as an arbitrary string like `payments-db`. Without the
- * check, its first 12 characters would be read as a session-id prefix and could
- * `LIKE`-match a completely unrelated session — a confidently wrong answer,
- * which is worse than no answer for a surface whose whole point is to end
- * guesswork. Returning null lets the caller say so and point at the container's
- * `shipit-session-id` / `shipit-parent-session` label instead, which is
- * authoritative for exactly these containers.
+ * Residual ambiguity, documented rather than papered over: a project that sets
+ * `container_name: agent-<12 chars that are another session's UUID prefix>`
+ * still mis-resolves. Nothing in a *name* can distinguish that case — only the
+ * container's `shipit-session-id` / `shipit-parent-session` label is
+ * authoritative — so the caller's error message points there.
  */
 export function sessionIdPrefixFromContainerName(name: string): string | null {
   const trimmed = name.trim().replace(/^\/+/, "");
-  const prefixed = trimmed.startsWith("agent-") || trimmed.startsWith("shipit-");
-  let rest = trimmed;
-  if (rest.startsWith("agent-")) rest = rest.slice("agent-".length);
-  else if (rest.startsWith("shipit-")) rest = rest.slice("shipit-".length);
+  let rest: string;
+  if (trimmed.startsWith("agent-")) rest = trimmed.slice("agent-".length);
+  else if (trimmed.startsWith("shipit-")) rest = trimmed.slice("shipit-".length);
+  else return null;
   rest = rest.slice(0, CONTAINER_ID_SLICE);
-  if (rest.length === 0) return null;
-  // A ShipIt-generated name is trusted by construction; anything else has to
-  // actually look like a session id before we match on it.
-  if (!prefixed && !UUID_PREFIX_RE.test(rest)) return null;
-  return rest;
+  return rest.length > 0 ? rest : null;
 }
 
 /** The session container name ShipIt gives `sessionId` (`container-lifecycle.ts`). */
@@ -190,6 +179,53 @@ export function containerNameForSession(sessionId: string): string {
 /** The Compose project name ShipIt gives `sessionId`'s services (`compose-cli.ts`). */
 export function composeProjectForSession(sessionId: string): string {
   return `shipit-${sessionId.slice(0, CONTAINER_ID_SLICE)}`;
+}
+
+/**
+ * Sanitize a persisted origin URL for display to a DIFFERENT session.
+ *
+ * `git-utils.ts:stripUrlCredentials` is the repo's normal helper, but it is not
+ * enough here, and the difference is the whole point of this function. It only
+ * rewrites well-formed `http:`/`https:` URLs, deliberately: an scp-style
+ * `git@github.com:o/r.git` carries an SSH *user*, not a secret, so for the
+ * surfaces it was written for (showing a URL back to its OWN owner) leaving
+ * those alone is right. Verified against it, these all pass through untouched:
+ *
+ *   ssh://git:pw@example.com/o/r.git          — a real password, non-http scheme
+ *   https://example.com/o/r.git?access_token=pw — credential in the query
+ *   https://u:pw@                              — `new URL` throws, returned as-is
+ *   tok@example.com:o/r.git                    — scp-style, may be a token
+ *
+ * `setGitRemote` (services/git.ts) persists whatever string the user supplied,
+ * and git accepts every form above as a remote, so each is reachable. Crossing
+ * a session boundary is exactly where req 8's "no tokens" clause binds, so this
+ * FAILS CLOSED instead: parse strictly and drop userinfo + query + fragment;
+ * if it will not parse, drop everything up to the last `@`. Losing a legible
+ * URL is an acceptable price for never emitting someone else's credential —
+ * the session id, branch, and PR url already identify the session.
+ */
+export function sanitizeRemoteUrlForInventory(raw: string): string | undefined {
+  const url = raw.trim();
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    parsed.username = "";
+    parsed.password = "";
+    // A git remote has no meaningful query or fragment, and both are places a
+    // token demonstrably shows up (`?access_token=`), so drop them wholesale
+    // rather than maintaining a list of credential-ish parameter names.
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    // Not a WHATWG URL: scp-style (`git@host:o/r.git`) or malformed. We cannot
+    // tell a benign `git@` from a `<token>@`, so drop any userinfo rather than
+    // guess. `lastIndexOf` so a userinfo containing `@` can't leave a tail.
+    const at = url.lastIndexOf("@");
+    if (at === -1) return url;
+    const rest = url.slice(at + 1);
+    return rest.length > 0 ? rest : undefined;
+  }
 }
 
 /**
@@ -218,14 +254,8 @@ export function buildHostSessionView(
   };
   if (session.kind) view.kind = session.kind;
   if (session.branch) view.branch = session.branch;
-  // `stripUrlCredentials` is NOT belt-and-suspenders here. The repo-wide
-  // invariant is that a persisted origin carries no userinfo, but `setGitRemote`
-  // (services/git.ts) writes the user-supplied URL through verbatim, so a
-  // session row CAN hold `https://x-access-token:<pat>@github.com/o/r.git`.
-  // Every other reader of `remoteUrl` shows it back to the session's OWN user;
-  // this one shows it to a DIFFERENT session, which is precisely the boundary
-  // req 8 draws around tokens. Strip at the crossing.
-  if (session.remoteUrl) view.remoteUrl = stripUrlCredentials(session.remoteUrl);
+  const remoteUrl = session.remoteUrl ? sanitizeRemoteUrlForInventory(session.remoteUrl) : undefined;
+  if (remoteUrl) view.remoteUrl = remoteUrl;
   if (session.parentSessionId) view.parentSessionId = session.parentSessionId;
   if (session.rootSessionId) view.rootSessionId = session.rootSessionId;
   if (session.spawnedByTurn) view.spawnedByTurn = session.spawnedByTurn;
@@ -276,14 +306,16 @@ export function queryHostSessions(
   if (query.container !== undefined) {
     containerPrefix = sessionIdPrefixFromContainerName(query.container);
     if (!containerPrefix) {
-      // A project's compose file can set an explicit `container_name:`, which
-      // ShipIt's override does not rewrite — so this name is real but carries no
-      // session id. Name the authoritative fallback rather than dead-ending: the
-      // labels are on exactly the containers this branch can't parse.
+      // Either a project-set `container_name:` (which ShipIt's override does not
+      // rewrite) or a bare session id. Name both ways forward rather than
+      // dead-ending — the label is authoritative for exactly the containers
+      // whose names we refuse to guess at.
       throw new ServiceError(
         400,
-        `"${query.container}" doesn't contain a session id. If it is a service container ` +
-          "with an explicit container_name, read the owner off its label instead: " +
+        `"${query.container}" is not a ShipIt-generated container name ` +
+          "(expected agent-<id> or shipit-<id>-<service>-N). " +
+          "If it is a session id, pass it to --id. If it is a service container with an " +
+          "explicit container_name, read the owner off its label: " +
           `docker inspect ${query.container} --format '{{index .Config.Labels "shipit-parent-session"}}' ` +
           "(or \"shipit-session-id\" for a session container), then pass that to --id.",
       );
@@ -325,7 +357,20 @@ export function queryHostSessions(
     return true;
   });
 
-  const page = matches.slice(offset, offset + limit);
+  // Re-sort on an IMMUTABLE total order before paging. The SQL orders by
+  // `last_used_at DESC`, which is the right thing to read on page 1 but is
+  // mutable: a session that takes a turn between two page requests jumps to the
+  // top, shifting every row after it — so offset paging duplicates one session
+  // and silently skips another, and req 5's "fully enumerable" fails on any
+  // live host. `createdAt` is written once at creation (`markStarted` resets it
+  // only during setup, before a session can be paged over) and `id` is a UUID,
+  // so the pair is a stable total order no concurrent turn can reshuffle.
+  const ordered = [...matches].sort((a, b) => {
+    if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? 1 : -1;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+
+  const page = ordered.slice(offset, offset + limit);
   const sessions = page.map((s) => buildHostSessionView(s, sessionManager.getPrStatus(s.id)));
   const consumed = offset + sessions.length;
   const result: HostSessionQueryResult = {
@@ -362,8 +407,17 @@ function normalizeLimit(limit: number | undefined): number {
   return Math.min(Math.floor(limit), MAX_HOST_SESSION_LIMIT);
 }
 
-/** Floor `offset` at 0. Same forgiving posture as {@link normalizeLimit}. */
+/**
+ * Validate `offset`. Unlike {@link normalizeLimit} this REJECTS a bad value
+ * rather than falling back: a silently-zeroed `--offset -1` / `NaN` returns
+ * page 1 again, which reads as a valid page and turns a paging loop into an
+ * infinite one. A bad limit merely changes how much you get; a bad offset
+ * changes which rows you believe you have seen.
+ */
 function normalizeOffset(offset: number | undefined): number {
-  if (offset === undefined || !Number.isFinite(offset) || offset <= 0) return 0;
-  return Math.floor(offset);
+  if (offset === undefined) return 0;
+  if (!Number.isFinite(offset) || offset < 0 || !Number.isInteger(offset)) {
+    throw new ServiceError(400, `Invalid offset: must be a non-negative integer, got ${offset}.`);
+  }
+  return offset;
 }

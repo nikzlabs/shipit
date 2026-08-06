@@ -82,9 +82,11 @@ dropped unless the session was created as an ops session.
   docker inspect payments-db --format '{{index .Config.Labels "shipit-parent-session"}}'
   # (or "shipit-session-id" for a session container), then pass that to --id
   ```
-  `--pr` matches the session's *current* PR and any earlier one it shipped from
+  `--pr` matches the session's *current* PR and the one immediately before it on
   the same branch, so a branch that carried #1741 and then #1744 resolves from
-  either number.
+  either number. Only one prior PR is retained, so a branch that shipped three
+  or more resolves from the latest two — for an older one, look it up by
+  `--branch` instead.
 
   Two classes are excluded from the *default* listing and each has a flag:
   sessions the user archived (`--include-archived` — reach for it when the

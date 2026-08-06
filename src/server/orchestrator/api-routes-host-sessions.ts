@@ -106,10 +106,10 @@ export async function registerHostSessionRoutes(
           const limit = Number(q.limit);
           if (Number.isFinite(limit)) query.limit = limit;
         }
-        if (q.offset) {
-          const offset = Number(q.offset);
-          if (Number.isFinite(offset)) query.offset = offset;
-        }
+        // Pass a bad offset THROUGH to the service so it 400s, rather than
+        // dropping it here — a silently-ignored offset returns page 1 dressed
+        // as the page the caller asked for, which loops a paging client.
+        if (q.offset) query.offset = Number(q.offset);
         return queryHostSessions(sessionManager, query);
       } catch (err) {
         if (err instanceof ServiceError) {

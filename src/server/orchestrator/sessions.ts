@@ -972,10 +972,15 @@ export class SessionManager {
    * docs/255 — every session whose persisted PR snapshot names `prNumber`.
    *
    * Matches the CURRENT snapshot (`pr_status.prNumber`) and the retained
-   * breadcrumb of a previously-merged PR (`previous_merged_pr.number`, docs/202)
-   * so a branch that shipped more than one PR resolves from any of its numbers —
-   * which is exactly the case that dead-ended the 2026-08-06 investigation
-   * (`shipit/kmwodw` carried #1741 and then #1744).
+   * breadcrumb of the previously-merged PR (`previous_merged_pr.number`,
+   * docs/202) — which is exactly the case that dead-ended the 2026-08-06
+   * investigation (`shipit/kmwodw` carried #1741 and then #1744).
+   *
+   * LIMIT, by the data model: `clearMerged` OVERWRITES the single breadcrumb on
+   * each re-arm, so only the *immediately* preceding PR is retained. A branch
+   * that shipped #1, #2, #3 resolves from #3 and #2 but not #1. Retaining the
+   * full history would mean widening docs/202's breadcrumb into a list, which
+   * belongs to that feature rather than to this read-only lookup.
    *
    * `json_extract` keeps this a single scan rather than loading and parsing
    * every row; SQLite's JSON1 extension is compiled into the bundled

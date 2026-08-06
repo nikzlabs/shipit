@@ -611,13 +611,23 @@ describe("shipit session find (docs/255)", () => {
     }
   });
 
-  it("accepts --pr as '#1744' or a full PR URL", async () => {
-    for (const value of ["#1744", "https://github.com/nikzlabs/shipit/pull/1744"]) {
+  it("accepts --pr as '#1744' or a PR URL in any of its real forms", async () => {
+    // `…/files` and `…?x=1` are ordinary things to paste out of a browser. A
+    // plain trailing-digits match rejects the first and reads the second as
+    // PR 1 — silently looking up the WRONG PR, which is the dangerous one.
+    for (const value of [
+      "1744",
+      "#1744",
+      "https://github.com/nikzlabs/shipit/pull/1744",
+      "https://github.com/nikzlabs/shipit/pull/1744/files",
+      "https://github.com/nikzlabs/shipit/pull/1744?diff=split",
+      "https://github.com/nikzlabs/shipit/pull/1744#discussion_r1",
+    ]) {
       const { run } = makeRunner();
       const out = await run(["session", "find", "--pr", value], {
         [INVENTORY_ROUTE]: { status: 200, body: { sessions: [], total: 0, truncated: false } },
       });
-      expect(out.calls[0].path).toContain("pr=1744");
+      expect(out.calls[0].path, `--pr ${value}`).toContain("pr=1744");
     }
   });
 
@@ -716,6 +726,19 @@ describe("shipit session list --all (docs/255)", () => {
     expect(out.calls[0].path).toContain("/agent-ops/session/host-sessions");
     expect(out.stdout).toContain("83292266-7445-4a1b-9c2d-000000000000");
     expect(out.stdout).toContain("#1744");
+  });
+
+  it("refuses host-only flags without --all rather than silently ignoring them", async () => {
+    // Without this, `shipit session list --include-warm` quietly returns the
+    // CHILDREN list — which reads as a successful answer to a question it never
+    // actually asked.
+    for (const flag of [["--include-warm"], ["--include-archived"], ["--offset", "5"]]) {
+      const { run } = makeRunner();
+      const out = await run(["session", "list", ...flag]);
+      expect(out.exitCode, flag[0]).toBe(2);
+      expect(out.stderr).toContain("only applies to the host inventory");
+      expect(out.calls).toHaveLength(0);
+    }
   });
 
   it("leaves the bare `list` on the children route (unchanged behaviour)", async () => {

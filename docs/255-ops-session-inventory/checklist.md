@@ -22,4 +22,12 @@
 - [x] Review finding: `--include-warm` so req 5's "every session" is reachable
 - [x] Review finding: `--offset` paging so a >500-session host is enumerable
 - [x] Review finding: req 7 wording corrected (evicted ≠ archived), receipt filed
+- [x] Second-pass Codex review of the fixes themselves
+- [x] 2nd-pass: fail-closed URL sanitizer (ssh://, query-token, scp, malformed)
+- [x] 2nd-pass: `--container` requires a ShipIt-generated name (bare id → `--id`)
+- [x] 2nd-pass: paging sorts on an immutable key, so live turns can't skip rows
+- [x] 2nd-pass: bad `offset` rejected instead of silently returning page 1
+- [x] 2nd-pass: PR-URL parsing handles `/files`, `?query`, `#fragment`
+- [x] 2nd-pass: `list` host-only flags refused without `--all`
+- [x] 2nd-pass: "any earlier PR" overclaim corrected to the retained one
 - [x] Tracker issue filed and cross-linked (`roadmap#SHI-329`)

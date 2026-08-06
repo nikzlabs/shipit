@@ -67,16 +67,30 @@ leaks by default:
 | `pr`: `number`, `url`, `state`, `baseBranch`, `headBranch` | PR title/body, review comments |
 | `previousPr`: `number`, `url` | — |
 
-¹ `remoteUrl` goes through `stripUrlCredentials` here, and that is **not**
-belt-and-suspenders. The repo-wide invariant is that a persisted origin carries
-no userinfo, but `setGitRemote` (`services/git.ts`) writes the user-supplied URL
-through verbatim, so a session row genuinely can hold
-`https://x-access-token:<pat>@github.com/o/r.git`. Every other reader of
-`remoteUrl` shows it back to that session's **own** user; this one shows it to a
-**different** session, which is exactly the boundary req 8 draws around tokens.
-Strip at the crossing. (The upstream persistence gap is a separate pre-existing
-bug, deliberately not fixed here — this surface must be safe regardless of what
-some other path chose to store.)
+¹ `remoteUrl` goes through a local `sanitizeRemoteUrlForInventory`, **not** the
+repo's usual `git-utils.ts:stripUrlCredentials`, and the difference is the point.
+`setGitRemote` (`services/git.ts`) persists whatever string the user supplied,
+and `stripUrlCredentials` only rewrites well-formed `http(s)` — deliberately, since
+an scp-style `git@github.com:o/r.git` carries an SSH *user*, not a secret, which
+is the right call for the surfaces it was written for (showing a URL back to its
+own owner). Verified against it, all four of these pass through untouched:
+
+```
+ssh://git:pw@example.com/o/r.git             a real password, non-http scheme
+https://example.com/o/r.git?access_token=pw  credential in the query string
+https://u:pw@                                `new URL` throws → returned as-is
+tok@example.com:o/r.git                      scp-style, may be a token
+```
+
+Git accepts every one as a remote, so each is reachable. Crossing a session
+boundary is exactly where req 8's "no tokens" clause binds, so the inventory
+**fails closed**: parse strictly and drop userinfo + query + fragment; if it
+will not parse, drop everything up to the last `@`; if nothing usable remains,
+omit the field. Losing a legible URL is a fair price for never emitting someone
+else's credential — the session id, branch, and PR url already identify the
+session. (The upstream persistence gap is a separate pre-existing bug,
+deliberately not fixed here: this surface must be safe regardless of what some
+other path chose to store.)
 
 The line is deliberately drawn at *"that a session exists and what it owns"*.
 An Ops session sees inventory; it never reads what the user said. Note what is
@@ -120,6 +134,22 @@ requires; the response carries `nextOffset` when more remain, so the CLI can
 name the exact next command instead of telling the agent to raise a `limit` it
 has no power to raise.
 
+**Paging re-sorts on an immutable key, and must.** The SQL orders by
+`last_used_at DESC` — right for reading page 1, but *mutable*: a session that
+takes a turn between two page requests jumps to the top and shifts every row
+after it, so offset paging duplicates one session and silently skips another.
+`queryHostSessions` therefore sorts the matched set by `(createdAt DESC, id)`
+before slicing: `createdAt` is written once at creation (`markStarted` resets it
+only during setup, before a session can be paged over) and `id` is a UUID, so
+the pair is a total order no concurrent turn can reshuffle. Without this, req 5's
+"fully enumerable" is false on any live host.
+
+A bad `offset` is **rejected**, not clamped — unlike `limit`, which falls back to
+the default. A silently-zeroed `--offset -1` returns page 1 dressed as the page
+the caller asked for, turning a paging loop into an infinite one. A bad limit
+only changes how much you get; a bad offset changes which rows you believe you
+have already seen.
+
 Why the id filter is `id=` and not `session=`: the container guard's §3 scope
 check falls back to a `?session=` query param when the path has no
 `/api/sessions/<id>/` segment. This route *does* have one, so `session=` would
@@ -143,19 +173,29 @@ emits) and an `agent-`/`shipit-` prefix, then takes the leading 12 characters of
 the remainder and matches `id LIKE '<prefix>%'`. That one rule covers every
 shape above, plus a bare id or id prefix pasted straight from the journal.
 
-**A name with neither prefix must additionally look like a UUID prefix.** A
+**The `agent-`/`shipit-` prefix is REQUIRED — a bare name is refused.** A
 project's own `docker-compose.yml` may set an explicit `container_name:`, and
 ShipIt's generated override does not rewrite it, so a service container can
-appear in `docker ps` as an arbitrary string like `payments-db`. Reading its
-first 12 characters as a session-id prefix would `LIKE`-match a completely
-unrelated session — a *confidently wrong* answer, which on a surface whose whole
-purpose is to end guesswork is worse than no answer at all. So an unprefixed
-name is accepted only if it could be a UUID prefix; otherwise the route 400s and
-the error names the authoritative fallback, which exists precisely for these
-containers: the `shipit-parent-session` label (compose siblings) or
-`shipit-session-id` (session containers), read with `docker inspect` and passed
-back as `--id`. Turning a dead end into a next step is the whole point of the
-feature, so the failure path gets the same treatment as the success path.
+appear in `docker ps` under any name at all. Reading its leading characters as a
+session-id prefix would `LIKE`-match a completely unrelated session — a
+*confidently wrong* answer, which on a surface whose whole purpose is to end
+guesswork is worse than no answer at all.
+
+An intermediate version accepted a bare *hex-looking* name as an id prefix. That
+was not enough: `container_name: deadbeef` on session A still resolved to
+session B whose UUID merely started with `deadbeef`. A bare session id simply is
+not a container name — it belongs to `--id`, which matches ids against ids and
+therefore cannot mis-attribute. So `--container` now takes only what ShipIt
+generates, and anything else 400s with both ways forward named: pass a session
+id to `--id`, or read the owner off the container's `shipit-parent-session` /
+`shipit-session-id` label with `docker inspect`. Turning a dead end into a next
+step is the whole point of the feature, so the failure path gets the same
+treatment as the success path.
+
+**Residual ambiguity, documented rather than papered over:** a project that sets
+`container_name: agent-<12 chars matching another session's UUID prefix>` still
+mis-resolves. Nothing in a *name* can distinguish that case — only the label is
+authoritative — and the error message is where that fallback is surfaced.
 
 ## SessionManager lookups
 
@@ -171,6 +211,12 @@ these are single-digit-millisecond queries against a table of hundreds of rows):
   ships enabled in the bundled `better-sqlite3` build. Matching
   `previous_merged_pr` too is what makes req 2 hold: the session that opened
   #1741 and then #1744 on `shipit/kmwodw` resolves from either number.
+  **Known limit:** `clearMerged` overwrites the single breadcrumb on each
+  re-arm, so only the *immediately* preceding PR survives — a branch that
+  shipped #1, #2, #3 resolves from #3 and #2 but not #1. Retaining the full
+  history means widening docs/202's breadcrumb into a list, which belongs to
+  that feature rather than to this read-only lookup; `--branch` covers the older
+  ones. The docs say "the one immediately before it", not "any earlier one".
 
 Each returns every matching row including warm/archived ones; the service layer
 applies the `includeArchived` and warm filters, so the SQL stays one predicate.

@@ -23,6 +23,7 @@ import {
   composeProjectForSession,
   containerNameForSession,
   queryHostSessions,
+  sanitizeRemoteUrlForInventory,
   sessionIdPrefixFromContainerName,
   MAX_HOST_SESSION_LIMIT,
 } from "./host-sessions.js";
@@ -86,17 +87,12 @@ describe("sessionIdPrefixFromContainerName", () => {
     expect(sessionIdPrefixFromContainerName("shipit-83292266-744_node_modules")).toBe("83292266-744");
   });
 
-  it("passes a bare (possibly truncated) session id through", () => {
-    expect(sessionIdPrefixFromContainerName("83292266-7445-4a1b-9c2d-000000000000")).toBe("83292266-744");
-    expect(sessionIdPrefixFromContainerName("8329")).toBe("8329");
-  });
-
   it("returns null when nothing is left to match on", () => {
     expect(sessionIdPrefixFromContainerName("agent-")).toBeNull();
     expect(sessionIdPrefixFromContainerName("   ")).toBeNull();
   });
 
-  it("refuses an arbitrary user-set container_name instead of guessing", () => {
+  it("refuses any name ShipIt did not generate, instead of guessing", () => {
     // A project's own compose file may set `container_name:`, and ShipIt's
     // generated override does not rewrite it — so these appear verbatim in
     // `docker ps`. Reading their first 12 chars as a session-id prefix would
@@ -107,10 +103,14 @@ describe("sessionIdPrefixFromContainerName", () => {
     expect(sessionIdPrefixFromContainerName("docker-socket-proxy")).toBeNull();
   });
 
-  it("still trusts a ShipIt-generated name even when the tail looks unusual", () => {
-    // The `agent-`/`shipit-` prefix is proof of provenance, so the remainder is
-    // taken as the id slice without the UUID-shape check.
-    expect(sessionIdPrefixFromContainerName("agent-zzzzzzzz-zzz")).toBe("zzzzzzzz-zzz");
+  it("refuses a bare hex name, which would otherwise mis-attribute a container", () => {
+    // The concrete trap: session A's compose sets `container_name: deadbeef`,
+    // and session B's UUID happens to start `deadbeef`. Accepting the bare name
+    // as an id prefix would report B as the owner of A's container. A bare id
+    // is not a container name — it belongs to `--id`, which matches ids against
+    // ids and so cannot mis-attribute.
+    expect(sessionIdPrefixFromContainerName("deadbeef")).toBeNull();
+    expect(sessionIdPrefixFromContainerName("83292266-7445-4a1b-9c2d-000000000000")).toBeNull();
   });
 
   it("round-trips the names ShipIt itself generates", () => {
@@ -308,6 +308,44 @@ describe("queryHostSessions", () => {
     expect(new Set(walked).size).toBe(5);
   });
 
+  it("pages consistently even when a session takes a turn mid-enumeration", () => {
+    // The SQL orders by the MUTABLE `last_used_at`. If paging inherited that
+    // order, a session taking a turn between two page requests would jump to
+    // the top, shifting every later row — duplicating one session and silently
+    // skipping another. Paging sorts on an immutable key to prevent that.
+    for (let i = 0; i < 6; i++) seed(`s${i}`, { branch: "shipit/many" });
+
+    const page1 = queryHostSessions(sessions, { branch: "shipit/many", limit: 2 });
+    // The oldest session becomes the most recently used, mid-enumeration.
+    sessions.track("s0");
+
+    const page2 = queryHostSessions(sessions, {
+      branch: "shipit/many", limit: 2, offset: page1.nextOffset,
+    });
+    const page3 = queryHostSessions(sessions, {
+      branch: "shipit/many", limit: 2, offset: page2.nextOffset,
+    });
+
+    const walked = [...page1.sessions, ...page2.sessions, ...page3.sessions].map((s) => s.id);
+    expect(walked).toHaveLength(6);
+    expect(new Set(walked).size).toBe(6); // no duplicates
+    expect([...walked].sort()).toEqual(["s0", "s1", "s2", "s3", "s4", "s5"]); // none skipped
+  });
+
+  it("rejects a bad offset rather than silently returning page 1", () => {
+    // A zeroed `--offset -1` looks like a valid page, which turns a paging loop
+    // into an infinite one. A bad limit only changes how much you get; a bad
+    // offset changes which rows you believe you have already seen.
+    seed("a");
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+      expect(() => queryHostSessions(sessions, { offset: bad })).toThrow(ServiceError);
+    }
+    // An offset past the end is legal — it is simply an empty last page.
+    const past = queryHostSessions(sessions, { offset: 999 });
+    expect(past.sessions).toEqual([]);
+    expect(past.nextOffset).toBeUndefined();
+  });
+
   it("treats --id the same whether or not another filter is also supplied", () => {
     // The warm-session exemption keys on the filter being SUPPLIED, not on which
     // lookup ran first. Without that, adding `--branch` to an `--id` query would
@@ -417,6 +455,39 @@ describe("metadata-only projection", () => {
     expect(view.latestAssistantMessage).toBeUndefined();
     // Serializing the whole view must not carry the replay text through either.
     expect(JSON.stringify(view)).not.toContain("the user said something private");
+  });
+
+  it("fails closed on every remote-URL shape that can carry a credential", () => {
+    // `git-utils.ts:stripUrlCredentials` handles ONLY well-formed http(s), by
+    // design — these four all survive it untouched, and git accepts every one
+    // as a remote, so `setGitRemote` can persist them. Crossing to another
+    // session is where req 8 binds, so this must be stricter than the helper.
+    for (const [raw, expected] of [
+      ["https://u:pw@github.com/o/r.git", "https://github.com/o/r.git"],
+      ["ssh://git:pw@example.com/o/r.git", "ssh://example.com/o/r.git"],
+      ["https://example.com/o/r.git?access_token=pw", "https://example.com/o/r.git"],
+      ["https://example.com/o/r.git#tok=pw", "https://example.com/o/r.git"],
+      ["tok@example.com:o/r.git", "example.com:o/r.git"],
+      ["git@github.com:o/r.git", "github.com:o/r.git"],
+    ] as const) {
+      expect(sanitizeRemoteUrlForInventory(raw)).toBe(expected);
+    }
+    // Unparseable and nothing left after the userinfo → withhold entirely
+    // rather than emit a fragment of a credentialed URL.
+    expect(sanitizeRemoteUrlForInventory("https://u:pw@")).toBeUndefined();
+    expect(sanitizeRemoteUrlForInventory("   ")).toBeUndefined();
+    // A clean remote is untouched.
+    expect(sanitizeRemoteUrlForInventory("https://github.com/o/r.git")).toBe(
+      "https://github.com/o/r.git",
+    );
+  });
+
+  it("withholds a non-http credentialed URL end to end, not just via the helper", () => {
+    seed("a", { branch: "shipit/x" });
+    sessions.setRemoteUrl("a", "ssh://git:pw@example.com/o/r.git");
+    const view = queryHostSessions(sessions, { id: "a" }).sessions[0];
+    expect(JSON.stringify(view)).not.toContain("pw@");
+    expect(view.remoteUrl).toBe("ssh://example.com/o/r.git");
   });
 
   it("strips credentials out of a repo URL before showing it to another session", () => {
