@@ -37,6 +37,15 @@ export interface WsSendMessage {
    * is about.
    */
   issueRef?: IssueRef;
+  /**
+   * docs/144 — some or all of `text` was dictated by voice rather than typed.
+   * Set by the composer when a transcript was spliced into the draft that
+   * produced this message. Purely a hint to the agent (it adds a
+   * `<dictated_input>` context block to the prompt so mis-heard terms and
+   * missing punctuation read as transcription artifacts, not intent); it never
+   * changes the persisted bubble, which stays the user's verbatim text.
+   */
+  dictated?: boolean;
 }
 
 export interface WsAnswerQuestion {
@@ -64,6 +73,12 @@ export interface WsAnswerQuestion {
    * last-applied mode.
    */
   permissionMode?: PermissionMode;
+  /**
+   * docs/144 — an "Other" free-text answer was dictated. Same hint as
+   * `WsSendMessage.dictated`: the answer becomes the next turn's prompt, so it
+   * carries the same transcription artifacts a dictated chat message does.
+   */
+  dictated?: boolean;
 }
 
 // ---- Agent selection (per-connection state, must stay on WS) ----

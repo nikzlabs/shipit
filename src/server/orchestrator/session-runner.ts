@@ -254,6 +254,8 @@ export interface QueuedMessage {
    * the retry supervisor would fire a duplicate.
    */
   deliveryId?: string;
+  /** docs/144 — voice-dictated prompt (see `AgentDispatchOptions.dictated`). */
+  dictated?: boolean;
 }
 
 /**
@@ -331,6 +333,18 @@ export interface AgentDispatchOptions {
    * Absent for an ordinary user turn: there is nothing to re-settle.
    */
   deliveryId?: string;
+  /**
+   * docs/144 — the human dictated this prompt by voice, so the text is a
+   * machine transcription. Adds a `<dictated_input>` context block to the
+   * assembled prompt (see `prompt-assembly.ts`) telling the agent to read
+   * mis-heard terms and missing punctuation as artifacts rather than intent.
+   * Carried through the queue so a message dictated while a turn is running
+   * still arrives with the hint when it drains.
+   *
+   * Never set by a server-originated dispatch: nothing the orchestrator
+   * composes has been through speech-to-text.
+   */
+  dictated?: boolean;
 }
 
 export const REPOSITORY_UNTRUSTED_CODE = "repository_untrusted" as const;
@@ -550,6 +564,7 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.systemTurn !== undefined) queued.systemTurn = opts.systemTurn;
   if (opts.onTurnComplete !== undefined) queued.onTurnComplete = opts.onTurnComplete;
   if (opts.deliveryId !== undefined) queued.deliveryId = opts.deliveryId;
+  if (opts.dictated !== undefined) queued.dictated = opts.dictated;
   return queued;
 }
 

@@ -69,6 +69,13 @@ export interface SendPayload {
    * setting. Non-sticky.
    */
   resetMergedBranch?: boolean;
+  /**
+   * docs/144 — some or all of `text` was dictated by voice rather than typed.
+   * Forwarded to the server, which adds a `<dictated_input>` note to the prompt
+   * so the agent reads mis-heard terms and absent punctuation as transcription
+   * artifacts instead of intent. Absent when nothing was dictated.
+   */
+  dictated?: boolean;
 }
 
 export function MessageInput({
@@ -207,12 +214,24 @@ export function MessageInput({
     sessionId: isOverlay ? "overlay" : sessionId,
   });
 
+  // docs/144 — whether the draft currently in the composer contains dictated
+  // text. Set when a transcript is spliced in, cleared on send and whenever the
+  // composer goes empty (the transcript is gone, so anything typed next is
+  // typed, not spoken). Ships to the server as `dictated` so the agent is told
+  // the message was transcribed and can read mis-hearings as artifacts. A
+  // partly-dictated message still counts: the artifacts are in there either way.
+  const [draftDictated, setDraftDictated] = useState(false);
+  const markTyped = useCallback((next: string) => {
+    if (next.trim() === "") setDraftDictated(false);
+  }, []);
+
   // The single transcript→textarea splice. Cursor/selection come from the
   // live textarea so dictation stitches into partially-typed text.
   // eslint-disable-next-line no-restricted-syntax -- transcript subscription with cleanup
   useEffect(() => {
     return voice.onTranscript((transcript) => {
       const ta = textareaRef.current;
+      setDraftDictated(true);
       setText((prev) => {
         const res = spliceTranscript({
           value: prev,
@@ -247,6 +266,14 @@ export function MessageInput({
   const persistDraft = surface !== "overlay";
   useMessageDraft({ focusKey, persistDraft, text, setText });
 
+  // docs/144 — a session switch swaps the draft underneath us. Drafts persist
+  // their text, not their provenance, so a restored draft is treated as typed
+  // rather than inheriting the outgoing session's dictation flag.
+  // eslint-disable-next-line no-restricted-syntax -- reset per-draft state when the composer's session changes
+  useEffect(() => {
+    setDraftDictated(false);
+  }, [focusKey]);
+
   // Fallback auto-grow for browsers without `field-sizing: content` support.
   useTextareaSizing(textareaRef, text);
 
@@ -257,6 +284,8 @@ export function MessageInput({
     const consume = (prefill: string | undefined) => {
       if (!prefill) return;
       setText(prefill);
+      // Prefill REPLACES the draft, so whatever was dictated into it is gone.
+      setDraftDictated(false);
       useSessionStore.getState().setPrefillText(undefined);
       requestAnimationFrame(() => {
         const ta = textareaRef.current;
@@ -406,6 +435,8 @@ export function MessageInput({
       deferredFiles: isOverlay ? localFiles : [],
       // docs/218 — only carry the intent when the control was actually shown.
       ...(showResetControl ? { resetMergedBranch: resetChecked } : {}),
+      // docs/144 — omitted entirely when the draft was typed.
+      ...(draftDictated ? { dictated: true } : {}),
     };
     // docs/218 — when this send carries the reset intent, the branch is about to
     // be reset to the latest base, which makes the session no longer
@@ -419,6 +450,7 @@ export function MessageInput({
     }
     onSend(payload);
     setText("");
+    setDraftDictated(false);
     // The transcript the cleanup notice referred to has now left the composer —
     // drop the notice so it doesn't linger over an empty input.
     voice.dismissCleanupWarning();
@@ -443,6 +475,7 @@ export function MessageInput({
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newText = e.target.value;
     setText(newText);
+    markTyped(newText);
 
     const cursorPos = e.target.selectionStart ?? newText.length;
     const textBeforeCursor = newText.slice(0, cursorPos);

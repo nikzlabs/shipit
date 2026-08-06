@@ -228,6 +228,7 @@ export async function dispatchAgentMessage(
     systemTurn: undefined,
     onTurnComplete: undefined,
     deliveryId: undefined,
+    dictated: undefined,
   }));
 
   return { ok: true, queued: wasRunning };

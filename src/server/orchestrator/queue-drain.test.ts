@@ -81,6 +81,7 @@ describe("queue drain routing (SHI-255)", () => {
       systemTurn: true,
       onTurnComplete,
       deliveryId: "watch-1:1",
+      dictated: true,
     };
 
     // docs/240 — `toQueuedMessage` now takes a branded `PreparedDispatch` (so

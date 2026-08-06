@@ -14,7 +14,7 @@ import {
 import hljs from "highlight.js";
 import { DiffBlock } from "./DiffBlock.js";
 import { ToolSpinner } from "./StreamingIndicator.js";
-import { AskUserQuestion, type AskQuestionItem } from "./AskUserQuestion.js";
+import { AskUserQuestion, type AskQuestionItem, type AnswerQuestionFn } from "./AskUserQuestion.js";
 import { PlanApproval } from "./PlanApproval.js";
 import { ToolResult } from "./ToolResult.js";
 import { Dialog, DialogContent } from "./ui/dialog.js";
@@ -64,7 +64,7 @@ export function ToolCallGroup({ items, isStreaming }: {
   );
 }
 
-export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, onSendFollowUp, isQuestionDisabled, grouped: _grouped, planContent }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>, text: string) => boolean; onSendFollowUp?: (text: string) => void; isQuestionDisabled: boolean; grouped?: boolean; planContent?: string }) {
+export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, onSendFollowUp, isQuestionDisabled, grouped: _grouped, planContent }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: AnswerQuestionFn; onSendFollowUp?: (text: string) => void; isQuestionDisabled: boolean; grouped?: boolean; planContent?: string }) {
   // IMPORTANT: all hooks must be called before any conditional `return` below.
   // `tool.name` and `tool.input` can change between renders while a tool is
   // streaming in (e.g. `AskUserQuestion` only matches once `input.questions`

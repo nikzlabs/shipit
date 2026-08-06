@@ -121,6 +121,13 @@ export async function createHeadlessSession(opts: {
    */
   armAutoMerge?: boolean;
   /**
+   * docs/144 — the prompt was dictated by voice. The server folds a
+   * `<dictated_input>` note into the first turn's prompt so the agent reads
+   * mis-heard terms and missing punctuation as transcription artifacts. Rides
+   * the JSON body, or the multipart form as the string "true".
+   */
+  dictated?: boolean;
+  /**
    * Raw files to attach to the new session. When present we POST as
    * multipart/form-data so the orchestrator can save them into the new
    * session's uploads dir before dispatching the prompt; otherwise we keep

@@ -110,6 +110,14 @@ export interface CreateHeadlessSessionOptions {
    * the session row or DB.
    */
   armAutoMerge?: boolean;
+  /**
+   * docs/144 — the prompt was dictated by voice (the quick-capture overlay's
+   * Mode B: hold the hotkey, speak a task, it spawns a session). The first
+   * turn's prompt gets the `<dictated_input>` block so the agent reads
+   * mis-heard terms as transcription artifacts. Never set for a
+   * server-composed prompt (issue seeds, API callers that didn't ask for it).
+   */
+  dictated?: boolean;
 }
 
 export interface CreateHeadlessSessionResult {
@@ -243,6 +251,7 @@ export async function createHeadlessSession(
     systemTurn: undefined,
     onTurnComplete: undefined,
     deliveryId: undefined,
+    dictated: opts.dictated,
   }));
 
   // graduate-session.ts owns the warm → active transition (docs/156).

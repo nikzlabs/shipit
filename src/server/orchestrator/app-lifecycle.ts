@@ -1072,6 +1072,7 @@ export function createPrStatusPoller(
         permissionMode: undefined,
         postTurn: undefined,
         deliveryId: undefined,
+        dictated: undefined,
       })).settled;
       // A turn that NEVER RAN doesn't burn budget: `dropped` (runner disposed
       // mid-turn, queue cleared) and `steered` (unreachable for a system turn,

@@ -330,6 +330,7 @@ export async function triggerCIFix(
     systemTurn: undefined,
     onTurnComplete: undefined,
     deliveryId: undefined,
+    dictated: undefined,
   }));
   // attemptNumber is vestigial (the client ignores it); a manual fix is always a
   // single one-shot, so report 1.

@@ -184,5 +184,6 @@ function dispatchRemediationTurn(
     systemTurn: true,
     onTurnComplete: undefined,
     deliveryId: undefined,
+    dictated: undefined,
   }));
 }

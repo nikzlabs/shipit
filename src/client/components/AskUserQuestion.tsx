@@ -23,16 +23,31 @@ export interface AskQuestionItem {
   multiSelect: boolean;
 }
 
+/**
+ * Deliver the user's answers to the agent.
+ *
+ * MUST return whether the answer was accepted for delivery. The card's
+ * answered-state lock is gated on it: a send dropped on a non-OPEN socket must
+ * leave the question answerable rather than showing an answered state for a
+ * message the agent never received.
+ *
+ * `dictated` (docs/144) marks an "Other" answer that was spoken rather than
+ * typed, so the resulting turn's prompt carries the transcription hint.
+ *
+ * Named rather than written inline because the same signature is threaded
+ * through four components; a fifth inline copy is a fifth chance to drift.
+ */
+export type AnswerQuestionFn = (
+  toolUseId: string,
+  answers: Record<string, string>,
+  text: string,
+  dictated?: boolean,
+) => boolean;
+
 interface AskUserQuestionProps {
   toolUseId: string;
   questions: AskQuestionItem[];
-  /**
-   * MUST return whether the answer was accepted for delivery. The card's
-   * answered-state lock is gated on it: a send dropped on a non-OPEN socket
-   * must leave the question answerable rather than showing an answered state
-   * for a message the agent never received.
-   */
-  onAnswer: (toolUseId: string, answers: Record<string, string>, text: string) => boolean;
+  onAnswer: AnswerQuestionFn;
   disabled: boolean;
   /**
    * The agent's tool_result content for this question, when it has been
@@ -161,6 +176,15 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
   // Track the submitted answers (for showing after submit). Local state is
   // the source of truth during a live session.
   const [localSubmitted, setLocalSubmitted] = useState<Record<string, string> | null>(null);
+  // docs/144 — questions whose "Other" free text was dictated. A dictated
+  // answer becomes the next turn's prompt, so it carries the same STT artifacts
+  // a dictated chat message does and gets the same hint. Set-valued because a
+  // multi-question card can mix spoken and typed answers; any one of them
+  // dictated is enough to flag the turn.
+  const [dictatedOther, setDictatedOther] = useState<Set<number>>(new Set());
+  const markDictated = useCallback((qIndex: number) => {
+    setDictatedOther((prev) => new Set(prev).add(qIndex));
+  }, []);
 
   // Effective submitted answers = local state during the session, OR the
   // server-persisted result on reload. `useMemo` keeps the reference stable
@@ -182,10 +206,26 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
    */
   const submitAnswers = useCallback(
     (answers: Record<string, string>) => {
-      if (!onAnswer(toolUseId, answers, formatAnswerText(questions, answers))) return;
+      // docs/144 — flag the turn when a transcript actually reaches the prompt.
+      // Matched against the SUBMITTED text rather than "is this question still
+      // on Other", because `handleOptionClick` submits in the same tick it
+      // clears `usingOther` — the closure here would still see the stale set. A
+      // question dictated into and then abandoned for a preset option answers
+      // with the option label, which is not the free text, so it drops out.
+      const dictated = Object.entries(answers).some(([k, answer]) => {
+        const spoken = otherTexts.get(Number(k))?.trim();
+        return dictatedOther.has(Number(k)) && !!spoken && answer === spoken;
+      });
+      const text = formatAnswerText(questions, answers);
+      // Omitted rather than passed as `false`, mirroring the wire shape it ends
+      // up in: absent means typed.
+      const accepted = dictated
+        ? onAnswer(toolUseId, answers, text, true)
+        : onAnswer(toolUseId, answers, text);
+      if (!accepted) return;
       setSubmittedAnswers(answers);
     },
-    [onAnswer, toolUseId, questions, setSubmittedAnswers],
+    [onAnswer, toolUseId, questions, setSubmittedAnswers, dictatedOther, otherTexts],
   );
 
   const handleOptionClick = useCallback((qIndex: number, label: string, multiSelect: boolean) => {
@@ -268,6 +308,16 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
       next.set(qIndex, text);
       return next;
     });
+    // docs/144 — the transcript is gone once the field is emptied, so whatever
+    // the user types next is typed, not spoken.
+    if (text.trim() === "") {
+      setDictatedOther((prev) => {
+        if (!prev.has(qIndex)) return prev;
+        const next = new Set(prev);
+        next.delete(qIndex);
+        return next;
+      });
+    }
   }, []);
 
   // Submit a single-question "Other" answer (Enter key). Mirrors the inline
@@ -407,6 +457,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
                     <OtherAnswerInput
                       value={otherTexts.get(qIndex) ?? ""}
                       onChange={(text) => handleOtherTextChange(qIndex, text)}
+                      onDictated={() => markDictated(qIndex)}
                       allowEnterSubmit={!needsSubmitButton}
                       onEnterSubmit={() => submitOther(qIndex)}
                     />
@@ -465,11 +516,14 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
 function OtherAnswerInput({
   value,
   onChange,
+  onDictated,
   onEnterSubmit,
   allowEnterSubmit,
 }: {
   value: string;
   onChange: (text: string) => void;
+  /** docs/144 — fired when a transcript is spliced in, so the parent can flag the turn. */
+  onDictated: () => void;
   onEnterSubmit: () => void;
   allowEnterSubmit: boolean;
 }) {
@@ -494,11 +548,14 @@ function OtherAnswerInput({
   valueRef.current = value;
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const onDictatedRef = useRef(onDictated);
+  onDictatedRef.current = onDictated;
 
   // eslint-disable-next-line no-restricted-syntax -- transcript subscription with cleanup
   useEffect(() => {
     return voice.onTranscript((transcript) => {
       const ta = textareaRef.current;
+      onDictatedRef.current();
       const res = spliceTranscript({
         value: valueRef.current,
         selectionStart: ta?.selectionStart,

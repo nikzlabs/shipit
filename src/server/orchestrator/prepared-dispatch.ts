@@ -107,6 +107,7 @@ export interface AgentDispatchInit {
   systemTurn: boolean | undefined;
   onTurnComplete: ((outcome: TurnOutcome) => void) | undefined;
   deliveryId: string | undefined;
+  dictated: boolean | undefined;
 }
 
 /** Compile-time `T extends never` assertion — the error message names the offender. */
@@ -145,6 +146,7 @@ const DISPATCH_FIELDS: Record<keyof AgentDispatchOptions, true> = {
   systemTurn: true,
   onTurnComplete: true,
   deliveryId: true,
+  dictated: true,
 };
 
 const DISPATCH_FIELD_KEYS = Object.keys(DISPATCH_FIELDS) as (keyof AgentDispatchOptions)[];
@@ -207,6 +209,9 @@ export function queuedMessageToDispatchOptions(next: QueuedMessage): PreparedDis
     // SHI-264 — and the DURABLE half of the same signal, so the entry answers
     // `runner.hasDelivery(id)` for the whole time it waits in the queue.
     deliveryId: next.deliveryId,
+    // docs/144 — a message dictated while a turn was running still tells the
+    // agent it was transcribed when it finally drains.
+    dictated: next.dictated,
   });
 }
 
