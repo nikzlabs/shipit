@@ -206,6 +206,9 @@ boundary they're competing with.
   each rendered in app context. Toggles for warm-light/dark and 4-repo/8-repo.
 - [`mocks/repo-separation-cards.html`](mocks/repo-separation-cards.html) — six
   ways to get card-style containment, since the obvious one doesn't exist here.
+- [`mocks/repo-separation-band.html`](mocks/repo-separation-band.html) — variant
+  4 (the filled header band) worked through in Claude Light and Claude Dark
+  specifically, with live sticky scrolling.
 
 ### The constraint any variant has to satisfy
 
@@ -231,3 +234,37 @@ hierarchy. So:
   has nothing to darken, so the treatment vanishes in every dark theme.
 
 No variant is chosen yet; nothing here is implemented.
+
+### What the band variant turned up (Claude Light / Claude Dark)
+
+The Claude palettes are the hard case for any fill-based treatment. Measured
+against the rail (`--color-bg-primary`), the band fills available are:
+
+| Fill | Claude Light | Claude Dark |
+|---|---|---|
+| `--color-bg-secondary` (as specced) | 1.12 : 1 | 1.09 : 1 |
+| `--color-bg-tertiary` | 1.25 : 1 | 1.21 : 1 |
+| `--color-accent-subtle` composited | 1.12 : 1 | 1.23 : 1 |
+
+Three things fall out, all checkable:
+
+1. **In Claude Dark, `--color-border-primary` is `#2e2519` — byte-identical to
+   `--color-bg-tertiary`.** A tertiary band with `border-primary` rules has
+   invisible rules there and visible ones in Claude Light, so the two themes
+   don't match. Rules have to come from `--color-border-secondary`.
+2. **The band as specced is the same fill as the current-session row**
+   (`SessionGroup.tsx:431` also uses `--color-bg-secondary`). At 1.09 : 1 against
+   the rail, header and selection become the same object. A band has to sit at a
+   different rank than the selection.
+3. **A translucent band on a sticky header is a bug.** Every `*-subtle` token is
+   `rgba()`, and the repo header is `position: sticky` (`SessionGroup.tsx:336`),
+   so rows scroll *through* a tinted band rather than under it. Composite the
+   tint over an opaque base — `linear-gradient(tint, tint), var(--color-bg-primary)`
+   keeps the token rather than hardcoding the resulting hex. The mock keeps an
+   uncomposited copy (option 4c-raw) as the visible guard. This applies to any
+   hue-tinted band, including variant 5's spine if it ever moves onto the header.
+
+Contrast ratio is luminance-only, and that matters here: the accent-tinted band
+measures the same 1.12 : 1 as the as-specced one in Claude Light, yet reads far
+more clearly, because it separates by **hue** rather than by lightness. Don't
+pick the band fill off the numbers alone.
