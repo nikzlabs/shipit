@@ -209,6 +209,10 @@ boundary they're competing with.
 - [`mocks/repo-separation-band.html`](mocks/repo-separation-band.html) — variant
   4 (the filled header band) worked through in Claude Light and Claude Dark
   specifically, with live sticky scrolling.
+- [`mocks/repo-separation-spine.html`](mocks/repo-separation-spine.html) — the
+  leading candidate (4e) extended so the per-repo accent edge spans the whole
+  group rather than just the header band. Seven options, both Claude themes,
+  live sticky scrolling, plus dense (8 repos) and collapsed toggles.
 
 ### The constraint any variant has to satisfy
 
@@ -268,3 +272,30 @@ Contrast ratio is luminance-only, and that matters here: the accent-tinted band
 measures the same 1.12 : 1 as the as-specced one in Claude Light, yet reads far
 more clearly, because it separates by **hue** rather than by lightness. Don't
 pick the band fill off the numbers alone.
+
+### Carrying the accent edge down the whole group
+
+4e puts the per-repo hue on the header band's left border, so it labels the
+*header*. Running the edge the full height of the group makes it label the
+*group*: sessions, the `New session` row, and both sub-section labels all sit
+inside one continuous vertical claim. It also collapses variant 4's band and
+variant 5's spine into a single mechanism doing both jobs, which is a reason to
+prefer it over shipping the two separately.
+
+Implementation constraints found while mocking it:
+
+- **Draw the edge as `border-left` on the group element, not on the header.** The
+  repo header is `position: sticky`, so an edge on `.ghead` visibly breaks at the
+  seam the moment the header pins. On the group it paints behind the pinned band
+  and stays continuous. Variants that need rounding or a gradient can't use a
+  border, so they need an absolutely-positioned pseudo-element with a `z-index`
+  above the sticky header.
+- **A per-repo body wash should use `color-mix`, not `rgba`.**
+  `color-mix(in srgb, var(--accent) 6%, var(--color-bg-primary))` resolves to an
+  *opaque* color, which is what the sticky-header rule above demands, and it
+  derives the tint from the hue variable instead of needing a second pre-tinted
+  token per repo.
+- **Judge it at eight repos, not four.** A 3px colored line per group is the
+  densest ink of any option explored; the failure mode is the rail reading as a
+  barcode, and that only shows up at real repo counts. The mock's dense toggle
+  exists for this.
