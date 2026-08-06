@@ -21,3 +21,27 @@
 - [x] Tests: shim (31), timeouts (11), queue (7), runner bridge (14), worker
       integration (+3)
 - [x] `npm run typecheck`, `npm run lint:dev`, affected suites green
+
+## Follow-up — stuck `starting`, no reachable address (#2044)
+
+- [x] `getServices` publishes `url` for `starting` as well as `running`;
+      `stopped`/`error` still withhold it
+- [x] Per-service `starting` watchdog (`STARTING_WATCHDOG_MS`) → `error` with a
+      reason, exempting in-flight `compose up` and the install gate (both re-arm)
+- [x] Watchdogs cancelled on `stop()` and on `reconcile()`'s map rebuild
+- [x] `joinSessionNetwork` bounded by `NETWORK_JOIN_TIMEOUT_MS` and logged
+- [x] `poller.start()` moved into `start()`'s `finally` so a throw can't leave a
+      session with no poll loop
+- [x] Poller's `ps`/`inspect` bounded by `COMPOSE_QUERY_TIMEOUT_MS` (wrapped in
+      the constructor, so the whole poll path is covered)
+- [x] `containerIp` cleared on `stopped`/`error` and on a new `compose up`, so a
+      `starting` service can't advertise the previous container's address
+- [x] Watchdog re-armed when the in-flight exemption releases (a long build must
+      not eat the window that covers the join + first poll)
+- [x] `reconcile()` clears `upInFlight` — a wedged old `up` must not exempt the
+      same-named new service forever
+- [x] `setupServiceManager` skips `mgr.start()` if the runner was disposed while
+      it awaited the prior stop / worker readiness
+- [x] `shipit-docs/preview.md` — `url` while `starting`, stuck-service troubleshooting
+- [x] Tests: 11 cases in `service-manager.test.ts`, 2 in `service-poller.test.ts`;
+      `npm run typecheck`, `npm run lint:dev`, full orchestrator suite green

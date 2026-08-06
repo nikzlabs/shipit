@@ -19,6 +19,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   ServicePoller,
   MISSING_CONTAINER_GRACE_MS,
+  COMPOSE_QUERY_TIMEOUT_MS,
   type ServicePollerOptions,
   type PollerService,
 } from "./service-poller.js";
@@ -514,5 +515,71 @@ describe("ServicePoller — OOMKilled classification (docs/239)", () => {
     });
     await poller.pollOnce();
     expect(onExitedWithError).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #2044 — the poll loop is the only thing that ever resolves `starting` or a
+ * container IP, and its docker queries were unbounded. A docker CLI that never
+ * exits froze the registry for the rest of the session with nothing logged.
+ */
+describe("ServicePoller — bounded docker queries (#2044)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("gives up on a `ps` that never answers instead of hanging the poll", async () => {
+    vi.useFakeTimers();
+    const afterPoll = vi.fn(async () => {});
+    const poller = buildPoller({
+      composeQuery: () => new Promise<string>(() => { /* never settles */ }),
+      afterPoll,
+    });
+
+    const poll = poller.pollOnce();
+    await vi.advanceTimersByTimeAsync(COMPOSE_QUERY_TIMEOUT_MS + 1_000);
+
+    // Resolves (the `ps`-failed bail-out), rather than hanging forever behind
+    // the wedged CLI while setInterval stacks more polls behind it.
+    await expect(poll).resolves.toBeUndefined();
+    expect(afterPoll).not.toHaveBeenCalled();
+  });
+
+  it("does not let one hung `inspect` cost the other containers their status", async () => {
+    vi.useFakeTimers();
+    const services: PollerService[] = [
+      { name: "slow", preview: "auto", status: "starting" },
+      { name: "web", preview: "auto", status: "starting" },
+    ];
+    const updates: { name: string; status: string }[] = [];
+    const poller = buildPoller({
+      composeQuery: (args) => {
+        if (args.includes("ps")) {
+          return Promise.resolve([
+            JSON.stringify({ Service: "slow", ID: "slow-1", State: "running", ExitCode: 0 }),
+            JSON.stringify({ Service: "web", ID: "web-1", State: "running", ExitCode: 0 }),
+          ].join("\n"));
+        }
+        if (args[0] === "inspect" && args[1] === "slow-1") {
+          return new Promise<string>(() => { /* never settles */ });
+        }
+        return Promise.resolve(JSON.stringify([{
+          NetworkSettings: { Networks: { "shipit-session-sess-1": { IPAddress: "172.16.0.4" } } },
+        }]));
+      },
+      getService: (name) => services.find(s => s.name === name),
+      listServices: () => services,
+      setContainerIp: () => {},
+      updateServiceStatus: (name, status) => { updates.push({ name, status }); },
+    });
+
+    const poll = poller.pollOnce();
+    await vi.advanceTimersByTimeAsync(COMPOSE_QUERY_TIMEOUT_MS + 1_000);
+    await poll;
+
+    expect(updates).toEqual([
+      { name: "slow", status: "running" },
+      { name: "web", status: "running" },
+    ]);
   });
 });
