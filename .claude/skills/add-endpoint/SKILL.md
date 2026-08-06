@@ -67,13 +67,9 @@ For a card that arrives off the agent-event stream (HTTP relay or post-turn WS):
 
 Transient signals (spinners, `preview_status`, queue counts) are correctly emit-only — only persist what belongs in the scrollback.
 
-## Adding a new deploy target
+## Deploy targets — there is no longer anything to add
 
-1. Create a new file in `src/server/orchestrator/deploy-targets/` implementing the `DeployTarget` interface
-2. Implement `info` (metadata + config fields) and `deploy(ctx)` method
-3. Optionally implement `prepare(ctx)` for pre-deploy setup
-4. Register the target in `index.ts` inside the `deploymentManager` initialization block
-5. The UI automatically renders config fields from `info.configFields` — no client changes needed
+ShipIt does not own a deploy pipeline. There is no `deploy-targets/` directory, no `DeployTarget` interface, and no `deploymentManager`. Deploys are triggered by the hosting platform's own Git integration on push, and ShipIt reads their status from the GitHub Deployments API to render it in the PR lifecycle card. See the `deployment-architecture` skill.
 
 ## Adding a new tool activity label
 

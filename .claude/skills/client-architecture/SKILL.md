@@ -21,6 +21,8 @@ The client is a React 19 SPA built with Vite and Tailwind CSS v4. State manageme
 
 11 domain-specific stores in `src/client/stores/`:
 
+The main stores (partial — `ls src/client/stores/` for the full set, currently ~21):
+
 | Store | File | Key State |
 |-------|------|-----------|
 | Session | `session-store.ts` | `sessionId`, `messages[]`, `isLoading`, `activity`, `sessions[]`, `authUrl`, `queuedMessages[]` |
@@ -28,7 +30,6 @@ The client is a React 19 SPA built with Vite and Tailwind CSS v4. State manageme
 | File | `file-store.ts` | `tree[]`, `viewingFile`, `viewingFileContent`, `docFiles[]` |
 | Preview | `preview-store.ts` | `status`, `selectedPort`, `installStatus`, `crashInfo` |
 | Terminal | `terminal-store.ts` | `entries[]`, `mode`, `shellStarted` |
-| Thread | `thread-store.ts` | `threads[]`, `activeThreadId` |
 | PR | `pr-store.ts` | `result`, `status`, `descGenerating` |
 | Settings | `settings-store.ts` | `permissionMode`, `systemPromptContent`, `githubStatus`, `pendingFiles[]` |
 | UI | `ui-store.ts` | `rightTab`, `templates[]`, `agentList`, `modelInfo`, `toast`, `features[]` |
@@ -120,12 +121,11 @@ The client is a React 19 SPA built with Vite and Tailwind CSS v4. State manageme
 
 ## Components
 
-~40 components in `src/client/components/`. Major ones:
+~260 components in `src/client/components/` — far more than are listed here. This is a partial orientation map, not an inventory; `ls src/client/components/` for the real set.
 
 ### Layout
 - **`SessionSidebar`** — session list with rename/archive, repo grouping
 - **`MobileTabBar`** — bottom tab navigation on mobile
-- **`StatusBar`** — bottom bar with git branch, preview status
 - **`ResizeHandle`** — drag handle between panels
 
 ### Chat
@@ -141,19 +141,15 @@ The client is a React 19 SPA built with Vite and Tailwind CSS v4. State manageme
 ### Right Panel
 - **`PreviewFrame`** — iframe for dev server preview + port selector + error display
 - **`FileTree`** — workspace file browser with expand/collapse
-- **`FileContentViewer`** — view/edit individual file contents
 - **`GitHistory`** — commit timeline with diff viewer
 - **`DiffPanel`** — file-by-file diff with accept/reject actions
 - **`TerminalPanel`** — build logs display
 - **`InteractiveTerminal`** — xterm.js shell (lazy loaded)
 - **`DocsViewer`** — markdown file viewer
-- **`FeaturesPanel`** — feature status dashboard
-- **`ThreadTimeline`** — conversation checkpoint visualization
 
 ### Modals & Overlays
 - **`AuthOverlay`** — Claude/GitHub authentication flows
 - **`DeploymentStatusRow`** (in `PrLifecycleCard.tsx`) — shows deploy status from GitHub Deployments API
-- **`PullRequestModal`** — create/merge PR
 - **`Settings`** — git identity, system prompt, agent config
 - **`UsageModal`** — cost/token breakdown
 - **`KeyboardShortcutsOverlay`** — shortcut reference
@@ -161,8 +157,6 @@ The client is a React 19 SPA built with Vite and Tailwind CSS v4. State manageme
 
 ### Home
 - **`HomeScreen`** — session list, import repo, templates
-- **`TemplateSelector`** — project template picker
-- **`RepoSelector`** — repo selector with search
 - **`AddRepoDialog`** — import GitHub repo dialog
 
 ## Data Flow: Sending a Message

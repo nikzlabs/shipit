@@ -73,58 +73,17 @@ The Playwright MCP server is configured and launches its own browser. Use `brows
 
 ## Dogfooding ShipIt in ShipIt
 
-Opening the ShipIt repo in production ShipIt surfaces the `dev` Compose service as a **manual** preview (heavy — `npm install` + `vite build` + a second orch — so it starts on demand). It runs an *inner* orchestrator with `RUNTIME_MODE=local` on port 3000, rendered in the outer preview panel. Local mode skips Docker: no inner containers or Compose, and inner agents spawn in-process. Design + degraded behaviors (no inner terminal/file-watcher/preview): `docs/118-shipit-ui-local`; seeding: `docs/131-dogfood-seed-sessions`.
-
-**Credentials.** The `dev` service reads user-supplied secrets from the outer Settings → Secrets (`docs/184`), and **only `GITHUB_TOKEN` should normally be set** — sign the inner ShipIt in to a Claude/Codex account instead. Leave `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` unset: they are a metered fallback ranked *below* connected accounts, and a spawn with no session route (`generateText`, for PR descriptions) would bill against the key while every real turn ran on the subscription.
-
-**Driving the inner instance.** Boot adds and trusts the repos in `scripts/dogfood-seed.json` (skips existing, exits 0 on failure, honors `DOGFOOD_SEED=0`, logs prefixed `[seed]`), so the inner UI comes up with a repo ready to work in. To drive it without clicking through the UI, `curl` its API — the service publishes 3000 and Vite proxies `/api` to the inner orch (resolve the host with `GET /api/sessions/${SHIPIT_SESSION_ID}/services` on the *outer* orchestrator). Four calls cover the loop: `GET /api/sessions/all` · `POST /api/sessions/headless` `{repoUrl, initialPrompt}` or `POST /api/sessions/:id/agent/dispatch` `{text}` (dispatch wakes a session nobody has open) · `GET /api/sessions/:id/status` · `GET /api/sessions/:id/history`.
+The repo runs inside itself via the manual `dev` Compose service (`shipit service start dev`), an inner orchestrator on `RUNTIME_MODE=local`. **Load the `dogfooding-shipit` skill** for local-mode limitations, which credentials to set (almost none), seeding, and driving the inner instance over HTTP.
 
 ## Project structure
 
-Directory map only — the per-file detail lives in the architecture skills below and in the files themselves. Entry point is `src/server/orchestrator/index.ts` (`buildApp()`).
-
-```
-src/
-  server/
-    session/         Code that runs inside a session container
-      session-worker.ts   Fastify server inside each container
-      terminal.ts · file-watcher.ts
-      agents/        Agent process adapters (docs/155): claude/, codex/, tool-map.ts
-    orchestrator/    Code that runs in the main process
-      index.ts       buildApp() entry point; app-di.ts, app-lifecycle.ts
-      api-routes*.ts validation.ts   HTTP routes (→ server-architecture skill)
-      repo-git.ts · repo-store.ts · git-utils.ts · git-config.ts   (→ git-architecture)
-      sessions.ts · session-runner.ts · session-container.ts · container-*.ts
-      service-manager.ts · compose-generator.ts · preview-proxy.ts · docker-proxy.ts
-      agents/        Per-agent orchestrator code (docs/155): claude/, codex/, auth, limits
-      github-auth*.ts · credential-store.ts · secret-store.ts
-      chat-history.ts · usage.ts · pr-status-poller.ts · features.ts · session-namer.ts
-      agent-instructions.ts · templates*.ts · sse-client.ts · worker-http.ts
-      ws-handlers/   WebSocket-only handlers (→ server-architecture skill)
-      services/      Business-logic layer — pure fns over domain types
-      integration_tests/   One file per feature area; test-helpers.ts has the stubs
-    shipit-docs/     Platform docs for the in-container agent (copied to /shipit-docs/)
-    shared/          Used by both layers
-      types/         All type defs (ws-*-messages.ts, domain-types.ts, …); types.ts re-exports
-      git.ts         GitManager — init, autoCommit, log, push, pull, diff, rollback
-      file-tree.ts · agent-registry.ts · session-config.ts · database.ts · utils.ts
-  client/          React 19 frontend (Vite + Tailwind CSS v4) — see client-architecture skill
-    App.tsx · AppLayout.tsx · main.tsx
-    components/ · hooks/ · stores/ (+ actions/) · themes/ · utils/
-    design-tokens.ts   Icon sizes, spacing, design constants
-android-snapshot-test/  Native Compose test app — the canonical Android target
-                   (build, JVM tests, Paparazzi snapshots, emulator preview).
-android-overlay-test/   Fixture pinning an off-matrix compileSdk to exercise the
-                   on-demand SDK overlay. Both are separate Gradle builds that
-                   Node tooling ignores. See docs/213. (The android/ WebView
-                   wrapper was removed — the PWA superseded it, docs/222.)
-```
+Entry point is `src/server/orchestrator/index.ts` (`buildApp()`). `src/server/orchestrator/` is the main process, `src/server/session/` runs inside session containers, `src/server/shared/` is used by both, and `src/client/` is the React 19 + Tailwind v4 frontend. `android-snapshot-test/` and `android-overlay-test/` are separate Gradle builds that Node tooling ignores (docs/213). Per-area file maps live in the architecture skills; `ls` beats a directory tree that silently rots.
 
 ## Architecture
 
-Three-layer system: browser (React SPA) → orchestrator (Fastify) → session workers (Docker containers). Architecture knowledge is packaged as skills in `.claude/skills/` for progressive disclosure — each skill surfaces by description and the agent loads it when the task matches. **Both backends read `.claude/skills/`** — Claude and Codex auto-disclose the same set (no `.codex/skills/` needed), so reference detail demoted into a skill reaches both; see `docs/209-cross-agent-skill-disclosure`. Always-on invariants belong in this file (`CLAUDE.md`, shared with Codex via the `AGENTS.md` symlink), not in a skill.
+Three-layer system: browser (React SPA) → orchestrator (Fastify) → session workers (Docker containers).
 
-Both backends receive the skill catalog with descriptions automatically, so it isn't duplicated here — load the one matching the task. **A skill can lag this file; where they disagree, the invariant below wins and the skill needs fixing.**
+Architecture reference lives in `.claude/skills/`, disclosed progressively. **Both backends read them** — Claude and Codex auto-disclose the same set with descriptions (no `.codex/skills/` needed, and no catalog duplicated here), so detail demoted into a skill reaches both; see `docs/209-cross-agent-skill-disclosure`. **Always-on invariants belong in this file** (shared with Codex via the `AGENTS.md` symlink), not in a skill — and a skill can lag it, so where they disagree the invariant below wins and the skill needs fixing.
 
 ## Key patterns
 
@@ -132,11 +91,7 @@ These are non-obvious architectural patterns that aren't apparent from the file 
 
 ### Orchestrator ↔ container communication
 
-Orchestrator ↔ session container is HTTP-only (never Docker exec): commands out via `worker-http.ts` (`ContainerSessionRunner` wraps them as the `SessionRunner` interface), events back over SSE (`sse-client.ts` → browser WS). `ProxyAgentProcess` implements `AgentProcess` but delegates to the container so local/remote agents look identical. Full detail — SSE reconnection/backpressure, multi-viewer broadcast, single-container+compose — in the **session-containers** and **session-processes** skills.
-
-### WS handler context (three-level DI)
-
-WS handlers compose three context layers and declare only what they need: `ConnectionCtx` (per-connection: `send()`, `getActiveDir()`, …), `RunnerCtx` (per-runner: `agentFactory()`, turn-state, terminal), `AppCtx` (app-wide singletons). `FullCtx` is all three. See the **server-architecture** skill.
+**HTTP-only, never Docker exec**: commands out via `worker-http.ts`, events back over SSE. `ProxyAgentProcess` delegates to the container so local and remote agents look identical. Detail: **session-containers**, **session-processes**.
 
 ### WebSocket lifecycle MUST NOT affect server behavior
 
@@ -152,13 +107,9 @@ The WebSocket connection is a *transport* between the browser and the orchestrat
 
 Executable contract: `integration_tests/ws-disconnect-resilience.test.ts`.
 
-### Service layer pattern
+### Service layer & type system
 
-Three-tier **Routes/WS handlers → Services → Managers**: services (`services/*.ts`) are pure async fns over domain types (not handler context), reusable by routes and WS handlers; app errors are `ServiceError(statusCode, message)` with HTTP semantics. See the **server-architecture** skill.
-
-### WS message type system
-
-Discriminated unions keyed on a `type` literal (`ws-client-messages.ts`, `ws-server-messages.ts`); the dispatch switch in `index.ts` narrows to the specific type before calling the handler.
+Three-tier **Routes/WS handlers → Services → Managers**: `services/*.ts` are pure async fns over domain types (not handler context), reusable by both; errors are `ServiceError(statusCode, message)`. WS messages are discriminated unions keyed on a `type` literal, narrowed by the dispatch switch. WS handlers compose `ConnectionCtx` / `RunnerCtx` / `AppCtx` and declare only what they need. Detail: **server-architecture**.
 
 ### Post-turn flow
 
@@ -192,28 +143,19 @@ Adding a card then means: a typed `PersistedMessage` field (+ column, `toRow`/`f
 
 ### Preview routing
 
-Reverse proxy (`preview-proxy.ts`): subdomain routing `{sessionId}--{port}.localhost` is primary (avoids Vite path-prefix conflicts), path-based `/preview/:sessionId/:port/*` is the fallback, with HMR-URL patching so hot-reload survives the proxy. Full detail: `docs/009-preview-system`, `docs/175-preview-subdomain-only`.
+Subdomain routing `{sessionId}--{port}.localhost` is primary (avoids Vite path-prefix conflicts); path-based is the fallback, with HMR-URL patching so hot reload survives the proxy. `docs/009-preview-system`, `docs/175-preview-subdomain-only`.
 
 ### Disk cleanup
 
-Each surface prunes **where the leak happens**, sorted by *what clock the leak grows on* (SHI-196):
-
-| Surface | Runs | Reclaims |
-|---|---|---|
-| Per-session teardown | archive / fullReset only — never idle/restart | Named volumes (`ServiceManager.stop({ removeVolumes: true })`) |
-| `deployment/vps/deploy.sh` | Build time | Images, builder cache |
-| `startup-janitor.ts` (`runDiskJanitor`) | **Boot only** | **Crash-recovery** leftovers a failed teardown stranded: orphan compose volumes/networks, archived workspaces (opt-in), per-session credential/log dirs, merged-PR branches. None accumulate steadily. |
-| `steady-state-reclaim.ts` (`runSteadyStateReclaim`) | The **periodic** disk-tier escalation pass (`escalateDiskTiers` — boot + per-activation + hourly) | What grows with the clock: unreferenced repo/dep caches, `repo-memory/`, obsolete overlay bases, stale pnpm stores |
-
-The hourly escalation timer is the single steady-state disk-reclaim entry point. Detail: those files' docstrings, `docs/183-overlay-dep-store`, and the **session-containers** skill.
+Each surface prunes **where the leak happens**, sorted by *what clock the leak grows on* (SHI-196): per-session teardown drops named volumes (archive/fullReset only, never idle/restart); `deploy.sh` owns build-time image prunes; `startup-janitor.ts` runs **boot-only** for crash-recovery leftovers; `steady-state-reclaim.ts` runs on the **hourly** disk-tier escalation pass for what grows with the clock. That hourly timer is the single steady-state entry point. Detail: those files' docstrings, `docs/183-overlay-dep-store`, **session-containers**.
 
 ### Client communication & stores
 
-Two browser channels: per-session **WebSocket** (`/ws/sessions/{id}`) and global **SSE** (`/api/events`: session list, repo/auth/PR status). Stores cross-reference via `useXStore.getState()` (not subscriptions, avoids cycles); resets centralized in `stores/actions/session-actions.ts`; hydration is HTTP bootstrap → WS `loadSessionHistory()` → live WS, guarded by `sessionId` against stale messages. See the **client-architecture** skill.
+Two browser channels: per-session **WebSocket** (`/ws/sessions/{id}`) and global **SSE** (`/api/events`). Stores cross-reference via `useXStore.getState()` (not subscriptions — avoids cycles); resets are centralized in `stores/actions/session-actions.ts`; hydration is HTTP bootstrap → WS `loadSessionHistory()` → live WS, guarded by `sessionId` against stale messages. Detail: **client-architecture**.
 
 ### Integration test patterns
 
-`TestClient` buffers WS messages from connect (no send-before-listen races); `isTestMode` in `buildApp()` enables `POST /api/_test/sessions` (no Docker); fakes (`FakeClaudeProcess`, `StubGitHubAuthManager`) expose injection methods. See the **testing-and-quality** skill.
+`TestClient` buffers WS messages from connect (no send-before-listen races); `isTestMode` in `buildApp()` enables `POST /api/_test/sessions` (no Docker); fakes expose injection methods. Detail: **testing-and-quality**.
 
 ## Workflow
 
@@ -241,15 +183,7 @@ Two browser channels: per-session **WebSocket** (`/ws/sessions/{id}`) and global
 
 ## Prompts
 
-LLM prompts (agent system instructions, voice cleanup, session naming, etc.) are **content, not logic** — keep them separated:
-
-- **Prompt *text* is data — it lives in `.md` files** co-located with the composing code (review as prose, diff cleanly, no backtick/`${}` escaping). Load via `loadPrompt(import.meta.url, "./x.md")` (`orchestrator/load-prompt.ts`) **at module top level** — once at init, never per-call (a missing file then throws at boot, not mid-turn). Not a bundler `?raw` import: prod runs TS via tsx, no bundler, so `fs.readFileSync(new URL(...))` is what works. Examples: `agents/<id>/system-prompt.md`, `voice/cleanup-prompt.md`, `orchestrator/prompts/*.md`.
-- **Prompt *composition* is code.** Axis branching/fragment selection stay in TS — `agent-instructions.ts`: `renderInstructions(agentId, isOps)` fills `{{TOKEN}}` holes in `prompts/skeleton.md` via `fillPromptTokens` (which throws on an unfilled token — the "no literal `{{FOO}}` reaches the model" guard).
-- **The prompt-cache contract is load-bearing.** Every `(agentId, isOps)` variant renders **once at module load** into `PRECOMPUTED_INSTRUCTIONS`; the per-turn path is a pure lookup of a frozen constant, keeping the CLI string byte-stable so the Anthropic prompt cache stays warm. Never move composition or the `.md` reads to a per-call path.
-
-### Testing prompts
-
-**Test composition and caching, never literal wording.** *Do* assert: fragment selection per `agentId`/`isOps`, variant distinctness, non-ops byte-identity, reference-equality of the precomputed constants (cache stability), call-site threading, and the cheap load guard (every variant non-empty, no leftover `{{TOKEN}}`); key presence/absence checks off a **structural anchor** (`##` header, a command token), not a sentence. *Don't* assert specific prose phrases (they churn on copy-edits and were removed from `agent-instructions.test.ts`) — a pure `prompts/*.md` edit should need **no** test changes. Provider/integration tests reference the **imported constant** (`toContain(CLEANUP_INSTRUCTIONS)`), not a pasted copy. See `voice/providers/*-cleanup.test.ts`, `integration_tests/system-prompt.test.ts`.
+LLM prompts (agent system instructions, voice cleanup, session naming) are **content, not logic**: prompt *text* lives in `.md` files loaded at module top level; *composition* stays in TypeScript. **The prompt-cache contract is load-bearing** — every variant renders once at module load into a frozen constant, so the per-turn path is a pure lookup and the CLI string stays byte-stable. Never move composition or the `.md` reads onto a per-call path. **Load the `prompt-architecture` skill** before editing prompts or their tests.
 
 ## Dependency policy
 
@@ -266,18 +200,9 @@ ShipIt's own repo uses the **`release-branch`** mechanism (`shipit.yaml` `releas
 
 ## Docs structure
 
-```
-docs/
-  NNN-feature-name/
-    requirements.md — What the feature must do, in the human's terms (required for new features)
-    plan.md        — How the feature works, key files, patterns
-    checklist.md   — Remaining work items or tracking notes
-    mockup.html    — Optional UI prototype committed as reference (or mockup.svg / mocks/)
-```
+Feature docs live in `docs/NNN-feature-name/` (`requirements.md`, `plan.md`, `checklist.md`). Docs are **reference material** — what a feature is, why, and how, including planned-but-unimplemented designs; work tracking lives in the issue tracker. Read a feature's `plan.md` before changing it, and its `checklist.md` for remaining work. **Load the `docs-navigator` skill** for the folder layout, frontmatter schema, `issue:` pointer syntax, and prototype conventions.
 
-`docs/NNN-feature/` is this repo's **convention**, not the docs list's filter — the scan walks the whole workspace and surfaces **every** `.md` file (`README.md`, `RELEASING.md`, `shipit-docs/*.md`, anything nested). The `NNN-` prefix and `plan.md`/`checklist.md`/`issue:` only decide Tracked-vs-Other grouping and newest-first ordering, so treat any markdown you write as user-visible.
-
-Docs are **reference material** — what a feature is, why, and how (including planned-but-unimplemented designs); work tracking lives in the issue tracker. Read a feature's `plan.md` first, check its `checklist.md` for remaining work. Frontmatter (`issue`/`title`/`description`) is optional; a 100%-complete `checklist.md` folds the doc into collapsed **Done**, else **Active**. `issue:` resolves against the trackers declared in `shipit.yaml` — **write the name form** (`roadmap#SHI-304`, `planning#42`), which survives a declaration being re-pointed at another repo or team. A backend address also resolves if it identifies a declared tracker: a full Linear URL without the title slug (a bare `TRACKER-28` is rejected), `owner/repo#123`, or a GitHub issue URL.
+The scan surfaces **every** `.md` file in the workspace, not just `docs/` — so treat any markdown you write as user-visible.
 
 ### Every new feature is under requirements discipline
 
@@ -297,10 +222,10 @@ Not every change is a feature. Bug fixes, refactors, and chores that don't get a
 
 ### Keep the tracker in sync when you touch a design doc
 
-Whenever you create or materially update a `docs/NNN-*` design doc, sync its tracker item in the same turn. Use the tracker-neutral `shipit issue` command (see `src/server/shipit-docs/issues.md`) — not `gh issue`, `gh api`, or a Linear MCP.
+Creating or materially updating a `docs/NNN-*` doc syncs its tracker item **in the same turn**, via the tracker-neutral `shipit issue` command — never `gh issue`, `gh api`, or a Linear MCP.
 
-- **Doc has an `issue:` pointer (Linear *or* GitHub).** Post a comment on that issue summarizing what changed in the doc and why: `shipit issue comment <pointer> --body-file - <<'EOF' … EOF`. The pointer identifies its own tracker; pass it verbatim. This applies equally to GitHub-attached docs — comment, don't open a second tracker item.
-- **Doc has no `issue:` pointer.** Create one on the `roadmap` tracker and cross-link, same turn (docs/187): `shipit issue create --tracker roadmap --title "<doc title>" --label <name> --body-file - <<'EOF' … EOF`, with a body summarizing the doc and linking its path. **`--tracker` is required** — `create` has no default so a forgotten flag can't file into this public repo's own issues (docs/248). **Always set a label** matching the work's intent (`feature`, `bug`, `chore`, `documentation`). Read the identifier the command prints and write the name form (`roadmap#SHI-NNN`) into the doc's `issue:` frontmatter in the same turn. Creation is do-then-surface — a provenance card with Undo is posted automatically, so don't propose-and-wait. If the tracker isn't connected the command says so; surface that rather than filing elsewhere.
+- **Doc has an `issue:` pointer** (Linear *or* GitHub): comment on it — `shipit issue comment <pointer> --body-file -`. The pointer identifies its own tracker; pass it verbatim. Comment; don't open a second item.
+- **Doc has no pointer**: create one and cross-link, same turn (docs/187) — `shipit issue create --tracker roadmap --label <name> --title "<doc title>" --body-file -`. **`--tracker` is required** so a forgotten flag can't file into this public repo's own issues (docs/248), and **always set a label** matching intent. Write the printed identifier back into the doc's `issue:` frontmatter as `roadmap#SHI-NNN`. Creation is do-then-surface — a provenance card with Undo is posted automatically, so don't propose-and-wait. If the tracker isn't connected, surface that rather than filing elsewhere.
 
 **Where does a fact live — `checklist.md`, `plan.md`, or the Linear issue? Never mirror; duplicated sources drift.** One mechanical test: **"Would this fact require a *commit* to change?"** Changed *because the code changed* → committed file. Changed for *planning/coordination* (priority, status, ownership, scheduling, cross-issue relations, discussion) → **Linear**. Does it belong to the diff, or to the conversation about the work?
 
@@ -312,14 +237,3 @@ Whenever you create or materially update a `docs/NNN-*` design doc, sync its tra
 | **The Linear issue** | The work unit + everything on a **non-code cadence**: priority, status (automated via `Closes`/`Refs`), cross-issue relations, ownership, scheduling, discussion, progress narration across PRs. | — (a tracker is a conversation medium; markdown is not). |
 
 When you do work you **comment on the issue**; you do not commit a status update. A committed doc MAY name sibling issue IDs inline as stable identifiers ("blocked on SHI-79") but MUST NOT record their **priority/status** — no sibling-status *tables*. A design doc may carry the author's **analyzed ordering** as settled narrative ("sequenced first"); live priority stays in Linear, and the two are deliberately not reconciled. Quick test: if a checklist item could be copied verbatim into the issue as a sub-task, it's in the wrong place.
-
-When a doc describes UI whose layout is load-bearing (filters, tables, breakpoints), commit the prototype beside `plan.md` — `mockup.html`, `mockup.svg`, or a `mocks/` subdir — as a self-contained static artifact (inline CSS/SVG, no build step, diffable; `.png` is a supplement, not the source of truth) and link it from `plan.md`. The `present` tool's tab is ephemeral; committed mocks are reviewable in PRs.
-
-`plan.md` may also carry an optional single-line `description:` — the docs viewer renders it under the title (one sentence, no multi-line YAML scalars):
-
-```yaml
----
-issue: octocat/hello-world#42
-description: Show a short doc description from frontmatter under the title in the docs panel.
----
-```
