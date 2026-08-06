@@ -14,18 +14,20 @@ reachability probe (`planning#1`, closed) and the labels that probe minted.
 
 ## Migration
 
-- [ ] Export all 322 Linear issues with comments, redirected to files (never piped — the shim truncates piped stdout at 64 KiB), outside the git workspace.
-- [ ] Add `createdAt` to `ISSUE_FIELDS` in `trackers/linear/adapter.ts` so an issue's original date is readable at all (req 9).
-- [ ] Create the corpus's 20 labels with their Linear colors, plus the five `priority: …` labels that carry priority across.
+- [ ] Confirm the two fixes on `main` (`9b031908`) have reached the **deployed** shim: a large issue piped to `wc -c` returns its full length rather than 65,536, and `shipit issue view … --json` includes `createdAt`. The export depends on both.
+- [ ] Export all 322 Linear issues with comments, redirected to files, outside the git workspace.
+- [ ] Create the corpus's 20 labels with their Linear colors, plus the four `priority: …` labels that carry priority across.
 - [ ] **Pilot** — copy one issue with a long body, several comments, an internal cross-reference, a label and a priority. Stop there for a human look at the body header, the dated comments and the rewritten references before the format is repeated 322 times.
+- [ ] Sync to the latest `main` before the copy starts, so the mapping and the sweep apply to a current tree.
 - [ ] **Pass A** — create all 322 issues in key order with titles, labels, and bodies carrying their `SHI-N` origin and original creation date (req 9). Cross-references stay unrewritten. Append each assigned number to the `SHI-N → planning#M` mapping as it comes back, so the mapping is complete and observed when the pass ends.
+- [ ] **Pass B** — replay the 1,344 comments with their original dates, and edit the 322 bodies to rewrite their 1,146 internal `SHI-N` cross-references and 120 `linear.app` URLs. Comment bodies cannot be edited afterwards, so a comment's cross-references must be correct when it is posted. Tracker writes only — no diff, no PR.
 - [ ] Verify a full round trip in the UI: the tab, an issue with comments, a write, and Undo.
-- [ ] Rewrite every reference in this repository from the mapping, in one PR, when nothing else is in flight (req 10): 2,623 mentions across 667 files, 186 doc `issue:` pointers, 221 files with `linear.app` URLs. Use `grep -a` — one source file is flagged binary and would otherwise be skipped. Needs Pass A only.
-- [ ] **Pass B** — replay the 1,344 comments with their original dates, and edit the 322 bodies to rewrite their 1,146 internal `SHI-N` cross-references and 120 `linear.app` URLs. Comment bodies cannot be edited afterwards, so a comment's cross-references must be correct when it is posted.
+- [ ] Rewrite every reference in this repository from the mapping, in one PR, when nothing else is in flight (req 10): 2,623 mentions across 667 files, 186 doc `issue:` pointers, 221 files with `linear.app` URLs. Use `grep -a` — one source file is flagged binary and would otherwise be skipped. The migration's only diff.
 - [ ] Retire Linear for ShipIt's own planning: drop the `roadmap` declaration and rewrite `CLAUDE.md`'s tracker-sync section (req 11).
 - [ ] Delete `planning#1` and the pilot issue.
 
 ## Found here, fixed elsewhere
 
-- [ ] The `shipit` shim truncates piped stdout at 64 KiB — it exits via `process.exit()` without draining. Any agent running `shipit issue view … --json | jq` on a large issue silently gets a cut-off document. Not specific to this migration.
+- [x] The `shipit` shim truncated piped stdout at 64 KiB — it exited without draining, so any agent running `shipit issue view … --json | jq` on a large issue silently got a cut-off document. Fixed on `main` in `9b031908` (`shim-exit.ts` flushes before exit); not yet in the deployed shim.
+- [x] `trackers/linear/adapter.ts`'s `ISSUE_FIELDS` did not select `createdAt`, so an issue's creation date was unreadable — which req 9 requires. Fixed in the same commit; not yet in the deployed shim.
 - [ ] `shipit issue list` on Linear queries `first: 100` with no pagination. It no longer blocks the export, which walks keys individually, but the limit stands.

@@ -26,6 +26,12 @@ assumed:
 The declaration landed on `main` in its own PR, so the tab is live. What remains
 is the copy, the reference rewrite, and retiring Linear.
 
+One gate is open, and it is the same merge-is-not-a-deploy trap: the two shim and
+adapter fixes the export depends on are on `main` (`9b031908`) but **not yet in
+the deployed shim** — verified from a session container, where a piped large issue
+still truncates at 65,536 bytes and `createdAt` is still absent. Confirm both
+before exporting.
+
 ## Why a private repository
 
 ShipIt's source repository is public. Planning work — roadmap, half-formed ideas,
@@ -88,7 +94,7 @@ Probed against the real adapter, not inferred:
 |---|---|---|
 | Priority (5 levels) | none — `createIssue` **rejects** `--priority` outright | A `priority: high` label round-trips: `mapGitHubPriority` reads it back as priority "High". Verified live. 108 issues affected. |
 | Workflow states (6) | open / closed only | Allowed to collapse (req 8). Backlog, Todo and In Progress all arrive open; Done, Canceled and Duplicate all arrive closed. Nothing encodes the difference. |
-| Issue creation date | not settable | Recorded in the body instead (req 9). Not currently even *readable*: `ISSUE_FIELDS` in `trackers/linear/adapter.ts` selects `updatedAt` but not `createdAt`, so the copy needs that one line added first. |
+| Issue creation date | not settable | Recorded in the body instead (req 9). It was not even *readable* until `9b031908` added `createdAt` to `ISSUE_FIELDS` in `trackers/linear/adapter.ts`; that fix must reach the deployed shim before the export. |
 | Sub-issue parent | adapter has no sub-issue support | 15 issues. Record the parent in the body. |
 | Assignee | supported | All 75 are the same person, who is also the copying account. Drop it. |
 | Label colors | supported | Carried from the export. |
@@ -121,7 +127,9 @@ comment or a cross-reference influences it. So:
 - **Pass B** replays the 1,344 comments and edits the 322 bodies, rewriting
   cross-references from the mapping Pass A produced.
 
-The repo-wide sweep sits between them, against a mapping that is already true.
+The split is what makes the mapping observed rather than guessed. It also draws
+the line the steps follow: both passes are tracker-only, and the repo-wide sweep
+comes after them as the migration's single diff.
 
 Predicting `SHI-N → planning#(N + offset)` and asserting each create would also
 work — the repository is empty apart from `planning#1` and the pilot, and nothing
@@ -163,17 +171,25 @@ The write-dedup window (`handleWrite`) keys on session + tracker + verb + issue 
 the second silently swallowed. Prefixing each replayed comment with its original
 date (req 9) makes bodies distinct, which removes the hazard as a side effect.
 
-## Export fidelity — a shim bug to route around
+## Export fidelity
 
-`shipit issue view --comments --json` **silently truncates at 65,536 bytes when
-stdout is a pipe.** The shim exits via `process.exit()` without draining stdout, so
-anything past the pipe buffer is lost; the JSON simply ends mid-string. Two of the
-322 issues (`SHI-56`, `SHI-90`) hit it. The same output redirected to a file is
-complete — `SHI-56` is 116,795 bytes and parses.
+Two defects found while probing this migration are **fixed on `main`**
+(`9b031908`), both of which the copy depends on:
 
-The export therefore redirects to files and never pipes. This is not specific to
-the migration: any agent running `shipit issue view … --json | jq` on a large
-issue gets silently truncated data, which is worth fixing separately.
+- `shipit issue view --comments --json` silently truncated at 65,536 bytes when
+  stdout was a pipe — the shim exited without draining, so anything past the pipe
+  buffer was lost and the JSON ended mid-string. Two of the 322 issues (`SHI-56`,
+  `SHI-90`) hit it. `shim-exit.ts` now flushes before exiting.
+- The Linear adapter's `ISSUE_FIELDS` did not select `createdAt`, so an issue's
+  original creation date was unreadable. Req 9 needs it, and it is now selected.
+
+**Neither is live in the deployed shim yet** — checked from a session container:
+the piped form still returns exactly 65,536 bytes and `createdAt` is still absent.
+This is the same merge-is-not-a-deploy gap the sequencing constraints call out for
+248, and it gates the export: run it only after confirming from a fresh session
+that a piped large issue returns its full length and that `createdAt` comes back.
+Until then the export must redirect to files and never pipe, which is a sound
+habit regardless.
 
 Two smaller traps in the same family: `src/client/hooks/useLazyToolInput.ts`
 contains a byte that makes `grep` treat it as binary, so the reference sweep needs
@@ -186,14 +202,14 @@ rather than inheriting it.
 
 1. ~~Create the planning repository and confirm the credential reaches it.~~ Done.
 2. ~~Land, release and deploy 248.~~ Done.
-3. **Export Linear** — 322 keys, `view --comments --json` redirected to a file per
+3. ~~Add `createdAt` to the Linear adapter, and stop the shim truncating piped
+   output.~~ Both on `main` (`9b031908`) — but confirm they have reached the
+   **deployed** shim before step 4, since the export depends on both.
+4. **Export Linear** — 322 keys, `view --comments --json` redirected to a file per
    key, resumable, outside the workspace. Read-only, and it doubles as the
    archive. Already run once; the copy session re-runs it for itself.
-4. **Add `createdAt`** to the Linear adapter's `ISSUE_FIELDS` so an issue's
-   original date can be read at all (req 9). One line, and a prerequisite of the
-   copy rather than part of it.
 5. **Create the labels** the corpus uses — the 20 from Linear with their colors,
-   plus the five `priority: …` labels that carry priority across. Workflow state
+   plus the four `priority: …` labels that carry priority across. Workflow state
    contributes none (req 8).
 6. **Pilot: copy exactly one issue and stop.** Pick one that exercises the awkward
    parts — a long body, several comments, at least one internal `SHI-N`
@@ -201,29 +217,35 @@ rather than inheriting it.
    it in the Issues tab and decide whether the body header, the dated comments and
    the rewritten cross-references read the way they should. Everything downstream
    repeats this 322 times, so the format is far cheaper to change here than after.
-   The pilot's issue number is consumed either way, so the prediction in step 7
+   The pilot's issue number is consumed either way, so Pass A's consistency check
    accounts for it rather than assuming an untouched repository.
-7. **Pass A — create all 322 issues** in key order: title, labels, and a body
+7. **Sync to the latest `main`.** Everything after this point is measured against
+   the working tree — the mapping is applied to it, and the sweep rewrites it — so
+   the copy starts from a current base rather than a stale one.
+8. **Pass A — create all 322 issues** in key order: title, labels, and a body
    carrying its `SHI-N` origin, its original creation date and, for the 15
    sub-issues, its parent. Cross-references stay in their original `SHI-N` form
    for now. Closed issues are closed after creation. Every assigned number is
    appended to the `SHI-N → planning#M` mapping as it comes back, which makes the
    mapping complete and *observed* at the end of this pass.
-8. **Rewrite every reference in this repository** from that mapping in one PR
-   (req 10): doc `issue:` frontmatter, inline doc mentions, code comments,
-   `CLAUDE.md`. 2,623 mentions across 667 files — it conflicts with every open
-   branch, so it lands when nothing else is in flight. Because the mapping is
-   already true, this step waits for a convenient moment rather than for the rest
-   of the copy.
-9. **Pass B — replay the 1,344 comments** with their original dates (req 9), and
-   edit the 322 bodies to rewrite their internal cross-references. This is the
-   larger half by write count and the one with no ordering constraints left.
-10. **Retire Linear** for ShipIt's own planning (req 11): drop the `roadmap`
+9. **Pass B — finish the tracker side.** Replay the 1,344 comments with their
+   original dates (req 9), and edit the 322 bodies so their internal
+   cross-references point at `planning#M`. Both are tracker writes against the
+   mapping Pass A produced; **nothing in this repository changes**, so this step
+   opens no PR and can run for as long as the pacing requires.
+10. **Rewrite every reference in this repository** from that mapping, in one PR
+    (req 10): doc `issue:` frontmatter, inline doc mentions, code comments,
+    `CLAUDE.md`. 2,623 mentions across 667 files — it conflicts with every open
+    branch, so it lands when nothing else is in flight. This is the only step of
+    the migration that produces a diff.
+11. **Retire Linear** for ShipIt's own planning (req 11): drop the `roadmap`
     declaration from `shipit.yaml` and rewrite `CLAUDE.md`'s tracker-sync section.
 
-Steps 3–7 and 9 are the child session's work, with a stop at the pilot for a human
-look. Steps 8 and 10 are this repository's. Step 8 needs only Pass A, which is why
-the copy is split there.
+Steps 4–9 are the child session's work, with a stop at the pilot for a human look;
+they touch only the tracker. Steps 10 and 11 are this repository's, and are the
+only two that produce a diff. Splitting there keeps the long, slow, resumable
+write job entirely separate from the one atomic PR that has to be timed against
+everything else in flight.
 
 **Nothing past step 2 has run.** The only writes made to the planning repository
 so far are the reachability probe described under Status — `planning#1`, closed,
@@ -243,7 +265,7 @@ the repository and the whole sweep has to be repeated on the first rename.
 
 Undeclaring `roadmap` makes every historical `SHI-N` reference fail closed
 ([248](../248-declared-issue-trackers/requirements.md) req 11) — which is the
-point, and why step 6 precedes step 7. Two residues are accepted rather than
+point, and why the reference rewrite precedes it. Two residues are accepted rather than
 fixed: git history keeps the old references, and issue cards persisted in old
 session transcripts point at a tracker that is no longer declared. Those cards
 render as static badges and their Undo still resolves, per 248's carve-out.
