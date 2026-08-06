@@ -21,11 +21,24 @@ import {
 
 export interface WorkerAuthGuardDeps {
   /**
-   * The per-session token the orchestrator must present. Defaults to
-   * `process.env[WORKER_TOKEN_ENV]`; `undefined` (no container env) leaves
-   * remote callers ungated — see {@link decideWorkerRequest} for why.
+   * The per-session token the orchestrator must present. Falls back to
+   * {@link WorkerAuthGuardDeps.env}`[WORKER_TOKEN_ENV]` when nullish — which is
+   * the REAL container path, not a test convenience: `SessionWorker` always
+   * passes this key and its own `workerToken` dep is unset in the standalone
+   * entry point, so the env read is how a live worker gets its token. Resolving
+   * to `undefined` (no container env) leaves remote callers ungated — see
+   * {@link decideWorkerRequest} step 5 for why that is deliberate.
    */
   token?: string | undefined;
+  /**
+   * Environment the token falls back to. Defaults to `process.env`; injectable
+   * so a caller can exercise the "no token configured" branch **hermetically**.
+   * Without it the branch is untestable inside a session container, where
+   * `WORKER_TOKEN_ENV` is always set and an explicit `token: undefined` falls
+   * straight through to the ambient token. Same shape as
+   * `egressEnforceEnabled(env)`.
+   */
+  env?: NodeJS.ProcessEnv;
   /** Log sink, injectable so tests don't write to the console. */
   log?: (message: string) => void;
 }
@@ -45,8 +58,16 @@ export function registerWorkerAuthGuard(
   app: FastifyInstance,
   deps: WorkerAuthGuardDeps = {},
 ): string | undefined {
-  const configuredToken =
-    deps.token ?? process.env[WORKER_TOKEN_ENV] ?? undefined;
+  // An EMPTY env value means "no token", matching the orchestrator's
+  // `workerTokenFromContainerEnv` (which maps `SHIPIT_WORKER_TOKEN=` to
+  // `undefined`). Without the emptiness check the two halves disagree: the
+  // orchestrator would send no header while the worker held `""` as its
+  // expected token, and since `tokensMatch("", …)` is always false every
+  // orchestrator→worker call would 403 — the exact bricked session that step 5
+  // of `decideWorkerRequest` exists to prevent, reached through an empty value
+  // instead of an absent one.
+  const fromEnv = (deps.env ?? process.env)[WORKER_TOKEN_ENV];
+  const configuredToken = deps.token ?? (fromEnv ? fromEnv : undefined);
   const log = deps.log ?? ((message: string) => console.warn(message));
 
   if (!configuredToken) {

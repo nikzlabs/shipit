@@ -43,6 +43,27 @@ if (process.env.SESSION_EGRESS_ENFORCE === undefined) {
 }
 
 /**
+ * SHI-311 — `SHIPIT_WORKER_TOKEN` is injected into EVERY session container
+ * unconditionally (`container-lifecycle.ts:createContainer`, no sandbox/ops
+ * branch) and is set on nothing else: CI runners and developer boxes never have
+ * it. `registerWorkerAuthGuard` resolves its token as
+ * `deps.token ?? env[WORKER_TOKEN_ENV]`, so a test meaning "a worker with no
+ * token configured" silently picked up the *ambient container* token and ran the
+ * guard in token-configured mode — `worker-auth-guard.test.ts`'s "keeps
+ * /agent-ops closed even on a worker with no token configured" then got 403 on
+ * the orchestrator leg where it asserts 200, failing only inside a session
+ * container. Same class as the git-config injection above: a local-env artifact,
+ * not a code defect.
+ *
+ * Stripping it is safe for the whole suite because no server test wants the
+ * ambient value — every test needing a token passes a literal one, and the
+ * guard's env fallback is exercised through its injectable `env` dep. The
+ * literal is spelled out (this file has no imports by design) and is pinned to
+ * `WORKER_TOKEN_ENV` by an assertion in `shared/worker-auth.test.ts`.
+ */
+Reflect.deleteProperty(process.env, "SHIPIT_WORKER_TOKEN");
+
+/**
  * No server test may touch the network through git.
  *
  * Several integration tests drive paths that clone or fetch from a *fake*
