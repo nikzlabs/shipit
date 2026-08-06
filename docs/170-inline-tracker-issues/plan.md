@@ -200,9 +200,22 @@ Linear / GitHub  ──(user OAuth)──▶  Tracker adapter  ──▶  GET /a
 "Start session" mirrors the docs "Start Session" flow (`handleDocStartSession`):
 instead of POSTing to `/api/sessions/headless` and auto-dispatching the first
 turn, it switches to a fresh session (when the current one already has messages)
-and **prefills the chat input** with the issue's context (`identifier`, `title`,
-`description`, link — the same text `seedFromIssueRef` would have sent). The user
-can then edit/augment the prompt before sending. The prefill + fresh-session
+and **prefills the chat input** with a pointer to the issue — the same text
+`seedFromIssueRef` would have sent, shared as `buildIssueSeedPrompt()` so the
+two paths can't drift. The user can then edit/augment the prompt before sending.
+
+**The seed names the issue; it does not copy it.** It is two lines —
+`Work on issue <identifier>: <title>` plus `Read it with
+\`shipit issue view <identifier>\``. The earlier seed pasted the issue's whole
+description and a link line into the composer, which buried whatever the user
+wanted to append underneath a wall of tracker text and froze a body the agent
+can read live anyway. Since the agent can fetch the issue itself, the seed's
+only job is to say *which* issue and leave the composer short enough to type
+into. (The pointer must stay extractable — see `extractIssueRefsFromText`'s
+`issue <id>` lead-in rule, which the wording is written against and a round-trip
+test in `issue-ref.test.ts` pins.)
+
+The prefill + fresh-session
 handling lives in `App.tsx#handleIssueStartSession` (where
 `handleNewSessionForRepo` and `setPrefillText` are available); `IssuesPanel` only
 resolves the repo for the `canStart` gate and delegates the click upward.
@@ -439,6 +452,9 @@ Actual key files (server):
   `GET /api/trackers/linear/teams`.
 - `src/server/orchestrator/services/headless-sessions.ts` — `seedFromIssueRef()`
   (branch + title + first prompt) and `createHeadlessSession({ issueRef })`.
+- `src/server/shared/issue-ref.ts` — `buildIssueSeedPrompt()`, the one seed text
+  both paths use (client-importable, so `App.tsx` shares it), sitting next to
+  the `extractIssueRefsFromText()` parser that has to read it back.
 - `src/server/orchestrator/credential-store.ts` — Linear token + team binding.
 
 Actual key files (client):

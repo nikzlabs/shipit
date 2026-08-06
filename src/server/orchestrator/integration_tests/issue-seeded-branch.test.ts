@@ -42,6 +42,7 @@ import {
   waitFor,
 } from "./test-helpers.js";
 import type { DatabaseManager } from "../../shared/database.js";
+import { buildIssueSeedPrompt } from "../../shared/issue-ref.js";
 
 // `graduateSession` shells out to the real naming CLI when nothing is pinned.
 // Returning a name here is deliberate: it is exactly what would rewrite the
@@ -160,8 +161,11 @@ describe("Integration: issue-seeded session branch + started (SHI-320)", () => {
     } catch { /* ignore */ }
   });
 
-  /** The prompt the Issues tab prefills — it opens with the issue's title. */
-  const seededPrompt = `You are working on issue ${ISSUE_REF.identifier}: ${ISSUE_TITLE}`;
+  /** The prompt the Issues tab prefills — it names the issue, nothing more. */
+  const seededPrompt = buildIssueSeedPrompt({
+    identifier: ISSUE_REF.identifier,
+    title: ISSUE_TITLE,
+  });
 
   it("pins the branch to the pointer and moves the issue to started", async () => {
     const client = await TestClient.connect(port, sessionId);

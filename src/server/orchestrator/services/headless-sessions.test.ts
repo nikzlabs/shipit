@@ -92,7 +92,23 @@ describe("seedFromIssueRef — branch names carry the pointer only", () => {
     });
     expect(seed.title).toBe("SHI-304: Secret plan");
     expect(seed.prompt).toContain("Secret plan");
-    expect(seed.prompt).toContain("Details");
+  });
+
+  // The seed is a POINTER, not a copy: the description used to be pasted in
+  // wholesale, which buried whatever the user appended in the composer and
+  // froze a body the agent can read live. It fetches instead.
+  it("names the issue without pasting its description or link", () => {
+    const seed = seedFromIssueRef({
+      tracker: "linear",
+      identifier: "SHI-304",
+      title: "Secret plan",
+      description: "A long body the agent should fetch itself.",
+      url: "https://linear.app/acme/issue/SHI-304",
+    });
+    expect(seed.prompt).toContain("Work on issue SHI-304: Secret plan");
+    expect(seed.prompt).toContain("shipit issue view SHI-304");
+    expect(seed.prompt).not.toContain("A long body");
+    expect(seed.prompt).not.toContain("https://linear.app");
   });
 
   it("falls back to a generated branch when the pointer slugifies to nothing", () => {
@@ -464,11 +480,12 @@ describe("createHeadlessSession", () => {
     expect(result.branch).not.toContain("inline");
     expect(result.session.title).toBe("SHI-67: Inline tracker Issues tab");
     expect(result.session.branch).toBe("shi-67");
-    // The first dispatched prompt carries the issue context.
+    // The first dispatched prompt names the issue and tells the agent how to
+    // read it — it does not carry a copy of the body (see the seed tests above).
     const text = registry.get(result.sessionId)?.dispatch.mock.calls[0][0].text as string;
     expect(text).toContain("SHI-67: Inline tracker Issues tab");
-    expect(text).toContain("Build the Issues tab.");
-    expect(text).toContain("https://linear.app/acme/issue/SHI-67");
+    expect(text).toContain("shipit issue view SHI-67");
+    expect(text).not.toContain("Build the Issues tab.");
   });
 
   it("propagates claim failures as service errors", async () => {

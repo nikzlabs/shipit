@@ -46,7 +46,10 @@ poller, type, or DB-migration change.
    `PrStatusSummary.prBody` (poller) both carry it.
 2. **Session origin** (`origin`). When a session is created from an issue (the
    Issues tab / `seedFromIssueRef`), the first user message contains a seed of
-   the form `You are working on issue <KEY>: <title>` + `Issue link: <url>`.
+   the form `Work on issue <KEY>: <title>` + a `shipit issue view <KEY>` hint
+   (`buildIssueSeedPrompt`). The seed no longer carries the issue's description
+   or a link line, so the bare-key-after-`issue` shape below is what this
+   extractor actually matches on that path.
    The first user message is already in the client session store (the same field
    `SessionTitleLabel` reads). A new conservative free-text extractor,
    `extractIssueRefsFromText()`, pulls pointers out of it.

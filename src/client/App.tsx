@@ -143,6 +143,7 @@ import {
 } from "./utils/doc-paths.js";
 import { dispatchAgentMessage } from "./utils/dispatch-agent-message.js";
 import type { AgentInterfaceProvenance } from "../server/shared/agent-interface-sdk/protocol.js";
+import { buildIssueSeedPrompt } from "../server/shared/issue-ref.js";
 import { sendUserMessage } from "./utils/send-user-message.js";
 import { buildReleaseConfirmMessage } from "./utils/release-confirm-message.js";
 import { isAgentMessagingBlocked } from "./utils/agent-messaging-trust.js";
@@ -1318,14 +1319,12 @@ export default function App() {
         await handleNewSessionForRepo(repoUrl);
       }
 
-      // Same prompt the server's seedFromIssueRef would have sent — now editable
-      // in the input instead of dispatched immediately.
-      const lines = [
-        `You are working on issue ${issue.identifier}: ${issue.title}`,
-      ];
-      if (issue.description?.trim()) lines.push("", issue.description.trim());
-      if (issue.url?.trim()) lines.push("", `Issue link: ${issue.url.trim()}`);
-      useSessionStore.getState().setPrefillText(lines.join("\n"));
+      // Same prompt the server's seedFromIssueRef sends — shared so the two
+      // can't drift — but here it lands in the composer, editable. It names the
+      // issue and nothing more: the agent fetches the body itself, and a short
+      // seed leaves room for the user to append what they actually want done
+      // before sending, instead of scrolling past a pasted description.
+      useSessionStore.getState().setPrefillText(buildIssueSeedPrompt(issue));
 
       // SHI-320 — the prompt above is not enough for the server to know this
       // session came from an issue, and inferring it from the text would be
