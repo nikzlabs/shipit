@@ -82,6 +82,25 @@ Confirmed empirically on that machine, closing the gaps this branch could not ve
   session lookup (the install had archived sessions only, so no container to serve).
 - Degradation and the update-path fix both behave as designed against a real git repo.
 
+## Follow-up from on-laptop verification (2026-08-06)
+
+- [x] **`tailscale.sh`'s "CLI not found" hint told users to `export SHIPIT_TAILSCALE_BIN=…`**, which
+      fixes only the shell in front of them. The next `update.sh` from a fresh shell has no such
+      variable, `shipit_refresh_tailnet_bind` falls to "Tailscale not reachable", and tailnet access
+      silently disappears — the exact persistence problem the branch already solves for
+      `SHIPIT_TAILNET_BIND` via `.shipit.env`, so the hint contradicted the design's own model. Both
+      the Darwin and non-Darwin branches now show the appending-to-`.shipit.env` form (with the real
+      expanded path, so it is copy-pasteable) and say why the shell-local form is not enough.
+- [x] **One code change was needed after all**, contrary to the initial read: `tailscale.sh` sourced
+      `lib.sh` but never called `shipit_load_env_file`, so its own preflight could not see a
+      `SHIPIT_TAILSCALE_BIN` persisted in `.shipit.env`. The advice worked for `update.sh` (which loads
+      the env file via `shipit_build_and_up`) but not for the script printing it — a user would add the
+      line, re-run, and hit the identical error. Verified both directions before and after the fix.
+
+No new test: this is user-facing message wording, and asserting literal prose is against convention.
+`bash -n` clean, both error branches rendered and inspected (Darwin via a stubbed `uname`), and the 14
+existing `local-install-bind.test.ts` cases still pass.
+
 ## Deliberately not done
 
 - **Removing the `4124:5173` mapping.** Nothing listens on 5173 in the prod image — the client is

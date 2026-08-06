@@ -56,6 +56,13 @@ echo ""
 # --- Preflight: check and instruct, never auto-install ----------------------
 # Mirrors deployment/local/setup.sh's posture: a local machine is the user's own,
 # so we do not install system packages onto it behind their back.
+#
+# Load .shipit.env BEFORE resolving, so a SHIPIT_TAILSCALE_BIN persisted there is
+# honoured here too. Without this the error branch below would print advice that
+# fixes update.sh (which loads the env file via shipit_build_and_up) but not THIS
+# script: the user would add the line, re-run, and hit the identical error.
+shipit_load_env_file
+
 # Resolved via shipit_tailscale_bin, NOT `command -v`: the standalone macOS app
 # keeps its CLI inside the bundle and never puts `tailscale` on PATH, so a bare
 # `command -v` told fully-configured Macs they had no Tailscale — while pointing
@@ -69,15 +76,26 @@ if [ -z "$TS_BIN" ]; then
       echo "  Install it from https://tailscale.com/download/mac (or: brew install --cask tailscale)" >&2
       echo "" >&2
       echo "  Already installed? The standalone app keeps its CLI inside the bundle" >&2
-      echo "  and not on PATH. Point ShipIt straight at it:" >&2
-      echo "      export SHIPIT_TAILSCALE_BIN=/Applications/Tailscale.app/Contents/MacOS/Tailscale" >&2
+      echo "  and not on PATH. Record the path so every future start finds it:" >&2
+      echo "      echo 'SHIPIT_TAILSCALE_BIN=/Applications/Tailscale.app/Contents/MacOS/Tailscale' \\" >&2
+      echo "        >> $SHIPIT_ENV_FILE" >&2
+      echo "" >&2
+      echo "  It must go in that file, not just your shell: a bare 'export' lasts only" >&2
+      echo "  for the current shell, so the next update.sh would lose tailnet access" >&2
+      echo "  and silently start on localhost only." >&2
       echo "  (Do not symlink it onto PATH — it resolves its bundle identifier from" >&2
       echo "   its own path and will abort.)" >&2
       ;;
     *)
       echo "  Install it with: curl -fsSL https://tailscale.com/install.sh | sh" >&2
       echo "" >&2
-      echo "  Installed somewhere unusual? Set SHIPIT_TAILSCALE_BIN to its full path." >&2
+      echo "  Installed somewhere unusual? Record its full path so every future start" >&2
+      echo "  finds it:" >&2
+      echo "      echo 'SHIPIT_TAILSCALE_BIN=/full/path/to/tailscale' >> $SHIPIT_ENV_FILE" >&2
+      echo "" >&2
+      echo "  It must go in that file, not just your shell: a bare 'export' lasts only" >&2
+      echo "  for the current shell, so the next update.sh would lose tailnet access" >&2
+      echo "  and silently start on localhost only." >&2
       ;;
   esac
   echo "" >&2
