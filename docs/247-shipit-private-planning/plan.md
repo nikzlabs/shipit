@@ -146,6 +146,29 @@ The identifier is what the migration changes; the name is already stable.
 This is why nothing else may open an issue or PR in the planning repository while
 the copy runs.
 
+### Order is a requirement, which constrains the driver
+
+Req 12 requires that of any two migrated issues, the one with the lower Linear key
+gets the lower planning number. Numbers cannot be preserved, but their *order*
+can, and that is what keeps "later issue, higher number" reading correctly
+afterwards.
+
+GitHub assigns numbers in creation order, so this reduces to: create strictly in
+ascending key order. Two consequences for Pass A that would otherwise be tempting
+to get wrong:
+
+- **No parallelism.** Issuing creates concurrently to go faster would interleave
+  their arrival at GitHub and scramble the order. Pass A is sequential, which is
+  also what the pacing in *Write volume* wants anyway.
+- **A failure halts rather than skips.** Skipping a failed create and retrying it
+  at the end would place it after issues with higher keys, breaking the ordering
+  for that one issue permanently — numbers cannot be reassigned. On a failure,
+  stop, resolve it, and resume from that key.
+
+Unrelated issues opened in the repository between keys would leave gaps but not
+reorder anything, so gaps are acceptable and holes in the number sequence are
+expected regardless (`planning#1` is the write probe, and the pilot consumes one).
+
 ## Write volume and pacing
 
 The copy is roughly **2,000 brokered writes**: 322 creates + 1,344 comments + ~230
@@ -222,12 +245,12 @@ rather than inheriting it.
 7. **Sync to the latest `main`.** Everything after this point is measured against
    the working tree — the mapping is applied to it, and the sweep rewrites it — so
    the copy starts from a current base rather than a stale one.
-8. **Pass A — create all 322 issues** in key order: title, labels, and a body
-   carrying its `SHI-N` origin, its original creation date and, for the 15
-   sub-issues, its parent. Cross-references stay in their original `SHI-N` form
-   for now. Closed issues are closed after creation. Every assigned number is
-   appended to the `SHI-N → planning#M` mapping as it comes back, which makes the
-   mapping complete and *observed* at the end of this pass.
+8. **Pass A — create all 322 issues** in ascending key order (req 12): title,
+   labels, and a body carrying its `SHI-N` origin, its original creation date
+   and, for the 15 sub-issues, its parent. Cross-references stay in their original
+   `SHI-N` form for now. Closed issues are closed after creation. Every assigned
+   number is appended to the `SHI-N → planning#M` mapping as it comes back, which
+   makes the mapping complete and *observed* at the end of this pass.
 9. **Pass B — finish the tracker side.** Replay the 1,344 comments with their
    original dates (req 9), and edit the 322 bodies so their internal
    cross-references point at `planning#M`. Both are tracker writes against the
