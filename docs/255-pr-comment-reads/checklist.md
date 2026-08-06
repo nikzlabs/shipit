@@ -12,6 +12,7 @@
 - [x] Same validation on `gh pr list`, `gh run list|view`, `gh workflow list|view`
 - [x] Tests: shim (`gh.test.ts`), fetch layer (`github-auth-prs.test.ts`), service (`github-pr-conversation.test.ts`)
 - [x] `/shipit-docs/github.md` updated: subcommand table, "Reading review feedback", field lists, exit codes
+- [x] `/shipit-docs/untrusted-input.md` updated: PR review feedback listed as a brokered, enveloped surface
 - [x] `npm run lint:dev` + `npm run typecheck` clean
 - [x] Cross-backend review (Codex), findings addressed:
   - [x] PR review text wrapped in the SHI-98 untrusted-input envelope (new `pr` source), size-capped
