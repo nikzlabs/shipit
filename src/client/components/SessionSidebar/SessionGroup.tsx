@@ -13,8 +13,8 @@ import { isRecentlyResolved } from "./useSessionGrouping.js";
 
 /**
  * docs/254 — the per-group identity edge. A 3px colored line on the LEFT of the
- * group, plus a `--color-bg-tertiary` band on the header so it reads as a
- * section header rather than another row.
+ * group, plus a faint band on the header so it reads as a section header rather
+ * than another row.
  *
  * Two things about this are load-bearing and were established by mocking it
  * (`docs/033-session-sidebar/mocks/repo-separation-spine.html`, option 5b):
@@ -23,17 +23,37 @@ import { isRecentlyResolved } from "./useSessionGrouping.js";
  *   `sticky top-0`, so an edge on the header visibly breaks at the seam the
  *   moment it pins; on the group it paints behind the pinned band and the line
  *   stays continuous for the group's whole height.
- * · The band fill must be an OPAQUE token. Every `*-subtle` token is `rgba()`,
- *   and a translucent sticky header lets session rows scroll straight through
- *   it. `--color-bg-tertiary` is opaque in every theme.
+ * · The band fill must be OPAQUE. Every `*-subtle` token is `rgba()`, and a
+ *   translucent sticky header lets session rows scroll straight through it —
+ *   which is why the band is a `color-mix` COMPOSITED over `--color-bg-primary`
+ *   rather than the hue at low alpha, and why the header keeps an opaque
+ *   background class underneath it in every state.
  */
 function groupEdgeStyle(color: string | undefined): React.CSSProperties | undefined {
   return color ? { borderLeftWidth: 3, borderLeftStyle: "solid", borderLeftColor: color } : undefined;
 }
 
-/** Header-band classes, applied only when the group carries an edge. */
-const BAND_CLASS = "bg-(--color-bg-tertiary)";
-const NO_BAND_CLASS = "bg-(--color-bg-primary)";
+/**
+ * The header band: a wash of the group's OWN color rather than a neutral fill
+ * (`header-band-weight.html`, option E). See `--repo-band-mix` in `index.css`
+ * for why it's this faint. Composited over the opaque rail background, so the
+ * result is itself opaque — required, because the header is sticky.
+ */
+export function groupBandFill(color: string): string {
+  return `color-mix(in srgb, ${color} var(--repo-band-mix), var(--color-bg-primary))`;
+}
+
+function groupBandStyle(color: string | undefined): React.CSSProperties | undefined {
+  return color ? { backgroundColor: groupBandFill(color) } : undefined;
+}
+
+/**
+ * Always on the header, in every state. When the group has a color the inline
+ * band overrides it; when it doesn't — unseparated, or a repo row written
+ * before the color backfill — this IS the fill, so a sticky header is never
+ * left transparent for rows to scroll through.
+ */
+const HEADER_BASE_CLASS = "bg-(--color-bg-primary)";
 
 /**
  * Gap below a separated group. Without it two adjacent edges meet and read as
@@ -86,10 +106,14 @@ export function OpsSessionGroup({
   // docs/254 req 10 — a non-repo group gets its OWN semantic color, not a
   // palette entry, so the palette keeps meaning "a repository". Ops is amber,
   // matching the warning tone this group's docstring has always described.
-  const edge = groupEdgeStyle(separated ? "var(--color-warning)" : undefined);
+  const color = separated ? "var(--color-warning)" : undefined;
+  const edge = groupEdgeStyle(color);
   return (
     <div className={`flex flex-col ${separated ? GROUP_GAP_CLASS : ""}`} style={edge} data-testid="ops-group">
-      <div className={`flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 z-10 ${separated ? BAND_CLASS : NO_BAND_CLASS}`}>
+      <div
+        className={`flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 z-10 ${HEADER_BASE_CLASS}`}
+        style={groupBandStyle(color)}
+      >
         <button
           onClick={onToggleCollapse}
           className="flex items-center gap-1.5 flex-1 min-w-0 text-left group"
@@ -157,10 +181,14 @@ export function SandboxSessionGroup({
   if (sessions.length === 0) return null;
   // docs/254 req 10 — semantic color, not a palette entry. Sandbox already owns
   // teal (`--color-sandbox`) on its Cube icon; the edge reuses it.
-  const edge = groupEdgeStyle(separated ? "var(--color-sandbox)" : undefined);
+  const color = separated ? "var(--color-sandbox)" : undefined;
+  const edge = groupEdgeStyle(color);
   return (
     <div className={`flex flex-col ${separated ? GROUP_GAP_CLASS : ""}`} style={edge} data-testid="sandbox-group">
-      <div className={`flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 z-10 ${separated ? BAND_CLASS : NO_BAND_CLASS}`}>
+      <div
+        className={`flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 z-10 ${HEADER_BASE_CLASS}`}
+        style={groupBandStyle(color)}
+      >
         <button
           onClick={onToggleCollapse}
           className="flex items-center gap-1.5 flex-1 min-w-0 text-left group"
@@ -317,9 +345,8 @@ export function RepoGroup({
   // docs/254 — `colorIndex` is undefined only for a row written by a build
   // older than the backfill migration; such a repo simply gets no edge rather
   // than an arbitrary one, so the color a user sees is always one that's stored.
-  const edge = groupEdgeStyle(
-    separated && repo.colorIndex !== undefined ? repoColorVar(repo.colorIndex) : undefined,
-  );
+  const color = separated && repo.colorIndex !== undefined ? repoColorVar(repo.colorIndex) : undefined;
+  const edge = groupEdgeStyle(color);
 
   // FLIP animation for session rows reordering (PR merged sinks to bottom) or
   // exiting (archive). Library defaults — single duration/easing per parent,
@@ -410,7 +437,8 @@ export function RepoGroup({
       )}
       {/* Repo header row */}
       <div
-        className={`flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 z-10 group/header ${separated ? BAND_CLASS : NO_BAND_CLASS}`}
+        className={`flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 z-10 group/header ${HEADER_BASE_CLASS}`}
+        style={groupBandStyle(color)}
         draggable={draggable}
         onDragStart={draggable ? onDragStart : undefined}
         onDragEnd={draggable ? onDragEnd : undefined}

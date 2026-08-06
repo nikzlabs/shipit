@@ -172,3 +172,128 @@ describe("docs/254 — repo palette vs status colors", () => {
     });
   }
 });
+
+/**
+ * docs/254 — the header band's WEIGHT.
+ *
+ * The band shipped as `--color-bg-tertiary`, picked to maximize contrast. That
+ * reads correctly on a dark theme (the token is lighter than the rail, so the
+ * header looks gently raised) and wrong on a light one (it is *darker* than
+ * every session row, so the headers outweigh their own content and a collapsed
+ * group becomes a slab). Nothing caught it: the value is a single shared token,
+ * and the defect only exists in one of the two surface directions.
+ *
+ * So the ceilings below are deliberately asymmetric — that asymmetry IS the
+ * finding. A dark-hue-over-light-rail band reads heavier than a
+ * light-hue-over-dark-rail band at the same contrast ratio, so light themes get
+ * far less headroom. The light ceiling is set below the value that shipped and
+ * looked wrong (Claude Light's `bg-tertiary`, 1.25), so reverting to a neutral
+ * fill fails here rather than in someone's eyes.
+ */
+describe("docs/254 — header band weight", () => {
+  const MIN_SEPARATION = 1.04; // below this the band stops reading as a header at all
+  const MAX_SEPARATION = { light: 1.15, dark: 1.3 };
+  /** Max spread across the 16 entries within one theme — see the test. */
+  const MAX_SPREAD = 0.15;
+
+  const css = fs.readFileSync(cssPath, "utf8");
+  const palette = readPalette();
+
+  function readBandMix(): { light: number; dark: number } {
+    const firstEntry = css.indexOf("--repo-color-0");
+    const read = (from: number, label: string): number => {
+      expect(from, `block not found: ${label}`).toBeGreaterThan(-1);
+      const m = /--repo-band-mix:\s*([\d.]+)%/.exec(css.slice(from, css.indexOf("}", from)));
+      expect(m, `--repo-band-mix missing from the ${label} block`).toBeTruthy();
+      return Number(m![1]) / 100;
+    };
+    return {
+      light: read(css.lastIndexOf(":root {", firstEntry), "light :root"),
+      dark: read(css.indexOf(".dark,", firstEntry), "dark-theme"),
+    };
+  }
+
+  /** Every theme's rail background, keyed by theme name. */
+  function readRails(): { name: string; surface: "light" | "dark"; bg: Rgb }[] {
+    return fs
+      .readdirSync(themesDir)
+      .filter((f) => f.endsWith(".css"))
+      .map((file) => {
+        const name = file.replace(/\.css$/, "");
+        const m = /--color-bg-primary:\s*(#[0-9a-fA-F]{6})\b/.exec(
+          fs.readFileSync(path.join(themesDir, file), "utf8"),
+        );
+        expect(m, `--color-bg-primary missing or not 6-digit hex in ${file}`).toBeTruthy();
+        return { name, surface: (DARK_THEMES.includes(name) ? "dark" : "light") as "light" | "dark", bg: parseHex(m![1]) };
+      });
+  }
+
+  /** What `color-mix(in srgb, <color> <mix>, <bg>)` resolves to. */
+  function mix(color: Rgb, bg: Rgb, fraction: number): Rgb {
+    return color.map((v, i) => Math.round(v * fraction + bg[i] * (1 - fraction))) as Rgb;
+  }
+
+  function relativeLuminance([r, g, b]: Rgb): number {
+    const [rs, gs, bs] = [r, g, b].map((v) => {
+      const c = v / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * rs + 0.7152 * gs + 0.0722 * bs;
+  }
+
+  function contrast(a: Rgb, b: Rgb): number {
+    const [hi, lo] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  }
+
+  const mixes = readBandMix();
+  const rails = readRails();
+
+  /** Every band this palette can produce on `theme`, as a contrast ratio to its rail. */
+  const bandsFor = (rail: (typeof rails)[number]): number[] =>
+    palette[rail.surface].map((hex) => contrast(mix(parseHex(hex), rail.bg, mixes[rail.surface]), rail.bg));
+
+  it("defines a mix fraction for both surface directions", () => {
+    expect(mixes.light).toBeGreaterThan(0);
+    expect(mixes.dark).toBeGreaterThan(0);
+  });
+
+  it("checks every theme that ships", () => {
+    expect(rails.length).toBeGreaterThanOrEqual(14);
+    expect(rails.some((r) => r.surface === "light")).toBe(true);
+    expect(rails.some((r) => r.surface === "dark")).toBe(true);
+  });
+
+  it("keeps the band faint enough that the header never outweighs its own rows", () => {
+    for (const rail of rails) {
+      for (const [i, ratio] of bandsFor(rail).entries()) {
+        expect(
+          ratio,
+          `${rail.name}: --repo-color-${i}'s band is ${ratio.toFixed(3)} against the rail — too heavy for a ${rail.surface} theme`,
+        ).toBeLessThanOrEqual(MAX_SEPARATION[rail.surface]);
+      }
+    }
+  });
+
+  it("keeps the band strong enough to read as a header at all", () => {
+    for (const rail of rails) {
+      for (const [i, ratio] of bandsFor(rail).entries()) {
+        expect(ratio, `${rail.name}: --repo-color-${i}'s band is only ${ratio.toFixed(3)} against the rail`)
+          .toBeGreaterThanOrEqual(MIN_SEPARATION);
+      }
+    }
+  });
+
+  // Unique to a hue wash, and it has no analogue in the neutral fill it
+  // replaced: the band is now derived per repo, so an entry that mixes much
+  // darker than its neighbours would give one repo a conspicuously heavier
+  // header than the rest for no reason the user can act on.
+  it("weighs every repo's header about the same within a theme", () => {
+    for (const rail of rails) {
+      const bands = bandsFor(rail);
+      const spread = Math.max(...bands) - Math.min(...bands);
+      expect(spread, `${rail.name}: header weight varies by ${spread.toFixed(3)} across the palette`)
+        .toBeLessThanOrEqual(MAX_SPREAD);
+    }
+  });
+});

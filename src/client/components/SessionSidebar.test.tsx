@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SessionSidebar } from "./SessionSidebar.js";
-import { GROUP_GAP_CLASS, BAND_CLEARANCE_CLASS } from "./SessionSidebar/SessionGroup.js";
+import { GROUP_GAP_CLASS, BAND_CLEARANCE_CLASS, groupBandFill } from "./SessionSidebar/SessionGroup.js";
 import { AUTO_MERGE_ICON_CLASS } from "../design-tokens.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore, type PrCardState } from "../stores/pr-store.js";
@@ -1288,8 +1288,36 @@ describe("SessionSidebar", () => {
       const header = group.querySelector<HTMLElement>(".sticky")!;
       expect(header).toBeTruthy();
       expect(header.style.borderLeftWidth).toBe("");
-      // …and the band fill is an opaque token, so rows can't scroll through it.
-      expect(header.className).toContain("bg-(--color-bg-tertiary)");
+    });
+
+    // The band is a wash of the group's OWN color, not a neutral fill: on a
+    // light theme the neutral (--color-bg-tertiary) was the DARKEST surface in
+    // the rail, so headers outweighed the sessions under them.
+    it("washes each group's header band with that group's own color", () => {
+      render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0), colored(repoB, 5)]} />);
+      const groups = document.querySelectorAll<HTMLElement>("[data-repo-color-index]");
+      const bandOf = (g: HTMLElement) => g.querySelector<HTMLElement>(".sticky")!.style.backgroundColor;
+      expect(bandOf(groups[0])).toBe(groupBandFill("var(--repo-color-0)"));
+      expect(bandOf(groups[1])).toBe(groupBandFill("var(--repo-color-5)"));
+      expect(bandOf(groups[0])).not.toBe(bandOf(groups[1]));
+    });
+
+    // The header is `sticky`, so a translucent fill lets session rows scroll
+    // straight THROUGH it. Two things keep it opaque: the wash is composited
+    // over the rail background rather than being the hue at low alpha, and an
+    // opaque class sits underneath for every state that has no wash at all.
+    it("keeps the sticky header opaque in every state", () => {
+      render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0), colored(repoB, 5)]} />);
+      const washed = document.querySelector<HTMLElement>("[data-repo-color-index] .sticky")!;
+      expect(washed.style.backgroundColor).toContain("var(--color-bg-primary)");
+      expect(washed.className).toContain("bg-(--color-bg-primary)");
+      cleanup();
+
+      // Unseparated, and a repo with no stored color: no wash, class only.
+      render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0)]} />);
+      const plain = screen.getByText("repo").closest<HTMLElement>(".sticky")!;
+      expect(plain.style.backgroundColor).toBe("");
+      expect(plain.className).toContain("bg-(--color-bg-primary)");
     });
   });
 });

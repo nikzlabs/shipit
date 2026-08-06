@@ -27,8 +27,9 @@ Two cues, neither of which needs a background surface behind the group:
 1. **A 3px identity edge** in the repo's own color, drawn as `border-left` on the
    **group element**, so it spans the header, the pinned sub-section, the
    `New session` row, every session row and `Recently resolved` (req 2).
-2. **A `--color-bg-tertiary` header band**, so the header reads as a section
-   header rather than another row (req 4).
+2. **A header band washed with the repo's own color**, so the header reads as a
+   section header rather than another row (req 4) —
+   `color-mix(in srgb, <the group's color> var(--repo-band-mix), var(--color-bg-primary))`.
 
 Colors are stored as a **palette index**, never a hex. Each theme maps the index
 to its own light/dark value, so one stored choice looks right on all fourteen
@@ -44,9 +45,14 @@ violates one will look correct in a static screenshot and break in use.
   pins; on the group it keeps painting behind the pinned band, so the line is
   continuous for the group's whole height (req 3). Guarded by *"puts the edge on
   the group element, not on the sticky header"* in `SessionSidebar.test.tsx`.
-- **The band fill must be an opaque token.** Every `*-subtle` token is `rgba()`,
-  and a translucent sticky header lets session rows scroll straight *through* it.
-  `--color-bg-tertiary` is opaque in every theme. Same test asserts the class.
+- **The band fill must be opaque.** Every `*-subtle` token is `rgba()`, and a
+  translucent sticky header lets session rows scroll straight *through* it. Two
+  things keep it opaque, and both are asserted: the wash is `color-mix`-ed *over*
+  `--color-bg-primary` rather than being the hue at low alpha, and the header
+  carries `bg-(--color-bg-primary)` underneath in **every** state — including the
+  two that have no wash at all (unseparated, and a repo row predating the color
+  backfill), where a bare inline style would have left it transparent.
+- **The band must be faint, not maximal.** See *The band weight* below.
 - **Palette entries must not read as status.** The rail already spends green on a
   live agent, amber on the current session, violet on a PR and red on errors, so
   every entry is pulled well down in saturation (req 9).
@@ -120,6 +126,40 @@ click; there is no save step. The selected swatch carries a tick as well as a
 ring, so it stays identifiable without relying on ring contrast against sixteen
 different backgrounds.
 
+## The band weight
+
+The band originally used `--color-bg-tertiary`. That was chosen to **maximize**
+contrast — the Claude palettes are the flattest we ship, and `bg-tertiary` is the
+strongest plain fill they contain (1.25 : 1 against the rail, against 1.12 : 1 for
+`bg-secondary`). Maximum contrast was the wrong target, and it fails specifically
+on **light** themes: `#e6dcd0` on a `#faf5ef` rail makes the band the *darkest*
+surface in the sidebar — darker than any session row, darker than the
+current-session highlight — so the headers outweigh the content beneath them. It
+is worst on a **collapsed** group, which is nothing but header and so becomes a
+solid slab.
+
+The same token behaves correctly in dark themes, where `bg-tertiary` is *lighter*
+than the rail and reads as gently raised. Same token, opposite direction, opposite
+result: the identical light/dark asymmetry that ruled out the fill-based
+containment variants during mocking.
+
+The fix (option **E** in [`mocks/header-band-weight.html`](mocks/header-band-weight.html),
+chosen from seven) replaces the neutral fill with a wash of the group's **own**
+color. Two consequences beyond the weight:
+
+- The band stops being dead mass and reinforces identity — it is the same cue as
+  the edge, not a second unrelated one.
+- The mix fraction is a token, `--repo-band-mix`: **7%** on light themes, **10%**
+  on dark, because the same fraction of a light hue over a near-black base
+  separates less than a dark hue over a near-white one.
+
+`--repo-band-mix` follows the same cascade rule as the palette itself — the dark
+value stays scoped to the dark-theme classes, never `:root`.
+
+Options **C** (hairline, no fill) and **D** (nothing at all — the edge and the type
+carry it) are the calmer alternatives and both work; the mock keeps them for the
+next time this is revisited.
+
 ## Spacing
 
 Three spacing rules, all applied only when separated, so an unseparated sidebar
@@ -190,8 +230,23 @@ match the code. Both were since settled in `requirements.md`'s
 
 ## Verification
 
-Checked in the dogfood inner ShipIt with four repos, in Claude Light and Claude
-Dark (the flattest palettes we ship, per the band mock's contrast measurements):
-distinct edges per repo, `--color-bg-tertiary` band resolving to `#e6dcd0` in
-Claude Light, and a color change in the picker updating both the DOM edge and
-`GET /api/repos` immediately.
+**The edge and the picker** were checked in the dogfood inner ShipIt with four
+repos, in Claude Light and Claude Dark (the flattest palettes we ship, per the
+band mock's contrast measurements): distinct edges per repo, and a color change
+in the picker updating both the DOM edge and `GET /api/repos` immediately.
+
+**The band wash** was *not* checked that way — the dogfood service never became
+reachable from the agent container (it served fine, but the outer service
+registry held it at `status: "starting"` and published no address; filed
+upstream). It was verified instead by:
+
+- the mock, in both Claude themes, using the identical `color-mix` formula;
+- `repo-palette.test.ts`, which resolves the wash against **all fourteen** themes'
+  own `--color-bg-primary` and asserts it stays inside a faint band in each. That
+  is broader coverage than the two-theme eyeball it replaced, and it closes the
+  gap the palette itself still carries (verified numerically everywhere, visually
+  only in the two Claude themes).
+
+The remaining unverified claim is the *aesthetic* one in the twelve non-Claude
+themes: the numbers say the wash is faint and even there, but nobody has looked
+at it.

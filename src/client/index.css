@@ -80,8 +80,22 @@
   --repo-color-13: #7a5c46;        /* Sienna */
   --repo-color-14: #566b7a;         /* Slate */
   --repo-color-15: #8a6060;         /* Taupe */
+
+  /* How much of the repo's own color the group's header band is mixed from,
+     over --color-bg-primary. The band's whole job is to say "this row is a
+     header, not a session" — the colored edge already does the separating — so
+     this is deliberately the SMALLEST signal that still reads as a header. The
+     band was originally --color-bg-tertiary, chosen to maximize contrast
+     against the flat Claude palettes; on a light theme that makes it the
+     DARKEST surface in the rail, so the headers outweighed the sessions and a
+     collapsed group became a solid slab. Maximum contrast was the wrong target.
+
+     Dark needs a slightly stronger mix: the same fraction of a light hue over
+     a near-black base separates less than a dark hue over a near-white one. */
+  --repo-band-mix: 7%;
 }
 .dark, .midnight, .forest, .rose, .claude, .codex, .solarized, .high-contrast {
+  --repo-band-mix: 10%;
   --repo-color-0: #e09a6a;
   --repo-color-1: #dcb980;
   --repo-color-2: #cbb85e;
