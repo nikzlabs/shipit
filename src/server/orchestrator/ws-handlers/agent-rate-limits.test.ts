@@ -1,11 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_LIMIT_NOTICE_CHARS,
   UNKNOWN_RESET_LOCKOUT_MS,
   detectHardExhaustion,
+  detectHardExhaustionInTurnText,
   exhaustionLockoutUntil,
   normalizeAgentUsageLimitError,
 } from "./agent-rate-limits.js";
 import type { AgentId, SubscriptionLimits, SubscriptionLimitsMap, SubscriptionLimitsWindow } from "../../shared/types.js";
+
+/**
+ * The exact text the Claude CLI emitted in the incident this coverage exists
+ * for (session 174b5d98, 2026-08-06 17:09 UTC) — verbatim, including the
+ * middle dot, because the failure was that none of the patterns matched it.
+ */
+const SESSION_LIMIT_NOTICE = "You've hit your session limit · resets 5:10pm (UTC)";
+const NOON_UTC = Date.parse("2026-08-06T12:00:00.000Z");
 
 const snapshot = (
   agentId: AgentId,
@@ -163,6 +173,121 @@ describe("detectHardExhaustion", () => {
     const past = new Date(Date.now() - 60_000).toISOString();
     expect(detectHardExhaustion(`You've hit Claude's 5h usage limit. It resets at ${past}.`))
       .toEqual({ resetAt: null });
+  });
+
+  // The exact string production missed: the CLI dropped "usage" and started
+  // naming the `session` window, and none of the five patterns matched it.
+  it("recognizes the CLI's own session-limit notice", () => {
+    expect(detectHardExhaustion(SESSION_LIMIT_NOTICE, NOON_UTC))
+      .toEqual({ resetAt: "2026-08-06T17:10:00.000Z" });
+  });
+
+  it("recognizes the window wordings with and without the word 'usage'", () => {
+    for (const message of [
+      "You've hit your session limit",
+      "You've hit your session usage limit",
+      "You've hit your weekly limit",
+      "You've hit Claude's monthly usage limit",
+    ]) {
+      expect(detectHardExhaustion(message)).not.toBeNull();
+    }
+  });
+
+  // The notice carries no date, so a clock time already past today is tomorrow's.
+  it("resolves a wall-clock UTC reset to the next time that clock reads it", () => {
+    expect(detectHardExhaustion("You've hit your session limit · resets 9am (UTC)", NOON_UTC))
+      .toEqual({ resetAt: "2026-08-07T09:00:00.000Z" });
+    expect(detectHardExhaustion("You've hit your session limit · resets 12:30am (UTC)", NOON_UTC))
+      .toEqual({ resetAt: "2026-08-07T00:30:00.000Z" });
+    expect(detectHardExhaustion("You've hit your session limit · resets 12:30pm (UTC)", NOON_UTC))
+      .toEqual({ resetAt: "2026-08-06T12:30:00.000Z" });
+  });
+
+  // Without a named zone the hour is meaningless here; guessing one would
+  // produce a lockout hours wrong. The 15-minute fallback is the right answer.
+  // An offset suffix is the same case: `UTC+02:00` is not UTC.
+  it("ignores a wall-clock reset that names no usable timezone", () => {
+    for (const message of [
+      "You've hit your session limit · resets 5:10pm",
+      "You've hit your session limit · resets 5:10pm PT",
+      "You've hit your session limit · resets 5:10pm UTC+02:00",
+      "You've hit your session limit · resets 5:10pm UTC-7",
+    ]) {
+      expect(detectHardExhaustion(message, NOON_UTC)).toEqual({ resetAt: null });
+    }
+  });
+});
+
+/**
+ * The structural half of the same incident: the limit notice arrived as
+ * ASSISTANT TEXT on a `subtype: "success"` turn, so `agent_result.error` was
+ * undefined and every error-gated detector was blind to it.
+ */
+describe("detectHardExhaustionInTurnText", () => {
+  it("recognizes the notice production saw on the text channel", () => {
+    expect(detectHardExhaustionInTurnText(SESSION_LIMIT_NOTICE, NOON_UTC))
+      .toEqual({ resetAt: "2026-08-06T17:10:00.000Z" });
+  });
+
+  it("ignores an absent or empty final message", () => {
+    for (const text of [undefined, null, "", "   "]) {
+      expect(detectHardExhaustionInTurnText(text)).toBeNull();
+    }
+  });
+
+  // The notice IS the message. Anchoring is what separates it from an ordinary
+  // short turn summary that happens to contain the same words — the case a
+  // reuse of the error channel's patterns would have gotten wrong, benching a
+  // healthy Claude subscription over somebody else's billing problem.
+  it("ignores a notice-shaped phrase that something else in the message introduces", () => {
+    for (const text of [
+      "The Vercel deploy failed because your account is out of credits; add funds and retry.",
+      "The message is: You've hit your session limit.",
+      "Nothing to do — the API returned quota exceeded for the third-party key.",
+      "Retried twice; the upstream service is out of quota.",
+    ]) {
+      expect(text.length).toBeLessThan(MAX_LIMIT_NOTICE_CHARS);
+      expect(detectHardExhaustionInTurnText(text)).toBeNull();
+    }
+  });
+
+  // Decoration a CLI may prefix the notice with is not "something else".
+  it("still matches through leading decoration", () => {
+    expect(detectHardExhaustionInTurnText(`⏺ ${SESSION_LIMIT_NOTICE}`, NOON_UTC))
+      .toEqual({ resetAt: "2026-08-06T17:10:00.000Z" });
+  });
+
+  // An agent DISCUSSING quota — including one working on this very file — must
+  // not bench the account it is running on. Length is what separates a notice
+  // from a discussion of one.
+  it("ignores quota language buried in a long assistant message", () => {
+    const prose =
+      "I updated the exhaustion detector so that the CLI's newer wording, "
+      + "\"You've hit your session limit\", is recognized on both the error channel "
+      + "and the assistant-text channel. Previously the regex only knew about the "
+      + "weekly, monthly and 5h usage limits, so a session-limit notice slipped "
+      + "through and the turn retired as a success.";
+    expect(prose.length).toBeGreaterThan(MAX_LIMIT_NOTICE_CHARS);
+    expect(detectHardExhaustionInTurnText(prose)).toBeNull();
+  });
+
+  it("ignores an ordinary short turn summary", () => {
+    for (const text of [
+      "Done — all tests pass.",
+      "I hit a rate limit on the API and retried; it succeeded.",
+    ]) {
+      expect(detectHardExhaustionInTurnText(text)).toBeNull();
+    }
+  });
+
+  it("recognizes the CLI's other notice wordings", () => {
+    for (const text of [
+      "Claude usage limit reached",
+      "Claude AI usage limit reached · resets 5am (UTC)",
+      "You've hit your weekly limit",
+    ]) {
+      expect(detectHardExhaustionInTurnText(text)).not.toBeNull();
+    }
   });
 });
 

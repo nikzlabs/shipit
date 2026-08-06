@@ -352,6 +352,23 @@ describe("runSubAgent — happy path", () => {
     expect(result.text).toBe("review complete");
   });
 
+  // Same blind spot as a primary turn: a consult that hits the limit mid-run
+  // gets the notice as its final assistant text and still reports `success`,
+  // so gating the fallback on `error` alone silently returned the notice as
+  // the consult's answer instead of failing over.
+  it("benches and retries when the limit arrives as the run's final text on a success", async () => {
+    const { deps, runner, markAccountExhausted } = makeDeps({
+      spawnResults: [
+        { status: "success", text: "You've hit your session limit · resets 5:10pm (UTC)", truncated: false, durationMs: 10, costUsd: 0 },
+        { status: "success", text: "review complete", truncated: false, durationMs: 20, costUsd: 0 },
+      ],
+    });
+    const result = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    expect(markAccountExhausted).toHaveBeenCalledTimes(1);
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(2);
+    expect(result.text).toBe("review complete");
+  });
+
   it("continues across exhausted accounts until a healthy subscription succeeds", async () => {
     const resetAt = "2099-08-02T12:00:00.000Z";
     const { deps, runner, selectAccountForTurn, markAccountExhausted } = makeDeps({
@@ -396,6 +413,38 @@ describe("runSubAgent — happy path", () => {
     expect(result.error).toBe(
       "Every connected Codex subscription account is out of quota. Earliest reset: 2099-08-02T11:00:00.000Z.",
     );
+  });
+
+  // A text-channel notice leaves `status: "success"`, so without the promotion
+  // the consult renders as a completed review whose entire answer is the
+  // provider's limit notice.
+  it("fails the consult when the last account's limit arrived as final text", async () => {
+    const earliestResetAt = "2099-08-02T11:00:00.000Z";
+    const { deps, runner, selectAccountForTurn } = makeDeps({
+      spawnResult: { status: "success", text: "You've hit your session limit · resets 5:10pm (UTC)", truncated: false, durationMs: 10, costUsd: 0 },
+    });
+    selectAccountForTurn
+      .mockReturnValueOnce({ ok: true, route: { kind: "account", id: "acct-primary" } })
+      .mockReturnValueOnce({ ok: false, reason: "all_exhausted", earliestResetAt });
+
+    const result = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe("error");
+    expect(result.error).toContain("out of quota");
+  });
+
+  // The error is the provider talking; only when it is silent do we read the
+  // model's words. A non-quota failure whose partial output happens to look
+  // like a notice must not bench a healthy account.
+  it("does not read the text channel when the run carries a non-quota error", async () => {
+    const { deps, runner, markAccountExhausted } = makeDeps({
+      spawnResult: { status: "error", text: "You've hit your session limit · resets 5:10pm (UTC)", error: "This account cannot access model opus", truncated: false, durationMs: 10, costUsd: 0 },
+    });
+    const result = await runSubAgent(deps, "s1", { subAgentId: "claude", prompt: "review", depth: 0 });
+    expect(result.status).toBe("error");
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
+    expect(markAccountExhausted).not.toHaveBeenCalled();
   });
 
   it("does not retry a model-access error", async () => {

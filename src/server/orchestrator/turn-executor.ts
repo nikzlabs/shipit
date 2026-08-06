@@ -28,7 +28,10 @@
 import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage, SessionMessageOrigin } from "../shared/types.js";
 import { buildTurnMessages, wireAgentListeners } from "./ws-handlers/agent-listeners.js";
 import { createAgentStderrTail } from "./agent-stderr-tail.js";
-import { detectHardExhaustion } from "./ws-handlers/agent-rate-limits.js";
+import {
+  detectHardExhaustion,
+  detectHardExhaustionInTurnText,
+} from "./ws-handlers/agent-rate-limits.js";
 import { resetRunnerTurnState } from "./session-runner.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
@@ -1018,10 +1021,23 @@ export async function executeAgentTurn(
     // Reads the RAW error: `wireAgentListeners` normalizes onto its own local
     // copy of the event, so its rewrite is not visible here. Both providers'
     // raw usage-limit text is covered by the same detector.
-    if (!input.isQuotaRetry && event.error && detectHardExhaustion(event.error)) {
-      quotaRetryInProgress = true;
-      await retryOnNextAccount();
-      return;
+    //
+    // …and when there is no error at all, the turn's final assistant text. A
+    // Claude CLI that hits the limit mid-turn reports it as an ordinary
+    // assistant message and ends `subtype: "success"`, so gating the retry on
+    // `event.error` alone made that shape — the one production actually hit —
+    // structurally invisible. `turnSummary` is this turn's own (it is cleared
+    // by `resetRunnerTurnState` at turn start) and is already populated:
+    // `wireAgentListeners` runs first and assigns it from `agent_assistant`.
+    if (!input.isQuotaRetry) {
+      const exhausted = event.error
+        ? detectHardExhaustion(event.error)
+        : detectHardExhaustionInTurnText(runner?.turnSummary);
+      if (exhausted) {
+        quotaRetryInProgress = true;
+        await retryOnNextAccount();
+        return;
+      }
     }
     if (useStreaming) {
       if (streamingPostTurnFired) return;
