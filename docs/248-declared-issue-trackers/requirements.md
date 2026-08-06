@@ -49,6 +49,10 @@ off Linear — is a separate feature
    or raise it with the user.
 9. Each declaration appears as its own tab in the Issues UI, in declaration order.
    A repository may declare more than one.
+9a. A tab shows the tracker's name, and nothing else — not the repository slug or
+   team key behind it. A declaration may carry an optional `title` for the tab to
+   show instead of its `name`, so an address like `planning` can read as
+   "Planning" without becoming unaddressable.
 
 ## Naming a destination
 
@@ -217,6 +221,12 @@ remains in git.
   config edit. This resolves the card-schema question that was open: a card records
   both the name it was written with (so req 16's re-point re-targets it) and the
   resolved destination (so an undeclared target stays undoable).
+- 2026-08-06 — The user reported the Issues tab was too long (it rendered
+  `planning · nikzlabs/shipit-planning`) and specified the fix: show the `title`
+  from `shipit.yaml`, falling back to the `name` when there is none. Recorded as
+  requirement 9a, which adds the optional `title` field. Keeping the binding
+  visible in the tab was rejected by that instruction; it survives as the tab's
+  hover text, which costs no width.
 - 2026-08-05 — Asked how deployments losing their Linear tab should be handled, the
   user chose a **clean break**: no migration warning and no auto-generated
   declaration. Writing to the user's `shipit.yaml` unprompted was rejected as

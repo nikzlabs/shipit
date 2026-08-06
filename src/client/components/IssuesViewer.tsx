@@ -572,22 +572,26 @@ export function IssuesViewer({
     <div className="flex flex-col h-full">
       {/* Single top bar: tracker sub-tabs · spacer · issue count · refresh */}
       <div className="flex items-stretch border-b border-(--color-border-secondary) bg-(--color-bg-secondary)">
-        {/* Sub-tab switcher — one per configured tracker (only Linear in v1). */}
+        {/* Sub-tab switcher — one per declared tracker, in declaration order.
+            The tab shows ONLY the label (the declared `title`, else the `name`).
+            It used to append `· <binding key>` — the `owner/repo` slug or Linear
+            team key — which made a two-tracker bar wider than the panel while
+            telling the reader something the tracker's own name already implies;
+            the binding survives as the hover title for the rare case it's
+            wanted. */}
         <div className="flex items-stretch">
           {trackers.map((t) => (
             <button
               key={t.id}
               onClick={() => onSelectTracker(t.id)}
-              className={`px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer border-b-2 ${
+              title={t.binding ? `${t.label} · ${t.binding.key}` : t.label}
+              className={`px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer border-b-2 whitespace-nowrap ${
                 activeTracker === t.id
                   ? "text-(--color-text-primary) border-(--color-accent)"
                   : "text-(--color-text-tertiary) border-transparent hover:text-(--color-text-secondary)"
               }`}
             >
               {t.label}
-              {t.binding && (
-                <span className="ml-1 text-(--color-text-tertiary)">· {t.binding.key}</span>
-              )}
             </button>
           ))}
         </div>

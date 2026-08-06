@@ -25,6 +25,8 @@ export interface DeclaredGitHubTracker {
   kind: "github";
   /** How every reference and operation addresses this tracker (req 2). */
   name: string;
+  /** Optional display title for the Issues tab (req 9a); defaults to `name`. */
+  title?: string;
   owner: string;
   repo: string;
 }
@@ -40,6 +42,8 @@ export interface DeclaredLinearTracker {
   kind: "linear";
   /** How every reference and operation addresses this tracker (req 2). */
   name: string;
+  /** Optional display title for the Issues tab (req 9a); defaults to `name`. */
+  title?: string;
   /** Linear team key, normalized to upper case (e.g. `SHI`). */
   team: string;
 }
@@ -55,6 +59,21 @@ export function declaredTrackerId(decl: DeclaredTracker): TrackerId {
   return decl.kind === "github"
     ? githubTrackerId({ owner: decl.owner, repo: decl.repo })
     : linearTrackerId(decl.team);
+}
+
+/**
+ * What the Issues tab shows for a declaration (req 9a): the declared `title`
+ * when there is one, else the `name`.
+ *
+ * The two are deliberately separate fields. `name` is an *address* — it has to be
+ * writable as `planning#42`, so it is constrained to a reference-safe character
+ * set and is usually a terse lower-case slug. A tab label has no such constraint
+ * and wants to read as a human heading ("Planning"). Before `title` existed the
+ * tab rendered `name · <backend key>`, which spent its width on a
+ * `nikzlabs/shipit-planning` slug the reader already knows.
+ */
+export function declaredTrackerLabel(decl: DeclaredTracker): string {
+  return decl.title ?? decl.name;
 }
 
 /**

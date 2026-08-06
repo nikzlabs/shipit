@@ -643,6 +643,46 @@ issues:
     ]);
   });
 
+  // req 9a — `title` is the tab's display label; `name` stays the address.
+  it("parses an optional display title alongside the addressable name", () => {
+    const config = parse(`
+issues:
+  trackers:
+    - kind: github
+      repo: acme/planning
+      name: planning
+      title: Planning
+    - kind: linear
+      team: SHI
+      name: roadmap
+      title: Product roadmap
+`);
+    expect(config.issues.trackers).toEqual([
+      { kind: "github", name: "planning", title: "Planning", owner: "acme", repo: "planning" },
+      { kind: "linear", name: "roadmap", title: "Product roadmap", team: "SHI" },
+    ]);
+    expect(config.warnings).toEqual([]);
+  });
+
+  it("omits `title` entirely when the declaration has none", () => {
+    const config = parse("issues:\n  trackers:\n    - kind: github\n      repo: acme/planning\n      name: planning\n");
+    expect(config.issues.trackers[0]).not.toHaveProperty("title");
+  });
+
+  // A cosmetic field must not cost a repository its tracker: a bad `title`
+  // warns and falls back to the name, rather than dropping the declaration.
+  it("warns and falls back to the name for a blank or non-string title", () => {
+    for (const bad of ["title: '   '", "title: 42"]) {
+      const config = parse(
+        `issues:\n  trackers:\n    - kind: github\n      repo: acme/planning\n      name: planning\n      ${bad}\n`,
+      );
+      expect(config.issues.trackers).toEqual([
+        { kind: "github", name: "planning", owner: "acme", repo: "planning" },
+      ]);
+      expect(config.warnings.some((w) => w.includes("trackers[0].title"))).toBe(true);
+    }
+  });
+
   it("preserves declaration order (it drives tab order)", () => {
     const config = parse(`
 issues:

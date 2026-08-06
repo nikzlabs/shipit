@@ -53,7 +53,7 @@
 import type { CredentialStore } from "../credential-store.js";
 import type { TrackerId, TrackerInfo } from "../../shared/types.js";
 import type { DeclaredTracker, TrackerDestination } from "../../shared/declared-tracker.js";
-import { destinationForDeclaration } from "../../shared/declared-tracker.js";
+import { declaredTrackerLabel, destinationForDeclaration } from "../../shared/declared-tracker.js";
 import { githubTrackerId, parseGitHubTrackerId, parseLinearTrackerId } from "../../shared/tracker-id.js";
 import type { Tracker } from "./tracker.js";
 import { LinearTracker, type FetchImpl } from "./linear/adapter.js";
@@ -169,20 +169,22 @@ export function buildTrackerRegistry(
   const linearToken = credentialStore.getLinearToken();
   const fetchOpt = fetchImpl ? { fetchImpl } : {};
 
-  const makeGitHubTracker = (ref: GitHubRepoRef, name?: string): GitHubTracker =>
+  const makeGitHubTracker = (ref: GitHubRepoRef, name?: string, label?: string): GitHubTracker =>
     new GitHubTracker({
       token,
       repo: ref,
       id: githubTrackerId(ref),
       ...(name ? { name } : {}),
+      ...(label ? { label } : {}),
       ...fetchOpt,
     });
 
-  const makeLinearTracker = (teamKey: string, name?: string): LinearTracker =>
+  const makeLinearTracker = (teamKey: string, name?: string, label?: string): LinearTracker =>
     new LinearTracker({
       token: linearToken,
       teamKey,
       ...(name ? { name } : {}),
+      ...(label ? { label } : {}),
       ...fetchOpt,
     });
 
@@ -216,10 +218,14 @@ export function buildTrackerRegistry(
 
   // Declarations, in declaration order (req 9 — that order drives tab order).
   for (const decl of declared) {
+    // The tab shows the declared `title`, else the `name` (req 9a) — the address
+    // and the heading are different fields, so a terse `planning` can render as
+    // "Planning" without becoming unaddressable.
+    const label = declaredTrackerLabel(decl);
     const tracker =
       decl.kind === "github"
-        ? makeGitHubTracker({ owner: decl.owner, repo: decl.repo }, decl.name)
-        : makeLinearTracker(decl.team, decl.name);
+        ? makeGitHubTracker({ owner: decl.owner, repo: decl.repo }, decl.name, label)
+        : makeLinearTracker(decl.team, decl.name, label);
     entries.push({ tracker, listed: true, destination: destinationForDeclaration(decl) });
   }
 

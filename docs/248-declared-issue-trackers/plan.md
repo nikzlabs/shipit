@@ -100,6 +100,27 @@ repository. `kind: linear` becomes a declared backend identified by its team key
   declaration, no migration warning. It is the one change a user notices without
   doing anything, and the only signal is the tab's absence.
 
+#### The tab shows a title, not an address (req 9a)
+
+A declaration's `name` is an **address**: it has to be writable as `planning#42`,
+so it is a reference-safe slug and reads like one. The Issues sub-tab initially
+rendered `name · <backend key>` — `planning · nikzlabs/shipit-planning` — which
+spent most of a narrow panel's width on the repository slug, and pushed a
+two-tracker bar past the panel edge.
+
+So a declaration carries an optional `title`, purely cosmetic, and the tab shows
+`title ?? name` and nothing else. Keeping them separate fields is the point: a
+tab label wants a human heading ("Planning") and takes no character-set
+constraint, while widening `name` to allow one would make some names unwritable
+as references. The binding survives as the tab's `title=` hover text, which costs
+no width.
+
+A bad `title` (blank, non-string) warns and falls back to the name rather than
+dropping the declaration — unlike the identifying fields, a cosmetic one must not
+cost a repository its tracker. Path: `declaredTrackerLabel()`
+(`declared-tracker.ts`) → `buildTrackerRegistry` → the adapters' existing
+`label` config → `TrackerInfo.label` → `IssuesViewer`'s sub-tab.
+
 ### 2. A destination is addressed by name (reqs 6, 12)
 
 `--repo owner/name` goes away, replaced by the declared name. The session's own
@@ -389,6 +410,7 @@ Added for the rework, and passing:
 | A canonical address naming an undeclared destination failing closed | `issue-ref-resolution.test.ts`, `issues-declared-trackers.test.ts`, `agent-issue-access.test.ts` |
 | An ambiguous reference failing rather than resolving to one match | `issue-ref-resolution.test.ts`, `agent-issue-access.test.ts` |
 | A self-declaration producing a name without a duplicate tab | `registry.test.ts`, `issues-declared-trackers.test.ts` |
+| A declared `title` labelling the tab, a missing/blank one falling back to `name`, and the tab rendering the label alone | `shipit-config.test.ts`, `registry.test.ts`, `IssuesViewer.test.tsx` |
 | A bare `create` rejected rather than filing into the session's own repository | `agent-issue-access.test.ts`, `shipit.test.ts` |
 | Undo working against an undeclared destination, and following a re-pointed name | `registry.test.ts`, `issues.test.ts` |
 | ShipIt-emitted references carrying the name form | `issues-declared-trackers.test.ts`, `issues-routes.test.ts`, `issues.test.ts` |
