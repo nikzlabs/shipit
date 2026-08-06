@@ -87,16 +87,17 @@ Probed against the real adapter, not inferred:
 | Linear | GitHub | Disposition |
 |---|---|---|
 | Priority (5 levels) | none — `createIssue` **rejects** `--priority` outright | A `priority: high` label round-trips: `mapGitHubPriority` reads it back as priority "High". Verified live. 108 issues affected. |
-| Workflow states (6) | open / closed only | Backlog vs Todo vs In Progress, and Done vs Canceled vs Duplicate, collapse. See [requirements.md](./requirements.md) → Open questions. |
-| Issue creation date | settable? no | Not even *readable*: `ISSUE_FIELDS` in `trackers/linear/adapter.ts` selects `updatedAt` but not `createdAt`. Comments do carry `createdAt`, which is what req 9 needs. See Open questions. |
+| Workflow states (6) | open / closed only | Allowed to collapse (req 8). Backlog, Todo and In Progress all arrive open; Done, Canceled and Duplicate all arrive closed. Nothing encodes the difference. |
+| Issue creation date | not settable | Recorded in the body instead (req 9). Not currently even *readable*: `ISSUE_FIELDS` in `trackers/linear/adapter.ts` selects `updatedAt` but not `createdAt`, so the copy needs that one line added first. |
 | Sub-issue parent | adapter has no sub-issue support | 15 issues. Record the parent in the body. |
 | Assignee | supported | All 75 are the same person, who is also the copying account. Drop it. |
 | Label colors | supported | Carried from the export. |
 
 `setStatus` does accept `canceled` and maps it to GitHub's `not_planned` close
-reason — but the read path (`adapter.ts:202`) collapses every closed issue to
-`completed`, so ShipIt itself will not show the distinction back. Encoding it as a
-label is the only form that survives a round trip.
+reason, but the read path (`adapter.ts:202`) collapses every closed issue to
+`completed`, so ShipIt never shows the distinction back. That is consistent with
+req 8 letting the states collapse — it just means nothing is gained by passing
+`canceled` rather than `closed`.
 
 ## Numbering, and the circularity it creates
 
@@ -112,12 +113,14 @@ comment's cross-references would be permanently stale.
 
 The way out is to **predict the mapping and verify it as we go**. The planning
 repository is empty apart from `planning#1` (a live write probe, closed, titled
-`[dry run] migration probe`). Creating in key order into a repository where
-nothing else opens issues or PRs makes `SHI-N → planning#(N+1)` deterministic. The
-driver asserts the returned identifier equals the prediction on every create and
-aborts on the first mismatch, so the risk is a halt, not silent corruption. If it
-ever does drift, the fallback is the two-pass shape — create everything, then edit
-bodies — accepting that comment cross-references stay as `SHI-N`.
+`[dry run] migration probe`) and whatever the pilot in step 6 consumes. Creating
+in key order into a repository where nothing else opens issues or PRs makes
+`SHI-N → planning#(N + offset)` deterministic, where the offset is fixed by
+whatever numbers are already taken when the run starts. The driver asserts the
+returned identifier equals the prediction on every create and aborts on the first
+mismatch, so the risk is a halt, not silent corruption. If it ever does drift, the
+fallback is the two-pass shape — create everything, then edit bodies — accepting
+that comment cross-references stay as `SHI-N`.
 
 This is why nothing else may open an issue or PR in the planning repository while
 the copy runs.
@@ -173,23 +176,41 @@ rather than inheriting it.
 3. **Export Linear** — 322 keys, `view --comments --json` redirected to a file per
    key, resumable, outside the workspace. Read-only, and it doubles as the
    archive. Already run once; the copy session re-runs it for itself.
-4. **Create the labels** the corpus uses (20 from Linear, plus whatever encoding
-   of priority and workflow state is settled), with their Linear colors.
-5. **Copy in key order**, predicting `planning#(N+1)` and asserting it. Each body
-   carries its `SHI-N` origin and, for the 15 sub-issues, its parent. Cross-
-   references inside bodies and comments are rewritten to `planning#M` from the
-   predicted mapping as they are written. Comments replay with their original
-   date in the text (req 9). Closed and canceled issues are closed after creation.
-   The mapping is appended to disk as it is built.
-6. **Rewrite every reference in this repository** from that mapping in one PR
+4. **Add `createdAt`** to the Linear adapter's `ISSUE_FIELDS` so an issue's
+   original date can be read at all (req 9). One line, and a prerequisite of the
+   copy rather than part of it.
+5. **Create the labels** the corpus uses — the 20 from Linear with their colors,
+   plus the five `priority: …` labels that carry priority across. Workflow state
+   contributes none (req 8).
+6. **Pilot: copy exactly one issue and stop.** Pick one that exercises the awkward
+   parts — a long body, several comments, at least one internal `SHI-N`
+   cross-reference, a label and a priority — and copy it end to end. Then look at
+   it in the Issues tab and decide whether the body header, the dated comments and
+   the rewritten cross-references read the way they should. Everything downstream
+   repeats this 322 times, so the format is far cheaper to change here than after.
+   The pilot's issue number is consumed either way, so the prediction in step 7
+   accounts for it rather than assuming an untouched repository.
+7. **Copy in key order**, predicting each `planning#M` and asserting the create
+   returns it. Each body carries its `SHI-N` origin, its original creation date
+   and, for the 15 sub-issues, its parent. Cross-references inside bodies and
+   comments are rewritten to `planning#M` from the predicted mapping as they are
+   written. Comments replay with their original date in the text (req 9). Closed
+   issues are closed after creation. The mapping is appended to disk as it is
+   built.
+8. **Rewrite every reference in this repository** from that mapping in one PR
    (req 10): doc `issue:` frontmatter, inline doc mentions, code comments,
    `CLAUDE.md`. 2,623 mentions across 667 files — it conflicts with every open
    branch, so it lands when nothing else is in flight.
-7. **Retire Linear** for ShipIt's own planning (req 11): drop the `roadmap`
+9. **Retire Linear** for ShipIt's own planning (req 11): drop the `roadmap`
    declaration from `shipit.yaml` and rewrite `CLAUDE.md`'s tracker-sync section.
 
-Steps 3–5 are the child session's work. Steps 6–7 are this repository's, and
-step 6 cannot start until step 5's mapping is final.
+Steps 3–7 are the child session's work, with a stop at the pilot for a human look.
+Steps 8–9 are this repository's, and step 8 cannot start until step 7's mapping is
+final.
+
+**Nothing past step 2 has run.** The only writes made to the planning repository
+so far are the reachability probe described under Status — `planning#1`, closed,
+plus the handful of labels it minted.
 
 ## Tracker names make this a one-time cost
 
