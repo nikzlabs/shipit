@@ -170,6 +170,15 @@ export interface OpenIssueRef {
 interface IssuesState {
   /** Configured-tracker metadata — drives the sub-tab switcher. */
   trackers: TrackerInfo[];
+  /**
+   * The repository whose declarations the store's contents belong to — the
+   * active session's remote URL, or null when there is no repo context
+   * (SHI-325). Declarations live in a repository's `shipit.yaml`, so a switch
+   * to a session on a *different* repository invalidates everything here
+   * before `fetchTrackers` can say what the new repository declares. See
+   * {@link IssuesState.setRepoScope}.
+   */
+  repoScope: string | null;
   activeTracker: TrackerId;
   issuesByTracker: Record<string, TrackerIssue[]>;
   /** Per-tracker info refreshed alongside the list (configured + binding). */
@@ -254,11 +263,36 @@ interface IssuesState {
 
   setActiveTracker: (id: TrackerId) => void;
   /**
+   * Point the store at the repository the active session belongs to (SHI-325).
+   * A no-op while the repository is unchanged — switching between two sessions
+   * of the same repository keeps the open issue and the loaded lists, which are
+   * still valid there. On a *change* it drops everything scoped to the previous
+   * repository, including the declared-tracker list itself: what the incoming
+   * repository declares is unknown until `fetchTrackers` lands, and docs/248
+   * req 11 says an undeclared destination fails closed, so the honest render for
+   * that window is "nothing declared yet" rather than the previous repository's
+   * trackers and its open issue.
+   *
+   * This is the *synchronous* half of the rule, and it exists for the window
+   * alone: {@link IssuesState.fetchTrackers} is the authoritative check, but it
+   * costs a round-trip, and leaving the previous repository's issue rendered
+   * across it is the bug in miniature. `fetchTrackers` remains load-bearing for
+   * what this can't see — the declared set is read from the session's own
+   * workspace, so two sessions on one repository can differ (a branch that
+   * edits `shipit.yaml`), and an edit changes it with no switch at all.
+   */
+  setRepoScope: (repoUrl: string | null) => void;
+  /**
    * Re-read the declared-tracker view from `GET /api/trackers` (a local
    * `shipit.yaml` read server-side — no tracker API round-trip). Resolves to
    * whether the declared set actually changed, so a caller refreshing on a
    * `shipit.yaml` edit (SHI-321) can skip the far more expensive issue-list
    * fetch when the edit touched something else in the file.
+   *
+   * Also enforces docs/248 req 11 over what the store already holds: a
+   * destination that is no longer declared is not reachable, so the open detail
+   * closes back to the list and that tracker's cached list/statuses/labels are
+   * dropped (SHI-325).
    */
   fetchTrackers: () => Promise<boolean>;
   fetchIssues: (trackerId?: TrackerId) => Promise<void>;
@@ -341,6 +375,67 @@ function emptyFilters(): IssueFilters {
   };
 }
 
+/** The closed-detail state — shared by `closeIssue` and the wider clears. */
+function closedDetail() {
+  return {
+    selected: null,
+    detail: null,
+    detailLoading: false,
+    detailError: null,
+    comments: null,
+    commentsLoading: false,
+    commentsError: null,
+  } as const;
+}
+
+/**
+ * Everything the store holds *about one repository's issues*: the per-tracker
+ * caches, the list chrome (loading/error/filters/scroll) and the open detail.
+ * Backs both `reset()` and the repo-scope change, so the two can't drift.
+ *
+ * The caches are keyed by tracker id but their CONTENTS belong to the
+ * destination that id named when they were fetched: the GitHub tracker resolves
+ * against the active session's repo binding (`sessionIdParam`), so
+ * `issuesByTracker["github"]` holds repo A's issues even though repo B declares
+ * the same id. That's why a repo change clears all of them, while a declaration
+ * refresh drops only the ids whose destination changed or went away (see
+ * `destinationKey` / `pickReachable`).
+ */
+function clearedRepoState() {
+  return {
+    issuesByTracker: {},
+    statusesByTracker: {},
+    labelsByTracker: {},
+    loading: false,
+    error: null,
+    filters: emptyFilters(),
+    listScrollTop: 0,
+    ...closedDetail(),
+  };
+}
+
+/**
+ * The destination a tracker id currently names, as the browser can see it: the
+ * backend kind plus the backend's own identity for the binding (`owner/repo`,
+ * a Linear team key). Two declarations of one id with different keys are two
+ * different destinations, and nothing cached under that id crosses between them.
+ * An absent binding is its own value — an unconfigured tracker reaches nothing.
+ */
+function destinationKey(t: TrackerInfo): string {
+  return `${t.kind ?? ""}:${t.binding?.key ?? ""}`;
+}
+
+/**
+ * The subset of a per-tracker cache whose ids are still reachable. Returns the
+ * same object when nothing is dropped, so a no-op refresh doesn't re-render
+ * every subscriber.
+ */
+function pickReachable<T>(record: Record<string, T>, reachable: Set<string>): Record<string, T> {
+  const keys = Object.keys(record);
+  if (keys.every((k) => reachable.has(k))) return record;
+  return Object.fromEntries(keys.filter((k) => reachable.has(k)).map((k) => [k, record[k]]));
+}
+
 function toggleInSet<T>(set: Set<T>, value: T): Set<T> {
   const next = new Set(set);
   if (next.has(value)) next.delete(value);
@@ -370,6 +465,7 @@ function pruneFilters(filters: IssueFilters, issues: TrackerIssue[]): IssueFilte
 
 export const useIssuesStore = create<IssuesState>((set, get) => ({
   trackers: [],
+  repoScope: null,
   // docs/248 — no built-in tracker, so there is no meaningful default until
   // `fetchTrackers` lands. The session's own repository is the one destination
   // that always exists when there is a repo at all, so it is the safe seed.
@@ -404,6 +500,27 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       filters: pruneFilters(state.filters, state.issuesByTracker[id] ?? []),
     })),
 
+  setRepoScope: (repoUrl) =>
+    set((state) =>
+      state.repoScope === repoUrl
+        ? state
+        : {
+            repoScope: repoUrl,
+            // The incoming repository's declarations are unknown until
+            // `fetchTrackers` lands; fail closed rather than rendering the
+            // previous repository's trackers (and its open issue) meanwhile.
+            trackers: [],
+            infoByTracker: {},
+            ...clearedRepoState(),
+            // A tracker fetch always follows a scope change (`App` fires one on
+            // every session change), so the panel renders "loading" for the gap
+            // rather than the misleading "not connected" that an empty tracker
+            // list would otherwise produce. Cleared by the `fetchIssues` that
+            // follows when the tab is open.
+            loading: true,
+          },
+    ),
+
   fetchTrackers: async () => {
     try {
       const params = sessionIdParam();
@@ -415,13 +532,42 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       const trackers = data.trackers ?? [];
       const changed = declarationSignature(get().trackers) !== declarationSignature(trackers);
       set((state) => {
-        const infoByTracker = { ...state.infoByTracker };
+        // docs/248 req 11 (SHI-325) — what the store holds for a tracker id
+        // survives only while that id still names the destination it was
+        // fetched from. Presence of the id is NOT enough: the session's own
+        // repository's GitHub Issues live under the bare `github` id (req 12),
+        // so that id is declared by every repository while pointing at a
+        // different destination in each — an issue opened in repo A would
+        // otherwise stay open, and refresh, against repo B's issue of the same
+        // number. A declared `name` re-pointed at another team/repo is the same
+        // case. Comparing the binding is what distinguishes them.
+        const reachable = new Set(
+          trackers
+            .filter((t) => {
+              const prev = state.infoByTracker[t.id];
+              return !prev || destinationKey(prev) === destinationKey(t);
+            })
+            .map((t) => t.id),
+        );
+        const infoByTracker = { ...pickReachable(state.infoByTracker, reachable) };
         for (const t of trackers) infoByTracker[t.id] = t;
         // Keep the active sub-tab valid if the configured set changed.
         const activeTracker = trackers.some((t) => t.id === state.activeTracker)
           ? state.activeTracker
           : (trackers[0]?.id ?? "github");
-        return { trackers, infoByTracker, activeTracker };
+        return {
+          trackers,
+          infoByTracker,
+          activeTracker,
+          // Only the unreachable entries go: a tracker that still names the
+          // same destination is still reachable and its cache is still valid.
+          issuesByTracker: pickReachable(state.issuesByTracker, reachable),
+          statusesByTracker: pickReachable(state.statusesByTracker, reachable),
+          labelsByTracker: pickReachable(state.labelsByTracker, reachable),
+          // Close the open detail when its destination is gone — the list, in
+          // its default state, is what the Issues tab falls back to.
+          ...(state.selected && !reachable.has(state.selected.tracker) ? closedDetail() : {}),
+        };
       });
       return changed;
     } catch (err) {
@@ -621,16 +767,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   setIssueLabels: (tracker, issue, labels) =>
     applyIssueMutation("/api/issue/labels", tracker, issue, { labels }),
 
-  closeIssue: () =>
-    set({
-      selected: null,
-      detail: null,
-      detailError: null,
-      detailLoading: false,
-      comments: null,
-      commentsError: null,
-      commentsLoading: false,
-    }),
+  closeIssue: () => set(closedDetail()),
 
   setListScrollTop: (top) => set({ listScrollTop: top }),
 
@@ -671,23 +808,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
 
   clearFilters: () => set({ filters: emptyFilters() }),
 
-  reset: () =>
-    set({
-      issuesByTracker: {},
-      statusesByTracker: {},
-      labelsByTracker: {},
-      loading: false,
-      error: null,
-      filters: emptyFilters(),
-      listScrollTop: 0,
-      selected: null,
-      detail: null,
-      detailLoading: false,
-      detailError: null,
-      comments: null,
-      commentsLoading: false,
-      commentsError: null,
-    }),
+  reset: () => set(clearedRepoState()),
 }));
 
 /**

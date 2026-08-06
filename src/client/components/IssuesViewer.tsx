@@ -539,6 +539,10 @@ export function IssuesViewer({
 }: IssuesViewerProps) {
   const activeInfo = info ?? trackers.find((t) => t.id === activeTracker);
   const configured = activeInfo?.configured ?? false;
+  // SHI-325 — a repo switch drops the declarations until the tracker fetch that
+  // follows lands. Neither "not connected" nor the previous repo's trackers is
+  // true in that window, so the panel says only what it knows.
+  const declarationsPending = trackers.length === 0 && loading;
   const filterActive = anyFilterActive(filters);
   const showFilterBar = configured && issues.length > 0;
   // Rows sit on the primary surface; adapt status-dot colors to its luminance
@@ -602,7 +606,9 @@ export function IssuesViewer({
         {/* Issue count + refresh */}
         <div className="flex items-center gap-2 px-3 text-xs text-(--color-text-secondary)">
           <span className="font-medium whitespace-nowrap" data-testid="issue-count">
-            {!configured ? (
+            {declarationsPending ? (
+              ""
+            ) : !configured ? (
               "Not connected"
             ) : filterActive ? (
               <>
@@ -697,7 +703,11 @@ export function IssuesViewer({
           </div>
         )}
 
-        {!configured ? (
+        {declarationsPending ? (
+          <div className="flex items-center justify-center h-full text-(--color-text-tertiary) text-sm">
+            Loading issues…
+          </div>
+        ) : !configured ? (
           isGitHubTracker(activeTracker) ? (
             // GitHub needs no connect step — it reuses ShipIt's GitHub auth and
             // scopes to the active session's repo. So "not configured" means
