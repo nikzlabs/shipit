@@ -211,6 +211,13 @@ spike is scaffolding.
 
 ## Design
 
+**Visual reference:** [`mockup.html`](./mockup.html) — the Settings **Services** screen
+(catalogue rows, credential entry, which rows show a usage indicator), the **Harnesses**
+screen (the derived service×style join, and the background-work setting), and the
+in-session model picker with its attribution. Self-contained static HTML; open it
+directly. It is where the layout decisions below are easiest to check, in particular that
+no screen offers to add a service or a harness.
+
 Settled by the 2026-08-05 answers. **Every service is ShipIt-defined** (req 5) — there
 is no user-authored service, only user-supplied credentials for services ShipIt ships.
 This feature adds **key-authenticated** services to that set; a subscription needs its

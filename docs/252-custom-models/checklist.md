@@ -98,3 +98,12 @@
 - [x] Retire the spike — removed from this branch on 2026-08-05, leaving the docs as
       the only content. Its findings are recorded in `plan.md`.
 - [ ] Fresh-context review of the branch diff against every numbered requirement.
+- [ ] Build the Settings **Services** screen per `mockup.html`: catalogue rows split
+      connected/available, key entry inline, subscription rows keeping today's account
+      flow, and no "add a service" affordance anywhere (reqs 5, 7).
+- [ ] Build the Settings **Harnesses** screen: read-only, derived from the catalogue
+      joined against configured credentials, so "why can't I pick that model?" is
+      answerable on screen (req 6).
+- [ ] Retire the per-agent `ClaudeTab`/`CodexTab` settings tabs — they are the
+      harness/service conflation in UI form. `ProviderAccountsCard` moves under the
+      owning service's row rather than under a harness tab.
