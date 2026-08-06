@@ -2,7 +2,7 @@
 
 The design that implements these requirements is in [`plan.md`](./plan.md).
 
-One open question is outstanding (req 14). Implementation is blocked until it is answered.
+No open questions remain.
 
 ## Requirements
 
@@ -126,18 +126,26 @@ One open question is outstanding (req 14). Implementation is blocked until it is
     offers no models and appears nowhere in the picker — being installed is a
     precondition of req 8's credential rule, not an exception to it.
 
+    The set is a property of the **deployment**, not a setting: changing it means changing
+    the deployment's configuration and redeploying. Adding a harness to a running install
+    without a redeploy is deliberately not offered.
+
 ## Open questions
 
-- **Can the installed harness set change after install, without reinstalling ShipIt?**
-  The prior sketch of this idea (`docs/154-cursor-agent-adapter`, never implemented)
-  makes the choice a **session-image build** input — `INSTALL_CLAUDE_CLI` /
-  `INSTALL_CODEX_CLI` / `INSTALL_CURSOR_CLI` booleans written to
-  `/opt/shipit/agents/installed.json` during the image build. That is the cheapest thing
-  that satisfies req 14 as stated, but it means adding a harness later is a redeploy, not
-  a setting. The alternative — installing a harness into an existing deployment on demand
-  — is a materially larger piece of work and pulls against "not user-editable".
+_None._
 
 ## Resolved questions
+
+- 2026-08-06 — Can the installed harness set change after install, without reinstalling?
+  **Chosen: no — redeploy.** The harness set is an input to the session-image build, so
+  changing it is a deployment-config change and a redeploy, not a setting. This is what
+  `docs/154-cursor-agent-adapter` already sketched (`INSTALL_CLAUDE_CLI` /
+  `INSTALL_CODEX_CLI` / `INSTALL_CURSOR_CLI` booleans written to
+  `/opt/shipit/agents/installed.json` at build time) and never implemented. Installing a
+  harness into a running deployment was rejected as materially larger — mutable session
+  images or a runtime install path, harder version pinning, and a harder warm-container
+  pool — and as pulling against req 14's "not user-editable", since it is very close to
+  editing the harness set at runtime. Requirement 14.
 
 - 2026-08-06 — Which requirements could be **removed**? **Chosen: cut 16 to 13.** A review
   round was run with the inverted brief CLAUDE.md prescribes — for each requirement, would
@@ -382,7 +390,12 @@ human, but most of the mechanism did not. What the human actually said, in order
 - "ShipIt as a product doesn't provide guarantees that all model/harness combinations
   will work … maybe strip it?" → req 8 reduced to the credential rule.
 - "apply your recommendation" (on which requirements could be removed) → the cut from 16
-  requirements to 13; see the first receipt.
+  requirements to 13; see the receipts.
+- "let's add the requirement that harnesses wouldn't be user editable, but when installing
+  ShipIt, the user should be able to choose which harnesses to install, with Codex and
+  Claude being selected by default" → req 14, both halves. The human also identified the
+  prior unimplemented sketch (`docs/154-cursor-agent-adapter`) that req 14 now supersedes.
+- "Redeploy" → req 14's closing paragraph: the harness set is a property of the deployment.
 
 Reqs 5, 7 and 9 were corrected on 2026-08-05 after review found they still described
 the *superseded* model in which users authored declarations and added services outright,
