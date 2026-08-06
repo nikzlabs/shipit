@@ -231,14 +231,17 @@ verify your work:
   for understanding layout)
 - **browser_click** / **browser_type** — interact with elements
 - **browser_take_screenshot** — capture a visual screenshot for layout/styling.
-  **Omit `filename`.** The MCP auto-names the file into `/tmp/.playwright-mcp/`
-  (its output dir and cwd), so it stays out of git — and `@playwright/mcp`
+  **Omit `filename`.** The MCP auto-names the file into its `--output-dir`,
+  `/tmp/.playwright-mcp/`, so it stays out of git — and `@playwright/mcp`
   returns the image itself *only* when `filename` is omitted. Pass one and the
   result is a text-only link to a file on disk: you never see the page, and the
   screenshot does not render in the chat transcript. If you truly need a stable
-  name, keep it under `/tmp/.playwright-mcp/` (never `/workspace/`, which gets
-  auto-committed; never a bare `/tmp/foo.png`, which is rejected) and `Read` the
-  file afterwards to actually look at it.
+  name, it must be an **absolute** path under `/tmp/.playwright-mcp/`, and
+  `Read` the file afterwards to actually look at it. A **relative** name does
+  not land in the output dir, whatever the tool's own description says: an
+  explicit filename is resolved against `/workspace`, so `shot.png` becomes
+  `/workspace/shot.png` and gets auto-committed. A bare `/tmp/foo.png` is
+  rejected with "File access denied" — it is outside both allowed roots.
 
 Use browser tools proactively after UI changes to catch issues early.
 
