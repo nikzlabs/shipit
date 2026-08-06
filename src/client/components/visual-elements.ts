@@ -70,6 +70,34 @@ export const CARD_MESSAGE_FIELDS = [
   "sessionReport",
 ] as const satisfies readonly (keyof ChatMessage)[];
 
+/**
+ * A transcript entry that is COMPLETE the moment it is created and is never
+ * written to incrementally — so it must never be the merge target for a later
+ * streaming-text event (`agent-event.ts`).
+ *
+ * Two kinds qualify:
+ *
+ *   - a card carrier (any `CARD_MESSAGE_FIELDS` field), where the card field IS
+ *     the content — SHI-112;
+ *   - a system notice (`notice: true`, docs/138), the muted full-width panel an
+ *     `emitNoticeInTurn` call produces (account failover, guarded-mode warning,
+ *     pre-turn-reset skip).
+ *
+ * Both can carry `streaming: true` — a card after a history reload of an
+ * in-progress turn, a notice when it is the last row of a running turn's
+ * `turn_snapshot` (every `emitNoticeInTurn` fires at turn start, before the
+ * agent has produced any assistant content, so a viewer attaching in that gap
+ * gets a snapshot whose only row is the notice). The merge rebuilds the target
+ * from a fixed field set, so merging into either one silently DROPS its
+ * card/notice fields: the panel becomes plain assistant text with the agent's
+ * first paragraph concatenated onto it, with no separating space.
+ *
+ * Adding a new flag of this kind? Add it here — one place, both merge branches.
+ */
+export function isTerminalTranscriptEntry(msg: ChatMessage): boolean {
+  return CARD_MESSAGE_FIELDS.some((f) => msg[f] !== undefined) || msg.notice === true;
+}
+
 export type VisualElement =
   | { kind: "message"; index: number; hideTools: boolean }
   | { kind: "tool-group"; items: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean }[]; streaming: boolean; messageIndices: number[] }

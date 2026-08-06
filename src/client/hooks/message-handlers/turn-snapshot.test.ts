@@ -7,7 +7,9 @@ import type { ChatMessage } from "../../components/MessageList.js";
 
 const ctx = {} as HandlerContext;
 
-const snapshot = (messages: { role: "user" | "assistant"; text: string }[]) => ({
+const snapshot = (
+  messages: { role: "user" | "assistant"; text: string; notice?: boolean; noticeLevel?: "info" | "warn"; noticeId?: string }[],
+) => ({
   type: "turn_snapshot" as const,
   sessionId: "s1",
   messages: messages.map((m) => ({ ...m, inProgress: true })),
@@ -80,6 +82,35 @@ describe("turn_snapshot handler", () => {
     const messages = useSessionStore.getState().messages;
     expect(messages.map((m) => !!m.streaming)).toEqual([false, true]);
     expect(messages.every((m) => m.inProgress)).toBe(true);
+  });
+
+  it("never marks a trailing notice row streaming, so live text can't fold into it", () => {
+    // The production window: `emitNoticeInTurn` fires at env-prep, after
+    // `resetRunnerTurnState`, so a viewer attaching before the agent's first
+    // token gets a snapshot consisting of exactly one row — the notice. A notice
+    // is complete when emitted and never written to incrementally, so it must
+    // not come back open, however far along it sits in the snapshot.
+    handleTurnSnapshot(ctx, snapshot([
+      { role: "assistant", text: "Claude2 reached your usage cutoff — continuing this session on Claude1.", notice: true, noticeLevel: "warn", noticeId: "failover-1" },
+    ]));
+
+    const [notice] = useSessionStore.getState().messages;
+    expect(notice.notice).toBe(true);
+    expect(!!notice.streaming).toBe(false);
+    expect(notice.inProgress).toBe(true);
+
+    // End to end against the real merge path: the agent's first text opens its
+    // own bubble instead of being concatenated onto the notice panel.
+    handleAgentEvent(ctx, {
+      type: "agent_event",
+      event: { type: "agent_assistant", content: [{ type: "text", text: "I agree — 5b is the right one." }] },
+    } as never);
+
+    expect(texts()).toEqual([
+      "Claude2 reached your usage cutoff — continuing this session on Claude1.",
+      "I agree — 5b is the right one.",
+    ]);
+    expect(useSessionStore.getState().messages[0].noticeLevel).toBe("warn");
   });
 
   it("clears a stale in-progress tail when the snapshot is empty", () => {
