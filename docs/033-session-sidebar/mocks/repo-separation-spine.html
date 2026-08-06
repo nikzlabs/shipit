@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>4e extended — the accent edge spanning the whole repo group</title>
+<style>
+/* Tokens copied verbatim from src/client/themes/claude-light.css and claude.css. */
+.claude-light {
+  --color-bg-primary: #faf5ef;
+  --color-bg-secondary: #f0e8de;
+  --color-bg-tertiary: #e6dcd0;
+  --color-bg-hover: rgba(180, 100, 60, 0.06);
+  --color-text-primary: #2a2018;
+  --color-text-secondary: #5c5040;
+  --color-text-tertiary: #9a8c78;
+  --color-border-primary: #e4d8c8;
+  --color-border-secondary: #d0c0ac;
+  --color-accent: #d97757;
+  --color-accent-subtle: rgba(217, 119, 87, 0.12);
+  --color-success: #3a8a50;
+  --color-pr: #8050a0;
+  --color-pr-subtle: rgba(128, 80, 160, 0.1);
+  --color-pr-border: rgba(128, 80, 160, 0.3);
+  --color-attention: #d97706;
+  --wash-pct: 6%;
+}
+.claude {
+  --color-bg-primary: #1a1410;
+  --color-bg-secondary: #231c16;
+  --color-bg-tertiary: #2e2519;
+  --color-bg-hover: rgba(217, 119, 87, 0.08);
+  --color-text-primary: #e8e0d8;
+  --color-text-secondary: #a89a8c;
+  --color-text-tertiary: #7a6e62;
+  --color-border-primary: #2e2519;
+  --color-border-secondary: #43382c;
+  --color-accent: #d97757;
+  --color-accent-subtle: rgba(217, 119, 87, 0.15);
+  --color-success: #5cb870;
+  --color-pr: #c4a0e0;
+  --color-pr-subtle: rgba(196, 160, 224, 0.15);
+  --color-pr-border: rgba(196, 160, 224, 0.3);
+  --color-attention: #f59e0b;
+  --wash-pct: 9%;
+}
+
+/* Per-repo hues, tuned for the terracotta-leaning Claude palettes. Eight of
+   them, because the dense toggle is the real test of a rail full of lines. */
+.claude-light [data-accent="a0"] { --a: #a8683c; }
+.claude-light [data-accent="a1"] { --a: #2f6f6a; }
+.claude-light [data-accent="a2"] { --a: #7a4f9c; }
+.claude-light [data-accent="a3"] { --a: #c05a3c; }
+.claude-light [data-accent="a4"] { --a: #4a6f9c; }
+.claude-light [data-accent="a5"] { --a: #6d8a3a; }
+.claude-light [data-accent="a6"] { --a: #9c4f6e; }
+.claude-light [data-accent="a7"] { --a: #8a7a2f; }
+.claude [data-accent="a0"] { --a: #d0a468; }
+.claude [data-accent="a1"] { --a: #6cbdb2; }
+.claude [data-accent="a2"] { --a: #c4a0e0; }
+.claude [data-accent="a3"] { --a: #e08a62; }
+.claude [data-accent="a4"] { --a: #85aee0; }
+.claude [data-accent="a5"] { --a: #a8c46a; }
+.claude [data-accent="a6"] { --a: #e08aa8; }
+.claude [data-accent="a7"] { --a: #d0c060; }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: #171310; color: #e8e0d8;
+  font: 13px/1.45 ui-sans-serif, -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased; padding: 28px 28px 64px;
+}
+h1 { font-size: 20px; margin: 0 0 8px; letter-spacing: -.01em; }
+h2 { font-size: 15px; margin: 46px 0 6px; }
+.lede { max-width: 92ch; color: #a89a8c; margin: 0 0 6px; }
+.lede code { background: #231c16; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+.lede b { color: #e8e0d8; }
+.callout {
+  max-width: 92ch; margin: 16px 0 0; padding: 12px 15px; border-radius: 8px;
+  background: #1a1410; border: 1px solid #2e2519; border-left: 3px solid #d97757;
+  font-size: 12.5px; line-height: 1.6; color: #a89a8c;
+}
+.callout b { color: #e8e0d8; }
+
+.toolbar { display: flex; gap: 8px; align-items: center; margin: 22px 0 26px; }
+.toolbar button {
+  font: inherit; font-size: 12px; padding: 5px 12px; border-radius: 999px; cursor: pointer;
+  border: 1px solid #43382c; background: #1a1410; color: #e8e0d8;
+}
+.toolbar button[aria-pressed="true"] { background: #d97757; color: #1a1410; border-color: #d97757; font-weight: 600; }
+
+.gallery { display: flex; flex-wrap: wrap; gap: 40px 26px; align-items: flex-start; }
+.opt { flex: 0 0 auto; width: 760px; margin: 0; }
+.opt > figcaption { margin-bottom: 12px; min-height: 104px; }
+.vtag { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #7a6e62; margin-bottom: 3px; }
+.vname { font-size: 14.5px; font-weight: 650; margin: 0 0 4px; color: #e8e0d8; }
+.vwhy, .vcost { font-size: 11.5px; line-height: 1.55; margin: 0; max-width: 74ch; }
+.vwhy { color: #a89a8c; } .vwhy b { color: #e8e0d8; font-weight: 600; }
+.vcost { color: #7a6e62; margin-top: 4px; }
+.pill { font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 2px 6px; border-radius: 999px; margin-left: 7px; vertical-align: 2px; }
+.pill.good { background: #d97757; color: #1a1410; }
+.pill.bad { background: #2e2519; color: #a89a8c; }
+.pair { display: flex; gap: 12px; }
+.frame { flex: 0 0 auto; width: 368px; }
+.app.dense { height: 820px; }
+.flabel { font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: #7a6e62; margin-bottom: 5px; }
+
+/* ── App context ───────────────────────────────────────────────────────── */
+.app { display: flex; height: 560px; border-radius: 9px; overflow: hidden; border: 1px solid #2e2519; }
+.app .rail { width: 272px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--color-bg-primary); border-right: 1px solid var(--color-border-primary); }
+.app .railhead { height: 39px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--color-border-primary); font-size: 11.5px; color: var(--color-text-tertiary); }
+.app .railhead .dot { width: 7px; height: 7px; border-radius: 999px; background: var(--color-success); }
+.app .scroll { flex: 1; overflow-y: auto; padding: 4px 0; scrollbar-width: thin; }
+.app .chat { flex: 1; min-width: 0; background: var(--color-bg-secondary); display: flex; flex-direction: column; }
+.app .chathead { height: 39px; flex: 0 0 auto; border-bottom: 1px solid var(--color-border-primary); display: flex; align-items: center; padding: 0 10px; font-size: 11px; color: var(--color-text-tertiary); white-space: nowrap; overflow: hidden; }
+.app .chatbody { flex: 1; padding: 12px 9px; display: flex; flex-direction: column; gap: 9px; }
+.bubble { border-radius: 8px; padding: 7px 9px; font-size: 10.5px; color: var(--color-text-secondary); background: var(--color-bg-primary); border: 1px solid var(--color-border-primary); }
+.bubble.me { background: var(--color-accent-subtle); border-color: transparent; color: var(--color-text-primary); align-self: flex-end; max-width: 90%; }
+.skel { height: 6px; border-radius: 999px; background: var(--color-border-primary); margin: 6px 0; }
+.skel.s2 { width: 70%; } .skel.s3 { width: 52%; }
+
+/* ── Sidebar skeleton — identical DOM in every option ──────────────────── */
+.grp { display: flex; flex-direction: column; position: relative; margin-bottom: 8px; }
+/* Sticky, like the real thing (SessionGroup.tsx:336). Opaque base under the
+   band fill — a translucent sticky header lets rows scroll through it. */
+.ghead {
+  display: flex; align-items: center; gap: 6px; padding: 7px 12px 7px 11px;
+  position: sticky; top: 0; z-index: 5;
+  background: var(--color-bg-tertiary);
+}
+.caret { width: 18px; height: 18px; display: grid; place-items: center; flex: 0 0 auto; color: var(--color-text-tertiary); }
+.glyph { display: grid; place-items: center; flex: 0 0 auto; color: var(--a); }
+.gname { font-size: 12.5px; font-weight: 650; letter-spacing: .01em; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gcount { font-size: 10px; font-weight: 600; color: var(--color-text-tertiary); }
+.dots { margin-left: auto; color: var(--color-text-tertiary); display: grid; place-items: center; flex: 0 0 auto; }
+.gbody { display: flex; flex-direction: column; gap: 4px; padding: 4px 0 8px; position: relative; }
+.sublabel { display: flex; align-items: center; gap: 6px; padding: 8px 12px 2px; margin: 0 4px; font-size: 9.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--color-text-tertiary); }
+.pindiv { height: 1px; background: var(--color-border-primary); margin: 6px 12px 2px; border: 0; }
+.row { display: flex; align-items: flex-start; gap: 6px; padding: 6px 8px; margin: 0 4px; border-radius: 6px; position: relative; }
+.row .badge { width: 22px; height: 22px; flex: 0 0 auto; border-radius: 6px; display: grid; place-items: center; background: var(--color-pr-subtle); border: 1px solid var(--color-pr-border); color: var(--color-pr); }
+.row.merged .badge { background: rgba(92,184,112,.13); border-color: rgba(92,184,112,.3); color: var(--color-success); }
+.row .txt { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.row .title { font-size: 12.5px; line-height: 1.3; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .meta { display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--color-text-tertiary); }
+.row .live { width: 6px; height: 6px; border-radius: 999px; background: var(--color-success); flex: 0 0 auto; }
+.row.current { background: var(--color-bg-secondary); }
+.row.current::after { content: ""; position: absolute; right: 0; top: 0; bottom: 0; width: 4px; background: var(--color-accent); border-radius: 0 6px 6px 0; }
+.row.child { padding-left: 22px; }
+.row.new { align-items: center; }
+.row.new .plus { width: 22px; height: 22px; display: grid; place-items: center; flex: 0 0 auto; opacity: .7; }
+.row.new .title { color: var(--color-text-secondary); }
+
+/* ═════════════════════════════════════════════════════════════════════════
+   The options. All of them keep 4e's tertiary band; they differ only in how
+   far the accent edge travels and what it does when it gets there.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+/* ── 5a · 4e as-is: edge on the band only (reference) ──────────────────── */
+.e-bandonly .ghead { border-left: 3px solid var(--a); }
+.e-bandonly .gbody { padding-left: 3px; }
+
+/* ── 5b · Edge spans the group — the literal ask ───────────────────────── */
+/* Border on .grp, not on .ghead, so it also paints BEHIND the pinned header:
+   the line stays continuous while the band is stuck. */
+.e-full { }
+.e-full .grp { border-left: 3px solid var(--a); }
+
+/* ── 5c · Inset edge with rounded caps ─────────────────────────────────── */
+.e-inset .grp { padding-left: 9px; }
+.e-inset .grp::before {
+  content: ""; position: absolute; left: 4px; top: 0; bottom: 0; width: 3px;
+  border-radius: 999px; background: var(--a); z-index: 6;
+}
+.e-inset .ghead { border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
+
+/* ── 5d · Edge + faint body wash ───────────────────────────────────────── */
+/* color-mix, not rgba() — it resolves to an OPAQUE color, which is what the
+   sticky-header lesson from the band mock demands, and it takes the hue
+   straight from --a without needing a second pre-tinted token per repo. */
+.e-wash .grp { border-left: 3px solid var(--a); }
+.e-wash .gbody {
+  background: color-mix(in srgb, var(--a) var(--wash-pct), var(--color-bg-primary));
+}
+
+/* ── 5e · Edge fades out down the group ────────────────────────────────── */
+.e-fade .grp::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; z-index: 6;
+  background: linear-gradient(to bottom, var(--a) 0%, var(--a) 22%, transparent 100%);
+}
+.e-fade .grp { padding-left: 3px; }
+
+/* ── 5f · Edge + closed shell (line + outline, tab shape) ──────────────── */
+.e-shell .scroll { padding: 6px; }
+.e-shell .grp {
+  border: 1px solid var(--color-border-primary); border-left: 3px solid var(--a);
+  border-radius: 8px; overflow: hidden; margin-bottom: 9px;
+}
+.e-shell .ghead { border-bottom: 1px solid var(--color-border-primary); }
+.e-shell .row { margin: 0 4px; }
+
+/* ── 5g · Edge spans, but stops short of the group's last row ──────────── */
+.e-hang .grp::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 14px; width: 3px;
+  border-radius: 0 0 999px 999px; background: var(--a); z-index: 6;
+}
+.e-hang .grp { padding-left: 3px; }
+</style>
+</head>
+<body>
+
+<h1>4e extended — carrying the accent edge down the whole repo group</h1>
+<p class="lede">
+  In 4e the per-repo hue lives on the header band's left border, so it labels the <em>header</em>. Running it the full
+  height of the group makes it label the <b>group</b>: every session, the <code>New session</code> row, the
+  <code>PINNED</code> and <code>RECENTLY RESOLVED</code> sub-sections all sit inside one continuous vertical claim. It
+  also collapses the two ideas the earlier gallery kept separate — the band from variant 4 and the spine from variant 5
+  — into a single treatment, which is a point in its favour: one mechanism, two jobs.
+</p>
+<p class="lede">
+  All seven options below keep 4e's <code>bg-tertiary</code> band and differ <b>only in how far the edge travels</b>.
+  Claude Light and Claude Dark, identical DOM, live sticky scrolling. <b>Toggle Dense</b> — eight hues stacked in a
+  272px rail is the failure mode to check for, not the four-repo case.
+</p>
+<div class="callout">
+  <b>One implementation note that decides 5b vs the rest.</b> The edge is drawn as
+  <code>border-left</code> on the <b>group</b>, not on the header — so it paints behind the sticky band and the line
+  stays continuous while the header is pinned. Put it on <code>.ghead</code> instead and the line visibly breaks at the
+  seam the moment you scroll. Options 5c, 5e and 5g use an absolutely-positioned pseudo-element for the same reason
+  (they need rounding or a gradient, which a border can't do), with <code>z-index</code> above the sticky header.
+</div>
+
+<div class="toolbar">
+  <button id="toggle-density" aria-pressed="false">Dense (8 repos)</button>
+  <button id="toggle-collapsed" aria-pressed="false">Collapse two groups</button>
+</div>
+
+<div class="gallery" id="gallery"></div>
+
+<script>
+const I = {
+  caretDown: '<svg width="12" height="12" viewBox="0 0 256 256" fill="currentColor"><path d="M213.7 101.7l-80 80a8 8 0 0 1-11.4 0l-80-80A8 8 0 0 1 48 88h160a8 8 0 0 1 5.7 13.7z"/></svg>',
+  caretRight: '<svg width="12" height="12" viewBox="0 0 256 256" fill="currentColor"><path d="M181.7 133.7l-80 80A8 8 0 0 1 88 208V48a8 8 0 0 1 13.7-5.7l80 80a8 8 0 0 1 0 11.4z"/></svg>',
+  github: '<svg width="12" height="12" viewBox="0 0 256 256" fill="currentColor"><path d="M208.3 75.7a80 80 0 0 0-6.5-63.4 8 8 0 0 0-6.9-4 79.9 79.9 0 0 0-62.3 30h-9.2a79.9 79.9 0 0 0-62.3-30 8 8 0 0 0-6.9 4 80 80 0 0 0-6.5 63.4A79.2 79.2 0 0 0 40 112v8a72.1 72.1 0 0 0 57.2 70.5A47.7 47.7 0 0 0 88 216v8H64a24 24 0 0 1-24-24 40 40 0 0 0-40-40 8 8 0 0 0 0 16 24 24 0 0 1 24 24 40 40 0 0 0 40 40h24v16a8 8 0 0 0 16 0v-40a32 32 0 0 1 64 0v40a8 8 0 0 0 16 0v-40a47.7 47.7 0 0 0-9.2-25.5A72.1 72.1 0 0 0 216 120v-8a79.2 79.2 0 0 0-7.7-36.3z"/></svg>',
+  branch: '<svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor"><path d="M232 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-64a31.8 31.8 0 0 0-16 4.3V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h64a32 32 0 0 0 32-32v-9a32.1 32.1 0 0 0 24-31z"/></svg>',
+  pr: '<svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor"><path d="M104 64a32 32 0 1 0-40 31v66a32 32 0 1 0 16 0V95a32.1 32.1 0 0 0 24-31zm88 97V88a40 40 0 0 0-40-40h-14l11-11a8 8 0 0 0-12-11l-24 24a8 8 0 0 0 0 12l24 24a8 8 0 0 0 12-11l-11-11h14a24 24 0 0 1 24 24v73a32 32 0 1 0 16 0z"/></svg>',
+  pin: '<svg width="10" height="10" viewBox="0 0 256 256" fill="currentColor"><path d="M180.7 84.7l-9.4-9.4 12.7-12.7a16 16 0 0 0 0-22.6l-23.3-23.3a16 16 0 0 0-22.6 0L125.4 29.4 116 20a16 16 0 0 0-22.6 22.6l4.7 4.7-46.4 27.9a16 16 0 0 0-2.8 25.2l40.2 40.2-42.7 42.7a8 8 0 0 0 11.4 11.4l42.7-42.7 40.2 40.2a16 16 0 0 0 25.2-2.8l27.9-46.4 4.7 4.7a16 16 0 0 0 22.6-22.6z"/></svg>',
+  merge: '<svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M104 64a32 32 0 1 0-40 31v66a32 32 0 1 0 16 0v-42a71.9 71.9 0 0 0 56 27h4a32 32 0 1 0 0-16h-4a56 56 0 0 1-56-56v-1a32.1 32.1 0 0 0 24-9z"/></svg>',
+  plus: '<svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M224 128a8 8 0 0 1-8 8h-80v80a8 8 0 0 1-16 0v-80H40a8 8 0 0 1 0-16h80V40a8 8 0 0 1 16 0v80h80a8 8 0 0 1 8 8z"/></svg>',
+  check: '<svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M128 24a104 104 0 1 0 104 104A104.1 104.1 0 0 0 128 24zm45.7 85.7l-56 56a8 8 0 0 1-11.4 0l-24-24a8 8 0 0 1 11.4-11.4l18.3 18.4 50.3-50.4a8 8 0 0 1 11.4 11.4z"/></svg>',
+  dots: '<svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><circle cx="128" cy="60" r="14"/><circle cx="128" cy="128" r="14"/><circle cx="128" cy="196" r="14"/></svg>',
+};
+
+const REPOS = [
+  { name: "personal", accent: "a0", sessions: [
+      { title: "Deploy bare metal server wit…", time: "40d ago", icon: "branch" },
+      { title: "Restore the Postgres snapshot", time: "44d ago", icon: "branch" },
+  ]},
+  { name: "branding", accent: "a1", resolved: true, pinned: [
+      { title: "Acquiring Initial Friendly User…", time: "19h ago", pin: true, icon: "branch" },
+  ], sessions: [
+      { title: "Logo lockup on dark surfaces", time: "3d ago", icon: "branch" },
+  ]},
+  { name: "shipit-website", accent: "a2", resolved: true, pinned: [
+      { title: "Get website indexed by searc…", time: "18h ago", pin: true, icon: "branch" },
+  ], sessions: [
+      { title: "Pricing page copy pass", time: "2d ago", icon: "branch" },
+  ]},
+  { name: "shipit", accent: "a3", pinned: [
+      { title: "DeepSeek Flash: best harnes…", time: "10m ago", pin: true, icon: "branch" },
+  ], sessions: [
+      { title: "Private GitHub issue tracker", time: "6m ago", pin: true, merged: true, icon: "pr", current: true, kids: [
+          { title: "Inline badges: support the …", time: "7m ago", live: true, icon: "pr" },
+      ]},
+      { title: "Fix shim stdout truncation …", time: "4h ago", icon: "branch" },
+      { title: "Declare the planning track…", time: "6h ago", icon: "branch" },
+      { title: "Custom models: separate ha…", time: "9h ago", icon: "branch" },
+  ]},
+];
+const EXTRA = [
+  { name: "infra-terraform", accent: "a4", sessions: [{ title: "Rotate the VPS deploy key", time: "2d ago", icon: "branch" }] },
+  { name: "docs-site", accent: "a5", sessions: [{ title: "Fix the changelog anchor l…", time: "5h ago", icon: "branch" }] },
+  { name: "shipit-mobile", accent: "a6", sessions: [{ title: "PWA install prompt on iOS", time: "1d ago", live: true, icon: "pr" }] },
+  { name: "experiments", accent: "a7", sessions: [{ title: "Snapshot-test the emulator", time: "9d ago", icon: "branch" }] },
+];
+
+function row(s, extra = "") {
+  const cls = ["row", extra, s.current ? "current" : "", s.merged ? "merged" : ""].filter(Boolean).join(" ");
+  const meta = [
+    s.merged ? `<span style="color:var(--color-success);display:grid">${I.check}</span>` : "",
+    s.live ? '<span class="live"></span>' : "",
+    s.pin ? `<span style="color:var(--color-attention);display:grid">${I.pin}</span>` : "",
+    `<span>${s.time}</span>`,
+  ].join("");
+  return `<div class="${cls}"><span class="badge">${I[s.icon]}</span>
+    <span class="txt"><span class="title">${s.title}</span><span class="meta">${meta}</span></span></div>`;
+}
+function group(r, collapsed) {
+  const pinned = r.pinned || [];
+  const count = pinned.length + (r.sessions || []).reduce((n, s) => n + 1 + (s.kids?.length || 0), 0);
+  const body = [
+    pinned.length ? `<div class="sublabel">${I.pin}<span>Pinned</span></div>` : "",
+    ...pinned.map((s) => row(s)),
+    pinned.length ? '<hr class="pindiv">' : "",
+    `<div class="row new"><span class="plus">${I.plus}</span><span class="txt"><span class="title">New session</span></span></div>`,
+    ...(r.sessions || []).flatMap((s) => [row(s), ...(s.kids || []).map((k) => row(k, "child"))]),
+    r.resolved ? `<div class="sublabel">${I.merge}<span>Recently resolved</span></div>` : "",
+  ].join("");
+  return `<section class="grp" data-accent="${r.accent}">
+    <header class="ghead"><span class="caret">${collapsed ? I.caretRight : I.caretDown}</span>
+      <span class="glyph">${I.github}</span><span class="gname">${r.name}</span>
+      <span class="gcount">${count}</span><span class="dots">${I.dots}</span></header>
+    ${collapsed ? "" : `<div class="gbody">${body}</div>`}</section>`;
+}
+function app(themeClass, optClass, repos, collapsedSet, scrollTop, dense) {
+  return `<div class="app ${themeClass} ${optClass} ${dense ? "dense" : ""}">
+    <div class="rail">
+      <div class="railhead"><span class="dot"></span><span>Sessions</span></div>
+      <div class="scroll" data-scroll="${scrollTop}">${repos.map((r, i) => group(r, collapsedSet.has(i))).join("")}</div>
+    </div>
+    <div class="chat">
+      <div class="chathead">Private GitHub issue tracker</div>
+      <div class="chatbody">
+        <div class="bubble me">Let the left line span all the sessions…</div>
+        <div class="bubble"><div class="skel"></div><div class="skel s2"></div><div class="skel s3"></div></div>
+        <div class="bubble"><div class="skel s2"></div><div class="skel s3"></div></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+const OPTS = [
+  { id: "e-bandonly", n: "5a", name: "4e as it stands — edge on the band only", pill: null,
+    why: "The reference. The hue labels the <b>header</b>; the sessions below it carry no mark, so the group's extent is still implied by spacing.",
+    cost: "Scroll a long group and the hue leaves the viewport with the band, so mid-scroll there is nothing on screen saying which repo you're in — the exact gap the full-height edge closes." },
+  { id: "e-full", n: "5b", name: "Edge spans the whole group", pill: ["good", "the ask"],
+    why: "<b>One 3px line from the top of the band to the bottom of the last row.</b> Everything belonging to the repo sits to its right — sessions, <code>New session</code>, both sub-section labels. The line never leaves the viewport while any part of the group is on screen, so the hue is a persistent answer to 'where am I'.",
+    cost: "3px × every group is the densest ink of the set — check the Dense toggle before committing. The line sits flush at x=0, which is a look to decide on deliberately rather than a conflict: the scrollbar is on the <em>right</em>, so nothing collides with it." },
+  { id: "e-inset", n: "5c", name: "Inset edge, rounded caps", pill: null,
+    why: "Same span, but the line is pulled 4px off the rail edge and given rounded ends, so each group reads as a <b>discrete stroke</b> rather than a rule that happens to stop.",
+    cost: "Costs 9px of row width, and the rounded caps make the line feel decorative — it stops reading as structure and starts reading as a marker." },
+  { id: "e-wash", n: "5d", name: "Edge + faint body wash", pill: null,
+    why: "The line plus a <b>very low-alpha tint of the same hue</b> across the group body. The group becomes a column, not just a line — the strongest 'these belong together' reading of the set.",
+    cost: "Two tinted surfaces (wash + band) plus the current-session row means three fills stacked in a palette that only supports about 1.25 : 1 of separation. Also needs opaque compositing, same as the band." },
+  { id: "e-fade", n: "5e", name: "Edge fades down the group", pill: null,
+    why: "Full strength at the band, <b>ramping to transparent by the bottom</b>. Keeps the header emphatic while letting long groups stop shouting, and visually says 'this hangs from the header'.",
+    cost: "The fade means the line is weakest exactly where you need it most — deep in a long list, mid-scroll. It optimises for the screenshot rather than for the scroll." },
+  { id: "e-shell", n: "5f", name: "Edge + closed shell", pill: null,
+    why: "The full-height edge plus a light outline and radius, so the group is a <b>closed container with a colored spine</b> — this is the outline-card variant and the spine variant fused.",
+    cost: "Most ink of the whole exploration: outline, radius, band fill and colored edge all at once. The bottom border adds a horizontal line right where the next group's band already provides one." },
+  { id: "e-hang", n: "5g", name: "Edge spans, stops short", pill: ["good", "quietest"],
+    why: "Full-strength line the whole way down, ending <b>14px above the group's bottom with a rounded tail</b>. Reads as deliberately terminated rather than clipped, and the gap before the next band does the separating.",
+    cost: "The last row sits slightly outside the line's reach, which is either 'the group breathes' or 'the line is too short', depending on the day." },
+];
+
+function render() {
+  const dense = document.getElementById("toggle-density").getAttribute("aria-pressed") === "true";
+  const collapsed = document.getElementById("toggle-collapsed").getAttribute("aria-pressed") === "true";
+  const repos = dense ? REPOS.concat(EXTRA) : REPOS;
+  const collapsedSet = new Set(collapsed ? [1, 2] : []);
+  const scrollTop = collapsed ? 0 : (dense ? 300 : 150);
+  document.getElementById("gallery").innerHTML = OPTS.map((o) => `
+    <figure class="opt">
+      <figcaption>
+        <div class="vtag">Option ${o.n}</div>
+        <p class="vname">${o.name}${o.pill ? `<span class="pill ${o.pill[0]}">${o.pill[1]}</span>` : ""}</p>
+        <p class="vwhy">${o.why}</p>
+        <p class="vcost"><b>Cost:</b> ${o.cost}</p>
+      </figcaption>
+      <div class="pair">
+        <div class="frame"><div class="flabel">Claude Light</div>${app("claude-light", o.id, repos, collapsedSet, scrollTop, dense)}</div>
+        <div class="frame"><div class="flabel">Claude Dark</div>${app("claude", o.id, repos, collapsedSet, scrollTop, dense)}</div>
+      </div>
+    </figure>`).join("");
+  document.querySelectorAll(".scroll").forEach((el) => { el.scrollTop = Number(el.dataset.scroll || 0); });
+}
+
+function press(el, on) { el.setAttribute("aria-pressed", String(on)); }
+document.getElementById("toggle-density").onclick = (e) => {
+  press(e.currentTarget, e.currentTarget.getAttribute("aria-pressed") !== "true"); render();
+};
+document.getElementById("toggle-collapsed").onclick = (e) => {
+  press(e.currentTarget, e.currentTarget.getAttribute("aria-pressed") !== "true"); render();
+};
+render();
+</script>
+</body>
+</html>

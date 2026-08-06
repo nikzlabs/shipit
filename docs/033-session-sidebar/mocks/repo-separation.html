@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Session sidebar — repo group separation variants</title>
+<style>
+/* ─────────────────────────────────────────────────────────────────────────
+   Theme tokens — copied from src/client/themes/warm-light.css and dark.css
+   so the mock renders against the real palette, not invented colors.
+   ───────────────────────────────────────────────────────────────────────── */
+:root, .warm-light {
+  --color-bg-primary: #fdf8f0;
+  --color-bg-secondary: #f5ede0;
+  --color-bg-tertiary: #ede4d4;
+  --color-bg-hover: rgba(180, 120, 40, 0.06);
+  --color-text-primary: #2c2416;
+  --color-text-secondary: #5c5040;
+  --color-text-tertiary: #a89878;
+  --color-border-primary: #e4d8c4;
+  --color-border-secondary: #d0c0a4;
+  --color-accent: #c07828;
+  --color-accent-subtle: rgba(192, 120, 40, 0.12);
+  --color-success: #2d8a4e;
+  --color-pr: #7840b0;
+  --color-pr-subtle: rgba(120, 64, 176, 0.1);
+  --color-pr-border: rgba(120, 64, 176, 0.3);
+  --color-attention: #d97706;
+  --page-bg: #e6dbc9;
+  --page-fg: #2c2416;
+}
+.dark {
+  --color-bg-primary: #0a0a0a;
+  --color-bg-secondary: #171717;
+  --color-bg-tertiary: #262626;
+  --color-bg-hover: rgba(255,255,255,0.05);
+  --color-text-primary: #fafafa;
+  --color-text-secondary: #a3a3a3;
+  --color-text-tertiary: #737373;
+  --color-border-primary: #262626;
+  --color-border-secondary: #404040;
+  --color-accent: #f59e0b;
+  --color-accent-subtle: rgba(245,158,11,0.14);
+  --color-success: #22c55e;
+  --color-pr: #a78bfa;
+  --color-pr-subtle: rgba(167,139,250,0.14);
+  --color-pr-border: rgba(167,139,250,0.35);
+  --color-attention: #f59e0b;
+  --page-bg: #000;
+  --page-fg: #fafafa;
+}
+
+/* Per-repo accent hues. Deliberately desaturated so four of them stacked in a
+   272px rail read as "different projects", not as a status/severity signal. */
+.warm-light [data-accent="a0"] { --accent: #8a6a3c; --accent-soft: rgba(138,106,60,.10); }
+.warm-light [data-accent="a1"] { --accent: #2f6f6a; --accent-soft: rgba(47,111,106,.10); }
+.warm-light [data-accent="a2"] { --accent: #6b4c9a; --accent-soft: rgba(107,76,154,.10); }
+.warm-light [data-accent="a3"] { --accent: #a14a3a; --accent-soft: rgba(161,74,58,.10); }
+.dark [data-accent="a0"] { --accent: #d0a468; --accent-soft: rgba(208,164,104,.12); }
+.dark [data-accent="a1"] { --accent: #5eb0a8; --accent-soft: rgba(94,176,168,.12); }
+.dark [data-accent="a2"] { --accent: #a78bfa; --accent-soft: rgba(167,139,250,.12); }
+.dark [data-accent="a3"] { --accent: #e08a72; --accent-soft: rgba(224,138,114,.12); }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--page-bg);
+  color: var(--page-fg);
+  font: 13px/1.45 ui-sans-serif, -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  padding: 28px 28px 64px;
+}
+
+/* ── Page chrome ───────────────────────────────────────────────────────── */
+h1 { font-size: 20px; margin: 0 0 6px; letter-spacing: -.01em; }
+h2 { font-size: 15px; margin: 44px 0 10px; }
+.lede { max-width: 84ch; color: var(--color-text-secondary); margin: 0 0 4px; font-size: 13px; }
+.lede code { background: var(--color-bg-secondary); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+.lede b { color: var(--page-fg); }
+.callout {
+  max-width: 84ch; margin: 16px 0 0; padding: 11px 14px; border-radius: 8px;
+  background: var(--color-bg-primary); border: 1px solid var(--color-border-primary);
+  border-left: 3px solid var(--color-accent); font-size: 12.5px; line-height: 1.55;
+  color: var(--color-text-secondary);
+}
+.callout b { color: var(--page-fg); }
+.callout a { color: var(--color-accent); }
+
+.toolbar { display: flex; gap: 8px; align-items: center; margin: 20px 0 26px; flex-wrap: wrap; }
+.toolbar button {
+  font: inherit; font-size: 12px; padding: 5px 12px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--color-border-secondary); background: var(--color-bg-primary); color: var(--color-text-primary);
+}
+.toolbar button[aria-pressed="true"] { background: var(--color-accent); color: #1a1206; border-color: var(--color-accent); font-weight: 600; }
+.toolbar .sep { width: 1px; height: 20px; background: var(--color-border-secondary); margin: 0 4px; }
+
+.gallery { display: flex; flex-wrap: wrap; gap: 36px 24px; align-items: flex-start; padding-bottom: 20px; }
+.variant { flex: 0 0 auto; width: 424px; margin: 0; }
+.variant > figcaption { margin-bottom: 10px; min-height: 152px; }
+.vtag { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--color-text-tertiary); margin-bottom: 3px; }
+.vname { font-size: 14px; font-weight: 650; letter-spacing: -.005em; margin: 0 0 4px; }
+.vwhy { font-size: 11.5px; line-height: 1.5; color: var(--color-text-secondary); margin: 0; }
+.vwhy b { color: var(--page-fg); font-weight: 600; }
+.vcost { font-size: 11.5px; line-height: 1.5; color: var(--color-text-tertiary); margin: 4px 0 0; }
+.pill { font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 2px 6px; border-radius: 999px; margin-left: 7px; vertical-align: 2px; }
+.pill.good { background: var(--color-accent); color: #fff; }
+.dark .pill.good { color: #1a1206; }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   APP CONTEXT — every variant is rendered against its REAL neighbours, not
+   floated on an invented page color. The sidebar rail is --color-bg-primary
+   (SessionSidebar.tsx:394) and the chat panel beside it is
+   --color-bg-secondary (AppLayout.tsx:344). No variant may repaint the rail
+   without saying so — see variant 3.
+   ───────────────────────────────────────────────────────────────────────── */
+.app {
+  display: flex; height: 604px; border-radius: 10px; overflow: hidden;
+  border: 1px solid var(--color-border-primary); box-shadow: 0 4px 16px rgba(0,0,0,.10);
+}
+.app .rail { width: 272px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--color-bg-primary); border-right: 1px solid var(--color-border-primary); }
+.app .railhead { height: 41px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--color-border-primary); font-size: 11.5px; color: var(--color-text-tertiary); }
+.app .railhead .dot { width: 7px; height: 7px; border-radius: 999px; background: var(--color-success); }
+.app .scroll { flex: 1; overflow: hidden; padding: 4px 0; }
+.app .chat { flex: 1; min-width: 0; background: var(--color-bg-secondary); display: flex; flex-direction: column; }
+.app .chathead { height: 41px; flex: 0 0 auto; border-bottom: 1px solid var(--color-border-primary); display: flex; align-items: center; padding: 0 12px; font-size: 11.5px; color: var(--color-text-tertiary); white-space: nowrap; overflow: hidden; }
+.app .chatbody { flex: 1; padding: 14px 10px; display: flex; flex-direction: column; gap: 10px; }
+.bubble { border-radius: 8px; padding: 8px 10px; font-size: 11px; color: var(--color-text-secondary); background: var(--color-bg-primary); border: 1px solid var(--color-border-primary); }
+.bubble.me { background: var(--color-accent-subtle); border-color: transparent; color: var(--color-text-primary); align-self: flex-end; max-width: 88%; }
+.skel { height: 6px; border-radius: 999px; background: var(--color-border-primary); margin: 6px 0; }
+.skel.s2 { width: 72%; } .skel.s3 { width: 54%; }
+
+/* ── Sidebar skeleton — identical DOM in every variant ─────────────────── */
+.grp { display: flex; flex-direction: column; position: relative; }
+.ghead { display: flex; align-items: center; gap: 6px; padding: 6px 12px 6px 14px; position: relative; }
+.caret { width: 20px; height: 20px; display: grid; place-items: center; flex: 0 0 auto; color: var(--color-text-tertiary); }
+.glyph { display: grid; place-items: center; flex: 0 0 auto; color: var(--color-text-secondary); }
+.gname { font-size: 12px; font-weight: 650; letter-spacing: .02em; color: var(--color-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gcount { display: none; font-size: 10px; font-weight: 600; color: var(--color-text-tertiary); }
+.dots { margin-left: auto; color: var(--color-text-tertiary); display: grid; place-items: center; flex: 0 0 auto; }
+.tile { display: none; }
+.gbody { display: flex; flex-direction: column; gap: 4px; padding-bottom: 8px; position: relative; }
+.spine { display: none; }
+.sublabel { display: flex; align-items: center; gap: 6px; padding: 8px 12px 2px; margin: 0 4px; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--color-text-tertiary); }
+.pindiv { height: 1px; background: var(--color-border-primary); margin: 6px 12px 2px; border: 0; }
+.row { display: flex; align-items: flex-start; gap: 6px; padding: 6px 8px; margin: 0 4px; border-radius: 6px; position: relative; }
+.row .badge { width: 22px; height: 22px; flex: 0 0 auto; border-radius: 6px; display: grid; place-items: center; background: var(--color-pr-subtle); border: 1px solid var(--color-pr-border); color: var(--color-pr); }
+.row.merged .badge { background: rgba(45,138,78,.10); border-color: rgba(45,138,78,.3); color: var(--color-success); }
+.row .txt { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.row .title { font-size: 12.5px; line-height: 1.3; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .meta { display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--color-text-tertiary); }
+.row .live { width: 6px; height: 6px; border-radius: 999px; background: var(--color-success); flex: 0 0 auto; }
+.row.current { background: var(--color-bg-secondary); }
+.row.current::after { content: ""; position: absolute; right: 0; top: 0; bottom: 0; width: 4px; background: var(--color-accent); border-radius: 0 6px 6px 0; }
+.row.child { padding-left: 22px; }
+.row.new { align-items: center; }
+.row.new .plus { width: 22px; height: 22px; display: grid; place-items: center; flex: 0 0 auto; opacity: .7; }
+.row.new .title { color: var(--color-text-secondary); }
+
+/* ── v1 · Current (baseline) — the skeleton above IS today's rendering ─── */
+
+/* ── v2 · Hairline rule + breathing room ───────────────────────────────── */
+.v-rule .grp + .grp { border-top: 1px solid var(--color-border-primary); margin-top: 10px; padding-top: 10px; }
+
+/* ── v3 · Outline cards — containment with NO repainted rail ───────────── */
+.v-card .scroll { padding: 6px; }
+.v-card .grp { border: 1px solid var(--color-border-primary); border-radius: 9px; overflow: hidden; margin-bottom: 8px; }
+.v-card .row { margin: 0 4px; }
+
+/* ── v4 · Filled header band ───────────────────────────────────────────── */
+.v-band .ghead {
+  background: var(--color-bg-secondary);
+  border-top: 1px solid var(--color-border-primary);
+  border-bottom: 1px solid var(--color-border-primary);
+  padding-top: 7px; padding-bottom: 7px;
+}
+.v-band .grp:first-child .ghead { border-top: 0; }
+.v-band .gname { color: var(--color-text-primary); }
+.v-band .gbody { padding-top: 4px; }
+
+/* ── v5 · Colored spine ────────────────────────────────────────────────── */
+.v-spine .grp { padding-left: 10px; }
+.v-spine .grp + .grp { margin-top: 10px; }
+.v-spine .grp::before { content: ""; position: absolute; left: 6px; top: 8px; bottom: 8px; width: 3px; border-radius: 999px; background: var(--accent); }
+.v-spine .ghead { padding-left: 6px; }
+.v-spine .glyph { color: var(--accent); }
+.v-spine .gname { color: var(--color-text-primary); }
+
+/* ── v6 · Monogram tile + accent name ──────────────────────────────────── */
+.v-tile .grp + .grp { margin-top: 12px; }
+.v-tile .caret { display: none; }
+.v-tile .glyph { display: none; }
+.v-tile .tile { display: grid; place-items: center; width: 20px; height: 20px; flex: 0 0 auto; border-radius: 6px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; line-height: 1; }
+.dark .v-tile .tile { color: #0a0a0a; }
+.v-tile .ghead { padding-left: 12px; }
+.v-tile .gname { color: var(--color-text-primary); font-size: 12.5px; }
+.v-tile .gcount { display: inline; }
+.v-tile .gbody { padding-left: 8px; }
+
+/* ── v7 · Typographic hierarchy only ───────────────────────────────────── */
+.v-type .grp + .grp { margin-top: 22px; }
+.v-type .ghead { padding-bottom: 2px; }
+.v-type .gname { font-size: 14px; font-weight: 700; letter-spacing: -.01em; color: var(--color-text-primary); }
+.v-type .glyph { display: none; }
+.v-type .gcount { display: inline; }
+.v-type .sublabel { font-size: 9.5px; opacity: .75; padding-top: 6px; }
+.v-type .row .title { font-size: 12px; }
+.v-type .pindiv { display: none; }
+
+/* ── v8 · Accordion (one repo open) ────────────────────────────────────── */
+.v-accordion .grp + .grp { border-top: 1px solid var(--color-border-primary); }
+.v-accordion .grp.closed .gbody { display: none; }
+.v-accordion .grp.closed .ghead { padding-top: 9px; padding-bottom: 9px; }
+.v-accordion .gcount { display: inline; }
+.v-accordion .grp.closed .gcount { margin-left: auto; }
+.v-accordion .grp.closed .dots { display: none; }
+.v-accordion .grp.closed .caret { transform: rotate(-90deg); }
+.v-accordion .grp:not(.closed) .ghead { background: var(--color-bg-secondary); }
+.v-accordion .grp:not(.closed) .gname { color: var(--color-text-primary); }
+
+/* ── v9 · Tree guide line ──────────────────────────────────────────────── */
+.v-tree .grp + .grp { margin-top: 14px; }
+.v-tree .gbody { padding-left: 14px; }
+.v-tree .spine { display: block; position: absolute; left: 21px; top: 0; bottom: 10px; width: 1px; background: var(--color-border-primary); }
+.v-tree .row { margin: 0 4px 0 0; }
+.v-tree .sublabel { padding-left: 6px; }
+.v-tree .pindiv { margin-left: 6px; }
+.v-tree .gname { color: var(--color-text-primary); }
+
+/* ── v10 · Outline card + per-repo accent edge + tile ──────────────────── */
+.v-combo .scroll { padding: 6px; }
+.v-combo .grp {
+  border: 1px solid var(--color-border-primary); border-left: 3px solid var(--accent);
+  border-radius: 9px; overflow: hidden; margin-bottom: 9px;
+}
+.v-combo .ghead { padding-left: 9px; }
+.v-combo .caret { width: 16px; }
+.v-combo .glyph { display: none; }
+.v-combo .tile { display: grid; place-items: center; width: 18px; height: 18px; flex: 0 0 auto; border-radius: 5px; background: var(--accent-soft); color: var(--accent); font-size: 10.5px; font-weight: 700; line-height: 1; }
+.v-combo .gname { color: var(--color-text-primary); font-size: 12.5px; }
+.v-combo .gcount { display: inline; }
+.v-combo .sublabel { font-size: 9.5px; opacity: .8; }
+.v-combo .row { margin: 0 4px; }
+
+/* ── Legend / matrix ───────────────────────────────────────────────────── */
+.matrix { margin: 20px 0 0; border-collapse: collapse; font-size: 12px; background: var(--color-bg-primary); border-radius: 10px; overflow: hidden; }
+.matrix th, .matrix td { padding: 7px 12px; text-align: left; border-bottom: 1px solid var(--color-border-primary); }
+.matrix th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--color-text-tertiary); font-weight: 700; background: var(--color-bg-secondary); }
+.matrix td:first-child { font-weight: 600; white-space: nowrap; }
+.matrix .yes { color: var(--color-success); font-weight: 700; }
+.matrix .no { color: var(--color-text-tertiary); }
+.matrix tr:last-child td { border-bottom: 0; }
+</style>
+</head>
+<body class="warm-light">
+
+<h1>Session sidebar — separating repository groups</h1>
+<p class="lede">
+  Today every repo group renders as a flat sibling on one uninterrupted surface: the repo header, <code>New session</code>,
+  <code>PINNED</code>, <code>RECENTLY RESOLVED</code> and the session rows all sit on <code>--color-bg-primary</code> with
+  only a font-weight difference. With 4+ repos the eye can't find where one project ends and the next begins — the
+  <em>intra</em>-group labels are as loud as the <em>inter</em>-group boundary.
+</p>
+<p class="lede">
+  Every variant below renders the <b>identical DOM</b>; only the wrapper class changes.
+</p>
+<div class="callout">
+  <b>Rendered in app context.</b> Each variant sits in the real chrome: the sidebar rail is
+  <code>--color-bg-primary</code> (<code>SessionSidebar.tsx:394</code>) and the chat panel beside it is
+  <code>--color-bg-secondary</code> (<code>AppLayout.tsx:344</code>). An earlier draft floated the variants on an invented
+  page color, which flattered anything card-shaped — <b>there is no third surface behind the groups to recess into</b>, so
+  a card cannot be a lighter fill in light themes and a darker one in dark. Variant 3 is now outline-based for that reason;
+  the five other ways to get containment are worked through in
+  <a href="repo-separation-cards.html">repo-separation-cards.html</a>.
+</div>
+
+<div class="toolbar">
+  <button id="theme-warm" aria-pressed="true">Warm light</button>
+  <button id="theme-dark" aria-pressed="false">Dark</button>
+  <span class="sep"></span>
+  <button id="toggle-accent" aria-pressed="true">Per-repo accent hues</button>
+  <button id="toggle-density" aria-pressed="false">Dense (8 repos)</button>
+</div>
+
+<div class="gallery" id="gallery"></div>
+
+<h2>Which cue does each variant use?</h2>
+<table class="matrix" id="matrix"></table>
+
+<script>
+/* ── Icons (inline, no deps) ───────────────────────────────────────────── */
+const I = {
+  caretDown: '<svg width="12" height="12" viewBox="0 0 256 256" fill="currentColor"><path d="M213.7 101.7l-80 80a8 8 0 0 1-11.4 0l-80-80A8 8 0 0 1 48 88h160a8 8 0 0 1 5.7 13.7z"/></svg>',
+  github: '<svg width="12" height="12" viewBox="0 0 256 256" fill="currentColor"><path d="M208.3 75.7a80 80 0 0 0-6.5-63.4 8 8 0 0 0-6.9-4 79.9 79.9 0 0 0-62.3 30h-9.2a79.9 79.9 0 0 0-62.3-30 8 8 0 0 0-6.9 4 80 80 0 0 0-6.5 63.4A79.2 79.2 0 0 0 40 112v8a72.1 72.1 0 0 0 57.2 70.5A47.7 47.7 0 0 0 88 216v8H64a24 24 0 0 1-24-24 40 40 0 0 0-40-40 8 8 0 0 0 0 16 24 24 0 0 1 24 24 40 40 0 0 0 40 40h24v16a8 8 0 0 0 16 0v-40a32 32 0 0 1 64 0v40a8 8 0 0 0 16 0v-40a47.7 47.7 0 0 0-9.2-25.5A72.1 72.1 0 0 0 216 120v-8a79.2 79.2 0 0 0-7.7-36.3z"/></svg>',
+  branch: '<svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor"><path d="M232 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-64a31.8 31.8 0 0 0-16 4.3V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h64a32 32 0 0 0 32-32v-9a32.1 32.1 0 0 0 24-31z"/></svg>',
+  pr: '<svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor"><path d="M104 64a32 32 0 1 0-40 31v66a32 32 0 1 0 16 0V95a32.1 32.1 0 0 0 24-31zm88 97V88a40 40 0 0 0-40-40h-14l11-11a8 8 0 0 0-12-11l-24 24a8 8 0 0 0 0 12l24 24a8 8 0 0 0 12-11l-11-11h14a24 24 0 0 1 24 24v73a32 32 0 1 0 16 0z"/></svg>',
+  pin: '<svg width="10" height="10" viewBox="0 0 256 256" fill="currentColor"><path d="M180.7 84.7l-9.4-9.4 12.7-12.7a16 16 0 0 0 0-22.6l-23.3-23.3a16 16 0 0 0-22.6 0L125.4 29.4 116 20a16 16 0 0 0-22.6 22.6l4.7 4.7-46.4 27.9a16 16 0 0 0-2.8 25.2l40.2 40.2-42.7 42.7a8 8 0 0 0 11.4 11.4l42.7-42.7 40.2 40.2a16 16 0 0 0 25.2-2.8l27.9-46.4 4.7 4.7a16 16 0 0 0 22.6-22.6z"/></svg>',
+  merge: '<svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M104 64a32 32 0 1 0-40 31v66a32 32 0 1 0 16 0v-42a71.9 71.9 0 0 0 56 27h4a32 32 0 1 0 0-16h-4a56 56 0 0 1-56-56v-1a32.1 32.1 0 0 0 24-9z"/></svg>',
+  plus: '<svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M224 128a8 8 0 0 1-8 8h-80v80a8 8 0 0 1-16 0v-80H40a8 8 0 0 1 0-16h80V40a8 8 0 0 1 16 0v80h80a8 8 0 0 1 8 8z"/></svg>',
+  check: '<svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M128 24a104 104 0 1 0 104 104A104.1 104.1 0 0 0 128 24zm45.7 85.7l-56 56a8 8 0 0 1-11.4 0l-24-24a8 8 0 0 1 11.4-11.4l18.3 18.4 50.3-50.4a8 8 0 0 1 11.4 11.4z"/></svg>',
+  dots: '<svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><circle cx="128" cy="60" r="14"/><circle cx="128" cy="128" r="14"/><circle cx="128" cy="196" r="14"/></svg>',
+};
+
+/* ── Data — the four repos from the screenshot ─────────────────────────── */
+const REPOS = [
+  { name: "personal", accent: "a0", mono: "P", sessions: [
+      { title: "Deploy bare metal server wit…", time: "40d ago", icon: "branch" },
+  ]},
+  { name: "branding", accent: "a1", mono: "B", pinned: [
+      { title: "Acquiring Initial Friendly User…", time: "19h ago", pin: true, icon: "branch" },
+  ], resolved: true, sessions: [] },
+  { name: "shipit-website", accent: "a2", mono: "W", pinned: [
+      { title: "Get website indexed by searc…", time: "18h ago", pin: true, icon: "branch" },
+  ], resolved: true, sessions: [] },
+  { name: "shipit", accent: "a3", mono: "S", pinned: [
+      { title: "DeepSeek Flash: best harnes…", time: "10m ago", pin: true, icon: "branch" },
+  ], sessions: [
+      { title: "Private GitHub issue tracker", time: "6m ago", pin: true, merged: true, icon: "pr", current: true, kids: [
+          { title: "Inline badges: support the …", time: "7m ago", live: true, icon: "pr" },
+      ]},
+      { title: "Fix shim stdout truncation …", time: "4h ago", icon: "branch" },
+      { title: "Declare the planning track…", time: "6h ago", icon: "branch" },
+  ]},
+];
+/* Dense mode — what 8 repos actually looks like, which is where the problem bites. */
+const EXTRA = [
+  { name: "infra-terraform", accent: "a1", mono: "I", sessions: [{ title: "Rotate the VPS deploy key", time: "2d ago", icon: "branch" }] },
+  { name: "docs-site", accent: "a0", mono: "D", sessions: [{ title: "Fix the changelog anchor l…", time: "5h ago", icon: "branch" }] },
+  { name: "shipit-mobile", accent: "a3", mono: "M", sessions: [{ title: "PWA install prompt on iOS", time: "1d ago", live: true, icon: "pr" }] },
+  { name: "experiments", accent: "a2", mono: "E", sessions: [{ title: "Snapshot-test the emulator", time: "9d ago", icon: "branch" }] },
+];
+
+/* ── Render ────────────────────────────────────────────────────────────── */
+function row(s, extraClass = "") {
+  const cls = ["row", extraClass, s.current ? "current" : "", s.merged ? "merged" : ""].filter(Boolean).join(" ");
+  const meta = [
+    s.merged ? `<span style="color:var(--color-success);display:grid">${I.check}</span>` : "",
+    s.live ? '<span class="live"></span>' : "",
+    s.pin ? `<span style="color:var(--color-attention);display:grid">${I.pin}</span>` : "",
+    `<span>${s.time}</span>`,
+  ].join("");
+  return `<div class="${cls}">
+    <span class="badge">${I[s.icon] || I.branch}</span>
+    <span class="txt"><span class="title">${s.title}</span><span class="meta">${meta}</span></span>
+  </div>`;
+}
+
+function group(r, closed) {
+  const pinned = r.pinned || [];
+  const count = pinned.length + (r.sessions || []).reduce((n, s) => n + 1 + (s.kids?.length || 0), 0);
+  const body = [
+    pinned.length ? `<div class="sublabel">${I.pin}<span>Pinned</span></div>` : "",
+    ...pinned.map((s) => row(s)),
+    pinned.length ? '<hr class="pindiv">' : "",
+    `<div class="row new"><span class="plus">${I.plus}</span><span class="txt"><span class="title">New session</span></span></div>`,
+    ...(r.sessions || []).flatMap((s) => [row(s), ...(s.kids || []).map((k) => row(k, "child"))]),
+    r.resolved ? `<div class="sublabel">${I.merge}<span>Recently resolved</span></div>` : "",
+  ].join("");
+  return `<section class="grp ${closed ? "closed" : ""}" data-accent="${r.accent}">
+    <header class="ghead">
+      <span class="caret">${I.caretDown}</span>
+      <span class="tile">${r.mono}</span>
+      <span class="glyph">${I.github}</span>
+      <span class="gname">${r.name}</span>
+      <span class="gcount">${count}</span>
+      <span class="dots">${I.dots}</span>
+    </header>
+    <div class="gbody"><span class="spine"></span>${body}</div>
+  </section>`;
+}
+
+/* The sidebar in its real chrome: rail + the chat panel it butts against. */
+function app(variantId, repos) {
+  const closedFor = (i) => variantId === "v-accordion" && i !== repos.length - 1;
+  return `<div class="app ${variantId}">
+    <div class="rail">
+      <div class="railhead"><span class="dot"></span><span>Sessions</span></div>
+      <div class="scroll">${repos.map((r, i) => group(r, closedFor(i))).join("")}</div>
+    </div>
+    <div class="chat">
+      <div class="chathead">Private GitHub issue tracker</div>
+      <div class="chatbody">
+        <div class="bubble me">Repos blend into each other…</div>
+        <div class="bubble"><div class="skel"></div><div class="skel s2"></div><div class="skel s3"></div></div>
+        <div class="bubble"><div class="skel s2"></div><div class="skel s3"></div></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+const VARIANTS = [
+  { id: "v-current", n: 1, name: "Current", cue: "None",
+    why: "Today's rendering, for reference. The boundary between repos is carried entirely by a <b>font-weight bump</b> on the repo name.",
+    cost: "The <code>PINNED</code> and <code>RECENTLY RESOLVED</code> labels are visually the same rank as a repo header, so the strongest horizontal lines in the rail are the wrong ones." },
+  { id: "v-rule", n: 2, name: "Hairline rule", cue: "1 · divider",
+    why: "One <b>1px rule + 10px of air</b> between groups. The single smallest change that works — nothing else moves.",
+    cost: "A rule is also what separates <em>Pinned</em> from the rest inside a group, so with pins everywhere the rail still reads as one long ladder." },
+  { id: "v-card", n: 3, name: "Outline cards", cue: "1 · closed outline",
+    why: "Each repo gets a <b>closed 1px outline with a 9px radius</b>, 8px apart. Containment comes from the shape, not from a fill — so it needs no surface behind it and behaves identically in both themes.",
+    cost: "Weaker at a glance than a filled card would be, and adds a third border weight next to the rail's own edges. Filled alternatives: see the companion mock." },
+  { id: "v-band", n: 4, name: "Header band", cue: "1 · filled header",
+    why: "The repo header gets a <b>full-bleed <code>bg-secondary</code> band</b> with rules top and bottom. Reads like a table section header; survives being sticky.",
+    cost: "Four solid bands in one column is heavy, and the band is the same tint as the current-session row, so they compete for 'the filled thing'." },
+  { id: "v-spine", n: 5, name: "Colored spine", cue: "2 · color + indent",
+    why: "A <b>per-repo hue in a 3px rail</b> runs the full height of the group. Identity is continuous, so you always know which project you're scrolling through.",
+    cost: "Introduces color as an identity channel next to the existing status colors (green live, amber current, purple PR). Needs a stable name→hue hash." },
+  { id: "v-tile", n: 6, name: "Monogram tile", cue: "2 · color + mass",
+    why: "A <b>solid colored monogram</b> replaces the caret+GitHub glyph pair, giving each header a heavy anchor point the eye lands on when scanning.",
+    cost: "Loses the always-visible collapse caret (must move to hover), and monograms collide (<code>shipit</code> / <code>shipit-website</code> both S)." },
+  { id: "v-type", n: 7, name: "Typographic only", cue: "1 · type scale",
+    why: "No new chrome at all: <b>repo name up to 14px/700 primary</b>, sub-labels demoted, 22px between groups. Fixes the rank inversion at its source.",
+    cost: "Whitespace is the only boundary, so it degrades in dense mode and with a short sidebar." },
+  { id: "v-accordion", n: 8, name: "Accordion", cue: "1 · only one open",
+    why: "<b>Only the active repo is expanded</b>; the rest collapse to a one-line row with a session count. Separation stops being a problem when there's one group.",
+    cost: "A real behavior change — cross-repo glancing ('is the branding session done?') now costs a click. Wrong if the user works across repos at once." },
+  { id: "v-tree", n: 9, name: "Tree guide line", cue: "1 · connector",
+    why: "A <b>vertical guide line</b> descends from the header through its rows, explicitly claiming them. Ownership is drawn rather than implied.",
+    cost: "The rail already indents agent-spawned child sessions; a second vertical line risks reading as one more nesting level." },
+  { id: "v-combo", n: 10, name: "Outline card + accent edge", cue: "3 · outline + color + type", rec: true,
+    why: "The outline from #3 with the <b>per-repo hue on its left border</b>, the monogram from #6 in accent-tint (caret kept), and sub-labels demoted per #7. Three cues, <b>none of which needs a background</b> — so it survives dense mode and every theme.",
+    cost: "Most CSS of the set and ~12px of width to gutters, plus the name→hue hash. If only one cue can ship, #2 + #7 together get most of the way." },
+];
+
+function renderGallery() {
+  const dense = document.getElementById("toggle-density").getAttribute("aria-pressed") === "true";
+  const repos = dense ? REPOS.concat(EXTRA) : REPOS;
+  document.getElementById("gallery").innerHTML = VARIANTS.map((v) => `
+    <figure class="variant">
+      <figcaption>
+        <div class="vtag">Variant ${v.n} · ${v.cue}</div>
+        <p class="vname">${v.name}${v.rec ? '<span class="pill good">recommended</span>' : ""}</p>
+        <p class="vwhy">${v.why}</p>
+        <p class="vcost"><b>Cost:</b> ${v.cost}</p>
+      </figcaption>
+      ${app(v.id, repos)}
+    </figure>`).join("");
+  applyAccent();
+}
+
+function renderMatrix() {
+  const cues = ["Divider", "Outline / shape", "Per-repo color", "Type hierarchy", "Indent / connector", "Repaints a surface", "Behavior change"];
+  const map = {
+    "v-current":   [0,0,0,0,0,0,0],
+    "v-rule":      [1,0,0,0,0,0,0],
+    "v-card":      [1,1,0,0,0,0,0],
+    "v-band":      [1,0,0,0,0,1,0],
+    "v-spine":     [0,0,1,0,1,0,0],
+    "v-tile":      [0,0,1,1,0,0,0],
+    "v-type":      [0,0,0,1,0,0,0],
+    "v-accordion": [1,0,0,0,0,1,1],
+    "v-tree":      [0,0,0,0,1,0,0],
+    "v-combo":     [1,1,1,1,0,0,0],
+  };
+  document.getElementById("matrix").innerHTML =
+    `<thead><tr><th>Variant</th>${cues.map((c) => `<th>${c}</th>`).join("")}<th>Cues</th></tr></thead><tbody>` +
+    VARIANTS.map((v) => {
+      const bits = map[v.id];
+      const total = bits.slice(0, 5).reduce((a, b) => a + b, 0);
+      return `<tr><td>${v.n} · ${v.name}</td>${bits.map((b) => `<td class="${b ? "yes" : "no"}">${b ? "●" : "—"}</td>`).join("")}<td>${total}</td></tr>`;
+    }).join("") + "</tbody>";
+}
+
+/* ── Toolbar ───────────────────────────────────────────────────────────── */
+function press(el, on) { el.setAttribute("aria-pressed", String(on)); }
+function applyAccent() {
+  const on = document.getElementById("toggle-accent").getAttribute("aria-pressed") === "true";
+  document.querySelectorAll("[data-accent]").forEach((g) => {
+    g.style.setProperty("--accent", on ? "" : "var(--color-border-secondary)");
+    g.style.setProperty("--accent-soft", on ? "" : "var(--color-bg-secondary)");
+  });
+}
+document.getElementById("theme-warm").onclick = () => {
+  document.body.className = "warm-light";
+  press(document.getElementById("theme-warm"), true);
+  press(document.getElementById("theme-dark"), false);
+};
+document.getElementById("theme-dark").onclick = () => {
+  document.body.className = "dark";
+  press(document.getElementById("theme-dark"), true);
+  press(document.getElementById("theme-warm"), false);
+};
+document.getElementById("toggle-accent").onclick = (e) => {
+  press(e.currentTarget, e.currentTarget.getAttribute("aria-pressed") !== "true");
+  applyAccent();
+};
+document.getElementById("toggle-density").onclick = (e) => {
+  press(e.currentTarget, e.currentTarget.getAttribute("aria-pressed") !== "true");
+  renderGallery();
+};
+
+renderGallery();
+renderMatrix();
+</script>
+</body>
+</html>
