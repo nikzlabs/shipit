@@ -39,11 +39,13 @@
  */
 
 import {
+  applyJq,
   asString,
   callBroker,
   defaultIO,
   fail,
   filterJson,
+  JQ_SUPPORTED_FORMS,
   normalizeLabels,
   parseFlags,
   readBodyFromFileOrStdin,
@@ -67,8 +69,8 @@ const HELP = `${SHIM_NAME} — pull-request operations brokered through the Ship
 Supported subcommands:
   gh pr create   [-t TITLE] [-b BODY|--body-file FILE] [-B BASE] [-d|--draft] [--fill] [-l|--label LABEL]
   gh pr edit     [<number>] [-t TITLE] [-b BODY|--body-file FILE] [--add-label LABEL] [--remove-label LABEL]
-  gh pr view     [<number>] [--json FIELDS] [-w|--web]
-  gh pr list     [--state STATE] [--json FIELDS]
+  gh pr view     [<number>] [--json FIELDS] [-q|--jq EXPR] [-w|--web]
+  gh pr list     [--state STATE] [--json FIELDS] [-q|--jq EXPR]
   gh pr status
   gh pr comment  [<number>] (-b BODY|--body-file FILE)
   gh pr ready    [<number>]
@@ -76,13 +78,16 @@ Supported subcommands:
   gh pr reopen   <number>
   gh pr merge    [<number>] [--merge|--squash|--rebase] [--auto]   (Sandbox sessions with "Allow merging PRs" only)
 
-  gh run list      [-w WORKFLOW] [-b BRANCH] [-s STATUS] [-L LIMIT] [--json FIELDS]
-  gh run view      [<run-id>] [--log] [--log-failed] [--json FIELDS]
-  gh workflow list [--json FIELDS]
-  gh workflow view <workflow> [--json FIELDS]
+  gh run list      [-w WORKFLOW] [-b BRANCH] [-s STATUS] [-L LIMIT] [--json FIELDS] [-q|--jq EXPR]
+  gh run view      [<run-id>] [--log] [--log-failed] [--json FIELDS] [-q|--jq EXPR]
+  gh workflow list [--json FIELDS] [-q|--jq EXPR]
+  gh workflow view <workflow> [--json FIELDS] [-q|--jq EXPR]
 
 Operations target the repo of the current working directory's clone. Pass
 --repo OWNER/NAME to target a specific repo explicitly.
+
+-q/--jq requires --json and supports simple paths only (${JQ_SUPPORTED_FORMS});
+anything else exits 3 with a message naming the expression.
 
 This is a ShipIt shim, not the real gh CLI. \`gh run\`/\`gh workflow\` are
 READ-ONLY here — listing and viewing runs/workflows (e.g. the result of a
@@ -144,6 +149,64 @@ function targetQuery(
   if (repo) params.set("repo", repo);
   const qs = params.toString();
   return qs ? `?${qs}` : "";
+}
+
+/**
+ * The `-q`/`--jq` flag spec fragment, merged into every handler that supports
+ * `--json`. Kept in one place so the two spellings can't drift per subcommand.
+ */
+const JQ_FLAGS = { "-q": "jq", "--jq": "jq" } as const;
+
+/**
+ * Reject `-q` without `--json`, matching real gh (which refuses the pair in its
+ * PreRun, before any network call). Called right after flag parsing so the
+ * refusal is the same shape here.
+ */
+function requireJsonForJq(deps: RunDeps, command: string, parsed: { values: Record<string, string> }): void {
+  if (parsed.values.jq !== undefined && parsed.values.json === undefined) {
+    fail(
+      deps.io,
+      `${command}: cannot use -q/--jq without --json. Name the fields first, e.g. ${command} --json state -q .state`,
+    );
+  }
+}
+
+/**
+ * Print a `--json`-filtered payload, applying `-q/--jq` when one was given, then
+ * exit 0.
+ *
+ * Exit codes are chosen so a caller that swallows stderr can still tell the
+ * failure modes apart — the whole point of supporting `-q` at all was that a
+ * polling loop like `gh pr view N --json state -q .state 2>/dev/null` used to
+ * exit 2 with an empty string, indistinguishable from "not merged yet":
+ * - 3 — the jq expression is outside the supported subset.
+ * - 1 — a supported expression that doesn't fit the data (jq's own error class).
+ */
+function emitJson(deps: RunDeps, command: string, payload: unknown, jq: string | undefined): void {
+  if (jq === undefined) {
+    deps.io.stdout(`${JSON.stringify(payload)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  const result = applyJq(payload, jq);
+  if (!result.ok) {
+    if (result.kind === "unsupported") {
+      fail(
+        deps.io,
+        `${command}: ${result.message}\nShipIt's gh shim implements simple jq paths only: ${JQ_SUPPORTED_FORMS}.\nDrop -q and parse the --json output yourself for anything richer.`,
+        3,
+      );
+    }
+    fail(deps.io, `${command}: ${result.message}`, 1);
+  }
+  // jq prints nothing for an empty result stream (e.g. `.[]` over `[]`).
+  if (result.values.length > 0) deps.io.stdout(`${result.values.join("\n")}\n`);
+  deps.io.exit(0);
+}
+
+/** Split a `--json a,b` value into the field list `filterJson` expects. */
+function jsonFields(raw: string): string[] {
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
 }
 
 async function handlePrCreate(args: string[], deps: RunDeps): Promise<void> {
@@ -253,6 +316,7 @@ async function handlePrView(args: string[], deps: RunDeps): Promise<void> {
     values: {
       "--json": "json",
       "--repo": "repo", "-R": "repo",
+      ...JQ_FLAGS,
     },
     booleans: {
       "-w": "web", "--web": "web",
@@ -265,6 +329,7 @@ async function handlePrView(args: string[], deps: RunDeps): Promise<void> {
   if (parsed.booleans.has("web")) {
     fail(deps.io, "ShipIt's gh shim does not support --web.");
   }
+  requireJsonForJq(deps, "gh pr view", parsed);
 
   const qs = targetQuery(deps, parsed.values.repo, { number: parsed.positional[0] });
   const res = await deps.call("GET", `/agent-ops/pr/view${qs}`, undefined, deps.env);
@@ -274,9 +339,7 @@ async function handlePrView(args: string[], deps: RunDeps): Promise<void> {
       fail(deps.io, "No pull request found for this branch.", 1);
     }
     if (parsed.values.json !== undefined) {
-      const fields = parsed.values.json.split(",").map((s) => s.trim()).filter(Boolean);
-      deps.io.stdout(`${JSON.stringify(filterJson(pr, fields))}\n`);
-      deps.io.exit(0);
+      emitJson(deps, "gh pr view", filterJson(pr, jsonFields(parsed.values.json)), parsed.values.jq);
       return;
     }
     // Plain-text rendering similar to real gh. We coerce field values to
@@ -302,11 +365,13 @@ async function handlePrList(args: string[], deps: RunDeps): Promise<void> {
       "--json": "json",
       "-L": "limit", "--limit": "limit",
       "--repo": "repo", "-R": "repo",
+      ...JQ_FLAGS,
     },
   });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for gh pr list: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
+  requireJsonForJq(deps, "gh pr list", parsed);
 
   const qs = targetQuery(deps, parsed.values.repo, { state: parsed.values.state });
   const res = await deps.call("GET", `/agent-ops/pr/list${qs}`, undefined, deps.env);
@@ -315,9 +380,8 @@ async function handlePrList(args: string[], deps: RunDeps): Promise<void> {
   }
   const prs = (res.body.prs as Record<string, unknown>[] | undefined) ?? [];
   if (parsed.values.json !== undefined) {
-    const fields = parsed.values.json.split(",").map((s) => s.trim()).filter(Boolean);
-    deps.io.stdout(`${JSON.stringify(prs.map((pr) => filterJson(pr, fields)))}\n`);
-    deps.io.exit(0);
+    const fields = jsonFields(parsed.values.json);
+    emitJson(deps, "gh pr list", prs.map((pr) => filterJson(pr, fields)), parsed.values.jq);
     return;
   }
   if (prs.length === 0) {
@@ -530,11 +594,13 @@ async function handleRunList(args: string[], deps: RunDeps): Promise<void> {
       "-L": "limit", "--limit": "limit",
       "--json": "json",
       "--repo": "repo", "-R": "repo",
+      ...JQ_FLAGS,
     },
   });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for gh run list: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
+  requireJsonForJq(deps, "gh run list", parsed);
   const qs = targetQuery(deps, parsed.values.repo, {
     workflow: parsed.values.workflow,
     branch: parsed.values.branch,
@@ -547,9 +613,8 @@ async function handleRunList(args: string[], deps: RunDeps): Promise<void> {
   }
   const runs = (res.body.runs as Record<string, unknown>[] | undefined) ?? [];
   if (parsed.values.json !== undefined) {
-    const fields = parsed.values.json.split(",").map((s) => s.trim()).filter(Boolean);
-    deps.io.stdout(`${JSON.stringify(runs.map((r) => filterJson(r, fields)))}\n`);
-    deps.io.exit(0);
+    const fields = jsonFields(parsed.values.json);
+    emitJson(deps, "gh run list", runs.map((r) => filterJson(r, fields)), parsed.values.jq);
     return;
   }
   if (runs.length === 0) {
@@ -576,6 +641,7 @@ async function handleRunView(args: string[], deps: RunDeps): Promise<void> {
     values: {
       "--json": "json",
       "--repo": "repo", "-R": "repo",
+      ...JQ_FLAGS,
     },
     booleans: {
       "--log": "log",
@@ -589,6 +655,7 @@ async function handleRunView(args: string[], deps: RunDeps): Promise<void> {
   if (parsed.booleans.has("web")) {
     fail(deps.io, "ShipIt's gh shim does not support --web. The run details are printed on stdout.");
   }
+  requireJsonForJq(deps, "gh run view", parsed);
   const wantsLog = parsed.booleans.has("log");
   const wantsLogFailed = parsed.booleans.has("logFailed");
   const qs = targetQuery(deps, parsed.values.repo, {
@@ -608,11 +675,9 @@ async function handleRunView(args: string[], deps: RunDeps): Promise<void> {
   const logs = asString(res.body.logs);
 
   if (parsed.values.json !== undefined) {
-    const fields = parsed.values.json.split(",").map((s) => s.trim()).filter(Boolean);
     // Merge jobs/logs into the run object so `--json jobs` / `--json …` works.
     const merged = { ...run, jobs, logs };
-    deps.io.stdout(`${JSON.stringify(filterJson(merged, fields))}\n`);
-    deps.io.exit(0);
+    emitJson(deps, "gh run view", filterJson(merged, jsonFields(parsed.values.json)), parsed.values.jq);
     return;
   }
 
@@ -642,21 +707,22 @@ async function handleWorkflowList(args: string[], deps: RunDeps): Promise<void> 
       // Accepted for real-gh compatibility but not forwarded (the orchestrator
       // returns the repo's workflows up to a fixed cap).
       "-L": "limit", "--limit": "limit",
+      ...JQ_FLAGS,
     },
     booleans: { "-a": "all", "--all": "all" },
   });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for gh workflow list: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
+  requireJsonForJq(deps, "gh workflow list", parsed);
   const res = await deps.call("GET", `/agent-ops/workflow/list${targetQuery(deps, parsed.values.repo)}`, undefined, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to list workflows"), 1);
   }
   const workflows = (res.body.workflows as Record<string, unknown>[] | undefined) ?? [];
   if (parsed.values.json !== undefined) {
-    const fields = parsed.values.json.split(",").map((s) => s.trim()).filter(Boolean);
-    deps.io.stdout(`${JSON.stringify(workflows.map((w) => filterJson(w, fields)))}\n`);
-    deps.io.exit(0);
+    const fields = jsonFields(parsed.values.json);
+    emitJson(deps, "gh workflow list", workflows.map((w) => filterJson(w, fields)), parsed.values.jq);
     return;
   }
   if (workflows.length === 0) {
@@ -675,6 +741,7 @@ async function handleWorkflowView(args: string[], deps: RunDeps): Promise<void> 
     values: {
       "--json": "json",
       "--repo": "repo", "-R": "repo",
+      ...JQ_FLAGS,
     },
     booleans: {
       "-w": "web", "--web": "web",
@@ -684,6 +751,7 @@ async function handleWorkflowView(args: string[], deps: RunDeps): Promise<void> 
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for gh workflow view: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
+  requireJsonForJq(deps, "gh workflow view", parsed);
   if (parsed.booleans.has("web")) {
     fail(deps.io, "ShipIt's gh shim does not support --web.");
   }
@@ -704,9 +772,7 @@ async function handleWorkflowView(args: string[], deps: RunDeps): Promise<void> 
     fail(deps.io, `No workflow matching "${wf}" found.`, 1);
   }
   if (parsed.values.json !== undefined) {
-    const fields = parsed.values.json.split(",").map((s) => s.trim()).filter(Boolean);
-    deps.io.stdout(`${JSON.stringify(filterJson(workflow, fields))}\n`);
-    deps.io.exit(0);
+    emitJson(deps, "gh workflow view", filterJson(workflow, jsonFields(parsed.values.json)), parsed.values.jq);
     return;
   }
   const runs = (res.body.runs as Record<string, unknown>[] | undefined) ?? [];

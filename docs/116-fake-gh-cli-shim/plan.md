@@ -118,6 +118,31 @@ The shim must match real `gh` closely enough that the agent doesn't get confused
 - Errors go to stderr; exit code is non-zero.
 - `--help` prints a brief summary of supported subcommands and exits 0.
 
+#### `-q` / `--jq` (added later)
+
+`--json` alone forced the agent to shell out to a parser, so the idiomatic
+`gh pr view N --json state -q .state` hit the generic unsupported-flag path and
+exited **2 before ever calling the broker** — a polling loop that redirected
+stderr saw an empty string forever, indistinguishable from "not merged yet"
+(observed in production 2026-08-06 against an already-merged PR). Every read
+verb that takes `--json` (`gh pr view|list`, `gh run list|view`,
+`gh workflow list|view`) now also takes `-q`/`--jq`, applied to the
+already-`filterJson`'d payload.
+
+`applyJq` (`shim-common.ts`) is a **path walker, not a jq**: it parses only
+`.`, `.field`, `.a.b`, `.[]`, `.[].field`, `.[0]` and `.field[].sub` into a
+bounded step list, then walks the value it was handed. It evaluates no
+user-supplied code and can reach nothing outside that payload — the parser is
+the security boundary, so a pipe or `select(...)` is refused up front rather
+than partially interpreted. Output matches `jq -r` (raw strings, one value per
+line, nothing for an empty stream).
+
+Failure modes are given distinct exit codes precisely because the original bug
+was an *indistinguishable* one — a caller that swallows stderr still gets a
+signal: **3** unsupported expression (message names it), **1** supported
+expression that doesn't fit the data, **2** usage errors including `-q`
+without `--json` (which real `gh` also refuses, before any network call).
+
 ### Auth and identity
 
 The shim never sees the GitHub token. The orchestrator owns it. If GitHub auth is not configured for the session, the worker rejects the request with a clear error: *"GitHub is not connected for this ShipIt session. Ask the user to connect GitHub in the UI."* The shim prints this verbatim.

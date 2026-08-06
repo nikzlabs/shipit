@@ -117,8 +117,8 @@ The shim:
 |---|---|
 | `gh pr create [-t TITLE] [-b BODY\|--body-file FILE] [-B BASE] [-d/--draft] [--fill] [-l/--label LABEL]` | Push current branch and open a PR. Use `--body-file -` with a quoted heredoc for markdown bodies. With `--fill`, an empty body is filled from recent commits. `--label` is repeatable / comma-separated and best-effort. |
 | `gh pr edit [<n>] [-t TITLE] [-b BODY\|--body-file FILE] [--add-label LABEL] [--remove-label LABEL]` | Update title/body and/or add/remove labels. `<n>` defaults to the current branch's PR. `--add-label`/`--remove-label` are repeatable / comma-separated, may be given alone (no title/body needed), and are best-effort. `--label`/`-l` is an additive alias for `--add-label`. |
-| `gh pr view [<n>] [--json FIELDS]` | Read a PR. With `--json title,body,state,…` returns just those fields. |
-| `gh pr list [--state open\|closed\|all] [--json …]` | List PRs in the session's repo. |
+| `gh pr view [<n>] [--json FIELDS] [-q/--jq EXPR]` | Read a PR. With `--json title,body,state,…` returns just those fields; `-q` extracts from them (see "Extracting one value" below). |
+| `gh pr list [--state open\|closed\|all] [--json …] [-q/--jq EXPR]` | List PRs in the session's repo. |
 | `gh pr status` | Print the current branch's PR (or "No PR"). |
 | `gh pr comment [<n>] (-b BODY\|--body-file FILE)` | Leave an issue-style comment on a PR. |
 | `gh pr ready [<n>]` | Mark a draft PR as ready for review. |
@@ -200,15 +200,44 @@ human/CI action, not an agent action.
 
 | Subcommand | Notes |
 |---|---|
-| `gh run list [-w WORKFLOW] [-b BRANCH] [-s STATUS] [-L LIMIT] [--json FIELDS]` | List workflow runs, most-recent first. `-w` filters by workflow name/filename/id; `-s` by status (e.g. `completed`, `success`, `failure`, `in_progress`). Plain output is tab-separated: status, conclusion, title, workflow, branch, event, id. |
-| `gh run view [<run-id>] [--log] [--log-failed] [--json FIELDS]` | View one run with its jobs. With no `<run-id>`, resolves the **latest run for the current branch** (falling back to the latest run overall). `--log` appends the run's job logs (tail-capped); `--log-failed` only failed jobs' logs. |
-| `gh workflow list [--json FIELDS]` | List the repo's workflow definitions (name, state, id). |
-| `gh workflow view <workflow> [--json FIELDS]` | View one workflow (by name, filename, or id) and its recent runs. Use `cat .github/workflows/<file>` to read the YAML — `--yaml` is not supported. |
+| `gh run list [-w WORKFLOW] [-b BRANCH] [-s STATUS] [-L LIMIT] [--json FIELDS] [-q/--jq EXPR]` | List workflow runs, most-recent first. `-w` filters by workflow name/filename/id; `-s` by status (e.g. `completed`, `success`, `failure`, `in_progress`). Plain output is tab-separated: status, conclusion, title, workflow, branch, event, id. |
+| `gh run view [<run-id>] [--log] [--log-failed] [--json FIELDS] [-q/--jq EXPR]` | View one run with its jobs. With no `<run-id>`, resolves the **latest run for the current branch** (falling back to the latest run overall). `--log` appends the run's job logs (tail-capped); `--log-failed` only failed jobs' logs. |
+| `gh workflow list [--json FIELDS] [-q/--jq EXPR]` | List the repo's workflow definitions (name, state, id). |
+| `gh workflow view <workflow> [--json FIELDS] [-q/--jq EXPR]` | View one workflow (by name, filename, or id) and its recent runs. Use `cat .github/workflows/<file>` to read the YAML — `--yaml` is not supported. |
 
 These also accept `--repo OWNER/NAME` (alias `-R`). The `--json FIELDS` filter
 uses the same field names as the real `gh` (e.g. `databaseId`, `status`,
 `conclusion`, `displayTitle`, `workflowName`, `headBranch`, `event`, `url`; `gh
 run view --json jobs` includes the jobs array).
+
+### Extracting one value (`-q` / `--jq`)
+
+`gh pr view`, `gh pr list`, `gh run list`, `gh run view`, `gh workflow list` and
+`gh workflow view` accept `-q`/`--jq` to pull a value out of the `--json`
+payload, so the idiomatic one-liner works:
+
+```bash
+state=$(gh pr view 42 --json state -q .state)   # → MERGED
+gh run list --json conclusion -q '.[].conclusion'  # one per line
+```
+
+This still reads **once** — `-q` makes a single read easy to consume in a
+script, it is not a licence to build a polling loop (see "Waiting for a PR to
+merge — never poll for it" above).
+
+Like real `gh`, `-q` requires `--json` — it filters the fields you named.
+Output matches `jq -r`: strings raw and unquoted, one value per line, nothing
+at all for an empty stream.
+
+This is **not** a full jq. Only simple paths are implemented: `.`, `.field`,
+`.a.b`, `.[]`, `.[].field`, `.[0]`, `.field[].sub`. Pipes, `select(...)`,
+string interpolation and functions are not.
+
+Exit codes are distinct so a script that redirects stderr can still tell what
+happened: **3** = the jq expression is outside the supported subset (the message
+names it), **1** = a supported expression that doesn't fit the data (e.g.
+indexing a string), **2** = ordinary usage errors such as `-q` without `--json`.
+For anything richer, drop `-q` and parse the `--json` output yourself.
 
 ### Subcommands that are intentionally unavailable
 
