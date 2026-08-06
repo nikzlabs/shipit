@@ -279,6 +279,9 @@ export async function handleSessionFind(args: string[], deps: RunDeps): Promise<
       "--pr": "pr",
       "--container": "container",
       "--id": "id",
+      // Muscle-memory alias. It maps onto the SAME `id=` query param — the
+      // route deliberately doesn't take a `session=` filter, because that is
+      // the param name `api-container-guard.ts` reads as a SCOPE.
       "--session": "id",
       "--limit": "limit",
     },
