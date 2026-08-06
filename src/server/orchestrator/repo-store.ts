@@ -1,5 +1,6 @@
 import type { RepoInfo } from "../shared/types.js";
 import type { DatabaseManager } from "../shared/database.js";
+import { isValidRepoColorIndex, pickRepoColorIndex } from "../shared/repo-colors.js";
 import { canonicalRepoKey } from "./git-utils.js";
 
 interface RepoRow {
@@ -11,6 +12,7 @@ interface RepoRow {
   trusted: number;
   hidden: number;
   default_branch: string | null;
+  color_index: number | null;
 }
 
 export class RepoStore {
@@ -31,6 +33,7 @@ export class RepoStore {
     info.trusted = row.trusted === 1;
     info.hidden = row.hidden === 1;
     if (row.default_branch) info.defaultBranch = row.default_branch;
+    if (isValidRepoColorIndex(row.color_index)) info.colorIndex = row.color_index;
     return info;
   }
 
@@ -44,13 +47,39 @@ export class RepoStore {
     const existing = this.get(url);
     if (existing) {
       this.db.prepare("UPDATE repos SET last_used_at = ?, hidden = 0 WHERE url = ?").run(new Date().toISOString(), url);
+      // docs/254 — a re-add must NOT reassign the color: it's the same repo
+      // coming back (often straight out of the Hidden section), and req 6 says
+      // the color survives hide/unhide. Only fill a hole left by an older build.
+      if (existing.colorIndex === undefined) {
+        this.db.prepare("UPDATE repos SET color_index = ? WHERE url = ?").run(this.nextColorIndex(), url);
+      }
       return this.get(url)!;
     }
     const now = new Date().toISOString();
     this.db.prepare(
-      "INSERT INTO repos (url, added_at, last_used_at, status) VALUES (?, ?, ?, 'cloning')",
-    ).run(url, now, now);
+      "INSERT INTO repos (url, added_at, last_used_at, status, color_index) VALUES (?, ?, ?, 'cloning', ?)",
+    ).run(url, now, now, this.nextColorIndex());
     return this.get(url)!;
+  }
+
+  /**
+   * docs/254 — the palette index a newly-added repo should get: the least-used
+   * one. Counts HIDDEN repos too, so unhiding one can't collide with a color
+   * handed out while it was out of sight.
+   */
+  private nextColorIndex(): number {
+    const rows = this.db.prepare("SELECT color_index FROM repos").all() as { color_index: number | null }[];
+    return pickRepoColorIndex(rows.map((r) => r.color_index).filter(isValidRepoColorIndex));
+  }
+
+  /**
+   * docs/254 — set a repo's identity color (palette index; see
+   * `shared/repo-colors.ts`). Matched by exact URL like `setHidden`. Returns
+   * true when a row was updated, false when the url isn't tracked.
+   */
+  setColorIndex(url: string, colorIndex: number): boolean {
+    const result = this.db.prepare("UPDATE repos SET color_index = ? WHERE url = ?").run(colorIndex, url);
+    return result.changes > 0;
   }
 
   /** Flip status to "ready" after clone completes. */

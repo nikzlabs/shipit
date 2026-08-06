@@ -6,6 +6,7 @@
 import type { RepoStore } from "../repo-store.js";
 import type { RepoInfo } from "../../shared/types.js";
 import { canonicalRepoKey } from "../git-utils.js";
+import { REPO_COLOR_COUNT, isValidRepoColorIndex } from "../../shared/repo-colors.js";
 import { ServiceError } from "./types.js";
 import { validateStringArray } from "./validation.js";
 
@@ -70,6 +71,29 @@ export function setRepoHidden(
     throw new ServiceError(400, "Repository URL is required");
   }
   const updated = repoStore.setHidden(url.trim(), hidden);
+  if (!updated) {
+    throw new ServiceError(404, "Repository not found");
+  }
+}
+
+/**
+ * docs/254 — set a repo's identity color, the palette index behind the sidebar's
+ * per-repo group edge. Validated against the palette rather than stored blind,
+ * so a bad client can't write an index that renders as `var(--repo-color-99)`
+ * and silently produces no color at all. Throws 404 when the url isn't tracked.
+ */
+export function setRepoColorIndex(
+  repoStore: RepoStore,
+  url: string | undefined,
+  colorIndex: unknown,
+): void {
+  if (!url?.trim()) {
+    throw new ServiceError(400, "Repository URL is required");
+  }
+  if (!isValidRepoColorIndex(colorIndex)) {
+    throw new ServiceError(400, `colorIndex must be an integer between 0 and ${REPO_COLOR_COUNT - 1}`);
+  }
+  const updated = repoStore.setColorIndex(url.trim(), colorIndex);
   if (!updated) {
     throw new ServiceError(404, "Repository not found");
   }

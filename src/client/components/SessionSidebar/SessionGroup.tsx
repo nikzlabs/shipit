@@ -8,7 +8,32 @@ import { OverflowMenu } from "../ui/overflow-menu.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import type { SessionInfo, RepoInfo } from "../../../server/shared/types.js";
 import { SessionItem } from "./SessionItem.js";
+import { repoColorVar } from "../../../server/shared/repo-colors.js";
 import { isRecentlyResolved } from "./useSessionGrouping.js";
+
+/**
+ * docs/254 — the per-group identity edge. A 3px colored line on the LEFT of the
+ * group, plus a `--color-bg-tertiary` band on the header so it reads as a
+ * section header rather than another row.
+ *
+ * Two things about this are load-bearing and were established by mocking it
+ * (`docs/033-session-sidebar/mocks/repo-separation-spine.html`, option 5b):
+ *
+ * · The edge lives on the GROUP element, never on the header. The header is
+ *   `sticky top-0`, so an edge on the header visibly breaks at the seam the
+ *   moment it pins; on the group it paints behind the pinned band and the line
+ *   stays continuous for the group's whole height.
+ * · The band fill must be an OPAQUE token. Every `*-subtle` token is `rgba()`,
+ *   and a translucent sticky header lets session rows scroll straight through
+ *   it. `--color-bg-tertiary` is opaque in every theme.
+ */
+function groupEdgeStyle(color: string | undefined): React.CSSProperties | undefined {
+  return color ? { borderLeftWidth: 3, borderLeftStyle: "solid", borderLeftColor: color } : undefined;
+}
+
+/** Header-band classes, applied only when the group carries an edge. */
+const BAND_CLASS = "bg-(--color-bg-tertiary)";
+const NO_BAND_CLASS = "bg-(--color-bg-primary)";
 
 /**
  * docs/128 — pinned group for privileged ops/host-debugging sessions. Keyed off
@@ -24,6 +49,7 @@ export function OpsSessionGroup({
   onSelectCurrent,
   onArchive,
   isTouch,
+  separated,
 }: {
   sessions: SessionInfo[];
   currentSessionId?: string;
@@ -33,11 +59,17 @@ export function OpsSessionGroup({
   onSelectCurrent?: () => void;
   onArchive: (sessionId: string) => void;
   isTouch: boolean;
+  /** docs/254 — whether the sidebar is drawing per-group identity edges. */
+  separated?: boolean;
 }) {
   if (sessions.length === 0) return null;
+  // docs/254 req 10 — a non-repo group gets its OWN semantic color, not a
+  // palette entry, so the palette keeps meaning "a repository". Ops is amber,
+  // matching the warning tone this group's docstring has always described.
+  const edge = groupEdgeStyle(separated ? "var(--color-warning)" : undefined);
   return (
-    <div className="flex flex-col">
-      <div className="flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 bg-(--color-bg-primary) z-10">
+    <div className="flex flex-col" style={edge} data-testid="ops-group">
+      <div className={`flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 z-10 ${separated ? BAND_CLASS : NO_BAND_CLASS}`}>
         <button
           onClick={onToggleCollapse}
           className="flex items-center gap-1.5 flex-1 min-w-0 text-left group"
@@ -89,6 +121,7 @@ export function SandboxSessionGroup({
   onSelectCurrent,
   onArchive,
   isTouch,
+  separated,
 }: {
   sessions: SessionInfo[];
   currentSessionId?: string;
@@ -98,11 +131,16 @@ export function SandboxSessionGroup({
   onSelectCurrent?: () => void;
   onArchive: (sessionId: string) => void;
   isTouch: boolean;
+  /** docs/254 — whether the sidebar is drawing per-group identity edges. */
+  separated?: boolean;
 }) {
   if (sessions.length === 0) return null;
+  // docs/254 req 10 — semantic color, not a palette entry. Sandbox already owns
+  // teal (`--color-sandbox`) on its Cube icon; the edge reuses it.
+  const edge = groupEdgeStyle(separated ? "var(--color-sandbox)" : undefined);
   return (
-    <div className="flex flex-col">
-      <div className="flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 bg-(--color-bg-primary) z-10">
+    <div className="flex flex-col" style={edge} data-testid="sandbox-group">
+      <div className={`flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 z-10 ${separated ? BAND_CLASS : NO_BAND_CLASS}`}>
         <button
           onClick={onToggleCollapse}
           className="flex items-center gap-1.5 flex-1 min-w-0 text-left group"
@@ -215,6 +253,7 @@ export function RepoGroup({
   onDragLeave,
   onDrop,
   onDragEnd,
+  separated,
 }: {
   repo: RepoInfo;
   sessions: SessionInfo[];
@@ -247,8 +286,20 @@ export function RepoGroup({
   onDragLeave: (e: React.DragEvent) => void;
   onDrop: (e: React.DragEvent) => void;
   onDragEnd: (e: React.DragEvent) => void;
+  /**
+   * docs/254 — draw the per-repo identity edge + header band. False when the
+   * sidebar shows a single repo (req 11): there is nothing to separate it from,
+   * so the treatment would be pure chrome.
+   */
+  separated: boolean;
 }) {
   const repoName = parseRepoName(repo.url);
+  // docs/254 — `colorIndex` is undefined only for a row written by a build
+  // older than the backfill migration; such a repo simply gets no edge rather
+  // than an arbitrary one, so the color a user sees is always one that's stored.
+  const edge = groupEdgeStyle(
+    separated && repo.colorIndex !== undefined ? repoColorVar(repo.colorIndex) : undefined,
+  );
 
   // FLIP animation for session rows reordering (PR merged sinks to bottom) or
   // exiting (archive). Library defaults — single duration/easing per parent,
@@ -318,6 +369,12 @@ export function RepoGroup({
   return (
     <div
       className={`flex flex-col relative ${isBeingDragged ? "opacity-40" : ""}`}
+      // docs/254 — the edge is a border on THIS element (see groupEdgeStyle):
+      // it spans the header, the pinned sub-section, `New session`, every
+      // session row and `Recently resolved`, and keeps painting behind the
+      // sticky header while it's pinned.
+      style={edge}
+      data-repo-color-index={separated ? repo.colorIndex : undefined}
       onDragOver={draggable ? onDragOver : undefined}
       onDragLeave={draggable ? onDragLeave : undefined}
       onDrop={draggable ? onDrop : undefined}
@@ -333,7 +390,7 @@ export function RepoGroup({
       )}
       {/* Repo header row */}
       <div
-        className="flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 bg-(--color-bg-primary) z-10 group/header"
+        className={`flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 z-10 group/header ${separated ? BAND_CLASS : NO_BAND_CLASS}`}
         draggable={draggable}
         onDragStart={draggable ? onDragStart : undefined}
         onDragEnd={draggable ? onDragEnd : undefined}

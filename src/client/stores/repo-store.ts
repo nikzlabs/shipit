@@ -58,6 +58,12 @@ interface RepoState {
    */
   setRepoHidden: (url: string, hidden: boolean) => Promise<boolean>;
   /**
+   * docs/254 — set a repo's identity color (palette index) for the sidebar's
+   * per-repo group edge. Same optimistic-then-PATCH shape as `setRepoHidden`,
+   * so the edge and the picker's selected swatch both change on click.
+   */
+  setRepoColorIndex: (url: string, colorIndex: number) => Promise<boolean>;
+  /**
    * Reorder repos in the sidebar. Applies the new order optimistically to
    * the local list (so the drop feels instant) and persists to the server.
    * Server then broadcasts `repo_list` over SSE — that re-sets the list
@@ -297,6 +303,30 @@ export const useRepoStore = create<RepoState>((set, get) => ({
     } catch (err) {
       console.error("[repo-store] setRepoHidden failed:", err);
       apply(!hidden);
+      return false;
+    }
+  },
+
+  setRepoColorIndex: async (url, colorIndex) => {
+    const previous = get().repos.find((r) => r.url === url)?.colorIndex;
+    const apply = (idx: number | undefined) =>
+      set((state) => ({ repos: state.repos.map((r) => (r.url === url ? { ...r, colorIndex: idx } : r)) }));
+    // Optimistic — the sidebar edge and the picker's tick move on click.
+    apply(colorIndex);
+    try {
+      const res = await fetch(`/api/repos/${encodeURIComponent(url)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ colorIndex }),
+      });
+      if (!res.ok) {
+        apply(previous);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.error("[repo-store] setRepoColorIndex failed:", err);
+      apply(previous);
       return false;
     }
   },

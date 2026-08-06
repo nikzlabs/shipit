@@ -197,3 +197,93 @@ describe("docs/201 — root_session_id backfill walk", () => {
     expect(rootOf("b")).not.toBeNull();
   });
 });
+
+/**
+ * docs/254 — the color_index migration backfills existing repos so a workspace
+ * that upgrades into the sidebar's per-repo edge doesn't come up with every
+ * group uncolored. The backfill is inline JS, so — mirroring the two patterns
+ * above — we replicate it here and assert it against seeded pre-migration rows
+ * (repos with a NULL color_index).
+ */
+function runRepoColorBackfill(db: DatabaseManager["db"]): void {
+  const rows = db
+    .prepare(
+      `SELECT url FROM repos
+       ORDER BY CASE WHEN display_order IS NULL THEN 1 ELSE 0 END,
+                display_order ASC,
+                last_used_at DESC,
+                rowid DESC`,
+    )
+    .all() as { url: string }[];
+  const update = db.prepare("UPDATE repos SET color_index = ? WHERE url = ?");
+  rows.forEach((row, i) => update.run(i % 16, row.url));
+}
+
+describe("docs/254 — repo color_index backfill", () => {
+  let dbManager: DatabaseManager;
+
+  beforeEach(() => {
+    dbManager = new DatabaseManager(":memory:");
+  });
+
+  afterEach(() => {
+    dbManager.close();
+  });
+
+  const seed = (url: string, displayOrder: number | null, lastUsedAt = "2026-01-01") =>
+    dbManager.db
+      .prepare(
+        "INSERT INTO repos (url, added_at, last_used_at, status, display_order, color_index) VALUES (?, '2026-01-01', ?, 'ready', ?, NULL)",
+      )
+      .run(url, lastUsedAt, displayOrder);
+
+  const colorOf = (url: string) =>
+    (dbManager.db.prepare("SELECT color_index FROM repos WHERE url = ?").get(url) as { color_index: number | null })
+      .color_index;
+
+  it("gives every pre-existing repo a distinct color", () => {
+    seed("a", 0);
+    seed("b", 1);
+    seed("c", 2);
+    runRepoColorBackfill(dbManager.db);
+    const colors = ["a", "b", "c"].map(colorOf);
+    expect(colors).toEqual([0, 1, 2]);
+  });
+
+  // Walks the sidebar's own display order, so the colors a user sees top-to-bottom
+  // are the same ones a fresh workspace would have been assigned.
+  it("assigns in sidebar display order, not insertion order", () => {
+    seed("last", 2);
+    seed("first", 0);
+    seed("middle", 1);
+    runRepoColorBackfill(dbManager.db);
+    expect(colorOf("first")).toBe(0);
+    expect(colorOf("middle")).toBe(1);
+    expect(colorOf("last")).toBe(2);
+  });
+
+  it("falls back to last-used order for never-reordered repos", () => {
+    seed("older", null, "2026-01-01");
+    seed("newer", null, "2026-06-01");
+    runRepoColorBackfill(dbManager.db);
+    expect(colorOf("newer")).toBe(0);
+    expect(colorOf("older")).toBe(1);
+  });
+
+  it("wraps past the palette size rather than writing an unrenderable index", () => {
+    for (let i = 0; i < 18; i++) seed(`r${i}`, i);
+    runRepoColorBackfill(dbManager.db);
+    expect(colorOf("r15")).toBe(15);
+    expect(colorOf("r16")).toBe(0);
+    expect(colorOf("r17")).toBe(1);
+  });
+
+  it("is idempotent — a re-run produces the same assignment", () => {
+    seed("a", 0);
+    seed("b", 1);
+    runRepoColorBackfill(dbManager.db);
+    runRepoColorBackfill(dbManager.db);
+    expect(colorOf("a")).toBe(0);
+    expect(colorOf("b")).toBe(1);
+  });
+});

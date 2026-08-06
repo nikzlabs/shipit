@@ -162,6 +162,13 @@ export function SessionSidebar({
   // Reordering is only meaningful when there's more than one visible repo to swap.
   const reorderEnabled = visibleRepos.length > 1;
 
+  // docs/254 req 11 — draw the per-group identity edges only when there is more
+  // than one group to tell apart. Deliberately keyed off the rendered GROUP
+  // count, not `isSingleRepo`: one repo alongside an Ops or Sandbox group is
+  // still two groups the eye has to separate, and suppressing the treatment
+  // there would leave exactly the blending this feature exists to fix.
+  const separated = repoGroups.length > 1;
+
   const handleDragStart = useCallback(
     (repoUrl: string) => (e: React.DragEvent) => {
       // dataTransfer payload — we read it back on drop. Using a custom MIME
@@ -459,6 +466,7 @@ export function SessionSidebar({
               onSelectCurrent={handleSelectCurrent}
               onArchive={onArchive}
               isTouch={isTouch}
+              separated={separated}
             />
           ) : group.kind === "ops" ? (
             <OpsSessionGroup
@@ -471,6 +479,7 @@ export function SessionSidebar({
               onSelectCurrent={handleSelectCurrent}
               onArchive={onArchive}
               isTouch={isTouch}
+              separated={separated}
             />
           ) : group.kind === "repo" ? (
             <RepoGroup
@@ -502,6 +511,7 @@ export function SessionSidebar({
               onDragLeave={handleDragLeave(group.repo.url)}
               onDrop={handleDrop(group.repo.url)}
               onDragEnd={handleDragEnd}
+              separated={separated}
             />
           ) : (
             <OrphanSessionGroup

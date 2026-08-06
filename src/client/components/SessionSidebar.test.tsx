@@ -1180,4 +1180,75 @@ describe("SessionSidebar", () => {
     expect(screen.getByText("Frontend fix")).toBeTruthy();
     expect(screen.getByText("API migration")).toBeTruthy();
   });
+
+  // docs/254 — per-repo identity edge spanning the whole group.
+  describe("repo group separation", () => {
+    const colored = (r: RepoInfo, colorIndex: number): RepoInfo => ({ ...r, colorIndex });
+
+    it("draws each repo group's edge in its own palette color", () => {
+      render(
+        <SessionSidebar
+          {...defaultProps}
+          repos={[colored(repoA, 0), colored(repoB, 5)]}
+        />,
+      );
+      const groups = document.querySelectorAll("[data-repo-color-index]");
+      expect(groups).toHaveLength(2);
+      expect((groups[0] as HTMLElement).style.borderLeftColor).toBe("var(--repo-color-0)");
+      expect((groups[1] as HTMLElement).style.borderLeftColor).toBe("var(--repo-color-5)");
+      expect((groups[0] as HTMLElement).style.borderLeftWidth).toBe("3px");
+    });
+
+    // req 11 — nothing to separate a lone group from.
+    it("suppresses the treatment when there is only one group", () => {
+      render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0)]} />);
+      expect(document.querySelector("[data-repo-color-index]")).toBeNull();
+    });
+
+    // The count that matters is GROUPS, not repos: one repo beside an Ops group
+    // is still two things the eye has to tell apart.
+    it("applies the treatment to a lone repo when an ops group is also present", () => {
+      const sessions = [
+        baseSession({ id: "s1", title: "In repo A", remoteUrl: repoA.url }),
+        baseSession({ id: "ops1", title: "Host work", remoteUrl: "", kind: "ops" }),
+      ];
+      render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 2)]} sessions={sessions} />);
+      const repoGroup = document.querySelector("[data-repo-color-index]") as HTMLElement | null;
+      expect(repoGroup?.style.borderLeftColor).toBe("var(--repo-color-2)");
+    });
+
+    // req 10 — non-repo groups use their own semantic color, never a palette one.
+    it("marks ops and sandbox groups with their semantic colors", () => {
+      const sessions = [
+        baseSession({ id: "s1", title: "In repo A", remoteUrl: repoA.url }),
+        baseSession({ id: "ops1", title: "Host work", remoteUrl: "", kind: "ops" }),
+        baseSession({ id: "sb1", title: "Scratch", remoteUrl: "", kind: "sandbox" }),
+      ];
+      render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0)]} sessions={sessions} />);
+      const ops = screen.getByTestId("ops-group");
+      const sandbox = screen.getByTestId("sandbox-group");
+      expect(ops.style.borderLeftColor).toBe("var(--color-warning)");
+      expect(sandbox.style.borderLeftColor).toBe("var(--color-sandbox)");
+      expect(ops.getAttribute("data-repo-color-index")).toBeNull();
+    });
+
+    // A repo stored by a build older than the backfill migration has no color;
+    // it must render plainly rather than with an invisible or arbitrary edge.
+    it("draws no edge for a repo with no stored color", () => {
+      render(<SessionSidebar {...defaultProps} repos={[repoA, repoB]} />);
+      expect(document.querySelector("[data-repo-color-index]")).toBeNull();
+    });
+
+    // The edge MUST be on the group, not the sticky header — on the header it
+    // breaks at the seam the moment the header pins.
+    it("puts the edge on the group element, not on the sticky header", () => {
+      render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0), colored(repoB, 1)]} />);
+      const group = document.querySelector<HTMLElement>("[data-repo-color-index]")!;
+      const header = group.querySelector<HTMLElement>(".sticky")!;
+      expect(header).toBeTruthy();
+      expect(header.style.borderLeftWidth).toBe("");
+      // …and the band fill is an opaque token, so rows can't scroll through it.
+      expect(header.className).toContain("bg-(--color-bg-tertiary)");
+    });
+  });
 });
