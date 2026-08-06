@@ -64,9 +64,9 @@ describe("RepoColorPicker", () => {
     expect(screen.getAllByRole("radio")).toHaveLength(REPO_COLOR_COUNT);
   });
 
-  // Automatic assignment never collides, but a manual pick can. Rather than
-  // blocking it, the picker says which colors another repo already holds so a
-  // duplicate is a deliberate choice instead of an accident.
+  // req 5 — the no-collision guarantee covers AUTOMATIC assignment; a manual
+  // pick may duplicate. The marking is the safeguard that makes that safe, so
+  // it's a requirement in its own right, not a nicety.
   describe("colors taken by other repos", () => {
     const other = (u: string, colorIndex: number): RepoInfo =>
       ({ url: u, status: "ready", addedAt: now, lastUsedAt: now, colorIndex });

@@ -20,4 +20,4 @@
 - [x] PATCH rejects a present-but-malformed field instead of silently skipping it
 - [x] Migration test runs the real migration rather than a copy of its logic
 - [x] Gap between groups so adjacent edges don't merge into one rail
-- [ ] Nik to settle the two open questions in `requirements.md` (reqs 5 and 11)
+- [x] Open questions on reqs 5 and 11 settled by Nik; both requirements reworded, no code change

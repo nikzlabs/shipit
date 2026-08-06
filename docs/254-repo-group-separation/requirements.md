@@ -22,8 +22,11 @@ What the feature must do, in the user's terms. Design lives in
 3. The line stays visible and unbroken while the sidebar is scrolled, including
    the region where the repo header is pinned to the top.
 4. The repo header reads as a section header rather than as another row.
-5. Each repo has its own color. Two repos must not share a color while unused
-   colors remain.
+5. Each repo gets its own color **automatically**: no two repos are assigned the
+   same color while unused colors remain. The user may deliberately choose a
+   color another repo already holds (req 7) — but the picker must mark those
+   colors and name the repo holding each one, so a duplicate is a deliberate
+   choice rather than an accident.
 6. A repo's color is stable: it does not change when other repos are added,
    removed, reordered, hidden, or unhidden.
 7. The user can change a repo's color from that repo's settings.
@@ -34,35 +37,16 @@ What the feature must do, in the user's terms. Design lives in
 10. Groups that are not repos — Host / Ops and Sandbox — are marked with their
     own established colors rather than a palette color, so the palette means
     "a repository" and nothing else.
-11. When only one repo is visible in the sidebar, the treatment is suppressed:
-    there is nothing to separate it from.
+11. When the sidebar renders only one **group**, the treatment is suppressed:
+    there is nothing to separate it from. The count is of groups, not repos — a
+    lone repo alongside a Host / Ops or Sandbox group is still two groups the eye
+    has to separate, and suppressing there would leave exactly the blending req 1
+    exists to fix.
 12. The treatment works in every theme ShipIt ships, light and dark.
 
 ## Open questions
 
-Both raised by an independent Codex review of the implementation (2026-08-06),
-which flagged these two requirements as not met by the code as written. Neither
-is a bug — in each case the code does something defensible that the requirement's
-wording doesn't cover. They need a human decision, not an agent's.
-
-- **Req 5 — may the user deliberately pick a colour another repo already uses?**
-  Automatic assignment never collides. But req 7 lets the user choose, and
-  nothing stops them choosing a taken colour, so req 5 as written ("two repos
-  must not share a colour while unused colours remain") is violated by a manual
-  pick. Options: (a) leave it — the picker now marks taken colours with a dot
-  and names the holder, so a duplicate is deliberate rather than accidental
-  *(recommended, and what currently ships)*; (b) block the pick outright;
-  (c) reword req 5 to scope it to automatic assignment. Nothing was reworded
-  pending this answer.
-
-- **Req 11 — is the treatment suppressed on one *repo*, or on one *group*?**
-  The requirement says "when only one repo is visible". The code suppresses when
-  only one **group** renders, so a lone repo alongside a Host/Ops or Sandbox
-  group still gets the treatment. The reasoning: one repo beside an Ops group is
-  still two things the eye must separate, and suppressing there would leave
-  exactly the blending this feature exists to fix. If that reasoning is accepted,
-  req 11 should be reworded to say "group"; if not, the code should change. The
-  code currently implements the group reading, and a test pins it.
+None.
 
 ## Resolved questions
 
@@ -79,6 +63,23 @@ wording doesn't cover. They need a human decision, not an agent's.
 - **2026-08-06 — Is the color fixed once assigned?** No: it must be changeable
   from repo settings, and the palette must be "big enough". *(Nik, follow-up
   message on the same card. Adds reqs 7 and 8.)*
+- **2026-08-06 — May the user deliberately pick a color another repo already
+  holds?** Yes — leave it allowed rather than blocking the pick. The safeguard
+  is that the picker marks taken colors and names the repo holding each, so a
+  duplicate is a deliberate choice, not an accident. Raised by the Codex review,
+  which correctly read the old req 5 ("two repos must not share a color") as
+  violated by any manual pick. Req 5 is now scoped to *automatic* assignment and
+  carries the marking safeguard; no code changed. *(Nik, reviewing this document.
+  Rewrites req 5.)*
+- **2026-08-06 — Is the treatment suppressed on one *repo*, or on one *group*?**
+  One **group**. A lone repo alongside a Host / Ops or Sandbox group is still two
+  groups the eye must separate. This **refines** the earlier "should the
+  treatment apply when there is only one repo?" receipt above: the intent there
+  was "don't decorate a sidebar with nothing to separate", and the group count is
+  the accurate measure of that. Also raised by the Codex review, which read the
+  code and the old req 11 as disagreeing — they did; the code was right and the
+  wording was wrong. No code changed. *(Nik, reviewing this document. Rewrites
+  req 11.)*
 
 ## Chosen treatment
 

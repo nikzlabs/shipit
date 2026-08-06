@@ -155,12 +155,18 @@ A Codex review (2026-08-06) against `requirements.md` produced four code changes
   It now rewinds a real database past the migration and re-opens it; verified to
   fail (5 cases) against a deliberately broken backfill.
 
-Two findings were **not** resolved in code because they are requirement-wording
-decisions rather than defects — see `## Open questions` in `requirements.md`
-(whether a user may deliberately pick a colour another repo holds, and whether
-suppression counts repos or groups). The picker now marks taken colours and names
-the holder, so a duplicate pick is deliberate rather than accidental, but nothing
-blocks it pending that decision.
+Two further findings were requirement-*wording* problems rather than defects, and
+were referred to the human rather than resolved by rewriting the requirement to
+match the code. Both were since settled in `requirements.md`'s
+`## Resolved questions`, and both confirmed the shipped behaviour:
+
+- **A user may deliberately pick a colour another repo holds.** Req 5 now scopes
+  its no-collision guarantee to *automatic* assignment, and requires the picker
+  to mark taken colours and name the repo holding each — which is what makes the
+  relaxation safe. No code changed.
+- **Suppression counts groups, not repos.** Req 11 now says "group", matching the
+  code: a lone repo alongside a Host / Ops or Sandbox group is still two groups
+  the eye must separate. No code changed.
 
 ## Verification
 

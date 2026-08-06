@@ -1205,8 +1205,8 @@ describe("SessionSidebar", () => {
       expect(document.querySelector("[data-repo-color-index]")).toBeNull();
     });
 
-    // The count that matters is GROUPS, not repos: one repo beside an Ops group
-    // is still two things the eye has to tell apart.
+    // req 11 — the count is GROUPS, not repos: one repo beside an Ops group is
+    // still two things the eye has to tell apart.
     it("applies the treatment to a lone repo when an ops group is also present", () => {
       const sessions = [
         baseSession({ id: "s1", title: "In repo A", remoteUrl: repoA.url }),
