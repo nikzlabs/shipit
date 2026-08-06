@@ -189,8 +189,13 @@ Two consequences worth knowing before editing this file:
   `undefined` and so sends no header. A worker that held `""` as its expected
   token would 403 every orchestrator call — the bricked session that D3/step 5
   exists to prevent, reached through an empty value instead of an absent one.
-  Unreachable today (`generateWorkerToken()` never returns empty), fixed anyway
-  because the two halves must agree.
+  No orchestrator-created container hits it (`generateWorkerToken()` never
+  returns empty, and a peer cannot alter another worker's environment), but a
+  hand-configured container or a standalone worker launched with
+  `SHIPIT_WORKER_TOKEN=` does. Note this moves a malformed-config worker from
+  fail-*closed* to the D3 fail-open policy — deliberate: it is the same
+  compatibility choice D3 already makes for an absent value, and the loopback-only
+  rule that closes the reported hole needs no token either way.
 - **`WORKER_TOKEN_ENV` is set in every session container, so a test asserting the
   no-token branch is not hermetic by default.** It passed in CI and failed
   in-container: `token: undefined` fell straight through to the ambient token and
