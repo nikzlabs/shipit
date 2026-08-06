@@ -318,9 +318,19 @@ If nothing matches, retry once with \`--include-archived\`, then say so plainly.
 An empty result is a real answer; it means no session on this host owns that
 branch/PR (a PR opened outside ShipIt, or from a host that was since rebuilt).
 
+If \`--container\` is refused because the name carries no session id, the
+container has a project-set \`container_name:\`. Read the owner off its label:
+\`\`\`
+docker inspect <name> --format '{{index .Config.Labels "shipit-parent-session"}}'
+docker inspect <name> --format '{{index .Config.Labels "shipit-session-id"}}'   # session container
+shipit session find --id <the-id-that-prints>
+\`\`\`
+
 ## 2. Widen only if needed
 \`\`\`
 shipit session list --all --include-archived              # the whole host inventory
+shipit session list --all --include-warm                  # plus the warm pool shells
+shipit session list --all --offset 200                    # next page, when output says so
 \`\`\`
 
 ## 3. Take the answer back to the host

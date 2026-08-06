@@ -96,6 +96,23 @@ describe("sessionIdPrefixFromContainerName", () => {
     expect(sessionIdPrefixFromContainerName("   ")).toBeNull();
   });
 
+  it("refuses an arbitrary user-set container_name instead of guessing", () => {
+    // A project's own compose file may set `container_name:`, and ShipIt's
+    // generated override does not rewrite it — so these appear verbatim in
+    // `docker ps`. Reading their first 12 chars as a session-id prefix would
+    // produce a confidently WRONG answer, which is worse than none here.
+    expect(sessionIdPrefixFromContainerName("payments-db")).toBeNull();
+    expect(sessionIdPrefixFromContainerName("postgres")).toBeNull();
+    expect(sessionIdPrefixFromContainerName("my_app_web_1")).toBeNull();
+    expect(sessionIdPrefixFromContainerName("docker-socket-proxy")).toBeNull();
+  });
+
+  it("still trusts a ShipIt-generated name even when the tail looks unusual", () => {
+    // The `agent-`/`shipit-` prefix is proof of provenance, so the remainder is
+    // taken as the id slice without the UUID-shape check.
+    expect(sessionIdPrefixFromContainerName("agent-zzzzzzzz-zzz")).toBe("zzzzzzzz-zzz");
+  });
+
   it("round-trips the names ShipIt itself generates", () => {
     const id = "83292266-7445-4a1b-9c2d-000000000000";
     expect(sessionIdPrefixFromContainerName(containerNameForSession(id))).toBe(id.slice(0, 12));
@@ -237,15 +254,58 @@ describe("queryHostSessions", () => {
     expect(withArchived.sessions[0].archived).toBe(true);
   });
 
-  it("hides warm pool sessions from the inventory but resolves them by container name", () => {
+  it("hides warm pool sessions by default but keeps every route to them open", () => {
+    seed("aaaa-0001-aaaa-bbbb", { branch: "shipit/live" });
     seed("warm-0001-aaaa-bbbb", { branch: "shipit/warm" });
     sessions.setWarm("warm-0001-aaaa-bbbb", true);
-    expect(queryHostSessions(sessions, {}).sessions).toEqual([]);
+    expect(queryHostSessions(sessions, {}).sessions.map((s) => s.id)).toEqual(["aaaa-0001-aaaa-bbbb"]);
     expect(queryHostSessions(sessions, { branch: "shipit/warm" }).sessions).toEqual([]);
     // An operator holding the container name is asking about that exact box.
     expect(
       queryHostSessions(sessions, { container: "agent-warm-0001-a" }).sessions.map((s) => s.id),
     ).toEqual(["warm-0001-aaaa-bbbb"]);
+    // …and req 5's "every session" needs an explicit way to LIST them.
+    expect(queryHostSessions(sessions, { includeWarm: true }).sessions.map((s) => s.id).sort()).toEqual([
+      "aaaa-0001-aaaa-bbbb",
+      "warm-0001-aaaa-bbbb",
+    ]);
+    expect(
+      queryHostSessions(sessions, { branch: "shipit/warm", includeWarm: true }).sessions.map((s) => s.id),
+    ).toEqual(["warm-0001-aaaa-bbbb"]);
+  });
+
+  it("keeps an automatically evicted session in the default answer", () => {
+    // `diskTier` and visibility are orthogonal (docs/161): eviction happens to
+    // ordinary live sessions on the idle ladder, so hiding evicted rows would
+    // suppress exactly the older sessions a triage question is usually about.
+    // Only an explicit user archive hides a session by default.
+    seed("evicted-1", { branch: "shipit/old" });
+    sessions.setDiskTier("evicted-1", "evicted");
+    const listed = queryHostSessions(sessions, {}).sessions;
+    expect(listed.map((s) => s.id)).toEqual(["evicted-1"]);
+    expect(listed[0].diskTier).toBe("evicted");
+    expect(listed[0].archived).toBeUndefined();
+  });
+
+  it("pages past the result cap so a big host is still fully enumerable", () => {
+    for (let i = 0; i < 5; i++) seed(`s${i}`, { branch: "shipit/many" });
+    const first = queryHostSessions(sessions, { branch: "shipit/many", limit: 2 });
+    expect(first.sessions).toHaveLength(2);
+    expect(first.total).toBe(5);
+    expect(first.nextOffset).toBe(2);
+
+    const second = queryHostSessions(sessions, { branch: "shipit/many", limit: 2, offset: 2 });
+    expect(second.sessions).toHaveLength(2);
+    expect(second.nextOffset).toBe(4);
+
+    const last = queryHostSessions(sessions, { branch: "shipit/many", limit: 2, offset: 4 });
+    expect(last.sessions).toHaveLength(1);
+    expect(last.truncated).toBe(false);
+    expect(last.nextOffset).toBeUndefined();
+
+    // Walking the pages visits every match exactly once.
+    const walked = [...first.sessions, ...second.sessions, ...last.sessions].map((s) => s.id);
+    expect(new Set(walked).size).toBe(5);
   });
 
   it("treats --id the same whether or not another filter is also supplied", () => {
@@ -299,8 +359,13 @@ describe("queryHostSessions", () => {
     expect(queryHostSessions(sessions, { limit: Number.NaN }).sessions).toHaveLength(1);
   });
 
-  it("rejects a container name with no id in it", () => {
+  it("rejects a container name with no id in it, and names the label fallback", () => {
     expect(() => queryHostSessions(sessions, { container: "agent-" })).toThrow(ServiceError);
+    // A user-set `container_name` is a real container but carries no session id.
+    // The error must hand the operator a next step, not just a refusal.
+    expect(() => queryHostSessions(sessions, { container: "payments-db" })).toThrow(
+      /shipit-parent-session/,
+    );
   });
 });
 
@@ -352,6 +417,30 @@ describe("metadata-only projection", () => {
     expect(view.latestAssistantMessage).toBeUndefined();
     // Serializing the whole view must not carry the replay text through either.
     expect(JSON.stringify(view)).not.toContain("the user said something private");
+  });
+
+  it("strips credentials out of a repo URL before showing it to another session", () => {
+    // `setGitRemote` (services/git.ts) persists a user-supplied origin verbatim,
+    // so a session row CAN hold userinfo. Every other reader shows `remoteUrl`
+    // back to that session's OWN user; this one shows it to a DIFFERENT session,
+    // which is the boundary req 8 draws around tokens.
+    //
+    // The fixture deliberately uses generic `u:pw@` rather than a realistic
+    // `x-access-token:<pat>@` shape: `stripUrlCredentials` strips ANY http(s)
+    // userinfo, so this exercises the same path, and a fixture that looks like a
+    // real PAT trips the secret scanner on every commit. Don't "improve" it back.
+    seed("a", { branch: "shipit/x" });
+    sessions.setRemoteUrl("a", "https://u:pw@github.com/o/r.git");
+    const view = queryHostSessions(sessions, { id: "a" }).sessions[0];
+    expect(view.remoteUrl).toBe("https://github.com/o/r.git");
+    expect(JSON.stringify(view)).not.toContain("u:pw@");
+  });
+
+  it("leaves an ordinary repo URL untouched", () => {
+    seed("a", { remoteUrl: "https://github.com/nikzlabs/shipit" });
+    expect(queryHostSessions(sessions, { id: "a" }).sessions[0].remoteUrl).toBe(
+      "https://github.com/nikzlabs/shipit",
+    );
   });
 
   it("never emits PR prose, only the PR's identity and state", () => {

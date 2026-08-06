@@ -667,6 +667,19 @@ export class SessionManager {
     return rows.map((r) => this.fromRow(r));
   }
 
+  /**
+   * docs/255 — literally every session row, warm pool included, most recently
+   * used first. Only the Ops inventory's `--include-warm` uses this: every other
+   * "all sessions" caller means {@link listAll}'s non-warm set, because a warm
+   * row is a pre-provisioned shell rather than someone's work.
+   */
+  listAllIncludingWarm(): SessionInfo[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM sessions ORDER BY last_used_at DESC, rowid DESC",
+    ).all() as SessionRow[];
+    return rows.map((r) => this.fromRow(r));
+  }
+
   /** Clear all session data. */
   clear(): void {
     this.db.prepare("DELETE FROM sessions").run();

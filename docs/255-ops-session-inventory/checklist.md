@@ -17,4 +17,9 @@
 - [x] Shim tests alongside the existing `shipit.test.ts` cases
 - [x] `npm run test:dev`, `npm run lint:dev`, `npm run typecheck`
 - [x] Independent fresh-context review against `requirements.md` (Codex, via `shipit agent run`)
+- [x] Review finding: strip credentials from `remoteUrl` at the session crossing
+- [x] Review finding: refuse a project-set `container_name`, point at the label
+- [x] Review finding: `--include-warm` so req 5's "every session" is reachable
+- [x] Review finding: `--offset` paging so a >500-session host is enumerable
+- [x] Review finding: req 7 wording corrected (evicted ≠ archived), receipt filed
 - [x] Tracker issue filed and cross-linked (`roadmap#SHI-329`)

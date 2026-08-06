@@ -274,17 +274,27 @@ Ops-only (read-only ShipIt source, docs/162):
 
 Ops-only (host session inventory, docs/255):
   shipit session find    --branch NAME | --pr NUMBER | --container NAME | --id ID
-                          [--include-archived] [--limit N] [--json]
+                          [--include-archived] [--include-warm]
+                          [--limit N] [--offset N] [--json]
                           Resolve a branch, PR, or container name back to the
                           session that produced it — the one-step answer to
                           "what session created this PR?". --container takes a
                           name straight from 'docker ps' or the host journal
                           ('agent-83292266-744', 'shipit-83292266-744-web-1').
-                          --pr matches the session's current PR AND a previous
-                          one it shipped from the same branch.
-  shipit session list --all [--include-archived] [--limit N] [--json]
+                          A service container with an explicit container_name
+                          carries no session id — the error tells you to read
+                          its 'shipit-parent-session' label instead. --pr
+                          matches the session's current PR AND a previous one it
+                          shipped from the same branch.
+  shipit session list --all [--include-archived] [--include-warm]
+                          [--limit N] [--offset N] [--json]
                           The whole host inventory. (Without --all, 'list' is
                           unchanged: only the children THIS session spawned.)
+
+  Results are capped; when there are more, the output names the exact
+  '--offset N' to pass for the next page. Warm pool sessions and sessions the
+  user archived are excluded by default — add --include-warm /
+  --include-archived to see them.
 
   Both return METADATA ONLY — id, title, kind, branch, repo, parent, agent,
   timestamps, container name, and the PR number/url/state. Never another

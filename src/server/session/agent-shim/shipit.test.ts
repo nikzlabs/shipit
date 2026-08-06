@@ -648,14 +648,33 @@ describe("shipit session find (docs/255)", () => {
     expect(out.stdout).toContain("--include-archived");
   });
 
-  it("forwards --include-archived and --limit", async () => {
+  it("forwards --include-archived, --include-warm, --limit and --offset", async () => {
     const { run } = makeRunner();
     const out = await run(
-      ["session", "find", "--branch", "b", "--include-archived", "--limit", "5"],
+      [
+        "session", "find", "--branch", "b",
+        "--include-archived", "--include-warm", "--limit", "5", "--offset", "10",
+      ],
       { [INVENTORY_ROUTE]: { status: 200, body: { sessions: [], total: 0, truncated: false } } },
     );
     expect(out.calls[0].path).toContain("includeArchived=true");
+    expect(out.calls[0].path).toContain("includeWarm=true");
     expect(out.calls[0].path).toContain("limit=5");
+    expect(out.calls[0].path).toContain("offset=10");
+  });
+
+  it("names the exact next page rather than telling the agent to widen --limit", async () => {
+    // `limit` is server-capped, so "pass --limit to widen" would loop the agent
+    // against a ceiling it cannot raise. `--offset` is the only way past it.
+    const { run } = makeRunner();
+    const out = await run(["session", "find", "--branch", "b"], {
+      [INVENTORY_ROUTE]: {
+        status: 200,
+        body: { sessions: [INVENTORY_HIT], total: 900, truncated: true, nextOffset: 500 },
+      },
+    });
+    expect(out.stdout).toContain("900 matches in total");
+    expect(out.stdout).toContain("--offset 500");
   });
 
   it("surfaces the orchestrator's ops-only refusal verbatim", async () => {

@@ -27,15 +27,20 @@ the orchestrator's `sessions` table the whole time.
    resolve to that session).
 3. From an Ops session, an operator can go from a **container name** as it
    appears in `docker ps` or the host journal (`agent-83292266-744`,
-   `shipit-83292266-744-web-1`) to the session that container belongs to.
+   `shipit-83292266-744-web-1`) to the session that container belongs to. Where
+   a name provably cannot identify a session, the answer says so and names the
+   next step — it never guesses.
 4. From an Ops session, an operator can go from a **session id** — including a
    truncated one — to that session's record.
 5. An Ops session can list **every** session on the host, not only the ones it
    spawned itself. Today `shipit session list` returns `[]` for an Ops session,
-   because it is scoped to children.
+   because it is scoped to children. "Every" means every session is *reachable*:
+   a noisy class may be excluded from the default listing, but there must be a
+   way to show it, and a host with more sessions than fit in one response must
+   still be fully enumerable.
 6. The answer identifies the session well enough to act on it: at minimum its id,
    title, kind, branch, repository, who spawned it, and its PR.
-7. Archived / evicted sessions are reachable too — a triage question usually
+7. Sessions the user **archived** are reachable too — a triage question usually
    arrives *after* the session is done — but they do not clutter the default
    answer.
 8. An Ops session must **not** be able to read what was said inside another
@@ -53,6 +58,23 @@ the orchestrator's `sessions` table the whole time.
 _(none)_
 
 ## Resolved questions
+
+**2026-08-06 — reqs 3, 5, 7 were sharpened after an independent review, without
+a human in the loop. Flagged here as agent-authored so review can reject them.**
+A fresh-context Codex review of the branch read the original wording of req 7
+("Archived / **evicted** sessions … do not clutter the default answer") as a
+requirement that automatically disk-evicted sessions be hidden by default. That
+would be wrong behaviour: `diskTier` and visibility are orthogonal in ShipIt
+(docs/161 — `SessionManager.list`'s own docstring says "Disk tier is irrelevant
+to visibility"), eviction happens to ordinary live sessions on the idle ladder
+after a few days, and hiding them would suppress exactly the older sessions a
+post-hoc triage question is about. The word "evicted" was my imprecision when
+first writing this doc from the incident packet, not something the operator
+asked for — so the requirement text was corrected rather than the code. Reqs 3
+and 5 gained the "never guesses" and "reachable / fully enumerable" clauses the
+same way: they make explicit what the packet implied, prompted by real defects
+the review found. **None of this is human-confirmed** — an operator who disagrees
+should say so and the code follows the requirement, not the other way round.
 
 **2026-08-06 — Is the metadata-only boundary the right cut, or should an Ops
 session be able to read another session's transcript?**

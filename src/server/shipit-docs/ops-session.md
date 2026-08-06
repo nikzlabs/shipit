@@ -75,11 +75,26 @@ dropped unless the session was created as an ops session.
   ```
   `--container` takes a name exactly as `docker ps` or the journal prints it —
   the session container (`agent-<id-slice>`) or one of its Compose siblings
-  (`shipit-<id-slice>-web-1`). `--pr` matches the session's *current* PR and any
-  earlier one it shipped from the same branch, so a branch that carried #1741
-  and then #1744 resolves from either number. Archived/evicted sessions are
-  excluded by default; add `--include-archived` when the triage subject is
-  already finished. Every subcommand takes `--json`.
+  (`shipit-<id-slice>-web-1`). A project's own compose file can set an explicit
+  `container_name:`, and such a container carries no session id in its name; the
+  error says so and points you at the authoritative fallback:
+  ```bash
+  docker inspect payments-db --format '{{index .Config.Labels "shipit-parent-session"}}'
+  # (or "shipit-session-id" for a session container), then pass that to --id
+  ```
+  `--pr` matches the session's *current* PR and any earlier one it shipped from
+  the same branch, so a branch that carried #1741 and then #1744 resolves from
+  either number.
+
+  Two classes are excluded from the *default* listing and each has a flag:
+  sessions the user archived (`--include-archived` — reach for it when the
+  triage subject is already finished) and warm pool sessions
+  (`--include-warm` — pre-provisioned shells with no branch, PR, or user). A
+  disk-**evicted** session is NOT hidden: eviction happens to ordinary live
+  sessions on the idle ladder, so those are exactly the older sessions you're
+  usually asking about. Results are capped; when there are more, the output
+  names the exact `--offset N` for the next page. Every subcommand takes
+  `--json`.
 
   This is **metadata only**: id, title, kind, branch, repo, parent session,
   agent/model, timestamps, container name, and the PR number/url/state. It does

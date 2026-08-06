@@ -77,7 +77,9 @@ export async function registerHostSessionRoutes(
       container?: string;
       id?: string;
       includeArchived?: string;
+      includeWarm?: string;
       limit?: string;
+      offset?: string;
     };
   }>(
     "/api/sessions/:id/host-sessions",
@@ -99,9 +101,14 @@ export async function registerHostSessionRoutes(
           query.pr = pr;
         }
         if (q.includeArchived === "true") query.includeArchived = true;
+        if (q.includeWarm === "true") query.includeWarm = true;
         if (q.limit) {
           const limit = Number(q.limit);
           if (Number.isFinite(limit)) query.limit = limit;
+        }
+        if (q.offset) {
+          const offset = Number(q.offset);
+          if (Number.isFinite(offset)) query.offset = offset;
         }
         return queryHostSessions(sessionManager, query);
       } catch (err) {

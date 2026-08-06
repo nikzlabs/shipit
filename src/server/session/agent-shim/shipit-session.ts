@@ -224,17 +224,35 @@ async function runHostSessionQuery(
   params: URLSearchParams,
   deps: RunDeps,
   label: string,
-): Promise<{ sessions: Record<string, unknown>[]; truncated: boolean; total: number }> {
+): Promise<{
+  sessions: Record<string, unknown>[];
+  truncated: boolean;
+  total: number;
+  nextOffset?: number;
+}> {
   const qs = params.toString() ? `?${params.toString()}` : "";
   const res = await deps.call("GET", `/agent-ops/session/host-sessions${qs}`, undefined, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, label), 1);
   }
+  const nextOffset = Number(res.body.nextOffset);
   return {
     sessions: (res.body.sessions as Record<string, unknown>[] | undefined) ?? [],
     truncated: res.body.truncated === true,
     total: Number(res.body.total ?? 0),
+    ...(Number.isFinite(nextOffset) ? { nextOffset } : {}),
   };
+}
+
+/**
+ * The "there is more" footer. Names the exact next command rather than saying
+ * "pass --limit", because the server caps `limit` — past the cap, paging with
+ * `--offset` is the ONLY way to reach the rest, and a hint that suggests
+ * otherwise sends the agent in a loop against a ceiling it cannot raise.
+ */
+function moreLine(total: number, nextOffset: number | undefined, noun: string): string {
+  const base = `… ${total} ${noun} in total.`;
+  return nextOffset === undefined ? base : `${base} Next page: --offset ${nextOffset}`;
 }
 
 /** Render one inventory record as an aligned, scannable text block. */
@@ -284,8 +302,13 @@ export async function handleSessionFind(args: string[], deps: RunDeps): Promise<
       // the param name `api-container-guard.ts` reads as a SCOPE.
       "--session": "id",
       "--limit": "limit",
+      "--offset": "offset",
     },
-    booleans: { "--json": "json", "--include-archived": "includeArchived" },
+    booleans: {
+      "--json": "json",
+      "--include-archived": "includeArchived",
+      "--include-warm": "includeWarm",
+    },
   });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit session find: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
@@ -312,7 +335,9 @@ export async function handleSessionFind(args: string[], deps: RunDeps): Promise<
     );
   }
   if (parsed.booleans.has("includeArchived")) params.set("includeArchived", "true");
+  if (parsed.booleans.has("includeWarm")) params.set("includeWarm", "true");
   if (parsed.values.limit) params.set("limit", parsed.values.limit);
+  if (parsed.values.offset) params.set("offset", parsed.values.offset);
 
   const result = await runHostSessionQuery(params, deps, "Failed to look up host sessions");
   if (parsed.booleans.has("json")) {
@@ -328,14 +353,19 @@ export async function handleSessionFind(args: string[], deps: RunDeps): Promise<
     return;
   }
   const blocks = result.sessions.map(renderHostSession);
-  if (result.truncated) blocks.push(`… ${result.total} matches; pass --limit to widen.`);
+  if (result.truncated) blocks.push(moreLine(result.total, result.nextOffset, "matches"));
   success(deps.io, blocks.join("\n\n"));
 }
 
 export async function handleSessionList(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
-    values: { "--turn": "turn", "--limit": "limit" },
-    booleans: { "--json": "json", "--all": "all", "--include-archived": "includeArchived" },
+    values: { "--turn": "turn", "--limit": "limit", "--offset": "offset" },
+    booleans: {
+      "--json": "json",
+      "--all": "all",
+      "--include-archived": "includeArchived",
+      "--include-warm": "includeWarm",
+    },
   });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit session list: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
@@ -346,7 +376,9 @@ export async function handleSessionList(args: string[], deps: RunDeps): Promise<
   if (parsed.booleans.has("all")) {
     const params = new URLSearchParams();
     if (parsed.booleans.has("includeArchived")) params.set("includeArchived", "true");
+    if (parsed.booleans.has("includeWarm")) params.set("includeWarm", "true");
     if (parsed.values.limit) params.set("limit", parsed.values.limit);
+    if (parsed.values.offset) params.set("offset", parsed.values.offset);
     const result = await runHostSessionQuery(params, deps, "Failed to list host sessions");
     if (parsed.booleans.has("json")) {
       deps.io.stdout(`${JSON.stringify(result.sessions)}\n`);
@@ -366,7 +398,7 @@ export async function handleSessionList(args: string[], deps: RunDeps): Promise<
         asString(s.title),
       ].join("\t"),
     );
-    if (result.truncated) lines.push(`… ${result.total} sessions; pass --limit to widen.`);
+    if (result.truncated) lines.push(moreLine(result.total, result.nextOffset, "sessions"));
     success(deps.io, lines.join("\n"));
     return;
   }

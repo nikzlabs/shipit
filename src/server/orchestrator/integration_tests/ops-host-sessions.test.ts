@@ -168,6 +168,67 @@ describe("Integration: Ops host-session inventory (docs/255)", () => {
     expect(res.body).not.toContain("Subject PR");
   });
 
+  it("does not leak a credential-bearing repo URL across the session boundary", async () => {
+    const ops = await createSession("ops");
+    seedSubject("83292266-7445-4a1b-9c2d-000000000000", "shipit/kmwodw", 1744);
+    // `setGitRemote` persists a user-supplied origin verbatim, so a session row
+    // can hold userinfo. Showing it to a DIFFERENT session is the token leak
+    // req 8 forbids — the projection strips it at the crossing.
+    //
+    // Generic `u:pw@` rather than a realistic `x-access-token:<pat>@` shape on
+    // purpose: `stripUrlCredentials` strips ANY http(s) userinfo, so the path
+    // under test is identical, and a PAT-shaped fixture trips the secret scanner
+    // on every commit. Don't "improve" it back.
+    sessionManager.setRemoteUrl(
+      "83292266-7445-4a1b-9c2d-000000000000",
+      "https://u:pw@github.com/o/r.git",
+    );
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${ops}/host-sessions?branch=shipit%2Fkmwodw`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain("u:pw@");
+    expect((res.json() as { sessions: { remoteUrl: string }[] }).sessions[0].remoteUrl).toBe(
+      "https://github.com/o/r.git",
+    );
+  });
+
+  it("refuses a user-set container_name and points at the label instead", async () => {
+    const ops = await createSession("ops");
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${ops}/host-sessions?container=payments-db`,
+    });
+    expect(res.statusCode).toBe(400);
+    expect((res.json() as { error: string }).error).toContain("shipit-parent-session");
+  });
+
+  it("pages the inventory with limit + offset", async () => {
+    const ops = await createSession("ops");
+    seedSubject("aaaa1111-2222-3333-4444-555555555555", "shipit/a", 1);
+    seedSubject("bbbb1111-2222-3333-4444-555555555555", "shipit/b", 2);
+
+    const first = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${ops}/host-sessions?limit=1`,
+    });
+    expect(first.statusCode).toBe(200);
+    const firstBody = first.json() as { sessions: { id: string }[]; total: number; nextOffset?: number };
+    expect(firstBody.sessions).toHaveLength(1);
+    expect(firstBody.total).toBe(3); // two subjects + the ops session itself
+    expect(firstBody.nextOffset).toBe(1);
+
+    const second = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${ops}/host-sessions?limit=1&offset=${firstBody.nextOffset}`,
+    });
+    const secondBody = second.json() as { sessions: { id: string }[] };
+    expect(secondBody.sessions).toHaveLength(1);
+    expect(secondBody.sessions[0].id).not.toBe(firstBody.sessions[0].id);
+  });
+
   it("rejects an invalid pr filter (400)", async () => {
     const ops = await createSession("ops");
     const res = await app.inject({

@@ -58,7 +58,7 @@ leaks by default:
 
 | Emitted | Withheld |
 |---|---|
-| `id`, `title`, `kind`, `branch`, `remoteUrl` | `conversationReplay` |
+| `id`, `title`, `kind`, `branch`, `remoteUrl`¹ | `conversationReplay` |
 | `parentSessionId`, `rootSessionId`, `spawnedByTurn` | queued messages / turn state |
 | `agentId`, `model` | latest assistant message text |
 | `createdAt`, `lastUsedAt`, `mergedAt`, `closedAt` | secrets, tokens, env |
@@ -66,6 +66,17 @@ leaks by default:
 | `containerName` (derived) | agent session id / provider route |
 | `pr`: `number`, `url`, `state`, `baseBranch`, `headBranch` | PR title/body, review comments |
 | `previousPr`: `number`, `url` | — |
+
+¹ `remoteUrl` goes through `stripUrlCredentials` here, and that is **not**
+belt-and-suspenders. The repo-wide invariant is that a persisted origin carries
+no userinfo, but `setGitRemote` (`services/git.ts`) writes the user-supplied URL
+through verbatim, so a session row genuinely can hold
+`https://x-access-token:<pat>@github.com/o/r.git`. Every other reader of
+`remoteUrl` shows it back to that session's **own** user; this one shows it to a
+**different** session, which is exactly the boundary req 8 draws around tokens.
+Strip at the crossing. (The upstream persistence gap is a separate pre-existing
+bug, deliberately not fixed here — this surface must be safe regardless of what
+some other path chose to store.)
 
 The line is deliberately drawn at *"that a session exists and what it owns"*.
 An Ops session sees inventory; it never reads what the user said. Note what is
@@ -84,12 +95,30 @@ GET /api/sessions/:id/host-sessions
     &pr=<number>            matches pr_status.prNumber OR previous_merged_pr.number
     &container=<name>       docker container name → session id prefix
     &id=<session-id>        exact id, or a unique-enough id prefix
-    &includeArchived=true   include user-archived / evicted sessions
-    &limit=<n>              cap the result set (default 200, max 500)
+    &includeArchived=true   include sessions the user hid (`userArchived`)
+    &includeWarm=true       include warm pool shells
+    &limit=<n>              cap the page (default 200, max 500)
+    &offset=<n>             skip N matches — pages past the cap (req 5)
 ```
 
-Filters compose (AND). With none, it is the full inventory — non-warm sessions,
-most recently used first, archived excluded unless asked for (req 5, req 7).
+Filters compose (AND). With none, it is the full inventory, most recently used
+first, with two classes excluded by default and each reachable by flag:
+user-archived sessions (req 7) and warm pool sessions.
+
+**What is *not* hidden by default: a disk-evicted session.** `diskTier` and
+visibility are orthogonal in ShipIt — `SessionManager.list`'s own docstring says
+"Disk tier is irrelevant to visibility" (docs/161) — and eviction happens to
+ordinary live sessions on the idle ladder after a few days. Filtering evicted
+rows out of the default answer would suppress exactly the older sessions a
+post-hoc triage question is usually about. Archiving sets `user_archived` *and*
+`disk_tier='evicted'`, so keying the default filter on `userArchived` alone is
+the strictly narrower, correct cut.
+
+`offset` exists because `limit` is server-capped at 500. Without paging, a host
+with more than 500 sessions could never be fully enumerated, which req 5
+requires; the response carries `nextOffset` when more remain, so the CLI can
+name the exact next command instead of telling the agent to raise a `limit` it
+has no power to raise.
 
 Why the id filter is `id=` and not `session=`: the container guard's §3 scope
 check falls back to a `?session=` query param when the path has no
@@ -114,6 +143,20 @@ emits) and an `agent-`/`shipit-` prefix, then takes the leading 12 characters of
 the remainder and matches `id LIKE '<prefix>%'`. That one rule covers every
 shape above, plus a bare id or id prefix pasted straight from the journal.
 
+**A name with neither prefix must additionally look like a UUID prefix.** A
+project's own `docker-compose.yml` may set an explicit `container_name:`, and
+ShipIt's generated override does not rewrite it, so a service container can
+appear in `docker ps` as an arbitrary string like `payments-db`. Reading its
+first 12 characters as a session-id prefix would `LIKE`-match a completely
+unrelated session — a *confidently wrong* answer, which on a surface whose whole
+purpose is to end guesswork is worse than no answer at all. So an unprefixed
+name is accepted only if it could be a UUID prefix; otherwise the route 400s and
+the error names the authoritative fallback, which exists precisely for these
+containers: the `shipit-parent-session` label (compose siblings) or
+`shipit-session-id` (session containers), read with `docker inspect` and passed
+back as `--id`. Turning a dead end into a next step is the whole point of the
+feature, so the failure path gets the same treatment as the success path.
+
 ## SessionManager lookups
 
 Straight SQL, no load-all-rows scan (indexes exist on nothing relevant here, but
@@ -136,8 +179,8 @@ applies the `includeArchived` and warm filters, so the SQL stays one predicate.
 
 ```
 shipit session find --branch <name> | --pr <number> | --container <name> | --id <id>
-                    [--include-archived] [--limit N] [--json]
-shipit session list --all [--include-archived] [--limit N] [--json]
+                    [--include-archived] [--include-warm] [--limit N] [--offset N] [--json]
+shipit session list --all [--include-archived] [--include-warm] [--limit N] [--offset N] [--json]
 ```
 
 `find` is the headline command — it is what makes the motivating question a
@@ -176,7 +219,7 @@ saying so is more useful than dumping the inventory under the wrong verb.
 
 | File | Role |
 |---|---|
-| `src/server/orchestrator/sessions.ts` | `findByBranch` / `findByPrNumber` / `findByIdPrefix` |
+| `src/server/orchestrator/sessions.ts` | `findByBranch` / `findByPrNumber` / `findByIdPrefix` / `listAllIncludingWarm` |
 | `src/server/orchestrator/services/host-sessions.ts` | filter composition + the metadata-only projection |
 | `src/server/orchestrator/api-routes-host-sessions.ts` | the Ops-gated route |
 | `src/server/orchestrator/api-container-guard.test.ts` | golden route-table snapshot (one new entry) |

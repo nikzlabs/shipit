@@ -597,13 +597,17 @@ export function registerAgentOpsRoutes(
       container?: string;
       id?: string;
       includeArchived?: string;
+      includeWarm?: string;
       limit?: string;
+      offset?: string;
     };
   }>(
     "/agent-ops/session/host-sessions",
     async (request, reply) => {
       const params = new URLSearchParams();
-      for (const key of ["branch", "pr", "container", "id", "includeArchived", "limit"] as const) {
+      for (const key of [
+        "branch", "pr", "container", "id", "includeArchived", "includeWarm", "limit", "offset",
+      ] as const) {
         const value = request.query[key];
         if (value) params.set(key, value);
       }
