@@ -147,13 +147,38 @@ and PWA install are unavailable. `random-id.ts` documents a real prior outage fr
 exactly this, so the caveat is field-proven, not theoretical. An owned wildcard
 domain pointed at the tailnet IP is the path to real HTTPS.
 
-### `.gitignore` (req 9)
+### The update path (req 9)
 
 `.shipit.env` is untracked but was never git-ignored, and `shipit_sync_checkout`
-refuses to sync when `git status --porcelain` is non-empty — which lists untracked
+refused to sync when `git status --porcelain` was non-empty — which lists untracked
 files. So writing operator preferences permanently broke `update.sh`. The egress
 opt-out (`setup.sh`) already writes that file, so this bug predates this feature;
 it is fixed here because this feature would otherwise widen it.
+
+Two changes, and the second is the one that matters:
+
+1. `.gitignore` now covers `.shipit.env` and the generated overlay.
+2. `shipit_sync_checkout` checks `--untracked-files=no`.
+
+The `.gitignore` entry alone would **not** have fixed anyone already affected:
+`update.sh` sources the checkout's *own* copy of `lib.sh`, so an old copy rejects
+the tree before it can fetch the commit carrying the new ignore rule. Narrowing the
+check is what unblocks them, on the next update after this lands.
+
+The narrowing is also just correct on its own terms: `git reset --hard` discards
+changes to *tracked* files only and leaves untracked files alone, so refusing on
+them never protected anything. Anyone stuck on a pre-fix copy needs one manual
+`rm ~/.shipit/.shipit.env`, documented in `deployment/README.md`.
+
+### Failure handling in the best-effort path
+
+Every filesystem mutation in `shipit_refresh_tailnet_bind` is guarded, because the
+callers run `set -euo pipefail` and the binding is best-effort by definition: a
+read-only checkout or a full disk must degrade to "no tailnet binding", never to
+"ShipIt refuses to start". Overlay *removal* is the exception to silent tolerance —
+`shipit_compose_files` keys off the file's existence, so a leftover overlay would
+keep binding an address the user opted out of, or one that no longer exists (which
+fails the container outright). That case warns rather than passing quietly.
 
 ### Documentation corrections
 

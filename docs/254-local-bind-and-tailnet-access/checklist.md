@@ -15,7 +15,46 @@
 - [x] Tests: `local-install-bind.test.ts` (7) drives the real `lib.sh` against a stubbed `tailscale`
 - [x] Tests: `preview-host.test.ts` extended for `suggestWildcardHost` (7 new)
 - [x] `npm run lint:dev` + `npm run typecheck` clean
-- [x] Independent requirements review by a fresh-context reviewer
+- [x] Independent requirements review by a fresh-context reviewer (Codex), findings resolved below
+
+## Review round (2026-08-06, Codex against `requirements.md`)
+
+Accepted and fixed:
+
+- [x] **Req 9 didn't actually work.** `shipit_sync_checkout` refused on *untracked* files, but
+      `git reset --hard` never touches those — so the check protected nothing while permanently
+      wedging updates for anyone with a `.shipit.env`. Narrowed to `--untracked-files=no`; the
+      `.gitignore` entry alone would not have reached already-affected installs, since `update.sh`
+      sources their old `lib.sh` before fetching. One-time recovery documented in `deployment/README.md`.
+- [x] **Best-effort path could still abort startup.** `mktemp`/`cat`/`mv`/`rm` were unguarded under
+      `set -e`. All now degrade to loopback-only. Overlay *removal* failure warns instead of failing
+      silently, because `shipit_compose_files` keys off the file's existence.
+- [x] **Req 3 violated by our own setup output** — it advertised Tailscale on the default path. Replaced
+      with a neutral pointer to `deployment/README.md`.
+- [x] **`tailscale.sh` printed a possibly-stale address.** It now reports what `lib.sh` actually bound
+      (`SHIPIT_TAILNET_IP`), and errors if the binding was skipped rather than claiming success.
+- [x] Doc inaccuracies: wildcard DNS alone ≠ HTTPS (`README.md`); the client exempts loopback IPs from
+      the raw-IP refusal (`CLAUDE.md`); the "never blocks startup" claim needed scoping to the start
+      paths, not `tailscale.sh` (`deployment/README.md`).
+- [x] `suggestWildcardHost`'s IPv6 comment claimed no fix exists; sslip.io does serve dashed IPv6. Now
+      stated as a scope decision, and the test says so.
+- [x] Coverage gaps: added the two `sync_checkout` cases, the unwritable-overlay case, the
+      undeletable-overlay case, and two `PreviewFrame` assertions (suggestion shown / correctly absent).
+
+Rejected, with reasons:
+
+- **"Req 5: `tailscale.sh` should record the opt-in and start anyway when Tailscale is down."** The
+  requirement is about *ShipIt* starting, and the start paths (`setup.sh`/`update.sh`) handle that
+  correctly. `tailscale.sh` is the opt-in command; failing its own precondition is the right outcome,
+  and silently proceeding would be worse.
+- **"Req 4: support IPv6-only tailnets."** Real but rare — Tailscale assigns IPv4 by default and
+  disabling it is an advanced setting. Recorded as a known limitation rather than built.
+
+Amended:
+
+- **Req 5's "recovers on its own"** was an agent-authored over-promise: a published Docker port binding
+  cannot be added to a running container, so restoration requires recreating it either way. Reworded to
+  the strongest achievable behaviour, flagged rather than quietly loosened.
 
 ## Deliberately not done
 

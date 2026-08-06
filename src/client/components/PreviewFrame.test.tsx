@@ -666,6 +666,37 @@ describe("PreviewFrame", () => {
     expect(screen.getByText("Preview not available over this host")).toBeInTheDocument();
     expect(screen.getByText("192.168.1.5:4123")).toBeInTheDocument();
     expect(screen.queryByText("Connecting to dev server...")).not.toBeInTheDocument();
+    // docs/254 req 8: explaining the constraint isn't enough — name a host that
+    // actually works, so the user has something to act on rather than a rule to
+    // reason about. Asserted here and not only in the helper's unit tests,
+    // because the helper could keep passing while the component stopped
+    // rendering what it returns.
+    expect(screen.getByText("http://192-168-1-5.sslip.io:4123")).toBeInTheDocument();
+  });
+
+  it("explains the constraint without inventing a host when none can be suggested", () => {
+    // A non-loopback IPv6 literal reaches the empty state (buildSubdomainUrl
+    // returns null for it) but gets no suggestion — sslip.io does serve dashed
+    // IPv6 names, but encoding one correctly is fiddly and deliberately out of
+    // scope, so the empty state must stop at the explanation. A bogus concrete
+    // suggestion would be worse than none.
+    vi.stubEnv("VITE_API_HOST", "[2001:db8::1]:4123");
+    render(
+      <PreviewFrame
+        preview={{
+          running: true,
+          port: 3000,
+          url: "/preview/abc/3000/",
+          source: "detected",
+          detectedPorts: [3000],
+        }}
+        sessionId="abc"
+        {...defaultProps}
+        detectedPorts={[3000]}
+      />,
+    );
+    expect(screen.getByText("Preview not available over this host")).toBeInTheDocument();
+    expect(screen.queryByText(/sslip\.io/)).not.toBeInTheDocument();
   });
 
   it("passes an AbortSignal to preview-health fetch so a hung response can't strand the poll", async () => {

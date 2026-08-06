@@ -48,9 +48,13 @@ http://100-83-12-47.sslip.io:4123
 ```
 
 - **Loopback is never removed.** `http://localhost:4123` keeps working on the machine itself.
-- **Tailscale being down never blocks startup.** The tailnet address is re-derived at every start; if
-  Tailscale isn't connected, ShipIt starts on loopback and says so, then picks the binding back up on
-  the next start. A changed tailnet address needs no edit for the same reason.
+- **Tailscale being down never blocks ShipIt from starting.** `setup.sh` and `update.sh` re-derive the
+  tailnet address at every start; if Tailscale isn't connected they start ShipIt on loopback and say
+  so, and the binding returns at the next start once Tailscale is back. A changed tailnet address is
+  picked up the same way, with no edit. (Restoring it does require that next start — a published
+  Docker port binding can't be added to an already-running container.) `tailscale.sh` itself is the
+  exception, and deliberately so: it is the opt-in command, so it reports the problem and stops rather
+  than claiming to have configured something it couldn't.
 - **Use the sslip.io URL, not the raw IP.** Previews are served at `{sessionId}--{port}.<host>`; a raw
   IP can't carry a wildcard subdomain, so `http://100.83.12.47:4123` gives a working app and blank
   previews. Same trade-offs as the VPS sslip.io path below: HTTP only (no wildcard cert for these
@@ -77,6 +81,18 @@ Day-to-day, from your checkout (default `~/.shipit`):
 # ...or also delete the workspace/credentials volumes (destructive):
 ~/.shipit/deployment/local/stop.sh --purge
 ```
+
+> **If `update.sh` refuses with "has uncommitted changes" and you haven't edited anything:** you're on
+> a copy from before this was fixed. `update.sh` used to reject *untracked* files too, and operator
+> state (`.shipit.env`, written by the egress opt-out) lives in the checkout — so writing it wedged
+> updates permanently. `git reset --hard` never touched untracked files in the first place, so the
+> check now ignores them. To get the fix, clear the blocker once and update:
+>
+> ```bash
+> mv ~/.shipit/.shipit.env /tmp/shipit.env.bak   # if you have one
+> ~/.shipit/deployment/local/update.sh
+> mv /tmp/shipit.env.bak ~/.shipit/.shipit.env   # restore; now ignored, won't block again
+> ```
 
 The local install runs in **manual update mode**: the channel selector in
 **Settings → Advanced → Software Updates** works, but "Update Now" defers to `update.sh` rather than

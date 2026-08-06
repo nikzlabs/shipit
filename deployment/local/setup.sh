@@ -169,8 +169,10 @@ echo "  Stop:    $SHIPIT_HOME/deployment/local/stop.sh"
 echo ""
 echo "  On first launch, sign in to Claude Code or Codex from the in-app provider flow."
 echo ""
+# Stated as a property of THIS install, with no reference to Tailscale: docs/254
+# req 3 requires the default path not to mention it, since most local users will
+# never use it. Remote access is documented in deployment/README.md for the few
+# who want it.
 echo "  ShipIt is bound to localhost, so it is not reachable from other devices."
-echo "  To reach it from your phone or another machine over Tailscale (previews"
-echo "  included), run:"
-echo "      $SHIPIT_HOME/deployment/local/tailscale.sh"
+echo "  See deployment/README.md if you want to reach it from another device."
 echo ""

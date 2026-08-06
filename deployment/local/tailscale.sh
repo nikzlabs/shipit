@@ -102,7 +102,20 @@ echo "==> Recorded tailnet opt-in in $SHIPIT_ENV_FILE"
 echo "==> Restarting ShipIt to add the tailnet binding..."
 shipit_build_and_up
 
-SSLIP_HOST="${TS_IP//./-}.sslip.io"
+# Report the address that was ACTUALLY bound. shipit_build_and_up re-derives it
+# (that is the whole point of doing it at start time), so the TS_IP read during
+# preflight above can be stale by now — or the binding may have been skipped
+# entirely if Tailscale dropped in between. Print what happened, not what we
+# hoped would happen.
+if [ -z "${SHIPIT_TAILNET_IP:-}" ]; then
+  echo "" >&2
+  echo "Tailscale became unreachable while starting, so ShipIt came up on" >&2
+  echo "localhost only. The opt-in is recorded — re-run update.sh once Tailscale" >&2
+  echo "is connected and tailnet access will be there." >&2
+  exit 1
+fi
+SSLIP_HOST="${SHIPIT_TAILNET_IP//./-}.sslip.io"
+TS_IP="$SHIPIT_TAILNET_IP"
 
 echo ""
 echo "${C_BANNER}===========================================${C_RESET}"

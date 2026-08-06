@@ -35,8 +35,16 @@ no exposed port to harden.
 5. Opting in to Tailscale access does not make ShipIt fail to start when Tailscale
    is unavailable. If Tailscale is not installed, not connected, or simply hasn't
    come up yet after a reboot, ShipIt still starts and is still reachable locally.
-   The tailnet binding is best-effort, and it recovers on its own once Tailscale is
-   back.
+   The tailnet binding is best-effort: it is never a precondition for starting, and
+   it is restored at the next start once Tailscale is back, with no user edit.
+
+   *Amended 2026-08-06 (agent, not human input): this originally read "recovers on
+   its own once Tailscale is back", which is not achievable — a published Docker
+   port binding cannot be added to a running container, so restoring it requires
+   recreating the container either way. The requirement now states the strongest
+   behaviour that is actually possible. Flagged to the human rather than quietly
+   reworded; if live recovery is genuinely wanted, it needs a supervisor process
+   (what the VPS does with socat) and is a different feature.*
 
 6. A user who has opted in and whose tailnet address later changes does not have to
    hand-edit anything for access to keep working.

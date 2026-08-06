@@ -153,6 +153,38 @@ describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () =>
     expect(yml).not.toContain("100.83.12.47");
   });
 
+  it("still starts when the overlay cannot be written at all (req 5)", () => {
+    fs.writeFileSync(envFile, "SHIPIT_TAILNET_BIND=1\n");
+    stubTailscale("100.83.12.47");
+    // An unwritable parent directory, so `mktemp` cannot create the temp file.
+    // Models the read-only-checkout / full-disk class of failure. The binding is
+    // best-effort, so this must degrade to loopback, not abort the start.
+    fs.chmodSync(home, 0o555);
+    try {
+      const { args, stderr } = refresh({ withTailscale: true });
+      expect(args.trim().split("\n").filter((p) => p === "-f")).toHaveLength(1);
+      expect(stderr).toContain("localhost only");
+    } finally {
+      fs.chmodSync(home, 0o755);
+    }
+  });
+
+  it("warns rather than silently binding on when a stale overlay cannot be removed", () => {
+    // Opted out, but the overlay can't be deleted. shipit_compose_files keys off
+    // the file's existence, so staying silent would keep binding an address the
+    // user opted out of — and fail the container outright once it stops existing.
+    fs.writeFileSync(envFile, "");
+    fs.writeFileSync(overlay, "services: {}\n");
+    const dir = path.dirname(overlay);
+    fs.chmodSync(dir, 0o555);
+    try {
+      const { stderr } = refresh({ withTailscale: false });
+      expect(stderr).toContain("could not remove");
+    } finally {
+      fs.chmodSync(dir, 0o755);
+    }
+  });
+
   it("survives a SHIPIT_HOME containing spaces", () => {
     // Not hypothetical: SHIPIT_HOME defaults to $HOME/.shipit, and macOS home
     // directories are routinely "/Users/First Last". A naive $(...) split here
@@ -196,6 +228,88 @@ describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () =>
     // A leftover overlay would keep binding the tailnet IP after opt-out, and
     // would fail the container outright once that address stopped existing.
     expect(fs.existsSync(overlay)).toBe(false);
+  });
+});
+
+describe("deployment/local/lib.sh — shipit_sync_checkout untracked files (docs/254 req 9)", () => {
+  let root: string;
+  let home: string;
+  let bare: string;
+
+  const git = (args: string, cwd: string): string =>
+    execFileSync("git", args.split(" "), {
+      cwd,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "t",
+        GIT_AUTHOR_EMAIL: "t@e",
+        GIT_COMMITTER_NAME: "t",
+        GIT_COMMITTER_EMAIL: "t@e",
+      },
+    }).toString();
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-sync-"));
+    bare = path.join(root, "origin.git");
+    home = path.join(root, "home");
+    fs.mkdirSync(bare, { recursive: true });
+    git("init --bare -b main .", bare);
+    git(`clone ${bare} ${home}`, root);
+    fs.writeFileSync(path.join(home, "tracked.txt"), "v1\n");
+    git("add -A", home);
+    git("commit -m first", home);
+    git("push -u origin main", home);
+    // `edge` resolves straight to origin/main, skipping the stable ls-remote probe.
+    fs.writeFileSync(path.join(home, ".release-channel"), "edge\n");
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  function sync(): { ok: boolean; stderr: string } {
+    const stderrFile = path.join(root, "err.txt");
+    const script = `
+      set -uo pipefail
+      SHIPIT_HOME=${JSON.stringify(home)}
+      . ${JSON.stringify(LIB_SH)}
+      shipit_sync_checkout
+    `;
+    try {
+      execFileSync("bash", ["-c", script], {
+        env: { ...process.env, HOME: home },
+        stdio: ["pipe", "pipe", fs.openSync(stderrFile, "w")],
+      });
+      return { ok: true, stderr: fs.readFileSync(stderrFile, "utf8") };
+    } catch {
+      return { ok: false, stderr: fs.readFileSync(stderrFile, "utf8") };
+    }
+  }
+
+  it("syncs despite untracked operator files, which reset --hard never touches", () => {
+    // The bug this fixes: .shipit.env (written by the egress opt-out) is untracked
+    // and lives in the checkout, so the old `git status --porcelain` check
+    // refused forever — wedging the only supported update path.
+    fs.writeFileSync(path.join(home, ".shipit.env"), "SESSION_EGRESS_ENFORCE=0\n");
+    fs.writeFileSync(path.join(home, "some-other-untracked.txt"), "x\n");
+
+    const { ok } = sync();
+
+    expect(ok).toBe(true);
+    // ...and the file is still there afterwards, which is why refusing on it was
+    // never protecting anything.
+    expect(fs.existsSync(path.join(home, ".shipit.env"))).toBe(true);
+  });
+
+  it("still refuses when tracked files are modified, which reset --hard WOULD discard", () => {
+    fs.writeFileSync(path.join(home, "tracked.txt"), "local edit\n");
+
+    const { ok, stderr } = sync();
+
+    expect(ok).toBe(false);
+    expect(stderr).toContain("uncommitted changes to tracked files");
+    // The edit must survive the refusal — that is the whole point of the guard.
+    expect(fs.readFileSync(path.join(home, "tracked.txt"), "utf8")).toBe("local edit\n");
   });
 });
 

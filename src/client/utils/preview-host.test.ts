@@ -92,6 +92,9 @@ describe("suggestWildcardHost (docs/254 req 8)", () => {
   });
 
   it("suggests nothing for IPv6 literals, which have no one-step fix", () => {
+    // Not a claim that IPv6 is unfixable — sslip.io serves dashed IPv6 names too.
+    // It is out of scope (see the helper docstring), and this pins that choice so
+    // a future change to it is deliberate rather than accidental.
     expect(suggestWildcardHost("[2001:db8::1]:4123")).toBeNull();
     expect(suggestWildcardHost("[::1]:4123")).toBeNull();
   });

@@ -73,8 +73,9 @@ Use that URL rather than the raw `http://100.x.y.z:4123`. Previews are served at
 blank on the raw-IP URL — [sslip.io](https://sslip.io) maps the dashed form straight back to the same
 address, which makes them resolve with no DNS setup. Traffic rides the encrypted tailnet, but the
 connection is HTTP: there is no wildcard certificate for these names, so clipboard access and PWA
-install (which need a secure context) are unavailable. For real HTTPS, point a wildcard DNS record you
-own at the tailnet address. Details in
+install (which need a secure context) are unavailable. Getting real HTTPS means terminating TLS
+yourself — a wildcard DNS record you own pointed at the tailnet address, a wildcard certificate for it,
+and a reverse proxy in front of ShipIt; the DNS record alone is not enough. Details in
 [`docs/254`](docs/254-local-bind-and-tailnet-access/plan.md).
 
 To expose ShipIt on your LAN instead, set `SHIPIT_BIND_ADDR=0.0.0.0` in `~/.shipit/.shipit.env` — but

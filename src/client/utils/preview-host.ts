@@ -28,9 +28,12 @@
  * (`deployment/local/tailscale.sh`) and the LAN case. The dashed form is what
  * dodges the raw-IPv4 guard in `buildSubdomainUrl`.
  *
- * Deliberately not suggested for IPv6 literals or dotless hostnames: there is no
- * equivalent one-step fix, so the generic guidance in the empty state is all we
- * can honestly give.
+ * Not suggested for IPv6 literals or dotless hostnames. For IPv6 that is a scope
+ * decision, not an impossibility — sslip.io does serve dashed IPv6 names — but
+ * the encoding is fiddly (zero-compression has to be expanded) and the case is
+ * rare enough that getting it subtly wrong would be worse than the generic
+ * guidance the empty state already gives. Dotless hostnames genuinely have no
+ * one-step fix.
  */
 export function suggestWildcardHost(locationHost: string): string | null {
   const [hostname, port] = locationHost.includes(":")
