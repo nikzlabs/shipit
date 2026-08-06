@@ -177,12 +177,20 @@ closes + ~26 label creations. Three consequences, each of which shapes the drive
 1. **No retry or backoff exists.** `trackers/github/adapter.ts` has no handling
    for `429`/secondary-rate-limit responses — a throttled request surfaces as a
    plain error. GitHub rate-limits content creation, so the driver must pace
-   itself and retry on its own. Measure the first hundred writes and set the pace
-   from what actually comes back rather than from a documented number.
-2. **It must be resumable.** At any survivable pace this runs for hours, across
-   more than one turn. The mapping and a per-issue completion marker are appended
-   to disk after each write, so a restart skips what is already done. Re-running a
-   completed step must be a no-op, not a duplicate.
+   itself and retry on its own. **How long the whole thing takes is not a
+   constraint** — it can run unattended overnight — so pace conservatively. The
+   reason to pace is to avoid failures, not to finish sooner.
+
+   No throughput figure here is measured. Reads were observed at ~2s each, and
+   only three writes have been run; the sustained write rate is unknown until the
+   first hundred are timed. Treat any duration in this doc as an order of
+   magnitude, and set the real pace from what the tracker actually returns.
+2. **It must be resumable.** It runs for a long time, across more than one turn.
+   The mapping and a per-issue completion marker are appended to disk after each
+   write, so a restart skips what is already done. Re-running a completed step
+   must be a no-op, not a duplicate. Idle cleanup is not a hazard: `dispose()`
+   refuses to reap a runner whose agent is running unless explicitly forced
+   (`container-session-runner.ts:2521`), so an unattended overnight pass survives.
 3. **Every write posts a persisted transcript card.** `api-routes-issues.ts` emits
    and *persists* an `issue_write_card` per write, with no suppression flag. ~2,000
    cards in one session's history is not something to inflict on a session anyone
@@ -250,11 +258,19 @@ and an assertion that needs a human is a missing assertion.
 **Why a human:** every one of these is "does this read well", which no test
 asserts.
 
-**Cost of getting it wrong:** high, and asymmetric. Issue *bodies* can be edited
-later. **Comments cannot** — the shim has no comment-edit or comment-delete
-command, and deletion exists only via a write card's Undo, which is gone once the
-copy session's cards age out. Credentials are brokered, so there is no direct-API
-fallback. A comment format settled here is settled for good.
+**Cost of getting it wrong:** depends on one capability that does not exist yet.
+Issue *bodies* can be edited later. **Comments cannot** — the shim has no
+comment-edit or comment-delete command, and deletion exists only via a write
+card's Undo, which is gone once the copy session's cards age out. Credentials are
+brokered, so there is no direct-API fallback. As things stand, a comment format
+settled here is settled for good.
+
+If `comment edit` ships first (docs/177 → *Proposed — editing and deleting a
+comment*), that changes: a wrong format becomes a second pass over 1,344
+comments rather than a permanent defect. Wall-clock is not a constraint on this
+migration, so "another full pass" is a real remedy rather than a theoretical one.
+This gate stays either way — it is far cheaper to read one issue than to
+re-drive 1,344 writes — but it stops being a one-way door.
 
 ### Gate 2 — after Pass A, before the reference sweep
 

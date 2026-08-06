@@ -379,11 +379,21 @@ Two things to get right, and they pull in opposite directions:
 Edit is the clearly-useful half and carries neither problem; delete is worth
 having but should not ride in on edit's justification.
 
-**Not a prerequisite for docs/247's migration.** It was considered as insurance
-against the copy settling on a bad comment format across 1,344 comments, and it
-does not serve that purpose: editing them all costs another full pass, which is
-what the migration's pilot gate exists to avoid. Build this because the capability
-is independently useful, not to de-risk that.
+**Worth landing before docs/247's migration**, for `comment edit` specifically.
+The migration replays 1,344 comments, and comments are the one thing it writes
+that cannot be corrected afterwards — issue bodies stay editable, comments do not.
+An earlier version of this section dismissed edit as useless insurance on the
+grounds that re-editing every comment costs another full pass; that argument does
+not survive the migration's actual constraint, which is that **wall-clock is
+free** — the copy can run unattended overnight. A second pass is therefore a real
+remedy, and `comment edit` converts a permanently wrong comment format into a
+recoverable one.
+
+That does not make it a *blocker*: docs/247's pilot gate still catches a bad
+format for the cost of reading a single issue, which is far cheaper than
+re-driving 1,344 writes. Edit removes the one-way door behind that gate.
+`comment delete` carries none of this justification and should be judged on its
+own.
 
 ## Key files
 
