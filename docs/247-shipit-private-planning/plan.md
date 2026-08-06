@@ -23,8 +23,9 @@ assumed:
   it** (req 5). Declared as `planning`, it lists, enumerates labels and statuses,
   and accepts writes — a create, a comment and a close all round-tripped live.
 
-The declaration is already in `shipit.yaml`. What remains is the copy, the
-reference rewrite, and retiring Linear.
+Declaring the tracker in `shipit.yaml` is split into its own PR so the tab
+appears without waiting on this doc's review. What remains after that is the
+copy, the reference rewrite, and retiring Linear.
 
 ## Why a private repository
 

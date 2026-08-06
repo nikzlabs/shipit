@@ -27,11 +27,6 @@ issues:
     - kind: linear
       team: SHI
       name: roadmap
-    # docs/247 — ShipIt's own planning issues live in a private repository,
-    # separate from this public source repo. Migration off Linear in progress.
-    - kind: github
-      repo: nikzlabs/shipit-planning
-      name: planning
 # Release auto-publish (docs/214): ShipIt cuts releases by merging a version-bump
 # PR into the `stable` maintenance branch. On merge, .github/workflows/release.yml
 # derives the tag `v<package.json version>`, gates on a green build, tags the

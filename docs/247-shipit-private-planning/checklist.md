@@ -9,7 +9,7 @@ reachability probe (`planning#1`, closed) and the labels that probe minted.
 - [x] Confirm whether "fully retire Linear" is scoped to ShipIt's own planning or extends to removing Linear support from the product. *(Answered by 248 req 3: `linear` is a declared kind, so support stays in the product and ShipIt retires it for itself by not declaring it.)*
 - [x] Create `nikzlabs/shipit-planning` and confirm the deployment's GitHub credential reaches it (req 5). *(Verified live: list, labels and statuses all answer, and a create + comment + close round-tripped.)*
 - [x] Land, release and **deploy** [248](../248-declared-issue-trackers/checklist.md)'s rework, then re-probe from a fresh session. *(The deployed shim takes `--tracker NAME`, requires one on `create`, and fails closed on an undeclared name.)*
-- [x] Declare the planning tracker in `shipit.yaml`.
+- [ ] Declare the planning tracker in `shipit.yaml`. *(Split into its own PR so the tab appears without waiting on this doc's review.)*
 - [x] Settle how much of a Linear issue survives the copy. *(Workflow states collapse — req 8; the issue's original creation date is recorded in its body — req 9.)*
 
 ## Migration
