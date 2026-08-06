@@ -90,7 +90,12 @@ repository. `kind: linear` becomes a declared backend identified by its team key
   `getLinearTeam` / `setLinearTeam` and the stored `linear.team` field retire, as
   does the team picker in `SettingsTrackers.tsx`. Settings keeps the token.
   `listLinearTeams` stays useful — but as a lookup for *writing* a declaration,
-  not as a picker that persists a binding.
+  not as a picker that persists a binding. The card is **workspace-scoped and
+  renders nothing repository-scoped**: it briefly carried a `shipit.yaml`
+  declaration snippet, which is per-repository configuration in a dialog that has
+  no repository, so that came back out. Repo-scoped tracker state surfaces where
+  it is actionable — the Issues tab's declared sub-tabs — and repo-scoped settings
+  belong in the Project Settings dialog.
 - **`LinearTracker` takes its team from its declaration**, so a repository can
   declare two Linear trackers on different teams. Its `isConfigured()` already
   requires a token and a team; the team now arrives from config rather than
@@ -408,7 +413,8 @@ Current state; each is a rework site unless noted.
   over; `identifier` construction moves to the shared formatter.
 - `src/server/orchestrator/credential-store.ts` — `getLinearTeam`/`setLinearTeam`
   and the stored `linear.team` retire.
-- `src/client/components/SettingsTrackers.tsx` — team picker retires.
+- `src/client/components/SettingsTrackers.tsx` — team picker retires; the card
+  stays credential-only (no repository-scoped declaration content).
 - `src/server/orchestrator/api-routes-issues.ts` — `resolveGitHubTrackerContext`
   reads `shipit.yaml` per request (uncached, so editing the file changes tabs on
   the next request; a parse failure degrades to no declarations). **Carries over.**

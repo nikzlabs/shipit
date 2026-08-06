@@ -130,28 +130,26 @@ export function SettingsTrackers({ embedded = false, logo }: { embedded?: boolea
           <p className="text-xs text-(--color-text-secondary)">Credential connected</p>
         </div>
       </div>
-      <div className="space-y-2">
-        {teams && teams.length > 0 && (
-          <div className="space-y-1">
-            <p className="text-xs text-(--color-text-tertiary)">Teams this token can reach:</p>
-            <div className="flex flex-wrap gap-1">
-              {teams.map((team) => (
-                <span
-                  key={team.id}
-                  title={team.name}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-(--color-border-secondary) bg-(--color-bg-elevated) text-xs"
-                >
-                  <span className="font-mono text-(--color-text-primary)">{team.key}</span>
-                  <span className="text-(--color-text-tertiary) truncate max-w-40">{team.name}</span>
-                </span>
-              ))}
-            </div>
+      {teams && teams.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-xs text-(--color-text-tertiary)">Teams this token can reach:</p>
+          <div className="flex flex-wrap gap-1">
+            {teams.map((team) => (
+              <span
+                key={team.id}
+                title={team.name}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-(--color-border-secondary) bg-(--color-bg-elevated) text-xs"
+              >
+                <span className="font-mono text-(--color-text-primary)">{team.key}</span>
+                <span className="text-(--color-text-tertiary) truncate max-w-40">{team.name}</span>
+              </span>
+            ))}
           </div>
-        )}
-        {teams?.length === 0 && (
-          <p className="text-xs text-(--color-text-tertiary)">No teams found for this token.</p>
-        )}
-      </div>
+        </div>
+      )}
+      {teams?.length === 0 && (
+        <p className="text-xs text-(--color-text-tertiary)">No teams found for this token.</p>
+      )}
     </div>
   ) : (
     <div className="space-y-3">
@@ -191,8 +189,8 @@ export function SettingsTrackers({ embedded = false, logo }: { embedded?: boolea
           </div>
           <p className="text-xs text-(--color-text-secondary) mt-1">
             Connect a Linear API key so repositories that declare a Linear tracker can show their
-            issues in the Issues tab. The credential lives here; which team it reads lives in each
-            repository&apos;s <code>shipit.yaml</code>.
+            issues in the Issues tab. This credential is workspace-wide; which team a repository
+            reads is part of that repository&apos;s own configuration.
           </p>
         </div>
         {headerActions}
