@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SessionSidebar } from "./SessionSidebar.js";
-import { GROUP_GAP_CLASS, BAND_CLEARANCE_CLASS } from "./SessionSidebar/SessionGroup.js";
+import { GROUP_GAP_CLASS, BAND_CLEARANCE_CLASS, groupBandFill } from "./SessionSidebar/SessionGroup.js";
 import { AUTO_MERGE_ICON_CLASS } from "../design-tokens.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore, type PrCardState } from "../stores/pr-store.js";
@@ -1288,8 +1288,73 @@ describe("SessionSidebar", () => {
       const header = group.querySelector<HTMLElement>(".sticky")!;
       expect(header).toBeTruthy();
       expect(header.style.borderLeftWidth).toBe("");
-      // …and the band fill is an opaque token, so rows can't scroll through it.
-      expect(header.className).toContain("bg-(--color-bg-tertiary)");
+    });
+
+    // The band is a wash of the group's OWN color, not a neutral fill: on a
+    // light theme the neutral (--color-bg-tertiary) was the DARKEST surface in
+    // the rail, so headers outweighed the sessions under them.
+    it("washes each group's header band with that group's own color", () => {
+      render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0), colored(repoB, 5)]} />);
+      const groups = document.querySelectorAll<HTMLElement>("[data-repo-color-index]");
+      const bandOf = (g: HTMLElement) => g.querySelector<HTMLElement>(".sticky")!.style.backgroundColor;
+      expect(bandOf(groups[0])).toBe(groupBandFill("var(--repo-color-0)"));
+      expect(bandOf(groups[1])).toBe(groupBandFill("var(--repo-color-5)"));
+      expect(bandOf(groups[0])).not.toBe(bandOf(groups[1]));
+    });
+
+    // The header is `sticky`, so a translucent fill lets session rows scroll
+    // straight THROUGH it. Two things keep it opaque: the wash is mixed over the
+    // rail background rather than being the hue at low alpha, and the opaque
+    // class is on the header unconditionally, so the states that produce NO
+    // inline wash still resolve to a fill.
+    //
+    // Every state below is rendered separately and on purpose. An earlier
+    // version of this test asserted "every state" while only ever rendering a
+    // colored repo, so the two no-wash branches it named went unexercised
+    // (caught in the Codex review of PR #2045).
+    describe("keeps the sticky header opaque", () => {
+      const headerOf = (el: HTMLElement) => el.querySelector<HTMLElement>(".sticky")!;
+
+      it("when the group carries a wash — mixed over the rail, not alpha", () => {
+        render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0), colored(repoB, 5)]} />);
+        const washed = headerOf(document.querySelector<HTMLElement>("[data-repo-color-index]")!);
+        expect(washed.style.backgroundColor).toContain("var(--color-bg-primary)");
+        expect(washed.className).toContain("bg-(--color-bg-primary)");
+      });
+
+      it("when the sidebar is unseparated", () => {
+        render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0)]} />);
+        const plain = screen.getByText("repo").closest<HTMLElement>(".sticky")!;
+        expect(plain.style.backgroundColor).toBe("");
+        expect(plain.className).toContain("bg-(--color-bg-primary)");
+      });
+
+      // Separated, but this repo predates the color backfill: it gets no edge
+      // and no wash, while its NEIGHBOURS are washed. The one branch the old
+      // test named and never actually rendered.
+      it("when a separated repo has no stored color", () => {
+        render(<SessionSidebar {...defaultProps} repos={[repoA, colored(repoB, 5)]} />);
+        const uncolored = screen.getByText("repo").closest<HTMLElement>(".sticky")!;
+        expect(uncolored.style.backgroundColor).toBe("");
+        expect(uncolored.className).toContain("bg-(--color-bg-primary)");
+      });
+
+      // Ops and Sandbox wash from SEMANTIC tokens, not palette entries, so they
+      // are a separate code path from the repo groups above.
+      it("on the Ops and Sandbox groups", () => {
+        const sessions = [
+          baseSession({ id: "s1", title: "In repo A", remoteUrl: repoA.url }),
+          baseSession({ id: "ops1", title: "Host work", remoteUrl: "", kind: "ops" }),
+          baseSession({ id: "sb1", title: "Scratch", remoteUrl: "", kind: "sandbox" }),
+        ];
+        render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0)]} sessions={sessions} />);
+        for (const [id, token] of [["ops-group", "--color-warning"], ["sandbox-group", "--color-sandbox"]] as const) {
+          const header = headerOf(screen.getByTestId(id));
+          expect(header.style.backgroundColor).toBe(groupBandFill(`var(${token})`));
+          expect(header.style.backgroundColor).toContain("var(--color-bg-primary)");
+          expect(header.className).toContain("bg-(--color-bg-primary)");
+        }
+      });
     });
   });
 });

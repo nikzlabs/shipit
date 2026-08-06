@@ -1,0 +1,601 @@
+<!doctype html>
+<meta charset="utf-8"><title>Header band across all themes</title>
+<style>
+  body{font:13px/1.5 ui-sans-serif,system-ui,sans-serif;margin:0;padding:24px;background:#16181d;color:#d8dde5}
+  h1{font-size:18px;margin:0 0 4px}
+  p.lede{margin:0 0 24px;max-width:76ch;color:#9aa4b2}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(430px,1fr));gap:20px}
+  .card{background:#1d2027;border:1px solid #2b3038;border-radius:10px;padding:14px}
+  h3{font-size:13px;margin:0 0 10px;font-weight:600}
+  .s{font-weight:400;color:#79828f;font-size:11px}
+  .pair{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .lab{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:#79828f;margin-bottom:5px}
+  .rail{border-radius:7px;padding:0 0 6px;overflow:hidden}
+  .grp{margin-bottom:6px}
+  .hdr{font-size:11px;font-weight:600;padding:5px 9px}
+  .rows{display:flex;flex-direction:column;gap:3px;padding-top:3px}
+  .row{font-size:11px;padding:4px 9px;margin:0 4px;border-radius:4px}
+  .cur{font-weight:500}
+</style>
+<h1>The repo header band, before and after — every shipped theme</h1>
+<p class="lede">
+  Rendered from the <b>shipped tokens</b>: each theme's own <code>--color-bg-primary/-secondary/-tertiary</code> and text
+  colors, the real 16-entry palette, and <code>--repo-band-mix</code> resolved the way <code>color-mix</code> resolves it.
+  Four repo groups, the third collapsed — collapsed groups are where the old neutral slab read worst.
+  <b>Left</b> is what shipped; <b>right</b> is the wash.
+</p>
+<div class="grid">
+  <div class="card">
+    <h3>claude-light <span class="s">light</span></h3>
+    <div class="pair">
+      <div><div class="lab">before — bg-tertiary</div><div class="rail" style="background:#faf5ef"><div class="grp" style="border-left:3px solid #9c5636">
+      <div class="hdr" style="background:#e6dcd0;color:#5c5040">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#5c5040">+ New session</div>
+      <div class="row cur" style="background:#f0e8de;color:#2a2018">Fix the infra header</div>
+      <div class="row" style="color:#5c5040">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #2c6f66">
+      <div class="hdr" style="background:#e6dcd0;color:#5c5040">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#5c5040">+ New session</div>
+      <div class="row cur" style="background:#f0e8de;color:#2a2018">Fix the website header</div>
+      <div class="row" style="color:#5c5040">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #96488c">
+      <div class="hdr" style="background:#e6dcd0;color:#5c5040">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #6d8a3a">
+      <div class="hdr" style="background:#e6dcd0;color:#5c5040">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#5c5040">+ New session</div>
+      <div class="row cur" style="background:#f0e8de;color:#2a2018">Fix the todo-list header</div>
+      <div class="row" style="color:#5c5040">Retune spacing</div></div></div></div></div>
+      <div><div class="lab">after — wash (7%)</div><div class="rail" style="background:#faf5ef"><div class="grp" style="border-left:3px solid #9c5636">
+      <div class="hdr" style="background:#f3eae2;color:#5c5040">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#5c5040">+ New session</div>
+      <div class="row cur" style="background:#f0e8de;color:#2a2018">Fix the infra header</div>
+      <div class="row" style="color:#5c5040">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #2c6f66">
+      <div class="hdr" style="background:#ecece5;color:#5c5040">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#5c5040">+ New session</div>
+      <div class="row cur" style="background:#f0e8de;color:#2a2018">Fix the website header</div>
+      <div class="row" style="color:#5c5040">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #96488c">
+      <div class="hdr" style="background:#f3e9e8;color:#5c5040">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #6d8a3a">
+      <div class="hdr" style="background:#f0eee2;color:#5c5040">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#5c5040">+ New session</div>
+      <div class="row cur" style="background:#f0e8de;color:#2a2018">Fix the todo-list header</div>
+      <div class="row" style="color:#5c5040">Retune spacing</div></div></div></div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>claude <span class="s">dark</span></h3>
+    <div class="pair">
+      <div><div class="lab">before — bg-tertiary</div><div class="rail" style="background:#1a1410"><div class="grp" style="border-left:3px solid #e09a6a">
+      <div class="hdr" style="background:#2e2519;color:#a89a8c">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#a89a8c">+ New session</div>
+      <div class="row cur" style="background:#231c16;color:#e8e0d8">Fix the infra header</div>
+      <div class="row" style="color:#a89a8c">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #5cbfb0">
+      <div class="hdr" style="background:#2e2519;color:#a89a8c">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#a89a8c">+ New session</div>
+      <div class="row cur" style="background:#231c16;color:#e8e0d8">Fix the website header</div>
+      <div class="row" style="color:#a89a8c">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #d68ecc">
+      <div class="hdr" style="background:#2e2519;color:#a89a8c">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #a8c46a">
+      <div class="hdr" style="background:#2e2519;color:#a89a8c">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#a89a8c">+ New session</div>
+      <div class="row cur" style="background:#231c16;color:#e8e0d8">Fix the todo-list header</div>
+      <div class="row" style="color:#a89a8c">Retune spacing</div></div></div></div></div>
+      <div><div class="lab">after — wash (10%)</div><div class="rail" style="background:#1a1410"><div class="grp" style="border-left:3px solid #e09a6a">
+      <div class="hdr" style="background:#2e2119;color:#a89a8c">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#a89a8c">+ New session</div>
+      <div class="row cur" style="background:#231c16;color:#e8e0d8">Fix the infra header</div>
+      <div class="row" style="color:#a89a8c">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #5cbfb0">
+      <div class="hdr" style="background:#212520;color:#a89a8c">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#a89a8c">+ New session</div>
+      <div class="row cur" style="background:#231c16;color:#e8e0d8">Fix the website header</div>
+      <div class="row" style="color:#a89a8c">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #d68ecc">
+      <div class="hdr" style="background:#2d2023;color:#a89a8c">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #a8c46a">
+      <div class="hdr" style="background:#282619;color:#a89a8c">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#a89a8c">+ New session</div>
+      <div class="row cur" style="background:#231c16;color:#e8e0d8">Fix the todo-list header</div>
+      <div class="row" style="color:#a89a8c">Retune spacing</div></div></div></div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>codex-light <span class="s">light</span></h3>
+    <div class="pair">
+      <div><div class="lab">before — bg-tertiary</div><div class="rail" style="background:#f2f7f2"><div class="grp" style="border-left:3px solid #9c5636">
+      <div class="hdr" style="background:#d8e6d8;color:#3a5a3a">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#3a5a3a">+ New session</div>
+      <div class="row cur" style="background:#e6efe6;color:#1a2e1a">Fix the infra header</div>
+      <div class="row" style="color:#3a5a3a">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #2c6f66">
+      <div class="hdr" style="background:#d8e6d8;color:#3a5a3a">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#3a5a3a">+ New session</div>
+      <div class="row cur" style="background:#e6efe6;color:#1a2e1a">Fix the website header</div>
+      <div class="row" style="color:#3a5a3a">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #96488c">
+      <div class="hdr" style="background:#d8e6d8;color:#3a5a3a">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #6d8a3a">
+      <div class="hdr" style="background:#d8e6d8;color:#3a5a3a">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#3a5a3a">+ New session</div>
+      <div class="row cur" style="background:#e6efe6;color:#1a2e1a">Fix the todo-list header</div>
+      <div class="row" style="color:#3a5a3a">Retune spacing</div></div></div></div></div>
+      <div><div class="lab">after — wash (7%)</div><div class="rail" style="background:#f2f7f2"><div class="grp" style="border-left:3px solid #9c5636">
+      <div class="hdr" style="background:#ecece5;color:#3a5a3a">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#3a5a3a">+ New session</div>
+      <div class="row cur" style="background:#e6efe6;color:#1a2e1a">Fix the infra header</div>
+      <div class="row" style="color:#3a5a3a">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #2c6f66">
+      <div class="hdr" style="background:#e4ede8;color:#3a5a3a">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#3a5a3a">+ New session</div>
+      <div class="row cur" style="background:#e6efe6;color:#1a2e1a">Fix the website header</div>
+      <div class="row" style="color:#3a5a3a">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #96488c">
+      <div class="hdr" style="background:#ecebeb;color:#3a5a3a">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #6d8a3a">
+      <div class="hdr" style="background:#e9efe5;color:#3a5a3a">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#3a5a3a">+ New session</div>
+      <div class="row cur" style="background:#e6efe6;color:#1a2e1a">Fix the todo-list header</div>
+      <div class="row" style="color:#3a5a3a">Retune spacing</div></div></div></div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>codex <span class="s">dark</span></h3>
+    <div class="pair">
+      <div><div class="lab">before — bg-tertiary</div><div class="rail" style="background:#0a0e0a"><div class="grp" style="border-left:3px solid #e09a6a">
+      <div class="hdr" style="background:#1a261a;color:#80a880">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#80a880">+ New session</div>
+      <div class="row cur" style="background:#111a11;color:#c8e0c8">Fix the infra header</div>
+      <div class="row" style="color:#80a880">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #5cbfb0">
+      <div class="hdr" style="background:#1a261a;color:#80a880">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#80a880">+ New session</div>
+      <div class="row cur" style="background:#111a11;color:#c8e0c8">Fix the website header</div>
+      <div class="row" style="color:#80a880">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #d68ecc">
+      <div class="hdr" style="background:#1a261a;color:#80a880">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #a8c46a">
+      <div class="hdr" style="background:#1a261a;color:#80a880">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#80a880">+ New session</div>
+      <div class="row cur" style="background:#111a11;color:#c8e0c8">Fix the todo-list header</div>
+      <div class="row" style="color:#80a880">Retune spacing</div></div></div></div></div>
+      <div><div class="lab">after — wash (10%)</div><div class="rail" style="background:#0a0e0a"><div class="grp" style="border-left:3px solid #e09a6a">
+      <div class="hdr" style="background:#1f1c14;color:#80a880">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#80a880">+ New session</div>
+      <div class="row cur" style="background:#111a11;color:#c8e0c8">Fix the infra header</div>
+      <div class="row" style="color:#80a880">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #5cbfb0">
+      <div class="hdr" style="background:#12201b;color:#80a880">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#80a880">+ New session</div>
+      <div class="row cur" style="background:#111a11;color:#c8e0c8">Fix the website header</div>
+      <div class="row" style="color:#80a880">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #d68ecc">
+      <div class="hdr" style="background:#1e1b1d;color:#80a880">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #a8c46a">
+      <div class="hdr" style="background:#1a2014;color:#80a880">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#80a880">+ New session</div>
+      <div class="row cur" style="background:#111a11;color:#c8e0c8">Fix the todo-list header</div>
+      <div class="row" style="color:#80a880">Retune spacing</div></div></div></div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>cool-light <span class="s">light</span></h3>
+    <div class="pair">
+      <div><div class="lab">before — bg-tertiary</div><div class="rail" style="background:#f4f6fa"><div class="grp" style="border-left:3px solid #9c5636">
+      <div class="hdr" style="background:#dce2ee;color:#454d64">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#454d64">+ New session</div>
+      <div class="row cur" style="background:#e8ecf4;color:#1a1e2e">Fix the infra header</div>
+      <div class="row" style="color:#454d64">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #2c6f66">
+      <div class="hdr" style="background:#dce2ee;color:#454d64">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#454d64">+ New session</div>
+      <div class="row cur" style="background:#e8ecf4;color:#1a1e2e">Fix the website header</div>
+      <div class="row" style="color:#454d64">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #96488c">
+      <div class="hdr" style="background:#dce2ee;color:#454d64">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #6d8a3a">
+      <div class="hdr" style="background:#dce2ee;color:#454d64">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#454d64">+ New session</div>
+      <div class="row cur" style="background:#e8ecf4;color:#1a1e2e">Fix the todo-list header</div>
+      <div class="row" style="color:#454d64">Retune spacing</div></div></div></div></div>
+      <div><div class="lab">after — wash (7%)</div><div class="rail" style="background:#f4f6fa"><div class="grp" style="border-left:3px solid #9c5636">
+      <div class="hdr" style="background:#eeebec;color:#454d64">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#454d64">+ New session</div>
+      <div class="row cur" style="background:#e8ecf4;color:#1a1e2e">Fix the infra header</div>
+      <div class="row" style="color:#454d64">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #2c6f66">
+      <div class="hdr" style="background:#e6edf0;color:#454d64">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#454d64">+ New session</div>
+      <div class="row cur" style="background:#e8ecf4;color:#1a1e2e">Fix the website header</div>
+      <div class="row" style="color:#454d64">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #96488c">
+      <div class="hdr" style="background:#edeaf2;color:#454d64">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #6d8a3a">
+      <div class="hdr" style="background:#ebeeed;color:#454d64">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#454d64">+ New session</div>
+      <div class="row cur" style="background:#e8ecf4;color:#1a1e2e">Fix the todo-list header</div>
+      <div class="row" style="color:#454d64">Retune spacing</div></div></div></div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>dark <span class="s">dark</span></h3>
+    <div class="pair">
+      <div><div class="lab">before — bg-tertiary</div><div class="rail" style="background:#030712"><div class="grp" style="border-left:3px solid #e09a6a">
+      <div class="hdr" style="background:#1f2937;color:#9ca3af">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#9ca3af">+ New session</div>
+      <div class="row cur" style="background:#111827;color:#f3f4f6">Fix the infra header</div>
+      <div class="row" style="color:#9ca3af">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #5cbfb0">
+      <div class="hdr" style="background:#1f2937;color:#9ca3af">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#9ca3af">+ New session</div>
+      <div class="row cur" style="background:#111827;color:#f3f4f6">Fix the website header</div>
+      <div class="row" style="color:#9ca3af">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #d68ecc">
+      <div class="hdr" style="background:#1f2937;color:#9ca3af">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #a8c46a">
+      <div class="hdr" style="background:#1f2937;color:#9ca3af">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#9ca3af">+ New session</div>
+      <div class="row cur" style="background:#111827;color:#f3f4f6">Fix the todo-list header</div>
+      <div class="row" style="color:#9ca3af">Retune spacing</div></div></div></div></div>
+      <div><div class="lab">after — wash (10%)</div><div class="rail" style="background:#030712"><div class="grp" style="border-left:3px solid #e09a6a">
+      <div class="hdr" style="background:#19161b;color:#9ca3af">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#9ca3af">+ New session</div>
+      <div class="row cur" style="background:#111827;color:#f3f4f6">Fix the infra header</div>
+      <div class="row" style="color:#9ca3af">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #5cbfb0">
+      <div class="hdr" style="background:#0c1922;color:#9ca3af">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#9ca3af">+ New session</div>
+      <div class="row cur" style="background:#111827;color:#f3f4f6">Fix the website header</div>
+      <div class="row" style="color:#9ca3af">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #d68ecc">
+      <div class="hdr" style="background:#181525;color:#9ca3af">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #a8c46a">
+      <div class="hdr" style="background:#141a1b;color:#9ca3af">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#9ca3af">+ New session</div>
+      <div class="row cur" style="background:#111827;color:#f3f4f6">Fix the todo-list header</div>
+      <div class="row" style="color:#9ca3af">Retune spacing</div></div></div></div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>forest <span class="s">dark</span></h3>
+    <div class="pair">
+      <div><div class="lab">before — bg-tertiary</div><div class="rail" style="background:#0c1410"><div class="grp" style="border-left:3px solid #e09a6a">
+      <div class="hdr" style="background:#1a2c23;color:#96b5a4">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#96b5a4">+ New session</div>
+      <div class="row cur" style="background:#131f19;color:#e2ede6">Fix the infra header</div>
+      <div class="row" style="color:#96b5a4">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #5cbfb0">
+      <div class="hdr" style="background:#1a2c23;color:#96b5a4">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#96b5a4">+ New session</div>
+      <div class="row cur" style="background:#131f19;color:#e2ede6">Fix the website header</div>
+      <div class="row" style="color:#96b5a4">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #d68ecc">
+      <div class="hdr" style="background:#1a2c23;color:#96b5a4">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #a8c46a">
+      <div class="hdr" style="background:#1a2c23;color:#96b5a4">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#96b5a4">+ New session</div>
+      <div class="row cur" style="background:#131f19;color:#e2ede6">Fix the todo-list header</div>
+      <div class="row" style="color:#96b5a4">Retune spacing</div></div></div></div></div>
+      <div><div class="lab">after — wash (10%)</div><div class="rail" style="background:#0c1410"><div class="grp" style="border-left:3px solid #e09a6a">
+      <div class="hdr" style="background:#212119;color:#96b5a4">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#96b5a4">+ New session</div>
+      <div class="row cur" style="background:#131f19;color:#e2ede6">Fix the infra header</div>
+      <div class="row" style="color:#96b5a4">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #5cbfb0">
+      <div class="hdr" style="background:#142520;color:#96b5a4">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#96b5a4">+ New session</div>
+      <div class="row cur" style="background:#131f19;color:#e2ede6">Fix the website header</div>
+      <div class="row" style="color:#96b5a4">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #d68ecc">
+      <div class="hdr" style="background:#202023;color:#96b5a4">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #a8c46a">
+      <div class="hdr" style="background:#1c2619;color:#96b5a4">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#96b5a4">+ New session</div>
+      <div class="row cur" style="background:#131f19;color:#e2ede6">Fix the todo-list header</div>
+      <div class="row" style="color:#96b5a4">Retune spacing</div></div></div></div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>high-contrast <span class="s">dark</span></h3>
+    <div class="pair">
+      <div><div class="lab">before — bg-tertiary</div><div class="rail" style="background:#000000"><div class="grp" style="border-left:3px solid #e09a6a">
+      <div class="hdr" style="background:#161616;color:#d0d0d0">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#d0d0d0">+ New session</div>
+      <div class="row cur" style="background:#0a0a0a;color:#ffffff">Fix the infra header</div>
+      <div class="row" style="color:#d0d0d0">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #5cbfb0">
+      <div class="hdr" style="background:#161616;color:#d0d0d0">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#d0d0d0">+ New session</div>
+      <div class="row cur" style="background:#0a0a0a;color:#ffffff">Fix the website header</div>
+      <div class="row" style="color:#d0d0d0">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #d68ecc">
+      <div class="hdr" style="background:#161616;color:#d0d0d0">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #a8c46a">
+      <div class="hdr" style="background:#161616;color:#d0d0d0">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#d0d0d0">+ New session</div>
+      <div class="row cur" style="background:#0a0a0a;color:#ffffff">Fix the todo-list header</div>
+      <div class="row" style="color:#d0d0d0">Retune spacing</div></div></div></div></div>
+      <div><div class="lab">after — wash (10%)</div><div class="rail" style="background:#000000"><div class="grp" style="border-left:3px solid #e09a6a">
+      <div class="hdr" style="background:#160f0b;color:#d0d0d0">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#d0d0d0">+ New session</div>
+      <div class="row cur" style="background:#0a0a0a;color:#ffffff">Fix the infra header</div>
+      <div class="row" style="color:#d0d0d0">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #5cbfb0">
+      <div class="hdr" style="background:#091312;color:#d0d0d0">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#d0d0d0">+ New session</div>
+      <div class="row cur" style="background:#0a0a0a;color:#ffffff">Fix the website header</div>
+      <div class="row" style="color:#d0d0d0">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #d68ecc">
+      <div class="hdr" style="background:#150e14;color:#d0d0d0">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #a8c46a">
+      <div class="hdr" style="background:#11140b;color:#d0d0d0">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#d0d0d0">+ New session</div>
+      <div class="row cur" style="background:#0a0a0a;color:#ffffff">Fix the todo-list header</div>
+      <div class="row" style="color:#d0d0d0">Retune spacing</div></div></div></div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>light <span class="s">light</span></h3>
+    <div class="pair">
+      <div><div class="lab">before — bg-tertiary</div><div class="rail" style="background:#ffffff"><div class="grp" style="border-left:3px solid #9c5636">
+      <div class="hdr" style="background:#f3f4f6;color:#4b5563">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#4b5563">+ New session</div>
+      <div class="row cur" style="background:#f9fafb;color:#111827">Fix the infra header</div>
+      <div class="row" style="color:#4b5563">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #2c6f66">
+      <div class="hdr" style="background:#f3f4f6;color:#4b5563">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#4b5563">+ New session</div>
+      <div class="row cur" style="background:#f9fafb;color:#111827">Fix the website header</div>
+      <div class="row" style="color:#4b5563">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #96488c">
+      <div class="hdr" style="background:#f3f4f6;color:#4b5563">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #6d8a3a">
+      <div class="hdr" style="background:#f3f4f6;color:#4b5563">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#4b5563">+ New session</div>
+      <div class="row cur" style="background:#f9fafb;color:#111827">Fix the todo-list header</div>
+      <div class="row" style="color:#4b5563">Retune spacing</div></div></div></div></div>
+      <div><div class="lab">after — wash (7%)</div><div class="rail" style="background:#ffffff"><div class="grp" style="border-left:3px solid #9c5636">
+      <div class="hdr" style="background:#f8f3f1;color:#4b5563">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#4b5563">+ New session</div>
+      <div class="row cur" style="background:#f9fafb;color:#111827">Fix the infra header</div>
+      <div class="row" style="color:#4b5563">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #2c6f66">
+      <div class="hdr" style="background:#f0f5f4;color:#4b5563">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#4b5563">+ New session</div>
+      <div class="row cur" style="background:#f9fafb;color:#111827">Fix the website header</div>
+      <div class="row" style="color:#4b5563">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #96488c">
+      <div class="hdr" style="background:#f8f2f7;color:#4b5563">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #6d8a3a">
+      <div class="hdr" style="background:#f5f7f1;color:#4b5563">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#4b5563">+ New session</div>
+      <div class="row cur" style="background:#f9fafb;color:#111827">Fix the todo-list header</div>
+      <div class="row" style="color:#4b5563">Retune spacing</div></div></div></div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>midnight <span class="s">dark</span></h3>
+    <div class="pair">
+      <div><div class="lab">before — bg-tertiary</div><div class="rail" style="background:#0b1120"><div class="grp" style="border-left:3px solid #e09a6a">
+      <div class="hdr" style="background:#1a2744;color:#94a3b8">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#94a3b8">+ New session</div>
+      <div class="row cur" style="background:#121d33;color:#e2e8f0">Fix the infra header</div>
+      <div class="row" style="color:#94a3b8">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #5cbfb0">
+      <div class="hdr" style="background:#1a2744;color:#94a3b8">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#94a3b8">+ New session</div>
+      <div class="row cur" style="background:#121d33;color:#e2e8f0">Fix the website header</div>
+      <div class="row" style="color:#94a3b8">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #d68ecc">
+      <div class="hdr" style="background:#1a2744;color:#94a3b8">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #a8c46a">
+      <div class="hdr" style="background:#1a2744;color:#94a3b8">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#94a3b8">+ New session</div>
+      <div class="row cur" style="background:#121d33;color:#e2e8f0">Fix the todo-list header</div>
+      <div class="row" style="color:#94a3b8">Retune spacing</div></div></div></div></div>
+      <div><div class="lab">after — wash (10%)</div><div class="rail" style="background:#0b1120"><div class="grp" style="border-left:3px solid #e09a6a">
+      <div class="hdr" style="background:#201f27;color:#94a3b8">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#94a3b8">+ New session</div>
+      <div class="row cur" style="background:#121d33;color:#e2e8f0">Fix the infra header</div>
+      <div class="row" style="color:#94a3b8">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #5cbfb0">
+      <div class="hdr" style="background:#13222e;color:#94a3b8">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#94a3b8">+ New session</div>
+      <div class="row cur" style="background:#121d33;color:#e2e8f0">Fix the website header</div>
+      <div class="row" style="color:#94a3b8">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #d68ecc">
+      <div class="hdr" style="background:#1f1e31;color:#94a3b8">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #a8c46a">
+      <div class="hdr" style="background:#1b2327;color:#94a3b8">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#94a3b8">+ New session</div>
+      <div class="row cur" style="background:#121d33;color:#e2e8f0">Fix the todo-list header</div>
+      <div class="row" style="color:#94a3b8">Retune spacing</div></div></div></div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>rose <span class="s">dark</span></h3>
+    <div class="pair">
+      <div><div class="lab">before — bg-tertiary</div><div class="rail" style="background:#150c14"><div class="grp" style="border-left:3px solid #e09a6a">
+      <div class="hdr" style="background:#2c1a2e;color:#b899b5">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#b899b5">+ New session</div>
+      <div class="row cur" style="background:#1f1320;color:#f0e4ee">Fix the infra header</div>
+      <div class="row" style="color:#b899b5">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #5cbfb0">
+      <div class="hdr" style="background:#2c1a2e;color:#b899b5">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#b899b5">+ New session</div>
+      <div class="row cur" style="background:#1f1320;color:#f0e4ee">Fix the website header</div>
+      <div class="row" style="color:#b899b5">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #d68ecc">
+      <div class="hdr" style="background:#2c1a2e;color:#b899b5">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #a8c46a">
+      <div class="hdr" style="background:#2c1a2e;color:#b899b5">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#b899b5">+ New session</div>
+      <div class="row cur" style="background:#1f1320;color:#f0e4ee">Fix the todo-list header</div>
+      <div class="row" style="color:#b899b5">Retune spacing</div></div></div></div></div>
+      <div><div class="lab">after — wash (10%)</div><div class="rail" style="background:#150c14"><div class="grp" style="border-left:3px solid #e09a6a">
+      <div class="hdr" style="background:#291a1d;color:#b899b5">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#b899b5">+ New session</div>
+      <div class="row cur" style="background:#1f1320;color:#f0e4ee">Fix the infra header</div>
+      <div class="row" style="color:#b899b5">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #5cbfb0">
+      <div class="hdr" style="background:#1c1e24;color:#b899b5">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#b899b5">+ New session</div>
+      <div class="row cur" style="background:#1f1320;color:#f0e4ee">Fix the website header</div>
+      <div class="row" style="color:#b899b5">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #d68ecc">
+      <div class="hdr" style="background:#281926;color:#b899b5">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #a8c46a">
+      <div class="hdr" style="background:#241e1d;color:#b899b5">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#b899b5">+ New session</div>
+      <div class="row cur" style="background:#1f1320;color:#f0e4ee">Fix the todo-list header</div>
+      <div class="row" style="color:#b899b5">Retune spacing</div></div></div></div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>solarized-light <span class="s">light</span></h3>
+    <div class="pair">
+      <div><div class="lab">before — bg-tertiary</div><div class="rail" style="background:#fdf6e3"><div class="grp" style="border-left:3px solid #9c5636">
+      <div class="hdr" style="background:#e4ddc8;color:#586e75">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#586e75">+ New session</div>
+      <div class="row cur" style="background:#eee8d5;color:#073642">Fix the infra header</div>
+      <div class="row" style="color:#586e75">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #2c6f66">
+      <div class="hdr" style="background:#e4ddc8;color:#586e75">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#586e75">+ New session</div>
+      <div class="row cur" style="background:#eee8d5;color:#073642">Fix the website header</div>
+      <div class="row" style="color:#586e75">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #96488c">
+      <div class="hdr" style="background:#e4ddc8;color:#586e75">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #6d8a3a">
+      <div class="hdr" style="background:#e4ddc8;color:#586e75">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#586e75">+ New session</div>
+      <div class="row cur" style="background:#eee8d5;color:#073642">Fix the todo-list header</div>
+      <div class="row" style="color:#586e75">Retune spacing</div></div></div></div></div>
+      <div><div class="lab">after — wash (7%)</div><div class="rail" style="background:#fdf6e3"><div class="grp" style="border-left:3px solid #9c5636">
+      <div class="hdr" style="background:#f6ebd7;color:#586e75">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#586e75">+ New session</div>
+      <div class="row cur" style="background:#eee8d5;color:#073642">Fix the infra header</div>
+      <div class="row" style="color:#586e75">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #2c6f66">
+      <div class="hdr" style="background:#eeedda;color:#586e75">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#586e75">+ New session</div>
+      <div class="row cur" style="background:#eee8d5;color:#073642">Fix the website header</div>
+      <div class="row" style="color:#586e75">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #96488c">
+      <div class="hdr" style="background:#f6eadd;color:#586e75">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #6d8a3a">
+      <div class="hdr" style="background:#f3eed7;color:#586e75">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#586e75">+ New session</div>
+      <div class="row cur" style="background:#eee8d5;color:#073642">Fix the todo-list header</div>
+      <div class="row" style="color:#586e75">Retune spacing</div></div></div></div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>solarized <span class="s">dark</span></h3>
+    <div class="pair">
+      <div><div class="lab">before — bg-tertiary</div><div class="rail" style="background:#002b36"><div class="grp" style="border-left:3px solid #e09a6a">
+      <div class="hdr" style="background:#0a4050;color:#93a1a1">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#93a1a1">+ New session</div>
+      <div class="row cur" style="background:#073642;color:#eee8d5">Fix the infra header</div>
+      <div class="row" style="color:#93a1a1">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #5cbfb0">
+      <div class="hdr" style="background:#0a4050;color:#93a1a1">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#93a1a1">+ New session</div>
+      <div class="row cur" style="background:#073642;color:#eee8d5">Fix the website header</div>
+      <div class="row" style="color:#93a1a1">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #d68ecc">
+      <div class="hdr" style="background:#0a4050;color:#93a1a1">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #a8c46a">
+      <div class="hdr" style="background:#0a4050;color:#93a1a1">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#93a1a1">+ New session</div>
+      <div class="row cur" style="background:#073642;color:#eee8d5">Fix the todo-list header</div>
+      <div class="row" style="color:#93a1a1">Retune spacing</div></div></div></div></div>
+      <div><div class="lab">after — wash (10%)</div><div class="rail" style="background:#002b36"><div class="grp" style="border-left:3px solid #e09a6a">
+      <div class="hdr" style="background:#16363b;color:#93a1a1">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#93a1a1">+ New session</div>
+      <div class="row cur" style="background:#073642;color:#eee8d5">Fix the infra header</div>
+      <div class="row" style="color:#93a1a1">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #5cbfb0">
+      <div class="hdr" style="background:#093a42;color:#93a1a1">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#93a1a1">+ New session</div>
+      <div class="row cur" style="background:#073642;color:#eee8d5">Fix the website header</div>
+      <div class="row" style="color:#93a1a1">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #d68ecc">
+      <div class="hdr" style="background:#153545;color:#93a1a1">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #a8c46a">
+      <div class="hdr" style="background:#113a3b;color:#93a1a1">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#93a1a1">+ New session</div>
+      <div class="row cur" style="background:#073642;color:#eee8d5">Fix the todo-list header</div>
+      <div class="row" style="color:#93a1a1">Retune spacing</div></div></div></div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>warm-light <span class="s">light</span></h3>
+    <div class="pair">
+      <div><div class="lab">before — bg-tertiary</div><div class="rail" style="background:#fdf8f0"><div class="grp" style="border-left:3px solid #9c5636">
+      <div class="hdr" style="background:#ede4d4;color:#5c5040">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#5c5040">+ New session</div>
+      <div class="row cur" style="background:#f5ede0;color:#2c2416">Fix the infra header</div>
+      <div class="row" style="color:#5c5040">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #2c6f66">
+      <div class="hdr" style="background:#ede4d4;color:#5c5040">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#5c5040">+ New session</div>
+      <div class="row cur" style="background:#f5ede0;color:#2c2416">Fix the website header</div>
+      <div class="row" style="color:#5c5040">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #96488c">
+      <div class="hdr" style="background:#ede4d4;color:#5c5040">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #6d8a3a">
+      <div class="hdr" style="background:#ede4d4;color:#5c5040">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#5c5040">+ New session</div>
+      <div class="row cur" style="background:#f5ede0;color:#2c2416">Fix the todo-list header</div>
+      <div class="row" style="color:#5c5040">Retune spacing</div></div></div></div></div>
+      <div><div class="lab">after — wash (7%)</div><div class="rail" style="background:#fdf8f0"><div class="grp" style="border-left:3px solid #9c5636">
+      <div class="hdr" style="background:#f6ede3;color:#5c5040">▾ infra</div>
+      <div class="rows">
+      <div class="row" style="color:#5c5040">+ New session</div>
+      <div class="row cur" style="background:#f5ede0;color:#2c2416">Fix the infra header</div>
+      <div class="row" style="color:#5c5040">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #2c6f66">
+      <div class="hdr" style="background:#eeeee6;color:#5c5040">▾ website</div>
+      <div class="rows">
+      <div class="row" style="color:#5c5040">+ New session</div>
+      <div class="row cur" style="background:#f5ede0;color:#2c2416">Fix the website header</div>
+      <div class="row" style="color:#5c5040">Retune spacing</div></div></div><div class="grp" style="border-left:3px solid #96488c">
+      <div class="hdr" style="background:#f6ece9;color:#5c5040">▸ branding</div>
+      <div class="rows"></div></div><div class="grp" style="border-left:3px solid #6d8a3a">
+      <div class="hdr" style="background:#f3f0e3;color:#5c5040">▾ todo-list</div>
+      <div class="rows">
+      <div class="row" style="color:#5c5040">+ New session</div>
+      <div class="row cur" style="background:#f5ede0;color:#2c2416">Fix the todo-list header</div>
+      <div class="row" style="color:#5c5040">Retune spacing</div></div></div></div></div>
+    </div>
+  </div></div>

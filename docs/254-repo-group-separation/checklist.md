@@ -7,7 +7,7 @@
 - [x] `PATCH /api/repos/:url` accepts `colorIndex`, validated server-side
 - [x] Optimistic client store action with revert on failure
 - [x] Group edge as `border-left` on the group element (survives the sticky header)
-- [x] Opaque `--color-bg-tertiary` header band
+- [x] Opaque header band, washed with the group's own color (`--repo-band-mix`)
 - [x] Ops + Sandbox groups use their own semantic colors
 - [x] Suppressed when the sidebar renders a single group
 - [x] Colour picker in Project Settings → Appearance
@@ -21,3 +21,6 @@
 - [x] Migration test runs the real migration rather than a copy of its logic
 - [x] Gap between groups so adjacent edges don't merge into one rail
 - [x] Open questions on reqs 5 and 11 settled by Nik; both requirements reworded, no code change
+- [x] Header band retuned: the neutral fill made light-theme headers the heaviest surface in the rail
+- [x] Band-weight guard across all fourteen themes, verified to fail both too-heavy and too-faint
+- [x] Independent review of the band retune (Codex, 2026-08-06) — two test overclaims fixed, no production defect

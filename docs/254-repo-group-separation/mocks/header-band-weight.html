@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Repo header band weight — Claude Light</title>
+<style>
+/* Tokens copied verbatim from src/client/themes/claude-light.css and claude.css,
+   and the shipped palette from src/client/index.css. */
+.claude-light {
+  --color-bg-primary: #faf5ef;
+  --color-bg-secondary: #f0e8de;
+  --color-bg-tertiary: #e6dcd0;
+  --color-bg-hover: rgba(180, 100, 60, 0.06);
+  --color-text-primary: #2a2018;
+  --color-text-secondary: #5c5040;
+  --color-text-tertiary: #9a8c78;
+  --color-border-primary: #e4d8c8;
+  --color-border-secondary: #d0c0ac;
+  --color-accent: #d97757;
+  --color-accent-subtle: rgba(217, 119, 87, 0.12);
+  --color-success: #3a8a50;
+  --color-warning: #b87020;
+  --color-pr: #8050a0;
+  --color-pr-subtle: rgba(128, 80, 160, 0.1);
+  --color-pr-border: rgba(128, 80, 160, 0.3);
+  --color-attention: #d97706;
+  --color-sandbox: #115e59;
+  --wash: 7%;
+}
+.claude {
+  --color-bg-primary: #1a1410;
+  --color-bg-secondary: #231c16;
+  --color-bg-tertiary: #2e2519;
+  --color-bg-hover: rgba(217, 119, 87, 0.08);
+  --color-text-primary: #e8e0d8;
+  --color-text-secondary: #a89a8c;
+  --color-text-tertiary: #7a6e62;
+  --color-border-primary: #2e2519;
+  --color-border-secondary: #43382c;
+  --color-accent: #d97757;
+  --color-accent-subtle: rgba(217, 119, 87, 0.15);
+  --color-success: #5cb870;
+  --color-warning: #e0a040;
+  --color-pr: #c4a0e0;
+  --color-pr-subtle: rgba(196, 160, 224, 0.15);
+  --color-pr-border: rgba(196, 160, 224, 0.3);
+  --color-attention: #f59e0b;
+  --color-sandbox: #2dd4bf;
+  --wash: 10%;
+}
+.claude-light [data-c="0"]  { --a: #9c5636; }
+.claude-light [data-c="4"]  { --a: #3c783c; }
+.claude-light [data-c="7"]  { --a: #3a6c9c; }
+.claude-light [data-c="11"] { --a: #a8506a; }
+.claude-light [data-c="13"] { --a: #7a5c46; }
+.claude [data-c="0"]  { --a: #e09a6a; }
+.claude [data-c="4"]  { --a: #7ec888; }
+.claude [data-c="7"]  { --a: #85aee0; }
+.claude [data-c="11"] { --a: #e08aa8; }
+.claude [data-c="13"] { --a: #c0a48a; }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: #171310; color: #e8e0d8;
+  font: 13px/1.45 ui-sans-serif, -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased; padding: 28px 28px 64px;
+}
+h1 { font-size: 20px; margin: 0 0 8px; letter-spacing: -.01em; }
+.lede { max-width: 94ch; color: #a89a8c; margin: 0 0 6px; }
+.lede code { background: #231c16; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+.lede b { color: #e8e0d8; }
+.callout {
+  max-width: 94ch; margin: 16px 0 0; padding: 12px 15px; border-radius: 8px;
+  background: #1a1410; border: 1px solid #2e2519; border-left: 3px solid #d97757;
+  font-size: 12.5px; line-height: 1.6; color: #a89a8c;
+}
+.callout b { color: #e8e0d8; }
+.toolbar { display: flex; gap: 8px; margin: 22px 0 26px; }
+.toolbar button { font: inherit; font-size: 12px; padding: 5px 12px; border-radius: 999px; cursor: pointer; border: 1px solid #43382c; background: #1a1410; color: #e8e0d8; }
+.toolbar button[aria-pressed="true"] { background: #d97757; color: #1a1410; border-color: #d97757; font-weight: 600; }
+
+.gallery { display: flex; flex-wrap: wrap; gap: 34px 22px; align-items: flex-start; }
+.opt { flex: 0 0 auto; width: 300px; margin: 0; }
+.opt > figcaption { margin-bottom: 10px; min-height: 132px; }
+.vtag { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #7a6e62; }
+.vname { font-size: 14px; font-weight: 650; margin: 2px 0 4px; color: #e8e0d8; }
+.vwhy, .vcost { font-size: 11.5px; line-height: 1.5; margin: 0; }
+.vwhy { color: #a89a8c; } .vwhy b { color: #e8e0d8; font-weight: 600; }
+.vcost { color: #7a6e62; margin-top: 4px; }
+.pill { font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 2px 6px; border-radius: 999px; margin-left: 6px; vertical-align: 2px; }
+.pill.good { background: #d97757; color: #1a1410; }
+.pill.bad { background: #2e2519; color: #a89a8c; }
+
+/* ── Rail ─────────────────────────────────────────────────────────────── */
+.rail {
+  width: 300px; background: var(--color-bg-primary); border: 1px solid var(--color-border-primary);
+  border-radius: 8px; overflow: hidden; padding-bottom: 4px;
+}
+.grp { display: flex; flex-direction: column; position: relative; margin-bottom: 6px; border-left: 3px solid var(--a, var(--color-border-secondary)); }
+.grp:last-child { margin-bottom: 0; }
+.ghead { display: flex; align-items: center; gap: 6px; padding: 6px 12px 6px 11px; position: relative; }
+.caret { width: 20px; display: grid; place-items: center; color: var(--color-text-tertiary); }
+.glyph { display: grid; place-items: center; color: var(--color-text-secondary); }
+.gname { font-size: 12.5px; font-weight: 650; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dots { margin-left: auto; color: var(--color-text-tertiary); display: grid; place-items: center; }
+.gbody { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; }
+.sublabel { display: flex; align-items: center; gap: 6px; padding: 6px 12px 2px; margin: 0 4px; font-size: 9.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--color-text-tertiary); }
+.row { display: flex; align-items: flex-start; gap: 6px; padding: 6px 8px; margin: 0 4px; border-radius: 6px; position: relative; }
+.row .badge { width: 22px; height: 22px; flex: 0 0 auto; border-radius: 6px; display: grid; place-items: center; background: var(--color-pr-subtle); border: 1px solid var(--color-pr-border); color: var(--color-pr); }
+.row .txt { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.row .title { font-size: 12.5px; line-height: 1.3; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .meta { display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--color-text-tertiary); }
+.row.current { background: var(--color-bg-secondary); }
+.row.current::after { content: ""; position: absolute; right: 0; top: 0; bottom: 0; width: 4px; background: var(--color-accent); border-radius: 0 6px 6px 0; }
+.row.new { align-items: center; }
+.row.new .plus { width: 22px; display: grid; place-items: center; opacity: .7; }
+.row.new .title { color: var(--color-text-secondary); }
+.grp.collapsed .gbody { display: none; }
+
+/* ═════ The options — they differ ONLY in how the header row is painted ═══ */
+
+/* A · shipped: --color-bg-tertiary slab */
+.b-tertiary .ghead { background: var(--color-bg-tertiary); }
+
+/* B · one step lighter */
+.b-secondary .ghead { background: var(--color-bg-secondary); }
+
+/* C · no fill, hairline below */
+.b-rule .ghead { border-bottom: 1px solid var(--color-border-primary); }
+
+/* D · nothing at all — the edge and the type carry it */
+.b-none .ghead { }
+
+/* E · a wash of the repo's OWN hue, composited opaque */
+.b-wash .ghead { background: color-mix(in srgb, var(--a) var(--wash), var(--color-bg-primary)); }
+
+/* F · repo-hue wash + hairline */
+.b-washrule .ghead {
+  background: color-mix(in srgb, var(--a) var(--wash), var(--color-bg-primary));
+  border-bottom: 1px solid color-mix(in srgb, var(--a) 22%, var(--color-bg-primary));
+}
+
+/* G · inset chip rather than a full-bleed bar */
+.b-chip .ghead { padding-left: 8px; }
+.b-chip .ghead::before {
+  content: ""; position: absolute; left: 4px; right: 4px; top: 2px; bottom: 2px;
+  background: var(--color-bg-tertiary); border-radius: 6px; z-index: 0;
+}
+.b-chip .ghead > * { position: relative; z-index: 1; }
+</style>
+</head>
+<body>
+
+<h1>The repo header band is too heavy in Claude Light</h1>
+<p class="lede">
+  The shipped band is <code>--color-bg-tertiary</code> — <code>#e6dcd0</code> on a <code>#faf5ef</code> rail. That makes
+  it <b>the darkest thing in the sidebar</b>: darker than any session row, darker than the current-session highlight.
+  So the headers carry the most visual weight and the actual content recedes behind them, which is backwards.
+</p>
+<p class="lede">
+  It's worst on <b>collapsed</b> groups. A collapsed repo is nothing but its header, so it becomes a solid slab — and a
+  rail with two or three collapsed repos reads as a stack of bars. Both collapsed groups from the screenshot are
+  reproduced below for exactly that reason.
+</p>
+<div class="callout">
+  <b>Where this came from.</b> I picked the fill to <em>maximise</em> contrast, because the Claude palettes are flat and
+  <code>bg-tertiary</code> is the strongest plain fill they contain (1.25 : 1 vs the rail, against 1.12 : 1 for
+  <code>bg-secondary</code>). That was the wrong target. The <b>coloured edge already does the separating</b> — the band
+  only has to say "this row is a header, not a session". That is the <em>smallest</em> signal that reads as a header, not
+  the largest one available.
+</div>
+
+<div class="toolbar">
+  <button id="t-light" aria-pressed="true">Claude Light</button>
+  <button id="t-dark" aria-pressed="false">Claude Dark</button>
+</div>
+
+<div class="gallery" id="gallery"></div>
+
+<script>
+const I = {
+  down: '<svg width="12" height="12" viewBox="0 0 256 256" fill="currentColor"><path d="M213.7 101.7l-80 80a8 8 0 0 1-11.4 0l-80-80A8 8 0 0 1 48 88h160a8 8 0 0 1 5.7 13.7z"/></svg>',
+  right: '<svg width="12" height="12" viewBox="0 0 256 256" fill="currentColor"><path d="M181.7 133.7l-80 80A8 8 0 0 1 88 208V48a8 8 0 0 1 13.7-5.7l80 80a8 8 0 0 1 0 11.4z"/></svg>',
+  gh: '<svg width="12" height="12" viewBox="0 0 256 256" fill="currentColor"><path d="M208.3 75.7a80 80 0 0 0-6.5-63.4 8 8 0 0 0-6.9-4 79.9 79.9 0 0 0-62.3 30h-9.2a79.9 79.9 0 0 0-62.3-30 8 8 0 0 0-6.9 4 80 80 0 0 0-6.5 63.4A79.2 79.2 0 0 0 40 112v8a72.1 72.1 0 0 0 57.2 70.5A47.7 47.7 0 0 0 88 216v8H64a24 24 0 0 1-24-24 40 40 0 0 0-40-40 8 8 0 0 0 0 16 24 24 0 0 1 24 24 40 40 0 0 0 40 40h24v16a8 8 0 0 0 16 0v-40a32 32 0 0 1 64 0v40a8 8 0 0 0 16 0v-40a47.7 47.7 0 0 0-9.2-25.5A72.1 72.1 0 0 0 216 120v-8a79.2 79.2 0 0 0-7.7-36.3z"/></svg>',
+  wrench: '<svg width="12" height="12" viewBox="0 0 256 256" fill="currentColor"><path d="M226.8 66.1a8 8 0 0 0-13.1-2.8l-31.4 31.4-20-4-4-20 31.4-31.4a8 8 0 0 0-2.8-13.1 60 60 0 0 0-77.8 74.3l-71 62a20 20 0 0 0 27.9 28.4l62.2-71.2a60 60 0 0 0 74.3-77.8z"/></svg>',
+  branch: '<svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor"><path d="M232 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-64a31.8 31.8 0 0 0-16 4.3V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h64a32 32 0 0 0 32-32v-9a32.1 32.1 0 0 0 24-31z"/></svg>',
+  pin: '<svg width="10" height="10" viewBox="0 0 256 256" fill="currentColor"><path d="M180.7 84.7l-9.4-9.4 12.7-12.7a16 16 0 0 0 0-22.6l-23.3-23.3a16 16 0 0 0-22.6 0L125.4 29.4 116 20a16 16 0 0 0-22.6 22.6l4.7 4.7-46.4 27.9a16 16 0 0 0-2.8 25.2l40.2 40.2-42.7 42.7a8 8 0 0 0 11.4 11.4l42.7-42.7 40.2 40.2a16 16 0 0 0 25.2-2.8l27.9-46.4 4.7 4.7a16 16 0 0 0 22.6-22.6z"/></svg>',
+  plus: '<svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M224 128a8 8 0 0 1-8 8h-80v80a8 8 0 0 1-16 0v-80H40a8 8 0 0 1 0-16h80V40a8 8 0 0 1 16 0v80h80a8 8 0 0 1 8 8z"/></svg>',
+  dots: '<svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><circle cx="128" cy="60" r="14"/><circle cx="128" cy="128" r="14"/><circle cx="128" cy="196" r="14"/></svg>',
+};
+
+// The screenshot's own rail: an Ops group, one expanded repo, TWO COLLAPSED
+// repos (where the slab reads worst), and one expanded repo with pins.
+const GROUPS = [
+  { name: "Host / Ops", c: null, ops: true, rows: [] },
+  { name: "personal", c: "0", rows: [{ n: "Deploy bare metal server with…", t: "41d ago", current: true }] },
+  { name: "branding", c: "4", collapsed: true, rows: [] },
+  { name: "shipit-website", c: "7", collapsed: true, rows: [] },
+  { name: "shipit", c: "11", pinnedLabel: true, rows: [
+      { n: "DeepSeek Flash: best harness…", t: "6h ago", pin: true },
+      { n: "ShipIt planning migration off…", t: "4h ago", pin: true },
+  ]},
+];
+
+function rail(optClass) {
+  return `<div class="rail ${optClass}">` + GROUPS.map((g) => {
+    const rows = [
+      g.pinnedLabel ? `<div class="sublabel">${I.pin}<span>Pinned</span></div>` : "",
+      !g.ops ? `<div class="row new"><span class="plus">${I.plus}</span><span class="txt"><span class="title">New session</span></span></div>` : "",
+      ...g.rows.map((r) => `<div class="row ${r.current ? "current" : ""}">
+        <span class="badge">${I.branch}</span>
+        <span class="txt"><span class="title">${r.n}</span><span class="meta">${r.pin ? `<span style="color:var(--color-attention);display:grid">${I.pin}</span>` : ""}<span>${r.t}</span></span></span></div>`),
+    ].join("");
+    const style = g.ops ? 'style="--a: var(--color-warning)"' : "";
+    return `<section class="grp ${g.collapsed ? "collapsed" : ""}" data-c="${g.c ?? ""}" ${style}>
+      <header class="ghead">
+        <span class="caret">${g.collapsed ? I.right : I.down}</span>
+        <span class="glyph">${g.ops ? I.wrench : I.gh}</span>
+        <span class="gname">${g.name}</span>
+        <span class="dots">${I.dots}</span>
+      </header>
+      <div class="gbody">${rows}</div>
+    </section>`;
+  }).join("") + `</div>`;
+}
+
+const OPTS = [
+  { id: "b-tertiary", n: "A", name: "Shipped — bg-tertiary", pill: ["bad", "current"],
+    why: "The band is the darkest surface in the rail, so the headers outweigh the sessions.",
+    cost: "Collapsed repos become solid slabs; five groups read as a stack of bars." },
+  { id: "b-secondary", n: "B", name: "One step lighter — bg-secondary",
+    why: "Same idea at <b>1.12 : 1</b> instead of 1.25 : 1. Minimal change, still a neutral fill.",
+    cost: "Same tint as the current-session row, so header and selection sit at one rank. Still a slab, just a paler one." },
+  { id: "b-rule", n: "C", name: "Hairline, no fill",
+    why: "Drop the fill; a single <code>border-primary</code> rule under the header. In a flat palette <b>a line reads more cleanly than a wash</b>, and nothing gains mass.",
+    cost: "A collapsed group is then just a rule — the boundary between two adjacent collapsed repos leans entirely on the 6px gap." },
+  { id: "b-none", n: "D", name: "Nothing — edge + type only",
+    why: "No fill, no rule. The coloured edge separates, and the header is distinguished by weight and the caret alone.",
+    cost: "Honest test of whether the band earns its place at all. Probably too little for a header that is also sticky." },
+  { id: "b-wash", n: "E", name: "Wash of the repo's own hue", pill: ["good", "recommended"],
+    why: "Replace the neutral greige with a <b>7% wash of the repo's own colour</b>, composited opaque. The header stops being dead mass and starts reinforcing identity — and it is lighter than <code>bg-tertiary</code>, so it no longer outweighs the rows.",
+    cost: "Needs <code>color-mix</code> over an opaque base (the sticky-header rule). Ties the band to the palette, so a future palette change moves it." },
+  { id: "b-washrule", n: "F", name: "Hue wash + matching hairline",
+    why: "E plus a rule in the same hue at 22%. Gives the header a defined bottom edge without adding fill weight.",
+    cost: "Two hue-derived values per header; the rule can look like a underline on a collapsed group." },
+  { id: "b-chip", n: "G", name: "Inset chip, not a bar",
+    why: "Keeps <code>bg-tertiary</code> but insets it 4px and rounds it, so the header is a <b>chip</b> rather than a full-bleed bar. Same colour, much less perceived mass.",
+    cost: "The inset fights the coloured edge it sits next to, and the chip's left gap makes the edge look detached from the header." },
+];
+
+function render() {
+  const theme = document.getElementById("t-dark").getAttribute("aria-pressed") === "true" ? "claude" : "claude-light";
+  document.getElementById("gallery").innerHTML = OPTS.map((o) => `
+    <figure class="opt ${theme}">
+      <figcaption>
+        <div class="vtag">Option ${o.n}</div>
+        <p class="vname">${o.name}${o.pill ? `<span class="pill ${o.pill[0]}">${o.pill[1]}</span>` : ""}</p>
+        <p class="vwhy">${o.why}</p>
+        <p class="vcost"><b>Cost:</b> ${o.cost}</p>
+      </figcaption>
+      ${rail(o.id)}
+    </figure>`).join("");
+}
+function press(el, on) { el.setAttribute("aria-pressed", String(on)); }
+document.getElementById("t-light").onclick = () => { press(document.getElementById("t-light"), true); press(document.getElementById("t-dark"), false); render(); };
+document.getElementById("t-dark").onclick = () => { press(document.getElementById("t-dark"), true); press(document.getElementById("t-light"), false); render(); };
+render();
+</script>
+</body>
+</html>
