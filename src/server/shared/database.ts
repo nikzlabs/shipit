@@ -839,6 +839,34 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN pending_agent_notice TEXT");
   },
+  // docs/254 — per-repo identity color for the sidebar's group edge. Stores the
+  // PALETTE INDEX, not a hex, so each theme maps it to its own light/dark value
+  // (`--repo-color-N` in client/index.css) instead of pinning one color that can
+  // only look right on half the themes.
+  //
+  // Existing rows are backfilled here rather than left NULL: the edge is the
+  // whole feature, so a workspace that upgrades into it with every repo
+  // uncolored would see nothing at all. Backfill walks rows in the sidebar's own
+  // display order and hands out distinct low indices, which is exactly what
+  // `pickRepoColorIndex` would have produced had the repos been added under this
+  // build — so an upgraded workspace and a fresh one agree.
+  (db) => {
+    db.exec("ALTER TABLE repos ADD COLUMN color_index INTEGER");
+    const rows = db
+      .prepare(
+        `SELECT url FROM repos
+         ORDER BY CASE WHEN display_order IS NULL THEN 1 ELSE 0 END,
+                  display_order ASC,
+                  last_used_at DESC,
+                  rowid DESC`,
+      )
+      .all() as { url: string }[];
+    const update = db.prepare("UPDATE repos SET color_index = ? WHERE url = ?");
+    // 16 = REPO_COLOR_COUNT. Inlined rather than imported: a migration must keep
+    // reproducing the same result forever, so it can't follow a constant that
+    // later changes — a bigger palette must not retroactively recolor old repos.
+    rows.forEach((row, i) => update.run(i % 16, row.url));
+  },
 ];
 
 export class DatabaseManager {

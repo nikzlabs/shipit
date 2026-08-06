@@ -49,6 +49,57 @@
   --color-sandbox: #2dd4bf;
 }
 
+/* docs/254 — repo-identity palette for the sidebar's per-repo edge. Sixteen
+   entries; `RepoInfo.colorIndex` stores the INDEX, so a theme re-maps what the
+   color looks like without rewriting anyone's stored choice.
+
+   Two constraints shaped the values:
+   · They must not read as STATUS. The rail already spends green on a live
+     agent, amber on the current session, violet on a PR and red on errors, so
+     every entry here is pulled well down in saturation — these say "which
+     project", never "what state".
+   · They must survive both surface directions. The light values are dark enough
+     to hold a 3px line on a near-white rail; the dark overrides are light
+     enough to hold one on a near-black rail. Same cascade rule as
+     --color-sandbox above: the dark values MUST stay scoped to the dark-theme
+     classes, never :root, or they clobber every light theme. */
+:root {
+  --repo-color-0: #9c5636;          /* Clay */
+  --repo-color-1: #a8763c;         /* Ochre */
+  --repo-color-2: #8a7a2f;       /* Mustard */
+  --repo-color-3: #6d8a3a;         /* Olive */
+  --repo-color-4: #3c783c;          /* Fern */
+  --repo-color-5: #2c6f66;          /* Pine */
+  --repo-color-6: #2c7f96;          /* Cyan */
+  --repo-color-7: #3a6c9c;         /* Steel */
+  --repo-color-8: #3c56a8;         /* Denim */
+  --repo-color-9: #5c5088;      /* Lavender */
+  --repo-color-10: #96488c;        /* Orchid */
+  --repo-color-11: #a8506a;          /* Rose */
+  --repo-color-12: #a84040;         /* Brick */
+  --repo-color-13: #7a5c46;        /* Sienna */
+  --repo-color-14: #566b7a;         /* Slate */
+  --repo-color-15: #8a6060;         /* Taupe */
+}
+.dark, .midnight, .forest, .rose, .claude, .codex, .solarized, .high-contrast {
+  --repo-color-0: #e09a6a;
+  --repo-color-1: #dcb980;
+  --repo-color-2: #cbb85e;
+  --repo-color-3: #a8c46a;
+  --repo-color-4: #7ec888;
+  --repo-color-5: #5cbfb0;
+  --repo-color-6: #63c8dc;
+  --repo-color-7: #85aee0;
+  --repo-color-8: #909beb;
+  --repo-color-9: #aa9dcf;
+  --repo-color-10: #d68ecc;
+  --repo-color-11: #e08aa8;
+  --repo-color-12: #de8484;
+  --repo-color-13: #c0a48a;
+  --repo-color-14: #a3b3c0;
+  --repo-color-15: #c2a6a8;
+}
+
 /* Lock the page to the visible viewport. The app shell uses h-[100dvh] and
    manages its own scroll regions; without this, mobile browsers let the
    whole document scroll when the URL bar shows/hides, pushing the header

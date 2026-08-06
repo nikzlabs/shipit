@@ -15,6 +15,8 @@ import {
   reorderRepos,
   setRepoTrusted,
   setRepoHidden,
+  setRepoColorIndex,
+  assertValidRepoColorIndex,
   createRepoWithTemplate,
   deleteSession,
   archiveSession,
@@ -257,17 +259,33 @@ export async function registerSessionReposRoutes(
   // repo can be brought back instantly. Registered before DELETE for the same
   // readability reason as the order route above (distinct HTTP methods, so no
   // actual routing conflict).
-  app.patch<{ Params: { url: string }; Body: { hidden?: boolean } }>(
+  // docs/254 — the same route also carries `colorIndex`, the repo's identity
+  // color for the sidebar's group edge. Both fields are optional and independent
+  // (each applied only when present), so the client can PATCH either one; a body
+  // carrying neither is the 400 below rather than a silent no-op.
+  app.patch<{ Params: { url: string }; Body: { hidden?: boolean; colorIndex?: number } }>(
     "/api/repos/:url",
     async (request, reply) => {
       try {
         const url = decodeURIComponent(request.params.url);
         const hidden = request.body?.hidden;
-        if (typeof hidden !== "boolean") {
-          reply.code(400).send({ error: "Request body must include a boolean 'hidden'" });
+        const colorIndex = request.body?.colorIndex;
+        if (hidden === undefined && colorIndex === undefined) {
+          reply.code(400).send({ error: "Request body must include a boolean 'hidden' or a numeric 'colorIndex'" });
           return;
         }
-        setRepoHidden(deps.repoStore, url, hidden);
+        // A field that is PRESENT but malformed is an error, never a silent
+        // skip: `{colorIndex: 2, hidden: "yes"}` must not quietly apply half the
+        // request and report success. Both fields are validated BEFORE either is
+        // written, so a rejected body leaves the row entirely untouched rather
+        // than committing the first update and throwing on the second.
+        if (hidden !== undefined && typeof hidden !== "boolean") {
+          reply.code(400).send({ error: "'hidden' must be a boolean" });
+          return;
+        }
+        if (colorIndex !== undefined) assertValidRepoColorIndex(colorIndex);
+        if (colorIndex !== undefined) setRepoColorIndex(deps.repoStore, url, colorIndex);
+        if (hidden !== undefined) setRepoHidden(deps.repoStore, url, hidden);
         // Broadcast so every connected tab updates its sidebar immediately —
         // same pattern as add/remove/reorder.
         deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });

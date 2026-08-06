@@ -609,4 +609,17 @@ export interface RepoInfo {
    * breaking.
    */
   defaultBranch?: string;
+  /**
+   * docs/254 — index into the repo-identity palette (`shared/repo-colors.ts`,
+   * rendered by `--repo-color-N` in `client/index.css`). Drives the colored edge
+   * that spans the repo's whole sidebar group.
+   *
+   * An INDEX rather than a color: each theme maps it to its own light/dark
+   * value, so one stored choice looks right everywhere. Assigned at add time to
+   * the least-used index and never reassigned implicitly — the color is stable
+   * across adds, removals, reorders and hide/unhide — and changeable by the user
+   * from Project Settings. `undefined` only for a row written by an older build
+   * before the backfill migration ran; the UI falls back to no edge.
+   */
+  colorIndex?: number;
 }
