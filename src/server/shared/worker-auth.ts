@@ -123,24 +123,61 @@ export const LIFECYCLE_PATHS: ReadonlySet<string> = new Set([
  */
 const UNAUTHENTICATED_PATHS: readonly string[] = ["/health"];
 
+/**
+ * The spellings of `pathname` that could reach a handler, so a protected route
+ * cannot be smuggled past the guard in percent-encoded form.
+ *
+ * Fastify's router canonicalizes before matching: `find-my-way` runs the path
+ * through `decodeURI` when it contains an escape it will not defer to per-param
+ * decoding (`lib/url-sanitizer.js:safeDecodeURI`). So `POST /agent/%6bill`
+ * matches the `/agent/kill` handler, and a guard comparing only the raw URL sees
+ * an unrecognized path and waves it through — verified as a live bypass before
+ * this existed, on BOTH this module's route groups.
+ *
+ * Rather than replicate `find-my-way`'s conditional (which decides *whether* to
+ * decode from the escapes present, and which is theirs to change), this returns
+ * every candidate and the callers deny if ANY of them is protected. That is
+ * deliberately conservative: it can only ever add a denial, never remove one. An
+ * over-denial costs a 403 on a path the router would have 404'd anyway.
+ *
+ * `decodeURI` — not `decodeURIComponent` — because that is what the router uses:
+ * it leaves reserved characters like `%2F` encoded, which is exactly why
+ * `/agent%2Fkill` does NOT reach the kill handler and must not be denied here.
+ */
+function pathVariants(pathname: string): string[] {
+  try {
+    const decoded = decodeURI(pathname);
+    return decoded === pathname ? [pathname] : [pathname, decoded];
+  } catch {
+    // A malformed escape (`%zz`). The router answers 400 without routing it, so
+    // the raw form is the only spelling that could ever have matched.
+    return [pathname];
+  }
+}
+
 /** Whether `pathname` is one of the loopback-only route groups. */
 export function isLoopbackOnlyPath(pathname: string): boolean {
-  return LOOPBACK_ONLY_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+  return pathVariants(pathname).some((candidate) =>
+    LOOPBACK_ONLY_PREFIXES.some((prefix) => candidate.startsWith(prefix)),
+  );
 }
 
 /**
  * Whether `pathname` is a lifecycle-mutating route ({@link LIFECYCLE_PATHS}).
  *
- * A trailing slash is stripped first. Fastify's router does not (`ignoreTrailingSlash`
- * is off, so `/agent/kill/` 404s), which makes this belt-and-braces — but the
- * guard deciding membership differently from the router is exactly the kind of
- * mismatch that turns into a bypass when someone flips that option.
+ * Checks every spelling from {@link pathVariants}, and strips a trailing slash.
+ * Fastify's router does not strip one (`ignoreTrailingSlash` is off, so
+ * `/agent/kill/` 404s), which makes that part belt-and-braces — but the guard
+ * deciding membership differently from the router is exactly the mismatch that
+ * the encoded-path bypass was.
  */
 export function isLifecyclePath(pathname: string): boolean {
-  const normalized = pathname.length > 1 && pathname.endsWith("/")
-    ? pathname.slice(0, -1)
-    : pathname;
-  return LIFECYCLE_PATHS.has(normalized);
+  return pathVariants(pathname).some((candidate) => {
+    const normalized = candidate.length > 1 && candidate.endsWith("/")
+      ? candidate.slice(0, -1)
+      : candidate;
+    return LIFECYCLE_PATHS.has(normalized);
+  });
 }
 
 /**

@@ -8,11 +8,20 @@
  */
 
 import { describe, it, expect, afterEach } from "vitest";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
 import { registerWorkerAuthGuard } from "./worker-auth-guard.js";
 import { SessionWorker } from "./session-worker.js";
-import { WORKER_AUTH_HEADER, WORKER_TOKEN_ENV } from "../shared/worker-auth.js";
+import { LIFECYCLE_PATHS, WORKER_AUTH_HEADER, WORKER_TOKEN_ENV } from "../shared/worker-auth.js";
+
+/**
+ * The source spelling the entry-point tripwire below looks for. Kept as the
+ * identifier rather than its value so the check pins the constant's USE, not a
+ * string that would still match if someone inlined a stale literal.
+ */
+const WORKER_TOKEN_ENV_IDENTIFIER = "WORKER_TOKEN_ENV";
 
 const TOKEN = "b".repeat(64);
 /** A plausible peer: another session's agent container on the shared bridge. */
@@ -215,6 +224,47 @@ describe("worker auth guard", () => {
     expect(status.statusCode).toBe(200);
   });
 
+  it("SHI-239: a percent-encoded lifecycle path cannot slip past the guard", async () => {
+    // Fastify's router decodes before matching, so `/agent/%6bill` reaches the
+    // `/agent/kill` handler. A guard comparing the raw URL would see a path it
+    // does not recognize and wave it through — the guard has to canonicalize
+    // exactly the way the router does.
+    app = buildGuardedApp(TOKEN);
+    for (const url of ["/agent/%6bill", "/agent/%6Bill", "/%61gent/start", "/agent/%73tart"]) {
+      const res = await app.inject({ method: "POST", url, remoteAddress: "127.0.0.1", payload: {} });
+      expect(res.statusCode, url).toBe(403);
+    }
+  });
+
+  it("SHI-311: a percent-encoded /agent-ops path stays loopback-only too", async () => {
+    // Same defect class on the pre-existing prefix rule: `/%61gent-ops/…`
+    // decodes to `/agent-ops/…` at the router.
+    app = buildGuardedApp(TOKEN);
+    // With a VALID token, which is the case the loopback-only rule exists for:
+    // without canonicalization this peer reaches the broker, and the raw path
+    // would otherwise fall through to the token check and be allowed.
+    const res = await app.inject({
+      method: "POST",
+      url: "/%61gent-ops/voice/note",
+      remoteAddress: PEER_CONTAINER_IP,
+      headers: { [WORKER_AUTH_HEADER]: TOKEN },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("serves an ordinary path containing a legitimately encoded segment", async () => {
+    // Canonicalizing must not turn every encoded character into a denial: the
+    // present-artifact routes carry encoded ids.
+    app = buildGuardedApp(TOKEN);
+    const res = await app.inject({
+      method: "GET",
+      url: "/present-files/a%20b",
+      remoteAddress: "127.0.0.1",
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
   it("SHI-239: serves the orchestrator's lifecycle calls with the token", async () => {
     app = buildGuardedApp(TOKEN);
     const res = await app.inject({
@@ -278,5 +328,76 @@ describe("SessionWorker installs the guard", () => {
     });
     expect(healthy.statusCode).toBe(200);
     await worker.stop();
+  });
+
+  it("SHI-239: hands its token to the guard, so lifecycle routes are closed on the real app", async () => {
+    // The /agent-ops assertion above passes even with NO token configured
+    // (loopback-only needs none), so on its own it does not prove the worker
+    // forwards `workerToken` at all. This does: without that wiring the guard is
+    // unconfigured and a loopback /agent/kill would be served.
+    const worker = new SessionWorker({
+      agentFactory: () => { throw new Error("not used"); },
+      workerToken: TOKEN,
+    });
+    const killed = await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/kill",
+      remoteAddress: "127.0.0.1",
+      payload: {},
+    });
+    expect(killed.statusCode).toBe(403);
+
+    const status = await worker.getApp().inject({
+      method: "GET",
+      url: "/agent/status",
+      remoteAddress: "127.0.0.1",
+    });
+    expect(status.statusCode).toBe(200);
+    await worker.stop();
+  });
+
+  it("SHI-239: every mutating /agent/* route the worker registers is in LIFECYCLE_PATHS", async () => {
+    // Derived from the REAL route table rather than a second hand-written list:
+    // a new mutating route added to `AgentController` fails here by name instead
+    // of shipping unguarded, which a duplicated literal list cannot catch.
+    const worker = new SessionWorker({
+      agentFactory: () => { throw new Error("not used"); },
+      workerToken: TOKEN,
+    });
+    const app = worker.getApp();
+    await app.ready();
+
+    const routes = app
+      .printRoutes({ commonPrefix: false })
+      .split("\n")
+      .map((line) => /(\/\S*) \(([A-Z, ]+)\)\s*$/.exec(line))
+      .filter((m): m is RegExpExecArray => m !== null)
+      .map((m) => ({ path: m[1] as string, methods: (m[2] as string).split(", ") }))
+      // `/agent-ops/*` is the broker, a different (loopback-only) group.
+      .filter((r) => r.path.startsWith("/agent/"));
+
+    // Sanity: the parse actually found the route table.
+    expect(routes.length).toBeGreaterThan(5);
+
+    const mutating = routes.filter((r) => r.methods.some((m) => m !== "GET" && m !== "HEAD"));
+    expect(mutating.map((r) => r.path).sort()).toEqual([...LIFECYCLE_PATHS].sort());
+
+    // …and the read-only remainder stays out, so the probe keeps working.
+    const readOnly = routes.filter((r) => r.methods.every((m) => m === "GET" || m === "HEAD"));
+    expect(readOnly.map((r) => r.path)).toEqual(["/agent/status"]);
+
+    await worker.stop();
+  });
+
+  it("SHI-239: the container entry point forwards the token env to the worker", async () => {
+    // The entry point only runs when the file is executed directly, so it cannot
+    // be exercised in-process. A static check is the same tripwire pattern as
+    // `dead-worker-port.test.ts`: it fails loudly if the forwarding is dropped,
+    // which would silently leave every production worker unguarded.
+    const source = fs.readFileSync(
+      fileURLToPath(new URL("./session-worker.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(source).toContain(`workerToken: process.env[${WORKER_TOKEN_ENV_IDENTIFIER}]`);
   });
 });

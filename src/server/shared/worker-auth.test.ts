@@ -90,8 +90,9 @@ describe("isLifecyclePath", () => {
     ]) {
       expect(isLifecyclePath(path), path).toBe(true);
     }
-    // The list above IS the set — a route added to one without the other would
-    // otherwise pass this file while going unguarded (or silently guarded).
+    // A literal list can only catch a typo in the set, never a route added to
+    // `AgentController` and forgotten here — that is pinned against the real
+    // route table in `session/worker-auth-guard.test.ts`.
     expect(LIFECYCLE_PATHS.size).toBe(10);
   });
 
@@ -111,6 +112,33 @@ describe("isLifecyclePath", () => {
   it("strips a trailing slash so the guard and the router agree on membership", () => {
     expect(isLifecyclePath("/agent/kill/")).toBe(true);
     expect(isLifecyclePath("/")).toBe(false);
+  });
+
+  it("sees through percent-encoding, which the router decodes before matching", () => {
+    // `POST /agent/%6bill` reaches the /agent/kill handler; comparing the raw
+    // URL alone was a live bypass.
+    for (const path of ["/agent/%6bill", "/agent/%6Bill", "/%61gent/start", "/agent/%73tart"]) {
+      expect(isLifecyclePath(path), path).toBe(true);
+    }
+    expect(isLoopbackOnlyPath("/%61gent-ops/voice/note")).toBe(true);
+  });
+
+  it("does not over-decode: %2F stays encoded, as it does in the router", () => {
+    // `decodeURI` leaves reserved characters alone, which is why `/agent%2Fkill`
+    // does NOT reach the kill handler — denying it would be a guard that
+    // disagrees with the router in the other direction.
+    expect(isLifecyclePath("/agent%2Fkill")).toBe(false);
+    expect(isLifecyclePath("/services/list")).toBe(false);
+  });
+
+  it("survives a malformed escape instead of throwing", () => {
+    // `decodeURI("%zz")` throws a URIError. The router answers 400 without
+    // routing, so the raw spelling is the only one that could have matched — but
+    // an exception here would surface as a 500 from the auth hook.
+    expect(() => isLifecyclePath("/agent/%zz")).not.toThrow();
+    expect(isLifecyclePath("/agent/%zz")).toBe(false);
+    expect(() => isLoopbackOnlyPath("/agent-ops/%zz")).not.toThrow();
+    expect(isLoopbackOnlyPath("/agent-ops/%zz")).toBe(true);
   });
 });
 
