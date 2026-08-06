@@ -221,6 +221,91 @@ outside the git workspace (it holds private planning content) — it is written 
 `/persist/linear-export/`, which is per-session, so a child session re-runs it
 rather than inheriting it.
 
+## Where a human has to look
+
+Four points in this migration need a person, not a passing test. They are marked
+**Human gate** in the steps below. Each one is here because the check is either a
+judgement call or a last cheap moment before something becomes expensive or
+impossible to undo — not merely because it is important.
+
+Everything else is the agent's to verify and report: the corpus counts, the
+mapping's completeness, that ordering is monotonic (req 12), that every create
+returned the expected number, that lint and typecheck pass. Those are assertions,
+and an assertion that needs a human is a missing assertion.
+
+### Gate 1 — the pilot, before the format is repeated 322 times
+
+**Look at:** the one copied issue, in the Issues tab. Specifically —
+
+- Does the body header read well? It carries the `SHI-N` origin and the original
+  creation date, and it will sit at the top of all 322.
+- Do the replayed comments read as a conversation? Each is prefixed with its
+  original date, and the prefix format is what makes a two-year-old discussion
+  legible or noisy.
+- Did the internal cross-references get rewritten to the right issues, and do
+  they resolve when clicked?
+- Do labels and the `priority: …` label look right, and does the priority read
+  back correctly in the list?
+
+**Why a human:** every one of these is "does this read well", which no test
+asserts.
+
+**Cost of getting it wrong:** high, and asymmetric. Issue *bodies* can be edited
+later. **Comments cannot** — the shim has no comment-edit or comment-delete
+command, and deletion exists only via a write card's Undo, which is gone once the
+copy session's cards age out. Credentials are brokered, so there is no direct-API
+fallback. A comment format settled here is settled for good.
+
+### Gate 2 — after Pass A, before the reference sweep
+
+**Look at:** the tracker list, and the mapping artifact. Specifically —
+
+- Are there 322 issues, and does spot-checking a handful against their Linear
+  originals show the right title, labels and open/closed state?
+- Does the list read in a sensible order — lowest Linear key first (req 12)?
+- Does the mapping cover every key, with no duplicates?
+
+**Why a human:** the agent asserts all of this, but the sweep that follows rewrites
+2,623 references in 667 files from this mapping. A wrong mapping propagates into
+every file in the repository, and the mistake is far cheaper to catch as 322 rows
+than as a 667-file diff.
+
+**Cost of getting it wrong:** a bad mapping means a bad sweep, and the sweep is
+the migration's only diff.
+
+### Gate 3 — the reference sweep PR
+
+**Look at:** the diff, with attention to what a mechanical rewrite gets wrong
+rather than to what it gets right —
+
+- Did anything get rewritten that shouldn't have? `SHI-N`-shaped text inside a
+  string literal, a test fixture, or a historical PR reference is not necessarily
+  a pointer to migrate. `notable-files.test.ts` already contains a deliberately
+  stale path of this kind.
+- Did the doc `issue:` frontmatter land in the name form (`planning#57`) rather
+  than a backend address?
+- Was `src/client/hooks/useLazyToolInput.ts` included? It is flagged binary by
+  `grep`, so a sweep without `grep -a` silently skips it.
+
+**Why a human:** this is normal PR review, but at a size where "looks fine" is not
+a reading. Review it by *category* — frontmatter, code comments, prose, fixtures —
+rather than file by file.
+
+**Cost of getting it wrong:** merged into `main` and conflicting with every open
+branch, so a follow-up correction is its own disruptive sweep.
+
+### Gate 4 — before retiring Linear
+
+**Look at:** whether anything still depends on Linear that this plan hasn't
+accounted for. Undeclaring `roadmap` makes every remaining `SHI-N` reference fail
+closed — which is intended, but only *after* the sweep has rewritten them.
+
+**Why a human:** the check is "are we actually done with it", which is about how
+the tracker is used day to day, not about what the code does.
+
+**Cost of getting it wrong:** low and recoverable — re-declaring `roadmap` in
+`shipit.yaml` restores access. This gate is a pause, not a point of no return.
+
 ## Steps
 
 1. ~~Create the planning repository and confirm the credential reaches it.~~ Done.
@@ -234,7 +319,7 @@ rather than inheriting it.
 5. **Create the labels** the corpus uses — the 20 from Linear with their colors,
    plus the four `priority: …` labels that carry priority across. Workflow state
    contributes none (req 8).
-6. **Pilot: copy exactly one issue and stop.** Pick one that exercises the awkward
+6. **Pilot: copy exactly one issue and stop. — Human gate 1.** Pick one that exercises the awkward
    parts — a long body, several comments, at least one internal `SHI-N`
    cross-reference, a label and a priority — and copy it end to end. Then look at
    it in the Issues tab and decide whether the body header, the dated comments and
@@ -251,17 +336,18 @@ rather than inheriting it.
    `SHI-N` form for now. Closed issues are closed after creation. Every assigned
    number is appended to the `SHI-N → planning#M` mapping as it comes back, which
    makes the mapping complete and *observed* at the end of this pass.
+   **Human gate 2 at the end of this step**, before anything reads the mapping.
 9. **Pass B — finish the tracker side.** Replay the 1,344 comments with their
    original dates (req 9), and edit the 322 bodies so their internal
    cross-references point at `planning#M`. Both are tracker writes against the
    mapping Pass A produced; **nothing in this repository changes**, so this step
    opens no PR and can run for as long as the pacing requires.
-10. **Rewrite every reference in this repository** from that mapping, in one PR
+10. **Rewrite every reference in this repository** — **Human gate 3.** From that mapping, in one PR
     (req 10): doc `issue:` frontmatter, inline doc mentions, code comments,
     `CLAUDE.md`. 2,623 mentions across 667 files — it conflicts with every open
     branch, so it lands when nothing else is in flight. This is the only step of
     the migration that produces a diff.
-11. **Retire Linear** for ShipIt's own planning (req 11): drop the `roadmap`
+11. **Retire Linear** for ShipIt's own planning — **Human gate 4.** (req 11): drop the `roadmap`
     declaration from `shipit.yaml`, and rewrite every part of `CLAUDE.md` that
     names Linear as the destination — see below, it is more than one section.
 
