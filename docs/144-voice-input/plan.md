@@ -547,7 +547,7 @@ not edge cases.
 
 ### UX
 
-**Mic button** appears in **three places** (same component, same hook
+**Mic button** appears in **four places** (same component, same hook
 state), only rendered when voice input is enabled in settings:
 
 - Next to the send/stop buttons in **MessageInput** — Mode A entry point.
@@ -563,6 +563,17 @@ state), only rendered when voice input is enabled in settings:
   sub-component owns its own `useVoiceInput` instance and splices the
   transcript into the textarea via `spliceTranscript`, exactly like
   MessageInput. On mobile it also mounts `MobileRecordingOverlay`.
+- Inside the **doc-comment composer** (`CommentInput`, docs/049) — lets the
+  user select text in a design doc and dictate the comment instead of typing
+  it. The same component backs both a new selection comment and an in-place
+  edit of an existing one, so one wiring covers both. Button-only for the same
+  reason as the question card, and more acutely: a doc can have a pending
+  comment *and* an open edit mounted at once, so a global hotkey would drive
+  two recorders. Because this composer is a growing multi-line card rather
+  than a fixed-height field, the mic sits in the footer row opposite
+  Cancel/Add instead of floating over the textarea. Escape while recording
+  cancels the *recording* rather than the comment — a mistimed Escape
+  discarding half-written text is the worse failure.
 
 States (shared across both mic instances):
 
@@ -996,6 +1007,7 @@ Captured here so future readers know they were considered, not forgotten:
 - `src/client/components/QuickCaptureOverlay.tsx` (from doc 145) — embed MicButton, wire a Mode-B hook instance, route transcript to the overlay's own `setText`. Auto-start capture when opened via the Mode-B hotkey.
 - `src/client/hooks/useQuickCaptureHotkey.ts` (from doc 145) — add a sibling Mode-B variant that opens the overlay *and* signals the overlay to auto-start mic capture
 - `src/client/components/AskUserQuestion.tsx` — `OtherAnswerInput` sub-component embeds MicButton (button-only, no hotkey) in the "Other" free-text field, wires its own `useVoiceInput` instance, splices the transcript with `spliceTranscript`, and mounts `MobileRecordingOverlay` on mobile
+- `src/client/components/MarkdownSelectionComments/CommentInput.tsx` — the doc-comment composer (new comment + in-place edit) embeds MicButton in its footer row (button-only, no hotkey), wires its own `useVoiceInput` instance, splices the transcript with `spliceTranscript`, mounts `MobileRecordingOverlay` on mobile, and routes Escape-while-recording to `cancelRecording` instead of closing the input. Tests: `CommentInput.test.tsx`
 - `src/client/components/MessageList.tsx` (or the existing turn-footer component, exact name verified during build) — render `PlayTurnButton` for each completed assistant turn; pass the turn's id and extracted prose
 - `src/client/stores/settings-store.ts` — add input fields (`voiceInputEnabled`, `sttProvider`, `cleanupEnabled`, `voiceHotkeyModeA`, `voiceHotkeyModeB`, `voiceLanguage`) **and** playback fields (`voicePlaybackEnabled`, `ttsProvider`, `ttsVoice`, `ttsSpeed`) and setters (no API key — that's server-side)
 - `src/client/utils/local-storage.ts` — persisters for the new non-credential settings
