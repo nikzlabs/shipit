@@ -162,14 +162,17 @@ export const STARTING_WATCHDOG_MS = 120_000;
  * `shipit service list`, and `GET /api/sessions/:id/services`.
  *
  * Deliberately says the container may in fact be running: the watchdog fires on
- * "we never got a status back", not on "the service failed", and telling the
+ * "readiness was never confirmed", not on "the service failed", and telling the
  * user their service is dead when it is serving requests would send them
- * debugging the wrong thing.
+ * debugging the wrong thing. It also has to be true for the other way in: a
+ * container looping in Docker's `restarting` state is reported as `starting`
+ * too, and there the probe is answering perfectly well.
  */
 export const STARTING_TIMEOUT_MESSAGE =
-  `Stuck in "starting" for over ${Math.round(STARTING_WATCHDOG_MS / 1000)}s — the status probe ` +
-  "never reported a container for this service. It may in fact be running: check " +
-  "`shipit service logs <name>`, then restart the service to re-probe.";
+  `Stuck in "starting" for over ${Math.round(STARTING_WATCHDOG_MS / 1000)}s with no compose up ` +
+  "in flight — readiness was never confirmed. The service may in fact be running, or its " +
+  "container may be stuck in a restart loop: check `shipit service logs <name>`, then restart " +
+  "the service to re-probe.";
 
 /**
  * Reject-after-`ms` wrapper. The underlying promise is NOT cancelled (nothing in
@@ -1225,6 +1228,15 @@ export class ServiceManager extends EventEmitter {
     // against the OLD entry would fire against a service object that no longer
     // exists (or, worse, a same-named replacement it never watched).
     this.cancelStartingWatchdogs();
+    // Same generation argument for the in-flight set, which is an exemption
+    // rather than a lock: a `compose up` from the previous definition that
+    // never returned would otherwise exempt the SAME-NAMED new service from
+    // both the poller's missing-container reconciliation and the `starting`
+    // watchdog, for the rest of the session. A stale call releasing later just
+    // deletes an absent key; if it races a new `up` for the same name it can
+    // drop that exemption early, which costs one grace window rather than the
+    // session.
+    this.upInFlight.clear();
 
     this.services.clear();
     this.logBuffers.clear();
@@ -1363,6 +1375,11 @@ export class ServiceManager extends EventEmitter {
   private async withUpInFlight<T>(names: string[], fn: () => Promise<T>): Promise<T> {
     for (const name of names) {
       this.upInFlight.set(name, (this.upInFlight.get(name) ?? 0) + 1);
+      // A new container is on its way, so the address we hold describes the
+      // OUTGOING one. Dropping it here is what keeps `getServices` from
+      // publishing a dead (or, worse, reassigned) IP during the window where
+      // the service is `starting` and the replacement doesn't exist yet.
+      this.clearContainerIp(name);
     }
     try {
       return await fn();
@@ -1371,6 +1388,17 @@ export class ServiceManager extends EventEmitter {
         const next = (this.upInFlight.get(name) ?? 1) - 1;
         if (next > 0) this.upInFlight.set(name, next);
         else this.upInFlight.delete(name);
+      }
+      // The watchdog's window is armed when `starting` is written — which for
+      // every caller here is BEFORE this `up`. An up that eats most of the
+      // window would otherwise leave only its remainder to cover the network
+      // join and the first poll, and a service that is coming up perfectly
+      // normally would be marked `error` seconds before the poll that would
+      // have cleared it. Releasing the exemption restarts the clock.
+      for (const name of names) {
+        if (!this.upInFlight.has(name) && this.services.get(name)?.status === "starting") {
+          this.armStartingWatchdog(name);
+        }
       }
     }
   }
@@ -1673,11 +1701,32 @@ export class ServiceManager extends EventEmitter {
     this.updateServiceStatus(name, "error", STARTING_TIMEOUT_MESSAGE);
   }
 
+  /**
+   * Forget a service's resolved container address.
+   *
+   * Called wherever the container it described is gone or being replaced. The
+   * IP was previously kept indefinitely, which was harmless only because
+   * `getServices` published a URL for `running` services alone; now that a
+   * `starting` service publishes one too, a retained IP would resurface as an
+   * address the moment a stop→start cycle wrote `starting` — pointing at a dead
+   * container, or at whatever else Docker has since handed that IP to.
+   */
+  private clearContainerIp(name: string): void {
+    const svc = this.services.get(name);
+    if (svc) delete svc.containerIp;
+  }
+
   private updateServiceStatus(name: string, status: ServiceStatus, error?: string): void {
     const svc = this.services.get(name);
     if (!svc) return;
     svc.status = status;
     svc.error = error;
+    // `stopped`/`error` are conclusions drawn from an observed exit (or from
+    // reconciliation finding no container at all) — the address we hold is now
+    // stale, not merely unverified. `starting` deliberately keeps it: the
+    // poller's `restarting` branch writes `starting` for a container it just
+    // resolved an IP for on the same pass.
+    if (status === "stopped" || status === "error") delete svc.containerIp;
     // Arm/disarm the stuck-`starting` watchdog on the transition itself, so
     // every writer of `starting` is covered without each one remembering to.
     if (status === "starting") {
