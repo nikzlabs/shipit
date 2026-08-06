@@ -44,13 +44,16 @@ const NO_BAND_CLASS = "bg-(--color-bg-primary)";
 export const GROUP_GAP_CLASS = "mb-1.5";
 
 /**
- * Breathing room under a separated group's header band, before its first row.
- * The band is a section header, so its contents need to sit clear of it — butted
- * straight against the first row the band reads as just another row with a
- * background. Only applied when separated; without a band there is nothing to
- * clear.
+ * Inset above and below a separated group's rows — 4px, deliberately the SAME as
+ * the list's own `gap-1` row-to-row spacing. One rhythm inside the group: the
+ * first row sits the same distance below the header band as the rows sit from
+ * each other, and the colored edge stops the same distance below the last row.
+ * Anything larger reads as the edge overshooting its content.
+ *
+ * Only applied when separated. Without a band there is nothing to clear, and the
+ * unseparated group keeps its original `pb-2`.
  */
-export const BAND_CLEARANCE_CLASS = "pt-2";
+export const BAND_CLEARANCE_CLASS = "pt-1 pb-1";
 
 /**
  * docs/128 — pinned group for privileged ops/host-debugging sessions. Keyed off
@@ -489,7 +492,7 @@ export function RepoGroup({
 
       {/* Session list — hidden when collapsed */}
       {!isCollapsed && (
-        <div ref={listRef} className={`flex flex-col gap-1 pb-2 ${separated ? BAND_CLEARANCE_CLASS : ""}`}>
+        <div ref={listRef} data-testid="group-session-list" className={`flex flex-col gap-1 ${separated ? BAND_CLEARANCE_CLASS : "pb-2"}`}>
           {(() => {
             // New session row — matches SessionItem shape so it can render as
             // selected. docs/110 — rendered below the pinned sub-section (see the

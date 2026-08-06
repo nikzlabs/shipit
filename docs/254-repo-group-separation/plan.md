@@ -132,12 +132,19 @@ component's own padding.
   opposite of "each repo owns a bounded run". The mock carried this as
   `margin-bottom`; the first implementation dropped it entirely, and the defect
   was caught in the real UI, not in review.
-- **8px below the header band** (`BAND_CLEARANCE_CLASS`). The band is a section
-  header; butted straight against the first row it reads as just another row that
-  happens to have a background.
+- **4px above the first row and below the last** (`BAND_CLEARANCE_CLASS`),
+  deliberately equal to the list's own `gap-1` row-to-row spacing. One rhythm
+  inside the group: the first row sits the same distance below the header band as
+  the rows sit from each other, and the coloured edge stops that same distance
+  below the last row. The original `pb-2` left the edge overshooting its content
+  by 8px, which read as a stray tail. Note the *apparent* gap to the `New session`
+  label is larger than the number, because that button carries its own 6px of
+  padding — an 8px inset measured ~16px to the eye and was too loose.
 - **No leading padding above the first group.** The scroll container's `pt-1` is
   dropped so the first band meets the sidebar header's border directly, the way a
-  table's first section header does.
+  table's first section header does. (This is why the clearance assertion is
+  scoped to the group in tests: unseparated, the scroll container carries the same
+  utility class, and an unscoped query matches it.)
 
 Both class constants are exported and asserted by name in the tests, so the
 tests pin *that there is a gap* without pinning the exact value — the metric is a

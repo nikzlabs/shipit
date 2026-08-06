@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SessionSidebar } from "./SessionSidebar.js";
 import { GROUP_GAP_CLASS, BAND_CLEARANCE_CLASS } from "./SessionSidebar/SessionGroup.js";
@@ -1253,19 +1253,31 @@ describe("SessionSidebar", () => {
     });
 
     // The band is a section header: butted straight against the first row it
-    // reads as just another row with a background.
-    it("clears the header band before the group's first row", () => {
+    // reads as just another row with a background. The clearance is sized to
+    // match the gap BETWEEN session rows, so the first row sits the same
+    // distance below the band as the rows sit from each other.
+    it("insets rows from the band and the edge's end by the row-to-row gap", () => {
       render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0), colored(repoB, 5)]} />);
-      const group = document.querySelector("[data-repo-color-index]")!;
-      const list = group.querySelector(`.${CSS.escape(BAND_CLEARANCE_CLASS)}`);
-      expect(list).toBeTruthy();
+      const list = within(document.querySelector<HTMLElement>("[data-repo-color-index]")!)
+        .getByTestId("group-session-list");
+      expect(list.className).toContain(BAND_CLEARANCE_CLASS);
+      // One rhythm inside the group: `gap-1` separates the rows, and the same
+      // 4px sits above the first row and below the last (where the colored edge
+      // ends). A larger bottom inset reads as the edge overshooting its content.
+      expect(list.className).toContain("gap-1");
+      expect(BAND_CLEARANCE_CLASS).toBe("pt-1 pb-1");
+      expect(list.className).not.toContain("pb-2");
     });
 
     it("keeps the previous spacing when the treatment is off", () => {
       render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0)]} />);
       const group = screen.getByText("repo").closest("div")?.parentElement?.parentElement;
       expect(group?.className ?? "").not.toContain(GROUP_GAP_CLASS);
-      expect(document.querySelector(`.${CSS.escape(BAND_CLEARANCE_CLASS)}`)).toBeNull();
+      // Scoped to the group: the sidebar's scroll container legitimately carries
+      // the same utility class in this mode, so an unscoped query would match it.
+      const list = screen.getByTestId("group-session-list");
+      expect(list.className).not.toContain(BAND_CLEARANCE_CLASS);
+      expect(list.className).toContain("pb-2"); // the original spacing, untouched
     });
 
     // The edge MUST be on the group, not the sticky header — on the header it
