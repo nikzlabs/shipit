@@ -159,6 +159,46 @@ describe("PreviewFrame", () => {
     await screen.findByTitle("Live Preview");
   });
 
+  it("reloads the current page in place instead of re-navigating to the entry URL", async () => {
+    // Regression: refresh used to re-assign `src`, which sends a preview the
+    // user had navigated into (SPA route, sub-page) back to the front page.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+
+    // The injected preview script announces itself — only then do we know a
+    // "reload" command will be honoured.
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "loaded" },
+      source: iframe.contentWindow,
+    }));
+
+    const srcSetter = vi.fn();
+    Object.defineProperty(iframe, "src", { set: srcSetter, get: () => "http://localhost:5173", configurable: true });
+
+    fireEvent.click(screen.getByTitle("Refresh preview"));
+
+    expect(postMessage).toHaveBeenCalledWith({ source: "shipit-toolbar", type: "reload" }, "*");
+    expect(srcSetter).not.toHaveBeenCalled();
+  });
+
+  it("falls back to re-assigning src when the preview script never loaded", async () => {
+    // No "loaded" message — a non-proxied local preview, a 502, or an
+    // auth-gated response. A hard re-fetch is the only thing that can work.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    const srcSetter = vi.fn();
+    Object.defineProperty(iframe, "src", { set: srcSetter, get: () => "http://localhost:5173", configurable: true });
+
+    fireEvent.click(screen.getByTitle("Refresh preview"));
+
+    expect(srcSetter).toHaveBeenCalledWith("http://localhost:5173");
+    expect(postMessage).not.toHaveBeenCalledWith({ source: "shipit-toolbar", type: "reload" }, "*");
+  });
+
   it("posts a back-navigation message to the active iframe when Back is clicked", async () => {
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);

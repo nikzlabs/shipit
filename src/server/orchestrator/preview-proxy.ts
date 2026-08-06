@@ -82,7 +82,12 @@ const HMR_WS_PATCH = `<script>(function(){` +
     `window.addEventListener("message",function(e){` +
       `var d=e.data;if(!d||d.source!=="shipit-toolbar")return;` +
       `if(d.type==="back")history.back();` +
-      `else if(d.type==="forward")history.forward()` +
+      `else if(d.type==="forward")history.forward();` +
+      // Refresh must reload whatever page the preview is currently on. The
+      // parent can only re-assign the iframe's `src`, which is the slot's
+      // original entry URL — that would throw away any client-side route the
+      // user navigated to and drop them back on the front page.
+      `else if(d.type==="reload")location.reload()` +
     `})` +
   `}` +
   `})()</script>`;
