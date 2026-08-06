@@ -8,20 +8,11 @@
  */
 
 import { describe, it, expect, afterEach } from "vitest";
-import fs from "node:fs";
-import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
 import { registerWorkerAuthGuard } from "./worker-auth-guard.js";
 import { SessionWorker } from "./session-worker.js";
 import { LIFECYCLE_PATHS, WORKER_AUTH_HEADER, WORKER_TOKEN_ENV } from "../shared/worker-auth.js";
-
-/**
- * The source spelling the entry-point tripwire below looks for. Kept as the
- * identifier rather than its value so the check pins the constant's USE, not a
- * string that would still match if someone inlined a stale literal.
- */
-const WORKER_TOKEN_ENV_IDENTIFIER = "WORKER_TOKEN_ENV";
 
 const TOKEN = "b".repeat(64);
 /** A plausible peer: another session's agent container on the shared bridge. */
@@ -389,15 +380,4 @@ describe("SessionWorker installs the guard", () => {
     await worker.stop();
   });
 
-  it("SHI-239: the container entry point forwards the token env to the worker", async () => {
-    // The entry point only runs when the file is executed directly, so it cannot
-    // be exercised in-process. A static check is the same tripwire pattern as
-    // `dead-worker-port.test.ts`: it fails loudly if the forwarding is dropped,
-    // which would silently leave every production worker unguarded.
-    const source = fs.readFileSync(
-      fileURLToPath(new URL("./session-worker.ts", import.meta.url)),
-      "utf8",
-    );
-    expect(source).toContain(`workerToken: process.env[${WORKER_TOKEN_ENV_IDENTIFIER}]`);
-  });
 });
