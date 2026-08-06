@@ -77,6 +77,18 @@ export function setRepoHidden(
 }
 
 /**
+ * docs/254 — reject anything that isn't a usable palette index. Exported so the
+ * route can validate the whole body BEFORE writing any of it: a PATCH carrying
+ * both `hidden` and a bad `colorIndex` must leave the row untouched rather than
+ * commit the first update and throw on the second.
+ */
+export function assertValidRepoColorIndex(colorIndex: unknown): asserts colorIndex is number {
+  if (!isValidRepoColorIndex(colorIndex)) {
+    throw new ServiceError(400, `colorIndex must be an integer between 0 and ${REPO_COLOR_COUNT - 1}`);
+  }
+}
+
+/**
  * docs/254 — set a repo's identity color, the palette index behind the sidebar's
  * per-repo group edge. Validated against the palette rather than stored blind,
  * so a bad client can't write an index that renders as `var(--repo-color-99)`
@@ -90,9 +102,7 @@ export function setRepoColorIndex(
   if (!url?.trim()) {
     throw new ServiceError(400, "Repository URL is required");
   }
-  if (!isValidRepoColorIndex(colorIndex)) {
-    throw new ServiceError(400, `colorIndex must be an integer between 0 and ${REPO_COLOR_COUNT - 1}`);
-  }
+  assertValidRepoColorIndex(colorIndex);
   const updated = repoStore.setColorIndex(url.trim(), colorIndex);
   if (!updated) {
     throw new ServiceError(404, "Repository not found");

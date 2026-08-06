@@ -16,6 +16,7 @@ import {
   setRepoTrusted,
   setRepoHidden,
   setRepoColorIndex,
+  assertValidRepoColorIndex,
   createRepoWithTemplate,
   deleteSession,
   archiveSession,
@@ -269,12 +270,22 @@ export async function registerSessionReposRoutes(
         const url = decodeURIComponent(request.params.url);
         const hidden = request.body?.hidden;
         const colorIndex = request.body?.colorIndex;
-        if (typeof hidden !== "boolean" && colorIndex === undefined) {
+        if (hidden === undefined && colorIndex === undefined) {
           reply.code(400).send({ error: "Request body must include a boolean 'hidden' or a numeric 'colorIndex'" });
           return;
         }
+        // A field that is PRESENT but malformed is an error, never a silent
+        // skip: `{colorIndex: 2, hidden: "yes"}` must not quietly apply half the
+        // request and report success. Both fields are validated BEFORE either is
+        // written, so a rejected body leaves the row entirely untouched rather
+        // than committing the first update and throwing on the second.
+        if (hidden !== undefined && typeof hidden !== "boolean") {
+          reply.code(400).send({ error: "'hidden' must be a boolean" });
+          return;
+        }
+        if (colorIndex !== undefined) assertValidRepoColorIndex(colorIndex);
         if (colorIndex !== undefined) setRepoColorIndex(deps.repoStore, url, colorIndex);
-        if (typeof hidden === "boolean") setRepoHidden(deps.repoStore, url, hidden);
+        if (hidden !== undefined) setRepoHidden(deps.repoStore, url, hidden);
         // Broadcast so every connected tab updates its sidebar immediately —
         // same pattern as add/remove/reorder.
         deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });

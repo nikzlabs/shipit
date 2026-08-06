@@ -120,6 +120,48 @@ click; there is no save step. The selected swatch carries a tick as well as a
 ring, so it stays identifiable without relying on ring contrast against sixteen
 different backgrounds.
 
+## Spacing
+
+Adjacent groups need a gap or their edges meet and read as **one** continuous
+rail that changes colour partway down — the opposite of "each repo owns a bounded
+run". The mock carried this as `margin-bottom`; the first implementation dropped
+it and the defect was caught in the real UI, not in review. 8px, applied only
+when separated. The scroll container's leading padding is dropped in the same
+mode so the first header band meets the sidebar header's border the way a table's
+first section header does.
+
+## What the independent review changed
+
+A Codex review (2026-08-06) against `requirements.md` produced four code changes:
+
+- **The palette was retuned.** The original entry 4 sat 7 units (redmean) from
+  Codex Light's `--color-pr` — visually identical to the PR badge on every
+  session row beside it — and seven themes had a similar violet collision. The
+  palette now clears every theme's status colours by a measured margin, and
+  `src/client/repo-palette.test.ts` fails if a future edit reintroduces a
+  collision. That test was verified to fail against the shipped-and-fixed value.
+- **The optimistic colour update had a lost-update race.** Clicking swatch 1 then
+  2 puts two PATCHes in flight; if 2 succeeded and 1 then failed, the rollback
+  restored the *pre-click* value over a newer, server-confirmed one — and the
+  authoritative `repo_list` SSE had already been consumed, so nothing corrected
+  it until reload. The revert is now conditional on the store still holding the
+  value that call wrote.
+- **`PATCH /api/repos/:url` silently ignored a malformed field.**
+  `{colorIndex: 2, hidden: "yes"}` applied the colour and reported success. Both
+  fields are now validated before either is written, so a rejected body leaves
+  the row untouched.
+- **The migration test ran a copy of the migration, not the migration.** It would
+  have stayed green if the shipped backfill were changed to assign every row 0.
+  It now rewinds a real database past the migration and re-opens it; verified to
+  fail (5 cases) against a deliberately broken backfill.
+
+Two findings were **not** resolved in code because they are requirement-wording
+decisions rather than defects — see `## Open questions` in `requirements.md`
+(whether a user may deliberately pick a colour another repo holds, and whether
+suppression counts repos or groups). The picker now marks taken colours and names
+the holder, so a duplicate pick is deliberate rather than accidental, but nothing
+blocks it pending that decision.
+
 ## Verification
 
 Checked in the dogfood inner ShipIt with four repos, in Claude Light and Claude

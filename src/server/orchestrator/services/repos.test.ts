@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DatabaseManager } from "../../shared/database.js";
 import { RepoStore } from "../repo-store.js";
 import { REPO_COLOR_COUNT } from "../../shared/repo-colors.js";
-import { setRepoColorIndex } from "./repos.js";
+import { setRepoColorIndex, assertValidRepoColorIndex, setRepoHidden } from "./repos.js";
 import { ServiceError } from "./types.js";
 
 let dbManager: DatabaseManager;
@@ -65,5 +65,22 @@ describe("setRepoColorIndex", () => {
     } catch (err) {
       expect((err as ServiceError).statusCode).toBe(400);
     }
+  });
+
+  // The route validates the WHOLE body up front via this assert, so a PATCH
+  // carrying a good `hidden` and a bad `colorIndex` writes neither.
+  it("exposes a standalone assert the route can run before any write", () => {
+    expect(() => assertValidRepoColorIndex(0)).not.toThrow();
+    expect(() => assertValidRepoColorIndex(REPO_COLOR_COUNT)).toThrow(ServiceError);
+    expect(() => assertValidRepoColorIndex("2")).toThrow(ServiceError);
+  });
+
+  it("leaves hidden untouched when a combined update is rejected up front", () => {
+    setRepoHidden(repoStore, url, false);
+    setRepoColorIndex(repoStore, url, 5);
+    // What the route does: validate everything, then write.
+    expect(() => assertValidRepoColorIndex(99)).toThrow(ServiceError);
+    expect(repoStore.get(url)?.hidden).toBe(false);
+    expect(repoStore.get(url)?.colorIndex).toBe(5);
   });
 });

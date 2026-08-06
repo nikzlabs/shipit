@@ -63,4 +63,47 @@ describe("RepoColorPicker", () => {
     expect(screen.queryByRole("radio", { checked: true })).toBeNull();
     expect(screen.getAllByRole("radio")).toHaveLength(REPO_COLOR_COUNT);
   });
+
+  // Automatic assignment never collides, but a manual pick can. Rather than
+  // blocking it, the picker says which colors another repo already holds so a
+  // duplicate is a deliberate choice instead of an accident.
+  describe("colors taken by other repos", () => {
+    const other = (u: string, colorIndex: number): RepoInfo =>
+      ({ url: u, status: "ready", addedAt: now, lastUsedAt: now, colorIndex });
+
+    it("marks a color another repo is using", () => {
+      useRepoStore.setState({ repos: [repo, other("https://github.com/owner/b.git", 9)] });
+      render(<RepoColorPicker repoUrl={url} />);
+      expect(screen.getByTestId("repo-color-9").getAttribute("data-taken")).toBe("true");
+      expect(screen.getByTestId("repo-color-8").getAttribute("data-taken")).toBeNull();
+    });
+
+    it("names the holder in the accessible label, not just a visual dot", () => {
+      useRepoStore.setState({ repos: [repo, other("https://github.com/owner/b.git", 9)] });
+      render(<RepoColorPicker repoUrl={url} />);
+      expect(screen.getByRole("radio", { name: /already used by b/ })).toBeTruthy();
+    });
+
+    it("does not mark this repo's own color as taken", () => {
+      useRepoStore.setState({ repos: [repo] });
+      render(<RepoColorPicker repoUrl={url} />);
+      expect(screen.getByTestId("repo-color-3").getAttribute("data-taken")).toBeNull();
+    });
+
+    // A hidden repo still holds its color and can return at any time.
+    it("counts hidden repos as holders", () => {
+      useRepoStore.setState({
+        repos: [repo, { ...other("https://github.com/owner/b.git", 9), hidden: true }],
+      });
+      render(<RepoColorPicker repoUrl={url} />);
+      expect(screen.getByTestId("repo-color-9").getAttribute("data-taken")).toBe("true");
+    });
+
+    it("still allows picking a taken color", async () => {
+      useRepoStore.setState({ repos: [repo, other("https://github.com/owner/b.git", 9)], setRepoColorIndex });
+      render(<RepoColorPicker repoUrl={url} />);
+      await userEvent.click(screen.getByTestId("repo-color-9"));
+      expect(setRepoColorIndex).toHaveBeenCalledWith(url, 9);
+    });
+  });
 });

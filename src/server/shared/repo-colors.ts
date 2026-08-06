@@ -14,22 +14,22 @@
 
 /** Human-readable names, index-aligned with `--repo-color-N`. */
 export const REPO_COLOR_NAMES = [
+  "Clay",
   "Ochre",
-  "Rust",
-  "Rose",
-  "Magenta",
-  "Violet",
-  "Indigo",
-  "Blue",
-  "Sky",
-  "Teal",
-  "Green",
-  "Olive",
   "Mustard",
+  "Olive",
+  "Fern",
+  "Pine",
+  "Cyan",
+  "Steel",
+  "Denim",
+  "Lavender",
+  "Orchid",
+  "Rose",
+  "Brick",
   "Sienna",
   "Slate",
-  "Mauve",
-  "Cocoa",
+  "Taupe",
 ] as const;
 
 /**

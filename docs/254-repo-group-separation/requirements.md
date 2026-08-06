@@ -40,7 +40,29 @@ What the feature must do, in the user's terms. Design lives in
 
 ## Open questions
 
-None.
+Both raised by an independent Codex review of the implementation (2026-08-06),
+which flagged these two requirements as not met by the code as written. Neither
+is a bug — in each case the code does something defensible that the requirement's
+wording doesn't cover. They need a human decision, not an agent's.
+
+- **Req 5 — may the user deliberately pick a colour another repo already uses?**
+  Automatic assignment never collides. But req 7 lets the user choose, and
+  nothing stops them choosing a taken colour, so req 5 as written ("two repos
+  must not share a colour while unused colours remain") is violated by a manual
+  pick. Options: (a) leave it — the picker now marks taken colours with a dot
+  and names the holder, so a duplicate is deliberate rather than accidental
+  *(recommended, and what currently ships)*; (b) block the pick outright;
+  (c) reword req 5 to scope it to automatic assignment. Nothing was reworded
+  pending this answer.
+
+- **Req 11 — is the treatment suppressed on one *repo*, or on one *group*?**
+  The requirement says "when only one repo is visible". The code suppresses when
+  only one **group** renders, so a lone repo alongside a Host/Ops or Sandbox
+  group still gets the treatment. The reasoning: one repo beside an Ops group is
+  still two things the eye must separate, and suppressing there would leave
+  exactly the blending this feature exists to fix. If that reasoning is accepted,
+  req 11 should be reworded to say "group"; if not, the code should change. The
+  code currently implements the group reading, and a test pins it.
 
 ## Resolved questions
 

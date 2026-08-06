@@ -14,4 +14,10 @@
 - [x] Tests: palette, store assignment, service validation, migration backfill, sidebar rendering, picker
 - [x] `npm run lint:dev` + `npm run typecheck` clean
 - [x] Verified in-browser in Claude Light and Claude Dark
-- [ ] Independent fresh-context review against `requirements.md` (CLAUDE.md step 5)
+- [x] Independent fresh-context review against `requirements.md` (Codex, 2026-08-06)
+- [x] Palette retuned so no entry collides with a status colour in any theme, with a guard test
+- [x] Optimistic colour update no longer lets a stale failure stomp a newer value
+- [x] PATCH rejects a present-but-malformed field instead of silently skipping it
+- [x] Migration test runs the real migration rather than a copy of its logic
+- [x] Gap between groups so adjacent edges don't merge into one rail
+- [ ] Nik to settle the two open questions in `requirements.md` (reqs 5 and 11)

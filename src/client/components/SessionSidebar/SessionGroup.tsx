@@ -36,6 +36,15 @@ const BAND_CLASS = "bg-(--color-bg-tertiary)";
 const NO_BAND_CLASS = "bg-(--color-bg-primary)";
 
 /**
+ * Gap below a separated group. Without it two adjacent edges meet and read as
+ * ONE continuous rail that changes color partway down, which is the opposite of
+ * the "each repo owns a bounded run" the edge exists to convey. 8px matches the
+ * mock the treatment was chosen from. Zero when unseparated, so the unseparated
+ * sidebar keeps exactly its previous spacing.
+ */
+const GROUP_GAP_CLASS = "mb-2";
+
+/**
  * docs/128 — pinned group for privileged ops/host-debugging sessions. Keyed off
  * the server-authoritative `kind: "ops"` field, separate from repo and orphan
  * groups, with a Wrench icon so it reads as "the host tools" rather than a repo.
@@ -68,7 +77,7 @@ export function OpsSessionGroup({
   // matching the warning tone this group's docstring has always described.
   const edge = groupEdgeStyle(separated ? "var(--color-warning)" : undefined);
   return (
-    <div className="flex flex-col" style={edge} data-testid="ops-group">
+    <div className={`flex flex-col ${separated ? GROUP_GAP_CLASS : ""}`} style={edge} data-testid="ops-group">
       <div className={`flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 z-10 ${separated ? BAND_CLASS : NO_BAND_CLASS}`}>
         <button
           onClick={onToggleCollapse}
@@ -139,7 +148,7 @@ export function SandboxSessionGroup({
   // teal (`--color-sandbox`) on its Cube icon; the edge reuses it.
   const edge = groupEdgeStyle(separated ? "var(--color-sandbox)" : undefined);
   return (
-    <div className="flex flex-col" style={edge} data-testid="sandbox-group">
+    <div className={`flex flex-col ${separated ? GROUP_GAP_CLASS : ""}`} style={edge} data-testid="sandbox-group">
       <div className={`flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 z-10 ${separated ? BAND_CLASS : NO_BAND_CLASS}`}>
         <button
           onClick={onToggleCollapse}
@@ -368,7 +377,7 @@ export function RepoGroup({
 
   return (
     <div
-      className={`flex flex-col relative ${isBeingDragged ? "opacity-40" : ""}`}
+      className={`flex flex-col relative ${separated ? GROUP_GAP_CLASS : ""} ${isBeingDragged ? "opacity-40" : ""}`}
       // docs/254 — the edge is a border on THIS element (see groupEdgeStyle):
       // it spans the header, the pinned sub-section, `New session`, every
       // session row and `Recently resolved`, and keeps painting behind the

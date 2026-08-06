@@ -1,6 +1,7 @@
 import { CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useRepoStore } from "../stores/repo-store.js";
+import { parseRepoName } from "../utils/repo-label.js";
 import { REPO_COLOR_COUNT, REPO_COLOR_NAMES, repoColorVar } from "../../server/shared/repo-colors.js";
 
 /**
@@ -13,9 +14,18 @@ import { REPO_COLOR_COUNT, REPO_COLOR_NAMES, repoColorVar } from "../../server/s
  * changes on click rather than on save; there is no separate save step.
  */
 export function RepoColorPicker({ repoUrl }: { repoUrl: string }) {
-  const repo = useRepoStore((s) => s.repos.find((r) => r.url === repoUrl));
+  const repos = useRepoStore((s) => s.repos);
   const setRepoColorIndex = useRepoStore((s) => s.setRepoColorIndex);
-  const selected = repo?.colorIndex;
+  const selected = repos.find((r) => r.url === repoUrl)?.colorIndex;
+  // Colors another repo is already using. Assignment never hands out a duplicate
+  // while free colors remain, but a manual pick can — so the picker says which
+  // are taken (and by whom) rather than letting a collision happen silently.
+  // Hidden repos count: they hold their color and can come back at any time.
+  const takenBy = new Map<number, string[]>();
+  for (const r of repos) {
+    if (r.url === repoUrl || r.colorIndex === undefined) continue;
+    takenBy.set(r.colorIndex, [...(takenBy.get(r.colorIndex) ?? []), parseRepoName(r.url)]);
+  }
 
   return (
     <div className="space-y-3" data-testid="repo-color-picker">
@@ -23,7 +33,8 @@ export function RepoColorPicker({ repoUrl }: { repoUrl: string }) {
         <h3 className="text-sm font-medium text-(--color-text-primary)">Sidebar color</h3>
         <p className="text-xs text-(--color-text-secondary)">
           The colored edge marking this repository&apos;s group in the session sidebar. Each repo gets a
-          different color automatically — change it here if you&apos;d rather pick your own.
+          different color automatically — change it here if you&apos;d rather pick your own. Colors already
+          taken by another repository are marked with a dot.
         </p>
       </div>
       <div
@@ -33,14 +44,19 @@ export function RepoColorPicker({ repoUrl }: { repoUrl: string }) {
       >
         {Array.from({ length: REPO_COLOR_COUNT }, (_, index) => {
           const isSelected = selected === index;
+          const users = takenBy.get(index);
+          const label = users
+            ? `${REPO_COLOR_NAMES[index]} — already used by ${users.join(", ")}`
+            : REPO_COLOR_NAMES[index];
           return (
             <button
               key={index}
               type="button"
               role="radio"
               aria-checked={isSelected}
-              aria-label={REPO_COLOR_NAMES[index]}
-              title={REPO_COLOR_NAMES[index]}
+              aria-label={label}
+              title={label}
+              data-taken={users ? "true" : undefined}
               data-testid={`repo-color-${index}`}
               onClick={() => { void setRepoColorIndex(repoUrl, index); }}
               className={`h-8 rounded-md flex items-center justify-center transition-transform hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-(--color-border-focus) ${
@@ -53,6 +69,11 @@ export function RepoColorPicker({ repoUrl }: { repoUrl: string }) {
                   sixteen different backgrounds. */}
               {isSelected && (
                 <CheckIcon size={ICON_SIZE.XS} weight="bold" className="text-(--color-text-inverse) drop-shadow" />
+              )}
+              {/* Taken by another repo — a small notch rather than a disabled
+                  state, because picking a duplicate on purpose is allowed. */}
+              {!isSelected && users && (
+                <span className="w-1.5 h-1.5 rounded-full bg-(--color-text-inverse) opacity-70" aria-hidden />
               )}
             </button>
           );

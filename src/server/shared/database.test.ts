@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DatabaseManager } from "./database.js";
 
 /**
@@ -201,89 +204,106 @@ describe("docs/201 — root_session_id backfill walk", () => {
 /**
  * docs/254 — the color_index migration backfills existing repos so a workspace
  * that upgrades into the sidebar's per-repo edge doesn't come up with every
- * group uncolored. The backfill is inline JS, so — mirroring the two patterns
- * above — we replicate it here and assert it against seeded pre-migration rows
- * (repos with a NULL color_index).
+ * group uncolored.
+ *
+ * Unlike the two suites above, this one runs the REAL migration rather than a
+ * copy of its logic: it opens a database, rewinds `user_version` past the
+ * color_index step, drops the column, seeds pre-migration rows, and re-opens.
+ * A copied helper would stay green if the shipped migration were changed to
+ * assign every row 0 or to skip the update entirely — which is exactly the
+ * class of mistake a migration test exists to catch.
  */
-function runRepoColorBackfill(db: DatabaseManager["db"]): void {
-  const rows = db
-    .prepare(
-      `SELECT url FROM repos
-       ORDER BY CASE WHEN display_order IS NULL THEN 1 ELSE 0 END,
-                display_order ASC,
-                last_used_at DESC,
-                rowid DESC`,
-    )
-    .all() as { url: string }[];
-  const update = db.prepare("UPDATE repos SET color_index = ? WHERE url = ?");
-  rows.forEach((row, i) => update.run(i % 16, row.url));
-}
-
-describe("docs/254 — repo color_index backfill", () => {
-  let dbManager: DatabaseManager;
+describe("docs/254 — repo color_index backfill (real migration)", () => {
+  let file: string;
+  let dir: string;
 
   beforeEach(() => {
-    dbManager = new DatabaseManager(":memory:");
+    dir = mkdtempSync(join(tmpdir(), "shipit-migration-"));
+    file = join(dir, "test.db");
   });
 
   afterEach(() => {
-    dbManager.close();
+    rmSync(dir, { recursive: true, force: true });
   });
 
-  const seed = (url: string, displayOrder: number | null, lastUsedAt = "2026-01-01") =>
-    dbManager.db
-      .prepare(
-        "INSERT INTO repos (url, added_at, last_used_at, status, display_order, color_index) VALUES (?, '2026-01-01', ?, 'ready', ?, NULL)",
-      )
-      .run(url, lastUsedAt, displayOrder);
+  /**
+   * Open the db, undo the color_index migration, seed rows as they would have
+   * existed before it, and hand back the version to re-run from.
+   */
+  function rewindPastColorMigration(seed: (db: DatabaseManager["db"]) => void): number {
+    const m = new DatabaseManager(file);
+    const version = m.db.pragma("user_version", { simple: true }) as number;
+    m.db.exec("ALTER TABLE repos DROP COLUMN color_index");
+    seed(m.db);
+    m.db.pragma(`user_version = ${version - 1}`);
+    m.close();
+    return version;
+  }
 
-  const colorOf = (url: string) =>
-    (dbManager.db.prepare("SELECT color_index FROM repos WHERE url = ?").get(url) as { color_index: number | null })
-      .color_index;
+  const seedRepo = (db: DatabaseManager["db"], url: string, displayOrder: number | null, lastUsedAt = "2026-01-01") =>
+    db.prepare(
+      "INSERT INTO repos (url, added_at, last_used_at, status, display_order) VALUES (?, '2026-01-01', ?, 'ready', ?)",
+    ).run(url, lastUsedAt, displayOrder);
+
+  function colorsAfterMigration(urls: string[]): (number | null)[] {
+    const m = new DatabaseManager(file);
+    const out = urls.map(
+      (u) => (m.db.prepare("SELECT color_index FROM repos WHERE url = ?").get(u) as { color_index: number | null }).color_index,
+    );
+    m.close();
+    return out;
+  }
 
   it("gives every pre-existing repo a distinct color", () => {
-    seed("a", 0);
-    seed("b", 1);
-    seed("c", 2);
-    runRepoColorBackfill(dbManager.db);
-    const colors = ["a", "b", "c"].map(colorOf);
-    expect(colors).toEqual([0, 1, 2]);
+    rewindPastColorMigration((db) => {
+      seedRepo(db, "a", 0);
+      seedRepo(db, "b", 1);
+      seedRepo(db, "c", 2);
+    });
+    expect(colorsAfterMigration(["a", "b", "c"])).toEqual([0, 1, 2]);
   });
 
   // Walks the sidebar's own display order, so the colors a user sees top-to-bottom
-  // are the same ones a fresh workspace would have been assigned.
+  // are the ones a fresh workspace would have been assigned.
   it("assigns in sidebar display order, not insertion order", () => {
-    seed("last", 2);
-    seed("first", 0);
-    seed("middle", 1);
-    runRepoColorBackfill(dbManager.db);
-    expect(colorOf("first")).toBe(0);
-    expect(colorOf("middle")).toBe(1);
-    expect(colorOf("last")).toBe(2);
+    rewindPastColorMigration((db) => {
+      seedRepo(db, "last", 2);
+      seedRepo(db, "first", 0);
+      seedRepo(db, "middle", 1);
+    });
+    expect(colorsAfterMigration(["first", "middle", "last"])).toEqual([0, 1, 2]);
   });
 
   it("falls back to last-used order for never-reordered repos", () => {
-    seed("older", null, "2026-01-01");
-    seed("newer", null, "2026-06-01");
-    runRepoColorBackfill(dbManager.db);
-    expect(colorOf("newer")).toBe(0);
-    expect(colorOf("older")).toBe(1);
+    rewindPastColorMigration((db) => {
+      seedRepo(db, "older", null, "2026-01-01");
+      seedRepo(db, "newer", null, "2026-06-01");
+    });
+    expect(colorsAfterMigration(["newer", "older"])).toEqual([0, 1]);
   });
 
   it("wraps past the palette size rather than writing an unrenderable index", () => {
-    for (let i = 0; i < 18; i++) seed(`r${i}`, i);
-    runRepoColorBackfill(dbManager.db);
-    expect(colorOf("r15")).toBe(15);
-    expect(colorOf("r16")).toBe(0);
-    expect(colorOf("r17")).toBe(1);
+    rewindPastColorMigration((db) => {
+      for (let i = 0; i < 18; i++) seedRepo(db, `r${i}`, i);
+    });
+    expect(colorsAfterMigration(["r15", "r16", "r17"])).toEqual([15, 0, 1]);
   });
 
-  it("is idempotent — a re-run produces the same assignment", () => {
-    seed("a", 0);
-    seed("b", 1);
-    runRepoColorBackfill(dbManager.db);
-    runRepoColorBackfill(dbManager.db);
-    expect(colorOf("a")).toBe(0);
-    expect(colorOf("b")).toBe(1);
+  it("is a no-op on an empty repos table", () => {
+    rewindPastColorMigration(() => {});
+    const m = new DatabaseManager(file);
+    expect((m.db.prepare("SELECT COUNT(*) c FROM repos").get() as { c: number }).c).toBe(0);
+    m.close();
+  });
+
+  // Migrations run exactly once, but a crash mid-upgrade can leave the process
+  // re-opening the same file — the result must not drift.
+  it("leaves colors untouched when the database is re-opened", () => {
+    rewindPastColorMigration((db) => {
+      seedRepo(db, "a", 0);
+      seedRepo(db, "b", 1);
+    });
+    expect(colorsAfterMigration(["a", "b"])).toEqual([0, 1]);
+    expect(colorsAfterMigration(["a", "b"])).toEqual([0, 1]);
   });
 });

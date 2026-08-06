@@ -1239,6 +1239,23 @@ describe("SessionSidebar", () => {
       expect(document.querySelector("[data-repo-color-index]")).toBeNull();
     });
 
+    // Without a gap, two adjacent 3px edges meet and read as one continuous
+    // rail that changes color partway down — the opposite of "each repo owns a
+    // bounded run". Reported from the real UI, where the mock's margin was
+    // missing.
+    it("separates adjacent group edges with a gap", () => {
+      render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0), colored(repoB, 5)]} />);
+      for (const g of document.querySelectorAll("[data-repo-color-index]")) {
+        expect(g.className).toContain("mb-2");
+      }
+    });
+
+    it("keeps the previous spacing when the treatment is off", () => {
+      render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0)]} />);
+      const group = screen.getByText("repo").closest("div")?.parentElement?.parentElement;
+      expect(group?.className ?? "").not.toContain("mb-2");
+    });
+
     // The edge MUST be on the group, not the sticky header — on the header it
     // breaks at the seam the moment the header pins.
     it("puts the edge on the group element, not on the sticky header", () => {

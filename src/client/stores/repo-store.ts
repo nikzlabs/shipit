@@ -311,6 +311,19 @@ export const useRepoStore = create<RepoState>((set, get) => ({
     const previous = get().repos.find((r) => r.url === url)?.colorIndex;
     const apply = (idx: number | undefined) =>
       set((state) => ({ repos: state.repos.map((r) => (r.url === url ? { ...r, colorIndex: idx } : r)) }));
+    /**
+     * A revert must only undo OUR optimistic write. Clicking swatch 1 then 2
+     * puts two requests in flight; if 2 wins and 1 then fails, an unconditional
+     * `apply(previous)` would stomp the newer, server-confirmed color back to
+     * the pre-click value — and the authoritative `repo_list` SSE has already
+     * been consumed, so nothing corrects it until the next reload. So we only
+     * roll back while the store still holds the value this call wrote (and a
+     * later `repo_list` broadcast is likewise allowed to win).
+     */
+    const revert = () => {
+      if (get().repos.find((r) => r.url === url)?.colorIndex !== colorIndex) return;
+      apply(previous);
+    };
     // Optimistic — the sidebar edge and the picker's tick move on click.
     apply(colorIndex);
     try {
@@ -320,13 +333,13 @@ export const useRepoStore = create<RepoState>((set, get) => ({
         body: JSON.stringify({ colorIndex }),
       });
       if (!res.ok) {
-        apply(previous);
+        revert();
         return false;
       }
       return true;
     } catch (err) {
       console.error("[repo-store] setRepoColorIndex failed:", err);
-      apply(previous);
+      revert();
       return false;
     }
   },
