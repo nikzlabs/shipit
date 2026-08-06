@@ -723,6 +723,111 @@ describe("gh pr view", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// -q / --jq
+//
+// The production bug: `gh pr view N --json state -q .state 2>/dev/null` exited 2
+// on the unsupported-flag path *before* ever reaching the broker, so a polling
+// loop saw an empty string forever and could not distinguish it from "not
+// merged yet". These cover the flag working, and every failure mode staying
+// distinguishable from the generic flag rejection.
+// ---------------------------------------------------------------------------
+
+describe("gh -q/--jq", () => {
+  const prView = {
+    "GET /agent-ops/pr/view": {
+      status: 200,
+      body: { pr: { title: "T", number: 2018, state: "MERGED", url: "u", head: "h", base: "main", body: "b" } },
+    },
+  };
+
+  it("extracts a field from --json output, unquoted (the merge-polling case)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["pr", "view", "2018", "--json", "state", "-q", ".state"], prView);
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toBe("MERGED\n");
+    // The broker was actually reached — the bug was failing before this call.
+    expect(out.calls.some((c) => c.path.startsWith("/agent-ops/pr/view"))).toBe(true);
+  });
+
+  it("accepts the --jq spelling and the --jq=EXPR form", async () => {
+    const { run } = makeRunner();
+    expect((await run(["pr", "view", "--json", "state", "--jq", ".state"], prView)).stdout).toBe("MERGED\n");
+    expect((await run(["pr", "view", "--json", "state", "--jq=.state"], prView)).stdout).toBe("MERGED\n");
+  });
+
+  it("iterates a list payload, one value per line", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["run", "list", "--json", "conclusion", "-q", ".[].conclusion"],
+      {
+        "GET /agent-ops/run/list": {
+          status: 200,
+          body: { runs: [{ conclusion: "success" }, { conclusion: "failure" }] },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toBe("success\nfailure\n");
+  });
+
+  it("rejects -q without --json before calling the broker", async () => {
+    const { run } = makeRunner();
+    const out = await run(["pr", "view", "2018", "-q", ".state"], prView);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("cannot use -q/--jq without --json");
+    expect(out.calls).toEqual([]);
+  });
+
+  it("fails an unsupported jq expression with exit 3, naming the expression", async () => {
+    const { run } = makeRunner();
+    const expr = '.[] | select(.state=="MERGED")';
+    const out = await run(["pr", "list", "--json", "state", "-q", expr], {
+      "GET /agent-ops/pr/list": { status: 200, body: { prs: [{ state: "OPEN" }] } },
+    });
+    // Exit 3 is the differentiable signal for a caller that swallows stderr —
+    // 2 is the generic unsupported-flag path this fix exists to get away from.
+    expect(out.exitCode).toBe(3);
+    expect(out.stderr).toContain(expr);
+    expect(out.stderr).toContain("unsupported jq expression");
+    expect(out.stderr).not.toContain("Unsupported flag");
+  });
+
+  it("fails a supported expression that doesn't fit the data with exit 1", async () => {
+    const { run } = makeRunner();
+    const out = await run(["pr", "view", "--json", "state", "-q", ".state.nested"], prView);
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("cannot index string");
+  });
+
+  it("prints nothing (exit 0) when the expression yields an empty stream", async () => {
+    const { run } = makeRunner();
+    const out = await run(["pr", "list", "--json", "state", "-q", ".[].state"], {
+      "GET /agent-ops/pr/list": { status: 200, body: { prs: [] } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toBe("");
+  });
+
+  it("is available on the workflow/run read verbs too", async () => {
+    const { run } = makeRunner();
+    const viewOut = await run(["run", "view", "9", "--json", "status", "-q", ".status"], {
+      "GET /agent-ops/run/view": { status: 200, body: { run: { status: "completed" } } },
+    });
+    expect(viewOut.stdout).toBe("completed\n");
+
+    const wfList = await run(["workflow", "list", "--json", "name", "-q", ".[].name"], {
+      "GET /agent-ops/workflow/list": { status: 200, body: { workflows: [{ name: "CI" }] } },
+    });
+    expect(wfList.stdout).toBe("CI\n");
+
+    const wfView = await run(["workflow", "view", "ci.yml", "--json", "state", "-q", ".state"], {
+      "GET /agent-ops/workflow/view": { status: 200, body: { workflow: { state: "active" } } },
+    });
+    expect(wfView.stdout).toBe("active\n");
+  });
+});
+
 describe("gh pr list", () => {
   it("prints JSON array when --json", async () => {
     const { run } = makeRunner();

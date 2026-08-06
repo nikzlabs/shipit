@@ -326,6 +326,150 @@ export function filterJson(
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// `-q` / `--jq` — a deliberately tiny jq subset over an already-filtered payload
+// ---------------------------------------------------------------------------
+
+/**
+ * One step of a supported jq path expression.
+ *
+ * Deliberately closed: field access, array index, array/object iteration. There
+ * is no pipe, no filter, no function call, no arithmetic — see `applyJq`.
+ */
+type JqStep =
+  | { kind: "field"; name: string }
+  | { kind: "index"; index: number }
+  | { kind: "iterate" };
+
+export type JqResult =
+  | { ok: true; values: string[] }
+  /**
+   * `unsupported` — the expression is outside the implemented subset (a parse
+   * refusal, reported before any data is touched). `evaluation` — the
+   * expression is supported but doesn't fit the data (jq's own error class).
+   * Callers map the two onto distinct exit codes so a caller that swallows
+   * stderr can still tell them apart.
+   */
+  | { ok: false; kind: "unsupported" | "evaluation"; message: string };
+
+/** Human-readable list of what `applyJq` accepts, for error messages. */
+export const JQ_SUPPORTED_FORMS = "`.`, `.field`, `.a.b`, `.[]`, `.[].field`, `.[0]`, `.field[].sub`";
+
+/** Bound on path depth — a shim payload is a flat PR/run record, not a tree. */
+const JQ_MAX_STEPS = 16;
+
+/**
+ * Parse a simple-path jq expression into steps, or `null` if it uses anything
+ * outside the supported subset.
+ *
+ * The parser is the security boundary: it accepts ONLY `.`, identifiers,
+ * `[<digits>]` and `[]`, so nothing that reaches `applyJq` can express a
+ * computation, reach outside the value it is handed, or run unbounded. Anything
+ * else — a pipe, `select(...)`, string literals, `..`, `@base64` — is rejected
+ * here rather than partially interpreted.
+ */
+function parseJqPath(expr: string): JqStep[] | null {
+  const src = expr.trim();
+  if (!src.startsWith(".")) return null;
+  if (src === ".") return [];
+
+  const steps: JqStep[] = [];
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    if (ch === ".") {
+      i++;
+      // `.[]` / `.[0]` — the bracket is consumed by the next iteration.
+      if (src[i] === "[") continue;
+      const m = /^[A-Za-z_][A-Za-z0-9_]*/.exec(src.slice(i));
+      if (!m) return null;
+      steps.push({ kind: "field", name: m[0] });
+      i += m[0].length;
+    } else if (ch === "[") {
+      const end = src.indexOf("]", i);
+      if (end === -1) return null;
+      const inner = src.slice(i + 1, end);
+      if (inner === "") steps.push({ kind: "iterate" });
+      else if (/^\d+$/.test(inner)) steps.push({ kind: "index", index: Number(inner) });
+      else return null;
+      i = end + 1;
+    } else {
+      return null;
+    }
+    if (steps.length > JQ_MAX_STEPS) return null;
+  }
+  return steps;
+}
+
+function jqTypeName(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value === "object" ? "object" : typeof value;
+}
+
+/**
+ * Render one jq output value the way `jq -r` (which is what `gh -q` uses) does:
+ * strings raw and unquoted, scalars stringified, `null` as `null`, and
+ * containers as compact JSON.
+ */
+function formatJqValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
+}
+
+/**
+ * Evaluate a simple-path jq expression against an already-filtered JSON payload
+ * (docs: `gh … --json FIELDS -q EXPR`).
+ *
+ * This is NOT a jq implementation and must not become one — it exists so that
+ * the idiomatic `gh pr view --json state -q .state` works instead of failing as
+ * an unsupported flag. It walks a fixed list of path steps over the value it is
+ * handed; it has no access to anything else, evaluates no user-supplied code,
+ * and cannot loop. Expressions beyond the subset are refused explicitly
+ * (`kind: "unsupported"`) rather than silently returning nothing.
+ */
+export function applyJq(value: unknown, expr: string): JqResult {
+  const steps = parseJqPath(expr);
+  if (!steps) {
+    return {
+      ok: false,
+      kind: "unsupported",
+      message: `unsupported jq expression: ${expr}`,
+    };
+  }
+
+  let current: unknown[] = [value];
+  for (const step of steps) {
+    const next: unknown[] = [];
+    for (const v of current) {
+      if (step.kind === "field") {
+        if (v === null || v === undefined) { next.push(null); continue; }
+        if (Array.isArray(v) || typeof v !== "object") {
+          return { ok: false, kind: "evaluation", message: `cannot index ${jqTypeName(v)} with "${step.name}"` };
+        }
+        next.push((v as Record<string, unknown>)[step.name] ?? null);
+      } else if (step.kind === "index") {
+        if (v === null || v === undefined) { next.push(null); continue; }
+        if (!Array.isArray(v)) {
+          return { ok: false, kind: "evaluation", message: `cannot index ${jqTypeName(v)} with number` };
+        }
+        next.push((v as unknown[])[step.index] ?? null);
+      } else {
+        if (Array.isArray(v)) { next.push(...(v as unknown[])); continue; }
+        if (v !== null && v !== undefined && typeof v === "object") {
+          next.push(...Object.values(v as Record<string, unknown>));
+          continue;
+        }
+        return { ok: false, kind: "evaluation", message: `cannot iterate over ${jqTypeName(v)}` };
+      }
+    }
+    current = next;
+  }
+  return { ok: true, values: current.map(formatJqValue) };
+}
+
 /**
  * Normalize repeated `--label`/`-l` occurrences into a flat, de-duped string
  * array. Matches real gh semantics: `--label a --label b` and `--label a,b`
