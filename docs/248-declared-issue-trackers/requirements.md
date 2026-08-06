@@ -227,6 +227,18 @@ remains in git.
   requirement 9a, which adds the optional `title` field. Keeping the binding
   visible in the tab was rejected by that instruction; it survives as the tab's
   hover text, which costs no width.
+
+  **This restores a requirement, rather than adding one.** The declaration
+  carried an optional `label` ("optional; defaults to the repository name") in
+  [247](../247-shipit-private-planning/requirements.md)'s requirement 5 before
+  this feature was split out of it, and it shipped that way in v0.3.1
+  (`5fbd3047`). The rework that introduced the required `name` (`06f5f757`)
+  deleted the field with no receipt and no requirement saying to — `name` simply
+  became both the address and the tab label, and the tab grew the `· <binding>`
+  suffix to stay legible. The field is back under the name `title`, because
+  `label` reads as an *issue* label everywhere else in this codebase
+  (`--label`, `IssueLabel`, the label filter). The adapters' `label` config,
+  which the deletion left with nothing feeding it, is what `title` now feeds.
 - 2026-08-05 — Asked how deployments losing their Linear tab should be handled, the
   user chose a **clean break**: no migration warning and no auto-generated
   declaration. Writing to the user's `shipit.yaml` unprompted was rejected as

@@ -121,6 +121,17 @@ cost a repository its tracker. Path: `declaredTrackerLabel()`
 (`declared-tracker.ts`) → `buildTrackerRegistry` → the adapters' existing
 `label` config → `TrackerInfo.label` → `IssuesViewer`'s sub-tab.
 
+*This is a restoration.* The pre-split version of this feature (docs/247, shipped
+in v0.3.1 as `5fbd3047`) had exactly this field, spelled `label` and defaulting to
+the repository name. Introducing the required `name` (`06f5f757`) dropped it —
+silently: no requirement asked for the removal and no receipt recorded it, so
+`name` became both the address and the tab label and the `· <binding>` suffix
+appeared to keep the tab legible. The rename to `title` is deliberate (`label`
+means an *issue* label everywhere else here), and the giveaway that the drop was
+accidental is that `GitHubTrackerConfig.label` / `LinearTrackerConfig.label`
+survived the rework with nothing left to feed them. That dead parameter is the
+one `title` now feeds — the adapters needed no change.
+
 ### 2. A destination is addressed by name (reqs 6, 12)
 
 `--repo owner/name` goes away, replaced by the declared name. The session's own
