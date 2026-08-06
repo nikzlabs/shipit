@@ -55,6 +55,33 @@ This installs ShipIt under `~/.shipit`, builds the Docker images, and starts it 
 provider flow. Fork installs, custom paths, updates, and stop/uninstall are in
 [`deployment/README.md`](deployment/README.md).
 
+#### Reaching a local install from your phone
+
+A local install binds to `127.0.0.1`, so it is not reachable from other devices — deliberately, since
+ShipIt has no built-in authentication. To reach it from a phone or another machine over
+[Tailscale](https://tailscale.com/), run:
+
+```bash
+~/.shipit/deployment/local/tailscale.sh
+```
+
+That adds a tailnet binding **alongside** loopback (localhost keeps working, and ShipIt still starts
+when Tailscale is down) and prints a URL of the form `http://100-x-y-z.sslip.io:4123`.
+
+Use that URL rather than the raw `http://100.x.y.z:4123`. Previews are served at
+`{sessionId}--{port}.<host>`, and a raw IP address can't carry a wildcard subdomain, so previews are
+blank on the raw-IP URL — [sslip.io](https://sslip.io) maps the dashed form straight back to the same
+address, which makes them resolve with no DNS setup. Traffic rides the encrypted tailnet, but the
+connection is HTTP: there is no wildcard certificate for these names, so clipboard access and PWA
+install (which need a secure context) are unavailable. For real HTTPS, point a wildcard DNS record you
+own at the tailnet address. Details in
+[`docs/254`](docs/254-local-bind-and-tailnet-access/plan.md).
+
+To expose ShipIt on your LAN instead, set `SHIPIT_BIND_ADDR=0.0.0.0` in `~/.shipit/.shipit.env` — but
+note that this puts an agent with a shell and your repositories on that network with nothing in front
+of it, so only do it on a network you control. A host firewall is not a reliable substitute: on Linux,
+Docker's published-port rules bypass `ufw`, and on macOS the application firewall is off by default.
+
 ### Run it on a VPS
 
 Use the VPS path for the intended always-on setup: agents, previews, and CI follow-up work keep

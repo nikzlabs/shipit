@@ -3,7 +3,8 @@
 Two install paths, deliberately aligned:
 
 - **Local** (`deployment/local/`) — run ShipIt on your own macOS or Linux machine, bound to
-  localhost. One-line install, manual updates, no access layer.
+  localhost. One-line install, manual updates, no access layer. Optional Tailscale access for
+  reaching it from another device (`deployment/local/tailscale.sh`).
 - **VPS** (`deployment/vps/`) — an always-on Linux server with optional Cloudflare Tunnel and/or
   Tailscale access and UI-driven self-updates.
 
@@ -27,6 +28,43 @@ Overrides (set before the command):
 
 - `SHIPIT_REPO_URL=https://github.com/you/shipit.git` — install a fork.
 - `SHIPIT_HOME=/path/to/dir` — install somewhere other than `~/.shipit`.
+
+### Reaching a local install from another device (Tailscale)
+
+The local install binds `127.0.0.1` only — ShipIt has no built-in authentication, so it must not be
+published to a network without an access layer. To reach it from a phone or another machine over
+Tailscale, with **working previews**:
+
+```bash
+~/.shipit/deployment/local/tailscale.sh
+```
+
+Unlike the VPS script this needs no `socat` forwarder and no systemd unit — the local install
+publishes its own port. The script records the opt-in in `~/.shipit/.shipit.env`, restarts ShipIt, and
+prints an access URL:
+
+```
+http://100-83-12-47.sslip.io:4123
+```
+
+- **Loopback is never removed.** `http://localhost:4123` keeps working on the machine itself.
+- **Tailscale being down never blocks startup.** The tailnet address is re-derived at every start; if
+  Tailscale isn't connected, ShipIt starts on loopback and says so, then picks the binding back up on
+  the next start. A changed tailnet address needs no edit for the same reason.
+- **Use the sslip.io URL, not the raw IP.** Previews are served at `{sessionId}--{port}.<host>`; a raw
+  IP can't carry a wildcard subdomain, so `http://100.83.12.47:4123` gives a working app and blank
+  previews. Same trade-offs as the VPS sslip.io path below: HTTP only (no wildcard cert for these
+  names, so clipboard and PWA install are unavailable), and a device whose resolver blocks public
+  names pointing into CGNAT `100.64/10` won't resolve it.
+
+To opt out, remove `SHIPIT_TAILNET_BIND` from `~/.shipit/.shipit.env` and re-run `update.sh`.
+
+To publish on your LAN instead, set `SHIPIT_BIND_ADDR=0.0.0.0` in `~/.shipit/.shipit.env`. That exposes
+an unauthenticated agent with a shell and your repositories to that network — only do it on a network
+you control, and don't count on a host firewall to contain it (Docker's published-port rules bypass
+`ufw` on Linux; the macOS application firewall is off by default).
+
+See [`docs/254-local-bind-and-tailnet-access`](../docs/254-local-bind-and-tailnet-access/plan.md).
 
 Day-to-day, from your checkout (default `~/.shipit`):
 

@@ -17,6 +17,32 @@
  * It deliberately governs preview host resolution AND the WS/SSE host elsewhere —
  * see the precondition note in the design doc.
  */
+/**
+ * For a host that can't carry preview subdomains, suggest one that can — or
+ * `null` when we have nothing concrete to offer (docs/254 req 8).
+ *
+ * Only raw IPv4 gets a suggestion, and only via sslip.io, a public wildcard
+ * resolver that maps any `<dashed-ip>.sslip.io` name back to that IP. That turns
+ * an un-subdomainable host into a working one with no owned domain and no DNS
+ * setup, which is exactly the local-install-over-Tailscale case
+ * (`deployment/local/tailscale.sh`) and the LAN case. The dashed form is what
+ * dodges the raw-IPv4 guard in `buildSubdomainUrl`.
+ *
+ * Deliberately not suggested for IPv6 literals or dotless hostnames: there is no
+ * equivalent one-step fix, so the generic guidance in the empty state is all we
+ * can honestly give.
+ */
+export function suggestWildcardHost(locationHost: string): string | null {
+  const [hostname, port] = locationHost.includes(":")
+    ? (locationHost.split(":") as [string, string])
+    : [locationHost, ""];
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) return null;
+  if (hostname.split(".").some((o) => Number(o) > 255)) return null;
+  // Loopback already works as `localhost`; suggesting sslip.io would be a downgrade.
+  if (hostname.startsWith("127.")) return null;
+  return `${hostname.replace(/\./g, "-")}.sslip.io${port ? `:${port}` : ""}`;
+}
+
 export function resolvePreviewHost(
   locationHost: string,
   tailnetPreviewHost: string | null | undefined,

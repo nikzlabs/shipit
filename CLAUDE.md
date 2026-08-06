@@ -143,7 +143,7 @@ Adding a card then means: a typed `PersistedMessage` field (+ column, `toRow`/`f
 
 ### Preview routing
 
-Subdomain routing `{sessionId}--{port}.localhost` is primary (avoids Vite path-prefix conflicts); path-based is the fallback, with HMR-URL patching so hot reload survives the proxy. `docs/009-preview-system`, `docs/175-preview-subdomain-only`.
+Reverse proxy (`preview-proxy.ts`): subdomain routing `{sessionId}--{port}.<host>` is the **only** mode — the path-based `/preview/:sessionId/:port/*` route was deleted in docs/175 (absolute asset paths 404 without HTML rewriting), and `preview.url`'s `/preview/…` string survives solely as the container-mode *sentinel* the client tests with `startsWith`. The proxy matches `{uuid}--{port}.anything` (`preview-proxy.ts:44`), so it is domain-agnostic; HMR URLs are patched to the iframe's own origin so hot-reload survives the proxy. **Consequence:** previews need a host that can carry a wildcard subdomain, so the client refuses to build a URL for a raw IP literal (`usePreviewHealthPoller.ts:43`) and renders an explanatory empty state instead. Full detail: `docs/009-preview-system`, `docs/175-preview-subdomain-only`; local/Tailscale access: `docs/254-local-bind-and-tailnet-access`.
 
 ### Disk cleanup
 

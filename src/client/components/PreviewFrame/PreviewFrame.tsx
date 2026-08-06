@@ -7,7 +7,7 @@ import { Button } from "../ui/button.js";
 import type { PreviewError } from "../../hooks/usePreviewErrors.js";
 import { usePreviewStore } from "../../stores/preview-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
-import { resolvePreviewHost } from "../../utils/preview-host.js";
+import { resolvePreviewHost, suggestWildcardHost } from "../../utils/preview-host.js";
 import { StartupSteps } from "../StartupSteps.js";
 import { useIframePool } from "../../hooks/useIframePool.js";
 import { usePreviewHealthPoller, buildSubdomainUrl } from "../../hooks/usePreviewHealthPoller.js";
@@ -453,6 +453,8 @@ export function PreviewFrame({
   // Subdomain routing is the only supported container-preview path (the old
   // path-based fallback is gone — it 404'd every absolute asset URL).
   const cannotSubdomainPreview = isContainerMode && isRunning && !!activePort && !!sessionId && previewSubdomainUrl === null;
+  // A concrete host the user could switch to, when one exists (docs/254 req 8).
+  const suggestedWildcardHost = cannotSubdomainPreview ? suggestWildcardHost(apiHost) : null;
 
   // When not running, hide the iframe behind the overlay (but keep DOM element alive)
   const hideIframe = !isRunning && !showStarting;
@@ -505,6 +507,15 @@ export function PreviewFrame({
           a domain with a <code className="px-1.5 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary) text-xs">*</code> DNS record,
           or Tailscale with MagicDNS wildcard resolution.
         </p>
+        {suggestedWildcardHost && (
+          <p className="text-xs text-(--color-text-secondary)">
+            For this host, opening ShipIt at{" "}
+            <code className="px-1.5 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary) text-xs">
+              http://{suggestedWildcardHost}
+            </code>{" "}
+            works without any DNS setup.
+          </p>
+        )}
       </div>
     );
   } else if (authBlocked && activeSlotUrl) {

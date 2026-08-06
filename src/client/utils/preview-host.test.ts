@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { resolvePreviewHost } from "./preview-host.js";
+import { resolvePreviewHost, suggestWildcardHost } from "./preview-host.js";
 
 // jsdom defaults window.location.protocol to "http:". Tests that care about the
 // non-override protocol pass-through stub it explicitly.
@@ -62,5 +62,43 @@ describe("resolvePreviewHost (docs/216)", () => {
       host: "localhost:3001",
       protocol: "http:",
     });
+  });
+});
+
+describe("suggestWildcardHost (docs/254 req 8)", () => {
+  it("suggests the dashed sslip.io form for a Tailscale address", () => {
+    // The local-install-over-Tailscale case: the raw IP can't carry preview
+    // subdomains, but its sslip.io form resolves right back to the same host.
+    expect(suggestWildcardHost("100.83.12.47:4123")).toBe("100-83-12-47.sslip.io:4123");
+  });
+
+  it("suggests the dashed form for a LAN address, preserving the port", () => {
+    expect(suggestWildcardHost("192.168.1.5:3000")).toBe("192-168-1-5.sslip.io:3000");
+  });
+
+  it("omits the port suffix when the host carries none", () => {
+    expect(suggestWildcardHost("100.83.12.47")).toBe("100-83-12-47.sslip.io");
+  });
+
+  it("suggests nothing for loopback, which already works as localhost", () => {
+    // buildSubdomainUrl normalizes 127.x to `localhost`, so previews already
+    // work here — suggesting sslip.io would be a downgrade, not a fix.
+    expect(suggestWildcardHost("127.0.0.1:4123")).toBeNull();
+  });
+
+  it("suggests nothing for a host that already works", () => {
+    expect(suggestWildcardHost("shipit.example.com")).toBeNull();
+    expect(suggestWildcardHost("localhost:4123")).toBeNull();
+  });
+
+  it("suggests nothing for IPv6 literals, which have no one-step fix", () => {
+    expect(suggestWildcardHost("[2001:db8::1]:4123")).toBeNull();
+    expect(suggestWildcardHost("[::1]:4123")).toBeNull();
+  });
+
+  it("rejects dotted-quad lookalikes rather than emitting a bogus host", () => {
+    // Four numeric octets shaped like an IP but out of range — a hostname, not an
+    // address, so the sslip.io mapping wouldn't resolve to anything.
+    expect(suggestWildcardHost("999.1.1.1:4123")).toBeNull();
   });
 });
