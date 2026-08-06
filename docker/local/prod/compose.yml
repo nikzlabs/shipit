@@ -5,9 +5,26 @@ services:
     build:
       context: ../../..
       dockerfile: docker/Dockerfile.prod
+    # docs/254 — bind loopback by DEFAULT. ShipIt has no built-in authentication
+    # (SECURITY-MODEL.md), so publishing on 0.0.0.0 exposed an agent with a shell
+    # and repo access to every network the machine joins. A host firewall is not a
+    # reliable backstop: on Linux, Docker's published-port rules sit above ufw's in
+    # FORWARD, so `ufw default deny incoming` reports active while the port stays
+    # reachable; on macOS the application firewall is off by default.
+    #
+    # Override in $SHIPIT_HOME/.shipit.env (sourced by deployment/local/lib.sh):
+    #   SHIPIT_BIND_ADDR=0.0.0.0   # deliberate LAN access on a trusted network
+    # For access from another device over Tailscale, prefer
+    # `deployment/local/tailscale.sh`, which ADDS a tailnet binding via a
+    # generated overlay and leaves this loopback one in place.
+    #
+    # 4124:5173 is vestigial — nothing listens on 5173 in the prod image (the
+    # client is built at image-build time and served from dist/client/ by the
+    # orchestrator on 4123; `EXPOSE 3000 5173` in Dockerfile.prod is stale). It is
+    # narrowed rather than removed because removing it is out of scope here.
     ports:
-      - "4123:4123"
-      - "4124:5173"
+      - "${SHIPIT_BIND_ADDR:-127.0.0.1}:4123:4123"
+      - "${SHIPIT_BIND_ADDR:-127.0.0.1}:4124:5173"
     volumes:
       - workspace:/workspace
       - credentials:/credentials
