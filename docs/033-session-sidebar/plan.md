@@ -192,3 +192,26 @@ Remove `SessionSelector.tsx` and `SessionSelector.test.tsx` after sidebar is ver
 2. `npm test` — all tests pass
 3. `npm run lint` — clean
 4. Manual: sidebar visible with grouped sessions, switch/create/rename/delete work, collapse/expand animates, mobile slide-over works
+
+## Visual reference — repo group separation (open)
+
+The rail now routinely holds 4+ repos, and the groups blend into each other: the
+repo header, `New session`, `PINNED`, `RECENTLY RESOLVED` and the session rows
+all sit on `--color-bg-primary`, separated only by a font-weight bump on the
+repo name. The strongest horizontal lines in the rail (the pinned divider, the
+sub-section labels) are *intra*-group, so they out-rank the *inter*-group
+boundary they're competing with.
+
+[`mocks/repo-separation.html`](mocks/repo-separation.html) explores ten
+treatments against the real theme tokens. Every variant renders the identical
+DOM — only the wrapper class differs — and the mock has warm-light/dark and
+4-repo/8-repo toggles so a candidate can be judged where it's hardest.
+
+One finding worth carrying into whichever variant ships: **elevation direction
+is not theme-invariant.** A card is *lighter* than the rail it sits on in light
+themes and *darker* in dark ones, so a card-based grouping needs two tokens
+(`--rail-bg` / `--card-bg`), not one hardcoded background pair — and the
+current-session row can't reuse `--color-bg-secondary`, because in dark themes
+that is the card's own surface.
+
+No variant is chosen yet; nothing here is implemented.
