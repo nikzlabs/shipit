@@ -1,24 +1,32 @@
 /**
- * GitHub Actions workflow operations — READ-ONLY.
+ * GitHub Actions workflow operations — reads, plus re-running an existing run.
  *
- * Backs the `gh run list|view` and `gh workflow list|view` shim subcommands
- * (SHI / "fetch the results of manual workflows"). The agent inside a session
- * container can manually-dispatched (`workflow_dispatch`) and other workflow
- * runs, see their status/conclusion, and pull job logs — all brokered through
- * the orchestrator so the GitHub token never enters the container.
+ * Backs the `gh run list|view|rerun` and `gh workflow list|view` shim
+ * subcommands. The agent inside a session container can read manually-dispatched
+ * (`workflow_dispatch`) and other workflow runs, see their status/conclusion,
+ * pull job logs, and re-run one — all brokered through the orchestrator so the
+ * GitHub token never enters the container.
  *
- * This module is deliberately read-only. Write/manipulation verbs the real `gh`
- * exposes — `gh workflow run`, `gh run rerun`, `gh run cancel`, `gh run delete`
- * — are NOT implemented here and stay blocked at the shim. Dispatching and
- * cancelling CI is a deliberate human/CI action, not something the agent should
- * trigger from a chat turn (CLAUDE.md §5).
+ * **Where the write boundary sits.** `rerun` re-executes workflow content that
+ * is already committed and already ran, against a commit that already exists.
+ * It introduces no new code, selects no new workflow, and destroys nothing —
+ * the agent already causes those same workflows to execute on every turn via
+ * auto-push, so the only thing blocking `rerun` bought was that the agent had to
+ * pollute branch history with an empty commit to get the same effect. The verbs
+ * that genuinely *are* new authority stay unimplemented here and blocked at the
+ * shim: `gh workflow run` (dispatch an arbitrary workflow — effectively
+ * arbitrary execution with repo secrets), `gh run cancel` and `gh run delete`
+ * (destroy state). See `/shipit-docs/github.md` for the agent-facing statement
+ * of the same line.
  *
  * Like the sibling `github-auth-{checks,releases,prs}.ts` modules, these are
  * thin `fetchGitHub` wrappers. Reads that target a collection throw on a
  * non-2xx response (so the service can surface GitHub's own error — e.g. a
  * token missing the `actions:read` scope, or Actions disabled on the repo —
  * rather than a misleading empty list); single-resource reads return `null` on
- * a 404 so "not found" is a clean result, not an error.
+ * a 404 so "not found" is a clean result, not an error. The one write returns a
+ * status-bearing result rather than throwing, so the service can turn GitHub's
+ * 403 into an actionable message about token scope.
  */
 
 import { fetchGitHub, parseGitHubError } from "./github-api.js";
@@ -186,6 +194,44 @@ export async function listWorkflowRunJobs(
     startedAt: j.started_at,
     completedAt: j.completed_at,
   }));
+}
+
+/** Outcome of a re-run request. Status-bearing so callers can special-case 403. */
+export interface RerunWorkflowRunResult {
+  ok: boolean;
+  /** The HTTP status GitHub returned. */
+  status: number;
+  /** GitHub's own error message; empty on success. */
+  message: string;
+}
+
+/**
+ * Re-run an existing workflow run.
+ *
+ * `onlyFailed` selects GitHub's `rerun-failed-jobs` endpoint (re-run just the
+ * failed jobs and their dependents) instead of `rerun` (the whole run). Both
+ * return 201 with an empty body on success.
+ *
+ * Unlike the reads above this does NOT throw on a non-2xx: the caller needs the
+ * status to distinguish "token can't write Actions" (403) from GitHub refusing
+ * the run itself (also 403 — e.g. a run too old to re-run, or one with no failed
+ * jobs), and both need a better message than a raw API dump.
+ */
+export async function rerunWorkflowRun(
+  token: string,
+  owner: string,
+  repo: string,
+  runId: number,
+  opts: { onlyFailed?: boolean } = {},
+): Promise<RerunWorkflowRunResult> {
+  const endpoint = opts.onlyFailed ? "rerun-failed-jobs" : "rerun";
+  const res = await fetchGitHub(
+    `https://api.github.com/repos/${owner}/${repo}/actions/runs/${runId}/${endpoint}`,
+    token,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+  );
+  if (res.ok) return { ok: true, status: res.status, message: "" };
+  return { ok: false, status: res.status, message: await parseGitHubError(res) };
 }
 
 /** List the repo's workflow definitions. Throws on a non-2xx response. */

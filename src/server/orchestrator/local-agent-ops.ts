@@ -65,6 +65,7 @@ const EXACT_ROUTES: Readonly<Record<string, string>> = {
   "pr/status": "pr/status",
   "run/list": "actions/runs",
   "run/view": "actions/runs/view",
+  "run/rerun": "actions/runs/rerun",
   "workflow/list": "actions/workflows",
   "workflow/view": "actions/workflows/view",
 };
