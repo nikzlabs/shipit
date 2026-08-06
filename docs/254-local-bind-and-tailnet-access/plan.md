@@ -107,7 +107,11 @@ services:
 ```
 
 `shipit_compose_files()` emits `-f base` plus `-f override` when the override
-exists, and every `docker compose` call in `lib.sh` goes through it. Loopback is
+exists, and the `build`/`up` calls in `shipit_build_and_up` go through it.
+`stop.sh` deliberately does not: `docker compose down` resolves by project name
+(`name: shipit-prod` in the base file), and the overlay adds no service, network
+or volume — only a port on the existing `shipit` service. Threading it there
+would be inert. Loopback is
 always present, so localhost never depends on Tailscale being up (req 5), and a
 changed tailnet address is picked up on the next start with no hand-editing
 (req 6).

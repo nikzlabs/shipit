@@ -63,6 +63,19 @@ http://100-83-12-47.sslip.io:4123
 
 To opt out, remove `SHIPIT_TAILNET_BIND` from `~/.shipit/.shipit.env` and re-run `update.sh`.
 
+**macOS: the CLI lives inside the app bundle.** The standalone Tailscale app from
+`tailscale.com/download/mac` puts its CLI at `/Applications/Tailscale.app/Contents/MacOS/Tailscale` and
+never adds `tailscale` to your `PATH`. ShipIt probes that location automatically, so this normally just
+works. If your install is somewhere else, point at it explicitly in `~/.shipit/.shipit.env`:
+
+```
+SHIPIT_TAILSCALE_BIN=/path/to/tailscale
+```
+
+Do **not** symlink the bundle binary onto your `PATH` — it resolves its bundle identifier from its own
+executable path and aborts with `The current bundleIdentifier is unknown to the registry`. Use the
+absolute bundle path (which is what ShipIt does).
+
 To publish on your LAN instead, set `SHIPIT_BIND_ADDR=0.0.0.0` in `~/.shipit/.shipit.env`. That exposes
 an unauthenticated agent with a shell and your repositories to that network — only do it on a network
 you control, and don't count on a host firewall to contain it (Docker's published-port rules bypass

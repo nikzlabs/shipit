@@ -56,23 +56,41 @@ echo ""
 # --- Preflight: check and instruct, never auto-install ----------------------
 # Mirrors deployment/local/setup.sh's posture: a local machine is the user's own,
 # so we do not install system packages onto it behind their back.
-if ! command -v tailscale >/dev/null 2>&1; then
-  echo "Error: Tailscale is not installed." >&2
+# Resolved via shipit_tailscale_bin, NOT `command -v`: the standalone macOS app
+# keeps its CLI inside the bundle and never puts `tailscale` on PATH, so a bare
+# `command -v` told fully-configured Macs they had no Tailscale — while pointing
+# them at the very download page that installs it that way.
+TS_BIN="$(shipit_tailscale_bin || true)"
+if [ -z "$TS_BIN" ]; then
+  echo "Error: could not find the Tailscale CLI." >&2
   echo "" >&2
   case "$(uname -s)" in
-    Darwin) echo "  Install it from https://tailscale.com/download/mac (or: brew install --cask tailscale)" >&2 ;;
-    *)      echo "  Install it with: curl -fsSL https://tailscale.com/install.sh | sh" >&2 ;;
+    Darwin)
+      echo "  Install it from https://tailscale.com/download/mac (or: brew install --cask tailscale)" >&2
+      echo "" >&2
+      echo "  Already installed? The standalone app keeps its CLI inside the bundle" >&2
+      echo "  and not on PATH. Point ShipIt straight at it:" >&2
+      echo "      export SHIPIT_TAILSCALE_BIN=/Applications/Tailscale.app/Contents/MacOS/Tailscale" >&2
+      echo "  (Do not symlink it onto PATH — it resolves its bundle identifier from" >&2
+      echo "   its own path and will abort.)" >&2
+      ;;
+    *)
+      echo "  Install it with: curl -fsSL https://tailscale.com/install.sh | sh" >&2
+      echo "" >&2
+      echo "  Installed somewhere unusual? Set SHIPIT_TAILSCALE_BIN to its full path." >&2
+      ;;
   esac
   echo "" >&2
   echo "  Then run this script again." >&2
   exit 1
 fi
 
-TS_IP="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
+TS_IP="$("$TS_BIN" ip -4 2>/dev/null | head -n1 || true)"
 if [ -z "$TS_IP" ]; then
-  echo "Error: Tailscale is installed but this machine is not connected to a tailnet." >&2
+  echo "Error: found the Tailscale CLI at '$TS_BIN', but this machine is not" >&2
+  echo "       connected to a tailnet." >&2
   echo "" >&2
-  echo "  Run 'tailscale up', then run this script again." >&2
+  echo "  Run 'tailscale up' (or connect from the Tailscale app), then re-run this." >&2
   exit 1
 fi
 

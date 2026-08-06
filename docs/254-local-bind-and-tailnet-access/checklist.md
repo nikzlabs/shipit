@@ -56,6 +56,32 @@ Amended:
   cannot be added to a running container, so restoration requires recreating it either way. Reworded to
   the strongest achievable behaviour, flagged rather than quietly loosened.
 
+## Live-machine verification round (2026-08-06, real macOS laptop + tailnet)
+
+- [x] **Blocking macOS bug fixed.** `command -v tailscale` reported "not installed" on a connected Mac:
+      the standalone app keeps its CLI at `/Applications/Tailscale.app/Contents/MacOS/Tailscale` and
+      never puts it on `PATH`. It broke both the preflight *and* `shipit_refresh_tailnet_bind`, so a
+      user who hand-set `SHIPIT_TAILNET_BIND=1` got loopback-only on every start forever — no
+      configuration made the feature work on a stock macOS install. Now resolved via
+      `shipit_tailscale_bin()`, shared by both scripts, which returns an invocable *path* (symlinking
+      the bundle binary is not a workaround — it resolves its bundle identifier from its own path and
+      aborts). `SHIPIT_TAILSCALE_BIN` overrides for nonstandard installs.
+- [x] Test gap closed: every prior case stubbed the binary onto `PATH`, the exact assumption that fails
+      on macOS. Added bundle-path resolution (via the `SHIPIT_TAILSCALE_PREFIX` test seam) and
+      override-precedence cases.
+- [x] Nit: "every compose invocation threads the overlay" was inaccurate — `stop.sh` doesn't, and
+      correctly so (`down` resolves by project name; the overlay adds only a port). Reworded.
+
+Confirmed empirically on that machine, closing the gaps this branch could not verify in-container:
+
+- The exposure was real: `TCP *:4123`, HTTP 200 from both the LAN address and a second tailnet host.
+  After the change, `127.0.0.1` only, both refused, `localhost` still 200.
+- The Compose `-f` merge **appends** (host_ip `127.0.0.1`/`127.0.0.1`/`100.x`), so the documented-spec
+  reasoning in `plan.md` was right. `SHIPIT_BIND_ADDR=0.0.0.0` resolves both bindings as documented.
+- Previews resolve over the tailnet; the subdomain proxy parsed `<sessionId>--3000.<sslip>` and did a
+  session lookup (the install had archived sessions only, so no container to serve).
+- Degradation and the update-path fix both behave as designed against a real git repo.
+
 ## Deliberately not done
 
 - **Removing the `4124:5173` mapping.** Nothing listens on 5173 in the prod image — the client is

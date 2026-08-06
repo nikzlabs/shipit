@@ -153,6 +153,82 @@ describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () =>
     expect(yml).not.toContain("100.83.12.47");
   });
 
+  it("finds the CLI inside the macOS app bundle, absent from PATH (req 4)", () => {
+    // The bug this pins: the standalone macOS Tailscale app keeps its CLI at
+    // /Applications/Tailscale.app/Contents/MacOS/Tailscale and never puts
+    // `tailscale` on PATH, so the original `command -v tailscale` reported "not
+    // installed" on a fully connected Mac — with no configuration that fixed it.
+    // Verified broken on a real laptop, and the previous tests could not catch
+    // it because they all stubbed the binary ONTO PATH, which is precisely the
+    // assumption that doesn't hold there.
+    fs.writeFileSync(envFile, "SHIPIT_TAILNET_BIND=1\n");
+    const bundleDir = path.join(root, "prefix", "Applications", "Tailscale.app", "Contents", "MacOS");
+    fs.mkdirSync(bundleDir, { recursive: true });
+    const bundleBin = path.join(bundleDir, "Tailscale");
+    fs.writeFileSync(bundleBin, '#!/bin/sh\n[ "$1" = "ip" ] && echo 100.76.154.41\n');
+    fs.chmodSync(bundleBin, 0o755);
+
+    const stderrFile = path.join(root, "bundle-err.txt");
+    const out = execFileSync(
+      "bash",
+      [
+        "-c",
+        `set -euo pipefail
+         SHIPIT_HOME=${JSON.stringify(home)}
+         . ${JSON.stringify(LIB_SH)}
+         shipit_load_env_file
+         shipit_refresh_tailnet_bind
+         shipit_compose_files`,
+      ],
+      {
+        // PATH deliberately WITHOUT any `tailscale`, as on a stock Mac.
+        env: {
+          ...process.env,
+          HOME: home,
+          SHIPIT_TAILSCALE_PREFIX: path.join(root, "prefix"),
+        },
+        stdio: ["pipe", "pipe", fs.openSync(stderrFile, "w")],
+      },
+    ).toString();
+
+    expect(fs.existsSync(overlay)).toBe(true);
+    expect(fs.readFileSync(overlay, "utf8")).toContain('"100.76.154.41:4123:4123"');
+    expect(out.trim().split("\n").filter((p) => p === "-f")).toHaveLength(2);
+  });
+
+  it("honours SHIPIT_TAILSCALE_BIN for an install in a nonstandard place", () => {
+    fs.writeFileSync(envFile, "SHIPIT_TAILNET_BIND=1\n");
+    const custom = path.join(root, "somewhere", "ts");
+    fs.mkdirSync(path.dirname(custom), { recursive: true });
+    fs.writeFileSync(custom, '#!/bin/sh\n[ "$1" = "ip" ] && echo 100.5.5.5\n');
+    fs.chmodSync(custom, 0o755);
+    // A DIFFERENT tailscale is on PATH; the explicit override must win, so a user
+    // pointing at the bundle isn't silently overridden by a stale shim on PATH.
+    stubTailscale("100.99.99.99");
+
+    execFileSync(
+      "bash",
+      [
+        "-c",
+        `set -euo pipefail
+         SHIPIT_HOME=${JSON.stringify(home)}
+         . ${JSON.stringify(LIB_SH)}
+         shipit_load_env_file
+         shipit_refresh_tailnet_bind`,
+      ],
+      {
+        env: {
+          ...process.env,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+          HOME: home,
+          SHIPIT_TAILSCALE_BIN: custom,
+        },
+      },
+    );
+
+    expect(fs.readFileSync(overlay, "utf8")).toContain('"100.5.5.5:4123:4123"');
+  });
+
   it("still starts when the overlay cannot be written at all (req 5)", () => {
     fs.writeFileSync(envFile, "SHIPIT_TAILNET_BIND=1\n");
     stubTailscale("100.83.12.47");

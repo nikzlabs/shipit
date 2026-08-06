@@ -91,6 +91,51 @@ shipit_load_env_file() {
   fi
 }
 
+# Resolve the Tailscale CLI, echoing an invocable path (empty output + non-zero
+# when there is none). Use this instead of a bare `command -v tailscale`.
+#
+# Why: the standalone macOS app — the one tailscale.com/download/mac hands you —
+# keeps its CLI INSIDE the bundle at
+# /Applications/Tailscale.app/Contents/MacOS/Tailscale and never puts `tailscale`
+# on PATH. A bare `command -v` therefore reports "not installed" on a machine that
+# is fully installed and connected, which is the single most likely configuration
+# for the laptop this feature exists to serve.
+#
+# Symlinking the bundle binary onto PATH is NOT a workaround: it resolves its
+# bundle identifier from its own executable path and dies with
+# "Fatal error: The current bundleIdentifier is unknown to the registry".
+# Only invoking the absolute bundle path (or a wrapper that `exec`s it) works —
+# which is exactly why this returns a PATH to invoke rather than just a boolean.
+#
+# SHIPIT_TAILSCALE_BIN overrides everything, for an install in a nonstandard
+# place. SHIPIT_TAILSCALE_PREFIX prefixes the probed absolute paths; it exists so
+# the tests can exercise the bundle-path branch without an /Applications, and is
+# not intended for users.
+shipit_tailscale_bin() {
+  if [ -n "${SHIPIT_TAILSCALE_BIN:-}" ]; then
+    [ -x "$SHIPIT_TAILSCALE_BIN" ] || return 1
+    printf '%s\n' "$SHIPIT_TAILSCALE_BIN"
+    return 0
+  fi
+  # PATH first: a Homebrew/`tailscaled`-package install is the common Linux case
+  # and the fastest check.
+  if command -v tailscale >/dev/null 2>&1; then
+    printf 'tailscale\n'
+    return 0
+  fi
+  local prefix="${SHIPIT_TAILSCALE_PREFIX:-}" candidate
+  for candidate in \
+    "$prefix/Applications/Tailscale.app/Contents/MacOS/Tailscale" \
+    "$prefix/usr/local/bin/tailscale" \
+    "$prefix/opt/homebrew/bin/tailscale"; do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Re-derive the opt-in tailnet port binding, and write (or remove) the compose
 # overlay that carries it. Called before every `up`. See docs/254.
 #
@@ -121,9 +166,10 @@ shipit_refresh_tailnet_bind() {
   # installed but not connected — the exact laptop-after-reboot case. Without it
   # the failing substitution aborts setup.sh/update.sh instead of falling through
   # to the loopback-only path below, which is precisely the opposite of req 5.
-  local ts_ip=""
-  if command -v tailscale >/dev/null 2>&1; then
-    ts_ip="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
+  local ts_ip="" ts_bin=""
+  ts_bin="$(shipit_tailscale_bin || true)"
+  if [ -n "$ts_bin" ]; then
+    ts_ip="$("$ts_bin" ip -4 2>/dev/null | head -n1 || true)"
   fi
 
   if [ -z "$ts_ip" ]; then
