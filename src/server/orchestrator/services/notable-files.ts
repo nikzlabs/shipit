@@ -5,7 +5,8 @@
  * notices it moved without scanning the full diff or detouring to the Docs
  * panel. Three tiers:
  *
- *   1. **Design docs** — any `.md` file.
+ *   1. **Design docs** — any `.md` file, plus any `.html`/`.htm` (a committed
+ *      mockup; the viewer renders it rather than showing markup).
  *   2. **Config** — a small allowlist of "wait, what moved?" files.
  *   3. **Images** — any added/modified image (by extension). The chip opens the
  *      asset inline so the user can eyeball it.
@@ -40,6 +41,23 @@ const CONFIG_FILENAMES = new Set([
   "AGENTS.md",
   "package.json",
 ]);
+
+/**
+ * HTML extensions surfaced on the strip, matched by (lowercased) extension.
+ * A committed prototype (`mockup.html`, a `mocks/` subdir) is a first-class
+ * design artifact in this repo's doc convention, and the file viewer *renders*
+ * HTML rather than showing markup (docs/219 — `file-content-kind.ts` splits
+ * `.html`/`.htm` out of the `code` bucket), so the chip opens a live mockup.
+ *
+ * Matched blanket, like {@link IMAGE_EXTENSIONS} and the `.md` rule — an app's
+ * `index.html` gets a chip too. A location gate ("only under `docs/`", "only
+ * beside a changed `.md`") was considered and rejected: no other tier here is
+ * path-dependent, and a change-set-dependent rule would make one file's chip
+ * appear or vanish based on what *else* the PR touched, breaking the per-file
+ * determinism the 1:1 projection rests on. If noise shows up, the fix is an
+ * exclusion rule applied uniformly across all tiers, not a bespoke gate here.
+ */
+const HTML_EXTENSIONS = new Set([".html", ".htm"]);
 
 /**
  * Image extensions surfaced on the strip, matched by (lowercased) extension.
@@ -125,12 +143,13 @@ export function computeNotableFiles(changes: RawFileChange[]): NotableFileChange
     if (!status) continue;
     const basename = path.posix.basename(change.path);
     const label = compactPathLabel(change.path);
+    const ext = path.extname(change.path).toLowerCase();
 
     if (CONFIG_FILENAMES.has(basename)) {
       out.push({ path: change.path, label, kind: "config", status });
-    } else if (change.path.endsWith(".md")) {
+    } else if (change.path.endsWith(".md") || HTML_EXTENSIONS.has(ext)) {
       out.push({ path: change.path, label, kind: "doc", status });
-    } else if (IMAGE_EXTENSIONS.has(path.extname(change.path).toLowerCase())) {
+    } else if (IMAGE_EXTENSIONS.has(ext)) {
       out.push({ path: change.path, label, kind: "image", status });
     }
   }
