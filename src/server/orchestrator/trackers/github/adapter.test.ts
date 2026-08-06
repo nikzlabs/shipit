@@ -163,6 +163,24 @@ describe("GitHubTracker", () => {
     ]);
   });
 
+  it("maps created_at onto the tracker-neutral createdAt (docs/247 req 9)", async () => {
+    const tracker = new GitHubTracker({
+      token: "t",
+      repo: REPO,
+      fetchImpl: vi.fn(async () =>
+        jsonResponse({
+          id: 1,
+          number: 42,
+          title: "Bug",
+          html_url: "https://github.com/octocat/hello-world/issues/42",
+          state: "open",
+          created_at: "2025-11-02T09:15:00Z",
+        }),
+      ),
+    });
+    expect((await tracker.getIssue("42"))?.createdAt).toBe("2025-11-02T09:15:00Z");
+  });
+
   it("listStatuses returns the fixed Open/Closed pair without a request (docs/191)", async () => {
     const fetchImpl = vi.fn();
     const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });

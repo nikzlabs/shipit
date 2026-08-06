@@ -86,6 +86,15 @@ export interface TrackerIssue {
    * adapter already orders its fetch by `updatedAt`, this just exposes the value.
    */
   updatedAt?: string;
+  /**
+   * ISO-8601 creation timestamp, when the tracker supplies one. Tracker-neutral:
+   * Linear's `createdAt` and GitHub's `created_at` both map here. Surfaced so an
+   * issue's original creation date is readable through `shipit issue view --json`
+   * — a migration that recreates issues on another backend has to record when
+   * each one was actually filed (docs/247 req 9), and the recreated issue's own
+   * `createdAt` is the migration date, not the original.
+   */
+  createdAt?: string;
   priority: IssuePriority;
   /**
    * The issue's labels, each carrying its display name and the tracker's own

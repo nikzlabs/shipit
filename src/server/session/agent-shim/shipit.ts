@@ -43,6 +43,7 @@ import {
   type ShimEnv,
   type ShimIO,
 } from "./shim-common.js";
+import { exitAfterFlush, shimWrite } from "./shim-exit.js";
 import {
   handleSessionArchive,
   handleSessionCreate,
@@ -811,7 +812,7 @@ function stripNodeArgs(argv: string[]): string[] {
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
   runShim(process.argv.slice(2)).catch((err: unknown) => {
     if (err instanceof Error && err.message === "__shim_exit__") return;
-    process.stderr.write(`shipit: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
+    shimWrite(process.stderr, `shipit: ${err instanceof Error ? err.message : String(err)}\n`);
+    exitAfterFlush(1);
   });
 }

@@ -687,6 +687,28 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(issue?.availableStatuses?.map((s) => s.name)).toContain("In Review");
   });
 
+  it("getIssue selects and surfaces the issue's createdAt (docs/247 req 9)", async () => {
+    const fetchImpl = routerFetch([
+      { match: "query Issue", data: { issue: issueNode({ createdAt: "2025-11-02T09:15:00.000Z" }) } },
+    ]);
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    const issue = await tracker.getIssue("SHI-1");
+    expect(issue?.createdAt).toBe("2025-11-02T09:15:00.000Z");
+    // The field has to be in the selection set, not just mapped — Linear returns
+    // only what is asked for, so a missing selection reads as a missing date.
+    const queries = fetchImpl.mock.calls.map(
+      (c) =>
+        (JSON.parse(((c[1] as RequestInit | undefined)?.body as string) || "{}") as { query?: string }).query ?? "",
+    );
+    expect(queries.find((q) => q.includes("query Issue"))).toContain("createdAt");
+  });
+
+  it("omits createdAt when the tracker returns none", async () => {
+    const fetchImpl = routerFetch([{ match: "query Issue", data: { issue: issueNode() } }]);
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    expect(await tracker.getIssue("SHI-1")).not.toHaveProperty("createdAt");
+  });
+
   it("listStatuses returns the team's workflow states in board order (docs/191)", async () => {
     const fetchImpl = routerFetch([
       // Deliberately out of position order — listStatuses sorts by position.

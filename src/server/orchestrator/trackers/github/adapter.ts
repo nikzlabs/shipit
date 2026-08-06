@@ -135,6 +135,8 @@ interface GitHubIssueNode {
   state: string;
   labels?: (string | { name?: string | null; color?: string | null })[];
   assignee?: { login?: string | null; avatar_url?: string | null } | null;
+  /** ISO-8601 creation time — the tracker-neutral `TrackerIssue.createdAt`. */
+  created_at?: string | null;
   /** Present iff this "issue" is actually a pull request — we skip those. */
   pull_request?: unknown;
 }
@@ -207,6 +209,7 @@ function toTrackerIssue(
     title: node.title,
     url: node.html_url,
     ...(node.body ? { description: node.body } : {}),
+    ...(node.created_at ? { createdAt: node.created_at } : {}),
     // Priority is label-derived, so map over the names of the resolved labels.
     priority: mapGitHubPriority(labels.map((l) => l.name)),
     ...(labels.length > 0 ? { labels } : {}),
