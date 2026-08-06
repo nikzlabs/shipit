@@ -148,6 +148,7 @@ export function PreviewFrame({
       const [slotSessionId] = key.split(":");
       if (mergedSessionIdSet.has(slotSessionId)) {
         loadedSlotsRef.current.delete(key);
+        reloadableWindowsRef.current.delete(key);
       }
     }
     pruneSlots((key) => {
@@ -183,6 +184,13 @@ export function PreviewFrame({
   // came up cleanly.
   const [authBlocked, setAuthBlocked] = useState(false);
   const loadedSlotsRef = useRef<Set<string>>(new Set());
+  // Windows that have reported "loaded", i.e. the injected preview script is
+  // running there and will honour a "shipit-toolbar" command. Unlike
+  // `loadedSlotsRef` this is NOT cleared on refresh — it records a capability,
+  // not the state of the current load. Keyed by slot but storing the window so
+  // a remounted iframe (new element, new contentWindow, script not yet run)
+  // doesn't inherit the old element's confirmation.
+  const reloadableWindowsRef = useRef<Map<string, MessageEventSource>>(new Map());
   const pendingReadyRef = useRef<{ source: MessageEventSource; origin: string; receivedAt: number }[]>([]);
   const authRetryRef = useRef(0);
   const lastAuthUrlRef = useRef<string | null>(null);
@@ -258,6 +266,7 @@ export function PreviewFrame({
     for (const [key, el] of iframeRefs.current.entries()) {
       if (el?.contentWindow && el.contentWindow === event.source) {
         loadedSlotsRef.current.add(key);
+        reloadableWindowsRef.current.set(key, el.contentWindow);
         if (key === activeSlotKeyRef.current) {
           authRetryRef.current = 0;
           setAuthBlocked(false);
@@ -319,7 +328,18 @@ export function PreviewFrame({
         // can be re-detected.
         loadedSlotsRef.current.delete(activeSlotKey);
         const el = iframeRefs.current.get(activeSlotKey);
-        if (el && activeSlotUrl) {
+        // Reload the page the preview is CURRENTLY on. Re-assigning `src`
+        // navigates back to the slot's entry URL, so a user who had clicked
+        // into a sub-route (or an SPA route) lost their place and landed on
+        // the front page. The iframe is cross-origin, so we ask the injected
+        // preview script (preview-proxy.ts) to call `location.reload()`.
+        // Slots without that script — a direct non-proxied local preview, a
+        // 502, an auth-gated response — never reported "loaded", and fall
+        // back to the `src` re-assignment, which is also what the auth-retry
+        // escalation needs (a genuinely blocked slot must re-fetch).
+        if (el?.contentWindow && reloadableWindowsRef.current.get(activeSlotKey) === el.contentWindow) {
+          el.contentWindow.postMessage({ source: "shipit-toolbar", type: "reload" }, "*");
+        } else if (el && activeSlotUrl) {
           el.src = activeSlotUrl;
         }
       }
