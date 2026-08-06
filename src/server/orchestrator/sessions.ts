@@ -66,6 +66,8 @@ interface SessionRow {
   previous_merged_pr: string | null;
   /** docs/218 — the merged PR's head-branch tip SHA; the auto-reset safety anchor. NULL = none. */
   merged_head_sha: string | null;
+  /** docs/221 — one-shot `[System] …` line the next interactive turn prepends. NULL = nothing owed. */
+  pending_agent_notice: string | null;
 }
 
 /**
@@ -354,6 +356,7 @@ export class SessionManager {
       }
     }
     if (row.merged_head_sha) info.mergedHeadSha = row.merged_head_sha;
+    if (row.pending_agent_notice) info.pendingAgentNotice = row.pending_agent_notice;
     return info;
   }
 
@@ -462,6 +465,39 @@ export class SessionManager {
       }
     })();
     return replay;
+  }
+
+  /**
+   * docs/221 — record the one-shot `[System] …` line the session's next
+   * interactive turn must prepend, after something moved the branch outside any
+   * turn (the manual "Sync with `<base>`" rebase / merged-branch reset).
+   *
+   * Last-write-wins by design: every writer is describing the same fact (where
+   * this branch now points), so a second sync before the user's next message
+   * supersedes the first rather than queueing behind it.
+   */
+  setPendingAgentNotice(id: string, notice: string): void {
+    this.db.prepare("UPDATE sessions SET pending_agent_notice = ? WHERE id = ?").run(notice, id);
+  }
+
+  /**
+   * docs/221 — consume (read + clear) the pending agent notice. Transactional so
+   * the notice is delivered exactly once: a turn that reads it owns it, and a
+   * crash before the prompt reaches the agent loses one notice rather than
+   * repeating it on every subsequent turn.
+   */
+  consumePendingAgentNotice(id: string): string | undefined {
+    let notice: string | undefined;
+    this.db.transaction(() => {
+      const row = this.db.prepare(
+        "SELECT pending_agent_notice FROM sessions WHERE id = ?",
+      ).get(id) as { pending_agent_notice: string | null } | undefined;
+      if (row?.pending_agent_notice) {
+        this.db.prepare("UPDATE sessions SET pending_agent_notice = NULL WHERE id = ?").run(id);
+        notice = row.pending_agent_notice;
+      }
+    })();
+    return notice;
   }
 
   /** Clear the agent session ID for a session. */

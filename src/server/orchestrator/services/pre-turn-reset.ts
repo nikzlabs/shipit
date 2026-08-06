@@ -514,6 +514,38 @@ function buildAgentPrefix(prNumber: number, base: string): string {
   );
 }
 
+/**
+ * docs/221 — the agent-facing notice for a reset the USER triggered from the
+ * "Sync with `<base>`" menu on a merged session, rather than one the agent ran
+ * itself via `shipit branch reset-to-base`.
+ *
+ * Both go through the same route, so the difference is only who asked. When the
+ * agent asked, it read the outcome in its own tool result and needs nothing more;
+ * when the user asked, the branch was rewritten under a conversation that has no
+ * idea it happened. Unlike {@link buildAgentPrefix} this is not delivered inside
+ * the turn that caused it — it is parked on the session and drained by the next
+ * one — so it says "while you were idle" rather than "your PR was merged".
+ */
+export function buildManualResetAgentNotice(opts: {
+  base: string;
+  fromSha?: string;
+  toSha?: string;
+  prNumber?: number;
+}): string {
+  const shas = opts.fromSha && opts.toSha
+    ? ` (was ${opts.fromSha.slice(0, 7)} → now ${opts.toSha.slice(0, 7)})`
+    : "";
+  const pr = opts.prNumber ? ` (#${opts.prNumber})` : "";
+  return (
+    `[System] While you were idle, the user reset this branch to the latest `
+    + `origin/${opts.base}${shas} from the ShipIt UI. It no longer contains the commits `
+    + `from the merged pull request${pr} and starts from current code. Your working tree `
+    + `was rewritten from outside the session: files you read earlier in this conversation `
+    + `may have changed, so re-read before editing, and do not re-apply or recreate `
+    + `anything from the merged PR.`
+  );
+}
+
 // ---------------------------------------------------------------------------
 // docs/239 — the explicit `shipit branch reset-to-base` mode
 // ---------------------------------------------------------------------------

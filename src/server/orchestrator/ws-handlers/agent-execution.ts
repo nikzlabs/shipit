@@ -418,16 +418,35 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     }
   }
 
+  // docs/221 — drain the pending out-of-band notice. The docs/218 reset above
+  // both moves the branch and speaks to the agent in the same breath because it
+  // runs INSIDE the turn it describes; a manual "Sync with <base>" cannot — it
+  // runs from an HTTP route while no turn exists (`runRebaseFlow` refuses to
+  // start one), so it leaves the sentence here for the next turn to deliver.
+  // Consume-and-clear is transactional, so it is delivered exactly once.
+  //
+  // Skipped for `/compact` for the same reason the reset is (docs/178): a
+  // maintenance command must not be handed a "your branch moved" instruction to
+  // react to. Leaving the notice pending means the user's next real turn still
+  // gets it.
+  const pendingAgentNotice =
+    capturedSessionId && !opts.compact
+      ? ctx.sessionManager.consumePendingAgentNotice(capturedSessionId) ?? ""
+      : "";
+
   // Assemble the prompt from user text plus optional file/image context. Images
   // are saved to the host uploads dir and referenced by path (avoids large
-  // base64 payloads over HTTP to the worker). The reset prefix (if any) rides in
-  // front so the agent sees it this turn only (no persistence).
+  // base64 payloads over HTTP to the worker). The notices ride in front so the
+  // agent sees them this turn only (the pending one is already cleared; the
+  // reset prefix was never persisted). Chronological order: the out-of-band sync
+  // happened before this turn, the reset happened moments ago.
   const activeDir = ctx.getActiveDir();
   const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
   const imageContext =
     images && images.length > 0 && activeDir ? saveImagesToUploadsDir(images, activeDir) : "";
+  const agentPrefix = [pendingAgentNotice, resetAgentPrefix].filter(Boolean).join("\n\n");
   const prompt =
-    (resetAgentPrefix ? `${resetAgentPrefix}\n\n` : "") +
+    (agentPrefix ? `${agentPrefix}\n\n` : "") +
     assembleAgentPrompt({ userText, fileContext, imageContext });
 
   // docs/218 — emit the persisted "branch updated" card right after the resumed

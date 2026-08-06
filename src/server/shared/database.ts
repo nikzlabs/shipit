@@ -829,6 +829,16 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN secret_block TEXT");
   },
+  // docs/221 — a one-shot `[System] …` line the session's next interactive agent
+  // turn prepends to its prompt, recorded by a workspace change that happened
+  // OUTSIDE any turn (the manual "Sync with <base>" rebase / merged-branch
+  // reset). Persisted rather than kept on the runner because the runner dies
+  // with the idle container, while the rewritten branch does not — and the agent
+  // resumes with a conversation that predates the rewrite. Read-and-cleared in
+  // one transaction, so it is delivered exactly once. NULL = nothing owed.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN pending_agent_notice TEXT");
+  },
 ];
 
 export class DatabaseManager {

@@ -67,6 +67,52 @@ card renders truthful outcome-specific copy for a rebased branch, a local-base-o
 move, or an already-current branch. `WsRebaseComplete.baseMoved` suppresses the
 redundant toast whenever this durable card is emitted.
 
+### Agent-facing notice (manual route only)
+
+The card above tells the **user**. Nothing told the **agent** — and the agent is
+the one whose view of the repository the sync invalidates. A manual sync rewrote
+the working tree while the agent sat resumed on a conversation that predates the
+rewrite, and the next turn carried on against files it had read before.
+
+The docs/218 post-merge reset does not have this problem because it runs *inside*
+the turn it describes, so it prepends its `[System] …` prefix directly. A manual
+sync has no turn to prepend to: `runRebaseFlow` refuses to start while one is
+running, and it is driven from an HTTP route. So the sentence is **parked** and
+the next interactive turn delivers it:
+
+| | |
+|---|---|
+| Write | `sessions.pending_agent_notice` — one nullable column, set by `SessionManager.setPendingAgentNotice` |
+| Read | `SessionManager.consumePendingAgentNotice` — read-and-clear in one transaction, so a notice is delivered exactly once |
+| Drain | `runAgentWithMessage` (`agent-execution.ts`), prepended ahead of the docs/218 reset prefix (chronological: the sync happened first) |
+
+Persisted rather than held on the runner for the `secretBlock` reason: the runner
+dies when the session goes idle, but the rewritten branch does not, and "synced,
+walked away, came back tomorrow" is exactly the case where the resumed agent most
+needs telling.
+
+Two writers, both gated on "a human asked for this, out of band":
+
+- **`runRebaseFlow`** (`buildBranchSyncAgentNotice`) on the two paths where the
+  branch actually **moved** — clean rebase and conflicts-resolved — under the same
+  `recordSyncCard` flag as the card. A sync that only fast-forwarded the local
+  `<base>` ref leaves the working tree byte-identical, so there is nothing to warn
+  about, and the auto-conflict-resolve path stays silent as before.
+- **`POST /branch/reset-to-base`** (`buildManualResetAgentNotice`, via
+  `recordManualResetAgentNotice`) — the merged fork of the *same* "Sync with
+  `<base>`" menu item. `runner.running` discriminates this route's two callers:
+  the `shipit branch reset-to-base` shim can only run inside an agent turn and
+  reads the outcome in its own tool result, so a turn in flight means the agent
+  already knows; anything arriving with no turn running (the menu click, or a
+  human running the shim in the terminal panel) is news.
+
+Both writes are best-effort — the sync itself already succeeded and is recorded
+for the user, so a failed notice must not turn that into a reported failure.
+
+The drain is skipped for `/compact` for the docs/178 reason the reset is: a
+maintenance command must not be handed a "your branch moved" instruction to react
+to. The notice stays pending and the user's next real turn gets it.
+
 ## Key files
 
 | Layer | File |
@@ -74,6 +120,10 @@ redundant toast whenever this durable card is emitted.
 | Local base move + card emit | `src/server/orchestrator/services/rebase-driver.ts` (`syncLocalBaseRef`, `emitSyncCard`, `recordSyncCard` dep) |
 | Ref-move + ref-read helpers | `src/server/shared/git.ts` (`forceUpdateBranchRef`, `getRefHash`) |
 | Manual-route flag | `src/server/orchestrator/api-routes-git.ts` (`recordSyncCard: true`) |
+| Agent notice — rebase | `src/server/orchestrator/services/rebase-driver.ts` (`buildBranchSyncAgentNotice`, `recordAgentNotice`) |
+| Agent notice — merged reset | `src/server/orchestrator/api-routes-git.ts` (`recordManualResetAgentNotice`), `services/pre-turn-reset.ts` (`buildManualResetAgentNotice`) |
+| Notice slot | `shared/types/domain-types/session.ts` (`pendingAgentNotice`), `orchestrator/sessions.ts` (`set`/`consumePendingAgentNotice`), `shared/database.ts` (migration) |
+| Notice drain | `src/server/orchestrator/ws-handlers/agent-execution.ts` (prepended ahead of the docs/218 reset prefix) |
 | `baseMoved` field + toast suppress | `shared/types/ws-server-messages/git.ts`, `client/hooks/message-handlers/rebase-complete.ts` |
 | Card type | `shared/types/domain-types/chat.ts` (`BranchSyncedCard`), `…/ws-server-messages/cards.ts` + `index.ts` (`WsBranchSyncedCard`) |
 | Persistence | `orchestrator/chat-history.ts` (field + row + SQL + `toRow`/`fromRow`), `shared/database.ts` (migration) |
@@ -91,12 +141,24 @@ redundant toast whenever this durable card is emitted.
 - `chat-history.test.ts` — `branchSynced` in `EVERY_OPTIONAL_FIELD_MESSAGE`
   (self-enforcing via `CARD_MESSAGE_FIELDS`) round-trips.
 - `branch-synced-card.test.ts` — live append, idempotent by `cardId`.
+- `rebase-driver.test.ts` (agent-notice block) — a moved branch records a notice,
+  the auto-resolve path records none, an unmoved branch records none.
+- `api-routes-git.test.ts` — `recordManualResetAgentNotice` parks a notice for a
+  UI-driven reset, stays silent when a turn is running or nothing moved, and does
+  not throw when the write fails.
+- `sessions.test.ts` — round-trip, consume-exactly-once, last-write-wins.
+- `integration_tests/rebase-flow.test.ts` — after a clean sync the next turn's
+  prompt carries the notice, and the turn after that does not.
 
 ## Out of scope
 
 - Surfacing the card on the automatic conflict-resolve-on-idle path (kept to its
   existing `auto_resolve_result` envelopes).
 - Moving local base for non-rebase flows (only the sync/rebase entry point).
+- Draining the pending agent notice on **dispatched** turns (CI auto-fix,
+  `shipit session message`). Same scope boundary docs/218 drew: a human resuming
+  is the signal. Nothing is lost — the notice is not consumed, so the user's next
+  interactive turn still delivers it.
 
 ## Follow-up — merged PR cards
 
