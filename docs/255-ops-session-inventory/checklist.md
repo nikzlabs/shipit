@@ -1,0 +1,20 @@
+# Checklist — Ops session inventory lookup
+
+- [x] `requirements.md` written from the operator's report
+- [x] `plan.md` written (surface, metadata-only boundary, rejected alternatives)
+- [x] `SessionManager.findByBranch` / `findByPrNumber` / `findByIdPrefix`
+- [x] `services/host-sessions.ts` — filter composition + allowlist projection
+- [x] `api-routes-host-sessions.ts` — Ops-gated route under the caller's own id
+- [x] Golden route-table snapshot updated (exactly one new entry)
+- [x] `GET /agent-ops/session/host-sessions` worker relay
+- [x] `shipit session find` + `shipit session list --all` shim subcommands
+- [x] `shipit` HELP text
+- [x] `src/server/shipit-docs/ops-session.md` — fourth pillar documented
+- [x] `src/server/shipit-docs/sessions.md` — subcommand table entries
+- [x] Ops workspace recipe (`prompts/trace-a-pr.md`) + template README
+- [x] Unit tests: branch / PR (current + previous) / container-prefix / id / archived / no-match
+- [x] Route tests: ops → 200, non-ops → 403, unknown session → 404, other session's path → guard 403
+- [x] Shim tests alongside the existing `shipit.test.ts` cases
+- [x] `npm run test:dev`, `npm run lint:dev`, `npm run typecheck`
+- [x] Independent fresh-context review against `requirements.md` (Codex, via `shipit agent run`)
+- [x] Tracker issue filed and cross-linked (`roadmap#SHI-329`)

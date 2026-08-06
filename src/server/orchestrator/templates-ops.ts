@@ -105,6 +105,10 @@ production host that ShipIt runs on, **read-only**:
   \`exec\`) are **rejected** by the proxy.
 - **Journal (read-only):** \`journalctl\` over the host's \`/var/log/journal\`
   (or \`/run/log/journal\`), mounted read-only.
+- **Session inventory (read-only, metadata only):** \`shipit session find
+  --branch|--pr|--container|--id\` and \`shipit session list --all\` resolve a
+  branch, PR, or container name back to the session that produced it. Never
+  another session's conversation, prompts, or workspace contents.
 
 That is the entire privilege surface. No \`/etc\`, no \`/root\`, no SSH, no write
 access to Docker. See \`/shipit-docs/ops-session.md\` for the full contract.
@@ -113,6 +117,8 @@ access to Docker. See \`/shipit-docs/ops-session.md\` for the full contract.
 
 Paste one of these into chat instead of reconstructing the commands from memory:
 
+- [\`prompts/trace-a-pr.md\`](prompts/trace-a-pr.md) — take a PR, branch, or
+  container name back to the session that produced it.
 - [\`prompts/investigate-loop.md\`](prompts/investigate-loop.md) — find a
   container stuck in a SIGTERM/recreate loop (\`LOOP DETECTED\`).
 - [\`prompts/diagnose-stuck-session.md\`](prompts/diagnose-stuck-session.md) —
@@ -290,6 +296,51 @@ host data and C was actually rejected.
   not a functional break.
 `;
 
+const PROMPT_TRACE_A_PR = `# Trace a PR / branch / container back to its session
+
+I have a PR, a branch name, or a container name and I want to know which ShipIt
+session produced it. Answer it from the orchestrator's own records — do NOT
+correlate journal timestamps against container names and guess.
+
+## 1. Ask directly (docs/255)
+\`\`\`
+shipit session find --pr 1744                            # a PR number, '#1744', or the PR URL
+shipit session find --branch shipit/kmwodw               # the PR's head branch
+shipit session find --container agent-83292266-744       # a name from 'docker ps' / the journal
+shipit session find --id 83292266                        # a truncated id from a log line
+\`\`\`
+\`--pr\` matches the session's current PR *and* an earlier one it shipped from the
+same branch, so a branch that carried two PRs resolves from either number. Add
+\`--include-archived\` when the session is already finished — the common case for
+a post-hoc triage question — and \`--json\` if you want to pipe the answer.
+
+If nothing matches, retry once with \`--include-archived\`, then say so plainly.
+An empty result is a real answer; it means no session on this host owns that
+branch/PR (a PR opened outside ShipIt, or from a host that was since rebuilt).
+
+## 2. Widen only if needed
+\`\`\`
+shipit session list --all --include-archived              # the whole host inventory
+\`\`\`
+
+## 3. Take the answer back to the host
+The record includes the session's container name, so you can go straight on:
+\`\`\`
+docker ps -a --filter "name=<containerName>" --format 'table {{.Names}}\\t{{.Status}}'
+docker logs --tail 200 <containerName>
+journalctl -D /var/log/journal --since "24 hours ago" --no-pager | grep <session-id>
+\`\`\`
+
+## What you will NOT get
+Inventory metadata only: id, title, kind, branch, repo, parent session,
+agent/model, timestamps, container name, and the PR number/url/state. Not the
+session's conversation, prompts, or workspace contents. If the question actually
+needs the chat, say so and let the operator open the session in the UI.
+
+Report: the session id and title, its branch and repo, who spawned it, its PR(s)
+and their state, and whether it is still live or archived.
+`;
+
 const PROMPT_REMEDIATE_SHIPIT_BUG = `# Remediate a ShipIt bug from Ops
 
 The current incident looks like it's caused by a bug in ShipIt itself (a
@@ -378,6 +429,7 @@ export const OPS_TEMPLATE: ProjectTemplate = {
     "README.md": README_MD,
     "shipit.yaml": SHIPIT_YAML,
     "docker-compose.yml": DOCKER_COMPOSE_YML,
+    "prompts/trace-a-pr.md": PROMPT_TRACE_A_PR,
     "prompts/investigate-loop.md": PROMPT_INVESTIGATE_LOOP,
     "prompts/diagnose-stuck-session.md": PROMPT_DIAGNOSE_STUCK_SESSION,
     "prompts/daily-health.md": PROMPT_DAILY_HEALTH,

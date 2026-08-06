@@ -63,6 +63,34 @@ dropped unless the session was created as an ops session.
   checkout HEAD — carry that distinction into any fix you propose. For a
   regression, `log`/`blame`/`show` are the fastest way to connect a symptom to
   the change that introduced it.
+- **Read-only session inventory.** The orchestrator knows which session owns
+  every branch, PR, and container on this host. Ask it instead of correlating
+  journal timestamps against container names:
+  ```bash
+  shipit session find --branch shipit/kmwodw            # branch → the session
+  shipit session find --pr 1744                          # PR number → the session
+  shipit session find --container agent-83292266-744     # container → the session
+  shipit session find --id 83292266                      # a truncated id from a log line
+  shipit session list --all                              # the whole host inventory
+  ```
+  `--container` takes a name exactly as `docker ps` or the journal prints it —
+  the session container (`agent-<id-slice>`) or one of its Compose siblings
+  (`shipit-<id-slice>-web-1`). `--pr` matches the session's *current* PR and any
+  earlier one it shipped from the same branch, so a branch that carried #1741
+  and then #1744 resolves from either number. Archived/evicted sessions are
+  excluded by default; add `--include-archived` when the triage subject is
+  already finished. Every subcommand takes `--json`.
+
+  This is **metadata only**: id, title, kind, branch, repo, parent session,
+  agent/model, timestamps, container name, and the PR number/url/state. It does
+  **not** return another session's conversation, prompts, queued messages,
+  assistant output, secrets, env, or workspace contents. You can see *that* a
+  session exists and *what it owns* — never what was said inside it. If you need
+  a session's chat, ask the operator to open it in the UI.
+
+  This replaces the old dead end where the only way from a PR to a session was
+  guessing between candidate UUIDs by timestamp. Reach for it first.
+
 - **Spawn a ShipIt fix session.** Once you have a root-cause hypothesis and the
   suspect files, delegate the fix to a normal repo-backed session branched from
   the exact commit you inspected:
@@ -111,6 +139,12 @@ dropped unless the session was created as an ops session.
 - **No other host paths.** No `/etc`, `/root`, `/home`, `/proc`, `/sys`. No SSH.
 - **The real `/var/run/docker.sock` is not mounted here** — only the proxy holds
   it. You reach Docker over TCP, never the socket.
+- **No reading another session's conversation.** `shipit session find` /
+  `list --all` return inventory metadata only. There is no subcommand that
+  returns another session's chat history, prompts, queued messages, assistant
+  output, secrets, or workspace files, and none will be added — that boundary is
+  the reason the inventory surface exists as its own narrow route rather than as
+  general access to the sessions API.
 - **No writes to ShipIt source.** `shipit source` is read-only — there is no
   `edit`, `commit`, `push`, `checkout`, or `git` subcommand. Change ShipIt only
   through a spawned `--shipit-source` fix session, which goes through the normal
@@ -118,6 +152,8 @@ dropped unless the session was created as an ops session.
 
 ## Where to look first
 
+- `prompts/trace-a-pr.md` — take a PR, branch, or container name back to the
+  session that produced it.
 - `prompts/investigate-loop.md` — a container stuck in a SIGTERM/recreate loop.
 - `prompts/diagnose-stuck-session.md` — one misbehaving session container.
 - `prompts/daily-health.md` — a quick host-health snapshot.

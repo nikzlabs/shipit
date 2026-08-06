@@ -922,6 +922,70 @@ export class SessionManager {
   }
 
   /**
+   * docs/255 — every session (warm/archived included) on the given branch.
+   *
+   * Ops-inventory lookup: a branch name is what an operator has in hand from a
+   * PR's head ref. Unfiltered by liveness on purpose — the service layer decides
+   * what to hide, so a triage question about a finished session still resolves.
+   */
+  findByBranch(branch: string): SessionInfo[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM sessions WHERE branch = ? ORDER BY last_used_at DESC, rowid DESC",
+    ).all(branch) as SessionRow[];
+    return rows.map((r) => this.fromRow(r));
+  }
+
+  /**
+   * docs/255 — every session whose id starts with `prefix`.
+   *
+   * Backs both the `--id` filter (a truncated UUID pasted from a log line) and
+   * the `--container` filter, since both host-visible container-name shapes
+   * (`agent-<slice>`, `shipit-<slice>-<service>-N`) embed `id.slice(0, 12)`.
+   *
+   * `%`, `_` and `\` in the prefix are escaped: a name lifted verbatim from
+   * `docker volume ls` (`shipit-<slice>_node_modules`) contains `_`, which LIKE
+   * would otherwise read as a single-character wildcard.
+   */
+  findByIdPrefix(prefix: string): SessionInfo[] {
+    if (!prefix) return [];
+    const escaped = prefix.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+    const rows = this.db.prepare(
+      "SELECT * FROM sessions WHERE id LIKE ? ESCAPE '\\' ORDER BY last_used_at DESC, rowid DESC",
+    ).all(`${escaped}%`) as SessionRow[];
+    return rows.map((r) => this.fromRow(r));
+  }
+
+  /**
+   * docs/255 — every session whose persisted PR snapshot names `prNumber`.
+   *
+   * Matches the CURRENT snapshot (`pr_status.prNumber`) and the retained
+   * breadcrumb of a previously-merged PR (`previous_merged_pr.number`, docs/202)
+   * so a branch that shipped more than one PR resolves from any of its numbers —
+   * which is exactly the case that dead-ended the 2026-08-06 investigation
+   * (`shipit/kmwodw` carried #1741 and then #1744).
+   *
+   * `json_extract` keeps this a single scan rather than loading and parsing
+   * every row; SQLite's JSON1 extension is compiled into the bundled
+   * better-sqlite3 build. The `json_valid` CASE wrappers are load-bearing:
+   * `json_extract` raises "malformed JSON" on a corrupt column value, which
+   * would fail the WHOLE query — and every other reader of these two columns
+   * already tolerates corrupt JSON by returning null (`getPrStatus`, `fromRow`).
+   * A bare `json_valid(x) AND json_extract(x, …)` is not enough, because the
+   * planner is free to reorder AND operands; the CASE forces the guard first.
+   */
+  findByPrNumber(prNumber: number): SessionInfo[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM sessions
+         WHERE (CASE WHEN json_valid(pr_status)
+                     THEN json_extract(pr_status, '$.prNumber') END) = ?
+            OR (CASE WHEN json_valid(previous_merged_pr)
+                     THEN json_extract(previous_merged_pr, '$.number') END) = ?
+         ORDER BY last_used_at DESC, rowid DESC`,
+    ).all(prNumber, prNumber) as SessionRow[];
+    return rows.map((r) => this.fromRow(r));
+  }
+
+  /**
    * Persist the PR status snapshot for a session. Stored as JSON so archived
    * sessions can keep their PR badge / number / URL across server restarts.
    * Pass `null` to clear the snapshot (e.g., on unarchive when the session
