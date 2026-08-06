@@ -15,7 +15,7 @@
  *       - kind: github
  *         repo: owner/planning
  *         name: planning
- *         title: Planning   # optional tab label; defaults to `name`
+ *         label: Planning   # optional Issues-tab label; defaults to `name`
  *       - kind: linear
  *         team: SHI
  *         name: roadmap
@@ -318,8 +318,8 @@ export function parseShipitConfig(doc: unknown): ShipitConfig {
 }
 
 const KNOWN_ISSUES_KEYS = new Set(["trackers"]);
-const KNOWN_GITHUB_TRACKER_KEYS = new Set(["kind", "name", "title", "repo"]);
-const KNOWN_LINEAR_TRACKER_KEYS = new Set(["kind", "name", "title", "team"]);
+const KNOWN_GITHUB_TRACKER_KEYS = new Set(["kind", "name", "label", "repo"]);
+const KNOWN_LINEAR_TRACKER_KEYS = new Set(["kind", "name", "label", "team"]);
 
 /**
  * A tracker `name` (docs/248 req 2). The same character set the name form of a
@@ -337,7 +337,7 @@ const TRACKER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
  *     - kind: github           # which backend backs this tracker
  *       repo: owner/planning   # GitHub Issues: `owner/name`
  *       name: planning         # how everything else addresses it
- *       title: Planning        # optional Issues-tab label (defaults to `name`)
+ *       label: Planning        # optional Issues-tab label (defaults to `name`)
  *     - kind: linear
  *       team: SHI              # Linear binds a tracker to one team
  *       name: roadmap
@@ -462,12 +462,12 @@ function parseDeclaredTracker(entry: unknown, index: number, warnings: string[])
     );
   }
 
-  // req 9a — an optional display `title` for the Issues tab. Unlike `name` it is
-  // never an address, so it takes no character-set constraint; a non-string or
-  // blank one warns and falls back to the name rather than dropping the whole
-  // declaration, since a cosmetic field should not cost a repository its tracker.
-  const title = parseTrackerTitle(obj.title, index, warnings);
-  const titleField = title ? { title } : {};
+  // req 9a — an optional `label` for the Issues tab. Unlike `name` it is never an
+  // address, so it takes no character-set constraint; a non-string or blank one
+  // warns and falls back to the name rather than dropping the whole declaration,
+  // since a cosmetic field should not cost a repository its tracker.
+  const label = parseTrackerLabel(obj.label, index, warnings);
+  const labelField = label ? { label } : {};
 
   if (kind === "github") {
     const repoSlug = obj.repo;
@@ -478,7 +478,7 @@ function parseDeclaredTracker(entry: unknown, index: number, warnings: string[])
     if (!ref) {
       return drop(`\`repo: ${repoSlug}\` must be an \`owner/name\` slug`);
     }
-    return { kind: "github", name, ...titleField, owner: ref.owner, repo: ref.repo };
+    return { kind: "github", name, ...labelField, owner: ref.owner, repo: ref.repo };
   }
 
   // req 5 — a Linear declaration states the team's key, which is also the prefix
@@ -492,19 +492,20 @@ function parseDeclaredTracker(entry: unknown, index: number, warnings: string[])
   if (!team) {
     return drop(`\`team: ${rawTeam}\` must be a Linear team key like \`SHI\``);
   }
-  return { kind: "linear", name, ...titleField, team };
+  return { kind: "linear", name, ...labelField, team };
 }
 
 /**
- * Parse an entry's optional `title` (req 9a). Returns undefined — meaning "fall
- * back to `name`" — for an absent, blank, or non-string value, warning on the
- * last two. Trimmed only; the tab is free-form text, so no shape is enforced.
+ * Parse an entry's optional `label` (req 9a) — the Issues tab's display text,
+ * not an issue label. Returns undefined — meaning "fall back to `name`" — for an
+ * absent, blank, or non-string value, warning on the last two. Trimmed only; the
+ * tab is free-form text, so no shape is enforced.
  */
-function parseTrackerTitle(raw: unknown, index: number, warnings: string[]): string | undefined {
+function parseTrackerLabel(raw: unknown, index: number, warnings: string[]): string | undefined {
   if (raw === undefined || raw === null) return undefined;
   if (typeof raw !== "string" || !raw.trim()) {
     warnings.push(
-      `Ignoring \`issues.trackers[${index}].title\`: it must be a non-empty string; using the tracker \`name\` instead.`,
+      `Ignoring \`issues.trackers[${index}].label\`: it must be a non-empty string; using the tracker \`name\` instead.`,
     );
     return undefined;
   }

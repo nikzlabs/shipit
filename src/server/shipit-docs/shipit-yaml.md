@@ -25,7 +25,7 @@ issues:
     - kind: github
       repo: owner/planning
       name: planning
-      title: Planning
+      label: Planning
     - kind: linear
       team: SHI
       name: roadmap
@@ -242,7 +242,7 @@ issues:
     - kind: github           # which backend backs this tracker
       repo: owner/planning   # GitHub Issues: `owner/name`
       name: planning         # how references and operations address it
-      title: Planning        # optional label for the Issues tab
+      label: Planning        # optional label for the Issues tab
     - kind: linear
       team: SHI              # Linear binds a tracker to one team
       name: roadmap
@@ -252,7 +252,7 @@ issues:
 |-------|------|-----------|-------------|
 | `kind` | string | required | Which backend: `github` or `linear`. |
 | `name` | string | required | How every reference and operation addresses this tracker. Unique within the repository. Letters, digits, `.`, `_`, `-` — it has to be writable as `name#42`. |
-| `title` | string | optional | What the Issues tab shows for this tracker. Free-form text; defaults to `name`. Purely cosmetic — references still use `name`. A blank or non-string `title` warns and falls back to `name`. |
+| `label` | string | optional | What the Issues tab shows for this tracker — its display text, *not* an issue label. Free-form; defaults to `name`. Purely cosmetic: references still use `name`. A blank or non-string `label` warns and falls back to `name`. |
 
 Each *destination* may also be declared only once: two entries pointing at the
 same repository or the same Linear team are not an alias, and the second is

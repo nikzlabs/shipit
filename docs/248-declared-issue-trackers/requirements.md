@@ -50,7 +50,7 @@ off Linear — is a separate feature
 9. Each declaration appears as its own tab in the Issues UI, in declaration order.
    A repository may declare more than one.
 9a. A tab shows the tracker's name, and nothing else — not the repository slug or
-   team key behind it. A declaration may carry an optional `title` for the tab to
+   team key behind it. A declaration may carry an optional `label` for the tab to
    show instead of its `name`, so an address like `planning` can read as
    "Planning" without becoming unaddressable.
 
@@ -222,11 +222,10 @@ remains in git.
   both the name it was written with (so req 16's re-point re-targets it) and the
   resolved destination (so an undeclared target stays undoable).
 - 2026-08-06 — The user reported the Issues tab was too long (it rendered
-  `planning · nikzlabs/shipit-planning`) and specified the fix: show the `title`
-  from `shipit.yaml`, falling back to the `name` when there is none. Recorded as
-  requirement 9a, which adds the optional `title` field. Keeping the binding
-  visible in the tab was rejected by that instruction; it survives as the tab's
-  hover text, which costs no width.
+  `planning · nikzlabs/shipit-planning`) and specified the fix: show the declared
+  tab text from `shipit.yaml`, falling back to the `name` when there is none.
+  Recorded as requirement 9a. Keeping the binding visible in the tab was rejected
+  by that instruction; it survives as the tab's hover text, which costs no width.
 
   **This restores a requirement, rather than adding one.** The declaration
   carried an optional `label` ("optional; defaults to the repository name") in
@@ -235,10 +234,17 @@ remains in git.
   (`5fbd3047`). The rework that introduced the required `name` (`06f5f757`)
   deleted the field with no receipt and no requirement saying to — `name` simply
   became both the address and the tab label, and the tab grew the `· <binding>`
-  suffix to stay legible. The field is back under the name `title`, because
-  `label` reads as an *issue* label everywhere else in this codebase
-  (`--label`, `IssueLabel`, the label filter). The adapters' `label` config,
-  which the deletion left with nothing feeding it, is what `title` now feeds.
+  suffix to stay legible.
+
+- 2026-08-06 — The field was first restored as `title`, on the reasoning that
+  `label` reads as an *issue* label everywhere else in this codebase (`--label`,
+  `IssueLabel`, the label filter). Shown that history, the user chose to keep the
+  **original `label` spelling** instead. One name for one field beats a clearer
+  name plus an alias to carry: a `shipit.yaml` written during the v0.3.1 window
+  keeps parsing, the adapters' surviving `label` config lines up with the
+  declaration that feeds it, and nothing has to explain why the same field has two
+  names. The issue-label collision is confined to a doc comment on
+  `declaredTrackerLabel()`.
 - 2026-08-05 — Asked how deployments losing their Linear tab should be handled, the
   user chose a **clean break**: no migration warning and no auto-generated
   declaration. Writing to the user's `shipit.yaml` unprompted was rejected as

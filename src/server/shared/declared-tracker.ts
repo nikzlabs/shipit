@@ -25,8 +25,8 @@ export interface DeclaredGitHubTracker {
   kind: "github";
   /** How every reference and operation addresses this tracker (req 2). */
   name: string;
-  /** Optional display title for the Issues tab (req 9a); defaults to `name`. */
-  title?: string;
+  /** Optional Issues-tab label (req 9a); defaults to `name`. */
+  label?: string;
   owner: string;
   repo: string;
 }
@@ -42,8 +42,8 @@ export interface DeclaredLinearTracker {
   kind: "linear";
   /** How every reference and operation addresses this tracker (req 2). */
   name: string;
-  /** Optional display title for the Issues tab (req 9a); defaults to `name`. */
-  title?: string;
+  /** Optional Issues-tab label (req 9a); defaults to `name`. */
+  label?: string;
   /** Linear team key, normalized to upper case (e.g. `SHI`). */
   team: string;
 }
@@ -62,18 +62,26 @@ export function declaredTrackerId(decl: DeclaredTracker): TrackerId {
 }
 
 /**
- * What the Issues tab shows for a declaration (req 9a): the declared `title`
+ * What the Issues tab shows for a declaration (req 9a): the declared `label`
  * when there is one, else the `name`.
  *
  * The two are deliberately separate fields. `name` is an *address* — it has to be
  * writable as `planning#42`, so it is constrained to a reference-safe character
  * set and is usually a terse lower-case slug. A tab label has no such constraint
- * and wants to read as a human heading ("Planning"). Before `title` existed the
- * tab rendered `name · <backend key>`, which spent its width on a
+ * and wants to read as a human heading ("Planning"). While the field was missing
+ * the tab rendered `name · <backend key>`, which spent its width on a
  * `nikzlabs/shipit-planning` slug the reader already knows.
+ *
+ * `label` is the field's original spelling: it shipped in v0.3.1 (`5fbd3047`)
+ * and the rework that introduced `name` (`06f5f757`) dropped it without a
+ * requirement asking for the removal. Restoring the same name — rather than
+ * coining a new one — is what keeps a `shipit.yaml` written in that window valid
+ * with no alias to carry. It does read close to an *issue* label (`--label`,
+ * `IssueLabel`), so a tracker's is always this one function's business, never a
+ * bare `label` variable at a call site.
  */
 export function declaredTrackerLabel(decl: DeclaredTracker): string {
-  return decl.title ?? decl.name;
+  return decl.label ?? decl.name;
 }
 
 /**

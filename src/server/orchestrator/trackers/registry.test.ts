@@ -47,13 +47,13 @@ describe("buildTrackerRegistry — the registry is the declarations (req 1)", ()
     expect(registry.list().map((t) => t.name)).toEqual([undefined, "planning", "roadmap"]);
   });
 
-  // req 9a — the declared `title` is what the tab shows; the `name` stays the
-  // address, so a titled tracker is still referenced as `planning#42`.
-  it("labels a tab with the declared title, falling back to the name", () => {
+  // req 9a — the declared `label` is what the tab shows; the `name` stays the
+  // address, so a labelled tracker is still referenced as `planning#42`.
+  it("labels a tab with the declared label, falling back to the name", () => {
     const registry = build({
       repo: { owner: "acme", repo: "app" },
       declared: [
-        { ...gh("acme/planning", "planning"), title: "Planning" },
+        { ...gh("acme/planning", "planning"), label: "Planning" },
         linear("SHI", "roadmap"),
       ],
       linearToken: "lin_api_x",

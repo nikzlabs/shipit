@@ -218,7 +218,7 @@ export function buildTrackerRegistry(
 
   // Declarations, in declaration order (req 9 — that order drives tab order).
   for (const decl of declared) {
-    // The tab shows the declared `title`, else the `name` (req 9a) — the address
+    // The tab shows the declared `label`, else the `name` (req 9a) — the address
     // and the heading are different fields, so a terse `planning` can render as
     // "Planning" without becoming unaddressable.
     const label = declaredTrackerLabel(decl);

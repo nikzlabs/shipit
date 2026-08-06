@@ -32,9 +32,9 @@ issues:
     - kind: github
       repo: nikzlabs/shipit-planning
       name: planning
-      # `name` is the address (`planning#42`); `title` is what the Issues tab
+      # `name` is the address (`planning#42`); `label` is what the Issues tab
       # shows. Without it the tab would render the lower-case slug.
-      title: Planning
+      label: Planning
 # Release auto-publish (docs/214): ShipIt cuts releases by merging a version-bump
 # PR into the `stable` maintenance branch. On merge, .github/workflows/release.yml
 # derives the tag `v<package.json version>`, gates on a green build, tags the
