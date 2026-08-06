@@ -2,7 +2,7 @@ import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
-import { resetRunnerTurnState } from "../session-runner.js";
+import { resetRunnerTurnState, resetSubAgentSpawnBudget } from "../session-runner.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
@@ -1311,6 +1311,15 @@ export function wireAgentListeners(
       if (runner) {
         runner.running = false;
         runner.clearTurnEventBuffer();
+        // docs/144 — the CLI turn is over, so the next one starts with a full
+        // sub-agent spawn budget. This is the boundary that covers turns the
+        // orchestrator never starts: a self-woken turn and a steered
+        // continuation both run through these same listeners and never reach
+        // `resetRunnerTurnState`, so without this the budget accrued across
+        // them until the cap latched permanently. Only the budget is reset here
+        // — `resetRunnerTurnState` would clear the accumulator, which must not
+        // happen off a turn-start boundary.
+        resetSubAgentSpawnBudget(runner);
       }
       if (turnSessionId) {
         emitToViewers({
@@ -1390,6 +1399,10 @@ export function wireAgentListeners(
         runner.clearBackgroundTasks();
       }
       runner.running = false;
+      // docs/144 — same terminal boundary as the `agent_result` branch: a turn
+      // that died still ended, and the next one must not inherit its spent
+      // spawn budget.
+      resetSubAgentSpawnBudget(runner);
       // docs/182 — a process-level error is a terminal turn error: record it on
       // the runner and persist it so `shipit session wait` reports `error`
       // (exit 3) even after an orchestrator restart loses the in-memory flag.

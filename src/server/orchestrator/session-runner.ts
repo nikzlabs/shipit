@@ -800,10 +800,45 @@ export function resetRunnerTurnState(runner: SessionRunnerInterface): void {
   // docs/244 / SHI-297 — nothing of the new turn is on disk yet, so no body of
   // it may leave the reconnect snapshot until a boundary writes it.
   clearCommittedBodyIds(runner.committedBodyIds);
-  // docs/144 — reset the per-turn sub-agent spawn budget at primary-turn start.
-  runner.subAgentSpawnsThisTurn = 0;
+  // docs/144 — a turn the orchestrator starts is a turn boundary for the spawn
+  // budget too. Not the only one: see `resetSubAgentSpawnBudget`.
+  resetSubAgentSpawnBudget(runner);
   // docs/163 — clear per-turn voice-note state (authored flag + attention cap).
   resetVoiceNoteTurnState(runner);
+}
+
+/**
+ * docs/144 — reset the per-turn sub-agent spawn budget (`shipit agent run`).
+ *
+ * Deliberately NOT folded into `resetRunnerTurnState`, because the two have
+ * different safe-reset points and conflating them cost the budget its "per
+ * turn" meaning:
+ *
+ *  - `resetRunnerTurnState` clears `chatMessageGroups`, so it may only run when
+ *    no turn is in flight. `agent_self_wake` therefore resets **only** when
+ *    `!runner.running` (a mid-turn `task_notification` that reset there would
+ *    erase the running turn's opening from chat history for good — see
+ *    `integration_tests/self-wake-midturn.test.ts`).
+ *  - The budget is not transcript state. Resetting it is harmless at any
+ *    boundary, and it MUST be reset at every real one.
+ *
+ * With the two coupled, a session whose turns arrive as self-wakes or steered
+ * continuations — the ordinary shape once an agent backgrounds a consult, which
+ * is exactly what ShipIt's own guidance tells it to do — went through many CLI
+ * turns without ever passing `resetRunnerTurnState`. Every spawn since the last
+ * orchestrator-started turn drew on one budget of 3, so the cap latched and
+ * every later `shipit agent run` was refused with "cap reached for this turn".
+ *
+ * So the budget also resets where the CLI's turn actually **ends**
+ * (`agent-listeners.ts`, both terminal branches: `agent_result` and process
+ * `error`). That restores per-CLI-turn semantics without weakening the bound:
+ * an agent cannot fabricate a terminal event, so topping the budget up still
+ * costs it an entire turn — which is what "3 per turn" always meant.
+ */
+export function resetSubAgentSpawnBudget(
+  runner: Pick<SessionRunnerInterface, "subAgentSpawnsThisTurn">,
+): void {
+  runner.subAgentSpawnsThisTurn = 0;
 }
 
 /**
@@ -1031,7 +1066,10 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
 
   /**
    * docs/144 — count of sub-agent spawns reaching `services/sub-agent.ts` this
-   * primary turn. Reset to 0 at turn start (`resetRunnerTurnState`). The
+   * primary turn. Reset to 0 at every turn boundary via
+   * {@link resetSubAgentSpawnBudget} — turn start for an orchestrator-started
+   * turn, and turn END for every CLI turn, which is what covers the turns the
+   * orchestrator never started (self-wakes, steered continuations). The
    * forgery-resistant fan-out bound: keyed by the worker-injected SESSION_ID, so
    * every spawn in the turn — including any a sub-agent forges past the
    * best-effort depth guard — decrements the same budget (cap = 3).

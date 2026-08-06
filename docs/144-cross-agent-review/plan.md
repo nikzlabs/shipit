@@ -411,7 +411,7 @@ the pinned agent's already-present credentials and provisions nothing).
 
 - **Per-turn cap (the real fan-out bound).** The runner tracks
   `subAgentSpawnsThisTurn`, incremented on each spawn reaching
-  `services/sub-agent.ts`, reset at primary-turn start. Modest hard cap in v0
+  `services/sub-agent.ts`, refilled at every turn boundary. Modest hard cap in v0
   (**3 per turn**) — enough for "review with both other models" or a couple
   of delegations, low enough to bound a misbehaving-primary loop. A call past
   the cap returns an error without spawning. This is the **forgery-resistant**
@@ -420,6 +420,29 @@ the pinned agent's already-present credentials and provisions nothing).
   sub-agent forges past the best-effort depth guard — decrements the same
   budget. Spam across turns is not a separate concern: bounded by normal turn
   rate and the user's intent.
+
+  **Where the budget refills matters as much as its size.** It was originally
+  reset only inside `resetRunnerTurnState`, i.e. only for turns the orchestrator
+  starts. But plenty of real turns are not orchestrator-started: a **self-woken**
+  turn (docs/235 — the CLI starting a turn when a backgrounded job finishes, the
+  ordinary shape once an agent backgrounds a consult) and a **steered**
+  continuation both run through the previous turn's listeners. Neither reaches
+  `resetRunnerTurnState`, and `agent_self_wake` cannot simply call it — resetting
+  mid-turn wipes the running turn's chat accumulator (docs/237). So a long
+  session accrued spawns against a single budget of 3 and then refused every
+  later `shipit agent run`, permanently.
+
+  The budget is therefore reset by its own `resetSubAgentSpawnBudget`
+  (`session-runner.ts`), called from `resetRunnerTurnState` **and** from both
+  terminal branches in `agent-listeners.ts` (`agent_result`, process `error`) —
+  i.e. wherever a CLI turn ends. Turn END rather than an unconditional reset on
+  `agent_self_wake` is the deliberate choice: a task notification is agent-
+  triggerable (any `Bash(run_in_background)` job finishing emits one), so
+  refilling there would let an agent top itself up *inside* one turn and defeat
+  the bound entirely, whereas a terminal event is emitted by the CLI and costs
+  the agent an actual turn to obtain. Guard: `turn-sub-agent-budget.test.ts`.
+  Known and accepted: spawns still **in flight** when a turn ends do not hold
+  budget, so a backgrounded consult can overlap the next turn's three.
 - **Cost / wall-clock cap.** Wall-clock cap on each subprocess (30 min, raised
   from the initial 5 min because real consults — audits, large-diff reviews,
   generation — routinely overran it; override via `SHIPIT_SUB_AGENT_TIMEOUT_MS`);
