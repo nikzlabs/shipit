@@ -334,7 +334,7 @@ const OPTS = [
     cost: "Scroll a long group and the hue leaves the viewport with the band, so mid-scroll there is nothing on screen saying which repo you're in — the exact gap the full-height edge closes." },
   { id: "e-full", n: "5b", name: "Edge spans the whole group", pill: ["good", "the ask"],
     why: "<b>One 3px line from the top of the band to the bottom of the last row.</b> Everything belonging to the repo sits to its right — sessions, <code>New session</code>, both sub-section labels. The line never leaves the viewport while any part of the group is on screen, so the hue is a persistent answer to 'where am I'.",
-    cost: "The line is flush with the rail's left edge and butts against the scroll gutter; and 3px × every group is the densest ink of the set — check the Dense toggle before committing." },
+    cost: "3px × every group is the densest ink of the set — check the Dense toggle before committing. The line sits flush at x=0, which is a look to decide on deliberately rather than a conflict: the scrollbar is on the <em>right</em>, so nothing collides with it." },
   { id: "e-inset", n: "5c", name: "Inset edge, rounded caps", pill: null,
     why: "Same span, but the line is pulled 4px off the rail edge and given rounded ends, so each group reads as a <b>discrete stroke</b> rather than a rule that happens to stop.",
     cost: "Costs 9px of row width, and the rounded caps make the line feel decorative — it stops reading as structure and starts reading as a marker." },
