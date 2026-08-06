@@ -22,6 +22,7 @@ reachability probe (`planning#1`, closed) and the labels that probe minted.
 - [ ] **Pass A** — create all 322 issues in key order with titles, labels, and bodies carrying their `SHI-N` origin and original creation date (req 9). Cross-references stay unrewritten. Append each assigned number to the `SHI-N → planning#M` mapping as it comes back, so the mapping is complete and observed when the pass ends.
 - [ ] **Pass B** — replay the 1,344 comments with their original dates, and edit the 322 bodies to rewrite their 1,146 internal `SHI-N` cross-references and 120 `linear.app` URLs. Comment bodies cannot be edited afterwards, so a comment's cross-references must be correct when it is posted. Tracker writes only — no diff, no PR.
 - [ ] Verify a full round trip in the UI: the tab, an issue with comments, a write, and Undo.
+- [ ] Teach `remarkLinkifyIssues` the name form ([SHI-323](https://linear.app/shipit-ai/issue/SHI-323)) before the sweep — `planning#57` matches nothing today, so inline badges in chat prose would break the moment references are rewritten.
 - [ ] Rewrite every reference in this repository from the mapping, in one PR, when nothing else is in flight (req 10): 2,623 mentions across 667 files, 186 doc `issue:` pointers, 221 files with `linear.app` URLs. Use `grep -a` — one source file is flagged binary and would otherwise be skipped. The migration's only diff.
 - [ ] Retire Linear for ShipIt's own planning: drop the `roadmap` declaration and rewrite `CLAUDE.md`'s tracker-sync section (req 11).
 - [ ] Delete `planning#1` and the pilot issue.

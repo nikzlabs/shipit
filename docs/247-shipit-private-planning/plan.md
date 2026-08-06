@@ -261,6 +261,25 @@ sweep of 2,600 mentions. Name support is a hard prerequisite for step 6, not an
 optimization: without it, step 6 hard-codes a repository slug into most files in
 the repository and the whole sweep has to be repeated on the first rename.
 
+## Inline badges stop working unless the linkifier learns the name form
+
+`remarkLinkifyIssues` (`src/client/utils/linkify-issues.ts`) is what turns an
+issue reference in chat prose into an in-app badge, and its matcher — a bare
+uppercase key, `[A-Z][A-Z0-9]*-\d+` — predates the name form. Today that shows up
+as a cosmetic split: `roadmap#SHI-319` badges only the `SHI-319` half and leaves
+`roadmap#` as plain text.
+
+After this migration it is not cosmetic. Every reference becomes `planning#57`,
+which has no uppercase prefix and no `-digits`, so it does not match at all and
+inline badges stop rendering entirely. The paths routed through `resolveIssueRef`
+are unaffected — doc frontmatter chips, PR-card chips, markdown hrefs — because
+prose is the one surface that never went through the resolver
+(`tracker-link.ts:47-49` deliberately handles hrefs only).
+
+Tracked as [SHI-323](https://linear.app/shipit-ai/issue/SHI-323). It is not a
+gate on the copy, but it should land before the reference rewrite, or the sweep
+will visibly degrade every inline mention in the chat transcript at once.
+
 ## After Linear is undeclared
 
 Undeclaring `roadmap` makes every historical `SHI-N` reference fail closed
