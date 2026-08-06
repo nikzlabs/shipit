@@ -7,6 +7,7 @@ import path from "node:path";
 import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { WorkflowRunSummary, WorkflowJobSummary, WorkflowSummary } from "../github-auth-actions.js";
+import type { PullRequestDetail, PrConversation } from "../github-auth-prs.js";
 import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
 import type { PrAutoMergeError } from "../../shared/types/github-types.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
@@ -1131,19 +1132,26 @@ export async function reopenPullRequest(
 }
 
 /**
+ * A PR as `gh pr view` returns it: always the PR's own details, plus the
+ * conversation when `comments` was requested — or `conversationError` when that
+ * second fetch failed (docs/255).
+ */
+export type PullRequestView =
+  & PullRequestDetail
+  & Partial<PrConversation>
+  & { conversationError?: string };
+
+/**
  * Read a single PR's details. When `number` is omitted, returns the open PR
- * for the current branch (or null when there is none).
+ * for the current branch (or null when there is none). With `comments: true`
+ * the PR's conversation (issue comments, reviews, inline review threads) is
+ * merged in — docs/255.
  */
 export async function viewPullRequest(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
-  options: { number?: number; remoteUrl?: string } = {},
-): Promise<{
-  url: string; number: number; base: string; head: string;
-  title: string; body: string;
-  state: "open" | "closed"; isDraft: boolean; merged: boolean;
-  additions: number; deletions: number;
-} | null> {
+  options: { number?: number; remoteUrl?: string; comments?: boolean } = {},
+): Promise<PullRequestView | null> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
   const remote = await resolveGitHubRemote(git, options.remoteUrl);
   if ("error" in remote) throw new ServiceError(400, remote.error);
@@ -1158,7 +1166,19 @@ export async function viewPullRequest(
     if (!pr) return null;
     prNumber = pr.number;
   }
-  return githubAuthManager.viewPullRequest(remote.owner, remote.repo, prNumber);
+  const pr = await githubAuthManager.viewPullRequest(remote.owner, remote.repo, prNumber);
+  if (!pr || options.comments !== true) return pr;
+
+  // docs/255 — the conversation is a second round-trip, so it is fetched only
+  // when the caller asked for it. A FAILED fetch must not read as "no
+  // comments": we return `conversationError` and no arrays at all, and the
+  // caller decides whether that is fatal (an explicit `--comments`/`--json
+  // comments` request) or a note (a plain view's summary line).
+  const conversation = await githubAuthManager.viewPullRequestConversation(
+    remote.owner, remote.repo, prNumber,
+  );
+  if (!conversation.ok) return { ...pr, conversationError: conversation.error };
+  return { ...pr, ...conversation.conversation };
 }
 
 /** List PRs for the session's repo. */

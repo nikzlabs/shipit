@@ -476,6 +476,21 @@ export class StubGitHubAuthManager extends EventEmitter {
     return this._viewPrResult;
   }
 
+  /**
+   * docs/255 — `gh pr view --comments`. Defaults to an empty-but-successful
+   * conversation; `setConversationResult` injects comments or a failed read.
+   */
+  private _conversationResult: { ok: true; conversation: unknown } | { ok: false; error: string } = {
+    ok: true,
+    conversation: { comments: [], reviews: [], reviewThreads: [], reviewDecision: null },
+  };
+  setConversationResult(result: typeof this._conversationResult) {
+    this._conversationResult = result;
+  }
+  async viewPullRequestConversation(_owner: string, _repo: string, _pullNumber: number) {
+    return this._conversationResult;
+  }
+
   /** Calls to `addLabelsToPullRequest`, in order. Inspect from tests. */
   public addLabelsCalls: { owner: string; repo: string; pullNumber: number; labels: string[] }[] = [];
   private _addLabelsResult: { success: boolean; message?: string } | null = null;

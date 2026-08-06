@@ -143,11 +143,16 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("GET", `/pr/status${prTargetQs(request.query)}`, undefined, reply),
   );
 
-  // GET /agent-ops/pr/view?number=N — view a PR's details
-  app.get<{ Querystring: { number?: string; cwd?: string; repo?: string } }>(
+  // GET /agent-ops/pr/view?number=N[&comments=true] — view a PR's details,
+  // optionally with its conversation (docs/255). `comments` is forwarded so the
+  // orchestrator only pays for the second round-trip when the shim asked.
+  app.get<{ Querystring: { number?: string; cwd?: string; repo?: string; comments?: string } }>(
     "/agent-ops/pr/view",
     async (request, reply) => {
-      const qs = prTargetQs(request.query, request.query.number ? { number: request.query.number } : {});
+      const extra: Record<string, string> = {};
+      if (request.query.number) extra.number = request.query.number;
+      if (request.query.comments === "true") extra.comments = "true";
+      const qs = prTargetQs(request.query, extra);
       return relay("GET", `/pr/view${qs}`, undefined, reply);
     },
   );

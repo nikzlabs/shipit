@@ -1298,3 +1298,258 @@ describe("gh workflow view", () => {
     expect(out.stderr).toContain("Read the workflow file from the workspace");
   });
 });
+
+// ---------------------------------------------------------------------------
+// gh pr view — reading PR comments (docs/255)
+//
+// The motivating bug: a reviewer left detailed findings on a PR and the agent
+// could not read them through any supported path. `--json comments` returned
+// `{}` — and so did `--json totallyBogusField`, so an unsupported field was
+// indistinguishable from "this PR has no discussion". These cover both halves:
+// the reads now exist, and an unsupported field can never masquerade as absent
+// data again.
+// ---------------------------------------------------------------------------
+
+/** A PR payload carrying a conversation, as the broker returns it. */
+function prWithConversation(over: Record<string, unknown> = {}) {
+  return {
+    pr: {
+      title: "T", number: 42, head: "feat", base: "main",
+      url: "https://github.com/x/y/pull/42", body: "Body", state: "open", isDraft: false,
+      comments: [
+        { id: "c1", author: { login: "alice" }, body: "ship it", createdAt: "2026-08-01T00:00:00Z", url: "u1" },
+      ],
+      reviews: [
+        { id: "r1", author: { login: "bob" }, body: "two problems", state: "CHANGES_REQUESTED", submittedAt: "2026-08-02T00:00:00Z", url: "u2" },
+      ],
+      reviewThreads: [
+        {
+          id: "t1", isResolved: false, isOutdated: false, path: "src/foo.ts", line: 42,
+          diffHunk: "@@ -1 +1 @@\n+leak()",
+          comments: [{ id: "tc1", author: { login: "bob" }, body: "this leaks", createdAt: "", url: "" }],
+        },
+      ],
+      reviewDecision: "CHANGES_REQUESTED",
+      ...over,
+    },
+  };
+}
+
+describe("gh pr view --comments", () => {
+  it("renders conversation comments, reviews, and inline threads with file/line/diff", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "view", "42", "--comments"],
+      { "GET /agent-ops/pr/view": { status: 200, body: prWithConversation() } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("@alice");
+    expect(out.stdout).toContain("ship it");
+    expect(out.stdout).toContain("@bob CHANGES_REQUESTED");
+    expect(out.stdout).toContain("two problems");
+    expect(out.stdout).toContain("src/foo.ts:42 [unresolved]");
+    expect(out.stdout).toContain("+leak()");
+    expect(out.stdout).toContain("this leaks");
+    // The conversation costs an extra round-trip, so the shim must ask for it.
+    expect(out.calls[0].path).toContain("comments=true");
+  });
+
+  it("accepts the -c spelling", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "view", "42", "-c"],
+      { "GET /agent-ops/pr/view": { status: 200, body: prWithConversation() } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("this leaks");
+  });
+
+  it("says so explicitly when a PR has no discussion", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "view", "42", "--comments"],
+      {
+        "GET /agent-ops/pr/view": {
+          status: 200,
+          body: prWithConversation({ comments: [], reviews: [], reviewThreads: [] }),
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("No comments, reviews, or review threads.");
+  });
+
+  it("fails loudly when the conversation could not be read", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "view", "42", "--comments"],
+      {
+        "GET /agent-ops/pr/view": {
+          status: 200,
+          body: { pr: { title: "T", number: 42, conversationError: "Bad credentials" } },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("could not read this PR's conversation");
+  });
+});
+
+describe("gh pr view — plain output conversation summary", () => {
+  it("tells the agent how much discussion exists and how to read it", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "view", "42"],
+      { "GET /agent-ops/pr/view": { status: 200, body: prWithConversation() } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("1 comment · 1 review · 1 review thread (1 unresolved)");
+    expect(out.stdout).toContain("gh pr view 42 --comments");
+    expect(out.calls[0].path).toContain("comments=true");
+    // The body is still the PR's, not the discussion's.
+    expect(out.stdout).toContain("Body");
+  });
+
+  it("states the empty case rather than staying silent about it", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "view", "42"],
+      {
+        "GET /agent-ops/pr/view": {
+          status: 200,
+          body: prWithConversation({ comments: [], reviews: [], reviewThreads: [] }),
+        },
+      },
+    );
+    expect(out.stdout).toContain("No comments, reviews, or review threads.");
+  });
+
+  it("still prints the PR (exit 0) with a note when the conversation read failed", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "view", "42"],
+      {
+        "GET /agent-ops/pr/view": {
+          status: 200,
+          body: { pr: { title: "T", number: 42, url: "u", body: "B", state: "open", conversationError: "boom" } },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("T #42");
+    expect(out.stderr).toContain("comments could not be read");
+    // Never a count that would read as "no discussion".
+    expect(out.stdout).not.toContain("No comments");
+  });
+});
+
+describe("gh pr view --json conversation fields", () => {
+  it("returns comments, reviews, and reviewThreads", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "view", "42", "--json", "comments,reviews,reviewThreads"],
+      { "GET /agent-ops/pr/view": { status: 200, body: prWithConversation() } },
+    );
+    expect(out.exitCode).toBe(0);
+    const parsed = JSON.parse(out.stdout) as Record<string, { length: number }[]>;
+    expect(Object.keys(parsed).sort()).toEqual(["comments", "reviewThreads", "reviews"]);
+    expect(out.calls[0].path).toContain("comments=true");
+  });
+
+  it("supports -q over a conversation field", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "view", "42", "--json", "reviews", "-q", ".reviews[].state"],
+      { "GET /agent-ops/pr/view": { status: 200, body: prWithConversation() } },
+    );
+    expect(out.stdout).toBe("CHANGES_REQUESTED\n");
+  });
+
+  it("does NOT pay for the conversation on the merge-polling one-liner", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "view", "42", "--json", "state", "-q", ".state"],
+      { "GET /agent-ops/pr/view": { status: 200, body: prWithConversation() } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).not.toContain("comments=true");
+  });
+
+  it("fails rather than returning empty arrays when the conversation read failed", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "view", "42", "--json", "comments"],
+      {
+        "GET /agent-ops/pr/view": {
+          status: 200,
+          body: { pr: { title: "T", number: 42, conversationError: "Bad credentials" } },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(1);
+    expect(out.stdout).toBe("");
+  });
+});
+
+describe("gh --json field validation", () => {
+  it("rejects an unknown field by name instead of printing {}", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "view", "42", "--json", "totallyBogusField"],
+      { "GET /agent-ops/pr/view": { status: 200, body: prWithConversation() } },
+    );
+    expect(out.exitCode).toBe(2);
+    expect(out.stdout).toBe("");
+    expect(out.stderr).toContain('unknown --json field: "totallyBogusField"');
+    expect(out.stderr).toContain("Supported fields for gh pr view:");
+    expect(out.stderr).toContain("reviewThreads");
+    // Rejected before any network call — the same shape as real gh.
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("names every unknown field when several are wrong", async () => {
+    const { run } = makeRunner();
+    const out = await run(["pr", "view", "--json", "title,nope,alsoNope"]);
+    expect(out.stderr).toContain('"nope", "alsoNope"');
+  });
+
+  it("rejects an empty --json value", async () => {
+    const { run } = makeRunner();
+    const out = await run(["pr", "view", "--json", ""]);
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain("needs at least one comma-separated field");
+  });
+
+  it("accepts the real-gh field aliases", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "view", "42", "--json", "author,labels,createdAt,headRefName,baseRefName,mergedAt,updatedAt"],
+      { "GET /agent-ops/pr/view": { status: 200, body: prWithConversation({ author: { login: "alice" } }) } },
+    );
+    expect(out.exitCode).toBe(0);
+  });
+
+  it("validates fields on every --json subcommand, not just gh pr view", async () => {
+    const { run } = makeRunner();
+    for (const argv of [
+      ["pr", "list", "--json", "bogus"],
+      ["run", "list", "--json", "bogus"],
+      ["run", "view", "1", "--json", "bogus"],
+      ["workflow", "list", "--json", "bogus"],
+      ["workflow", "view", "CI", "--json", "bogus"],
+    ]) {
+      const out = await run(argv);
+      expect(out.exitCode, argv.join(" ")).toBe(2);
+      expect(out.stderr, argv.join(" ")).toContain('unknown --json field: "bogus"');
+      expect(out.calls, argv.join(" ")).toHaveLength(0);
+    }
+  });
+
+  it("still accepts the documented run/workflow fields", async () => {
+    const { run } = makeRunner();
+    const runs = { "GET /agent-ops/run/list": { status: 200, body: { runs: [{ conclusion: "success" }] } } };
+    const out = await run(["run", "list", "--json", "databaseId,status,conclusion,workflowName", "-q", ".[].conclusion"], runs);
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toBe("success\n");
+  });
+});

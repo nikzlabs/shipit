@@ -181,5 +181,67 @@ describe("PR status via HTTP", () => {
     expect(res.json()).toMatchObject({
       pr: { number: 7, state: "closed", merged: true },
     });
+
+    // docs/255 — the conversation is opt-in, so a view without `comments=true`
+    // carries no conversation fields at all.
+    expect(res.json().pr).not.toHaveProperty("comments");
+  });
+
+  it("pr/view?comments=true merges the PR's conversation", async () => {
+    await githubAuth.setToken("test-token");
+    const git = new GitManager(sessionDir);
+    await git.addRemote("origin", "https://github.com/test-user/test-repo.git");
+    githubAuth.setViewPrResult({
+      url: "https://github.com/test-user/test-repo/pull/9",
+      number: 9, base: "main", head: "shipit/feature", title: "T", body: "B",
+      state: "open", isDraft: false, merged: false, additions: 1, deletions: 0,
+    });
+    githubAuth.setConversationResult({
+      ok: true,
+      conversation: {
+        comments: [{ id: "c1", author: { login: "alice" }, body: "please fix", createdAt: "", url: "" }],
+        reviews: [],
+        reviewThreads: [{
+          id: "t1", isResolved: false, isOutdated: false, path: "src/foo.ts", line: 12,
+          diffHunk: "@@ -1 +1 @@", comments: [],
+        }],
+        reviewDecision: "CHANGES_REQUESTED",
+      },
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/pr/view?number=9&comments=true`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      pr: {
+        number: 9,
+        reviewDecision: "CHANGES_REQUESTED",
+        comments: [{ body: "please fix" }],
+        reviewThreads: [{ path: "src/foo.ts", line: 12 }],
+      },
+    });
+  });
+
+  it("pr/view?comments=true reports a failed conversation read, not an empty one", async () => {
+    await githubAuth.setToken("test-token");
+    const git = new GitManager(sessionDir);
+    await git.addRemote("origin", "https://github.com/test-user/test-repo.git");
+    githubAuth.setViewPrResult({
+      url: "https://github.com/test-user/test-repo/pull/9",
+      number: 9, base: "main", head: "shipit/feature", title: "T", body: "B",
+      state: "open", isDraft: false, merged: false, additions: 1, deletions: 0,
+    });
+    githubAuth.setConversationResult({ ok: false, error: "Bad credentials" });
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/pr/view?number=9&comments=true`,
+    });
+    expect(res.statusCode).toBe(200);
+    const pr = (res.json() as { pr: Record<string, unknown> }).pr;
+    expect(pr.conversationError).toBe("Bad credentials");
+    expect(pr).not.toHaveProperty("comments");
   });
 });
