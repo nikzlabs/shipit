@@ -54,6 +54,68 @@ describe("handleAgentEvent — card carrier message is never a merge target (SHI
     expect(messages.some((m) => m.text === "running the command")).toBe(true);
   });
 
+  // Same bug class, one class of message wider. A system notice (docs/138 —
+  // account failover, guarded-mode warning, pre-turn-reset skip) is a
+  // `notice: true` flag rather than a card payload, so it was outside CARD_MESSAGE_FIELDS
+  // and the guard above missed it. Every `emitNoticeInTurn` fires at turn start
+  // with zero assistant groups recorded, so a viewer attaching before the
+  // agent's first token gets a `turn_snapshot` whose only row is the notice,
+  // marked `streaming`. The next `agent_assistant` merged into it: the muted
+  // panel became plain assistant text with the agent's first paragraph
+  // concatenated straight onto it, no separating space
+  // ("…continuing on Claude1.I agree — …"). Persistence was fine, so a reload
+  // repaired it — live, it stayed broken for the rest of the turn.
+  it("does not fold agent text into a streaming notice row", () => {
+    const noticeMsg = {
+      role: "assistant",
+      text: "Claude2 reached your usage cutoff — continuing this session on Claude1.",
+      streaming: true,
+      notice: true,
+      noticeLevel: "warn",
+      noticeId: "failover-acct_c45d897b",
+    } as unknown as ChatMessage;
+    useSessionStore.setState({ messages: [noticeMsg] });
+
+    handleAgentEvent(ctx, assistantEvent("I agree — 5b is the right one."));
+
+    const { messages } = useSessionStore.getState();
+    // The regression signature is the two texts ending up in one `text` field.
+    expect(messages).toHaveLength(2);
+    expect(messages.some((m) => m.text.includes("Claude1.I agree"))).toBe(false);
+
+    const notice = messages[0];
+    expect(notice.notice).toBe(true);
+    expect(notice.noticeLevel).toBe("warn");
+    expect(notice.noticeId).toBe("failover-acct_c45d897b");
+    expect(notice.text).toBe("Claude2 reached your usage cutoff — continuing this session on Claude1.");
+    expect(notice.streaming).toBe(false);
+
+    expect(messages[1].text).toBe("I agree — 5b is the right one.");
+    expect(messages[1].notice).toBeUndefined();
+  });
+
+  // The `forceMerge` branch has its own copy of the terminal-entry condition, so
+  // a standalone tool arriving on the heels of a notice must not merge either.
+  it("does not fold a standalone tool call into a streaming notice row", () => {
+    useSessionStore.setState({
+      messages: [{
+        role: "assistant",
+        text: "Guarded mode is unavailable; running unguarded.",
+        streaming: true,
+        notice: true,
+        noticeLevel: "warn",
+      } as unknown as ChatMessage],
+    });
+
+    handleAgentEvent(ctx, assistantEvent("", [{ id: "tu-plan", name: "ExitPlanMode", input: {} }]));
+
+    const { messages } = useSessionStore.getState();
+    expect(messages).toHaveLength(2);
+    expect(messages[0].notice).toBe(true);
+    expect(messages[0].toolUse ?? []).toHaveLength(0);
+    expect(messages[1].toolUse?.[0].name).toBe("ExitPlanMode");
+  });
+
   it("still merges consecutive streaming assistant text on a normal (non-card) bubble", () => {
     useSessionStore.setState({ messages: [{ role: "assistant", text: "Hello", streaming: true } as ChatMessage] });
     handleAgentEvent(ctx, assistantEvent(" world"));
