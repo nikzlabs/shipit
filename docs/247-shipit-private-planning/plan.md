@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-304
+issue: roadmap#SHI-304
 title: ShipIt private planning
 description: Track ShipIt's own planning in a private GitHub repository, and migrate off Linear by copying every issue and rewriting every reference.
 ---
@@ -12,15 +12,19 @@ this doc is only about ShipIt's own use of it and the one-time migration.
 
 ## Status
 
-**Not started**, and gated on [248](../248-declared-issue-trackers/plan.md) rather
-than on anything here. A first version of the tracker mechanism shipped, but 248's
-requirements have since replaced `--repo` with declared tracker names, so what this
-migration needs is the *reworked* 248 deployed — not the version currently on
-`main`. The planning repository also does not exist yet.
+**Ready to execute.** Both gates are cleared, and each was probed rather than
+assumed:
 
-Sequencing that outward: references must be written in the `planning#123` form the
-first time, so 248's name support has to land, ship, and reach the deployment
-before the reference rewrite begins.
+- **248 is deployed, not merely merged.** The `shipit` shim in a session
+  container comes from the deployed orchestrator, and it addresses trackers by
+  name (`--tracker NAME`), requires one on `create`, and fails closed on an
+  undeclared name with the declared set listed.
+- **`nikzlabs/shipit-planning` exists and the deployment's credential reaches
+  it** (req 5). Declared as `planning`, it lists, enumerates labels and statuses,
+  and accepts writes — a create, a comment and a close all round-tripped live.
+
+The declaration is already in `shipit.yaml`. What remains is the copy, the
+reference rewrite, and retiring Linear.
 
 ## Why a private repository
 
@@ -41,94 +45,170 @@ repository (req 6). It sits outside the tracker registry entirely
 worth stating because "all issues now go to the planning repo" is exactly the
 wrong summary of this change.
 
-## Migration
+## Scale — measured, not estimated
 
-### Sequencing constraints
-
-Three facts set the order, each verified rather than assumed:
-
-1. **A merge is not a deploy.** The `shipit` shim inside a session container comes
-   from the *deployed* orchestrator, so nothing can be written to the planning
-   repository until 248's rework reaches the deployment — not when it lands on
-   `main`.
-2. **`shipit issue list` cannot enumerate Linear.** The adapter queries
-   `first: 100` with no pagination (`trackers/linear/adapter.ts`), so the list tops
-   out at the 100 most-recently-updated issues. The tracker holds roughly 316
-   (the highest key referenced in the repo is SHI-316; SHI-320 returns "Entity not
-   found"). Enumeration must walk keys `SHI-1…SHI-316` via
-   `shipit issue view <key> --comments --json`, which takes a direct pointer.
-3. **Credentials are brokered.** Neither a Linear token nor a GitHub token is
-   present in a session container, so every read and write goes through
-   `shipit issue`. There is no direct-API shortcut available to the agent.
-
-### Scale
+A full read-only export ran against Linear (322 keys, `SHI-1…SHI-322`; no gaps,
+`SHI-323` and above do not exist). The corpus:
 
 | Surface | Count |
 |---|---|
-| Linear issues to copy | ~316 |
-| Distinct issue keys referenced in the repo | 254 |
-| Mentions in `src/**/*.ts(x)` | ~1,575 across 369 files |
-| Mentions in `docs/` | ~809 across 244 files |
-| Other (`CLAUDE.md`, `docker/`, `.github/`) | the remainder |
+| Linear issues | 322 |
+| Comments | 1,344 (across 232 issues; 90 have none) |
+| Issue body text | 515 KB |
+| Comment text | 1.19 MB |
+| Distinct labels | 20 |
+| Issues with a parent (sub-issue) | 15 |
+| Issues with an assignee | 75 — all one person |
+| Comment authors | 1 (`nicolas.zherebtsov`, all 1,344) |
 
-The reference rewrite therefore touches most files in the repository. It should
-land as **one atomic PR when nothing else is in flight**, because a diff of that
-shape conflicts with every open branch.
+Status spread: Done 219, Backlog 78, Canceled 10, In Progress 7, Todo 7,
+Duplicate 1. Priority spread: none 214, Medium 42, High 31, Low 27, Urgent 8.
 
-### Steps
+The reference surface in this repository:
 
-1. **Create `nikzlabs/shipit-planning`** (req 5 — the user does this) and confirm
-   the deployment's GitHub credential reaches it. The credential is account-wide
-   (`githubAuthManager.getToken()`), not the repo-scoped installation token, so a
-   fine-grained PAT limited to the source repository fails here. One
-   `shipit issue list` against it settles that; a 403/404 surfaces as the inline
-   access error.
-2. **Land, release and deploy 248's rework**, then re-probe from a fresh session
-   to confirm the shim addresses trackers by name. The `shipit` binary in a session
-   container is the deployed orchestrator's, so a merge alone changes nothing here.
-3. **Export Linear** — walk `SHI-1…SHI-316`, capturing title, body, comments
-   (author, timestamp, body), labels, priority, status, and sub-issue parent.
-   Read-only, and it doubles as the archive. Written outside the git workspace:
-   it holds private planning content.
-4. **Copy into the planning repository** in key order, so numbering lands
-   predictably. Each body carries its `SHI-N` origin; comments are replayed with
-   their original date in the text (req 9) — authorship needs no preservation,
-   since the copying account and the original author are the same person; labels
-   are created as needed; closed and canceled issues are closed after creation.
-   The output is the `SHI-N → planning#M` mapping, which everything downstream
-   depends on.
-5. **Rewrite every reference** from that mapping in one PR (req 10): doc `issue:`
-   frontmatter, inline doc mentions, code comments, `CLAUDE.md`.
-6. **Retire Linear** for ShipIt's own planning (req 11) and rewrite `CLAUDE.md`'s
-   tracker-sync section.
+| Surface | Count |
+|---|---|
+| Distinct `SHI-N` keys referenced | 259 |
+| Total mentions | 2,623 across 667 files |
+| — in `src/` | 1,677 across 391 files |
+| — in `docs/` | 869 across 249 files |
+| Docs with an `issue:` frontmatter pointer | 186 |
+| Files containing a `linear.app` URL | 221 |
 
-### Numbering does not survive
+And — the surface the earlier estimate missed entirely — **the corpus references
+itself**: 1,146 `SHI-N` mentions and 120 `linear.app` URLs live *inside* issue
+bodies and comments. Those have to be rewritten too, or the migrated tracker is
+full of pointers back to the system being retired.
+
+## What GitHub cannot hold
+
+Probed against the real adapter, not inferred:
+
+| Linear | GitHub | Disposition |
+|---|---|---|
+| Priority (5 levels) | none — `createIssue` **rejects** `--priority` outright | A `priority: high` label round-trips: `mapGitHubPriority` reads it back as priority "High". Verified live. 108 issues affected. |
+| Workflow states (6) | open / closed only | Backlog vs Todo vs In Progress, and Done vs Canceled vs Duplicate, collapse. See [requirements.md](./requirements.md) → Open questions. |
+| Issue creation date | settable? no | Not even *readable*: `ISSUE_FIELDS` in `trackers/linear/adapter.ts` selects `updatedAt` but not `createdAt`. Comments do carry `createdAt`, which is what req 9 needs. See Open questions. |
+| Sub-issue parent | adapter has no sub-issue support | 15 issues. Record the parent in the body. |
+| Assignee | supported | All 75 are the same person, who is also the copying account. Drop it. |
+| Label colors | supported | Carried from the export. |
+
+`setStatus` does accept `canceled` and maps it to GitHub's `not_planned` close
+reason — but the read path (`adapter.ts:202`) collapses every closed issue to
+`completed`, so ShipIt itself will not show the distinction back. Encoding it as a
+label is the only form that survives a round trip.
+
+## Numbering, and the circularity it creates
 
 GitHub assigns issue numbers sequentially and shares the sequence with pull
 requests; they cannot be chosen. `SHI-137` will not become `planning#137`. The
-mapping is the only authority, which is why step 4 emits it as a durable artifact
-rather than a side effect — and why step 5 cannot start until step 4 completes.
+`SHI-N → planning#M` mapping is the only authority.
 
-### Tracker names make this a one-time cost
+That mapping is needed *before* the copy, not after — because issue bodies and
+comments cross-reference each other (1,146 mentions). Writing them first and
+fixing them later would mean a second edit pass over most of the corpus, and
+**comment bodies cannot be edited at all** through the shim, so a
+comment's cross-references would be permanently stale.
+
+The way out is to **predict the mapping and verify it as we go**. The planning
+repository is empty apart from `planning#1` (a live write probe, closed, titled
+`[dry run] migration probe`). Creating in key order into a repository where
+nothing else opens issues or PRs makes `SHI-N → planning#(N+1)` deterministic. The
+driver asserts the returned identifier equals the prediction on every create and
+aborts on the first mismatch, so the risk is a halt, not silent corruption. If it
+ever does drift, the fallback is the two-pass shape — create everything, then edit
+bodies — accepting that comment cross-references stay as `SHI-N`.
+
+This is why nothing else may open an issue or PR in the planning repository while
+the copy runs.
+
+## Write volume and pacing
+
+The copy is roughly **2,000 brokered writes**: 322 creates + 1,344 comments + ~230
+closes + ~26 label creations. Three consequences, each of which shapes the driver:
+
+1. **No retry or backoff exists.** `trackers/github/adapter.ts` has no handling
+   for `429`/secondary-rate-limit responses — a throttled request surfaces as a
+   plain error. GitHub rate-limits content creation, so the driver must pace
+   itself and retry on its own. Measure the first hundred writes and set the pace
+   from what actually comes back rather than from a documented number.
+2. **It must be resumable.** At any survivable pace this runs for hours, across
+   more than one turn. The mapping and a per-issue completion marker are appended
+   to disk after each write, so a restart skips what is already done. Re-running a
+   completed step must be a no-op, not a duplicate.
+3. **Every write posts a persisted transcript card.** `api-routes-issues.ts` emits
+   and *persists* an `issue_write_card` per write, with no suppression flag. ~2,000
+   cards in one session's history is not something to inflict on a session anyone
+   wants to reopen. The copy therefore runs in its **own child session**, which is
+   archived when it finishes.
+
+The write-dedup window (`handleWrite`) keys on session + tracker + verb + issue id
++ content hash, so two *identical* comment bodies on the *same* issue would have
+the second silently swallowed. Prefixing each replayed comment with its original
+date (req 9) makes bodies distinct, which removes the hazard as a side effect.
+
+## Export fidelity — a shim bug to route around
+
+`shipit issue view --comments --json` **silently truncates at 65,536 bytes when
+stdout is a pipe.** The shim exits via `process.exit()` without draining stdout, so
+anything past the pipe buffer is lost; the JSON simply ends mid-string. Two of the
+322 issues (`SHI-56`, `SHI-90`) hit it. The same output redirected to a file is
+complete — `SHI-56` is 116,795 bytes and parses.
+
+The export therefore redirects to files and never pipes. This is not specific to
+the migration: any agent running `shipit issue view … --json | jq` on a large
+issue gets silently truncated data, which is worth fixing separately.
+
+Two smaller traps in the same family: `src/client/hooks/useLazyToolInput.ts`
+contains a byte that makes `grep` treat it as binary, so the reference sweep needs
+`grep -a` or it will skip a file that does contain a key; and the export must live
+outside the git workspace (it holds private planning content) — it is written to
+`/persist/linear-export/`, which is per-session, so a child session re-runs it
+rather than inheriting it.
+
+## Steps
+
+1. ~~Create the planning repository and confirm the credential reaches it.~~ Done.
+2. ~~Land, release and deploy 248.~~ Done.
+3. **Export Linear** — 322 keys, `view --comments --json` redirected to a file per
+   key, resumable, outside the workspace. Read-only, and it doubles as the
+   archive. Already run once; the copy session re-runs it for itself.
+4. **Create the labels** the corpus uses (20 from Linear, plus whatever encoding
+   of priority and workflow state is settled), with their Linear colors.
+5. **Copy in key order**, predicting `planning#(N+1)` and asserting it. Each body
+   carries its `SHI-N` origin and, for the 15 sub-issues, its parent. Cross-
+   references inside bodies and comments are rewritten to `planning#M` from the
+   predicted mapping as they are written. Comments replay with their original
+   date in the text (req 9). Closed and canceled issues are closed after creation.
+   The mapping is appended to disk as it is built.
+6. **Rewrite every reference in this repository** from that mapping in one PR
+   (req 10): doc `issue:` frontmatter, inline doc mentions, code comments,
+   `CLAUDE.md`. 2,623 mentions across 667 files — it conflicts with every open
+   branch, so it lands when nothing else is in flight.
+7. **Retire Linear** for ShipIt's own planning (req 11): drop the `roadmap`
+   declaration from `shipit.yaml` and rewrite `CLAUDE.md`'s tracker-sync section.
+
+Steps 3–5 are the child session's work. Steps 6–7 are this repository's, and
+step 6 cannot start until step 5's mapping is final.
+
+## Tracker names make this a one-time cost
 
 The reference rewrite is expensive enough to be worth paying only once. Writing
-the rewritten references in the **name** form (`planning#123`, requirements 10 and 13 of
-[248](../248-declared-issue-trackers/plan.md)) means a later rename of the planning
-repository is a one-line `shipit.yaml` edit rather than a second sweep of ~2,400
-mentions. Name support is therefore a hard prerequisite for step 5, not an
-optimization: without it, step 5 hard-codes a repository slug into most files in
+the rewritten references in the **name** form (`planning#123`,
+[248](../248-declared-issue-trackers/plan.md) reqs 10 and 15) means a later rename
+of the planning repository is a one-line `shipit.yaml` edit rather than a second
+sweep of 2,600 mentions. Name support is a hard prerequisite for step 6, not an
+optimization: without it, step 6 hard-codes a repository slug into most files in
 the repository and the whole sweep has to be repeated on the first rename.
 
-## The Linear fallback closes itself
+## After Linear is undeclared
 
-`shipit issue create` currently hardcodes Linear as its fallback tracker
-(`resolveTrackerFlag` in `agent-shim/shipit-issue.ts`), which would have meant a
-bare `create` filing into a retired tracker. An earlier version of this plan
-proposed an `issues.default` key to fix it. That is no longer needed:
-[248](../248-declared-issue-trackers/requirements.md) req 1 removes implicit
-destinations altogether and req 12 makes every operation name its tracker, so there
-is no fallback left to point anywhere. The dependency is on 248 landing, not on a
-separate feature.
+Undeclaring `roadmap` makes every historical `SHI-N` reference fail closed
+([248](../248-declared-issue-trackers/requirements.md) req 11) — which is the
+point, and why step 6 precedes step 7. Two residues are accepted rather than
+fixed: git history keeps the old references, and issue cards persisted in old
+session transcripts point at a tracker that is no longer declared. Those cards
+render as static badges and their Undo still resolves, per 248's carve-out.
 
 ## Non-goals
 
@@ -139,3 +219,4 @@ separate feature.
 - Removing Linear support from the product. Linear stays a declared tracker kind
   ([248](../248-declared-issue-trackers/requirements.md) req 3); ShipIt retires it
   for itself by not declaring it.
+- Preserving Linear issue *numbers*. The mapping is the authority.

@@ -47,7 +47,23 @@ routing, tracker names — is a separate feature
 
 ## Open questions
 
-None.
+Both surfaced while probing the real corpus against the real GitHub adapter, and
+both are about how much of an issue survives the copy — observable to anyone
+reading a migrated issue, so neither is the agent's to settle.
+
+- **Does a Linear workflow state survive the copy?** GitHub Issues has only open
+  and closed. The corpus uses six states — Done 219, Backlog 78, Canceled 10,
+  In Progress 7, Todo 7, Duplicate 1 — so `Backlog`/`Todo`/`In Progress` collapse
+  into one open state and `Done`/`Canceled`/`Duplicate` into one closed state.
+  Requirement 8 calls out canceled issues specifically, which suggests the
+  distinction matters, but no requirement says it must be visible afterwards.
+- **Does a copied issue keep its original creation date?** Requirement 9 preserves
+  each *comment's* date; the issue's own date is unaddressed. GitHub cannot set a
+  creation date, and ShipIt cannot currently even read Linear's — the adapter's
+  issue query selects `updatedAt` but not `createdAt`. So every migrated issue
+  would read as created on the day of the copy unless the original date is
+  recorded in the issue body.
+
 ## Resolved questions
 
 Receipts about the tracker *mechanism* live in
