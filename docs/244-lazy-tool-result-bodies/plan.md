@@ -112,11 +112,43 @@ Present (`parsePresentToolResult`, `:171`).
 ## Verified facts
 
 * The 1 MB cap is **client-side only** — `src/client/hooks/message-handlers/agent-event.ts:122`,
-  on the live in-memory copy.
+  on the live in-memory copy. It caps a **content-block array through its text**,
+  never as a raw string — see *The client cap had the block-array bug too* below.
 * The **persist path is uncapped**: `extractToolResults`
   (`ws-handlers/agent-event-normalizer.ts:15–31`) applies no size limit, and
   `chat-history.ts:489` stores `JSON.stringify(msg.toolResults)` verbatim.
 * `PersistedMessage` carries **no row id** (`chat-history.ts:107`).
+
+## The client cap had the block-array bug too
+
+`projectBlockArray` exists because *"a block array must never be sliced as a raw
+string"*: an MCP result is a `JSON.stringify`'d array of text and image blocks,
+so it is **one line**, the line cap never fires, and a byte cut lands mid-array.
+`parseContentForImages` then returns null and the tool-call modal draws the
+payload — base64 and all — as a wall of raw JSON where the screenshot should be.
+
+The serve path was fixed for that. The **client cap was not**, and it does the
+same raw `content.slice(0, cap)`. It only bites the results the projection
+deliberately leaves inline, which is exactly where the heaviest unstripped
+screenshots are: a **nested subagent's**, since nothing strips it until its row
+is committed. Reported from the field as a screenshot rendering as raw JSON,
+reproduced by slicing a 1.4 MB block array at the cap.
+
+`capContentBlocks` (`agent-event.ts`) now caps the **text inside the blocks** and
+rebuilds the array, mirroring the serve path. Two consequences worth stating:
+
+* **Image blocks are kept whole**, not counted against the budget. There is
+  nothing to substitute them with here — the `/images/:hash` URL is backed by
+  the persisted row, and a nested result has no committed row — so the choice is
+  the image or nothing. The bound is recovered on the next history load, where
+  the projection replaces the payload with that URL.
+* **The `truncated` marker follows what was actually removed.** An image-only
+  result loses nothing, so it is not marked; marking it would send the modal
+  after a multi-megabyte body it already holds.
+
+A body that is *not* a content-block array (a tool returning an ordinary JSON
+array) still takes the raw cap unchanged. Guard tests:
+`agent-event.test.ts` → *the cap never breaks an MCP content-block array*.
 
 ## The SHI-266 dependency is not real
 

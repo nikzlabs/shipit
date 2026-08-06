@@ -29,6 +29,71 @@ function safeCutAt(text: string, max: number): number {
 }
 
 /**
+ * Cap a JSON content-block array by shortening the TEXT inside it, leaving the
+ * array itself valid JSON.
+ *
+ * An MCP result — a Playwright screenshot above all — is a
+ * `JSON.stringify`'d array of `{type:"text"}` / `{type:"image"}` blocks, and it
+ * is what `parseContentForImages` (`ToolResult.tsx`) re-parses to draw the
+ * image. Being stringified it is ONE line of possibly megabytes, so the raw cap
+ * below cuts it mid-array: the JSON no longer parses, the parse returns null,
+ * and the tool-call modal renders the whole thing — base64 and all — as a wall
+ * of raw JSON instead of the screenshot. That is the exact failure
+ * `transcript-projection.ts`'s `projectBlockArray` was written to avoid on the
+ * serve path ("a block array must never be sliced as a raw string"); the client
+ * cap kept doing it, so every result the projection deliberately leaves inline
+ * — a nested subagent's screenshot, most of all — degraded that way once its
+ * base64 crossed the cap.
+ *
+ * Image blocks are kept WHOLE rather than counted against the budget. There is
+ * nothing to substitute them with here: the `/images/:hash` URL the projection
+ * uses is backed by the persisted row, and a nested result has no committed row
+ * yet. So the choice is the image or nothing, and holding a screenshot the
+ * transcript is about to draw is the point of having it. The bound this gives
+ * up is recovered on the next history load, where the projection replaces the
+ * payload with that URL.
+ *
+ * Returns undefined when `content` isn't a content-block array, leaving the raw
+ * cap to handle it — an ordinary JSON payload from a tool that happens to
+ * return an array is bounded exactly as before.
+ */
+function capContentBlocks(content: string, cap: number): { content: string; textRemoved: boolean } | undefined {
+  if (!content.startsWith("[")) return undefined;
+  let blocks: unknown;
+  try {
+    blocks = JSON.parse(content);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(blocks)) return undefined;
+
+  let isContentBlocks = false;
+  let textRemoved = false;
+  let budget = cap;
+  const capped = blocks.map((b): unknown => {
+    if (typeof b !== "object" || b === null) return b;
+    const block = b as Record<string, unknown>;
+    if (block.type === "image") {
+      isContentBlocks = true;
+      return b;
+    }
+    if (block.type !== "text" || typeof block.text !== "string") return b;
+    isContentBlocks = true;
+    const text = block.text;
+    if (text.length <= budget) {
+      budget -= text.length;
+      return b;
+    }
+    textRemoved = true;
+    const head = text.slice(0, safeCutAt(text, budget));
+    budget = 0;
+    return { ...block, text: head };
+  });
+  if (!isContentBlocks) return undefined;
+  return { content: JSON.stringify(capped), textRemoved };
+}
+
+/**
  * Name of the tool that produced `toolUseId`, searched over the transcript the
  * result is about to be attached to. Needed to tell a body that must ship whole
  * from an ordinary result, since the tool_result block itself carries only the
@@ -220,8 +285,21 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
 
         let capped: { totalLines: number } | undefined;
         if (!shipsWhole && content.length > CLIENT_CONTENT_CAP) {
-          capped = { totalLines: content.split("\n").length };
-          content = content.slice(0, safeCutAt(content, CLIENT_CONTENT_CAP));
+          const totalLines = content.split("\n").length;
+          // Structure-preserving first: a content-block array is capped through
+          // its text so it stays parseable JSON and its image survives. Only a
+          // body that is NOT one falls back to the raw clip.
+          const blocks = capContentBlocks(content, CLIENT_CONTENT_CAP);
+          if (blocks) {
+            content = blocks.content;
+            // The markers mean "this body was shortened, fetch the rest". An
+            // image-only result loses nothing here, so claiming otherwise would
+            // send the modal after a multi-megabyte body it already has.
+            if (blocks.textRemoved) capped = { totalLines };
+          } else {
+            capped = { totalLines };
+            content = content.slice(0, safeCutAt(content, CLIENT_CONTENT_CAP));
+          }
         }
         const cappedAndFetchable = capped && !isNested;
         results.push({
