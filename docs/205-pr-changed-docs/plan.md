@@ -162,6 +162,36 @@ are eyeballable on the card without scanning the diff. Nothing on the strip is
 ever deduped (same-named assets in different dirs are distinct). The
 `NotableFileChange.kind` union widened to `"doc" | "config" | "image"`.
 
+**HTML mockups join the doc tier.** Any `.html`/`.htm` file classifies as
+`kind: "doc"`, so a committed prototype gets a chip alongside its `plan.md`.
+This closes an asymmetry in our own convention: CLAUDE.md tells the agent to
+commit a prototype as "`mockup.html`, `mockup.svg`, or a `mocks/` subdir", and
+before this only the latter two surfaced (`.svg` rides the image tier). The
+payoff needed no new UI — docs/219 already split `.html`/`.htm` out of the
+`code` bucket in `file-content-kind.ts`, so `openPreview` **renders** the mockup
+(with a source toggle) instead of showing raw markup. The `"doc"` kind is reused
+rather than widening the `NotableFileChange` union: the chip label carries the
+extension (`205/mockup.html`), so the icon needn't.
+
+The match is **blanket by extension**, like the `.md` and image tiers — an app's
+`index.html` gets a chip too. Two location gates were considered and rejected:
+
+- *Only under a `docs/` segment* — special-cases one extension against the
+  precedent of every other rule in the module, and is simply wrong for repos
+  that keep design docs elsewhere (this classifier runs for every repo edited in
+  ShipIt, not just this one).
+- *Only beside a changed `.md` in the same change set* — worse. It would be the
+  only rule here that depends on the **rest of the diff**, making a chip
+  non-deterministic per file: `mocks/foo.html` would get a chip in a PR that
+  also touched a neighbouring `.md`, and none in the next PR that edits only the
+  mockup — exactly when you'd want it. That breaks the pure 1:1 projection the
+  module rests on.
+
+The noise argument didn't survive the precedent either: blanket `.md` already
+fills the strip on a docs-heavy PR, and blanket images do on an icon-heavy one.
+If real-world noise appears, the fix is an exclusion rule applied uniformly
+across all tiers, not a bespoke gate on HTML.
+
 Key files added: `src/server/orchestrator/services/notable-files.ts`,
 `src/client/components/ChangedDocsStrip.tsx`, and the
 `getSavedChangedDocsExpanded` / `saveChangedDocsExpanded` helpers in
