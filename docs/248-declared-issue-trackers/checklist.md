@@ -135,6 +135,14 @@ Filed; the tracker holds its status from here.
   months." This closed a live defect, not just a wording gap — Undo preferred the
   recorded *name*, so a re-pointed `planning` rewrote a **different repository's**
   issue of the same number, with a test asserting that as correct.
+- [x] **An open issue does not survive a repo switch** (SHI-325) — the detail
+  falls back to the list when its destination is no longer reachable from the
+  session being switched to (req 11). Reproduced live in the dogfood inner
+  ShipIt with two repositories before fixing, and the repro is what corrected the
+  design: an id-presence check does **not** catch it, because both repositories
+  declare the bare `github` id for their own Issues, so the comparison is on the
+  *destination* (`kind` + `binding.key`). Second half is a synchronous repo-scope
+  drop for the round-trip that check costs. See plan.md § req 16.
 
 ## Follow-on
 

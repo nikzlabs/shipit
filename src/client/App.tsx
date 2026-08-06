@@ -1057,7 +1057,17 @@ export default function App() {
   // binding; Linear ignores it. `fetchTrackers` is idempotent and cheap.
   // eslint-disable-next-line no-restricted-syntax -- external system sync: warm tracker config for inline issue-link interception
   useEffect(() => {
-    void useIssuesStore.getState().fetchTrackers();
+    void (async () => {
+      await useIssuesStore.getState().fetchTrackers();
+      // SHI-325 — the list is repo-scoped too: the GitHub tracker resolves
+      // against the session's repo binding, so the same tracker id yields
+      // different issues per session. Refetch whenever the tab is showing one
+      // (the fetch-on-open effect above is keyed on `rightTab`, so it does NOT
+      // re-run for a session change while the tab stays open).
+      if (useUiStore.getState().rightTab === "issues") {
+        await useIssuesStore.getState().fetchIssues();
+      }
+    })();
   }, [sessionId]);
 
   // docs/133 Phase 4: tell the server whether the PR tab is the active

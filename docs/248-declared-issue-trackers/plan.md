@@ -261,6 +261,42 @@ local`, the dogfood inner ShipIt) runs no file watcher at all, so there the olde
 session-switch/tab-activation refresh remains the only trigger — the same
 documented degradation as the file tree and terminal.
 
+*Client follow-up (SHI-325) — the browser's copy also has to be **dropped**, not
+just refreshed.* An issue opened in the Issues tab survived a switch to a session
+on another repository, leaving a destination the new session cannot reach on
+screen (req 11 fails closed). Two halves, because neither is sufficient alone:
+
+- **`fetchTrackers` is the authoritative check.** What the store holds for a
+  tracker id survives only while that id still names the *same destination* —
+  same `kind`, same `binding.key`. Presence of the id is deliberately not the
+  test: the session's own repository's GitHub Issues are the bare `github` id in
+  **every** repository (req 12), so a cross-repo switch changes the destination
+  without changing the id, and an open issue would otherwise keep rendering — and
+  refreshing, and mutating — against the *other* repository's issue of the same
+  number. That is the same failure the pointer parser was fixed for. A re-pointed
+  `name` is the same case and is caught by the same comparison. Unreachable
+  entries are dropped from `issuesByTracker`/`statusesByTracker`/`labelsByTracker`
+  and the open detail closes back to the list; a tracker that still names the same
+  destination keeps its cache.
+- **`setRepoScope` covers the window before that answer arrives.** The check
+  above needs a round-trip, and until it lands the previous repository's detail
+  and sub-tabs would still be painted. So a session switch to a *different*
+  repository synchronously drops the store's repo-scoped contents — including the
+  declared-tracker list, which is also `trackerDestinations()`, the resolution
+  context every inline issue chip renders against. It is called from
+  `resetSessionState`/`resumeSessionInternal` (`stores/actions/session-actions.ts`,
+  the repo's one place for cross-store resets) and is a no-op within one
+  repository, so switching between two sessions of the same project leaves the
+  open issue alone. A session the sidebar list doesn't know yet re-scopes rather
+  than borrowing the sidebar's active repo, which is only a guess. During the
+  window the panel renders "Loading issues…" — neither "not connected" nor the
+  previous repository's trackers is true there.
+
+The list is repo-scoped for the same reason the detail is, so the session-change
+effect in `App` now refetches it when the tab is open; keyed on `rightTab`, the
+fetch-on-open effect never re-ran for a switch that left the tab open, and the
+GitHub tab kept the previous repository's issues.
+
 *Divergence from the design:* this was expected to need a database migration. It
 does not. `IssueWriteCard` is persisted as a JSON blob in the existing
 `issue_write` column (`chat-history.ts` `toRow`/`fromRow`), so a new optional
