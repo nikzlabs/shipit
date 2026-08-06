@@ -61,7 +61,19 @@ function sessionIdParam(): string {
  * is why the resolver reads from here rather than adding a second fetch.
  */
 export function trackerDestinations(): TrackerDestination[] {
-  return useIssuesStore.getState().trackers.map((t) => ({
+  return toTrackerDestinations(useIssuesStore.getState().trackers);
+}
+
+/**
+ * The same projection, over a tracker list the caller already holds. Split out
+ * for the one resolver that runs at **render** time rather than in a click
+ * handler — the inline `IssueBadge` (docs/207, SHI-323), which subscribes to the
+ * store's `trackers` array and must derive its destinations inside a `useMemo`.
+ * Calling {@link trackerDestinations} from a zustand selector would mint a new
+ * array on every store read and defeat the snapshot cache.
+ */
+export function toTrackerDestinations(trackers: TrackerInfo[]): TrackerDestination[] {
+  return trackers.map((t) => ({
     id: t.id,
     kind: t.kind,
     ...(t.name ? { name: t.name } : {}),

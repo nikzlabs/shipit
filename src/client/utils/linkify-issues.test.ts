@@ -38,6 +38,51 @@ function links(tree: Nodes): { url: string; text: string }[] {
 const ISSUE = (key: string) => ({ url: `${ISSUE_LINK_SCHEME}${key}`, text: key });
 
 describe("remarkLinkifyIssues", () => {
+  // SHI-323 — docs/248 req 10's name form. The badge must cover the WHOLE
+  // reference; matching only the trailing key left `roadmap#` outside the pill.
+  it("wraps a name form carrying a Linear key, prefix included", () => {
+    expect(links(run("Fixed in roadmap#SHI-319 today"))).toEqual([ISSUE("roadmap#SHI-319")]);
+  });
+
+  it("wraps a name form carrying a bare number (the post-docs/247 ShipIt form)", () => {
+    expect(links(run("Tracked as planning#57."))).toEqual([ISSUE("planning#57")]);
+  });
+
+  it("wraps a name form whose name contains dots and dashes", () => {
+    expect(links(run("see shipit-ai.core#42 there"))).toEqual([ISSUE("shipit-ai.core#42")]);
+  });
+
+  it("wraps a name form inside an inline-code span", () => {
+    expect(links(run("ref `planning#57` here"))).toEqual([ISSUE("planning#57")]);
+  });
+
+  it("matches name-shaped noise too (the declared-tracker gate at render filters these)", () => {
+    // `PR#3` / `channel#2` are exactly why the gate can't live in the matcher:
+    // the shape is common in prose and only the declarations can tell them apart.
+    expect(links(run("PR#3 and channel#2")).map((l) => l.text)).toEqual(["PR#3", "channel#2"]);
+  });
+
+  it("does not half-match a GitHub short form as a name form", () => {
+    // `owner/repo#42` must not yield `repo#42` — the slash lookbehind stops it.
+    expect(links(run("landed in owner/repo#42 yesterday"))).toEqual([]);
+  });
+
+  it("does not match a name form with a trailing identifier tail", () => {
+    // Nothing matches, so the text must survive byte-for-byte.
+    expect(links(run("roadmap#SHI-319-draft"))).toEqual([]);
+  });
+
+  it("does not touch a name form inside an existing markdown link", () => {
+    const found = links(run("[roadmap#SHI-319](https://linear.app/acme/issue/SHI-319)"));
+    expect(found).toEqual([
+      { url: "https://linear.app/acme/issue/SHI-319", text: "roadmap#SHI-319" },
+    ]);
+  });
+
+  it("does NOT wrap name forms inside fenced code blocks", () => {
+    expect(links(run("```\nplanning#57\n```"))).toEqual([]);
+  });
+
   it("wraps a bare Linear key in prose (the motivating case)", () => {
     expect(links(run("This is tracked in TRACKER-43 now"))).toEqual([ISSUE("TRACKER-43")]);
   });

@@ -1,50 +1,74 @@
 /**
- * `remarkLinkifyIssues` — turn bare Linear issue keys in prose into in-app
- * badges.
+ * `remarkLinkifyIssues` — turn bare issue references in prose into in-app badges.
  *
- * The agent (and humans) routinely mention Linear issues inline as a bare key —
- * "tracked in TRACKER-43", "blocked on TRACKER-79". A full Linear *URL* is already
- * intercepted by `parseTrackerIssueLink` → opens the in-app Issues viewer; a
- * bare key stayed plain text because no absolute URL is derivable from it
- * without the workspace slug. But the in-app viewer doesn't need a URL — the
- * key alone is the tracker-native lookup id (`Tracker.getIssue(key)`). So this
+ * The agent (and humans) routinely mention issues inline as a bare reference —
+ * "tracked in TRACKER-43", "blocked on roadmap#SHI-79", "see planning#57". A full
+ * issue *URL* is already intercepted by `parseTrackerIssueLink` → opens the
+ * in-app Issues viewer; a bare reference stayed plain text because no absolute
+ * URL is derivable from it. But the in-app viewer doesn't need a URL — the
+ * reference alone resolves to a destination + a tracker-native lookup id. So this
  * plugin closes the gap the same way `remarkLinkifyPaths` does for file paths:
- * it walks the mdast, finds key-shaped tokens, and wraps each in a `link` node
- * with a sentinel `shipit-issue:KEY` url. From there the `a` → `MarkdownLink`
- * pipeline renders an `IssueBadge` (not an anchor) that opens the issue inline.
+ * it walks the mdast, finds reference-shaped tokens, and wraps each in a `link`
+ * node with a sentinel `shipit-issue:TOKEN` url. From there the `a` →
+ * `MarkdownLink` pipeline renders an `IssueBadge` (not an anchor) that opens the
+ * issue inline.
  *
  * Design notes:
- * - **The team-key gate lives at render, not here.** A bare `[A-Z]+-\d+` token
- *   collides with everyday strings (`UTF-8`, `GPT-4`, `COVID-19`), so matching
+ * - **The gate lives at render, not here.** A reference-shaped token collides
+ *   with everyday strings (`UTF-8`, `GPT-4`, `COVID-19`, `PR#3`), so matching
  *   alone can't decide what's an issue. This plugin is deliberately liberal; the
- *   badge renderer only paints a badge when the token's team prefix matches the
- *   *connected* Linear workspace's bound team key, and otherwise renders the raw
- *   text. Keeping the gate at render is what lets the parse stay pure + memoized
- *   on `text` while the connected-tracker state lives in a store.
- * - **Uppercase only.** Real Linear keys are uppercase; restricting to uppercase
- *   drops a whole class of lowercase prose false positives before the gate.
+ *   badge renderer resolves the token against the repository's *declared*
+ *   trackers (docs/248 req 11) and renders the raw text for anything undeclared
+ *   or ambiguous. Keeping the gate at render is what lets the parse stay pure +
+ *   memoized on `text` while the declared-tracker state lives in a store.
+ * - **That split matters MORE since the name form landed** (docs/248 req 10, and
+ *   SHI-323 which added it here). `<name>#<id>` is a far more collision-prone
+ *   shape than an uppercase key — `PR#3`, `issue#5`, `channel#2` all match — so
+ *   the render-time resolver is the only thing standing between ordinary prose
+ *   and a badge. A token that doesn't resolve must degrade to *exactly* its
+ *   original text.
+ * - **Whole token, not half of one.** The name form is matched first, so
+ *   `roadmap#SHI-319` produces one `shipit-issue:roadmap#SHI-319` link covering
+ *   the whole reference. Matching only the bare-key tail would badge `SHI-319`
+ *   and leave `roadmap#` outside the pill as stray text (the SHI-323 defect).
+ * - **Uppercase only for the bare-key form.** Real Linear keys are uppercase;
+ *   restricting to uppercase drops a whole class of lowercase prose false
+ *   positives before the gate. The name form has no such luxury — `planning#57`
+ *   is all-lowercase by construction — which is why its gate is the resolver.
  * - **Runs after `remark-gfm` and `remarkLinkifyPaths`.** We never descend into
  *   existing `link` nodes, so a `TRACKER-43` inside a
  *   `linear.app/.../issue/TRACKER-43` URL (already an autolinked `link`) is left
  *   alone — that URL is handled by
  *   the tracker-URL branch instead.
- * - **Text *and inline code*.** A key is wrapped whether it sits in prose or in
- *   a backtick span, mirroring the path plugin. Fenced `code` blocks stay
+ * - **Text *and inline code*.** A reference is wrapped whether it sits in prose
+ *   or in a backtick span, mirroring the path plugin. Fenced `code` blocks stay
  *   verbatim (they're leaf nodes we never match).
  */
 
 import type { InlineCode, Link, Root, RootContent, Text } from "mdast";
 
-/** Sentinel href scheme carrying the bare Linear key through to `MarkdownLink`. */
+/** Sentinel href scheme carrying the reference token through to `MarkdownLink`. */
 export const ISSUE_LINK_SCHEME = "shipit-issue:";
 
 /**
- * A Linear-key-shaped token: an uppercase team prefix, a dash, and digits. The
- * surrounding `[\w-]` guards keep it from biting mid-token (inside a longer
- * identifier like `X-TRACKER-43-Y` or a word). The team-key gate at render time is
- * what actually decides this is an issue vs. noise like `GPT-4`.
+ * A reference-shaped token, in the two forms that appear in prose (docs/248
+ * req 10). The alternation is ordered, and the order is load-bearing:
+ *
+ * 1. **Name form** — `roadmap#SHI-304`, `planning#57`. The name and id shapes
+ *    mirror `NAMED_REF_RE` in `shared/issue-ref.ts`, which is what ultimately
+ *    parses the token; keeping them in step means anything we badge is something
+ *    the resolver can read. The lookbehind additionally rejects a leading `/` so
+ *    a GitHub short form (`owner/repo#42`) isn't half-matched as `repo#42`.
+ * 2. **Bare key** — `SHI-304`. Unchanged from before the name form existed,
+ *    including its lookbehind, which deliberately permits a leading `#` so
+ *    `issue #SHI-3` still badges.
+ *
+ * Matching the name form first is what makes a badge cover the whole reference
+ * rather than its trailing key. Neither branch decides anything: the resolver at
+ * render time does (see the module docstring).
  */
-const ISSUE_KEY_RE = /(?<![\w-])[A-Z][A-Z0-9]*-\d+(?![\w-])/g;
+const ISSUE_TOKEN_RE =
+  /(?<![\w#/-])[A-Za-z0-9][A-Za-z0-9._-]*#(?:[A-Za-z][A-Za-z0-9]*-\d+|\d+)(?![\w-])|(?<![\w-])[A-Z][A-Z0-9]*-\d+(?![\w-])/g;
 
 /** Keep the leaf type of the node a match came from so an inline-code key stays monospace. */
 function leaf(value: string, code: boolean): Text | InlineCode {
@@ -53,16 +77,16 @@ function leaf(value: string, code: boolean): Text | InlineCode {
 
 /**
  * Split one node's string value into alternating leaf / `link` nodes on each
- * issue-key match. Returns `null` when nothing matched so callers leave the
+ * reference match. Returns `null` when nothing matched so callers leave the
  * original node untouched.
  */
 function linkifyValue(value: string, code: boolean): (Text | InlineCode | Link)[] | null {
-  ISSUE_KEY_RE.lastIndex = 0;
+  ISSUE_TOKEN_RE.lastIndex = 0;
   const out: (Text | InlineCode | Link)[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = ISSUE_KEY_RE.exec(value)) !== null) {
+  while ((match = ISSUE_TOKEN_RE.exec(value)) !== null) {
     const raw = match[0];
     const start = match.index;
     if (start > lastIndex) {
@@ -85,7 +109,7 @@ function linkifyValue(value: string, code: boolean): (Text | InlineCode | Link)[
 }
 
 /**
- * In-place walk: replace key-bearing `text` and `inlineCode` nodes, never
+ * In-place walk: replace reference-bearing `text` and `inlineCode` nodes, never
  * descend into existing links. Fenced `code` blocks are leaf nodes we don't
  * match here, so they stay verbatim.
  */
