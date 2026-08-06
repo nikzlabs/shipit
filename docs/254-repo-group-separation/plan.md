@@ -160,6 +160,25 @@ Options **C** (hairline, no fill) and **D** (nothing at all — the edge and the
 carry it) are the calmer alternatives and both work; the mock keeps them for the
 next time this is revisited.
 
+### What the band guard does and does not prove
+
+`repo-palette.test.ts` measures the band against the **rail**, in every theme.
+That is not the same as "the header never outweighs its own rows", and the
+difference is worth stating because the stronger claim is the tempting one.
+Asserting band < row would **fail on four shipped light themes**: the rows'
+`--color-bg-secondary` highlight ranges from 1.045 (`light`) to 1.155
+(`solarized`) against the rail while the band barely moves, so band-under-row
+holds in Claude Light (1.108 < 1.120) and Solarized Light but not in `light`,
+`codex-light`, `cool-light` or `warm-light`. The ceilings are aesthetic
+regression guardrails — chosen so the value that shipped and looked wrong fails
+— not a proof that nothing heavy can pass.
+
+One non-obvious property the guard exists to protect: `color-mix` **interpolates**,
+it does not composite, so mixing a translucent color over an opaque backdrop
+yields a translucent result. The band is opaque only because both inputs are, and
+that now includes `--color-warning` and `--color-sandbox`, which the Ops and
+Sandbox groups feed in and which are not part of the palette.
+
 ## Spacing
 
 Three spacing rules, all applied only when separated, so an unseparated sidebar

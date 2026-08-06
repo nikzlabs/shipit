@@ -22,3 +22,5 @@
 - [x] Gap between groups so adjacent edges don't merge into one rail
 - [x] Open questions on reqs 5 and 11 settled by Nik; both requirements reworded, no code change
 - [x] Header band retuned: the neutral fill made light-theme headers the heaviest surface in the rail
+- [x] Band-weight guard across all fourteen themes, verified to fail both too-heavy and too-faint
+- [x] Independent review of the band retune (Codex, 2026-08-06) — two test overclaims fixed, no production defect

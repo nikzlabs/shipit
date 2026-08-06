@@ -36,8 +36,13 @@ function groupEdgeStyle(color: string | undefined): React.CSSProperties | undefi
 /**
  * The header band: a wash of the group's OWN color rather than a neutral fill
  * (`header-band-weight.html`, option E). See `--repo-band-mix` in `index.css`
- * for why it's this faint. Composited over the opaque rail background, so the
- * result is itself opaque — required, because the header is sticky.
+ * for why it's this faint.
+ *
+ * The result must be OPAQUE, because the header is sticky. Note `color-mix`
+ * interpolates rather than compositing, so mixing over an opaque backdrop does
+ * NOT launder a translucent input — the output alpha is the interpolated one.
+ * Both inputs are therefore required to be opaque, which `repo-palette.test.ts`
+ * asserts for the palette AND for the semantic tokens Ops and Sandbox pass in.
  */
 export function groupBandFill(color: string): string {
   return `color-mix(in srgb, ${color} var(--repo-band-mix), var(--color-bg-primary))`;
@@ -48,10 +53,11 @@ function groupBandStyle(color: string | undefined): React.CSSProperties | undefi
 }
 
 /**
- * Always on the header, in every state. When the group has a color the inline
- * band overrides it; when it doesn't — unseparated, or a repo row written
- * before the color backfill — this IS the fill, so a sticky header is never
- * left transparent for rows to scroll through.
+ * Always on the header, in every state. Not a layer *beneath* the wash — the
+ * inline `background-color` simply wins where there is one. This is the FALLBACK
+ * for the two states that produce no wash at all (unseparated, and a repo row
+ * written before the color backfill), so a sticky header is never left
+ * transparent for rows to scroll through.
  */
 const HEADER_BASE_CLASS = "bg-(--color-bg-primary)";
 

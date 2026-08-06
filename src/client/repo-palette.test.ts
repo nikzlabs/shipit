@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { REPO_COLOR_COUNT } from "../server/shared/repo-colors.js";
+import { groupBandFill } from "./components/SessionSidebar/SessionGroup.js";
 
 /**
  * docs/254 req 9 — the repo-identity palette must not be mistakable for the
@@ -189,6 +190,17 @@ describe("docs/254 — repo palette vs status colors", () => {
  * far less headroom. The light ceiling is set below the value that shipped and
  * looked wrong (Claude Light's `bg-tertiary`, 1.25), so reverting to a neutral
  * fill fails here rather than in someone's eyes.
+ *
+ * WHAT THIS DOES NOT ESTABLISH (raised in the Codex review of PR #2045). Every
+ * measurement here is band-against-RAIL. It is tempting to read that as "the
+ * header never outweighs its own rows", and it is not the same claim: the rows'
+ * own highlight (`--color-bg-secondary`) varies far more across themes than the
+ * band does — from 1.045 (`light`) to 1.155 (`solarized`) against the rail — so
+ * band-under-row holds in Claude Light (1.108 < 1.120) and Solarized Light but
+ * NOT in `light`, `codex-light`, `cool-light` or `warm-light`, where the band
+ * sits a hair above a very weak row highlight. Asserting band < row would fail
+ * on four shipped themes today, so it isn't the rule; these are aesthetic
+ * regression guardrails, not a proof that no visually heavy result can pass.
  */
 describe("docs/254 — header band weight", () => {
   const MIN_SEPARATION = 1.04; // below this the band stops reading as a header at all
@@ -258,13 +270,58 @@ describe("docs/254 — header band weight", () => {
     expect(mixes.dark).toBeGreaterThan(0);
   });
 
+  // Everything below models `color-mix` in sRGB, in plain arithmetic, entirely
+  // independently of the component. That independence is the point — and it is
+  // also the failure mode: switch the production helper to `srgb-linear` and
+  // these numbers would keep measuring the OLD algorithm while staying green.
+  // So pin the space the model assumes. If this fails, the model is what needs
+  // updating, not the assertion.
+  it("models the same color space production actually mixes in", () => {
+    expect(groupBandFill("#123456").startsWith("color-mix(in srgb,")).toBe(true);
+  });
+
+  // The band is only opaque because BOTH color-mix inputs are. `color-mix` does
+  // not composite onto an opaque backdrop — it interpolates, so mixing a
+  // translucent color with an opaque one yields a translucent result, and the
+  // sticky header would let session rows scroll through it again. The rail
+  // background is opaque by construction; these are the foreground inputs, and
+  // they include the two SEMANTIC tokens the Ops and Sandbox groups feed in,
+  // which are not part of the palette and so are checked nowhere else.
+  it("feeds the band only opaque colors, in every theme", () => {
+    const opaque = /^#[0-9a-fA-F]{6}$/;
+    for (const surface of ["light", "dark"] as const) {
+      for (const [i, c] of palette[surface].entries()) {
+        expect(opaque.test(c), `--repo-color-${i} (${c}) is not an opaque 6-digit hex`).toBe(true);
+      }
+    }
+    // --color-warning (Ops) and --color-sandbox (Sandbox). Each is declared per
+    // theme, and --color-sandbox additionally in index.css for dark themes.
+    const sources = [
+      ...fs.readdirSync(themesDir).filter((f) => f.endsWith(".css")).map((f) => [f, path.join(themesDir, f)] as const),
+      ["index.css", cssPath] as const,
+    ];
+    let checked = 0;
+    for (const [label, file] of sources) {
+      const text = fs.readFileSync(file, "utf8");
+      for (const token of ["--color-warning", "--color-sandbox"]) {
+        for (const m of text.matchAll(new RegExp(`${token}:\\s*([^;]+);`, "g"))) {
+          expect(opaque.test(m[1].trim()), `${label}: ${token} is "${m[1].trim()}", which is not opaque`).toBe(true);
+          checked++;
+        }
+      }
+    }
+    expect(checked, "found no semantic band colors to check — did a token get renamed?").toBeGreaterThan(0);
+  });
+
   it("checks every theme that ships", () => {
     expect(rails.length).toBeGreaterThanOrEqual(14);
     expect(rails.some((r) => r.surface === "light")).toBe(true);
     expect(rails.some((r) => r.surface === "dark")).toBe(true);
   });
 
-  it("keeps the band faint enough that the header never outweighs its own rows", () => {
+  // Band-against-RAIL only — see the block comment for what that does and does
+  // not establish.
+  it("keeps the band's separation from the rail inside the faint range", () => {
     for (const rail of rails) {
       for (const [i, ratio] of bandsFor(rail).entries()) {
         expect(
