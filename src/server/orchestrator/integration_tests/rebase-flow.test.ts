@@ -197,6 +197,23 @@ async function collectMessages(timeoutMs = 3000): Promise<WsServerMessage[]> {
   return messages;
 }
 
+/**
+ * Wait until the agent has been run with a prompt containing `needle`.
+ *
+ * `waitForClaude`'s "not this instance" form doesn't fit here: the orchestrator
+ * may reuse the same process across turns, so identity can't distinguish turn N
+ * from turn N+1. The prompt text can.
+ */
+async function waitForPrompt(needle: string, timeoutMs = 5000): Promise<FakeClaudeProcess> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const c = latestClaude;
+    if (c?.runCalled && c.lastPrompt.includes(needle)) return c;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error(`Timed out waiting for a prompt containing "${needle}"`);
+}
+
 /** Wait until a message of the given type arrives. */
 async function waitForMessage(type: string, timeoutMs = 5000): Promise<WsServerMessage> {
   const deadline = Date.now() + timeoutMs;
@@ -229,6 +246,33 @@ describe("rebase flow: API + WS events", () => {
     await waitForMessage("rebase_started");
     const completeMsg = await waitForMessage("rebase_complete", 8_000);
     expect(completeMsg).toMatchObject({ type: "rebase_complete" });
+  });
+
+  // docs/221 — the user-visible half of a manual sync (the "Synced with main"
+  // card) already worked; the agent was never told. A sync runs with no turn in
+  // flight, so the notice is parked on the session and delivered by the next
+  // turn's prompt — this asserts the whole round trip, not just the DB write.
+  it("clean rebase — the next user turn's prompt carries the sync notice, once", { timeout: 25_000 }, async () => {
+    await githubAuth.setToken("test-token");
+    const { sessionId, sessionDir } = await createSession();
+    setupDivergence(sessionDir, { conflicting: false });
+
+    expect((await postRebase(sessionId, "main")).status).toBe(200);
+    await waitForMessage("rebase_complete", 8_000);
+
+    client.send({ type: "send_message", text: "carry on" });
+    const first = await waitForPrompt("carry on");
+    expect(first.lastPrompt).toContain("[System]");
+    expect(first.lastPrompt).toContain("origin/main");
+    first.finish("test-session-1");
+
+    // Delivered exactly once: the consume is read-and-clear, so a second turn
+    // must not re-litigate a sync the agent already heard about.
+    await collectMessages(500);
+    client.send({ type: "send_message", text: "and again" });
+    const second = await waitForPrompt("and again");
+    expect(second.lastPrompt).not.toContain("[System]");
+    second.finish("test-session-1");
   });
 
   it("up-to-date branch — emits rebase_complete without rebase_started", { timeout: 20_000 }, async () => {

@@ -306,6 +306,25 @@ export interface SessionInfo {
    * closed. Cleared by `clearMerged` on a docs/202 re-arm.
    */
   mergedHeadSha?: string;
+  /**
+   * docs/221 — a `[System] …` line the session's NEXT interactive agent turn must
+   * see, recorded by something that changed the workspace **out of band** while
+   * no turn was running: today, the manual "Sync with `<base>`" menu action
+   * (rebase onto the latest base, or the merged-branch reset). The automatic
+   * post-merge reset needs no slot — it runs inside the turn it speaks to, so it
+   * prepends its prefix directly (`pre-turn-reset.ts`).
+   *
+   * Persisted rather than held on the runner for the `secretBlock` reason: the
+   * runner dies when the session goes idle, and a user who syncs the branch and
+   * comes back tomorrow is exactly the case where the agent — resumed with a
+   * conversation that predates the rewrite — most needs telling.
+   *
+   * Single slot, last-write-wins: every writer describes the same thing (where
+   * this branch now points), so the newest one supersedes the older.
+   * `consumePendingAgentNotice` reads-and-clears it in one transaction, so a
+   * notice is delivered exactly once.
+   */
+  pendingAgentNotice?: string;
 }
 
 /**
