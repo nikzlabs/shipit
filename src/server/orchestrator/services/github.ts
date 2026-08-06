@@ -1166,7 +1166,12 @@ export async function viewPullRequest(
     if (!pr) return null;
     prNumber = pr.number;
   }
-  const pr = await githubAuthManager.viewPullRequest(remote.owner, remote.repo, prNumber);
+  // Read through the result-carrying variant so a 403 on a private repo (or a
+  // GitHub 5xx) surfaces as an error instead of "No pull request found" —
+  // failure and absence must stay distinguishable here too.
+  const read = await githubAuthManager.viewPullRequestResult(remote.owner, remote.repo, prNumber);
+  if (!read.ok) throw new ServiceError(502, `Failed to read PR #${prNumber}: ${read.error}`);
+  const pr = read.pr;
   if (!pr || options.comments !== true) return pr;
 
   // docs/255 — the conversation is a second round-trip, so it is fetched only

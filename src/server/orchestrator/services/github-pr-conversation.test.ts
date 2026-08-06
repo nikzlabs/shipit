@@ -35,6 +35,9 @@ function conversation() {
     reviews: [],
     reviewThreads: [],
     reviewDecision: "COMMENTED",
+    commentsTotal: 1,
+    reviewsTotal: 0,
+    reviewThreadsTotal: 0,
   };
 }
 
@@ -42,6 +45,7 @@ function makeGitHub(over: Record<string, unknown> = {}): GitHubAuthManager {
   return {
     authenticated: true,
     viewPullRequest: vi.fn(async () => pr()),
+    viewPullRequestResult: vi.fn(async () => ({ ok: true, pr: pr() })),
     viewPullRequestConversation: vi.fn(async () => ({ ok: true, conversation: conversation() })),
     ...over,
   } as unknown as GitHubAuthManager;
@@ -81,6 +85,17 @@ describe("viewPullRequest with comments", () => {
     });
     const res = await viewPullRequest(makeGit(), github, { remoteUrl: REMOTE, comments: true });
     expect(res).toBe(null);
+    expect(github.viewPullRequestConversation).not.toHaveBeenCalled();
+  });
+
+  it("raises a failed PR read instead of reporting it as 'no such PR'", async () => {
+    // A 403 on a private repo used to collapse to null and render as "No pull
+    // request found for this branch" — failure masquerading as absence.
+    const github = makeGitHub({
+      viewPullRequestResult: vi.fn(async () => ({ ok: false, error: "Resource not accessible" })),
+    });
+    await expect(viewPullRequest(makeGit(), github, { number: 5, remoteUrl: REMOTE }))
+      .rejects.toThrow("Resource not accessible");
     expect(github.viewPullRequestConversation).not.toHaveBeenCalled();
   });
 });

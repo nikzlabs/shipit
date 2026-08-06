@@ -476,6 +476,17 @@ export class StubGitHubAuthManager extends EventEmitter {
     return this._viewPrResult;
   }
 
+  /** docs/255 — the failure-distinguishing read behind `gh pr view`. */
+  private _viewPrError: string | null = null;
+  /** Make the PR read fail (a 403/5xx), as opposed to returning "no such PR". */
+  setViewPrError(error: string | null) {
+    this._viewPrError = error;
+  }
+  async viewPullRequestResult(_owner: string, _repo: string, _pullNumber: number) {
+    if (this._viewPrError) return { ok: false as const, error: this._viewPrError };
+    return { ok: true as const, pr: this._viewPrResult };
+  }
+
   /**
    * docs/255 — `gh pr view --comments`. Defaults to an empty-but-successful
    * conversation; `setConversationResult` injects comments or a failed read.

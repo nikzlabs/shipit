@@ -51,6 +51,12 @@ export const UNTRUSTED_SOURCE_DESCRIPTIONS = {
   mcp: "an MCP tool response",
   /** Issue-tracker free-text (title/body/comments). Enrolled by SHI-85. */
   issue: "an issue tracker",
+  /**
+   * Pull-request comments, review summaries, and inline review threads, read
+   * through the `gh` shim. Enrolled by docs/255 — same reasoning as `issue`:
+   * anyone who can comment on the PR authors this text.
+   */
+  pr: "a pull request's comments and review feedback",
 } as const;
 
 export type UntrustedSource = keyof typeof UNTRUSTED_SOURCE_DESCRIPTIONS;
@@ -61,6 +67,7 @@ const SOURCE_LABELS: Record<UntrustedSource, string> = {
   web: "WEB CONTENT",
   mcp: "MCP TOOL RESULT",
   issue: "ISSUE CONTENT",
+  pr: "PULL REQUEST CONTENT",
 };
 
 /** Marker that opens an untrusted envelope. Exported for tests / SHI-85. */

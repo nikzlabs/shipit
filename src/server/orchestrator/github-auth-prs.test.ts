@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { viewPullRequestConversation, viewPullRequest } from "./github-auth-prs.js";
+import { viewPullRequestConversation, viewPullRequest, viewPullRequestResult } from "./github-auth-prs.js";
 
 function mockFetch(payload: unknown, status = 200): void {
   vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -109,12 +109,106 @@ describe("viewPullRequestConversation", () => {
     expect(res.ok).toBe(false);
   });
 
+  it("reports GitHub's totals, so a windowed fetch cannot look complete", async () => {
+    // 62 comments exist; the query returns the most recent 50. Reporting 50 as
+    // the total would tell the agent it had read everything.
+    mockFetch(graphqlPr({
+      comments: {
+        totalCount: 62,
+        nodes: [{ id: "c1", body: "x", createdAt: "", url: "", author: { login: "a" } }],
+      },
+      reviewThreads: {
+        totalCount: 51,
+        nodes: [{
+          id: "t1", isResolved: false, isOutdated: false, path: "f.ts", line: 1, originalLine: null,
+          comments: { totalCount: 3, nodes: [{ id: "tc", body: "y", createdAt: "", url: "", diffHunk: "", author: null }] },
+        }],
+      },
+    }));
+    const res = await viewPullRequestConversation("tok", "o", "r", 7);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.conversation.commentsTotal).toBe(62);
+    expect(res.conversation.comments).toHaveLength(1);
+    expect(res.conversation.reviewThreadsTotal).toBe(51);
+    expect(res.conversation.reviewThreads[0].commentsTotal).toBe(3);
+  });
+
+  it("never reports a total below what it returns", async () => {
+    mockFetch(graphqlPr({
+      comments: {
+        totalCount: 0,
+        nodes: [{ id: "c1", body: "x", createdAt: "", url: "", author: null }],
+      },
+    }));
+    const res = await viewPullRequestConversation("tok", "o", "r", 7);
+    expect(res.ok && res.conversation.commentsTotal).toBe(1);
+  });
+
+  it("discounts filtered PENDING reviews from the reported review total", async () => {
+    mockFetch(graphqlPr({
+      reviews: {
+        totalCount: 4,
+        nodes: [
+          { id: "r1", body: "", state: "PENDING", submittedAt: null, url: "", author: null },
+          { id: "r2", body: "", state: "APPROVED", submittedAt: "", url: "", author: null },
+        ],
+      },
+    }));
+    const res = await viewPullRequestConversation("tok", "o", "r", 7);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // 4 total minus the 1 PENDING we dropped.
+    expect(res.conversation.reviewsTotal).toBe(3);
+    expect(res.conversation.reviews).toHaveLength(1);
+  });
+
+  it("keeps originalLine so an outdated thread still says where it points", async () => {
+    mockFetch(graphqlPr({
+      reviewThreads: {
+        nodes: [{
+          id: "t1", isResolved: false, isOutdated: true, path: "src/foo.ts",
+          line: null, originalLine: 17,
+          comments: { nodes: [{ id: "tc", body: "here", createdAt: "", url: "", diffHunk: "@@", author: null }] },
+        }],
+      },
+    }));
+    const res = await viewPullRequestConversation("tok", "o", "r", 7);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.conversation.reviewThreads[0]).toMatchObject({ line: null, originalLine: 17 });
+  });
+
   it("reports a missing PR instead of returning an empty conversation", async () => {
     mockFetch({ data: { repository: { pullRequest: null } } });
     const res = await viewPullRequestConversation("tok", "o", "r", 7);
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.error).toContain("#7");
+  });
+});
+
+describe("viewPullRequestResult", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("treats 404 as 'no such PR'", async () => {
+    mockFetch({ message: "Not Found" }, 404);
+    expect(await viewPullRequestResult("tok", "o", "r", 3)).toEqual({ ok: true, pr: null });
+  });
+
+  it("treats any other failure as an error, not as absence", async () => {
+    // The distinction that matters on a private repo: 403 must not render as
+    // "No pull request found for this branch".
+    mockFetch({ message: "Resource not accessible by integration" }, 403);
+    const res = await viewPullRequestResult("tok", "o", "r", 3);
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toContain("Resource not accessible");
+  });
+
+  it("still collapses both to null for viewPullRequest's existing callers", async () => {
+    mockFetch({ message: "boom" }, 500);
+    expect(await viewPullRequest("tok", "o", "r", 3)).toBe(null);
   });
 });
 

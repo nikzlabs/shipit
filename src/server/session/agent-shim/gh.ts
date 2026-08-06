@@ -40,10 +40,12 @@
  * For documentation: see /shipit-docs/github.md inside the container.
  */
 
+import { wrapUntrustedContent } from "../../shared/untrusted-input.js";
 import {
   applyJq,
   asString,
   callBroker,
+  capText,
   defaultIO,
   fail,
   filterJson,
@@ -263,9 +265,15 @@ function jsonFields(
   supported: string[],
 ): string[] {
   const available = `Supported fields for ${command}: ${supported.join(", ")}`;
-  const fields = raw.split(",").map((s) => s.trim()).filter(Boolean);
-  if (fields.length === 0) {
+  const fields = raw.split(",").map((s) => s.trim());
+  if (raw.trim() === "") {
     fail(deps.io, `${command}: --json needs at least one comma-separated field.\n${available}`);
+  }
+  // An empty component (`--json title,,state`, a trailing comma) is a typo, and
+  // dropping it quietly is the same silent-acceptance this validation exists to
+  // remove — say so rather than proceeding with what survived the split.
+  if (fields.some((f) => f === "")) {
+    fail(deps.io, `${command}: --json has an empty field name in "${raw}".\n${available}`);
   }
   const unknown = fields.filter((f) => !supported.includes(f));
   if (unknown.length > 0) {
@@ -446,7 +454,7 @@ async function handlePrView(args: string[], deps: RunDeps): Promise<void> {
     if (conversationError) {
       deps.io.stderr(`Note: this PR's comments could not be read: ${conversationError}\n`);
     } else if (wantsComments) {
-      lines.push(...renderConversation(pr));
+      lines.push("", renderConversation(pr));
     } else {
       lines.push("", conversationSummary(pr));
     }
@@ -459,6 +467,13 @@ async function handlePrView(args: string[], deps: RunDeps): Promise<void> {
 // ---------------------------------------------------------------------------
 // PR conversation rendering (docs/255)
 // ---------------------------------------------------------------------------
+
+/**
+ * Cap on the rendered conversation. A PR discussion is unbounded in principle;
+ * this keeps one `--comments` read from swallowing the agent's context. The
+ * envelope says when it clipped.
+ */
+const MAX_CONVERSATION_CHARS = 40_000;
 
 /** Pull the three conversation arrays off a PR payload. */
 function conversationOf(pr: Record<string, unknown>): {
@@ -473,6 +488,24 @@ function conversationOf(pr: Record<string, unknown>): {
     reviews: arr(pr.reviews),
     threads: arr(pr.reviewThreads),
   };
+}
+
+/**
+ * How many of each kind GitHub actually holds, which is NOT the same as how
+ * many we fetched: the query is bounded, so a very busy PR returns a window.
+ * Reporting the fetched length as the total would tell the agent it had read
+ * everything when it hadn't — the same "looks complete, isn't" failure this
+ * feature exists to remove. `*Total` comes back from the orchestrator; a
+ * missing one falls back to the fetched length.
+ */
+function totalOf(pr: Record<string, unknown>, key: string, fetched: number): number {
+  const value = pr[key];
+  return typeof value === "number" && value >= fetched ? value : fetched;
+}
+
+/** ` (showing the N most recent)` when the fetch was windowed, else "". */
+function windowNote(total: number, fetched: number): string {
+  return total > fetched ? ` (showing ${fetched})` : "";
 }
 
 /** `@login` for a comment/review author, or `@ghost` for a deleted account. */
@@ -493,39 +526,64 @@ function plural(n: number, word: string): string {
  */
 function conversationSummary(pr: Record<string, unknown>): string {
   const { comments, reviews, threads } = conversationOf(pr);
-  if (comments.length === 0 && reviews.length === 0 && threads.length === 0) {
+  const commentTotal = totalOf(pr, "commentsTotal", comments.length);
+  const reviewTotal = totalOf(pr, "reviewsTotal", reviews.length);
+  const threadTotal = totalOf(pr, "reviewThreadsTotal", threads.length);
+  if (commentTotal === 0 && reviewTotal === 0 && threadTotal === 0) {
     return "No comments, reviews, or review threads.";
   }
   const parts: string[] = [];
-  if (comments.length > 0) parts.push(plural(comments.length, "comment"));
-  if (reviews.length > 0) parts.push(plural(reviews.length, "review"));
-  if (threads.length > 0) {
+  if (commentTotal > 0) parts.push(plural(commentTotal, "comment"));
+  if (reviewTotal > 0) parts.push(plural(reviewTotal, "review"));
+  if (threadTotal > 0) {
     const unresolved = threads.filter((t) => t.isResolved !== true).length;
-    parts.push(`${plural(threads.length, "review thread")}${unresolved > 0 ? ` (${unresolved} unresolved)` : ""}`);
+    parts.push(`${plural(threadTotal, "review thread")}${unresolved > 0 ? ` (${unresolved} unresolved)` : ""}`);
   }
   const num = asString(pr.number);
   return `${parts.join(" · ")} — run \`gh pr view ${num} --comments\` to read them.`;
 }
 
-/** Full `--comments` rendering: conversation comments, reviews, inline threads. */
-function renderConversation(pr: Record<string, unknown>): string[] {
+/** `path:line` for an inline thread, falling back to where it was written. */
+function threadLocation(t: Record<string, unknown>): string {
+  const path = asString(t.path) || "(file unknown)";
+  // An OUTDATED thread has no current `line` — GitHub only keeps the line it
+  // was originally left on. Without the fallback the most common review
+  // finding (one whose code has since moved) would render as a bare filename.
+  const line = t.line ?? t.originalLine;
+  if (line === null || line === undefined) return path;
+  return `${path}:${asString(line)}`;
+}
+
+/**
+ * Full `--comments` rendering: conversation comments, reviews, inline threads.
+ *
+ * Every byte here is authored by whoever can comment on the PR — on a public
+ * repo, anyone — so the whole block goes through the SHI-98 untrusted-input
+ * envelope (`shared/untrusted-input.ts`, `source: "pr"`), exactly as the
+ * `shipit issue` shim does with issue comments. It is data to read, never
+ * instructions to follow.
+ */
+function renderConversation(pr: Record<string, unknown>): string {
   const { comments, reviews, threads } = conversationOf(pr);
+  const commentTotal = totalOf(pr, "commentsTotal", comments.length);
+  const reviewTotal = totalOf(pr, "reviewsTotal", reviews.length);
+  const threadTotal = totalOf(pr, "reviewThreadsTotal", threads.length);
   const out: string[] = [];
 
-  if (comments.length === 0 && reviews.length === 0 && threads.length === 0) {
-    out.push("", "No comments, reviews, or review threads.");
-    return out;
+  if (commentTotal === 0 && reviewTotal === 0 && threadTotal === 0) {
+    return "No comments, reviews, or review threads.";
   }
 
   if (comments.length > 0) {
-    out.push("", `--- Comments (${comments.length}) ---`);
+    out.push(`--- Comments (${commentTotal}${windowNote(commentTotal, comments.length)}) ---`);
     for (const c of comments) {
       out.push("", `${authorOf(c)} · ${asString(c.createdAt)}`, asString(c.body));
     }
   }
 
   if (reviews.length > 0) {
-    out.push("", `--- Reviews (${reviews.length}) ---`);
+    if (out.length > 0) out.push("");
+    out.push(`--- Reviews (${reviewTotal}${windowNote(reviewTotal, reviews.length)}) ---`);
     for (const r of reviews) {
       out.push("", `${authorOf(r)} ${asString(r.state)} · ${asString(r.submittedAt)}`);
       const body = asString(r.body);
@@ -535,15 +593,14 @@ function renderConversation(pr: Record<string, unknown>): string[] {
 
   if (threads.length > 0) {
     const unresolved = threads.filter((t) => t.isResolved !== true).length;
-    out.push("", `--- Review threads (${threads.length}, ${unresolved} unresolved) ---`);
+    if (out.length > 0) out.push("");
+    out.push(`--- Review threads (${threadTotal}${windowNote(threadTotal, threads.length)}, ${unresolved} unresolved) ---`);
     for (const t of threads) {
-      const path = asString(t.path) || "(file unknown)";
-      const line = t.line === null || t.line === undefined ? "" : `:${asString(t.line)}`;
       const flags = [
         t.isResolved === true ? "resolved" : "unresolved",
         ...(t.isOutdated === true ? ["outdated"] : []),
       ].join(", ");
-      out.push("", `${path}${line} [${flags}]`);
+      out.push("", `${threadLocation(t)} [${flags}]`);
       const hunk = asString(t.diffHunk);
       if (hunk.trim()) out.push(...hunk.split("\n").map((l) => `  ${l}`));
       for (const c of (Array.isArray(t.comments) ? (t.comments as Record<string, unknown>[]) : [])) {
@@ -551,7 +608,18 @@ function renderConversation(pr: Record<string, unknown>): string[] {
       }
     }
   }
-  return out;
+
+  // Totals without bodies (an inconsistent payload) must not render as an
+  // empty envelope — say what we know instead.
+  if (out.length === 0) return "No comments, reviews, or review threads.";
+
+  const { text, truncated } = capText(out.join("\n"), MAX_CONVERSATION_CHARS);
+  return wrapUntrustedContent({
+    source: "pr",
+    content: text,
+    provenance: `pull request #${asString(pr.number)} — anyone who can comment authors this`,
+    truncated,
+  });
 }
 
 async function handlePrList(args: string[], deps: RunDeps): Promise<void> {

@@ -13,4 +13,10 @@
 - [x] Tests: shim (`gh.test.ts`), fetch layer (`github-auth-prs.test.ts`), service (`github-pr-conversation.test.ts`)
 - [x] `/shipit-docs/github.md` updated: subcommand table, "Reading review feedback", field lists, exit codes
 - [x] `npm run lint:dev` + `npm run typecheck` clean
-- [x] Cross-backend review (Codex), findings addressed
+- [x] Cross-backend review (Codex), findings addressed:
+  - [x] PR review text wrapped in the SHI-98 untrusted-input envelope (new `pr` source), size-capped
+  - [x] GraphQL `totalCount` carried through, so a windowed fetch can't look complete
+  - [x] `originalLine` fallback, so an outdated thread still names its line
+  - [x] An empty field name inside a `--json` list is an error, not silently dropped
+  - [x] A failed PR read (403/5xx) no longer renders as "No pull request found"
+  - [x] Relay test asserting `comments=true` is forwarded only when asked

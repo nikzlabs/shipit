@@ -7,7 +7,7 @@ import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper,
 import { GitHubAppTokenMinter } from "./github-app-token.js";
 // Sub-module imports — delegated implementations
 import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl, checkRepoWriteAccess as checkRepoWriteAccessImpl, listOrgs as listOrgsImpl } from "./github-auth-repos.js";
-import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, addLabelsToPullRequest as addLabelsToPullRequestImpl, removeLabelFromPullRequest as removeLabelFromPullRequestImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, viewPullRequestConversation as viewPullRequestConversationImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
+import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, addLabelsToPullRequest as addLabelsToPullRequestImpl, removeLabelFromPullRequest as removeLabelFromPullRequestImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, viewPullRequestResult as viewPullRequestResultImpl, viewPullRequestConversation as viewPullRequestConversationImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
 import type { PullRequestDetail, PrConversation } from "./github-auth-prs.js";
 import { getCheckStatus as getCheckStatusImpl, getCheckRunAnnotations as getCheckRunAnnotationsImpl, getJobLogs as getJobLogsImpl } from "./github-auth-checks.js";
 import {
@@ -748,6 +748,21 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   /**
+   * Same read, distinguishing "no such PR" from "the read failed" (docs/255).
+   * `gh pr view` uses this so a 403/5xx never renders as "No pull request
+   * found"; the collapsing `viewPullRequest` above stays for callers that
+   * treat a failed read as "no extra info".
+   */
+  async viewPullRequestResult(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+  ): Promise<{ ok: true; pr: PullRequestDetail | null } | { ok: false; error: string }> {
+    if (!this._token) return { ok: false, error: "Not authenticated with GitHub" };
+    return viewPullRequestResultImpl(this._token, owner, repo, pullNumber);
+  }
+
+  /**
    * Fetch a PR's conversation — issue comments, review submissions, and inline
    * review threads (docs/255). Read-only; the write side of review threads
    * lives in `services/github-pr-comments.ts`.
@@ -1067,7 +1082,7 @@ export class GitHubAuthManager extends EventEmitter {
 
 // Barrel re-exports from sub-modules for backwards compatibility
 export { createRepo, listUserRepos, searchRepos, listOrgs } from "./github-auth-repos.js";
-export { createPullRequest, findPullRequest, findPullRequestAnyState, mergePullRequest, enableAutoMerge, disableAutoMerge, updatePullRequest, addPullRequestComment, addLabelsToPullRequest, removeLabelFromPullRequest, markPullRequestReady, listPullRequests, viewPullRequest, viewPullRequestConversation, getPullRequestNodeId } from "./github-auth-prs.js";
+export { viewPullRequestResult, createPullRequest, findPullRequest, findPullRequestAnyState, mergePullRequest, enableAutoMerge, disableAutoMerge, updatePullRequest, addPullRequestComment, addLabelsToPullRequest, removeLabelFromPullRequest, markPullRequestReady, listPullRequests, viewPullRequest, viewPullRequestConversation, getPullRequestNodeId } from "./github-auth-prs.js";
 export type { PullRequestDetail, PrConversation, PrConversationComment, PrConversationReview, PrConversationThread } from "./github-auth-prs.js";
 export { getCheckStatus, getCheckRunAnnotations, getJobLogs } from "./github-auth-checks.js";
 export { listWorkflowRuns, getWorkflowRun, listWorkflowRunJobs, listWorkflows, getWorkflow, rerunWorkflowRun, type WorkflowRunSummary, type WorkflowJobSummary, type WorkflowSummary, type RerunWorkflowRunResult } from "./github-auth-actions.js";

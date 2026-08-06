@@ -532,11 +532,36 @@ export async function viewPullRequest(
   repo: string,
   pullNumber: number,
 ): Promise<PullRequestDetail | null> {
+  const result = await viewPullRequestResult(token, owner, repo, pullNumber);
+  return result.ok ? result.pr : null;
+}
+
+/**
+ * Same read as `viewPullRequest`, but distinguishing "GitHub says this PR does
+ * not exist" from "the request failed".
+ *
+ * `viewPullRequest` collapses both to `null`, so `gh pr view` reported a 403 on
+ * a private repo — or a GitHub 5xx — as "No pull request found for this
+ * branch". That is the same failure-looks-like-absence confusion docs/255
+ * exists to remove, one layer down. The collapsing wrapper is kept because its
+ * other callers (the merge path's title/body lookup, the release poller) treat
+ * a failed read as "no extra info" and must not start throwing.
+ */
+export async function viewPullRequestResult(
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+): Promise<{ ok: true; pr: PullRequestDetail | null } | { ok: false; error: string }> {
   const res = await fetchGitHub(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
     token,
   );
-  if (!res.ok) return null;
+  // 404 is the only status that genuinely means "no such PR". Anything else —
+  // 401/403 (no access), 5xx, rate limiting — is a failure to read, and the
+  // caller must be able to say so.
+  if (res.status === 404) return { ok: true, pr: null };
+  if (!res.ok) return { ok: false, error: await parseGitHubError(res) };
   const pr = (await res.json()) as {
     html_url: string; number: number;
     base: { ref: string }; head: { ref: string };
@@ -548,28 +573,31 @@ export async function viewPullRequest(
     created_at?: string; updated_at?: string; merged_at?: string | null;
   };
   return {
-    url: pr.html_url,
-    number: pr.number,
-    base: pr.base.ref,
-    head: pr.head.ref,
-    baseRefName: pr.base.ref,
-    headRefName: pr.head.ref,
-    title: pr.title,
-    body: pr.body ?? "",
-    state: pr.state,
-    isDraft: pr.draft,
-    merged: pr.merged,
-    additions: pr.additions,
-    deletions: pr.deletions,
-    author: pr.user?.login ? { login: pr.user.login } : null,
-    labels: (pr.labels ?? []).map((l) => ({
-      name: l.name ?? "",
-      color: l.color ?? "",
-      description: l.description ?? "",
-    })),
-    createdAt: pr.created_at ?? "",
-    updatedAt: pr.updated_at ?? "",
-    mergedAt: pr.merged_at ?? null,
+    ok: true,
+    pr: {
+      url: pr.html_url,
+      number: pr.number,
+      base: pr.base.ref,
+      head: pr.head.ref,
+      baseRefName: pr.base.ref,
+      headRefName: pr.head.ref,
+      title: pr.title,
+      body: pr.body ?? "",
+      state: pr.state,
+      isDraft: pr.draft,
+      merged: pr.merged,
+      additions: pr.additions,
+      deletions: pr.deletions,
+      author: pr.user?.login ? { login: pr.user.login } : null,
+      labels: (pr.labels ?? []).map((l) => ({
+        name: l.name ?? "",
+        color: l.color ?? "",
+        description: l.description ?? "",
+      })),
+      createdAt: pr.created_at ?? "",
+      updatedAt: pr.updated_at ?? "",
+      mergedAt: pr.merged_at ?? null,
+    },
   };
 }
 
@@ -609,10 +637,20 @@ export interface PrConversationThread {
   isResolved: boolean;
   isOutdated: boolean;
   path: string | null;
+  /** The thread's line in the CURRENT diff — null once the thread is outdated. */
   line: number | null;
+  /**
+   * The line the thread was originally left on. GitHub keeps this after the
+   * code moves, so it is the only location an outdated thread has — and
+   * outdated threads are exactly the common case for a review you're reading
+   * after pushing a fix.
+   */
+  originalLine: number | null;
   /** The diff context the thread was left on (from its first comment). */
   diffHunk: string;
   comments: PrConversationComment[];
+  /** Total comments on the thread; `comments.length` may be a window of it. */
+  commentsTotal: number;
 }
 
 export interface PrConversation {
@@ -621,13 +659,24 @@ export interface PrConversation {
   reviewThreads: PrConversationThread[];
   /** APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | null (no review required). */
   reviewDecision: string | null;
+  /**
+   * How many GitHub actually holds, which is NOT `array.length`: the query is
+   * bounded (see the limits below), so a very busy PR comes back windowed.
+   * Without these the shim would print the window size as the total and tell
+   * the agent it had read everything — the same "looks complete, isn't"
+   * failure this feature exists to remove.
+   */
+  commentsTotal: number;
+  reviewsTotal: number;
+  reviewThreadsTotal: number;
 }
 
 /**
  * Bounds on the conversation query, mirroring the PR-status poller's caps
  * (`pr-status-parser.ts`): recent-first for the timeline, generous but finite
  * for threads. A conversation past these bounds is vanishingly rare, and the
- * caps keep one `gh pr view --comments` from pulling an unbounded payload.
+ * caps keep one `gh pr view --comments` from pulling an unbounded payload —
+ * the `*Total` fields above report what was left outside the window.
  */
 const CONVERSATION_COMMENT_LIMIT = 50;
 const CONVERSATION_REVIEW_LIMIT = 30;
@@ -640,19 +689,24 @@ query($owner: String!, $name: String!, $number: Int!) {
     pullRequest(number: $number) {
       reviewDecision
       comments(last: ${CONVERSATION_COMMENT_LIMIT}) {
+        totalCount
         nodes { id body createdAt url author { login } }
       }
       reviews(last: ${CONVERSATION_REVIEW_LIMIT}) {
+        totalCount
         nodes { id body state submittedAt url author { login } }
       }
       reviewThreads(first: ${CONVERSATION_THREAD_LIMIT}) {
+        totalCount
         nodes {
           id
           isResolved
           isOutdated
           path
           line
+          originalLine
           comments(first: ${CONVERSATION_THREAD_COMMENT_LIMIT}) {
+            totalCount
             nodes { id body createdAt url diffHunk author { login } }
           }
         }
@@ -668,6 +722,15 @@ interface RawConversationComment {
   url: string | null;
   diffHunk?: string | null;
   author: { login: string } | null;
+}
+
+/**
+ * GitHub's `totalCount` for a connection, floored at how many we actually
+ * received — a total below the list we return would be nonsense, and a missing
+ * one means "assume we have them all".
+ */
+function totalOrLength(total: number | undefined, length: number): number {
+  return typeof total === "number" && total > length ? total : length;
 }
 
 function mapComment(c: RawConversationComment): PrConversationComment {
@@ -707,13 +770,15 @@ export async function viewPullRequestConversation(
         repository?: {
           pullRequest?: {
             reviewDecision: string | null;
-            comments?: { nodes: RawConversationComment[] | null } | null;
+            comments?: { totalCount?: number; nodes: RawConversationComment[] | null } | null;
             reviews?: {
+              totalCount?: number;
               nodes:
                 | (RawConversationComment & { state: string; submittedAt: string | null })[]
                 | null;
             } | null;
             reviewThreads?: {
+              totalCount?: number;
               nodes:
                 | {
                     id: string;
@@ -721,7 +786,8 @@ export async function viewPullRequestConversation(
                     isOutdated: boolean;
                     path: string | null;
                     line: number | null;
-                    comments?: { nodes: RawConversationComment[] | null } | null;
+                    originalLine: number | null;
+                    comments?: { totalCount?: number; nodes: RawConversationComment[] | null } | null;
                   }[]
                 | null;
             } | null;
@@ -736,30 +802,42 @@ export async function viewPullRequestConversation(
     const pr = payload.data?.repository?.pullRequest;
     if (!pr) return { ok: false, error: `Pull request #${pullNumber} not found` };
 
+    const comments = (pr.comments?.nodes ?? []).map(mapComment);
+    // PENDING reviews are filtered out but still counted by `totalCount`, so
+    // derive the review total from what we kept plus whatever fell outside the
+    // window — never a number smaller than the list we return.
+    const rawReviews = pr.reviews?.nodes ?? [];
+    const reviews = rawReviews
+      .filter((r) => r.state !== "PENDING")
+      .map((r) => ({ ...mapComment(r), state: r.state, submittedAt: r.submittedAt ?? "" }));
+    const threads = (pr.reviewThreads?.nodes ?? []).map((t) => {
+      const threadComments = (t.comments?.nodes ?? []).map(mapComment);
+      return {
+        id: t.id,
+        isResolved: t.isResolved,
+        isOutdated: t.isOutdated,
+        path: t.path,
+        line: t.line,
+        originalLine: t.originalLine ?? null,
+        diffHunk: t.comments?.nodes?.[0]?.diffHunk ?? "",
+        comments: threadComments,
+        commentsTotal: totalOrLength(t.comments?.totalCount, threadComments.length),
+      };
+    });
+
     return {
       ok: true,
       conversation: {
         reviewDecision: pr.reviewDecision ?? null,
-        comments: (pr.comments?.nodes ?? []).map(mapComment),
-        reviews: (pr.reviews?.nodes ?? [])
-          .filter((r) => r.state !== "PENDING")
-          .map((r) => ({
-            ...mapComment(r),
-            state: r.state,
-            submittedAt: r.submittedAt ?? "",
-          })),
-        reviewThreads: (pr.reviewThreads?.nodes ?? []).map((t) => {
-          const comments = (t.comments?.nodes ?? []).map(mapComment);
-          return {
-            id: t.id,
-            isResolved: t.isResolved,
-            isOutdated: t.isOutdated,
-            path: t.path,
-            line: t.line,
-            diffHunk: t.comments?.nodes?.[0]?.diffHunk ?? "",
-            comments,
-          };
-        }),
+        comments,
+        reviews,
+        reviewThreads: threads,
+        commentsTotal: totalOrLength(pr.comments?.totalCount, comments.length),
+        reviewsTotal: Math.max(
+          reviews.length,
+          totalOrLength(pr.reviews?.totalCount, rawReviews.length) - (rawReviews.length - reviews.length),
+        ),
+        reviewThreadsTotal: totalOrLength(pr.reviewThreads?.totalCount, threads.length),
       },
     };
   } catch (err) {

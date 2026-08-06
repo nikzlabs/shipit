@@ -303,6 +303,18 @@ export async function callBroker(
  * through; everything else (null, undefined, objects) becomes the empty
  * string so we never write `[object Object]` or `null` into agent output.
  */
+/**
+ * Clamp `text` to `max` chars, reporting whether it was truncated. Shared by
+ * every shim surface that renders attacker-influenced free text inside an
+ * untrusted-input envelope (issue bodies/comments, PR review feedback) — the
+ * envelope's `truncated` flag comes from here, so a clipped block always says
+ * it was clipped.
+ */
+export function capText(text: string, max: number): { text: string; truncated: boolean } {
+  if (text.length <= max) return { text, truncated: false };
+  return { text: `${text.slice(0, max).trimEnd()}\n…[truncated]`, truncated: true };
+}
+
 export function asString(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);

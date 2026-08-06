@@ -95,9 +95,39 @@ names rather than on ordinary habits (req 7, resolved question 2).
 | `src/server/orchestrator/services/github.ts` | `viewPullRequest(..., { comments })` merges the conversation onto the PR, best-effort. |
 | `src/server/orchestrator/api-routes-github.ts` | `GET /api/sessions/:id/pr/view?comments=true`. |
 | `src/server/session/agent-ops-routes.ts` | forwards `comments` on `/agent-ops/pr/view`. |
-| `src/server/session/agent-shim/gh.ts` | `--comments` rendering, conversation-aware fetch policy, per-subcommand `--json` field validation. |
-| `src/server/session/agent-shim/shim-common.ts` | `validateJsonFields()` helper shared by every `--json` subcommand. |
+| `src/server/session/agent-shim/gh.ts` | `--comments` rendering (inside the untrusted-input envelope), conversation-aware fetch policy, per-subcommand `--json` field validation. |
+| `src/server/session/agent-shim/shim-common.ts` | `capText()`, shared with the `shipit issue` shim's enveloped rendering. |
+| `src/server/shared/untrusted-input.ts` | new `pr` source — PR review text is attacker-authored, like issue text. |
 | `src/server/shipit-docs/github.md` | agent-facing docs — supported-subcommand table, field lists, exit codes. |
+
+## Failure and absence stay distinguishable all the way down
+
+Three separate places could have re-created "unread feedback looks empty", and
+each is closed:
+
+- **A failed conversation read** → `conversationError`, never empty arrays.
+- **A windowed fetch** → the query is bounded (50 comments / 30 reviews / 50
+  threads), so `commentsTotal` / `reviewsTotal` / `reviewThreadsTotal` report
+  what GitHub actually holds and the rendering says `(showing N)`. Without them
+  a 62-comment PR would report "50 comments" and read as complete.
+- **A failed PR read** → `viewPullRequestResult()` treats only **404** as "no
+  such PR"; a 403 on a private repo or a 5xx becomes a 502 with GitHub's
+  message, instead of the shim's "No pull request found for this branch". The
+  collapsing `viewPullRequest()` stays for the callers that legitimately treat a
+  failed read as "no extra info" (the merge path's title/body lookup, the
+  release poller).
+
+An outdated inline thread has no current `line` — only `originalLine` — so both
+are carried and the renderer falls back, otherwise the most common review
+finding (one whose code has since moved) would render as a bare filename.
+
+## Review text is untrusted input
+
+Comment bodies, review summaries, and diff hunks are authored by whoever can
+comment on the PR — on a public repo, anyone. The plain `--comments` rendering
+therefore goes through the SHI-98 envelope (`shared/untrusted-input.ts`, new
+`pr` source), size-capped, exactly as the `shipit issue` shim treats issue text.
+The `--json` output stays structured: it is already unambiguously data.
 
 ## Non-goals
 
