@@ -2,7 +2,7 @@
 
 The design that implements these requirements is in [`plan.md`](./plan.md).
 
-No open questions remain.
+One open question is outstanding (req 14). Implementation is blocked until it is answered.
 
 ## Requirements
 
@@ -116,9 +116,26 @@ No open questions remain.
     running (req 11) — a remap is never invisible, and never leaves a session unable to
     take a turn.
 
+14. **Harnesses are not user-editable.** Nothing in Settings adds, defines, or removes a
+    harness: a harness is an agent CLI plus the adapter that normalizes its event stream,
+    so the set of them is ShipIt's, exactly as the service catalogue is (req 7).
+
+    Which harnesses a ShipIt install *has* is chosen **when ShipIt is installed**, from
+    the set ShipIt supports. Claude Code and Codex are selected by default, so an install
+    that accepts the defaults gets today's behaviour. A harness that was not installed
+    offers no models and appears nowhere in the picker — being installed is a
+    precondition of req 8's credential rule, not an exception to it.
+
 ## Open questions
 
-_None._
+- **Can the installed harness set change after install, without reinstalling ShipIt?**
+  The prior sketch of this idea (`docs/154-cursor-agent-adapter`, never implemented)
+  makes the choice a **session-image build** input — `INSTALL_CLAUDE_CLI` /
+  `INSTALL_CODEX_CLI` / `INSTALL_CURSOR_CLI` booleans written to
+  `/opt/shipit/agents/installed.json` during the image build. That is the cheapest thing
+  that satisfies req 14 as stated, but it means adding a harness later is a redeploy, not
+  a setting. The alternative — installing a harness into an existing deployment on demand
+  — is a materially larger piece of work and pulls against "not user-editable".
 
 ## Resolved questions
 
