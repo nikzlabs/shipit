@@ -13,14 +13,13 @@ Implements [`requirements.md`](./requirements.md), which has no open questions.
 ShipIt integrates **harnesses**, not models. `AgentProcess` spawns a CLI and
 normalizes its event stream; the model is a `--model` argument that CLI forwards to
 an API. So running a different vendor's model does not need a new backend — it needs
-the same CLI pointed at a different endpoint (reqs 1, 3).
+the same CLI pointed at a different endpoint (req 1).
 
 That is the whole mechanism, and it is why this is cheap. Everything expensive in an
 agent integration — the tool map, the event parsing, skills disclosure, MCP config,
-steering, permission modes, plan mode — belongs to the harness and is untouched
-(req 6).
+steering, permission modes, plan mode — belongs to the harness and is untouched.
 
-Untouched is not the same as guaranteed. Req 6 is **best-effort**: ShipIt adds no
+Untouched is not the same as guaranteed. Req 1 is **best-effort**: ShipIt adds no
 limitation of its own, and it cannot fix a harness or model either. This is worth
 knowing when triaging — a model that calls tools badly, ignores a plan-mode
 instruction, or produces weaker diffs is behaving as that model behaves. It is not a
@@ -40,7 +39,7 @@ A custom model keeps the first, replaces the second, and extends the third. Ther
 no way to say that today, and every awkwardness below is a symptom of that single
 gap. Resolving it is the real work; DeepSeek is just the first case that forces it.
 
-**The split the requirements settle on is three-way, not two-way** (reqs 7–9):
+**The split the requirements settle on is three-way, not two-way** (reqs 5–6):
 
 | Concept | Is | Identified by |
 |---|---|---|
@@ -49,17 +48,17 @@ gap. Resolving it is the real work; DeepSeek is just the first case that forces 
 | **Model** | a model id a service offers | the pair (serviceId, model id) |
 
 A service is *not* the credential. One service holds zero or more user-supplied
-credential routes — see the ownership table under Design, which req 15's "another
+credential routes — see the ownership table under Design, which req 12's "another
 subscription of the same service" depends on.
 
 A model id alone is **not** a global identifier: the same model is reachable through
 DeepSeek directly and through a gateway like OpenRouter, at different prices and
 possibly different API styles. Whatever the picker persists must therefore carry the
-service identity, or "the selected model's service" cannot be resolved and req 14
+service identity, or "the selected model's service" cannot be resolved and req 11
 cannot say which service billed a turn. This is a change from the spike, which keyed
 everything off a bare model id.
 
-Compatibility is **partly derived, partly declared** (reqs 8–9). Speaking a style is
+Compatibility is **partly derived, partly declared** (req 6). Speaking a style is
 necessary but not sufficient: a service also declares *which of its models* work under
 each style it speaks. A model is offered on a harness when the service speaks that
 harness's style and lists that model for it.
@@ -68,13 +67,15 @@ The declaration is not bureaucracy — it is the only honest way to express real
 DeepSeek speaks both styles yet supports only `deepseek-v4-flash` under Codex, and
 Codex additionally wants per-model metadata (context window, tool format, reasoning
 settings) beyond a bare id. A purely derived rule would list `deepseek-v4-pro` under
-Codex and let the turn fail. Nothing forbids that at runtime — req 11 is only about
+Codex and let the turn fail. Nothing forbids that at runtime — req 8 is only about
 credentials — so the catalogue is where it has to be prevented, by not listing the pair
-in the first place (req 8).
+in the first place (req 6).
 
-What still falls out cheaply is req 9: a new harness picks up every configured service
-that speaks its style, limited to the models already declared for it. Nothing has to
-enumerate harness×service pairs by hand.
+A consequence worth noting, though not a requirement of its own: a harness added later
+picks up every configured service that speaks its style, limited to the models already
+declared for it. Nothing has to enumerate harness×service pairs by hand. This used to be
+stated as a separate requirement; it was deleted as derivable from the offering rule
+above.
 
 This is also why "should we support OpenAI-compatible providers?" was the wrong
 question. It is not a scope boundary; it is a property of each service, and it decides
@@ -103,7 +104,7 @@ gated by `isAllowedAgentEnvKey` (`agent-registry.ts:314`).
 2. `ALLOWED_ENV_KEYS` is a **compile-time constant** (`agent-registry.ts:303`), so one
    key name per service means one code change per service.
 
-   This *used* to contradict req 10, when req 10 promised that trying a new service
+   This *used* to contradict req 7, when req 7 promised that trying a new service
    needed no release. It no longer does: the catalogue ships with ShipIt, so a new
    service is already a ShipIt change, and adding its key name in the same change costs
    nothing extra. **The requirement that justified building a runtime credential
@@ -111,7 +112,7 @@ gated by `isAllowedAgentEnvKey` (`agent-registry.ts:314`).
    key name per catalogue service is now the simpler and sufficient answer.
 
 The compose gap in (1) is unaffected and still has to be closed, on its own merits
-rather than as a consequence of req 10.
+rather than as a consequence of req 7.
 
 ### The credential-scrub only applies to local mode
 
@@ -154,7 +155,7 @@ than hardcoding one endpoint.)
 DeepSeek itself speaks **both** — the `/anthropic` endpoint and, per its own docs, the
 OpenAI Responses API with a Codex adaptation. So one DeepSeek key surfaces models under
 both harnesses — but *not necessarily the same models*: only `deepseek-v4-flash` is
-supported under Codex today, which is precisely why req 8 makes the per-model
+supported under Codex today, which is precisely why req 6 makes the per-model
 declaration part of the service rather than deriving it from the style set. An
 OpenAI-style-only service surfaces under Codex alone.
 
@@ -167,7 +168,7 @@ OpenAI-style-only service surfaces under Codex alone.
    review: session naming *does* have a credential seam, selecting the route a turn
    would use and passing that account's credential root
    (`graduate-session.ts:250`, `session-namer.ts:28`); it is implicit and agent-bound,
-   not absent. What it lacks is an *explicit, user-selected* model (req 12). PR
+   not absent. What it lacks is an *explicit, user-selected* model (req 9). PR
    descriptions go through `generateText`, which in containerized production has no
    in-process factory and returns an empty string rather than spawning at all
    (`app-di.ts:485`) — so it degrades silently instead of failing.
@@ -180,7 +181,7 @@ same gap as above, surfacing twice. Neither should be patched individually.
 The third symptom, an **empty usage pill** (`ClaudeLimitsProvider` is event-fed from
 `agent_rate_limits`, which a non-Anthropic service does not emit), was originally
 recorded here as a bug. It is not one: once the indicator is per-service, a service
-with no quota *should* show nothing (req 13). Kept in this list because the mistake is
+with no quota *should* show nothing (req 10). Kept in this list because the mistake is
 easy to repeat — the correct behavior is indistinguishable from the bug by inspection.
 
 ### Prompt caching is not portable
@@ -197,7 +198,7 @@ all", and **removed from this branch on 2026-08-05** once it had. It was never a
 implementation of these requirements: it hardcoded a single model id in `CLAUDE_MODELS`,
 hardcoded DeepSeek's endpoint, and made `hasAnyAuthForProvider`/`reservedRouteFor` treat
 a DeepSeek key as a Claude-provider route — an overstatement it accepted deliberately,
-and which req 11 now rules out. It was deleted rather than kept because shipping a
+and which req 8 now rules out. It was deleted rather than kept because shipping a
 design alongside an implementation that contradicts it is worse than shipping neither.
 The code is recoverable from this branch's history if anyone wants to re-run the
 experiment.
@@ -210,7 +211,7 @@ spike is scaffolding.
 
 ## Design
 
-Settled by the 2026-08-05 answers. **Every service is ShipIt-defined** (req 7) — there
+Settled by the 2026-08-05 answers. **Every service is ShipIt-defined** (req 5) — there
 is no user-authored service, only user-supplied credentials for services ShipIt ships.
 This feature adds **key-authenticated** services to that set; a subscription needs its
 own login, refresh and account handling, which is per-service ShipIt work, so
@@ -218,27 +219,25 @@ subscription-backed services remain the vendors already implemented.
 
 **Data model — two layers, with different owners.**
 
-*ShipIt ships the catalogue* (req 8): which services exist, which API styles each
+*ShipIt ships the catalogue* (req 6): which services exist, which API styles each
 speaks, and per style, which of its models work there plus any metadata that style needs
 (Codex wants context window, tool format and reasoning settings). This must be
-a **maintained subset**, not a mirror of everything a service offers (req 8). Only a
+a **maintained subset**, not a mirror of everything a service offers (req 6). Only a
 handful of models are worth using for coding at any time, so an aggregator advertising
 400+ models contributes a short curated list rather than 400 rows.
 
-That choice dissolves a tension rather than managing it. Per-model metadata — Codex's
-context window, tool format and reasoning settings — is only awkward when there are
-hundreds of models to state it for. With a curated subset it is simply stated per model,
-and no generation, family-rule scheme, or defaults-plus-exceptions machinery is needed.
-The cost is a judgement call ShipIt owns and revises: which models are worth carrying. A per-style endpoint belongs here too:
+Per-model metadata — Codex's context window, tool format and reasoning settings — is
+simply stated per model, there being few enough of them. The cost is a judgement call
+ShipIt owns and revises: which models are worth carrying. A per-style endpoint belongs here too:
 one base URL per service is wrong for a service whose styles live at different paths.
 
-*The user supplies credentials* (req 10) for the services they want to use. That is the
+*The user supplies credentials* (req 7) for the services they want to use. That is the
 whole of what they own; they are not authoring catalogue entries. The consequence is
-explicit in req 10 — a service ShipIt does not know about needs a ShipIt change.
+explicit in req 7 — a service ShipIt does not know about needs a ShipIt change.
 
 **Four distinct identities, which an earlier draft blurred into one.** This doc first
 called a service "a credential + endpoint" and later a ShipIt-owned catalogue row; those
-are different things, and req 15's "another subscription of the same service" only makes
+are different things, and req 12's "another subscription of the same service" only makes
 sense once they are separated:
 
 | Thing | Owner | Example |
@@ -249,15 +248,20 @@ sense once they are separated:
 | turn route | resolved per turn from the credential routes of that service | which key/account this turn used |
 
 One catalogue service can therefore hold several credential routes, which is exactly the
-case req 15 fails over between.
+case req 12 fails over between.
 
-Anthropic and OpenAI are catalogue rows like any other, not special cases (req 7).
+Anthropic and OpenAI are catalogue rows like any other, not special cases (req 5).
 `AgentId` keeps meaning *harness* only, and gains a declared API style.
 
 The picker's list for the active harness is then every `(service, model)` pair the
 service declares under that harness's style, filtered to services with a usable
-credential (reqs 9, 11). Note the entry is the **pair**, not the model id — the same id
+credential (reqs 6, 8). Note the entry is the **pair**, not the model id — the same id
 can come from more than one service at different prices.
+
+It stays **one picker**, listing every eligible model the same way regardless of which
+service provides it (req 3). A vendor's own models must not get a separate surface or a
+privileged position in this one — that is the same rule as "Anthropic is a catalogue row
+like any other", seen from the UI side.
 
 **Full separation is the point.** No code path should ask "which vendor's agent is
 this?" to decide anything about credentials. Concretely, req 2 means a user with only a
@@ -265,7 +269,7 @@ DeepSeek key runs the Claude Code harness with no Anthropic account anywhere in 
 system — so `providerAccountManager`'s per-`AgentId` account model has to become a
 per-*service* one, not gain a fallback branch.
 
-**Credential failure branches on credential type, not on the error** (req 15). This is
+**Credential failure branches on credential type, not on the error** (req 12). This is
 the load-bearing simplification: ShipIt does not classify the failure, it looks at how
 the failing service is authenticated — a fact it holds statically in the service row.
 A subscription fails over to another subscription *of the same service*; an API key
@@ -277,7 +281,7 @@ benching checks the route kind and bails for a reserved route
 (`bootstrap-managers.ts:442`), while the same-turn quota retry does not: it fires on
 `detectHardExhaustion(event.error)` alone (`turn-executor.ts:938`). A key-authenticated
 service answering "quota exceeded" would therefore be retried once on the same bad key,
-which is exactly what req 15 forbids. Both paths need the credential-kind gate.
+which is exactly what req 12 forbids. Both paths need the credential-kind gate.
 
 That also means there is no service re-prompt flow to build; an earlier draft proposed
 one. See the findings note above for what has to be *removed* instead.
@@ -289,18 +293,18 @@ them when stamping exhaustion (`:800`), and never routes onto pay-as-you-go beca
 subscription is unavailable (docs/150 req 12, `:605`). The work is to lift that from
 per-`AgentId` accounts to per-service credentials, not to invent a policy.
 
-**Eligibility** (req 11) moves from `hasAnyAuthForProvider(provider)` to a per-model
+**Eligibility** (req 8) moves from `hasAnyAuthForProvider(provider)` to a per-model
 question: *does the service offering this model have a credential?* With Anthropic as an
 ordinary service, "Claude with no account connected" and "DeepSeek with no key" become
 the same condition answered by the same code. This retires the spike's overstatement
 rather than patching it.
 
 Note the narrow scope: eligibility is a **credential** check and nothing more. It does
-not assert the model will work — that is req 6's best-effort territory — so there is no
+not assert the model will work — that is req 1's best-effort territory — so there is no
 runtime validation to build and no staleness policy to maintain. A model that stops
 working at its service is a catalogue update in the next ShipIt release.
 
-**Mid-session model switching** (req 5) is a capability question per harness, not a new
+**Mid-session model switching** (req 4) is a capability question per harness, not a new
 mechanism: the model is already a per-turn spawn argument, and `AgentCapabilities`
 already carries per-harness flags. A switch that crosses *services* additionally
 re-resolves the credential and base URL for the next spawn.
@@ -317,9 +321,9 @@ from `runParams.model` alone (`turn-executor.ts:1225`). Since the same model id 
 offered by two services, switching `deepseek-v4-flash` from DeepSeek direct to
 OpenRouter leaves the strings equal, no kill fires, and the next turn runs on the
 **old process with the old endpoint and old credential** — silently billing the wrong
-service and contradicting req 14.
+service and contradicting req 11.
 
-So req 5 does need a change after all: the resident process's identity must be the
+So req 4 does need a change after all: the resident process's identity must be the
 whole spawn-relevant tuple — harness, service, API style, endpoint, credential route,
 model — not a model string. This is the same `(service, model id)` identity the picker
 needs, applied one layer down; the two should share a representation rather than each
@@ -329,23 +333,21 @@ Note the correction this implies for "the model is already a per-turn spawn argu
 for a **resident** process it is not. Later turns are injected without spawning until
 that guard forces a boundary, which is precisely why the guard exists.
 
-**Credential delivery** reuses the existing pipe with **one** correction, not two. A
-compile-time key name per catalogue service is sufficient: req 10's narrowing means a
-new service already implies a ShipIt change, so naming its key in that same change costs
-nothing, and no runtime dynamic-key mechanism is warranted. What does still need
-building is the compose path — a compose-backed containerized session receives only
+**Credential delivery** reuses the existing pipe with **one** correction, not two: a
+compile-time key name per catalogue service is sufficient (see the finding above). What
+does still need building is the compose path — a compose-backed containerized session receives only
 compose-declared and `mcp__*` secrets, so a stored service key never reaches it.
 
 **Subscription credentials are out of scope for the services this feature adds**
-(req 7), which is what keeps credential delivery to one flow. Subscriptions travel through account
+(req 5), which is what keeps credential delivery to one flow. Subscriptions travel through account
 credential roots and filesystem mounts rather than `agentEnv`, and each needs its own
-login and refresh — the reason req 7 draws the line where it does. Existing
+login and refresh — the reason req 5 draws the line where it does. Existing
 subscription-backed vendors keep their current path unchanged.
 
 **Spawn shaping** sets the base URL and credential at both spawn sites, after the
 scrub, from the *selected model's* service rather than from a model-id prefix.
 
-**Non-turn work** (req 12) — session naming and PR descriptions run on a model the user
+**Non-turn work** (req 9) — session naming and PR descriptions run on a model the user
 chooses **for that purpose**, resolved independently of whatever the session is using.
 It is a `(service, model)` selection like any other, not a service alone: a service does
 not identify something callable. It surfaces as its own setting, and ShipIt ships a
@@ -363,12 +365,12 @@ today's behavior:
   `generateText` returns (`services/github.ts:1412`), and in containerized production
   that is the empty string (`app-di.ts:485`) — the generic prose lives only in the
   `catch`, so it is reached on a thrown error and not on a blank result. Satisfying
-  req 12 therefore means **normalizing a blank generation into the generic fallback**,
+  req 9 therefore means **normalizing a blank generation into the generic fallback**,
   with separate tests for the rejection path and the blank-success path.
 
 **The notice has to be durable, not a toast.** Session naming is fire-and-forget: it can
 finish while the user is looking at another session or with no viewer attached at all, so
-a transient toast would be silent in exactly the case req 12 exists to prevent. It should
+a transient toast would be silent in exactly the case req 9 exists to prevent. It should
 be transcript content, which brings it under ShipIt's persistence and session-scoping
 rules — persisted via `emitChatCard`, carrying its owning `sessionId`, registered in
 `TRANSCRIPT_SCOPED_MESSAGES` (see `docs/188`, `docs/191`). Dismissal is state on that
@@ -380,34 +382,31 @@ explicit setting is also the only version that can be *shown* to the user as bro
 when its service stops working. This is the one place with no existing seam at all, and
 the largest single piece of work here.
 
-**Retiring a catalogue entry** (req 16). Curation means removal is routine, so each
+**Retiring a catalogue entry** (req 13). Curation means removal is routine, so each
 service's catalogue row carries a map from its own retired model ids to their
 successors. A session pinned to a retired model resolves through its service's map at
 the point the model is read, and runs on the successor; the picker offers only current
 models.
 
 The map lives **inside a service and maps model id to model id** — it never crosses
-services. That is a requirement (req 16), and it is also what makes the mechanism
+services. That is a requirement (req 13), and it is also what makes the mechanism
 trivial: because `serviceId` is unchanged by a remap, the credential, the endpoint, the
 API style and the price are all unchanged too, so a remap cannot strand a session on a
-service the user has no credential for. An earlier draft keyed the map by
-`(serviceId, modelId)` pair *and* allowed a cross-service successor, which is what
-created that hole; scoping the map per service closes it by construction rather than by
-a check. Two services retiring the same model id toward different successors is still
-handled — each states its own successor in its own row.
+service the user has no credential for. Two services retiring the same model id toward
+different successors is still handled — each states its own successor in its own row.
 
 There is precedent to copy rather than a mechanism to invent: `normalizeCodexModelId`
 (`agent-registry.ts:141`) already does exactly this for one model, mapping the retired
 `gpt-5.6` slug onto `gpt-5.6-sol` "at the boundary before Codex turns so legacy sessions
-run the intended Sol model". Req 16 generalizes that one-off shim from a hardcoded
+run the intended Sol model". Req 13 generalizes that one-off shim from a hardcoded
 per-`AgentId` special case into a per-service catalogue field resolved at the same
 boundary.
 
-Because the session now reports the successor, req 14 makes the remap visible rather
+Because the session now reports the successor, req 11 makes the remap visible rather
 than silent — the picker and attribution show what is actually running, not what was
 originally chosen.
 
-**Usage** (req 13) is reported per service. The existing types are partway there but
+**Usage** (req 10) is reported per service. The existing types are partway there but
 less far than this doc first claimed: the wire shape is **`AgentId` → `routeId` →
 limits** (`usage-limits-types.ts:74`), so it is keyed by provider *and* route, and
 `LimitsProvider`/`LimitsRegistry` are selected by `AgentId` first
@@ -421,7 +420,7 @@ Note this is two distinct things, and only the first is at issue: **quota teleme
 fed by `rate_limit_event` or `/api/oauth/usage`) versus **token and cost accounting**
 (`RecordedTurn` — `costUsd`, input/output tokens, cache reads, context occupancy),
 which ShipIt already records per turn for every provider. A key-based service has no
-quota to report but full token accounting. Req 13 keeps that slot **empty** for such a
+quota to report but full token accounting. Req 10 keeps that slot **empty** for such a
 service, which is what a key-based route already does today — so this is inherited
 behavior to preserve, not new behavior to build. Putting spend in that slot is
 deliberately out of scope; the data exists, but it is its own feature.
@@ -429,10 +428,10 @@ deliberately out of scope; the data exists, but it is its own feature.
 **The known-wrong behaviors** resolve unevenly:
 
 - The **empty usage pill** is not a bug at all once the indicator is per-service — a
-  service with no quota should show nothing (req 13).
-- The **non-turn failures** are covered by req 12, though as two separate paths rather
+  service with no quota should show nothing (req 10).
+- The **non-turn failures** are covered by req 9, though as two separate paths rather
   than one.
-- The **401 misfire** is fixed by *deleting* behavior, not adding it (req 15). Today
+- The **401 misfire** is fixed by *deleting* behavior, not adding it (req 12). Today
   `AUTH_ERROR_PATTERNS` (`process.ts:43`) catches auth-shaped text and drives ShipIt's
   own re-auth flow, which for an API-keyed service is both wrong and unfixable. That
   interception must not apply to a key-authenticated service; the turn stops and says
@@ -467,9 +466,9 @@ deliberately out of scope; the data exists, but it is its own feature.
 | `shared/model-windows.ts` | First-frame context window |
 | `client/components/ModelAgentSelector.tsx` | Picker, `METERED_MODELS` |
 | `shared/types/usage-limits-types.ts` | `SubscriptionLimits` — already keyed by `routeId` |
-| `orchestrator/agents/*/limits-provider.ts` | Per-`AgentId` today; becomes per service (req 13) |
+| `orchestrator/agents/*/limits-provider.ts` | Per-`AgentId` today; becomes per service (req 10) |
 | `orchestrator/usage.ts` | `RecordedTurn` — token/cost accounting, distinct from quota |
-| `orchestrator/session-namer.ts` | Non-turn spawn with no service seam (req 12) |
+| `orchestrator/session-namer.ts` | Non-turn spawn with no service seam (req 9) |
 
 ## Verifying a service in dogfood
 
