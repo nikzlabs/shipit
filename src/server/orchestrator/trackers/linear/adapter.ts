@@ -34,6 +34,7 @@ import type {
 import { formatIssueReference } from "../../../shared/issue-ref.js";
 import { linearTrackerId } from "../../../shared/tracker-id.js";
 import {
+  TrackerPermissionError,
   TrackerResolutionError,
   type ListIssuesOptions,
   type SetAssigneeOptions,
@@ -655,6 +656,77 @@ export class LinearTracker implements Tracker {
       { id: commentId },
     );
     if (!data.commentDelete.success) throw new Error("Linear rejected the comment delete");
+  }
+
+  async updateComment(
+    issueId: string,
+    commentId: string,
+    body: string,
+  ): Promise<{ comment: TrackerComment; previousBody: string }> {
+    // The issue leg first — `resolveUuid` applies the team guard, so an issue
+    // outside the declared team is refused before the comment is even read.
+    const issueUuid = await this.resolveUuid(issueId);
+    // One read supplies everything the guards and the undo snapshot need: the
+    // comment's author, its owning issue, and the body being replaced. `viewer`
+    // rides along in the same query — it is the identity the workspace PAT
+    // writes as, which is what "ShipIt's own comment" means on Linear.
+    const data = await this.gql<{
+      viewer: { id: string; displayName?: string | null; name?: string | null };
+      comment: {
+        id: string;
+        body: string;
+        user: { id: string; displayName?: string | null; name?: string | null } | null;
+        issue: { id: string; identifier: string; team: { key: string } | null } | null;
+      } | null;
+    }>(
+      `query CommentOwner($id: String!) {
+        viewer { id displayName name }
+        comment(id: $id) {
+          id
+          body
+          user { id displayName name }
+          issue { id identifier team { key } }
+        }
+      }`,
+      { id: commentId },
+    );
+    const existing = data.comment;
+    if (!existing) throw new Error(`Linear comment not found: ${commentId}`);
+    // Same workspace-global reach `deleteComment` guards against: a comment id
+    // resolves across teams, so check the team before acting on it.
+    this.assertOwnTeam(commentId, existing.issue?.team?.key ?? null);
+    if (existing.issue?.id !== issueUuid) {
+      const where = existing.issue ? ` — it is on ${existing.issue.identifier}.` : ".";
+      throw new Error(
+        `Comment ${commentId} is not on ${issueId}${where} A comment id is workspace-global, ` +
+          `so the issue it belongs to is checked against the one named.`,
+      );
+    }
+    if (existing.user?.id !== data.viewer.id) {
+      const author = existing.user?.displayName ?? existing.user?.name ?? "someone else";
+      const viewer = data.viewer.displayName ?? data.viewer.name ?? "the ShipIt workspace token";
+      throw new TrackerPermissionError(
+        `Comment ${commentId} on ${issueId} was written by ${author}, not by ${viewer} (the identity ` +
+          `ShipIt writes as). ShipIt only edits its own comments — post a new comment instead of ` +
+          `rewriting someone else's.`,
+      );
+    }
+    const updated = await this.gql<{
+      commentUpdate: { success: boolean; comment: LinearCommentNode | null };
+    }>(
+      `mutation UpdateComment($id: String!, $input: CommentUpdateInput!) {
+        commentUpdate(id: $id, input: $input) {
+          success
+          comment { ${COMMENT_FIELDS} }
+        }
+      }`,
+      { id: commentId, input: { body } },
+    );
+    const comment = updated.commentUpdate.comment;
+    if (!updated.commentUpdate.success || !comment) {
+      throw new Error("Linear rejected the comment update");
+    }
+    return { comment: toTrackerComment(comment), previousBody: existing.body };
   }
 
   async updateIssue(

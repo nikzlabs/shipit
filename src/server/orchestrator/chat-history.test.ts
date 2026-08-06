@@ -868,6 +868,34 @@ describe("ChatHistoryManager", () => {
       expect(card?.undo).toEqual({ kind: "edit", previousLabels: ["backend"], previousPriority: "low" });
     });
 
+    it("round-trips a comment-edit card's previous-body undo snapshot (SHI-86)", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      const msg: PersistedMessage = {
+        role: "assistant",
+        text: "",
+        issueWrite: {
+          cardId: "iw-comment-edit",
+          tracker: "linear",
+          issueId: "SHI-9",
+          identifier: "SHI-9",
+          title: "Doc",
+          verb: "comment-edit",
+          summary: "edited a comment on SHI-9",
+          // Line 2 shows the NEW body; the prior text lives on the snapshot.
+          content: { comment: "Corrected: the migration replays 1,344 comments." },
+          attribution: "workspace",
+          undo: { kind: "comment-edit", commentId: "c-99", previousBody: "the original text" },
+          undoState: "available",
+          createdAt: "2026-06-05T00:00:00.000Z",
+        },
+      };
+      mgr.append("sess-1", msg);
+      const card = new ChatHistoryManager(dbManager).load("sess-1")[0].issueWrite;
+      // The whole card survives a reload — without the snapshot the Undo button
+      // would render with nothing to restore.
+      expect(card).toEqual(msg.issueWrite);
+    });
+
     it("round-trips the docs/189 line-2 content (comment preview, status delta)", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("sess-1", writeCard("iw-comment"));

@@ -342,62 +342,116 @@ dropping into the Linear UI. SHI-206 adds **`--parent <pointer>`** on both
 folded alongside `labels`/`priority`. The `IssueWriteUndo` `edit` variant carries
 `previousParentId?: string | null`.
 
-## Proposed — editing and deleting a comment
+## Extension — `comment edit` (SHI-86)
 
-A comment is currently write-once. `shipit issue comment` posts one, and nothing
-takes it back: there is no `comment edit` and no `comment delete`. An agent that
-posts a wrong or stale comment can only post another one saying to ignore the
-first, which matters because `CLAUDE.md` has agents commenting on every design-doc
-update, so the mistakes accumulate in the surface meant to be read.
+A comment used to be write-once. `shipit issue comment` posted one and nothing
+took it back, so an agent that posted a wrong or stale comment could only post
+another saying to ignore the first — which matters because `CLAUDE.md` has agents
+commenting on every design-doc update, so the mistakes accumulated in the surface
+meant to be read.
 
-Where the plumbing already stands:
+```
+shipit issue comment edit <reference> --comment <id> -b BODY [--tracker NAME] [--json]
+```
 
-- **Delete exists at the adapter layer for both kinds** — `deleteComment` on the
-  GitHub and Linear adapters — but is reachable only through a write card's Undo,
-  so it expires with the card.
-- **Edit exists nowhere.** Neither adapter has an `updateComment`, so this is new
-  work at every layer: adapter method, service, route, shim subcommand, card.
+**Why now.** docs/247's Linear → shipit-planning migration replays 1,344
+comments, and comments were the one thing it writes that could not be corrected
+afterwards — issue bodies stay editable, comments did not. That is not a
+*blocker* (docs/247's pilot gate catches a bad format for the cost of reading a
+single issue, far cheaper than re-driving 1,344 writes), but edit removes the
+one-way door behind that gate. An earlier draft dismissed edit as useless
+insurance because re-editing every comment costs another full pass; that argument
+does not survive the migration's actual constraint, which is that **wall-clock is
+free** — the copy can run unattended overnight, so a second pass is a real remedy.
 
-Comment ids are already available to a caller — `view --comments --json` returns
-each comment's `id` and `url` — so addressing one needs no new lookup.
+### Addressing a comment: reference **and** id
 
-Two things to get right, and they pull in opposite directions:
+The verb takes the issue reference *plus* `--comment <id>`, rather than the
+comment id alone. A comment id is **backend-global** on both trackers, so the
+reference is what names the destination (the rule every other operation follows)
+and what scopes the id — and the pairing is then something the adapter can
+*check*, closing the substitution hole a bare global id would open. It costs the
+caller nothing: `shipit issue view <ref> --comments --json` already returns each
+comment's `id` alongside the issue, so both ids come from one read.
 
-- **Delete is the risky half.** Both `deleteComment` implementations take a
-  backend-global comment id. docs/248's review had to add a team-ownership
+### The authorship guard — decided: yes, and it is own-authorship
+
+Editing a comment the agent did not write silently rewrites a human's words, and
+both backends permit it with sufficient access. **ShipIt refuses it.** The
+adapter compares the comment's author against the identity ShipIt writes as (the
+acting user's GitHub token; the deployment's Linear PAT) and throws
+`TrackerPermissionError` → **403** on a mismatch.
+
+Three things settled the call. The value of the feature is entirely in fixing
+*ShipIt's own* bad comments — nothing in the motivating cases wants to touch a
+human's words, so the guard costs no capability anyone asked for. The
+do-then-surface card is a weaker backstop here than elsewhere: an undo restores
+the text, but only if a human reads the transcript and notices, and a rewritten
+comment does not announce itself the way a new one does. And it is exactly the
+concern that keeps `delete` out of scope — the answer legitimately *could* have
+differed for edit (it is reversible where delete is not), but reversibility
+addresses the recovery, not the intrusion.
+
+The guard is **own-authorship**, not agent-authorship: ShipIt cannot distinguish
+a comment its agent posted from one the same identity posted through the tracker
+UI, and does not need to. On GitHub that identity is the acting user, so "your
+own comment" is the honest reading. On Linear it is the deployment-wide PAT
+owner, so an agent can edit what any ShipIt agent on that deployment posted but
+never a human member's comment — which is the property that matters. This is the
+same PAT asymmetry *Identity & attribution* above describes, applied to a guard
+rather than to a card's wording.
+
+Two further guards ride along, both enforced in the adapter (server-side, so a
+direct relay POST cannot bypass them): the comment must belong to the named
+issue, and on Linear that issue must belong to the declared team
+(`assertOwnTeam`, the check `deleteComment` already applies).
+
+### Undo, and the dedup key
+
+Undo restores the previous body — the symmetric reverse write, matching the
+existing `edit` snapshot pattern. The prior body is returned by
+`Tracker.updateComment` itself rather than fetched separately: the adapter must
+read the comment anyway to run the guards, so the snapshot comes off the same
+response the checks ran against and costs no extra round-trip.
+
+`handleWrite`'s dedup key is session + tracker + verb + `issueId` + hash(content),
+and a comment edit is scoped to a **comment**, not an issue. The comment id
+therefore rides inside the **hashed content** (`{commentId, body}`) rather than
+the `issueId` slot, which stays the issue because it doubles as the card's undo
+target. Keying on the issue alone would collapse two edits to *different*
+comments on the same issue — silently dropping the second and returning the
+first's card as if it had succeeded, leaving a comment un-fixed with nothing to
+show for it. Replay of the *same* edit is still absorbed (SHI-112). Pinned by
+`agent-issue-write-idempotency.test.ts`.
+
+The card is a distinct verb (`comment-edit`, "Edited a comment on …") rather than
+a reuse of `comment`, because a rewrite is not a new comment and its undo is a
+different operation. Its second line shows the **new** body; the prior text is
+one Undo click away, and two clamped blockquotes would not fit the two-line card.
+
+## Proposed — deleting a comment
+
+Deliberately still out of scope, and it should not ride in on edit's
+justification. `deleteComment` already exists on both adapters (reachable today
+only through a write card's Undo), so it looks like the cheap half, but:
+
+- **The id is backend-global.** docs/248's review had to add a team-ownership
   assertion to the Linear one precisely because a re-pointed name could hand it an
-  id belonging to another team. Exposed as a shim command with no further guard,
-  an agent could delete any comment whose id it can name — including human
-  discussion it did not write. It wants an authorship check, not just a working
-  mutation.
-- **Undo is asymmetric.** An edit undoes cleanly by restoring the previous body,
-  which is the established snapshot pattern. A delete does not: re-posting the
-  text mints a new comment with a new id, author and timestamp, so "undo" would be
-  a visibly different object. That asymmetry should be stated in the card rather
-  than papered over.
+  id belonging to another team. `comment edit` now demonstrates the shape a guard
+  would take (issue-belonging + own-authorship), so this is tractable — but it is
+  a design decision, not a mechanical port.
+- **Undo is asymmetric.** An edit undoes cleanly by restoring the previous body.
+  A delete does not: re-posting the text mints a new comment with a new id, author
+  and timestamp, so "undo" would be a visibly different object. That asymmetry
+  needs to be stated in the card rather than papered over, and nobody has decided
+  how.
 
-Edit is the clearly-useful half and carries neither problem; delete is worth
-having but should not ride in on edit's justification.
-
-**Worth landing before docs/247's migration**, for `comment edit` specifically.
-The migration replays 1,344 comments, and comments are the one thing it writes
-that cannot be corrected afterwards — issue bodies stay editable, comments do not.
-An earlier version of this section dismissed edit as useless insurance on the
-grounds that re-editing every comment costs another full pass; that argument does
-not survive the migration's actual constraint, which is that **wall-clock is
-free** — the copy can run unattended overnight. A second pass is therefore a real
-remedy, and `comment edit` converts a permanently wrong comment format into a
-recoverable one.
-
-That does not make it a *blocker*: docs/247's pilot gate still catches a bad
-format for the cost of reading a single issue, which is far cheaper than
-re-driving 1,344 writes. Edit removes the one-way door behind that gate.
-`comment delete` carries none of this justification and should be judged on its
-own.
+With `comment edit` shipped, a wrong comment is already recoverable by rewriting
+it, which removes most of the pressure for a delete.
 
 ## Key files
 
-- `src/server/orchestrator/trackers/tracker.ts` — add write methods + `TrackerComment`, optional `availableStatuses` on read types.
+- `src/server/orchestrator/trackers/tracker.ts` — add write methods + `TrackerComment`, optional `availableStatuses` on read types; `updateComment` (SHI-86) and `TrackerPermissionError` (a refusal, not a resolution failure → 403).
 - `src/server/orchestrator/trackers/linear/adapter.ts` — `commentCreate`/`issueUpdate` + state/user resolution via `linearGraphql()`.
 - `src/server/orchestrator/trackers/github/adapter.ts` — `addComment`/`deleteComment`/`updateIssue`/state/assignees via the adapter's injectable `fetchImpl` + `githubHeaders` (the `fetchGitHub` header pattern; testable against a fake). `github-auth-issues.ts` is unchanged — it keeps the global-`fetch` `createIssue` for bug-filing only.
 - `src/server/orchestrator/services/issues.ts` — `commentOnIssueForTracker` / `updateIssueForTracker` / `setIssueStatusForTracker` / `setIssueAssigneeForTracker`, each snapshotting prior state for undo.
@@ -413,3 +467,4 @@ own.
 - `docs/172-agent-containment/` — why the token stays out of the container (Gaps 1, 2-R).
 - `docs/164-*` (bug-filing) — issue *creation* as a human-gated act.
 - `docs/170-inline-tracker-issues/` — the read-only `Tracker` registry + adapters being extended.
+- `docs/247-shipit-private-planning/` — the migration that wanted `comment edit`: it replays 1,344 comments, the one thing it writes that could not be corrected afterwards.

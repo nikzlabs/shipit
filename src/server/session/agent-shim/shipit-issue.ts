@@ -3,7 +3,9 @@
  * docs/177 + docs/187 write, reworked by docs/248).
  *
  * `shipit issue` is the ONE issue interface, identical across every backend.
- * Read = view/list; write = create/comment/edit/status/assign. Creation is
+ * Read = view/list; write = create/comment/comment edit/edit/status/assign.
+ * `comment edit` (SHI-86) rewrites a comment ShipIt itself posted — someone
+ * else's is refused server-side, and there is no `comment delete`. Creation is
  * do-then-surface (docs/187) — the issue is created immediately and a provenance
  * card with Undo (which cancels it) is posted. The `shipit issue` dispatch + the
  * rejected-subcommand gate live in `shipit.ts`.
@@ -789,6 +791,24 @@ export async function handleIssueCreate(args: string[], deps: RunDeps): Promise<
 }
 
 export async function handleIssueComment(args: string[], deps: RunDeps): Promise<void> {
+  // `comment` is a small verb group: bare `comment <ref>` posts, `comment edit`
+  // rewrites (SHI-86) — the same shape `label create` uses. No pointer form is
+  // the bare word `edit`, so the two can't be confused. (`shipit issue edit`
+  // remains the ISSUE editor; this one edits a comment on it.)
+  if (args[0] === "edit") {
+    return handleIssueCommentEdit(args.slice(1), deps);
+  }
+  // Deliberately absent, so say so rather than letting `delete` fall through and
+  // fail as an unrecognized pointer. A comment id is backend-global and a delete
+  // has no honest undo (re-posting mints a new id, author and timestamp), so it
+  // needs its own design pass — see docs/177.
+  if (args[0] === "delete") {
+    fail(
+      deps.io,
+      "shipit issue comment: there is no `comment delete`. Rewrite the comment with " +
+        "`shipit issue comment edit <ref> --comment <id> -b '<new body>'` instead.",
+    );
+  }
   const parsed = parseFlags(args, {
     values: { "-b": "body", "--body": "body", "-F": "bodyFile", "--body-file": "bodyFile", "--tracker": "tracker" },
     booleans: { "--json": "json" },
@@ -811,6 +831,66 @@ export async function handleIssueComment(args: string[], deps: RunDeps): Promise
   const res = await deps.call("POST", "/agent-ops/issue/comment", { tracker, trackerName, id, body }, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to comment on issue"), 1);
+  }
+  reportWrite(res, deps, parsed.booleans.has("json"));
+}
+
+/**
+ * `shipit issue comment edit <ref> --comment <id> -b BODY` — rewrite a comment
+ * the agent posted (SHI-86).
+ *
+ * The issue pointer is required alongside `--comment` rather than derived from
+ * the comment id: a comment id is backend-global, so the issue is what names the
+ * destination (docs/248's rule that every operation names what it acts on) and
+ * what scopes the id. The orchestrator re-checks the pairing, and refuses a
+ * comment ShipIt did not author.
+ *
+ * Both ids come from one read — `shipit issue view <ref> --comments --json`
+ * returns each comment's `id` — so nothing extra is needed to address one.
+ */
+export async function handleIssueCommentEdit(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: {
+      "-b": "body",
+      "--body": "body",
+      "-F": "bodyFile",
+      "--body-file": "bodyFile",
+      "--tracker": "tracker",
+      "--comment": "comment",
+    },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit issue comment edit: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const destinations = await loadDestinations(deps);
+  const { tracker, trackerName, id } = resolveIssuePointer(
+    deps.io,
+    "comment edit",
+    parsed.positional[0],
+    parsed.values.tracker,
+    destinations,
+  );
+  const commentId = parsed.values.comment;
+  if (!commentId?.trim()) {
+    fail(
+      deps.io,
+      "shipit issue comment edit: --comment <id> is required. " +
+        "Get a comment's id with `shipit issue view <ref> --comments --json`.",
+    );
+  }
+  const body = await readIssueBody(parsed.values, deps);
+  if (!body?.trim()) {
+    fail(deps.io, "shipit issue comment edit: -b/--body (or --body-file -) is required.");
+  }
+  const res = await deps.call(
+    "POST",
+    "/agent-ops/issue/comment/edit",
+    { tracker, trackerName, id, commentId: commentId.trim(), body },
+    deps.env,
+  );
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to edit comment"), 1);
   }
   reportWrite(res, deps, parsed.booleans.has("json"));
 }

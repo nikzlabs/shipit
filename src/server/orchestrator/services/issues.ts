@@ -27,6 +27,7 @@ import type {
 import {
   buildTrackerRegistry,
   listLinearTeams,
+  TrackerPermissionError,
   TrackerResolutionError,
   type Tracker,
   type TrackerRegistry,
@@ -470,6 +471,11 @@ function clipComment(body: string): string {
  * the dead end forced users to create labels by hand in the tracker UI.
  */
 function toResolutionServiceError(err: unknown, opts?: { labelHint?: boolean }): never {
+  // A refusal, not a resolution failure (SHI-86) — 403, and no options list,
+  // because there is no other value the agent could have passed that would work.
+  if (err instanceof TrackerPermissionError) {
+    throw new ServiceError(403, err.message);
+  }
   if (err instanceof TrackerResolutionError) {
     const list = err.options.length > 0 ? `\nValid ${err.kind} options: ${err.options.join(", ")}` : "";
     const hint =
@@ -651,6 +657,50 @@ export async function commentOnIssueForTracker(
     verb: "comment",
     summary: `commented on ${issue.identifier}`,
     undo: { kind: "comment", commentId: commentId! },
+    content: { comment: clipComment(body) },
+  };
+}
+
+/**
+ * Rewrite one of the issue's comments (SHI-86 — `shipit issue comment edit`);
+ * undo restores the body it replaced.
+ *
+ * A comment was write-once before this: an agent that posted a wrong or stale
+ * comment could only post another asking readers to ignore the first, and
+ * `CLAUDE.md` has agents commenting on every design-doc update, so the mistakes
+ * accumulated in the surface meant to be read. It also removes the one-way door
+ * in docs/247's migration, which replays 1,344 comments — issue bodies stay
+ * editable, comments did not.
+ *
+ * The issue is named alongside the comment (not derived from it) for the same
+ * reason every other verb names its destination: a comment id is backend-global,
+ * so the issue is what scopes it. The adapter enforces that pairing, plus
+ * authorship. `shipit issue view <ref> --comments --json` already returns both
+ * ids together, so requiring both costs the caller nothing.
+ */
+export async function editCommentForTracker(
+  credentialStore: CredentialStore,
+  trackerId: string,
+  id: string,
+  commentId: string,
+  body: string,
+  fetchImpl?: FetchImpl,
+  github?: GitHubTrackerContext,
+): Promise<IssueWriteOutcome> {
+  const tracker = resolveConfiguredTracker(credentialStore, trackerId, fetchImpl, github);
+  const issue = await loadIssueOr404(tracker, id);
+  let previousBody: string;
+  try {
+    ({ previousBody } = await tracker.updateComment(id, commentId, body));
+  } catch (err) {
+    toResolutionServiceError(err);
+  }
+  return {
+    issue,
+    verb: "comment-edit",
+    summary: `edited a comment on ${issue.identifier}`,
+    undo: { kind: "comment-edit", commentId, previousBody: previousBody! },
+    // The NEW body is the card's second line; the prior text is one Undo away.
     content: { comment: clipComment(body) },
   };
 }
@@ -849,6 +899,12 @@ export async function undoIssueWrite(
     switch (card.undo.kind) {
       case "comment":
         await tracker.deleteComment(card.undo.commentId);
+        return;
+      case "comment-edit":
+        // Restore the exact body the rewrite replaced. The adapter re-runs the
+        // same belonging + authorship guards the forward write passed, which
+        // still hold — ShipIt edited it once, so ShipIt authored it.
+        await tracker.updateComment(card.issueId, card.undo.commentId, card.undo.previousBody);
         return;
       case "edit":
         await tracker.updateIssue(card.issueId, {

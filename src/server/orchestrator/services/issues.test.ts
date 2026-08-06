@@ -26,6 +26,7 @@ import {
   createIssueForTracker,
   createLabelForTracker,
   commentOnIssueForTracker,
+  editCommentForTracker,
   updateIssueForTracker,
   setIssueStatusForTracker,
   setIssueAssigneeForTracker,
@@ -838,6 +839,87 @@ describe("issue write services (docs/177)", () => {
     expect(preview.endsWith("…")).toBe(true);
     expect(preview).not.toContain("\n");
     expect(preview.length).toBeLessThanOrEqual(281); // 280 + ellipsis
+  });
+
+  // ---- comment edit (SHI-86) ----------------------------------------------
+
+  /**
+   * `ghFetch` plus the two calls a comment edit adds: the by-id comment read
+   * (author + owning issue + prior body) and the PATCH that rewrites it.
+   */
+  function ghFetchWithComment(over: { author?: string; issueUrl?: string } = {}) {
+    const base = ghFetch();
+    return vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = url as string;
+      const method = init?.method ?? "GET";
+      if (u.endsWith("/user")) return ghResponse({ login: "octocat" });
+      if (u.includes("/issues/comments/9001")) {
+        if (method === "GET") {
+          return ghResponse({
+            id: 9001,
+            body: "old text",
+            issue_url:
+              over.issueUrl ?? "https://api.github.com/repos/octocat/hello-world/issues/42",
+            user: { login: over.author ?? "octocat" },
+          });
+        }
+        return ghResponse({ id: 9001, body: JSON.parse(init?.body as string).body });
+      }
+      return base(url, init);
+    });
+  }
+
+  it("comment edit: rewrites the comment and snapshots the prior body for undo", async () => {
+    const fetchImpl = ghFetchWithComment();
+    const out = await editCommentForTracker(store, "github", "42", "9001", "corrected", fetchImpl, GH);
+    expect(out.verb).toBe("comment-edit");
+    expect(out.summary).toContain("octocat/hello-world#42");
+    // Undo restores the exact prior body — the symmetric reverse write.
+    expect(out.undo).toEqual({ kind: "comment-edit", commentId: "9001", previousBody: "old text" });
+    // The card's line 2 shows the NEW body; the old one is one Undo away.
+    expect(out.content).toEqual({ comment: "corrected" });
+  });
+
+  it("comment edit: undo restores the previous body", async () => {
+    const fetchImpl = ghFetchWithComment();
+    await undoIssueWrite(
+      store,
+      {
+        tracker: "github",
+        issueId: "42",
+        undo: { kind: "comment-edit", commentId: "9001", previousBody: "old text" },
+      },
+      fetchImpl,
+      GH,
+    );
+    const patch = fetchImpl.mock.calls.find(
+      ([u, i]) => i?.method === "PATCH" && (u as string).includes("/issues/comments/9001"),
+    )!;
+    expect(JSON.parse(patch[1]?.body as string)).toEqual({ body: "old text" });
+  });
+
+  // The judgement call, enforced end to end: editing a comment ShipIt did not
+  // write would silently rewrite a human's words, and neither backend refuses
+  // it. A 403 (not a 422) — there is no other value that would have worked.
+  it("comment edit: refuses a comment written by someone else, as a 403", async () => {
+    const fetchImpl = ghFetchWithComment({ author: "some-human" });
+    await expect(
+      editCommentForTracker(store, "github", "42", "9001", "rewritten", fetchImpl, GH),
+    ).rejects.toMatchObject({ statusCode: 403 });
+    expect(
+      fetchImpl.mock.calls.some(
+        ([u, i]) => i?.method === "PATCH" && (u as string).includes("/issues/comments/"),
+      ),
+    ).toBe(false);
+  });
+
+  it("comment edit: refuses a comment id belonging to another issue", async () => {
+    const fetchImpl = ghFetchWithComment({
+      issueUrl: "https://api.github.com/repos/octocat/hello-world/issues/99",
+    });
+    await expect(
+      editCommentForTracker(store, "github", "42", "9001", "rewritten", fetchImpl, GH),
+    ).rejects.toThrow(/not on issue #42/);
   });
 
   it("edit: snapshots the prior title for undo", async () => {

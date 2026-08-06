@@ -158,9 +158,18 @@ export interface TrackerComment {
  * `label` records a label CREATION (`shipit issue label create`, or one minted
  * by `--create-missing-labels`) — the one write verb that targets tracker
  * config rather than an issue, so its card carries the label name as the
- * identifier and no issue id.
+ * identifier and no issue id. `comment-edit` records a comment REWRITE
+ * (`shipit issue comment edit`, SHI-86) — distinct from `comment` because the
+ * card reads differently and undo restores a body rather than deleting one.
  */
-export type IssueWriteVerb = "comment" | "edit" | "status" | "assignee" | "create" | "label";
+export type IssueWriteVerb =
+  | "comment"
+  | "comment-edit"
+  | "edit"
+  | "status"
+  | "assignee"
+  | "create"
+  | "label";
 
 /**
  * docs/189 — the human-readable "what changed" values the redesigned write card
@@ -171,7 +180,12 @@ export type IssueWriteVerb = "comment" | "edit" | "status" | "assignee" | "creat
  * cards, or a `create`, which has no "before").
  */
 export interface IssueWriteContent {
-  /** comment → a clipped preview of the posted comment body. */
+  /**
+   * comment → a clipped preview of the posted comment body. Also carries the
+   * NEW body for a `comment-edit` (SHI-86): the card is two-line clamped, so a
+   * second blockquote for the prior text would not fit — and the prior body is
+   * not lost, it rides on the undo snapshot and one click restores it.
+   */
   comment?: string;
   /** edit → the title transition, present only when the title was edited. */
   title?: { before: string; after: string };
@@ -198,6 +212,13 @@ export interface IssueWriteContent {
  */
 export type IssueWriteUndo =
   | { kind: "comment"; commentId: string }
+  // SHI-86 — a comment EDIT. Undo restores the exact body the comment had
+  // before the rewrite, which is the symmetric reverse-write the established
+  // `edit` snapshot pattern already uses for an issue's title/description. (A
+  // comment *delete* has no symmetric undo — re-posting mints a new id, author
+  // and timestamp — which is why it is deliberately not exposed; see
+  // docs/177 → "Proposed — editing and deleting a comment".)
+  | { kind: "comment-edit"; commentId: string; previousBody: string }
   // SHI-92 — an edit may also change labels/priority; the prior label set and
   // prior priority level are snapshotted so undo restores them (the prior labels
   // replace the post-edit set; the prior priority level is re-applied).

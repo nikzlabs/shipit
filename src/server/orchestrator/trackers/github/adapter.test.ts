@@ -448,6 +448,80 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(init?.method).toBe("DELETE");
   });
 
+  // ---- comment edit (SHI-86) ----------------------------------------------
+  //
+  // A comment id is repository-global, so the adapter reads the comment by id
+  // first and checks two things before writing: that it hangs off the issue the
+  // caller named, and that it was authored by the identity ShipIt writes as.
+
+  /** The by-id comment endpoint's response (author + owning issue + body). */
+  const commentResponse = (over: Record<string, unknown> = {}) =>
+    jsonResponse({
+      id: 555,
+      body: "old text",
+      html_url: "https://github.com/octocat/hello-world/issues/42#c",
+      issue_url: "https://api.github.com/repos/octocat/hello-world/issues/42",
+      user: { login: "octocat" },
+      ...over,
+    });
+
+  /** Routes the three calls a comment edit makes: GET comment, GET user, PATCH. */
+  const commentEditFetch = (over: { comment?: Record<string, unknown>; viewer?: string } = {}) =>
+    vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = url as string;
+      if (u.endsWith("/user")) return jsonResponse({ login: over.viewer ?? "octocat" });
+      if (u.includes("/issues/comments/") && (init?.method ?? "GET") === "GET") {
+        return commentResponse(over.comment);
+      }
+      return jsonResponse({ id: 555, body: JSON.parse(init?.body as string).body, html_url: "http://c" });
+    });
+
+  it("edits a comment via PATCH and returns the body it replaced (SHI-86)", async () => {
+    const fetchImpl = commentEditFetch();
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    const { comment, previousBody } = await tracker.updateComment("42", "555", "new text");
+    expect(comment).toMatchObject({ id: "555", body: "new text" });
+    // The prior body is the undo snapshot — taken from the same read the guards
+    // ran against, so it costs no extra round-trip.
+    expect(previousBody).toBe("old text");
+    const patch = fetchImpl.mock.calls.find((c) => c[1]?.method === "PATCH")!;
+    expect(patch[0]).toContain("/repos/octocat/hello-world/issues/comments/555");
+    expect(JSON.parse(patch[1]?.body as string)).toEqual({ body: "new text" });
+  });
+
+  it("refuses to edit a comment on a different issue than the one named (SHI-86)", async () => {
+    const fetchImpl = commentEditFetch({
+      comment: { issue_url: "https://api.github.com/repos/octocat/hello-world/issues/99" },
+    });
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    await expect(tracker.updateComment("42", "555", "new")).rejects.toThrow(/not on issue #42.*#99/s);
+    expect(fetchImpl.mock.calls.some((c) => c[1]?.method === "PATCH")).toBe(false);
+  });
+
+  it("refuses to edit a comment written by someone else (SHI-86)", async () => {
+    const fetchImpl = commentEditFetch({ comment: { user: { login: "some-human" } } });
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    await expect(tracker.updateComment("42", "555", "new")).rejects.toMatchObject({
+      name: "TrackerPermissionError",
+    });
+    // Nothing was rewritten — the refusal happens before the PATCH.
+    expect(fetchImpl.mock.calls.some((c) => c[1]?.method === "PATCH")).toBe(false);
+  });
+
+  it("matches the author case-insensitively (GitHub logins are case-preserving)", async () => {
+    const fetchImpl = commentEditFetch({ comment: { user: { login: "OctoCat" } }, viewer: "octocat" });
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    await expect(tracker.updateComment("42", "555", "new")).resolves.toMatchObject({ previousBody: "old text" });
+  });
+
+  it("reports a missing comment as missing, not as an unreachable repo (SHI-86)", async () => {
+    const fetchImpl = vi.fn(async () => new Response("", { status: 404 }));
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    await expect(tracker.updateComment("42", "555", "new")).rejects.toThrow(
+      /Comment 555 not found in octocat\/hello-world/,
+    );
+  });
+
   it("edits title/body via PATCH", async () => {
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => issueResponse({ title: "New" }));
     const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });

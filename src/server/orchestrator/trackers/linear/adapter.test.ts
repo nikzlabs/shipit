@@ -348,6 +348,76 @@ describe("LinearTracker writes (docs/177)", () => {
     await expect(tracker.deleteComment("gone")).resolves.toBeUndefined();
   });
 
+  // ---- comment edit (SHI-86) ----------------------------------------------
+  //
+  // A comment id is workspace-global, so the adapter reads the comment (plus
+  // `viewer`) in one query and checks three things before the mutation: the
+  // team, that the comment hangs off the issue the caller named, and that its
+  // author is the identity the workspace PAT writes as.
+
+  /** The CommentOwner guard read, overridable per case. */
+  const commentOwner = (over: Record<string, unknown> = {}) => ({
+    viewer: { id: "u-shipit", displayName: "ShipIt" },
+    comment: {
+      id: "c1",
+      body: "old text",
+      user: { id: "u-shipit", displayName: "ShipIt" },
+      issue: { id: "uuid-1", identifier: "SHI-1", team: { key: "SHI" } },
+      ...over,
+    },
+  });
+
+  const commentEditRoutes = (over: Record<string, unknown> = {}) => [
+    { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "SHI" } } } },
+    { match: "CommentOwner", data: commentOwner(over) },
+    {
+      match: "commentUpdate",
+      data: { commentUpdate: { success: true, comment: { id: "c1", url: "http://c", body: "new text" } } },
+    },
+  ];
+
+  it("updates a comment and returns the body it replaced (SHI-86)", async () => {
+    const fetchImpl = routerFetch(commentEditRoutes());
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    expect(await tracker.updateComment("SHI-1", "c1", "new text")).toEqual({
+      comment: { id: "c1", url: "http://c", body: "new text" },
+      previousBody: "old text",
+    });
+  });
+
+  it("refuses to edit a comment on a different issue than the one named (SHI-86)", async () => {
+    const fetchImpl = routerFetch(
+      commentEditRoutes({ issue: { id: "uuid-9", identifier: "SHI-9", team: { key: "SHI" } } }),
+    );
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    await expect(tracker.updateComment("SHI-1", "c1", "new")).rejects.toThrow(/not on SHI-1.*SHI-9/s);
+    expect(
+      fetchImpl.mock.calls.some((c) => (c[1] as { body: string }).body.includes("commentUpdate")),
+    ).toBe(false);
+  });
+
+  it("refuses to edit a comment written by someone else (SHI-86)", async () => {
+    const fetchImpl = routerFetch(
+      commentEditRoutes({ user: { id: "u-human", displayName: "Nik Zherebtsov" } }),
+    );
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    await expect(tracker.updateComment("SHI-1", "c1", "new")).rejects.toMatchObject({
+      name: "TrackerPermissionError",
+    });
+    expect(
+      fetchImpl.mock.calls.some((c) => (c[1] as { body: string }).body.includes("commentUpdate")),
+    ).toBe(false);
+  });
+
+  it("refuses to edit a comment on another team's issue (docs/248 req 17)", async () => {
+    // The team guard fires on the issue leg, before the comment is even read.
+    const fetchImpl = routerFetch([
+      { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "OPS" } } } },
+    ]);
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    await expect(tracker.updateComment("SHI-1", "c1", "new")).rejects.toThrow(/belongs to team `OPS`/);
+  });
+
   it("lists an issue's comments oldest-first with author + timestamp (docs/189)", async () => {
     const fetchImpl = routerFetch([
       {

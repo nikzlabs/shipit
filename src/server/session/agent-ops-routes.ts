@@ -377,6 +377,12 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/issue/comment", request.body ?? {}, reply),
   );
 
+  // POST /agent-ops/issue/comment/edit { tracker, id, commentId, body } (SHI-86)
+  app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; commentId?: string; body?: string } }>(
+    "/agent-ops/issue/comment/edit",
+    async (request, reply) => relay("POST", "/issue/comment/edit", request.body ?? {}, reply),
+  );
+
   // POST /agent-ops/issue/edit { tracker, id, title?, body?, labels?, priority?, parent?, createMissingLabels? } (SHI-92, SHI-206, SHI-230)
   app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean } }>(
     "/agent-ops/issue/edit",
