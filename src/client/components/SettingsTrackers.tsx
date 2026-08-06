@@ -27,10 +27,17 @@ interface LinearTeam {
  *
  * so the team picker that used to persist a deployment-wide binding is gone. The
  * team list is still fetched, but as a **lookup**: it answers "which team keys
- * can this credential reach?", which is what someone needs in order to write the
- * declaration. Nothing here writes to anyone's `shipit.yaml` — deployments that
+ * can this credential reach?", which is a property of the *credential* and so
+ * belongs here. Nothing here writes to anyone's `shipit.yaml` — deployments that
  * had a stored team simply lose their Linear tab until a repository declares one,
  * which is the clean break the requirements chose over a migration.
+ *
+ * **This card is workspace-scoped and shows nothing repository-scoped.** It
+ * briefly carried a `shipit.yaml` declaration snippet to explain how a repository
+ * gets its Issues tab; that is per-repository configuration and does not belong
+ * in the workspace-wide Settings dialog, so it is gone. A repository's declared
+ * trackers already surface where they are actionable — as the Issues tab's
+ * sub-tabs — and repo-scoped settings live in the Project Settings dialog.
  *
  * Connection state is derived from the teams lookup rather than from the tracker
  * list, because after docs/248 a connected credential with no declaration
@@ -124,16 +131,6 @@ export function SettingsTrackers({ embedded = false, logo }: { embedded?: boolea
         </div>
       </div>
       <div className="space-y-2">
-        <p className="text-xs text-(--color-text-secondary)">
-          Declare a team in a repository&apos;s <code>shipit.yaml</code> to give it an Issues tab:
-        </p>
-        <pre className="text-xs font-mono text-(--color-text-secondary) bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded p-2 overflow-x-auto">
-{`issues:
-  trackers:
-    - kind: linear
-      team: ${teams?.[0]?.key ?? "SHI"}
-      name: roadmap`}
-        </pre>
         {teams && teams.length > 0 && (
           <div className="space-y-1">
             <p className="text-xs text-(--color-text-tertiary)">Teams this token can reach:</p>
