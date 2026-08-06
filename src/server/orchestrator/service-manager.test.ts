@@ -42,6 +42,24 @@ function serviceEnvFile(workspaceDir: string, sessionId: string, svc: string): s
   return path.join(serviceEnvOf(workspaceDir), sessionId, `.env.${svc}`);
 }
 
+/**
+ * A `composeQuery` that answers every query with empty stdout.
+ *
+ * Stubbing `composeRunner` alone is NOT enough to keep a test off the real
+ * Docker daemon: `ComposeCli` falls back to `defaultComposeQuery` — a live
+ * `spawn("docker", …)` — whenever `composeQuery` is omitted. `start()` opens
+ * with `killStaleContainers()` (a `docker ps`), and the poller then re-queries
+ * on `pollIntervalMs`, which these tests set to 0. On a machine with no docker
+ * binary each spawn fails instantly and the test passes; on a CI runner where
+ * the daemon exists, the same test awaits real daemon round-trips in a ~1ms
+ * loop and blows the 5s timeout. That environment split is what made two
+ * `refreshSecrets` tests pass locally and time out in CI.
+ *
+ * Empty output is the right answer for a test that never asserts on compose
+ * state: no stale containers to sweep, no containers for the poller to find.
+ */
+const emptyComposeQuery: ComposeQuery = () => Promise.resolve("");
+
 describe("ServiceManager", () => {
   let tmpDir: string;
 
@@ -756,6 +774,7 @@ services:
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ STRIPE_KEY: "sk_test_123", DATABASE_URL: "postgres://x" }),
       pollIntervalMs: 0,
@@ -794,6 +813,7 @@ services:
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ STRIPE_KEY: "sk" }),
       pollIntervalMs: 0,
@@ -821,6 +841,7 @@ services:
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
       composeRunner: fakeRunner,
       // no secretsLoader
       pollIntervalMs: 0,
@@ -896,6 +917,7 @@ services:
       serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
+      composeQuery: emptyComposeQuery,
       secretsLoader: async () => ({ API_KEY: secret }),
       pollIntervalMs: 0,
     });
@@ -931,6 +953,7 @@ services:
       serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
+      composeQuery: emptyComposeQuery,
       secretsLoader: async () => ({ API_KEY: "value" }),
       pollIntervalMs: 0,
     });
@@ -960,6 +983,7 @@ services:
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
       pollIntervalMs: 0,
@@ -996,6 +1020,7 @@ services:
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
       composeRunner: fakeRunner,
       secretsLoader: async () => ({}),
       pollIntervalMs: 0,
@@ -1026,6 +1051,7 @@ services:
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ DATABASE_URL: "postgres://x", STRIPE_KEY: "sk" }),
       pollIntervalMs: 0,
@@ -1064,6 +1090,7 @@ services:
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ STRIPE_KEY: "sk" }),
       pollIntervalMs: 0,
@@ -1095,6 +1122,7 @@ services:
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
       pollIntervalMs: 0,
@@ -1155,6 +1183,7 @@ services:
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
       pollIntervalMs: 0,
@@ -1199,6 +1228,7 @@ services:
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
       pollIntervalMs: 0,
@@ -1242,6 +1272,7 @@ services:
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
       pollIntervalMs: 0,
@@ -1287,6 +1318,7 @@ services:
       sessionId: "test-session",
       workspaceDir: dir,
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
       pollIntervalMs: 0,
@@ -1330,6 +1362,7 @@ services:
       sessionId: "test-session",
       workspaceDir: dir,
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ ANTHROPIC_API_KEY: "sk-ant-xxx", GITHUB_TOKEN: "ghp_xxx" }),
       pollIntervalMs: 0,
@@ -1466,6 +1499,7 @@ services:
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
       composeRunner: fakeRunner,
       secretsLoader: async () => ({}), // no values — both surface as missing
       pollIntervalMs: 0,
