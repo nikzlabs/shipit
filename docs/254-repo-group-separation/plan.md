@@ -122,13 +122,26 @@ different backgrounds.
 
 ## Spacing
 
-Adjacent groups need a gap or their edges meet and read as **one** continuous
-rail that changes colour partway down — the opposite of "each repo owns a bounded
-run". The mock carried this as `margin-bottom`; the first implementation dropped
-it and the defect was caught in the real UI, not in review. 8px, applied only
-when separated. The scroll container's leading padding is dropped in the same
-mode so the first header band meets the sidebar header's border the way a table's
-first section header does.
+Three spacing rules, all applied only when separated, so an unseparated sidebar
+keeps exactly its previous metrics. All three were tuned from the real UI rather
+than from the mock — the mock's proportions didn't survive contact with the
+component's own padding.
+
+- **6px between groups** (`GROUP_GAP_CLASS`). Without a gap, adjacent edges meet
+  and read as **one** continuous rail that changes colour partway down — the
+  opposite of "each repo owns a bounded run". The mock carried this as
+  `margin-bottom`; the first implementation dropped it entirely, and the defect
+  was caught in the real UI, not in review.
+- **8px below the header band** (`BAND_CLEARANCE_CLASS`). The band is a section
+  header; butted straight against the first row it reads as just another row that
+  happens to have a background.
+- **No leading padding above the first group.** The scroll container's `pt-1` is
+  dropped so the first band meets the sidebar header's border directly, the way a
+  table's first section header does.
+
+Both class constants are exported and asserted by name in the tests, so the
+tests pin *that there is a gap* without pinning the exact value — the metric is a
+tuning decision, its existence is not.
 
 ## What the independent review changed
 

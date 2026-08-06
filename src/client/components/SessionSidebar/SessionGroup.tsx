@@ -38,11 +38,19 @@ const NO_BAND_CLASS = "bg-(--color-bg-primary)";
 /**
  * Gap below a separated group. Without it two adjacent edges meet and read as
  * ONE continuous rail that changes color partway down, which is the opposite of
- * the "each repo owns a bounded run" the edge exists to convey. 8px matches the
- * mock the treatment was chosen from. Zero when unseparated, so the unseparated
- * sidebar keeps exactly its previous spacing.
+ * the "each repo owns a bounded run" the edge exists to convey. Zero when
+ * unseparated, so the unseparated sidebar keeps exactly its previous spacing.
  */
-const GROUP_GAP_CLASS = "mb-2";
+export const GROUP_GAP_CLASS = "mb-1.5";
+
+/**
+ * Breathing room under a separated group's header band, before its first row.
+ * The band is a section header, so its contents need to sit clear of it — butted
+ * straight against the first row the band reads as just another row with a
+ * background. Only applied when separated; without a band there is nothing to
+ * clear.
+ */
+export const BAND_CLEARANCE_CLASS = "pt-2";
 
 /**
  * docs/128 — pinned group for privileged ops/host-debugging sessions. Keyed off
@@ -97,7 +105,7 @@ export function OpsSessionGroup({
         </button>
       </div>
       {!isCollapsed && (
-        <div className="flex flex-col gap-1">
+        <div className={`flex flex-col gap-1 ${separated ? BAND_CLEARANCE_CLASS : ""}`}>
           {sessions.map((session) => (
             <SessionItem
               key={session.id}
@@ -168,7 +176,7 @@ export function SandboxSessionGroup({
         </button>
       </div>
       {!isCollapsed && (
-        <div className="flex flex-col gap-1">
+        <div className={`flex flex-col gap-1 ${separated ? BAND_CLEARANCE_CLASS : ""}`}>
           {sessions.map((session) => (
             <SessionItem
               key={session.id}
@@ -481,7 +489,7 @@ export function RepoGroup({
 
       {/* Session list — hidden when collapsed */}
       {!isCollapsed && (
-        <div ref={listRef} className="flex flex-col gap-1 pb-2">
+        <div ref={listRef} className={`flex flex-col gap-1 pb-2 ${separated ? BAND_CLEARANCE_CLASS : ""}`}>
           {(() => {
             // New session row — matches SessionItem shape so it can render as
             // selected. docs/110 — rendered below the pinned sub-section (see the

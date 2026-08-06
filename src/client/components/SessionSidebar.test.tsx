@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SessionSidebar } from "./SessionSidebar.js";
+import { GROUP_GAP_CLASS, BAND_CLEARANCE_CLASS } from "./SessionSidebar/SessionGroup.js";
 import { AUTO_MERGE_ICON_CLASS } from "../design-tokens.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore, type PrCardState } from "../stores/pr-store.js";
@@ -1242,18 +1243,29 @@ describe("SessionSidebar", () => {
     // Without a gap, two adjacent 3px edges meet and read as one continuous
     // rail that changes color partway down — the opposite of "each repo owns a
     // bounded run". Reported from the real UI, where the mock's margin was
-    // missing.
+    // missing. Asserted against the exported constant, not a literal: the exact
+    // spacing is a tuning decision, "there is a gap at all" is not.
     it("separates adjacent group edges with a gap", () => {
       render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0), colored(repoB, 5)]} />);
-      for (const g of document.querySelectorAll("[data-repo-color-index]")) {
-        expect(g.className).toContain("mb-2");
-      }
+      const groups = document.querySelectorAll("[data-repo-color-index]");
+      expect(groups.length).toBeGreaterThan(1);
+      for (const g of groups) expect(g.className).toContain(GROUP_GAP_CLASS);
+    });
+
+    // The band is a section header: butted straight against the first row it
+    // reads as just another row with a background.
+    it("clears the header band before the group's first row", () => {
+      render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0), colored(repoB, 5)]} />);
+      const group = document.querySelector("[data-repo-color-index]")!;
+      const list = group.querySelector(`.${CSS.escape(BAND_CLEARANCE_CLASS)}`);
+      expect(list).toBeTruthy();
     });
 
     it("keeps the previous spacing when the treatment is off", () => {
       render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0)]} />);
       const group = screen.getByText("repo").closest("div")?.parentElement?.parentElement;
-      expect(group?.className ?? "").not.toContain("mb-2");
+      expect(group?.className ?? "").not.toContain(GROUP_GAP_CLASS);
+      expect(document.querySelector(`.${CSS.escape(BAND_CLEARANCE_CLASS)}`)).toBeNull();
     });
 
     // The edge MUST be on the group, not the sticky header — on the header it
