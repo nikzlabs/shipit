@@ -86,12 +86,35 @@ merges with, overrides, or is overridden by those is a CLI behaviour nobody here
 has tested. Any plan that depends on ShipIt's settings winning must verify it at
 the source first, not inherit it.
 
-**5. The index has nowhere durable to live.** Containers are destroyed on idle
-and `/workspace` is re-cloned; `~/.lemoncrow` under `HOME=/home/shipit` does not
-survive. Re-indexing 28k symbols on every container start is a cold-start tax on
-every session. The mounts that do survive are `/persist`
-(`container-lifecycle.ts:301`) and the shared `/dep-cache` (:355) — an index cache
-would need one of them, keyed per repo+commit.
+**5. The index has nowhere durable to live by default, and the default is the
+worst tier.** LemonCrow's default state dir is `~/.lemoncrow`, which under
+`HOME=/home/shipit` is plain container filesystem — wiped when the container is
+destroyed. That is not once per session: containers are destroyed ~10 min after
+the last viewer leaves, so a single session that the user returns to across a day
+re-indexes on *every* container start. Its other write target, workspace-local
+`.lemoncrow/`, is worse — `/workspace` is re-cloned from git each start, so the
+index only survives by being committed, which is collision 3.
+
+Three mount tiers survive, and they are scoped differently:
+
+| Mount | Scope | Verified | Fit for the index |
+|---|---|---|---|
+| `~/.lemoncrow` (default) | none — container filesystem | — | rebuilt every container start |
+| `/persist` | **per session** (`sessionDir/scratch`) | `container-lifecycle.ts:301`, `:1439` | rebuilt for every new session on the repo |
+| `/dep-cache` | **per repository**, shared across all its sessions | `container-lifecycle.ts:349`; resolver keys on `session.remoteUrl` (`runner-registry-factory.ts:297`) | correct tier |
+
+So the index belongs in `/dep-cache`, not `/persist` — that is already how
+npm/yarn/pnpm caches are shared across sessions for the same repo
+(`container-lifecycle.ts:509`). It also has the right eviction semantics:
+`steady-state-reclaim.ts:428` removes `dep-cache/<hash>` when the repo is
+unreferenced or past a cold cutoff, which is what you want for rebuildable data.
+
+Two caveats remain even in the right tier. **Sessions on the same repo are on
+different branches**, so a shared index has to be incrementally updated against
+the checked-out tree rather than reused as-is; whether LemonCrow re-indexes the
+diff cheaply or rebuilds is unmeasured and is a spike question. And the index's
+**on-disk size is unknown** — `/dep-cache` is per-repo shared storage, so a large
+index multiplies across every repo the instance has seen, not every session.
 
 **6. The background service controller does not apply.** systemd/launchd startup
 is meaningless here; anything long-running has to be a declared Compose service
@@ -117,7 +140,7 @@ Register LemonCrow through the MCP-server surface ShipIt already has
 is hidden.
 
 - Collisions 1 and 2 do not arise — built-ins keep working, hooks keep firing, diffs keep rendering.
-- Collision 3 is contained: only `lc mcp serve` runs, not the `lc init` config wizard, so run it with its state pointed at `/persist`.
+- Collision 3 is contained: only `lc mcp serve` runs, not the `lc init` config wizard, so point its state at the per-repo `/dep-cache` (collision 5) rather than letting it default to `~/.lemoncrow` or the clone.
 - Effort: small. Mostly a settings-docs and index-cache question.
 - Ceiling: also small. Additive tools capture the retrieval win and none of the output-compaction win, so the headline numbers do not transfer.
 
