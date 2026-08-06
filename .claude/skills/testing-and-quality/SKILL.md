@@ -39,7 +39,13 @@ Tests use Vitest with two project configs in `vitest.config.ts`:
 
 Live in `src/server/orchestrator/integration_tests/` — one file per feature area.
 
-Shared stubs and helpers are in `integration_tests/test-helpers.ts`: `TestClient`, `StubAuthManager`, `StubGitHubAuthManager`, `StubTerminal`, `StubWatcher`, `FakeClaudeProcess`, `FakeCodexProcess`, `FakeAgent`, `FakeRunner`. (There is no `StubViteManager` — dev servers moved to Docker Compose via `ServiceManager`.)
+Shared stubs live in `src/server/orchestrator/integration_tests/`, split across files — `grep` for the class rather than assuming `test-helpers.ts`:
+
+- `test-helpers.ts` — `TestClient`, `StubAuthManager`, `StubGitHubAuthManager`
+- `container-test-helpers.ts` — `StubTerminal`, `StubWatcher`
+- Some fakes are local to the test that uses them (e.g. `FakeCodexProcess` in `codex-agent.test.ts`)
+
+There is no `StubViteManager` — dev servers moved to Docker Compose via `ServiceManager`.
 
 Each test file:
 1. Uses `buildApp()` with injected stubs

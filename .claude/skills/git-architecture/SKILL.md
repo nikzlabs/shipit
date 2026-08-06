@@ -96,12 +96,12 @@ This config is inherited by all git operations (both `GitManager` and `RepoGit`)
 
 ### CredentialStore
 
-`src/server/orchestrator/credential-store.ts` — unified storage in `/credentials/`:
+Two distinct things live in the credentials directory — don't conflate them:
 
-- `.gitconfig` — git identity (name, email)
-- `.github-token` — GitHub personal access token
-- `.agent-env` — agent API keys
-- `.git-credentials` — URL-based git credentials for push/pull
+- **`.gitconfig`** — git identity (name, email), written by `git-config.ts` and pointed at by `GIT_CONFIG_GLOBAL` so every git invocation inherits it. **Not** part of `CredentialStore`.
+- **`shipit-credentials.json`** — `CredentialStore` (`credential-store.ts`). Holds `githubToken`, `agentEnv`, provider-account metadata, and app settings as *fields in one JSON file*, encrypted when a cipher is supplied. The older separate `.github-token` / `.agent-env` / `.git-credentials` files are gone.
+
+Provider subscription auth (Claude/Codex logins) is separate again — it lives in per-account filesystem roots managed by `provider-account-manager.ts`.
 
 The credentials directory is mounted read-only into session containers, so workers can push/pull but not modify credentials.
 
@@ -115,7 +115,7 @@ The credentials directory is mounted read-only into session containers, so worke
 
 ## Auto-Commit Flow
 
-After each Claude turn completes:
+After each agent turn completes (Claude or Codex — the flow is backend-agnostic):
 
 1. `handleSendMessage` in the WS handler calls `onAgentFinished()`
 2. The handler generates a commit summary from the turn

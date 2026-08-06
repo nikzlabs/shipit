@@ -319,9 +319,11 @@ All Docker containers are destroyed on server shutdown. On next startup, orphan 
 
 | Resource | Limit | Location |
 |----------|-------|----------|
-| Container memory | Sized from host capacity (docs/229); default `DEFAULT_SESSION_MEMORY_MB`, overridable per repo via `agent.memory` in `shipit.yaml` | `session-container.ts` |
-| Container CPU | `agent.cpu` in `shipit.yaml`, else the default quota | `session-container.ts` |
-| Container PIDs | `agent.pids` in `shipit.yaml`, else the default | `session-container.ts` |
+| Container memory | Derived from host capacity (docs/229) — half the usable budget per session, floor 4096 MB, ceiling 49152 MB, last-resort minimum 1536 MB. Override at the **deployment** with `DEFAULT_SESSION_MEMORY_MB` / `MAX_SESSION_MEMORY_MB`. | `container-config-builder.ts` |
+| Container CPU | Sized from host cores; no per-repo limit | `container-config-builder.ts` |
+| Container PIDs | Fixed ceiling | `container-config-builder.ts` |
+
+**`agent.memory` / `agent.cpu` / `agent.pids` in `shipit.yaml` are removed keys** (docs/229). They are warned-and-ignored by `shipit-config.ts`, not honored — a repo that still sets them is getting host-derived sizing regardless.
 | Concurrent runners | 10 | `SessionRunnerRegistry` |
 | Runner idle timeout | 10 min (default) | `SessionRunnerRegistry` |
 | Unused runner idle | 10 sec | `ContainerSessionRunner` |

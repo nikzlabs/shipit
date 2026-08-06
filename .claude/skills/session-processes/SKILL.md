@@ -6,7 +6,7 @@ user-invocable: true
 
 # Session Worker Processes
 
-Each session runs in a Docker container with a Fastify server (port 9100) that manages the Claude CLI, preview server, file watcher, and terminal. The orchestrator communicates with session workers via HTTP (commands) and SSE (events).
+Each session runs in a Docker container with a Fastify server (port 9100) that manages the agent CLI, file watcher, and terminal. **Preview/dev servers are not among them** — they moved to Docker Compose under the orchestrator's `ServiceManager`. The orchestrator communicates with session workers via HTTP (commands) and SSE (events).
 
 ## Session Worker
 

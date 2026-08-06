@@ -6,7 +6,7 @@ user-invocable: true
 
 # Dogfooding ShipIt in ShipIt
 
-Opening the ShipIt repo in production ShipIt surfaces the `dev` Compose service as a **manual** preview — heavy (`npm install` + `vite build` + a second orchestrator), so it starts on demand rather than every boot. It runs an *inner* orchestrator on port 3000, rendered in the outer preview panel: a chat-driven dev loop on the ShipIt source.
+Opening the ShipIt repo in production ShipIt surfaces the `dev` Compose service as a **manual** preview — heavy enough (a whole second orchestrator, plus a `Dockerfile.dogfood` build) that it starts on demand rather than every boot. It shares the agent container's `/workspace/node_modules` (populated by `agent.install` at session boot) and runs Vite's **dev server** on the exposed port 3000, proxying `/api`, `/ws`, and `/preview` to the inner orchestrator on internal port 4000. It does **not** run its own `npm install` or a production `vite build` — the Compose file explains why that would be redundant and unsafe.
 
 Start it with `shipit service start dev`. A first start may take minutes; a `start` that times out is still running — re-check with `shipit service list`.
 
@@ -51,7 +51,7 @@ First resolve the host, against the **outer** orchestrator:
 curl -s http://${SHIPIT_HOST}:${SHIPIT_PORT}/api/sessions/${SHIPIT_SESSION_ID}/services
 ```
 
-Then four calls cover the whole loop:
+Then these calls cover the whole loop:
 
 | Call | Purpose |
 |---|---|
@@ -66,4 +66,4 @@ Then four calls cover the whole loop:
 - `docs/118-shipit-ui-local` — local-mode design and degraded behaviors
 - `docs/131-dogfood-seed-sessions` — seeding
 - `docs/184-remove-platform-secret-forwarding` — why credentials are user-supplied
-- `shipit-docs/preview.md` — resolving service hosts from inside a container
+- `src/server/shipit-docs/preview.md` (shipped to containers as `/shipit-docs/preview.md`) — resolving service hosts from inside a container

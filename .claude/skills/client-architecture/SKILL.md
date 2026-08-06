@@ -197,4 +197,4 @@ useMessageHandler receives WS responses:
 
 ## Styling
 
-Tailwind CSS v4 with dark-mode-only color scheme (gray-950 backgrounds). Custom animations defined in `src/client/index.css`: spin-slow, resize-handle cursor. All components use utility classes directly — no CSS modules or styled-components.
+Tailwind CSS v4 over **semantic color tokens** — ShipIt is multi-theme, not dark-mode-only. Concrete values live in per-theme CSS under `src/client/themes/`; never hardcode a palette value. See the `design-language` skill. Shared animations are in `src/client/index.css`. All components use utility classes directly — no CSS modules or styled-components.

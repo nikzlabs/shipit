@@ -295,8 +295,12 @@ Types are shared between server and client (client imports from `../../server/sh
 | Repos | `repos` table | `RepoStore` (`repo-store.ts`) |
 | Secrets | `secrets` table | `SecretStore` (`secret-store.ts`) |
 | Reviews, rewind snapshots, egress rules, presentations | their own tables | see `database.ts` |
-| Credentials (git identity, GitHub token, agent auth) | One encrypted `{credentialsDir}/shipit-credentials.json` | `CredentialStore` (`credential-store.ts`) |
+| GitHub token, agent env, provider-account metadata | `{credentialsDir}/shipit-credentials.json` (encrypted **when a cipher is supplied**, not unconditionally) | `CredentialStore` (`credential-store.ts`) |
+| Git identity | `.gitconfig` in the credentials dir, via `GIT_CONFIG_GLOBAL` — not a `CredentialStore` field | `git-config.ts` |
+| Provider subscription auth | Per-account filesystem roots (`.claude/…`, `.codex/auth.json`) | `provider-account-manager.ts` |
 | Session code | Git repo | `/workspace/sessions/{uuid}/` |
+
+Those are four distinct stores — SQLite domain records, the CredentialStore JSON, global git config, and the provider CLI auth roots. Don't collapse them.
 
 Deploy status is **not** persisted locally — it is read from the GitHub Deployments API (see the `deployment-architecture` skill). The `.vibe-sessions.json` / `.shipit-usage.json` names survive only as file-watcher ignore entries (`fs-constants.ts`), not as stores. There is no `ThreadManager`.
 

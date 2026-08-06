@@ -147,7 +147,7 @@ Subdomain routing `{sessionId}--{port}.localhost` is primary (avoids Vite path-p
 
 ### Disk cleanup
 
-Each surface prunes **where the leak happens**, sorted by *what clock the leak grows on* (SHI-196): per-session teardown drops named volumes (archive/fullReset only, never idle/restart); `deploy.sh` owns build-time image prunes; `startup-janitor.ts` runs **boot-only** for crash-recovery leftovers; `steady-state-reclaim.ts` runs on the **hourly** disk-tier escalation pass for what grows with the clock. That hourly timer is the single steady-state entry point. Detail: those files' docstrings, `docs/183-overlay-dep-store`, **session-containers**.
+Each surface prunes **where the leak happens**, sorted by *what clock the leak grows on* (SHI-196): per-session teardown drops named volumes (archive/fullReset only, never idle/restart); `deploy.sh` owns build-time image prunes; `startup-janitor.ts` runs **boot-only** for crash-recovery leftovers; `steady-state-reclaim.ts` runs on the disk-tier escalation pass (`escalateDiskTiers`) for what grows with the clock. That pass fires from **three** triggers — startup, **per session activation (the primary one)**, and an hourly activity-independent backstop — all guarded by a single in-flight flag, and it is the single steady-state entry point. Detail: those files' docstrings, `docs/183-overlay-dep-store`, **session-containers**.
 
 ### Client communication & stores
 
