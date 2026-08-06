@@ -17,6 +17,7 @@
 import fsp from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
+import { exitAfterFlush, shimWrite } from "./shim-exit.js";
 
 // ---------------------------------------------------------------------------
 // Flag parsing
@@ -353,10 +354,15 @@ export interface ShimIO {
   exit: (code: number) => void;
 }
 
+/**
+ * The real process IO. Writes go through `shimWrite` and the exit through
+ * `exitAfterFlush` so a large document piped to `jq`/`head`/`$(…)` is not
+ * silently truncated at the 64 KiB pipe buffer — see `shim-exit.ts`.
+ */
 export const defaultIO: ShimIO = {
-  stdout: (text) => process.stdout.write(text),
-  stderr: (text) => process.stderr.write(text),
-  exit: (code) => process.exit(code),
+  stdout: (text) => shimWrite(process.stdout, text),
+  stderr: (text) => shimWrite(process.stderr, text),
+  exit: (code) => exitAfterFlush(code),
 };
 
 export function fail(io: ShimIO, message: string, code = 2): never {

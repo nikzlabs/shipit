@@ -129,6 +129,7 @@ interface LinearIssueNode {
   url: string;
   description?: string | null;
   updatedAt?: string | null;
+  createdAt?: string | null;
   priority: number;
   priorityLabel?: string | null;
   /** Parent issue when this is a sub-issue (docs/206) — drives nested rendering. */
@@ -164,6 +165,7 @@ function toTrackerIssue(node: LinearIssueNode, formatRef: (key: string) => strin
     ...(node.description ? { description: node.description } : {}),
     ...(node.parent ? { parentId: node.parent.id, parentIdentifier: formatRef(node.parent.identifier) } : {}),
     ...(node.updatedAt ? { updatedAt: node.updatedAt } : {}),
+    ...(node.createdAt ? { createdAt: node.createdAt } : {}),
     priority: mapLinearPriority(node.priority, node.priorityLabel ?? undefined),
     ...(labels.length > 0 ? { labels } : {}),
     ...(node.state
@@ -220,6 +222,7 @@ const ISSUE_FIELDS = `
   url
   description
   updatedAt
+  createdAt
   priority
   priorityLabel
   parent { id identifier }
