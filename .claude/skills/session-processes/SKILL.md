@@ -6,7 +6,7 @@ user-invocable: true
 
 # Session Worker Processes
 
-Each session runs in a Docker container with a Fastify server (port 9100) that manages the Claude CLI, preview server, file watcher, and terminal. The orchestrator communicates with session workers via HTTP (commands) and SSE (events).
+Each session runs in a Docker container with a Fastify server (port 9100) that manages the agent CLI, file watcher, and terminal. **Preview/dev servers are not among them** — they moved to Docker Compose under the orchestrator's `ServiceManager`. The orchestrator communicates with session workers via HTTP (commands) and SSE (events).
 
 ## Session Worker
 
@@ -51,7 +51,7 @@ Note: Preview/dev servers are now managed by Docker Compose via `ServiceManager`
 
 ## Claude Process
 
-`src/server/session/claude.ts` — spawns the Claude CLI and manages streaming NDJSON interaction.
+`src/server/session/agents/claude/process.ts` — spawns the Claude CLI and manages streaming NDJSON interaction. (docs/155 split the agent code into per-agent directories: `agents/claude/`, `agents/codex/`.)
 
 ### Spawning
 
@@ -93,7 +93,7 @@ File context references are prepended as text blocks with XML-like markers.
 
 ## Agent Abstraction
 
-`src/server/session/agents/claude-adapter.ts` wraps `ClaudeProcess` as an `AgentProcess` (defined in `src/server/shared/types/agent-types.ts`). The adapter:
+`src/server/session/agents/claude/adapter.ts` wraps `ClaudeProcess` as an `AgentProcess` (defined in `src/server/shared/types/agent-types.ts`). The adapter:
 
 - Translates `ClaudeEvent` -> `AgentEvent` (unified event format)
 - Reports capabilities (supported tools, models, permission modes)
