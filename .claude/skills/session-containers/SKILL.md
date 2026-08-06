@@ -151,7 +151,7 @@ SessionContainerManager.create(config):
        Image: "shipit-session-worker:latest",
        Cmd: ["node", "--import", "tsx", "src/server/session/session-worker.ts"],
        NetworkingConfig: { shipit bridge network },
-       HostConfig: { Memory: 512MB, CpuQuota: 50000, PidsLimit: 256 },
+       HostConfig: { Memory: sized from host capacity, CpuQuota, PidsLimit },
        Labels: { "shipit-session-id": sessionId },
      })
   3. container.start()
@@ -256,9 +256,11 @@ Instead of per-runner idle timers, ShipIt manages container lifecycle with a sin
 - The runner has `viewerCount === 0` AND `!running`, OR
 - The container has no runner at all
 
-`enforceIdleContainerLimit()` (in `index.ts`) scans all containers, identifies idle ones, and destroys the oldest excess beyond the limit. It fires on two triggers:
-1. **Viewer disconnects** — called in the WS close handler after `detachFromRunner()`
-2. **Agent finishes** — called via the `onRunnerIdle` registry callback when a runner emits `"idle"`
+`enforceIdleContainerLimit()` scans all containers, identifies idle ones, and destroys the oldest excess beyond the limit. It fires on two triggers:
+1. **A periodic timer** (`startup-monitors.ts`)
+2. **Agent finishes** — via the `onRunnerIdle` registry callback when a runner emits `"idle"`
+
+**It is deliberately NOT called from the WS close handler** (`route-registry.ts` carries an explicit comment saying so): WebSocket lifecycle must not drive container lifecycle, or a network blip or page reload would destroy a live session's container. A close handler only calls `detachFromRunner()`. See `CLAUDE.md` → *WebSocket lifecycle MUST NOT affect server behavior*.
 
 When excess idle containers are destroyed:
 - `containerManager.destroy(sessionId)` stops and removes the Docker container
@@ -317,9 +319,9 @@ All Docker containers are destroyed on server shutdown. On next startup, orphan 
 
 | Resource | Limit | Location |
 |----------|-------|----------|
-| Container memory | 512 MB | `session-container.ts` |
-| Container CPU | 0.5 (50,000 quota) | `session-container.ts` |
-| Container PIDs | 256 | `session-container.ts` |
+| Container memory | Sized from host capacity (docs/229); default `DEFAULT_SESSION_MEMORY_MB`, overridable per repo via `agent.memory` in `shipit.yaml` | `session-container.ts` |
+| Container CPU | `agent.cpu` in `shipit.yaml`, else the default quota | `session-container.ts` |
+| Container PIDs | `agent.pids` in `shipit.yaml`, else the default | `session-container.ts` |
 | Concurrent runners | 10 | `SessionRunnerRegistry` |
 | Runner idle timeout | 10 min (default) | `SessionRunnerRegistry` |
 | Unused runner idle | 10 sec | `ContainerSessionRunner` |

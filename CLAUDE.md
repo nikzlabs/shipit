@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-ShipIt is a browser-based AI editor — describe what you want in chat, the agent writes the code, and you see results live. The agent runs as a CLI inside a session container; Claude Code CLI is the default backend, Codex CLI is also supported, and the architecture is agent-agnostic so additional backends can be added later. Authentication uses the user's existing subscription with the chosen provider — no per-call API keys required.
+ShipIt is a browser-based AI editor — describe what you want in chat, the agent writes the code, and you see results live. The agent runs as a CLI inside a session container; Claude Code CLI is the default backend, Codex CLI is also supported, and the architecture is agent-agnostic so additional backends can be added later. Authentication normally uses the user's existing subscription with the chosen provider; a metered API key exists only as a fallback ranked *below* connected accounts.
 
 ## Product principles
 
@@ -43,7 +43,7 @@ The user describes intent; the agent runs the commands, edits the files, reads t
 
 ## Runtime
 
-ShipIt always runs inside Docker containers — there is no local/bare-metal mode. The orchestrator runs in a container and spawns session worker containers.
+ShipIt runs inside Docker containers: the orchestrator runs in a container and spawns session worker containers. The one exception is the dogfood inner instance (`RUNTIME_MODE=local`), which skips Docker entirely — see [Dogfooding ShipIt in ShipIt](#dogfooding-shipit-in-shipit).
 
 ## Setup
 
@@ -124,20 +124,7 @@ android-overlay-test/   Fixture pinning an off-matrix compileSdk to exercise the
 
 Three-layer system: browser (React SPA) → orchestrator (Fastify) → session workers (Docker containers). Architecture knowledge is packaged as skills in `.claude/skills/` for progressive disclosure — each skill surfaces by description and the agent loads it when the task matches. **Both backends read `.claude/skills/`** — Claude and Codex auto-disclose the same set (no `.codex/skills/` needed), so reference detail demoted into a skill reaches both; see `docs/209-cross-agent-skill-disclosure`. Always-on invariants belong in this file (`CLAUDE.md`, shared with Codex via the `AGENTS.md` symlink), not in a skill.
 
-### Available skills
-
-| Skill | Covers |
-|-------|--------|
-| `server-architecture` | buildApp(), HTTP routes, services, WS handlers, DI, state scopes |
-| `client-architecture` | Zustand stores, hooks, components, data flow |
-| `session-lifecycle` | Session types, creation paths, warm pool, activation, switching |
-| `session-containers` | Docker containers, runners, idle cleanup, reconnection |
-| `session-processes` | Claude CLI, preview manager, file watcher, terminal, agents |
-| `git-architecture` | GitManager, RepoGit, bare cache, per-session clones, credentials, auto-commit |
-| `deployment-architecture` | Auto-deploy on push, GitHub Deployments API, deploy status tracking |
-| `add-endpoint` | How to add HTTP endpoints, WS messages, activity labels |
-| `testing-and-quality` | Test patterns, integration tests, quality checklist |
-| `docs-navigator` | Feature docs index — find the right `docs/NNN-*` for a task |
+Both backends receive the skill catalog with descriptions automatically, so it isn't duplicated here — load the one matching the task. **A skill can lag this file; where they disagree, the invariant below wins and the skill needs fixing.**
 
 ## Key patterns
 
@@ -155,21 +142,15 @@ WS handlers compose three context layers and declare only what they need: `Conne
 
 The WebSocket connection is a *transport* between the browser and the orchestrator. It must not be allowed to drive server-side state, agent lifecycle, container lifecycle, or persistence. Disconnects, reconnects, browser crashes, and network blips are all expected and routine — none of them should change what the server is doing.
 
-Concrete rules:
+- **Capture per-connection state at the top of long-running functions**, never inside async callbacks. `runAgentWithMessage` and `wireAgentListeners` capture `runner`, `capturedSessionId`, `capturedSessionDir` once at entry; anything in `agent.on(...)`, `setTimeout`, `Promise.then`, or a recursive call reads ONLY those.
 
-- **Per-connection state is captured at the top of long-running functions**, never inside async callbacks. `runAgentWithMessage` and `wireAgentListeners` capture `runner`, `capturedSessionId`, `capturedSessionDir` once at entry. Any code in `agent.on("done")`, `agent.on("event")`, `agent.on("error")`, `setTimeout`, `Promise.then`, or recursive calls reads ONLY those captured values, never `ctx.getX()` or `ctx.setX()`.
+- **Resolve runners through `resolveRunner(ctx)` / the registry, never `ctx.getRunner()`** — that returns the per-connection `attachedRunner`, which becomes `null` on close, while the registry lives for the whole process. Then read and mutate the resolved runner directly (`runner.running = false`); the old `ctx.setIsClaudeRunning`-style setters were deleted precisely because they became silent no-ops after disconnect (`docs/095`).
 
-- **Resolve runners via the registry, not via `ctx.getRunner()`.** `ctx.getRunner()` returns the per-connection `attachedRunner`, which becomes `null` on WS close. Use `ctx.getRunnerRegistry().get(capturedSessionId) ?? ctx.getRunner()` so the resolution survives reconnects. The registry persists across the entire process lifetime.
+- **Emit via `runner.emitMessage()`, not `ctx.send()`.** It broadcasts to every attached viewer AND buffers into the turn-event log, so reconnecting viewers see post-turn messages; `ctx.send` writes to one socket and silently drops on a closed one.
 
-- **Mutate runner state directly via `runner.X = …`.** The previous `ctx.setIsClaudeRunning`, `ctx.setTurnSummary`, `ctx.setAccumulatedText`, etc. setters have been deleted (see `docs/095-runner-ctx-simplification/plan.md`). The only way to mutate runner state now is to resolve a runner — via `resolveRunner(ctx)` from `ws-handlers/resolve-runner.ts`, which prefers the registry — and assign directly: `runner.running = false`, `runner.turnSummary = "…"`, `runner.emitMessage(...)`. Reading state works the same way: `runner.running`, not `ctx.getIsClaudeRunning()`.
+- **A close handler only calls `detachFromRunner()`.** Never `runner.dispose()`, `agent.kill()`, `terminal.kill()`, or `container.destroy()` from any WS lifecycle event. Disposal belongs to the periodic idle enforcer (60s grace after detach; refuses to kill running agents) and explicit user actions (archive, repo delete, full reset, shutdown), which pass `{ force: true }`.
 
-- **Emit via `runner.emitMessage()`, not `ctx.send()`.** `runner.emitMessage` broadcasts to every attached viewer AND buffers into the turn-event log so reconnecting viewers see post-turn messages. `ctx.send` writes to a single socket and silently drops on closed sockets.
-
-- **Never trigger `runner.dispose()` from a WebSocket lifecycle event.** Disposal happens via the periodic idle enforcer (which respects a 60s grace period after viewer detach and refuses to kill running agents) or from explicit user actions (archive, repo delete, full reset, shutdown). The latter pass `{ force: true }`.
-
-- **Never trigger `agent.kill()`, `terminal.kill()`, `container.destroy()`, etc. from a WebSocket close handler.** The only thing `socket.on("close")` should do is call `detachFromRunner()` (which decrements the viewer count and removes per-connection listeners). Period.
-
-The bug class is structurally impossible now the silent-no-op setters are gone — mutating runner state forces you to resolve a runner reference first, forcing you to think about lifetime. Executable contract: `integration_tests/ws-disconnect-resilience.test.ts`.
+Executable contract: `integration_tests/ws-disconnect-resilience.test.ts`.
 
 ### Service layer pattern
 
@@ -237,9 +218,9 @@ Two browser channels: per-session **WebSocket** (`/ws/sessions/{id}`) and global
 ## Workflow
 
 - **Read before coding** — before changing a feature, read its `docs/NNN-feature/requirements.md` (if present) and `plan.md`, plus the source files listed under "Key files". Trace the data flow for similar features to understand existing patterns. A new feature starts at `requirements.md`, not at `plan.md` — see [Every new feature is under requirements discipline](#every-new-feature-is-under-requirements-discipline).
-- **Verify an inherited guarantee at the source; a doc describing one is a claim, not a contract.** When your design leans on a neighbouring mechanism ("the retry supervisor covers restart", "the queue carries the callback", "that lease prevents concurrent entry"), read the code that would have to hold for it. This repo has repeatedly shipped plans asserting guarantees the code did not provide — docs/196 claimed a failed delivery retried "on the next poll" when the only retry was at bootstrap, and SHI-255's write-up claimed a later drain "cannot re-narrow an entry without deliberately bypassing that module" days before SHI-259 did exactly that by accident. Both read as settled fact. State such dependencies as "verified at `file.ts:fn`", not as inheritance.
-- **Requirements are usually stated at the UX level — don't promote your mechanism into one.** "Ship several PRs in a row without shepherding each merge" is the whole requirement; it implies nothing about unattended turns, durable plan payloads, or a new subsystem. Build the smallest mechanism that produces the stated experience, and when writing it up, keep what was actually asked for separate from what you inferred (docs/239's "Requirement provenance" section is the pattern). If a feature starts needing platform primitives to support it, treat that as evidence the shape is wrong rather than as a work estimate.
-- **Adversarial review hardens a design; it does not simplify it.** A reviewer asked "what's wrong with this" will answer that question and never "this shouldn't exist" — so rounds of review reliably add mechanism and never remove it. Between rounds, ask the opposite question explicitly: for each element, *would anyone notice if it were removed?* Run at least one review with that brief before implementing anything sizeable; on docs/239 it cut roughly a third of the design after five rounds of the usual kind had only grown it.
+- **Verify an inherited guarantee at the source; a doc describing one is a claim, not a contract.** When your design leans on a neighbouring mechanism ("the retry supervisor covers restart", "that lease prevents concurrent entry"), read the code that would have to hold for it. This repo has repeatedly shipped plans asserting guarantees the code did not provide — docs/196 claimed a failed delivery retried "on the next poll" when the only retry was at bootstrap; SHI-255's write-up ruled out a re-narrowing that SHI-259 then did by accident days later. Both read as settled fact. State such dependencies as "verified at `file.ts:fn`", not as inheritance.
+- **Requirements are usually stated at the UX level — don't promote your mechanism into one.** "Ship several PRs in a row without shepherding each merge" is the whole requirement; it implies nothing about unattended turns or a new subsystem. Build the smallest mechanism that produces the stated experience, and keep what was actually asked for separate from what you inferred (docs/239's "Requirement provenance" section is the pattern). A feature that starts needing platform primitives to support it is evidence the shape is wrong, not a work estimate.
+- **Adversarial review hardens a design; it does not simplify it.** A reviewer asked "what's wrong with this" will answer that question and never "this shouldn't exist" — so rounds of review reliably add mechanism and never remove it. Between rounds, ask the opposite explicitly: for each element, *would anyone notice if it were removed?* Run at least one review with that brief before implementing anything sizeable; on docs/239 it cut roughly a third of the design after five ordinary rounds had only grown it.
 - **Identify all touchpoints** — plan which files need changes (server, client, types, tests) before writing code.
 - **Co-locate tests** — place tests next to source files (`foo.ts` → `foo.test.ts`). Follow patterns from neighboring test files.
 - **Lint and typecheck before finishing** — run `npm run lint:dev` and `npm run typecheck` after code changes and fix any errors before considering work complete. `lint:dev` is the dev-loop default; CI runs the full `npm run lint` so the source of truth is unchanged.
@@ -255,7 +236,7 @@ Two browser channels: per-session **WebSocket** (`/ws/sessions/{id}`) and global
 - **Naming** — classes: PascalCase, functions: camelCase, events/WS message types: snake_case, constants: UPPER_SNAKE_CASE.
 - **React** — functional components only, hooks for all state/effects. React 19 JSX transform (no `import React` needed).
 - **Icons** — use `@phosphor-icons/react` for all icons. Never hardcode `<svg>` elements. Use the `ICON_SIZE` constants from `src/client/design-tokens.ts` (XS=12, SM=16, MD=20, LG=32, XL=48) for icon sizes. See the `design-language` skill for full icon and styling guidance.
-- **Styling** — Tailwind CSS v4 utility classes. Dark-mode-only color scheme (gray-950 backgrounds).
+- **Styling** — Tailwind CSS v4 utilities over the **semantic color tokens**; concrete values live in per-theme CSS under `src/client/themes/`. Never hardcode a palette value — ShipIt is multi-theme, not dark-mode-only. See the `design-language` skill.
 - **Strict TypeScript** — `strict: true` in tsconfig. Target ES2022, module ESNext with bundler resolution.
 
 ## Prompts

@@ -51,7 +51,7 @@ See `docs/001-websocket-protocol/plan.md` for the full endpoint and message refe
 **Key conventions:**
 - Use `Extract<WsClientMessage, { type: "..." }>` to get the narrowed message type — don't import individual message interfaces.
 - Handler functions are `async` only if they `await` something; otherwise use `void` return.
-- Access per-connection state via `ctx` getters/setters (`ctx.getActiveAppSessionId()`, `ctx.setActiveSessionDir(...)`, etc.), not closure variables.
+- Read per-connection state via `ctx` getters (`ctx.getActiveAppSessionId()`, etc.), not closure variables. **There are no `ctx.setX` runner setters** — they were deleted for becoming silent no-ops after disconnect. To mutate runner state, resolve a runner via `resolveRunner(ctx)` and assign directly (`runner.running = false`). See `CLAUDE.md` → *WebSocket lifecycle MUST NOT affect server behavior*.
 - Access app-level managers directly from `ctx` (`ctx.sessionManager`, `ctx.deploymentStore`, etc.).
 - Import `getErrorMessage` from `./validation.js` for consistent error formatting (within orchestrator).
 
