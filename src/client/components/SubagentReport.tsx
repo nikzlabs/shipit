@@ -26,7 +26,7 @@
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: fetches the full report from an HTTP endpoint when the modal that displays it mounts, with cancellation. See useFullReport below.
 import { useEffect, useState } from "react";
-import { CaretDownIcon, ClockIcon, CoinsIcon, WrenchIcon } from "@phosphor-icons/react";
+import { ArrowsOutSimpleIcon, ClockIcon, CoinsIcon, WrenchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { MarkdownContent } from "./message-markdown.js";
 import { CopyButton } from "./ui/copy-button.js";
@@ -53,6 +53,20 @@ import type { ToolResultBlock } from "./MessageList.js";
  * rendered height is what is compared.
  */
 const CLAMP_CLASS = "max-h-48 overflow-hidden";
+
+/**
+ * req 4 — the inline report's measure is capped so it stops running the full
+ * width of the chat.
+ *
+ * Deliberately NOT part of {@link reportProseClasses}: those classes are also
+ * applied to the modal's *scroll container*, and a `max-width` on a scrolling
+ * box shrinks the box — not just the text. That left the modal with a dead
+ * ~80px gutter down its right side and a scrollbar floating in the middle of
+ * it instead of against the dialog edge. The modal is a dedicated reading
+ * surface whose own `max-w-3xl` is already the measure, so it takes the prose
+ * styling without this.
+ */
+const MEASURE_CAP = "max-w-[78ch]";
 
 export function SubagentReport({ result }: { result: ToolResultBlock }) {
   const report = parseSubagentReport(result.content);
@@ -142,7 +156,7 @@ function ReportPanel({
           <div
             ref={bodyRef}
             data-testid="subagent-report-body"
-            className={`px-3 pb-3 pt-2.5 ${reportProseClasses(isError)} ${CLAMP_CLASS}`}
+            className={`px-3 pb-3 pt-2.5 ${reportProseClasses(isError)} ${MEASURE_CAP} ${CLAMP_CLASS}`}
           >
             {isError ? <pre className="whitespace-pre-wrap">{text}</pre> : <MarkdownContent text={text} />}
           </div>
@@ -158,7 +172,11 @@ function ReportPanel({
             onClick={() => setModalOpen(true)}
             className="flex w-full cursor-pointer items-center gap-1.5 border-t border-(--color-border-primary) bg-(--color-bg-secondary)/70 px-3 py-1.5 text-xs text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
           >
-            <CaretDownIcon size={ICON_SIZE.XS} />
+            {/* An expand-out icon, NOT a caret: this button opens a modal, and a
+                caret is the transcript's disclosure affordance (`SubagentCall`'s
+                Prompt / Subagent's work toggles) — it promises the section is
+                about to unfold in place. */}
+            <ArrowsOutSimpleIcon size={ICON_SIZE.XS} />
             Show the full report
             {result.totalLines !== undefined && (
               <span className="text-(--color-text-tertiary)">— {result.totalLines} lines</span>
@@ -301,13 +319,13 @@ function useFullReport(result: ToolResultBlock): { text?: string; loading: boole
 
 /**
  * req 4 — the report's markdown is deliberately flattened. A subagent's `#`
- * must not render larger than the transcript it is nested inside, and the
- * measure is capped so a report stops running the full width of the chat.
+ * must not render larger than the transcript it is nested inside. The measure
+ * cap is {@link MEASURE_CAP}, applied by the inline body only.
  */
 function reportProseClasses(isError: boolean): string {
   if (isError) return "font-mono text-xs leading-relaxed text-(--color-error)";
   return [
-    "max-w-[78ch] text-[13.5px] leading-6 text-(--color-text-primary)",
+    "text-[13.5px] leading-6 text-(--color-text-primary)",
     "[&_h1]:text-[13.5px] [&_h2]:text-[13.5px] [&_h3]:text-[13.5px]",
     "[&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold",
     "[&_h1]:mt-3.5 [&_h2]:mt-3.5 [&_h3]:mt-3.5 [&_h1]:mb-1 [&_h2]:mb-1 [&_h3]:mb-1",
