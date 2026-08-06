@@ -126,6 +126,50 @@ It resolves through `ServiceManager.snapshotLogs` (durable log store first,
 `docker compose logs --tail` as the fallback) with ANSI stripped, exactly like
 the HTTP route. The route is unchanged and still works.
 
+### Follow-up: a started service the agent could not reach (#2044)
+
+A manual service started successfully — its own logs showed it compiling and
+serving — while the registry reported `status: "starting"` indefinitely and
+published neither `containerIp` nor `url`. Every documented address (the
+container IP, the compose service name over DNS, the preview subdomain) was
+therefore unavailable, so "start the service, then verify your UI work in the
+browser" was not completable at all.
+
+The status was frozen because **everything that resolves `starting` runs
+downstream of a successful `docker compose ps`** — the poller's forward pass and
+its missing-container reconciliation both need `ps` to answer, and nothing else
+in the manager times a `starting` service out. Any interruption of the poll loop
+(a `ps` that keeps failing, a `reconcile()` whose `start()` threw before reaching
+`poller.start()`, a call wedged ahead of the `pollOnce()` in `startService`)
+pinned every service at whatever status it last had, permanently and silently.
+Three changes, each independently sufficient for the reported case:
+
+- **The address is published as soon as the container has one**, independent of
+  the readiness verdict: `getServices` derives `url` for `starting` as well as
+  `running` (`stopped`/`error` still withhold it — there we have positive
+  evidence the container is gone, so the retained IP is stale rather than
+  merely unverified). A `starting` service's URL may refuse connections; that is
+  a recoverable state, and "no address exists" is not.
+- **`starting` is bounded.** A per-service watchdog (`STARTING_WATCHDOG_MS`,
+  120 s) resolves a service that nothing is legitimately holding there to `error`
+  with a reason that says plainly the container may in fact be running and names
+  `shipit service logs`. It runs off its own timer precisely so it survives the
+  poll loop being down. The two exemptions are the same ones the poller's
+  reconciliation uses — a `compose up` in flight (an image build has no bound)
+  and the install gate — and both re-arm rather than cancel, so a service still
+  stuck once the reason clears is still caught.
+- **The wedge itself is closed.** `joinSessionNetwork` is bounded at
+  `NETWORK_JOIN_TIMEOUT_MS` (30 s) and `poller.start()` moved into a `finally`.
+  The join is explicitly best-effort — its failure is swallowed as non-fatal —
+  yet every caller sequences it *before* the `pollOnce()` that resolves status
+  and IP, and it can block for a long time: dockerode has no client-side timeout,
+  it awaits the container's egress-firewall readiness promise, and it runs a
+  sidecar container to open egress to the new subnet. A best-effort side quest
+  must not be able to hold up the authoritative read behind it, so a join that
+  overruns is now treated exactly like a join that failed (and logged, which it
+  previously was not — a repeatedly-timing-out join is the same condition that
+  leaves the agent unable to resolve a service by its compose name).
+
 ## Key files
 
 | File | Role |
@@ -136,7 +180,7 @@ the HTTP route. The route is unchanged and still works.
 | `src/server/session/service-request-queue.ts` | Per-request timeout support. |
 | `src/server/session/session-worker.ts` | `GET /services/logs`; per-action timeouts on the bridge. |
 | `src/server/orchestrator/container-session-runner.ts` | `handleServiceRequest` — the `logs` action and real post-poll status. |
-| `src/server/orchestrator/service-manager.ts` | Unchanged; `startService`/`snapshotLogs`/`getServices` are the primitives all of the above call. |
+| `src/server/orchestrator/service-manager.ts` | `startService`/`snapshotLogs`/`getServices` are the primitives all of the above call. Also owns the #2044 follow-up: the `starting` watchdog, the bounded network join, and `url` derivation. |
 | `src/server/orchestrator/prompts/skeleton.md`, `prompts/live-preview.md` | Prompt surfacing — the discoverability half of the fix. |
 | `src/server/shipit-docs/compose.md`, `preview.md` | Agent-facing reference; "user clicks Start" → "the agent starts it". |
 

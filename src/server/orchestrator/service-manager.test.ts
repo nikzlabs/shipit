@@ -3,7 +3,15 @@ import type { ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { ServiceManager, type ComposeRunner, type ComposeQuery, type SecretsStatusInternalSnapshot } from "./service-manager.js";
+import {
+  ServiceManager,
+  NETWORK_JOIN_TIMEOUT_MS,
+  STARTING_WATCHDOG_MS,
+  STARTING_TIMEOUT_MESSAGE,
+  type ComposeRunner,
+  type ComposeQuery,
+  type SecretsStatusInternalSnapshot,
+} from "./service-manager.js";
 import { SESSION_WORKSPACE_SUBDIR, SESSION_STATE_SUBDIR } from "./session-state-dir.js";
 
 /**
@@ -2661,5 +2669,259 @@ services:
     const web = mgr.getService("web");
     expect(web?.status).toBe("error");
     expect(web?.error).toContain("Exited with code 127");
+  });
+});
+
+/**
+ * #2044 — a manual service that started successfully sat at `status: "starting"`
+ * indefinitely and never published an address, so the agent had no supported way
+ * to reach a service it had just brought up.
+ *
+ * Three independent guarantees, each of which alone would have unblocked that
+ * report:
+ *   1. the address is published as soon as a container has one, whatever the
+ *      readiness verdict says;
+ *   2. `starting` is bounded — nothing can pin a service there forever without
+ *      a reason landing on it;
+ *   3. the poll loop, which is the only thing that ever resolves `starting`,
+ *      always ends up running.
+ */
+describe("ServiceManager stuck-starting recovery (#2044)", () => {
+  let tmpDir: string;
+
+  function setup() {
+    tmpDir = makeSessionDir("service-mgr-stuck-");
+    return path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
+  }
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    vi.useRealTimers();
+  });
+
+  function writeCompose(dir: string, content: string): void {
+    fs.writeFileSync(path.join(dir, "docker-compose.yml"), content);
+  }
+
+  const MANUAL_COMPOSE =
+    "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n    x-shipit-preview: manual\n";
+
+  interface ManagerOpts {
+    /** Resolves the `docker compose up` — override to hang or reject. */
+    up?: () => Promise<void>;
+    networkJoinFn?: (networkName: string) => Promise<void>;
+    pollIntervalMs?: number;
+  }
+
+  function makeManager(dir: string, opts: ManagerOpts = {}) {
+    let psResponse = "";
+    let containerIp: string | null = "172.16.0.9";
+    let psCalls = 0;
+
+    const composeRunner: ComposeRunner = (args) =>
+      args.includes("up") ? (opts.up?.() ?? Promise.resolve()) : Promise.resolve();
+
+    const composeQuery: ComposeQuery = (args) => {
+      const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
+      if (key === "ps") {
+        psCalls += 1;
+        return Promise.resolve(psResponse);
+      }
+      if (key === "inspect") {
+        return Promise.resolve(JSON.stringify([{
+          State: { OOMKilled: false },
+          NetworkSettings: {
+            Networks: containerIp ? { "shipit-session-test-session": { IPAddress: containerIp } } : {},
+          },
+        }]));
+      }
+      return Promise.resolve("");
+    };
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: opts.pollIntervalMs ?? 0,
+      ...(opts.networkJoinFn ? { networkJoinFn: opts.networkJoinFn } : {}),
+    });
+
+    return {
+      mgr,
+      setPsResponse: (s: string) => { psResponse = s; },
+      setContainerIp: (ip: string | null) => { containerIp = ip; },
+      psCalls: () => psCalls,
+    };
+  }
+
+  /** A `ps` row for a container that exists but whose state tells us nothing. */
+  const createdPs = JSON.stringify({ Service: "web", ID: "abc", State: "created", ExitCode: 0 });
+  const runningPs = JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 });
+  const exitedPs = JSON.stringify({ Service: "web", ID: "abc", State: "exited", ExitCode: 0 });
+
+  it("publishes url while still `starting`, as soon as the container has an address", async () => {
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    // The container exists (so `docker inspect` answers with an IP) but its
+    // state doesn't confirm readiness — exactly the reported situation.
+    setPsResponse(createdPs);
+    await mgr.startService("web");
+
+    const web = mgr.getServices().find(s => s.name === "web");
+    expect(web?.status).toBe("starting");
+    expect(web?.containerIp).toBe("172.16.0.9");
+    expect(web?.url).toBe("http://172.16.0.9:3000/");
+  });
+
+  it("withholds url once the container is known to be gone", async () => {
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, setPsResponse } = makeManager(dir);
+    const poll = () => (mgr as unknown as { poller: { pollOnce(): Promise<void> } }).poller.pollOnce();
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    expect(mgr.getServices().find(s => s.name === "web")?.url).toBe("http://172.16.0.9:3000/");
+
+    // Clean exit → `stopped`. The IP we last resolved now describes a dead
+    // container, so it must not be advertised as an address.
+    setPsResponse(exitedPs);
+    await poll();
+    const web = mgr.getServices().find(s => s.name === "web");
+    expect(web?.status).toBe("stopped");
+    expect(web?.url).toBeUndefined();
+  });
+
+  it("marks a service that never leaves `starting` as error, with a reason", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    // `ps` never reports this service — the status probe is blind to it.
+    setPsResponse("");
+    await mgr.startService("web");
+    expect(mgr.getService("web")?.status).toBe("starting");
+
+    await vi.advanceTimersByTimeAsync(STARTING_WATCHDOG_MS + 1_000);
+
+    const web = mgr.getService("web");
+    expect(web?.status).toBe("error");
+    expect(web?.error).toBe(STARTING_TIMEOUT_MESSAGE);
+    // The message must not claim the service failed — we only know we never
+    // heard back about it.
+    expect(web?.error).toContain("may in fact be running");
+  });
+
+  it("does not fire the watchdog while a compose up is still in flight", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    // An image build has no upper bound — the up simply hasn't returned yet.
+    let releaseUp: (() => void) | undefined;
+    const { mgr, setPsResponse } = makeManager(dir, {
+      up: () => new Promise<void>((resolve) => { releaseUp = resolve; }),
+    });
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    const startPromise = mgr.startService("web");
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Two full windows of a legitimately slow build.
+    await vi.advanceTimersByTimeAsync(STARTING_WATCHDOG_MS * 2 + 1_000);
+    expect(mgr.getService("web")?.status).toBe("starting");
+
+    releaseUp?.();
+    await startPromise;
+    expect(mgr.getService("web")?.status).toBe("running");
+  });
+
+  it("does not fire the watchdog while the install gate holds the service", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr } = makeManager(dir);
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    expect(mgr.getService("web")?.status).toBe("starting");
+
+    // A long `agent.install` is not a wedged service.
+    await vi.advanceTimersByTimeAsync(STARTING_WATCHDOG_MS * 2 + 1_000);
+    expect(mgr.getService("web")?.status).toBe("starting");
+    expect(mgr.getService("web")?.error).toBeUndefined();
+  });
+
+  it("stop() cancels pending starting watchdogs", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse("");
+    await mgr.startService("web");
+    expect(mgr.getService("web")?.status).toBe("starting");
+
+    await mgr.stop();
+    await vi.advanceTimersByTimeAsync(STARTING_WATCHDOG_MS + 1_000);
+    // stop() already walked everything to `stopped`; the watchdog must not
+    // have resurrected it as an error afterwards.
+    expect(mgr.getService("web")?.status).toBe("stopped");
+  });
+
+  it("starts the poll loop even when start() throws", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr, psCalls } = makeManager(dir, {
+      up: () => Promise.reject(new Error("docker daemon is unhappy")),
+      pollIntervalMs: 5_000,
+    });
+
+    await expect(mgr.start()).rejects.toThrow("docker daemon is unhappy");
+    const before = psCalls();
+
+    await vi.advanceTimersByTimeAsync(11_000);
+    // Without the periodic poller, nothing would ever re-read Docker and the
+    // stack would be frozen at whatever `start()` left behind.
+    expect(psCalls()).toBeGreaterThan(before);
+
+    await mgr.stop();
+  });
+
+  it("resolves status and address even when the network join never returns", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    // The join reaches Docker over dockerode and can run a sidecar container —
+    // both can hang. It is best-effort, so it must not hold up the poll behind it.
+    const { mgr, setPsResponse } = makeManager(dir, {
+      networkJoinFn: () => new Promise<void>(() => { /* never settles */ }),
+    });
+
+    // `start()` joins too — it has to time out before the stack is up at all.
+    const stackPromise = mgr.start();
+    await vi.advanceTimersByTimeAsync(NETWORK_JOIN_TIMEOUT_MS + 1_000);
+    await stackPromise;
+
+    setPsResponse(runningPs);
+    const startPromise = mgr.startService("web");
+
+    await vi.advanceTimersByTimeAsync(NETWORK_JOIN_TIMEOUT_MS + 1_000);
+    await startPromise;
+
+    const web = mgr.getServices().find(s => s.name === "web");
+    expect(web?.status).toBe("running");
+    expect(web?.url).toBe("http://172.16.0.9:3000/");
   });
 });

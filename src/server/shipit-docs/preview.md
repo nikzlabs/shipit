@@ -218,10 +218,14 @@ verify your work:
   containers, so `localhost` is the agent's own container, not the dev server.
   Inspect ShipIt's service registry and use the service's **`url`** field:
   `curl -s http://${SHIPIT_HOST}:${SHIPIT_PORT}/api/sessions/${SHIPIT_SESSION_ID}/services`.
-  Each running service carries a ready-to-use `url`
+  A service carries a ready-to-use `url`
   (e.g. `"url":"http://172.20.0.2:5173/"`) — `browser_navigate` to it, or `curl`
-  it directly. The `url` is the service's own `containerIp` + `port`; if it is
-  absent the service isn't running yet (no IP detected), so wait and re-query.
+  it directly. The `url` is the service's own `containerIp` + `port`, and it is
+  published as soon as the container has an address — including while the
+  service still reads `status: "starting"`, because readiness is a separate
+  question from where the service lives. So a `starting` service with a `url` is
+  worth trying: connection-refused just means "not up yet, retry". A missing
+  `url` means no container address is known yet — wait and re-query.
   Do **not** use the `{sessionId}--{port}.<host>` subdomain form — that origin is
   for the user's preview pane (served by the orchestrator proxy) and does not
   resolve from the agent's browser. (Egress containment allows the agent to reach
@@ -256,8 +260,14 @@ If the project doesn't have a docker-compose.yml, see
   command and port. Verify the service is running with ShipIt's service
   registry:
   `curl -s http://${SHIPIT_HOST}:${SHIPIT_PORT}/api/sessions/${SHIPIT_SESSION_ID}/services`.
-  For browser verification, use each running service's returned `url` (its
+  For browser verification, use the service's returned `url` (its
   `containerIp` + `port`) rather than guessing `localhost`.
+- **Service stuck in `starting`**: try its `url` anyway — it is published as
+  soon as the container has an address, so a service that is genuinely serving
+  is reachable even before the registry has confirmed readiness. A service that
+  is still `starting` after two minutes with no image build in flight resolves
+  to `error` carrying the reason; `shipit service logs <name>` shows whether the
+  process itself is healthy, and `shipit service restart <name>` re-probes it.
 - **Port not detected**: Ensure `ports` is set in docker-compose.yml.
 - **Connection refused**: The dev server may need a moment to start. Ensure it
   binds to `0.0.0.0` (set `HOST=0.0.0.0` in the compose environment).

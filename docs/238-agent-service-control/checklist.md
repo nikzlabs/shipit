@@ -21,3 +21,17 @@
 - [x] Tests: shim (31), timeouts (11), queue (7), runner bridge (14), worker
       integration (+3)
 - [x] `npm run typecheck`, `npm run lint:dev`, affected suites green
+
+## Follow-up — stuck `starting`, no reachable address (#2044)
+
+- [x] `getServices` publishes `url` for `starting` as well as `running`;
+      `stopped`/`error` still withhold it
+- [x] Per-service `starting` watchdog (`STARTING_WATCHDOG_MS`) → `error` with a
+      reason, exempting in-flight `compose up` and the install gate (both re-arm)
+- [x] Watchdogs cancelled on `stop()` and on `reconcile()`'s map rebuild
+- [x] `joinSessionNetwork` bounded by `NETWORK_JOIN_TIMEOUT_MS` and logged
+- [x] `poller.start()` moved into `start()`'s `finally` so a throw can't leave a
+      session with no poll loop
+- [x] `shipit-docs/preview.md` — `url` while `starting`, stuck-service troubleshooting
+- [x] Tests: 8 cases in `service-manager.test.ts`; `npm run typecheck`,
+      `npm run lint:dev`, orchestrator integration suite green
