@@ -9,6 +9,7 @@ import { recordSteeredMessage, persistTurnInProgress } from "./agent-listeners.j
 import { runAgentWithMessage, saveImagesToUploadsDir, assembleAgentPrompt } from "./agent-execution.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { shouldSteerMessage } from "../dispatch-steering.js";
+import { resetSubAgentSpawnBudget } from "../session-runner.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { agentAuthenticationError, isAgentAuthenticated } from "../services/agent-auth-gate.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
@@ -241,6 +242,30 @@ export async function handleSendMessage(
             runnerForQueue.appliedPermissionMode = msg.permissionMode;
           }
           steeringAgent.sendUserMessage(steerPrompt);
+
+          // docs/144 — a steered message is a NEW human instruction, so it
+          // refills the sub-agent spawn budget the way starting a turn does.
+          //
+          // Without this the budget has no refill point on this path at all:
+          // steering deliberately does not start an orchestrator turn, so
+          // `resetRunnerTurnState` never runs, and every message the user types
+          // while the agent is mid-turn keeps drawing on the budget of whichever
+          // turn happened to be running. A session where the agent is usually
+          // busy — the ordinary shape once it backgrounds consults, which is
+          // exactly what ShipIt's guidance tells it to do — then exhausts the
+          // cap and refuses every later `shipit agent run` with "cap reached for
+          // this turn", on a turn the user experiences as brand new.
+          //
+          // Only the budget is refilled, never `resetRunnerTurnState`: clearing
+          // the accumulator mid-turn would destroy the running turn's chat
+          // history (docs/237).
+          //
+          // The trigger is deliberately a WS message from a browser client — a
+          // human keystroke, which no agent can emit — so this cannot weaken the
+          // forgery-resistant fan-out bound (docs/144 §5). Programmatic steers
+          // (`trySteerDispatch`: parent→child messages, agent-interface pages,
+          // CI) are agent-reachable and deliberately do NOT refill.
+          resetSubAgentSpawnBudget(runnerForQueue);
 
           // Shapes match PersistedMessage so the same payload feeds chat
           // history persistence and the message_steered broadcast.
