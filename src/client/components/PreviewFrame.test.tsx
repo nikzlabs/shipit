@@ -199,6 +199,64 @@ describe("PreviewFrame", () => {
     expect(postMessage).not.toHaveBeenCalledWith({ source: "shipit-toolbar", type: "reload" }, "*");
   });
 
+  it("shows the path an iframe reports, and updates it on client-side navigation", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+
+    const report = (path: string) => window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "path", path },
+      source: iframe.contentWindow,
+    }));
+
+    report("/orders/8842?tab=open");
+    expect(await screen.findByText("/orders/8842")).toBeInTheDocument();
+    expect(screen.getByText("?tab=open")).toBeInTheDocument();
+
+    report("/settings/secrets");
+    expect(await screen.findByText("/settings/secrets")).toBeInTheDocument();
+    expect(screen.queryByText("/orders/8842")).not.toBeInTheDocument();
+  });
+
+  it("ignores a reported path that is not a same-document absolute path", async () => {
+    // The value is authored by the previewed page. A protocol-relative
+    // "//evil.example" would resolve against the slot URL into a foreign
+    // origin, putting someone else's host in the tooltip and on the clipboard.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+
+    for (const path of ["//evil.example/x", "http://evil.example/x", "javascript:alert(1)", 42]) {
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { source: "shipit-preview", type: "path", path },
+        source: iframe.contentWindow,
+      }));
+    }
+
+    expect(screen.queryByRole("button", { name: /Copy preview URL/ })).not.toBeInTheDocument();
+  });
+
+  it("does not show a path reported by a different session's background iframe", async () => {
+    // Slots are per (session, port); a background preview reporting its route
+    // must not overwrite what the visible one says.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "path", path: "/visible" },
+      source: iframe.contentWindow,
+    }));
+    expect(await screen.findByText("/visible")).toBeInTheDocument();
+
+    // A message from a window that owns no slot is dropped entirely.
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "path", path: "/from-nowhere" },
+      source: window,
+    }));
+    expect(screen.queryByText("/from-nowhere")).not.toBeInTheDocument();
+    expect(screen.getByText("/visible")).toBeInTheDocument();
+  });
+
   it("posts a back-navigation message to the active iframe when Back is clicked", async () => {
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);

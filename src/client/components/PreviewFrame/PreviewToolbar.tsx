@@ -10,6 +10,7 @@ import { Button } from "../ui/button.js";
 import { StatusDot } from "../ui/status-dot.js";
 import { DeviceSelector } from "../DeviceSelector.js";
 import { usePreviewStore } from "../../stores/preview-store.js";
+import { PreviewPath } from "./PreviewPath.js";
 
 /** One selectable port row in the port dropdown. */
 export interface PortInfo {
@@ -58,6 +59,10 @@ interface PreviewToolbarProps {
   onBack: () => void;
   /** URL of the active iframe slot, or null when none is mounted. */
   activeSlotUrl: string | null;
+  /** Path + query of the page the preview is on, or null when unknown. */
+  previewPath: string | null;
+  /** The same location as an absolute URL, for click-to-copy. */
+  previewFullUrl: string | null;
 }
 
 /**
@@ -89,6 +94,8 @@ export function PreviewToolbar({
   onRefresh,
   onBack,
   activeSlotUrl,
+  previewPath,
+  previewFullUrl,
 }: PreviewToolbarProps) {
   const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
   const autoFixRetries = usePreviewStore((s) => s.autoFixRetries);
@@ -176,7 +183,10 @@ export function PreviewToolbar({
           </>
         )}
       </span>
-      <div className="flex items-center gap-2">
+      {/* Its own flexible region between the two groups, so the path never
+          squeezes the selectors on its left and truncates on its own terms. */}
+      <PreviewPath path={previewPath} fullUrl={previewFullUrl} />
+      <div className="flex items-center gap-2 shrink-0">
         {hasErrors && (
           <button
             onClick={() => setErrorPanelOpen((prev) => !prev)}

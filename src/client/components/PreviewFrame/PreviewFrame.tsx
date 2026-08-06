@@ -35,6 +35,12 @@ export interface PreviewStatus {
 
 const READY_BUFFER_LIMIT = 8;
 const READY_BUFFER_TTL_MS = 2_000;
+/**
+ * Cap on a reported preview path. The value is authored by the previewed page,
+ * so it is untrusted input — a pathological one must not reach React or the
+ * clipboard. Long enough that no real route is clipped.
+ */
+const MAX_PATH_LENGTH = 2048;
 
 function previewOrigin(url: string): string | null {
   try {
@@ -85,6 +91,10 @@ export function PreviewFrame({
 }: PreviewFrameProps) {
   const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Current path per slot, as reported by each page's injected script. State,
+  // not a ref — it drives the toolbar. Kept per slot so switching sessions
+  // shows that preview's own route rather than the last one seen anywhere.
+  const [slotPaths, setSlotPaths] = useState<Map<string, string>>(new Map());
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
   const [portSelectorOpen, setPortSelectorOpen] = useState(false);
 
@@ -149,6 +159,12 @@ export function PreviewFrame({
       if (mergedSessionIdSet.has(slotSessionId)) {
         loadedSlotsRef.current.delete(key);
         reloadableWindowsRef.current.delete(key);
+        setSlotPaths((prev) => {
+          if (!prev.has(key)) return prev;
+          const next = new Map(prev);
+          next.delete(key);
+          return next;
+        });
       }
     }
     pruneSlots((key) => {
@@ -160,6 +176,18 @@ export function PreviewFrame({
 
   // Derive active slot state for overlay/UI logic
   const activeSlotUrl = activeSlot?.url ?? null;
+  const activePath = activeSlotKey ? slotPaths.get(activeSlotKey) ?? null : null;
+  // Resolve against the slot URL to recover the absolute URL for click-to-copy.
+  // Safe despite `activePath` being untrusted: the message handler already
+  // rejected anything that isn't a same-origin absolute path.
+  const activeFullUrl = useMemo(() => {
+    if (!activePath || !activeSlotUrl) return null;
+    try {
+      return new URL(activePath, activeSlotUrl).href;
+    } catch {
+      return null;
+    }
+  }, [activePath, activeSlotUrl]);
   const showIframe = slotOrder.length > 0;
   const activeSlotReady = !!activeSlot;
   const isTransitioning = !activeSlotReady && activePort > 0 && preview?.running && showIframe;
@@ -254,6 +282,22 @@ export function PreviewFrame({
         );
         pending.push({ source: event.source, origin: event.origin, receivedAt: Date.now() });
         pendingReadyRef.current = pending.slice(-READY_BUFFER_LIMIT);
+      }
+      return;
+    }
+    if (data.type === "path" && event.source) {
+      const raw = (data as { path?: unknown }).path;
+      // Untrusted — authored by the previewed page. Require a same-document
+      // absolute path: anything else is not something we can render as "where
+      // you are", and a protocol-relative "//host/x" would resolve against the
+      // slot URL into a *different* origin, putting a foreign host in the
+      // tooltip and on the clipboard.
+      if (typeof raw !== "string" || !raw.startsWith("/") || raw.startsWith("//")) return;
+      const value = raw.slice(0, MAX_PATH_LENGTH);
+      for (const [key, el] of iframeRefs.current.entries()) {
+        if (!el?.contentWindow || el.contentWindow !== event.source) continue;
+        setSlotPaths((prev) => (prev.get(key) === value ? prev : new Map(prev).set(key, value)));
+        return;
       }
       return;
     }
@@ -548,6 +592,8 @@ export function PreviewFrame({
             ?.contentWindow?.postMessage({ source: "shipit-toolbar", type: "back" }, "*");
         }}
         activeSlotUrl={activeSlotUrl}
+        previewPath={activePath}
+        previewFullUrl={activeFullUrl}
       />
 
       {/* Missing-required-secrets banner (087 Phase 2). One row at the top of
