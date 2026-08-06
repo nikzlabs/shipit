@@ -130,6 +130,25 @@ Every PR subcommand also accepts `--repo OWNER/NAME` (alias `-R`) to target a
 specific repo — useful in a Sandbox session where you've cloned more than one.
 Without it, the op targets the repo of the directory you ran `gh` in.
 
+### Waiting for a PR to merge — never poll for it
+
+`gh pr view` reads a PR **once**. Do not wrap it in a `while … sleep 60` loop to
+wait for a merge. A blocking poll keeps the turn alive for as long as it runs, so
+the runner never goes idle and **ShipIt cannot reclaim the container** — it holds
+a slot for hours while the session sits in the sidebar looking stuck, long after
+the PR merged. A human merge can take days; no `sleep` budget covers it.
+
+Arm an async watch and **end your turn** instead. ShipIt starts a *new* turn here
+when the PR merges:
+
+```sh
+shipit session notify-on-merge --self       # this session's own PR
+shipit session notify-on-merge <child-id>   # a child session's PR
+```
+
+Both return immediately (exit 0, "armed"). See [sessions.md](sessions.md) for
+what the wake-turn carries and how to chain several PRs from one session.
+
 ### Images in a PR (not possible)
 
 You cannot put an image in a PR body or comment — no attach verb exists, and no

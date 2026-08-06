@@ -129,6 +129,14 @@ override the parent.
 | `shipit session report -b TEXT \| --body-file FILE [--severity fyi\|warn\|blocker] [--subject T] [--to parent\|cohort] [--json]` | Push a report **up** to the session that spawned you (and, with `--to cohort`, to every live sibling). Each recipient gets a card in its chat **and** a queued system turn, so the report is pushed, not waiting to be pulled. See *Reporting upward* below. |
 | `shipit session help` | Print the subcommand reference. |
 
+**Never poll for a merge in your shell.** A `while … gh pr view … sleep 60` loop
+is the wrong shape even when it works: it keeps the turn alive for hours, so the
+runner never goes idle and **ShipIt cannot reclaim the container** — the session
+holds its slot and looks stuck in the sidebar long after the PR merged. `wait`
+isn't the answer either; it resolves when the child's *agent* goes idle, not when
+a human merges. Arm `notify-on-merge <id>` (a child's PR) or `notify-on-merge
+--self` (this session's PR) and end your turn — ShipIt wakes you when it lands.
+
 Every supported subcommand accepts `--help` (or `-h`) and points to the
 canonical agent-facing documentation for its full usage and examples. This
 applies across the `session`, `source`, `issue`, `agent`, `service`, `release`,

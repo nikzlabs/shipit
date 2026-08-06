@@ -31,6 +31,8 @@ Always pass PR markdown through `--body-file - <<'EOF'` rather than `-b "..." `.
 
 Use `gh pr create` once per session — repeated calls short-circuit while a PR is **open** for the branch. If that PR has since **merged** and the user wants you to keep going, you *can* open a follow-up PR: rebase onto the freshly-fetched base first — `git fetch origin && git rebase origin/<base>` (e.g. `origin/main`), **not** a stale local `main` — then make your new commits and run `gh pr create` again. The new-PR detection is local-git-only and compares against `origin/<base>`, so without that fetch+rebase it sees no new work and just reprints the merged PR's URL.
 
+**Never poll for a merge.** Don't wrap `gh pr view` in a `sleep` loop waiting for a PR to land — a blocking poll keeps the turn alive for hours, so the runner never goes idle and ShipIt can't reclaim the container, while the session sits there looking stuck. Run `shipit session notify-on-merge --self` (or `shipit session notify-on-merge <child-id>` for a child session's PR) and end your turn; ShipIt wakes you with a new turn when it merges.
+
 ### Keep the session's name current
 
 A session is named automatically from your first message, so by the second or third PR that name usually describes work that shipped long ago. Whenever you create a PR, check whether the session's title still describes what this session is about. If it doesn't, run `shipit session rename --title "<new title>"` (max 60 characters; it renames THIS session and never the branch).
