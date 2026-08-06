@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect } from "vitest";
+import vm from "node:vm";
 import { AGENT_INTERFACE_SDK_MARKER } from "../shared/agent-interface-sdk/bootstrap.js";
 import { allowPreviewBootstrapInCsp, buildUpstreamHeaders, injectPreviewBootstrap } from "./preview-proxy.js";
 
@@ -84,6 +85,87 @@ describe("injectPreviewBootstrap", () => {
     const once = injectPreviewBootstrap("<html><head></head></html>");
     const twice = injectPreviewBootstrap(once);
     expect(twice.split(AGENT_INTERFACE_SDK_MARKER)).toHaveLength(2);
+  });
+});
+
+/**
+ * The injected HMR/toolbar script is a hand-written string, so we execute the
+ * real one in a sandbox rather than pattern-matching its source. Path reporting
+ * is the part worth proving: a load-time read alone goes stale the moment a
+ * client-side router moves, and the History wrapper that fixes that sits on the
+ * hot path of every SPA navigation in every preview.
+ */
+interface PostedMessage { source?: string; type?: string; path?: string }
+
+function runInjectedScript(initial = { pathname: "/", search: "", hash: "" }) {
+  const posted: PostedMessage[] = [];
+  const listeners = new Map<string, ((e?: unknown) => void)[]>();
+  const pushed: unknown[][] = [];
+  const history = {
+    pushState: (...args: unknown[]) => { pushed.push(args); return "original-return"; },
+    replaceState: (...args: unknown[]) => { pushed.push(args); },
+  };
+  const location = { ...initial, port: "3001", hostname: "preview.localhost" };
+  const window = {
+    WebSocket: function FakeWebSocket() {},
+    parent: { postMessage: (m: PostedMessage) => posted.push(m) },
+    addEventListener: (type: string, fn: (e?: unknown) => void) => {
+      const existing = listeners.get(type) ?? [];
+      listeners.set(type, [...existing, fn]);
+    },
+  };
+  const html = injectPreviewBootstrap("<html><head></head></html>");
+  const body = html.slice(html.indexOf("<script>") + "<script>".length, html.indexOf("</script>"));
+  vm.runInContext(body, vm.createContext({
+    window, history, location, URL, WebSocket: window.WebSocket,
+  }));
+  return { posted, listeners, history, location, pushed };
+}
+
+describe("injected preview script — path reporting", () => {
+  it("reports the current path to the parent on load", () => {
+    const { posted } = runInjectedScript({ pathname: "/orders/8842", search: "?tab=open", hash: "" });
+    expect(posted).toContainEqual({ source: "shipit-preview", type: "path", path: "/orders/8842?tab=open" });
+  });
+
+  it("never includes the host or port in the reported value", () => {
+    const { posted } = runInjectedScript();
+    const paths = posted.filter((m) => m.type === "path").map((m) => m.path);
+    expect(paths).toEqual(["/"]);
+    for (const p of paths) expect(p).not.toContain("preview.localhost");
+  });
+
+  it("re-reports when a client-side router pushes a new route", () => {
+    const { posted, history, location } = runInjectedScript();
+    location.pathname = "/settings/secrets";
+    history.pushState({}, "", "/settings/secrets");
+    expect(posted.filter((m) => m.type === "path").map((m) => m.path))
+      .toEqual(["/", "/settings/secrets"]);
+  });
+
+  it("re-reports on replaceState and on popstate", () => {
+    const { posted, history, listeners, location } = runInjectedScript();
+    location.pathname = "/a";
+    history.replaceState({}, "", "/a");
+    location.pathname = "/b";
+    for (const fn of listeners.get("popstate") ?? []) fn();
+    expect(posted.filter((m) => m.type === "path").map((m) => m.path)).toEqual(["/", "/a", "/b"]);
+  });
+
+  it("re-reports on hashchange, so hash routers stay live", () => {
+    const { posted, listeners, location } = runInjectedScript();
+    location.hash = "#/orders";
+    for (const fn of listeners.get("hashchange") ?? []) fn();
+    expect(posted.filter((m) => m.type === "path").map((m) => m.path)).toEqual(["/", "/#/orders"]);
+  });
+
+  it("calls through to the original History methods and preserves their return", () => {
+    // The wrapper sits on every SPA navigation — swallowing the call or its
+    // return value would break routing in every preview.
+    const { history, pushed } = runInjectedScript();
+    const returned = history.pushState({ a: 1 }, "", "/x");
+    expect(pushed).toEqual([[{ a: 1 }, "", "/x"]]);
+    expect(returned).toBe("original-return");
   });
 });
 
