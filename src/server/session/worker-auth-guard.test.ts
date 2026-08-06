@@ -8,6 +8,8 @@
  */
 
 import { describe, it, expect, afterEach } from "vitest";
+import net from "node:net";
+import type { AddressInfo } from "node:net";
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
 import { registerWorkerAuthGuard } from "./worker-auth-guard.js";
@@ -15,6 +17,25 @@ import { SessionWorker } from "./session-worker.js";
 import { LIFECYCLE_PATHS, WORKER_AUTH_HEADER, WORKER_TOKEN_ENV } from "../shared/worker-auth.js";
 
 const TOKEN = "b".repeat(64);
+
+/**
+ * Send a hand-written request line over a real socket.
+ *
+ * `app.inject` builds the request from a parsed URL and normalizes away exactly
+ * the spellings the guard has to defend against (a `#` fragment, an absolute
+ * request target), so a bypass that a real client can send is invisible to it.
+ */
+function rawRequest(port: number, requestLine: string): Promise<string> {
+  return new Promise((resolve) => {
+    const sock = net.connect({ host: "127.0.0.1", port }, () => {
+      sock.write(`${requestLine}\r\nHost: 127.0.0.1:${port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
+    });
+    let buf = "";
+    sock.on("data", (d) => { buf += d.toString(); });
+    sock.on("close", () => resolve(buf));
+    sock.on("error", (err) => resolve(`SOCKET_ERROR ${err.message}`));
+  });
+}
 /** A plausible peer: another session's agent container on the shared bridge. */
 const PEER_CONTAINER_IP = "172.18.0.9";
 
@@ -215,6 +236,31 @@ describe("worker auth guard", () => {
     expect(status.statusCode).toBe(200);
   });
 
+  it("SHI-239: a fragment or absolute-form target cannot reach a lifecycle handler", async () => {
+    // MUST use a real socket. `app.inject` normalizes both spellings away, so an
+    // inject-based version of this test passes against the broken guard — that
+    // is precisely how both vectors survived the first review round.
+    const app2 = buildGuardedApp(TOKEN);
+    await app2.listen({ host: "127.0.0.1", port: 0 });
+    const port = (app2.server.address() as AddressInfo).port;
+    try {
+      for (const target of [
+        "/agent/kill#x",
+        "/agent/start#x",
+        "/agent/%6bill#x",
+        `http://127.0.0.1:${port}/agent/kill`,
+        `http://127.0.0.1:${port}/agent/start`,
+      ]) {
+        const res = await rawRequest(port, `POST ${target} HTTP/1.1`);
+        expect(res, target).toContain("403");
+        expect(res, target).not.toContain("killed");
+        expect(res, target).not.toContain("started");
+      }
+    } finally {
+      await app2.close();
+    }
+  });
+
   it("SHI-239: a percent-encoded lifecycle path cannot slip past the guard", async () => {
     // Fastify's router decodes before matching, so `/agent/%6bill` reaches the
     // `/agent/kill` handler. A guard comparing the raw URL would see a path it
@@ -358,17 +404,55 @@ describe("SessionWorker installs the guard", () => {
     const app = worker.getApp();
     await app.ready();
 
-    const routes = app
-      .printRoutes({ commonPrefix: false })
-      .split("\n")
-      .map((line) => /(\/\S*) \(([A-Z, ]+)\)\s*$/.exec(line))
-      .filter((m): m is RegExpExecArray => m !== null)
-      .map((m) => ({ path: m[1] as string, methods: (m[2] as string).split(", ") }))
-      // `/agent-ops/*` is the broker, a different (loopback-only) group.
-      .filter((r) => r.path.startsWith("/agent/"));
-
-    // Sanity: the parse actually found the route table.
-    expect(routes.length).toBeGreaterThan(5);
+    // Parsed FAIL-CLOSED. The obvious version — regex, keep what matches, drop
+    // the rest — passes while covering nothing: a constrained route prints a
+    // trailing `{"host":"…"}` and misses the anchor, and a wildcard prints as the
+    // bare leaf `*`, so both vanish from the census and the assertions below
+    // still hold. Anything under /agent/ that does not parse is a failure here,
+    // not a silent omission.
+    // Indentation carries parenthood: a nested leaf prints as a bare suffix, so
+    // `/present-files/:presentId/*` renders as `* (GET, HEAD)` indented under its
+    // parent. Track the last top-level path and re-attach children, or a wildcard
+    // added under /agent/ would read as an unrelated `*` and vanish.
+    const routes: { path: string; methods: string[] }[] = [];
+    let currentTop = "";
+    for (const line of app.printRoutes({ commonPrefix: false }).split("\n")) {
+      const m = /^(.*?)[├└]── (\S+) \(([A-Z, ]+)\)\s*$/.exec(line);
+      if (!m) {
+        // Fail CLOSED on anything in the /agent/ space we cannot parse — e.g. a
+        // constrained route, which prints a trailing `{"host":"…"}` and misses
+        // the anchor. The obvious "regex, keep what matches, drop the rest"
+        // version passes while silently covering nothing.
+        if (line.includes("/agent/")) {
+          throw new Error(
+            `Unparsed route line in the /agent/ space — the census cannot see it, so it would ` +
+            `ship unguarded. Fix the parse (or the route): ${JSON.stringify(line)}`,
+          );
+        }
+        continue;
+      }
+      const nested = (m[1] ?? "").trim() !== "";
+      const segment = m[2] as string;
+      if (!nested && !segment.startsWith("/")) {
+        // A wildcard whose parent prefix is not itself a route prints as a bare
+        // top-level `*`, with no way to tell which subtree it serves. We cannot
+        // certify the /agent/ space while an unattributable route exists, so this
+        // fails rather than skipping it — `/agent/blob/*` renders exactly this way.
+        throw new Error(
+          `Unattributable route in the printed table — cannot tell whether it covers /agent/: ${JSON.stringify(line)}`,
+        );
+      }
+      const path = nested ? currentTop + segment : segment;
+      if (!nested) currentTop = segment;
+      if (!path.startsWith("/agent/")) continue; // /agent-ops/* is the broker, a different group.
+      // LIFECYCLE_PATHS is exact-string membership (`shared/worker-auth.ts`), so a
+      // parametric or wildcard route here could never be covered by it — adding
+      // `/agent/:id` to the set would turn this green while `/agent/foo` stayed open.
+      if (/[:*]/.test(path)) {
+        throw new Error(`Parametric/wildcard route in the /agent/ space cannot be guarded by an exact-path set: ${path}`);
+      }
+      routes.push({ path, methods: (m[3] as string).split(", ") });
+    }
 
     const mutating = routes.filter((r) => r.methods.some((m) => m !== "GET" && m !== "HEAD"));
     expect(mutating.map((r) => r.path).sort()).toEqual([...LIFECYCLE_PATHS].sort());

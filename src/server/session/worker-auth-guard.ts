@@ -17,6 +17,7 @@ import {
   WORKER_AUTH_HEADER,
   WORKER_TOKEN_ENV,
   decideWorkerRequest,
+  routerPathname,
 } from "../shared/worker-auth.js";
 
 export interface WorkerAuthGuardDeps {
@@ -69,7 +70,7 @@ export function registerWorkerAuthGuard(
   // `undefined`). Without the emptiness check the two halves disagree: the
   // orchestrator would send no header while the worker held `""` as its
   // expected token, and since `tokensMatch("", …)` is always false every
-  // orchestrator→worker call would 403 — the exact bricked session that step 5
+  // orchestrator→worker call would 403 — the exact bricked session that step 6
   // of `decideWorkerRequest` exists to prevent, reached through an empty value
   // instead of an absent one.
   const fromEnv = (deps.env ?? process.env)[WORKER_TOKEN_ENV];
@@ -87,9 +88,11 @@ export function registerWorkerAuthGuard(
   }
 
   app.addHook("onRequest", async (request, reply) => {
-    const pathname = (request.url ?? "/").split("?")[0];
+    const rawUrl = request.url ?? "/";
     const decision = decideWorkerRequest({
-      pathname,
+      // The RAW target. Deriving a pathname here is what produced the fragment
+      // and absolute-form bypasses; `decideWorkerRequest` owns that now.
+      url: rawUrl,
       remoteAddress: request.socket.remoteAddress,
       presentedToken: request.headers[WORKER_AUTH_HEADER],
       configuredToken,
@@ -98,8 +101,10 @@ export function registerWorkerAuthGuard(
 
     // One line per rejection: this is the signal that a session tried to reach
     // another session's worker, and it is the only place that is observable.
+    // Logs the canonical path, so the line names the route actually targeted
+    // rather than whatever spelling the caller used to reach it.
     log(
-      `[worker-auth] denied ${request.method} ${pathname} from ` +
+      `[worker-auth] denied ${request.method} ${routerPathname(rawUrl)} from ` +
         `${request.socket.remoteAddress ?? "unknown"} (${decision.reason})`,
     );
     return reply.code(403).send(DENIED_BODY);

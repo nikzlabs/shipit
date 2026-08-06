@@ -60,6 +60,18 @@ if (process.env.SESSION_EGRESS_ENFORCE === undefined) {
  * guard's env fallback is exercised through its injectable `env` dep. The
  * literal is spelled out (this file has no imports by design) and is pinned to
  * `WORKER_TOKEN_ENV` by an assertion in `shared/worker-auth.test.ts`.
+ *
+ * SHI-239 made this line LOAD-BEARING, not just a tidy-up — do not narrow it to
+ * the guard's own tests. Lifecycle routes (`/agent/start`, `/agent/kill`, …) now
+ * require the token even from loopback, so a token-configured worker refuses
+ * them. Roughly ten integration fixtures build an in-process `SessionWorker`
+ * WITHOUT a token and drive `/agent/start` over loopback; with the ambient value
+ * present they would silently become token-configured and 403 their own calls.
+ * The failure is deliberately hard to read — `container-agent-wiring.test.ts`
+ * surfaces it as `waitFor(agent.run()) timed out`, with only a stderr
+ * `lifecycle-needs-token` line naming the cause — and it is CI-INVISIBLE,
+ * because CI runners have no `SHIPIT_WORKER_TOKEN`. It reproduces only inside a
+ * dogfood session container: exactly the class this strip was added to kill.
  */
 Reflect.deleteProperty(process.env, "SHIPIT_WORKER_TOKEN");
 

@@ -144,6 +144,43 @@ const UNAUTHENTICATED_PATHS: readonly string[] = ["/health"];
  * it leaves reserved characters like `%2F` encoded, which is exactly why
  * `/agent%2Fkill` does NOT reach the kill handler and must not be denied here.
  */
+/**
+ * The path Fastify's router will actually match, derived from the raw request
+ * target exactly as `find-my-way` derives it.
+ *
+ * This lives here, not at the Fastify wiring, because deriving it wrongly is the
+ * bug class this module keeps hitting: the guard classifies one string while the
+ * router dispatches on another. Two vectors were live before this existed, both
+ * reproduced against a real server on a real socket (`app.inject` normalizes
+ * them away, so an inject-only probe misses both):
+ *
+ *  - **Fragment.** The guard split only on `?`, but `find-my-way` treats a raw
+ *    `#` as a delimiter too (`lib/url-sanitizer.js`, charCode 35). So
+ *    `POST /agent/kill#x` classified as the unprotected `/agent/kill#x` and
+ *    dispatched to the `/agent/kill` handler. It defeated the decode fix as
+ *    well: `/agent/%6bill#x` reached the same handler.
+ *  - **Absolute-form request target.** `find-my-way` strips scheme+authority
+ *    when the target does not begin with `/` (`index.js`, `FULL_PATH_REGEXP`),
+ *    while the guard classified the whole absolute URL. So
+ *    `POST http://127.0.0.1:9100/agent/kill` was served.
+ *
+ * `;` is deliberately NOT a delimiter here: `find-my-way`'s `useSemicolonDelimiter`
+ * defaults to false and the worker passes no override, so `/agent/kill;x=1`
+ * genuinely 404s rather than reaching the handler. Splitting on it would deny
+ * paths the router never routes — harmless for lifecycle paths, but it would
+ * also truncate a legitimate `/present-files/<id>` whose id contains one.
+ *
+ * The delimiter scan starts at index 1, mirroring `safeDecodeURI`'s loop, so a
+ * target that IS a delimiter at position 0 is left alone and 404s as it does now.
+ */
+export function routerPathname(rawUrl: string): string {
+  let path = rawUrl.length > 0 ? rawUrl : "/";
+  // Only when it does not already start with `/` — same condition as the router.
+  if (path.charCodeAt(0) !== 47) path = path.replace(/^https?:\/\/.*?\//, "/");
+  const cut = path.slice(1).search(/[?#]/);
+  return cut === -1 ? path : path.slice(0, cut + 1);
+}
+
 function pathVariants(pathname: string): string[] {
   try {
     const decoded = decodeURI(pathname);
@@ -229,8 +266,17 @@ export function tokensMatch(expected: string | undefined, presented: unknown): b
 // ---------------------------------------------------------------------------
 
 export interface WorkerRequestOrigin {
-  /** Path without querystring. */
-  pathname: string;
+  /**
+   * The RAW request target, exactly as Fastify received it (`request.url`) —
+   * querystring, fragment and absolute form all still attached.
+   *
+   * Deliberately not a pre-stripped pathname: callers that derived one
+   * themselves is how both the fragment and absolute-form bypasses happened.
+   * {@link routerPathname} canonicalizes it here, so the guard and the router
+   * cannot disagree about which path a request is for. Passing an
+   * already-derived pathname is still safe — the derivation is idempotent.
+   */
+  url: string;
   /** The real TCP peer address (`request.socket.remoteAddress`). */
   remoteAddress: string | undefined | null;
   /** Value of {@link WORKER_AUTH_HEADER} on the request, if any. */
@@ -296,13 +342,16 @@ export interface WorkerAuthDecision {
  * rather than to a session that cannot start a turn.
  */
 export function decideWorkerRequest(origin: WorkerRequestOrigin): WorkerAuthDecision {
-  if (UNAUTHENTICATED_PATHS.includes(origin.pathname)) {
+  // Canonicalized HERE rather than by the caller — see WorkerRequestOrigin.url.
+  const pathname = routerPathname(origin.url);
+
+  if (UNAUTHENTICATED_PATHS.includes(pathname)) {
     return { allow: true, reason: "unauthenticated-path" };
   }
 
   const loopback = isLoopbackAddress(origin.remoteAddress);
 
-  if (isLoopbackOnlyPath(origin.pathname)) {
+  if (isLoopbackOnlyPath(pathname)) {
     return loopback
       ? { allow: true, reason: "loopback" }
       : { allow: false, reason: "loopback-only" };
@@ -310,7 +359,7 @@ export function decideWorkerRequest(origin: WorkerRequestOrigin): WorkerAuthDeci
 
   // SHI-239 — ahead of the blanket loopback allow below, so a caller inside this
   // container cannot start/kill the resident agent just by being inside it.
-  if (origin.configuredToken !== undefined && isLifecyclePath(origin.pathname)) {
+  if (origin.configuredToken !== undefined && isLifecyclePath(pathname)) {
     return tokensMatch(origin.configuredToken, origin.presentedToken)
       ? { allow: true, reason: "token" }
       : { allow: false, reason: "lifecycle-needs-token" };
