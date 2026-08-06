@@ -27,7 +27,13 @@ export interface WorkerAuthGuardDeps {
    * passes this key and its own `workerToken` dep is unset in the standalone
    * entry point, so the env read is how a live worker gets its token. Resolving
    * to `undefined` (no container env) leaves remote callers ungated — see
-   * {@link decideWorkerRequest} step 5 for why that is deliberate.
+   * {@link decideWorkerRequest} step 6 for why that is deliberate.
+   *
+   * SHI-239 raises the stakes on the `env` dep below rather than changing this
+   * shape: the token now gates the lifecycle routes too, so a test-built worker
+   * that picked the value out of the ambient environment would 403 its own
+   * loopback `/agent/start`. The suite-wide strip in `server-test-setup.ts` is
+   * what keeps that from happening.
    */
   token?: string | undefined;
   /**
@@ -71,12 +77,12 @@ export function registerWorkerAuthGuard(
   const log = deps.log ?? ((message: string) => console.warn(message));
 
   if (!configuredToken) {
-    // Not fatal (see decideWorkerRequest step 5) but always worth a line: in a
+    // Not fatal (see decideWorkerRequest step 6) but always worth a line: in a
     // real container this means the orchestrator that created it predates the
     // token, so only the loopback-only groups are protected.
     log(
-      `[worker-auth] ${WORKER_TOKEN_ENV} is not set — orchestrator-facing routes are ungated. ` +
-        "Loopback-only routes (/agent-ops, /present-files) are still enforced.",
+      `[worker-auth] ${WORKER_TOKEN_ENV} is not set — orchestrator-facing and lifecycle ` +
+        "routes are ungated. Loopback-only routes (/agent-ops, /present-files) are still enforced.",
     );
   }
 

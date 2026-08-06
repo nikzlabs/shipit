@@ -6,11 +6,13 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  LIFECYCLE_PATHS,
   LOOPBACK_ONLY_PREFIXES,
   WORKER_AUTH_HEADER,
   WORKER_TOKEN_ENV,
   decideWorkerRequest,
   generateWorkerToken,
+  isLifecyclePath,
   isLoopbackAddress,
   isLoopbackOnlyPath,
   normalizePeerAddress,
@@ -72,6 +74,46 @@ describe("isLoopbackOnlyPath", () => {
   });
 });
 
+describe("isLifecyclePath", () => {
+  it("covers every route that starts, stops or steers the resident agent", () => {
+    for (const path of [
+      "/agent/start",
+      "/agent/interrupt",
+      "/agent/kill",
+      "/agent/spawn",
+      "/agent/cancel",
+      "/agent/stdin",
+      "/agent/message",
+      "/agent/permission-mode",
+      "/agent/compact",
+      "/agent/permission/resolve",
+    ]) {
+      expect(isLifecyclePath(path), path).toBe(true);
+    }
+    // The list above IS the set — a route added to one without the other would
+    // otherwise pass this file while going unguarded (or silently guarded).
+    expect(LIFECYCLE_PATHS.size).toBe(10);
+  });
+
+  it("excludes the status probe and anything outside the exact set", () => {
+    for (const path of [
+      "/agent/status", // health/adoption probe — must stay open on loopback
+      "/agent-ops/agent/spawn", // the broker; a different group entirely
+      "/agent/startle", // exact match, not a prefix
+      "/services/list",
+      "/health",
+      "/present-files/x",
+    ]) {
+      expect(isLifecyclePath(path), path).toBe(false);
+    }
+  });
+
+  it("strips a trailing slash so the guard and the router agree on membership", () => {
+    expect(isLifecyclePath("/agent/kill/")).toBe(true);
+    expect(isLifecyclePath("/")).toBe(false);
+  });
+});
+
 describe("tokensMatch", () => {
   it("matches an identical token and nothing else", () => {
     expect(tokensMatch(TOKEN, TOKEN)).toBe(true);
@@ -113,10 +155,19 @@ describe("decideWorkerRequest", () => {
     // Same class, different route group: /terminal/start + /terminal/input is
     // command execution in another session's container, and PUT /secrets
     // rewrites its agent env.
-    for (const path of ["/terminal/start", "/agent/message", "/secrets", "/agent/kill"]) {
+    for (const path of ["/terminal/start", "/secrets", "/files/read"]) {
       const denied = decide({ pathname: path });
       expect(denied.allow, path).toBe(false);
       expect(denied.reason).toBe("bad-token");
+    }
+
+    // The lifecycle routes are refused for the same peer, under SHI-239's rule
+    // rather than this one — a stricter reason for a strictly narrower group, so
+    // the SHI-311 guarantee is unchanged.
+    for (const path of ["/agent/message", "/agent/kill"]) {
+      const denied = decide({ pathname: path });
+      expect(denied.allow, path).toBe(false);
+      expect(denied.reason, path).toBe("lifecycle-needs-token");
     }
   });
 
@@ -159,6 +210,66 @@ describe("decideWorkerRequest", () => {
 
   it("ignores the querystring-free path only — callers strip it before deciding", () => {
     expect(decide({ pathname: "/agent-ops/issue/view", remoteAddress: "127.0.0.1" }).allow).toBe(true);
+  });
+
+  it("SHI-239: loopback is NOT enough for any lifecycle route", () => {
+    // The carve-out from the blanket loopback allow. Being inside the container
+    // identifies the caller; it does not authorize it to touch the live agent.
+    for (const path of LIFECYCLE_PATHS) {
+      const denied = decide({ pathname: path, remoteAddress: "127.0.0.1" });
+      expect(denied.allow, path).toBe(false);
+      expect(denied.reason, path).toBe("lifecycle-needs-token");
+    }
+  });
+
+  it("SHI-239: a loopback caller presenting the wrong token is refused too", () => {
+    const denied = decide({
+      pathname: "/agent/kill",
+      remoteAddress: "127.0.0.1",
+      presentedToken: "c".repeat(64),
+    });
+    expect(denied).toEqual({ allow: false, reason: "lifecycle-needs-token" });
+  });
+
+  it("SHI-239: the incident shape — a stray in-container /agent/start never reaches the 409", () => {
+    // The 2026-07-25 self-kill: an integration-test fixture's
+    // ContainerSessionRunner POSTed /agent/start at 127.0.0.1:9100, the live
+    // worker answered 409 "Agent already running" twice, and the runner's
+    // persistent-409 recovery cleared the "stale" agent with /agent/kill —
+    // SIGTERMing the agent running vitest. The runner looks its token up by
+    // worker base URL, so for a foreign URL it presents none; both legs are now
+    // refused at the guard, ahead of any handler that could 409.
+    for (const path of ["/agent/start", "/agent/kill"]) {
+      const denied = decide({ pathname: path, remoteAddress: "127.0.0.1", presentedToken: undefined });
+      expect(denied.allow, path).toBe(false);
+    }
+  });
+
+  it("SHI-239: the orchestrator's lifecycle calls still pass, from the bridge or loopback", () => {
+    for (const remoteAddress of [OTHER_SESSION_IP, "127.0.0.1"]) {
+      const allowed = decide({ pathname: "/agent/start", remoteAddress, presentedToken: TOKEN });
+      expect(allowed, remoteAddress).toEqual({ allow: true, reason: "token" });
+    }
+  });
+
+  it("SHI-239: leaves /agent/status and the rest of the loopback surface alone", () => {
+    // Over-broad prefix matching here would break the health/adoption probe and
+    // the agent's own service + present routes.
+    for (const path of ["/agent/status", "/services/list", "/agent-ops/issue/list", "/present-files/x"]) {
+      const allowed = decide({ pathname: path, remoteAddress: "127.0.0.1" });
+      expect(allowed.allow, path).toBe(true);
+      expect(allowed.reason, path).toBe("loopback");
+    }
+  });
+
+  it("SHI-239: an unconfigured worker keeps its old lifecycle behavior", () => {
+    // Same fallback as the orchestrator-facing routes: in-process tests build a
+    // SessionWorker with no token and drive /agent/start over loopback, and a
+    // mid-deploy skew must degrade rather than fail to start turns.
+    for (const remoteAddress of ["127.0.0.1", OTHER_SESSION_IP]) {
+      const allowed = decide({ pathname: "/agent/start", remoteAddress, configuredToken: undefined });
+      expect(allowed.allow, remoteAddress).toBe(true);
+    }
   });
 
   it("exposes stable wire names for the header and env var", () => {

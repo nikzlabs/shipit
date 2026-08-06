@@ -39,6 +39,9 @@ function buildGuardedApp(
   app.get("/present-files/:id", async () => ({ artifact: true }));
   app.post("/terminal/start", async () => ({ started: true }));
   app.get("/present/:id/raw", async () => ({ raw: true }));
+  app.post("/agent/start", async () => ({ started: true }));
+  app.post("/agent/kill", async () => ({ killed: true }));
+  app.get("/agent/status", async () => ({ running: false }));
   return app;
 }
 
@@ -191,6 +194,49 @@ describe("worker auth guard", () => {
       method: "POST",
       url: "/terminal/start",
       remoteAddress: PEER_CONTAINER_IP,
+      payload: {},
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("SHI-239: refuses the container's own agent on the lifecycle routes", async () => {
+    // The self-kill shape at the HTTP layer: a stray in-container caller POSTs
+    // /agent/start, gets 403 instead of the 409 that arms the orchestrator's
+    // persistent-409 recovery, and /agent/kill is out of reach entirely.
+    app = buildGuardedApp(TOKEN);
+    for (const url of ["/agent/start", "/agent/kill"]) {
+      const res = await app.inject({ method: "POST", url, remoteAddress: "127.0.0.1", payload: {} });
+      expect(res.statusCode, url).toBe(403);
+    }
+
+    // …while the probe next door stays open, which is what a too-broad
+    // `/agent/` prefix would have broken.
+    const status = await app.inject({ method: "GET", url: "/agent/status", remoteAddress: "127.0.0.1" });
+    expect(status.statusCode).toBe(200);
+  });
+
+  it("SHI-239: serves the orchestrator's lifecycle calls with the token", async () => {
+    app = buildGuardedApp(TOKEN);
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/start",
+      remoteAddress: "172.18.0.2",
+      headers: { [WORKER_AUTH_HEADER]: TOKEN },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ started: true });
+  });
+
+  it("SHI-239: an unconfigured worker still serves lifecycle routes over loopback", async () => {
+    // The compatibility fallback reaches lifecycle routes too: in-process tests
+    // build a SessionWorker with no token and drive /agent/start over loopback,
+    // and a mid-deploy skew must degrade rather than fail to start turns.
+    app = buildGuardedApp(undefined);
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/start",
+      remoteAddress: "127.0.0.1",
       payload: {},
     });
     expect(res.statusCode).toBe(200);
