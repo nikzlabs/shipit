@@ -238,11 +238,17 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:id/pr/:number/reopen",
   // docs/224 — gated agent merge (`gh pr merge`), sandbox dangerousGitHubOps grant.
   "POST /api/sessions/:id/pr/:number/merge",
-  // github actions — gh run / gh workflow (read-only)
+  // github actions — gh run / gh workflow (reads)
   "GET /api/sessions/:id/actions/runs",
   "GET /api/sessions/:id/actions/runs/view",
   "GET /api/sessions/:id/actions/workflows",
   "GET /api/sessions/:id/actions/workflows/view",
+  // `gh run rerun` — the group's one write. Re-executes already-committed
+  // workflow content against an existing commit, and only for a run on the
+  // session's OWN branch (enforced in `services/github.ts`). Deliberately not
+  // accompanied by dispatch / cancel / delete routes: those choose new code or
+  // destroy state.
+  "POST /api/sessions/:id/actions/runs/rerun",
   // release — shipit release plan/prepare (docs/214)
   "POST /api/sessions/:id/release/plan",
   "POST /api/sessions/:id/release/prepare",

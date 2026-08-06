@@ -15,8 +15,9 @@ import {
   listWorkflowRunJobs as listWorkflowRunJobsImpl,
   listWorkflows as listWorkflowsImpl,
   getWorkflow as getWorkflowImpl,
+  rerunWorkflowRun as rerunWorkflowRunImpl,
 } from "./github-auth-actions.js";
-import type { WorkflowRunSummary, WorkflowJobSummary, WorkflowSummary } from "./github-auth-actions.js";
+import type { WorkflowRunSummary, WorkflowJobSummary, WorkflowSummary, RerunWorkflowRunResult } from "./github-auth-actions.js";
 import { getReleaseByTag as getReleaseByTagImpl, type ReleaseByTag } from "./github-auth-releases.js";
 import { createIssue as createIssueImpl } from "./github-auth-issues.js";
 import type { CreateIssueResult } from "./github-auth-issues.js";
@@ -811,7 +812,7 @@ export class GitHubAuthManager extends EventEmitter {
     return getJobLogsImpl(this._token, owner, repo, jobId);
   }
 
-  // ---- GitHub Actions (read-only — backs `gh run`/`gh workflow`) ----
+  // ---- GitHub Actions (backs `gh run`/`gh workflow`) ----
 
   /** List workflow runs for a repo, most-recent first. */
   async listWorkflowRuns(
@@ -845,6 +846,23 @@ export class GitHubAuthManager extends EventEmitter {
   async getWorkflow(owner: string, repo: string, idOrFile: string): Promise<WorkflowSummary | null> {
     if (!this._token) return null;
     return getWorkflowImpl(this._token, owner, repo, idOrFile);
+  }
+
+  /**
+   * Re-run an existing workflow run (whole run, or just its failed jobs).
+   *
+   * Returns a status-bearing result rather than throwing so the service can map
+   * GitHub's 403 onto an actionable message. With no token the shape is the
+   * same, reported as a 401.
+   */
+  async rerunWorkflowRun(
+    owner: string,
+    repo: string,
+    runId: number,
+    opts: { onlyFailed?: boolean } = {},
+  ): Promise<RerunWorkflowRunResult> {
+    if (!this._token) return { ok: false, status: 401, message: "Not authenticated with GitHub" };
+    return rerunWorkflowRunImpl(this._token, owner, repo, runId, opts);
   }
 
   /**
@@ -1041,7 +1059,7 @@ export class GitHubAuthManager extends EventEmitter {
 export { createRepo, listUserRepos, searchRepos, listOrgs } from "./github-auth-repos.js";
 export { createPullRequest, findPullRequest, findPullRequestAnyState, mergePullRequest, enableAutoMerge, disableAutoMerge, updatePullRequest, addPullRequestComment, addLabelsToPullRequest, removeLabelFromPullRequest, markPullRequestReady, listPullRequests, viewPullRequest, getPullRequestNodeId } from "./github-auth-prs.js";
 export { getCheckStatus, getCheckRunAnnotations, getJobLogs } from "./github-auth-checks.js";
-export { listWorkflowRuns, getWorkflowRun, listWorkflowRunJobs, listWorkflows, getWorkflow, type WorkflowRunSummary, type WorkflowJobSummary, type WorkflowSummary } from "./github-auth-actions.js";
+export { listWorkflowRuns, getWorkflowRun, listWorkflowRunJobs, listWorkflows, getWorkflow, rerunWorkflowRun, type WorkflowRunSummary, type WorkflowJobSummary, type WorkflowSummary, type RerunWorkflowRunResult } from "./github-auth-actions.js";
 export { getReleaseByTag, type ReleaseByTag } from "./github-auth-releases.js";
 export { createIssue } from "./github-auth-issues.js";
 export { addReviewThreadReply, resolveReviewThread, unresolveReviewThread, submitPullRequestReview } from "./github-auth-review-threads.js";

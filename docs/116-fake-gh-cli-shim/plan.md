@@ -1,6 +1,6 @@
 ---
 issue: https://linear.app/shipit-ai/issue/SHI-207
-description: Sandboxed gh shim for agent-driven PRs, plus read-only gh run / gh workflow access.
+description: Sandboxed gh shim for agent-driven PRs, plus gh run / gh workflow access (reads + own-branch re-run).
 ---
 
 # 116 — Fake `gh` CLI Shim for Agent-Driven PR Creation
@@ -89,9 +89,10 @@ Explicitly **rejected** with a helpful error and non-zero exit:
 - `gh api …` — arbitrary endpoint access defeats the design.
 - `gh repo create|delete|edit|fork|sync|view|list` — repo lifecycle is orchestrator-owned; not the agent's concern.
 - `gh release …` — releases are deliberate human acts.
-- `gh workflow run`, `gh run rerun|cancel|delete` — CI **manipulation**. (The
-  *read-only* `gh run list|view` and `gh workflow list|view` ARE supported —
-  see "Read-only workflow runs (added later)" below.)
+- `gh workflow run` — **dispatch** is arbitrary execution with the repo's
+  secrets; `gh run cancel|delete` — these **destroy** state. (`gh run list|view`,
+  `gh workflow list|view`, and — added later — `gh run rerun` ARE supported; see
+  "Read-only workflow runs" and "`gh run rerun`" below.)
 - `gh auth …` — auth is harness-owned.
 - `gh secret …` — secret management is via ShipIt's own secrets surface.
 - `gh ssh-key …`, `gh gpg-key …`, `gh codespace …`, `gh extension …` — irrelevant to the workflow.
@@ -175,17 +176,104 @@ current branch, falling back to the latest run overall), `gh workflow list`, and
 chain mirrors the PR ops exactly — shim (`run`/`workflow` command groups in
 `gh.ts`) → `/agent-ops/{run,workflow}/{list,view}` worker routes → repo-aware
 (`cwd`/`repo`) orchestrator routes `GET /actions/runs[/view]` and
-`GET /actions/workflows[/view]` → `services/github.ts` → new read-only
+`GET /actions/workflows[/view]` → `services/github.ts` → new
 `github-auth-actions.ts` module → GitHub REST. The token never enters the
-container, identical to PR creation. The **manipulation** verbs
-(`gh workflow run`, `gh run rerun|cancel|delete`) stay blocked: dispatching or
-cancelling CI is a deliberate human/CI action, not an agent action (§5). Logs
+container, identical to PR creation. Logs
 are assembled per-job from the plain-text `actions/jobs/{id}/logs` endpoint
 (reusing the existing `getJobLogs`) and tail/total-capped to keep output sane;
 GitHub masks registered secrets (`***`) in those logs. Implementation:
 `github-auth-actions.ts`, `services/github.ts`
 (`listWorkflowRuns`/`viewWorkflowRun`/`listWorkflows`/`viewWorkflow`),
 `api-routes-github.ts`, `agent-ops-routes.ts`, `gh.ts`.
+
+**`gh run rerun` (added later) — unbundling re-run from dispatch/cancel/delete:**
+the Actions surface above shipped read-only, with `gh workflow run`, `gh run
+rerun`, `gh run cancel` and `gh run delete` blocked together as "CI
+manipulation". That grouping turned out to be wrong for one of the four. CI on
+PR #2031 failed in GitHub's "Prepare all required actions" phase — 503 then 500
+from action resolution, *before* checkout, on a tree whose previous run was
+green. Nothing in the repo caused it and nothing in the repo could fix it; the
+correct response was to re-run the job, and the agent could not. The only
+in-ShipIt workaround was pushing an **empty commit** — a no-op in branch history
+that also re-runs everything instead of the failed jobs — and the alternative was
+sending the user to github.com to click "Re-run jobs", which §1/§4 call a product
+failure, not a design.
+
+The distinction that justifies the split: `gh workflow run` **dispatches** an
+arbitrary workflow (effectively arbitrary execution with the repo's secrets);
+`cancel`/`delete` **destroy** state; `rerun` re-executes *already-committed,
+already-run* workflow content against an *existing* commit. It selects no
+workflow and destroys nothing — and the agent already causes those same workflows
+to execute on every turn, because ShipIt auto-pushes the branch. Blocking it
+never removed the capability; it only forced the destructive path to it. The
+other three stay blocked, and the surrounding module/route comments now state the
+line rather than the old grouping.
+
+**Three guardrails, in `services/github.ts` (`rerunWorkflowRun` / `rerunRefusal`).**
+A Codex review of the first draft was right that "rerun adds no authority" is
+false as stated — it named several capabilities re-run would grant that pushing
+cannot. Each guardrail closes one, and together they reduce re-run to "the CI my
+own push already caused":
+
+1. **Same branch** — `run.headBranch === currentBranchOrNull()`. Without it an
+   explicit run id re-executes a merged deploy or release workflow on
+   `main`/`stable`. Deliberately NOT `getCurrentBranch()`, which masks a detached
+   HEAD as `"main"` and would authorize exactly the runs the check exists to
+   refuse; a detached HEAD is a 409.
+2. **Same commit** — `run.headSha === getHeadHash()`. GitHub re-runs against the
+   run's *original* `GITHUB_SHA`/`GITHUB_REF`
+   ([docs](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs)),
+   so without this the agent could replay any historical commit's CI, whereas
+   pushing can only ever run the current tree.
+3. **Push / PR events only** — a `workflow_dispatch` run on this branch was
+   started by a human, and replaying it is dispatching by proxy, which is the
+   authority we just declined to grant.
+
+(1) and (2) are both load-bearing and neither subsumes the other: a fresh session
+branch points at its base branch's tip, so SHA alone would authorize `main`'s
+run, while a long-lived branch has many runs under one name at different SHAs.
+
+Two things the same review corrected in the write-up rather than the code, worth
+recording because the first draft asserted both wrongly. Re-runs use the
+privileges of the **original** triggering actor, not the re-runner's — so the
+agent gains no elevated context. And "identical code runs again" is true only of
+`--failed`: GitHub pins a failed-job re-run to the first attempt's reusable-workflow
+SHA, while re-running *all* jobs re-resolves a mutable branch/tag ref and can
+therefore execute different content
+([docs](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations#behavior-of-reusable-workflows-when-re-running-jobs)).
+Both modes stay available — a `startup_failure` run has no failed jobs to
+re-run, which is precisely the shape of the incident that motivated this — but
+the agent-facing docs now steer to `--failed` first and say why.
+
+Declined from that review, with reasons: gating re-run behind a
+dangerous-operation grant or user confirmation (the empty-commit workaround needs
+no grant and does strictly more damage, so gating only the safer path is
+incoherent); making `--failed` mandatory (it cannot retry a `startup_failure`);
+and a `requirements.md` for this doc (appending a capability to a feature that
+predates the discipline is not the material rework the rule attaches to).
+
+With no id, resolution is the latest run on the current branch; note the
+deliberate divergence from `viewWorkflowRun`, which falls back to the latest run
+*overall* — safe for a read, branch-escaping for a write. Chain: `gh run rerun
+[<run-id>] [--failed]` → `POST /agent-ops/run/rerun` → `POST
+/api/sessions/:id/actions/runs/rerun` → `rerunWorkflowRun` →
+`actions/runs/{id}/rerun` or `…/rerun-failed-jobs`. The run id is validated
+against `/^[1-9]\d*$/` at BOTH the shim and the route (the route is
+container-reachable, and bare `Number()` would silently accept `1e3`, `0x2a`,
+`1.5` and address a different run). GitHub's 403 is ambiguous, so the service
+lists the common causes while keeping GitHub's own message — the fine-grained-PAT
+case needs the repository's "Actions" permission set to *Read and write*, while a
+classic token gets it from `repo`.
+
+On token provenance, verified rather than assumed: every `github-auth-*.ts` REST
+call — including this one — uses the connected user token (`this._token`), a
+user-supplied PAT. The short-lived **GitHub App installation token** is minted
+only for the git credential broker (`mintRepoScopedToken`, used by
+`api-routes-github.ts`'s `/git/credential`), and its
+`INSTALLATION_TOKEN_PERMISSIONS` deliberately omits `actions` — so it is not on
+this path, and re-run does not widen it. That the existing read-only `gh run
+list|view` already needs `actions:read` from the same token is the evidence: they
+work today, so the token in play carries Actions permissions.
 
 ### Interaction with the harness fallback
 

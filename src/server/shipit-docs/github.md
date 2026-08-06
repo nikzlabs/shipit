@@ -189,19 +189,18 @@ When enabled, the guardrails are enforced server-side:
   the shim never forces past it. `--admin` is rejected.
 - A draft PR is refused (run `gh pr ready` first).
 
-### Workflow runs (read-only)
+### Workflow runs
 
-`gh run` and `gh workflow` are supported **read-only** — list and view workflow
-runs (including manually-dispatched `workflow_dispatch` runs) and workflow
-definitions, so you can fetch the result of a manual workflow inline. The
-*manipulation* verbs (`gh workflow run`, `gh run rerun`, `gh run cancel`,
-`gh run delete`) stay blocked: dispatching or cancelling CI is a deliberate
-human/CI action, not an agent action.
+`gh run` and `gh workflow` let you list and view workflow runs (including
+manually-dispatched `workflow_dispatch` runs) and workflow definitions, so you
+can fetch CI results inline. Beyond those reads there is exactly one write:
+**`gh run rerun`**, which re-runs a run on the branch you are working on.
 
 | Subcommand | Notes |
 |---|---|
 | `gh run list [-w WORKFLOW] [-b BRANCH] [-s STATUS] [-L LIMIT] [--json FIELDS] [-q/--jq EXPR]` | List workflow runs, most-recent first. `-w` filters by workflow name/filename/id; `-s` by status (e.g. `completed`, `success`, `failure`, `in_progress`). Plain output is tab-separated: status, conclusion, title, workflow, branch, event, id. |
 | `gh run view [<run-id>] [--log] [--log-failed] [--json FIELDS] [-q/--jq EXPR]` | View one run with its jobs. With no `<run-id>`, resolves the **latest run for the current branch** (falling back to the latest run overall). `--log` appends the run's job logs (tail-capped); `--log-failed` only failed jobs' logs. |
+| `gh run rerun [<run-id>] [--failed]` | Re-run an existing run. With no `<run-id>`, the **latest run for the current branch**. `--failed` re-runs only the failed jobs (and their dependents) instead of the whole run. Limited to runs on **your branch, at your current commit, triggered by a push or pull request** — see below. |
 | `gh workflow list [--json FIELDS] [-q/--jq EXPR]` | List the repo's workflow definitions (name, state, id). |
 | `gh workflow view <workflow> [--json FIELDS] [-q/--jq EXPR]` | View one workflow (by name, filename, or id) and its recent runs. Use `cat .github/workflows/<file>` to read the YAML — `--yaml` is not supported. |
 
@@ -209,6 +208,57 @@ These also accept `--repo OWNER/NAME` (alias `-R`). The `--json FIELDS` filter
 uses the same field names as the real `gh` (e.g. `databaseId`, `status`,
 `conclusion`, `displayTitle`, `workflowName`, `headBranch`, `event`, `url`; `gh
 run view --json jobs` includes the jobs array).
+
+#### Re-running CI (`gh run rerun`)
+
+Use it when a run failed for a reason that has nothing to do with the code —
+GitHub returning 5xx while resolving actions, a runner dying, a flake, a network
+blip against an external service. Check the failure first (`gh run view
+--log-failed`); if the tree is at fault, fix the tree. A re-run is not a way to
+roll dice on a real failure.
+
+```sh
+gh run rerun --failed        # just the failed jobs of this branch's latest run
+gh run rerun 1234567890      # the whole run, by id
+```
+
+Do **not** push an empty commit to force a fresh run — that pollutes the branch
+history with a no-op and re-runs everything. This is the supported path.
+
+**Prefer `--failed`.** It is cheaper, and it is also the more predictable of the
+two: GitHub pins a re-run of failed jobs to the reusable-workflow content from
+the first attempt, whereas re-running *all* jobs re-resolves a mutable
+branch/tag ref, so a full re-run can execute slightly different workflow code
+than the original. Reach for a full re-run when the run failed before any job
+existed (e.g. a `startup_failure`, where there are no failed jobs to re-run).
+
+**Where the line sits.** Re-running executes workflow content the repo already
+committed and already ran, against a commit that already exists — it picks no new
+workflow and destroys nothing. And you already cause those same workflows to run
+on every turn, because ShipIt auto-pushes your branch: blocking re-run never
+removed the capability, it just made the empty commit the only way to reach it.
+The verbs that would be genuinely new authority stay blocked — `gh workflow run`
+(dispatch an arbitrary workflow, i.e. arbitrary execution with the repo's
+secrets), `gh run cancel` and `gh run delete` (destroy state).
+
+Three guardrails keep re-run inside "CI my own push caused". A run is refused,
+with a message naming the concrete mismatch, unless:
+
+- **it is on your current branch** — otherwise an explicit run id could
+  re-execute a deploy or release workflow on `main` or a release branch;
+- **it is for your current `HEAD` commit** — GitHub re-runs against the run's
+  *original* commit, so an older run would replay a tree you can no longer reach
+  by pushing. If you get this one, push the branch and let CI run fresh;
+- **it was triggered by a push or a pull request** — a `workflow_dispatch`,
+  `schedule` or `release` run was started by a human or another system, and
+  replaying it is making that choice for them.
+
+If GitHub itself returns 403, the message keeps GitHub's own wording and lists
+the common causes: the connected token may lack Actions **write** (a
+**fine-grained PAT** needs the repository's "Actions" permission set to *Read and
+write*; a classic token needs `repo`), or GitHub refused that run — still in
+progress, more than 30 days old, past its 50-re-run limit, or `--failed` on a run
+with no failed jobs — or an org policy / SSO requirement applies.
 
 ### Extracting one value (`-q` / `--jq`)
 
@@ -249,9 +299,11 @@ or because the corresponding action belongs to the user, not the agent:
 - `gh repo create|delete|edit|fork|sync|view|list` — repo lifecycle is owned
   by the orchestrator and the user.
 - `gh release …` — releases are deliberate human acts.
-- `gh workflow run`, `gh run rerun|cancel|delete` — **CI manipulation** is out
-  of scope (the *read-only* `gh run list|view` and `gh workflow list|view` are
-  supported — see "Workflow runs" above).
+- `gh workflow run` — dispatching an arbitrary workflow is effectively arbitrary
+  execution with the repo's secrets; choosing *which* workflow runs is a human
+  act. `gh run cancel`, `gh run delete` — these destroy state. (Re-running an
+  existing run is a different act and **is** supported: `gh run rerun`, see
+  "Workflow runs" above.)
 - `gh auth …` — auth is owned by the ShipIt UI.
 - `gh secret …`, `gh variable …` — use `shipit.yaml` and the secrets surface.
 - `gh ssh-key …`, `gh gpg-key …`, `gh codespace …`, `gh extension …` — out of

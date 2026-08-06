@@ -1016,7 +1016,7 @@ describe("repo-aware brokering (docs/211)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// gh run list / view (read-only GitHub Actions)
+// gh run list / view (GitHub Actions reads)
 // ---------------------------------------------------------------------------
 
 describe("gh run list", () => {
@@ -1137,6 +1137,112 @@ describe("gh run view", () => {
     const { run } = makeRunner();
     const out = await run(["run", "view", "--web"]);
     expect(out.exitCode).not.toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gh run rerun (the one Actions write)
+// ---------------------------------------------------------------------------
+
+describe("gh run rerun", () => {
+  const OK = {
+    "POST /agent-ops/run/rerun": {
+      status: 200,
+      body: { run: { databaseId: 42, workflowName: "CI", url: "https://gh/run/42" }, onlyFailed: false },
+    },
+  };
+
+  it("POSTs with no id and no --failed, and points at gh run view", async () => {
+    const { run } = makeRunner();
+    const out = await run(["run", "rerun"], OK);
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].method).toBe("POST");
+    expect(out.calls[0].path).toBe("/agent-ops/run/rerun");
+    expect(out.calls[0].body).toMatchObject({ failed: false, cwd: "/workspace/myrepo" });
+    // No id key at all — the orchestrator resolves the current branch's latest run.
+    expect(Object.keys(out.calls[0].body as object)).not.toContain("id");
+    expect(out.stdout).toContain("Re-running run 42 (CI)");
+    expect(out.stdout).toContain("gh run view 42");
+  });
+
+  it("forwards an explicit run id and --failed", async () => {
+    const { run } = makeRunner();
+    const out = await run(["run", "rerun", "42", "--failed"], OK);
+    expect(out.calls[0].body).toMatchObject({ id: "42", failed: true });
+    expect(out.stdout).toContain("Re-running failed jobs in run 42");
+  });
+
+  it("forwards --repo for sandbox sessions", async () => {
+    const { run } = makeRunner();
+    const out = await run(["run", "rerun", "--repo", "octocat/hello"], OK, "/workspace/clone-b");
+    expect(out.calls[0].body).toMatchObject({ repo: "octocat/hello", cwd: "/workspace/clone-b" });
+  });
+
+  it.each([
+    ["latest"], ["1e3"], ["0x2a"], ["1.5"], [" 42"], ["0"], ["42abc"],
+  ])("rejects the coercible run id %s before calling the broker", async (id) => {
+    // `Number()` accepts every one of these and would address a DIFFERENT run
+    // than the agent typed, so the check is a decimal-digit regex, not Number().
+    const { run } = makeRunner();
+    const out = await run(["run", "rerun", id]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("Invalid run id");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("rejects more than one run id rather than silently using the first", async () => {
+    const { run } = makeRunner();
+    const out = await run(["run", "rerun", "42", "43"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("at most one run id");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("surfaces the orchestrator's own-branch refusal verbatim", async () => {
+    // The guardrail lives server-side; the shim's job is to not swallow it.
+    const { run } = makeRunner();
+    const out = await run(["run", "rerun", "9"], {
+      "POST /agent-ops/run/rerun": {
+        status: 403,
+        body: { error: 'Run 9 is on branch "stable", not the branch you are working on' },
+      },
+    });
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain('on branch "stable"');
+  });
+
+  it("names GitHub disconnection rather than printing a bare 401", async () => {
+    const { run } = makeRunner();
+    const out = await run(["run", "rerun"], {
+      "POST /agent-ops/run/rerun": { status: 401, body: { error: "Not authenticated with GitHub" } },
+    });
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("GitHub is not connected");
+  });
+
+  it("rejects --job and --debug with guidance instead of ignoring them", async () => {
+    const { run } = makeRunner();
+    const job = await run(["run", "rerun", "42", "--job", "build"]);
+    expect(job.exitCode).not.toBe(0);
+    expect(job.stderr).toContain("--failed");
+    const debug = await run(["run", "rerun", "42", "--debug"]);
+    expect(debug.exitCode).not.toBe(0);
+    expect(debug.stderr).toContain("--log-failed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gh run cancel / delete and gh workflow run stay blocked
+// ---------------------------------------------------------------------------
+
+describe("CI verbs that remain unavailable", () => {
+  it("refuses gh run cancel, gh run delete, and gh workflow run", async () => {
+    const { run } = makeRunner();
+    for (const argv of [["run", "cancel"], ["run", "delete", "42"], ["workflow", "run", "ci.yml"]]) {
+      const out = await run(argv);
+      expect(out.exitCode, argv.join(" ")).not.toBe(0);
+      expect(out.calls, argv.join(" ")).toHaveLength(0);
+    }
   });
 });
 

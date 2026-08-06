@@ -271,7 +271,7 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].body).toMatchObject({ cwd: "/workspace/clone", repo: "octocat/hello" });
   });
 
-  // ---- GitHub Actions reads (gh run / gh workflow, read-only) ----
+  // ---- GitHub Actions (gh run / gh workflow) ----
 
   it("GET /agent-ops/run/list forwards filters + cwd/repo to /actions/runs", async () => {
     client.setResponse("GET", "/actions/runs", { ok: true, status: 200, body: { runs: [] } });
@@ -296,6 +296,20 @@ describe("agent-ops routes", () => {
     expect(path.split("?")[0]).toBe("/actions/runs/view");
     expect(path).toContain("id=42");
     expect(path).toContain("logFailed=true");
+  });
+
+  it("POST /agent-ops/run/rerun forwards id/failed + cwd/repo to /actions/runs/rerun", async () => {
+    client.setResponse("POST", "/actions/runs/rerun", {
+      ok: true, status: 200, body: { run: { databaseId: 42 }, onlyFailed: true },
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/run/rerun",
+      payload: { id: "42", failed: true, cwd: "/workspace/c", repo: "octocat/hello" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/actions/runs/rerun");
+    expect(client.calls[0].body).toMatchObject({ id: "42", failed: true, cwd: "/workspace/c", repo: "octocat/hello" });
   });
 
   it("GET /agent-ops/workflow/list forwards to /actions/workflows", async () => {

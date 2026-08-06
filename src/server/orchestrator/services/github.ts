@@ -1173,7 +1173,7 @@ export async function listPullRequests(
   return githubAuthManager.listPullRequests(remote.owner, remote.repo, options.state ?? "open");
 }
 
-// ---- GitHub Actions (read-only — backs `gh run` / `gh workflow`) ----
+// ---- GitHub Actions (backs `gh run` / `gh workflow`) ----
 
 /** Per-job log tail and total-output caps for `gh run view --log[-failed]`. */
 const RUN_LOG_TAIL_LINES = 200;
@@ -1310,6 +1310,138 @@ export async function viewWorkflowRun(
     ? await collectRunLogs(githubAuthManager, remote.owner, remote.repo, jobs, options.logFailed === true)
     : "";
   return { run, jobs, logs };
+}
+
+/**
+ * Events whose runs the agent may re-run. Both are runs the agent's own pushes
+ * caused. `workflow_dispatch`, `schedule`, `release`, `repository_dispatch` and
+ * friends are excluded on purpose: a human (or another system) chose to start
+ * those, and re-running one is re-making that choice, not retrying the agent's
+ * own CI. The shim cannot dispatch a workflow, so it should not be able to
+ * replay a dispatched one either.
+ */
+const RERUNNABLE_RUN_EVENTS = new Set(["push", "pull_request"]);
+
+/**
+ * Re-run an existing workflow run for the session's repo.
+ *
+ * The one Actions *write* the agent gets. What makes it defensible is NOT that
+ * re-running is harmless in the abstract — a workflow can deploy or publish —
+ * but that three guardrails together bound it to CI the agent already causes.
+ * ShipIt auto-pushes the session branch after every turn, so the agent already
+ * triggers exactly these runs; blocking re-run never removed that capability, it
+ * only forced the agent to reach it by pushing an empty commit. Each guardrail
+ * closes a way the run could be something *other* than that:
+ *
+ * 1. **Same branch.** Otherwise an explicit run id re-executes a merged deploy
+ *    or release workflow on `main`/`stable` — genuinely new authority.
+ * 2. **Same commit.** GitHub re-runs against the run's original `GITHUB_SHA`,
+ *    so without this the agent could replay an arbitrary historical commit's CI;
+ *    pushing can only ever run the *current* tree.
+ * 3. **Push / PR events only.** A `workflow_dispatch` run on this branch was
+ *    started by a human; replaying it is dispatching by proxy.
+ *
+ * (1) and (2) are both load-bearing and neither subsumes the other: a fresh
+ * session branch points at the base branch's tip, so its runs share a SHA with
+ * `main`'s — the branch check is what stops that — while a long-lived branch has
+ * many runs at the same name and different SHAs.
+ *
+ * With no `runId`, resolves the latest run for the current branch. Note the
+ * deliberate difference from {@link viewWorkflowRun}: that one falls back to the
+ * latest run *overall* when the branch has none, which for a write would silently
+ * reach outside the branch scope. Here "no run on this branch" is an error. That
+ * function also reads the branch with `getCurrentBranch()`; this one must not
+ * (see the call site).
+ */
+export async function rerunWorkflowRun(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  options: { runId?: number; onlyFailed?: boolean; remoteUrl?: string } = {},
+): Promise<{ run: WorkflowRunSummary; onlyFailed: boolean }> {
+  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+  const remote = await resolveGitHubRemote(git, options.remoteUrl);
+  if ("error" in remote) throw new ServiceError(400, remote.error);
+
+  // `currentBranchOrNull`, NOT `getCurrentBranch` — the latter falls back to
+  // "main" on a detached HEAD (mid-rebase, mid-cherry-pick), which for a guard
+  // comparing branch names would silently authorize re-running `main`'s runs.
+  const branch = await git.currentBranchOrNull();
+  if (!branch) {
+    throw new ServiceError(
+      409,
+      "HEAD is detached (a rebase or cherry-pick may be in progress), so there is no branch to scope the re-run to. " +
+        "Finish or abort it, then re-run.",
+    );
+  }
+  const head = await git.getHeadHash();
+  if (!head) throw new ServiceError(409, "Could not resolve HEAD, so there is no commit to scope the re-run to.");
+
+  let run: WorkflowRunSummary | null;
+  if (typeof options.runId === "number") {
+    run = await githubAuthManager.getWorkflowRun(remote.owner, remote.repo, options.runId);
+    if (!run) throw new ServiceError(404, `No workflow run ${options.runId} in ${remote.owner}/${remote.repo}`);
+  } else {
+    const recent = await githubAuthManager.listWorkflowRuns(remote.owner, remote.repo, { branch, limit: 1 });
+    if (recent.length === 0) {
+      throw new ServiceError(404, `No workflow run found for branch "${branch}" — pass a run id explicitly.`);
+    }
+    run = recent[0];
+  }
+
+  const refusal = rerunRefusal(run, branch, head);
+  if (refusal) throw new ServiceError(403, refusal);
+
+  const onlyFailed = options.onlyFailed === true;
+  const result = await githubAuthManager.rerunWorkflowRun(remote.owner, remote.repo, run.databaseId, { onlyFailed });
+  if (!result.ok) throw new ServiceError(result.status, rerunErrorMessage(result, run, onlyFailed));
+  return { run, onlyFailed };
+}
+
+/**
+ * The three guardrails, as one message-producing check. Returns `null` when the
+ * run is in scope. Kept separate from the flow above so each refusal states the
+ * concrete mismatch — an agent that gets "not allowed" learns nothing.
+ */
+function rerunRefusal(run: WorkflowRunSummary, branch: string, head: string): string | null {
+  const scope = "gh run rerun only covers CI your own branch's pushes caused";
+  if (run.headBranch !== branch) {
+    return `Run ${run.databaseId} is on branch "${run.headBranch}", not the branch you are working on ("${branch}"). ` +
+      `${scope} — re-running a run on another branch could re-execute a deploy or release workflow. ` +
+      `If that is what the user wants, they can re-run it from GitHub.`;
+  }
+  if (run.headSha !== head) {
+    return `Run ${run.databaseId} is for commit ${run.headSha.slice(0, 8)}, but HEAD is ${head.slice(0, 8)}. ` +
+      `${scope}, at the commit you are on — GitHub re-runs against the run's original commit, so this would replay ` +
+      `an older tree. Push the current branch and let CI run on it instead.`;
+  }
+  if (!RERUNNABLE_RUN_EVENTS.has(run.event)) {
+    return `Run ${run.databaseId} was triggered by "${run.event}", not a push or pull request. ` +
+      `${scope} — a run someone started by hand is theirs to re-run.`;
+  }
+  return null;
+}
+
+/**
+ * Turn GitHub's refusal into something the agent can act on.
+ *
+ * A 403 here is ambiguous, so name the likely causes rather than assert one —
+ * and always keep GitHub's own message, which is often the most specific thing
+ * available.
+ */
+function rerunErrorMessage(
+  result: { status: number; message: string },
+  run: WorkflowRunSummary,
+  onlyFailed: boolean,
+): string {
+  const what = onlyFailed ? "re-run the failed jobs in" : "re-run";
+  const base = `Could not ${what} run ${run.databaseId} (${run.workflowName}): ${result.message}`;
+  if (result.status === 403) {
+    return `${base}\n\nCommon causes, most actionable first:\n` +
+      `- The connected GitHub token lacks Actions write access. A fine-grained PAT needs the repository's "Actions" permission set to Read and write; a classic token needs \`repo\`. Ask the user to reconnect GitHub or widen the token.\n` +
+      `- GitHub refused this particular run: still in progress, more than 30 days old, past its 50-re-run limit, or (with --failed) no failed jobs to re-run. \`gh run view ${run.databaseId}\` shows its state.\n` +
+      `- An organization policy or SSO requirement applies to the token.`;
+  }
+  return base;
 }
 
 /** List the repo's workflow definitions. */

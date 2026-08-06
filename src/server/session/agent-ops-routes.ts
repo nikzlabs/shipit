@@ -207,11 +207,12 @@ export function registerAgentOpsRoutes(
   );
 
   // ---------------------------------------------------------------------------
-  // GitHub Actions reads (read-only) — back `gh run list|view` and
-  // `gh workflow list|view`. Repo-aware (cwd/repo) like the PR ops. The worker
-  // injects the trusted SESSION_ID; the orchestrator resolves the target repo.
-  // There is intentionally NO dispatch/rerun/cancel route — manipulating CI is
-  // a human/CI action, so the shim keeps those verbs blocked.
+  // GitHub Actions — back `gh run list|view|rerun` and `gh workflow list|view`.
+  // Repo-aware (cwd/repo) like the PR ops. The worker injects the trusted
+  // SESSION_ID; the orchestrator resolves the target repo. `rerun` is the only
+  // write: it re-executes already-committed workflow content on the session's
+  // own branch. There is intentionally NO dispatch/cancel/delete route — those
+  // choose new code or destroy state, and stay human/CI actions.
   // ---------------------------------------------------------------------------
 
   // GET /agent-ops/run/list — list workflow runs
@@ -239,6 +240,14 @@ export function registerAgentOpsRoutes(
       if (logFailed) extra.logFailed = logFailed;
       return relay("GET", `/actions/runs/view${prTargetQs(request.query, extra)}`, undefined, reply);
     },
+  );
+
+  // POST /agent-ops/run/rerun — re-run an existing run (the group's one write).
+  // The orchestrator enforces the own-branch guardrail; this router just narrows
+  // the surface, exactly as it does for `pr/:number/merge`.
+  app.post<{ Body: { id?: string | number; failed?: boolean; cwd?: string; repo?: string } }>(
+    "/agent-ops/run/rerun",
+    async (request, reply) => relay("POST", "/actions/runs/rerun", request.body ?? {}, reply),
   );
 
   // GET /agent-ops/workflow/list — list workflow definitions

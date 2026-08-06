@@ -12,7 +12,9 @@
  *   `gh release`, `gh secret set`, `gh ssh-key`, etc. Backed by the user's
  *   GitHub token, that's a large mutation surface reachable from any process
  *   the agent spawns.
- * - The shim's allowlist is narrow on purpose: pull-request operations only.
+ * - The shim's allowlist is narrow on purpose: pull-request operations, plus
+ *   reads of workflow runs and one write — re-running a run on the session's own
+ *   branch (see the `gh run` handlers below for where that line sits).
  *
  * Output:
  * - `gh pr create` prints the PR URL on stdout, exits 0 (matches real gh).
@@ -80,6 +82,7 @@ Supported subcommands:
 
   gh run list      [-w WORKFLOW] [-b BRANCH] [-s STATUS] [-L LIMIT] [--json FIELDS] [-q|--jq EXPR]
   gh run view      [<run-id>] [--log] [--log-failed] [--json FIELDS] [-q|--jq EXPR]
+  gh run rerun     [<run-id>] [--failed]      (your branch, your commit, push/PR runs)
   gh workflow list [--json FIELDS] [-q|--jq EXPR]
   gh workflow view <workflow> [--json FIELDS] [-q|--jq EXPR]
 
@@ -89,12 +92,12 @@ Operations target the repo of the current working directory's clone. Pass
 -q/--jq requires --json and supports simple paths only (${JQ_SUPPORTED_FORMS});
 anything else exits 3 with a message naming the expression.
 
-This is a ShipIt shim, not the real gh CLI. \`gh run\`/\`gh workflow\` are
-READ-ONLY here — listing and viewing runs/workflows (e.g. the result of a
-manually-dispatched workflow). Subcommands like \`gh api\`, \`gh repo\`,
-\`gh release\`, \`gh auth\`, \`gh secret\`, and the workflow *manipulation* verbs
-(\`gh workflow run\`, \`gh run rerun\`, \`gh run cancel\`, \`gh run delete\`) are
-intentionally unavailable. See /shipit-docs/github.md.`;
+This is a ShipIt shim, not the real gh CLI. \`gh run\`/\`gh workflow\` are reads
+plus \`gh run rerun\` — re-running an existing run on the branch you are working
+on. Subcommands like \`gh api\`, \`gh repo\`, \`gh release\`, \`gh auth\`,
+\`gh secret\`, and the verbs that choose new code or destroy state
+(\`gh workflow run\`, \`gh run cancel\`, \`gh run delete\`) are intentionally
+unavailable. See /shipit-docs/github.md.`;
 
 const REJECTED_SUBCOMMANDS = new Set([
   "api", "auth", "browse", "codespace", "completion", "config", "extension",
@@ -582,7 +585,7 @@ function formatError(
 }
 
 // ---------------------------------------------------------------------------
-// GitHub Actions handlers (read-only) — `gh run` / `gh workflow`
+// GitHub Actions handlers — `gh run` / `gh workflow`. Reads, plus `run rerun`.
 // ---------------------------------------------------------------------------
 
 async function handleRunList(args: string[], deps: RunDeps): Promise<void> {
@@ -699,6 +702,69 @@ async function handleRunView(args: string[], deps: RunDeps): Promise<void> {
   success(deps.io, lines.join("\n"));
 }
 
+/**
+ * `gh run rerun [<run-id>] [--failed]` — the one Actions write.
+ *
+ * Bare `rerun` maps to GitHub's `rerun` endpoint (the whole run); `--failed`
+ * maps to `rerun-failed-jobs`. With no run id the orchestrator resolves the
+ * latest run for the current branch, matching how `gh run view` behaves.
+ *
+ * The guardrails (own branch, own HEAD commit, push/PR-triggered) live in
+ * `services/github.ts` and arrive here as a 403 whose message names the concrete
+ * mismatch — we print it verbatim rather than summarizing, because the specific
+ * mismatch is what tells the agent what to do instead.
+ */
+async function handleRunRerun(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: { "--repo": "repo", "-R": "repo" },
+    booleans: {
+      "--failed": "failed",
+      "-d": "debug", "--debug": "debug",
+      "-j": "job", "--job": "job",
+    },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for gh run rerun: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  if (parsed.booleans.has("debug")) {
+    fail(deps.io, "ShipIt's gh shim does not support --debug (re-run with debug logging). Re-run without it and read the logs with gh run view --log-failed.");
+  }
+  if (parsed.booleans.has("job")) {
+    fail(deps.io, "ShipIt's gh shim does not support --job. Use --failed to re-run the failed jobs, or omit it to re-run the whole run.");
+  }
+
+  if (parsed.positional.length > 1) {
+    fail(deps.io, `gh run rerun takes at most one run id — got ${parsed.positional.length}: ${parsed.positional.join(" ")}`);
+  }
+  const raw = parsed.positional[0];
+  // Decimal digits only. `Number()` would accept "1e3", "0x2a", " 42 " and
+  // "1.5", each of which reaches the API as a different id than the agent typed.
+  if (raw !== undefined && !/^[1-9]\d*$/.test(raw)) {
+    fail(deps.io, `Invalid run id: ${raw}. Pass the numeric id from gh run list, or omit it for this branch's latest run.`);
+  }
+  const onlyFailed = parsed.booleans.has("failed");
+  const payload = {
+    ...(raw !== undefined ? { id: raw } : {}),
+    failed: onlyFailed,
+    ...targetBody(deps, parsed.values.repo),
+  };
+  const res = await deps.call("POST", "/agent-ops/run/rerun", payload, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to re-run the workflow run"), 1);
+  }
+  const run = (res.body.run as Record<string, unknown> | null) ?? {};
+  const what = onlyFailed ? "Re-running failed jobs in" : "Re-running";
+  const id = asString(run.databaseId) || raw || "";
+  const name = asString(run.workflowName);
+  const lines = [`${what} run${id ? ` ${id}` : ""}${name ? ` (${name})` : ""}.`];
+  const url = asString(run.url);
+  if (url) lines.push(url);
+  // Only name the follow-up read when we know the id — a `gh run view` with a
+  // blank argument would be worse than omitting the hint.
+  if (id) lines.push("", `Watch it with: gh run view ${id}`);
+  success(deps.io, lines.join("\n"));
+}
+
 async function handleWorkflowList(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: {
@@ -795,6 +861,7 @@ async function handleWorkflowView(args: string[], deps: RunDeps): Promise<void> 
 const RUN_HANDLERS: Record<string, (args: string[], deps: RunDeps) => Promise<void>> = {
   list: handleRunList,
   view: handleRunView,
+  rerun: handleRunRerun,
 };
 
 const WORKFLOW_HANDLERS: Record<string, (args: string[], deps: RunDeps) => Promise<void>> = {
@@ -861,7 +928,7 @@ export async function runShim(
   const command = args[0];
 
   if (REJECTED_SUBCOMMANDS.has(command)) {
-    fail(io, `${SHIM_NAME} only supports a subset of pull-request and read-only workflow operations.\nTried: gh ${command}\nSee /shipit-docs/github.md for the full list.`);
+    fail(io, `${SHIM_NAME} only supports a subset of pull-request and workflow-run operations.\nTried: gh ${command}\nSee /shipit-docs/github.md for the full list.`);
   }
 
   const group = COMMAND_GROUPS[command];
