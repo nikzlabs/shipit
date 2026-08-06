@@ -1244,6 +1244,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
         systemTurn: true,
         onTurnComplete: undefined,
         deliveryId: "delivery-running",
+        dictated: undefined,
       }));
       expect(runner.running).toBe(true);
       expect(runner.hasDelivery("delivery-running")).toBe(true);

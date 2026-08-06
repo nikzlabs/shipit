@@ -220,6 +220,9 @@ export async function handleSendMessage(
             userText: msg.text,
             fileContext,
             imageContext,
+            // docs/144 — a dictated message steered into a running turn needs
+            // the transcription hint just as much as one that starts a turn.
+            dictated: msg.dictated,
           });
           // docs/138 + docs/140 — the streaming CLI keeps its spawn-time
           // `--permission-mode` for life, so a steered message inherits plan
@@ -318,6 +321,8 @@ export async function handleSendMessage(
         systemTurn: undefined,
         onTurnComplete: undefined,
         deliveryId: undefined,
+        // docs/144 — rides the queue so the hint survives the drain.
+        dictated: msg.dictated,
       }));
       return;
     }
@@ -527,6 +532,7 @@ export async function handleSendMessage(
     uploadPaths,
     ...(msg.userReview ? { userReview: msg.userReview } : {}),
     ...(msg.resetMergedBranch !== undefined ? { resetMergedBranch: msg.resetMergedBranch } : {}),
+    ...(msg.dictated ? { dictated: true } : {}),
     compact: isCompactRequest,
   });
 }
@@ -656,6 +662,9 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     validatedFiles: [],
     ...(agentSessionId !== undefined ? { agentSessionId } : {}),
     ...(capturedPermissionMode !== undefined ? { permissionMode: capturedPermissionMode } : {}),
+    // docs/144 — an "Other" answer dictated into the question card is a
+    // transcript like any other; the answer IS the next turn's prompt.
+    ...(msg.dictated ? { dictated: true } : {}),
     isNewSession: false,
   });
 }

@@ -106,3 +106,14 @@
 - [x] Verify the TTS cache cap (~200 MB) evicts correctly under load and that eviction during playback does not stall the current `HTMLAudioElement`.
 - [x] Decide on `audio/webm;opus` vs `audio/mp4` for STT and `mp3` vs `opus` for TTS based on Safari results; update the doc's open questions section with the chosen formats.
 - [x] Only if OpenAI's per-request character limit is tripped during QA: segment cleaned text by paragraph and stitch the resulting audio chunks; add a regression test.
+
+## Phase 10 — Tell the agent the message was dictated
+
+- [x] `DICTATION_CONTEXT` + a `dictated` arm on `assembleAgentPrompt` (`prompt-assembly.ts`), ordered by the same slash-invocation rule as file/image context so a dictated `/review` keeps its `/` at index 0.
+- [x] `dictated?: boolean` on `WsSendMessage` and `WsAnswerQuestion`.
+- [x] `dictated` on `AgentDispatchOptions` / `QueuedMessage` / `AgentDispatchInit` / `DISPATCH_FIELDS` and both converters, so a message dictated while a turn is running still carries the hint when it drains. Every existing `prepareDispatch` call site declares `dictated: undefined` (server-composed prompts are never spoken).
+- [x] Thread it through all four turn paths: direct (`runAgentWithMessage`), live steer (`send-message.ts` steer branch), queue drain (`processNextQueuedMessage`), dispatched (`dispatched-turn.ts`).
+- [x] Quick-capture Mode B: `dictated` on `POST /api/sessions/headless` (JSON + multipart) → `createHeadlessSession` → the first turn's prompt.
+- [x] `AskUserQuestion` "Other": `OtherAnswerInput` reports dictation upward; the card flags the turn only when the submitted answer IS the spoken text (a dictated question later abandoned for a preset option doesn't flag it). Shared `AnswerQuestionFn` type replaces the four inline copies of the callback signature.
+- [x] Composer provenance: `draftDictated` set on transcript splice; cleared on send, on an emptied draft, on prefill, and on session switch (drafts persist text, not provenance).
+- [x] Tests: `agent-prompt.test.ts` (ordering both ways, absent when typed, structural assertions on the block), `MessageInputDictation.test.tsx` (typed vs dictated vs mixed, no leak to the next message, cleared draft), `AskUserQuestionDictation.test.tsx` (dictated / typed / abandoned-Other).

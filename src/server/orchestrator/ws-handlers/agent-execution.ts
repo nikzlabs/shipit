@@ -180,6 +180,9 @@ async function runQueuedInteractiveMessage(
       permissionMode: next.permissionMode,
       isNewSession: false,
       uploadPaths: nextUploadRefs?.map((u) => u.path),
+      // docs/144 — the hint rode the queue with the message; keep it attached
+      // now the message finally becomes a turn.
+      ...(next.dictated ? { dictated: true } : {}),
     });
   } catch (err) {
     console.error("[queue] Error processing queued message:", getErrorMessage(err));
@@ -231,6 +234,12 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
    * global setting. Non-sticky.
    */
   resetMergedBranch?: boolean;
+  /**
+   * docs/144 — the user dictated this message by voice, so `userText` is a
+   * machine transcription. Adds the `<dictated_input>` context block to the
+   * assembled prompt; the persisted user row keeps the verbatim text.
+   */
+  dictated?: boolean;
 }): Promise<void> {
   const { userText, images, validatedFiles, permissionMode, isNewSession, uploadPaths, userReview } = opts;
 
@@ -447,7 +456,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   const agentPrefix = [pendingAgentNotice, resetAgentPrefix].filter(Boolean).join("\n\n");
   const prompt =
     (agentPrefix ? `${agentPrefix}\n\n` : "") +
-    assembleAgentPrompt({ userText, fileContext, imageContext });
+    assembleAgentPrompt({ userText, fileContext, imageContext, dictated: opts.dictated });
 
   // docs/218 — emit the persisted "branch updated" card right after the resumed
   // user row (and before the agent's response). Runs inside the executor via the

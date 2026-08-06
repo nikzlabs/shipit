@@ -169,6 +169,9 @@ export function QuickCaptureOverlay({
       ...(selectedModel ? { model: selectedModel } : {}),
       ...(reasoning ? { reasoning } : {}),
       ...(armAutoMerge ? { armAutoMerge: true } : {}),
+      // docs/144 — Mode B is the voice-native path (hold the hotkey, speak a
+      // task, it spawns a session), so the dictation hint matters most here.
+      ...(payload.dictated ? { dictated: true } : {}),
       ...(payload.deferredFiles.length > 0 ? { files: payload.deferredFiles } : {}),
     };
     // Remember the target so the next quick capture defaults to it (see

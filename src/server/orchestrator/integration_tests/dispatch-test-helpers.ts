@@ -39,6 +39,7 @@ export function testDispatch(
     systemTurn: opts.systemTurn,
     onTurnComplete: opts.onTurnComplete,
     deliveryId: opts.deliveryId,
+    dictated: opts.dictated,
   });
 }
 

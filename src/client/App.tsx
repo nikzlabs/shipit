@@ -478,6 +478,7 @@ export default function App() {
         uploadRefs,
         uploads: payloadUploads,
         resetMergedBranch,
+        dictated,
       } = payload;
       // docs/203, docs/220 — `/review [@path]` is a chat-native entry point to AI
       // review: same composed prompt as the modal button, sent as a normal
@@ -600,6 +601,9 @@ export default function App() {
           })(),
           // docs/218 — per-send opt-out for the auto-reset-merged-branch control.
           ...(resetMergedBranch !== undefined ? { resetMergedBranch } : {}),
+          // docs/144 — tell the agent this message was spoken, not typed, so it
+          // reads STT artifacts as artifacts. The bubble above stays verbatim.
+          ...(dictated ? { dictated: true } : {}),
         };
 
         const sent = sendUserMessage({
@@ -849,7 +853,7 @@ export default function App() {
   // Returns whether the answer reached the wire — AskUserQuestion gates its
   // answered-state lock on this, so it must not swallow the boolean.
   const handleAnswerQuestion = useCallback(
-    (toolUseId: string, answers: Record<string, string>, text: string): boolean => {
+    (toolUseId: string, answers: Record<string, string>, text: string, dictated?: boolean): boolean => {
       // Forward the session's current permission mode so answering a clarifying
       // question stays in the same mode it was asked in. Without this, an answer
       // given in plan mode resumes the CLI in default mode and the agent starts
@@ -870,6 +874,8 @@ export default function App() {
             answers,
             text,
             ...(pm !== "auto" ? { permissionMode: pm } : {}),
+            // docs/144 — an "Other" answer that was spoken rather than typed.
+            ...(dictated ? { dictated: true } : {}),
           }),
       });
     },
