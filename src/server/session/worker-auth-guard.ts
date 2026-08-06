@@ -17,6 +17,7 @@ import {
   WORKER_AUTH_HEADER,
   WORKER_TOKEN_ENV,
   decideWorkerRequest,
+  routerPathname,
 } from "../shared/worker-auth.js";
 
 export interface WorkerAuthGuardDeps {
@@ -27,7 +28,13 @@ export interface WorkerAuthGuardDeps {
    * passes this key and its own `workerToken` dep is unset in the standalone
    * entry point, so the env read is how a live worker gets its token. Resolving
    * to `undefined` (no container env) leaves remote callers ungated — see
-   * {@link decideWorkerRequest} step 5 for why that is deliberate.
+   * {@link decideWorkerRequest} step 6 for why that is deliberate.
+   *
+   * SHI-239 raises the stakes on the `env` dep below rather than changing this
+   * shape: the token now gates the lifecycle routes too, so a test-built worker
+   * that picked the value out of the ambient environment would 403 its own
+   * loopback `/agent/start`. The suite-wide strip in `server-test-setup.ts` is
+   * what keeps that from happening.
    */
   token?: string | undefined;
   /**
@@ -63,7 +70,7 @@ export function registerWorkerAuthGuard(
   // `undefined`). Without the emptiness check the two halves disagree: the
   // orchestrator would send no header while the worker held `""` as its
   // expected token, and since `tokensMatch("", …)` is always false every
-  // orchestrator→worker call would 403 — the exact bricked session that step 5
+  // orchestrator→worker call would 403 — the exact bricked session that step 6
   // of `decideWorkerRequest` exists to prevent, reached through an empty value
   // instead of an absent one.
   const fromEnv = (deps.env ?? process.env)[WORKER_TOKEN_ENV];
@@ -71,19 +78,21 @@ export function registerWorkerAuthGuard(
   const log = deps.log ?? ((message: string) => console.warn(message));
 
   if (!configuredToken) {
-    // Not fatal (see decideWorkerRequest step 5) but always worth a line: in a
+    // Not fatal (see decideWorkerRequest step 6) but always worth a line: in a
     // real container this means the orchestrator that created it predates the
     // token, so only the loopback-only groups are protected.
     log(
-      `[worker-auth] ${WORKER_TOKEN_ENV} is not set — orchestrator-facing routes are ungated. ` +
-        "Loopback-only routes (/agent-ops, /present-files) are still enforced.",
+      `[worker-auth] ${WORKER_TOKEN_ENV} is not set — orchestrator-facing and lifecycle ` +
+        "routes are ungated. Loopback-only routes (/agent-ops, /present-files) are still enforced.",
     );
   }
 
   app.addHook("onRequest", async (request, reply) => {
-    const pathname = (request.url ?? "/").split("?")[0];
+    const rawUrl = request.url ?? "/";
     const decision = decideWorkerRequest({
-      pathname,
+      // The RAW target. Deriving a pathname here is what produced the fragment
+      // and absolute-form bypasses; `decideWorkerRequest` owns that now.
+      url: rawUrl,
       remoteAddress: request.socket.remoteAddress,
       presentedToken: request.headers[WORKER_AUTH_HEADER],
       configuredToken,
@@ -92,8 +101,10 @@ export function registerWorkerAuthGuard(
 
     // One line per rejection: this is the signal that a session tried to reach
     // another session's worker, and it is the only place that is observable.
+    // Logs the canonical path, so the line names the route actually targeted
+    // rather than whatever spelling the caller used to reach it.
     log(
-      `[worker-auth] denied ${request.method} ${pathname} from ` +
+      `[worker-auth] denied ${request.method} ${routerPathname(rawUrl)} from ` +
         `${request.socket.remoteAddress ?? "unknown"} (${decision.reason})`,
     );
     return reply.code(403).send(DENIED_BODY);

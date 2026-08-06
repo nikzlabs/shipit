@@ -26,8 +26,20 @@
  * depending on a key file surviving.
  *
  * Note the token is readable by the agent inside its own container (it is in the
- * worker's env). That grants nothing: loopback already reaches that worker's
- * whole surface, and the token is per-session, so it opens no other worker.
+ * worker's env, which the agent process inherits). It is per-session, so it
+ * opens no OTHER worker — cross-session access, the SHI-311 hole, stays closed
+ * either way.
+ *
+ * Since SHI-239 that inheritance is no longer entirely free, though: loopback
+ * alone no longer reaches the lifecycle routes (`shared/worker-auth.ts`
+ * {@link LIFECYCLE_PATHS}), so a process that deliberately forwards the env var
+ * as a header can still start or kill its own session's agent. That group
+ * targets accidental collisions — a stray `/agent/start` that trips the
+ * persistent-409 recovery into killing the live agent — and an accident does not
+ * set an auth header. Scrubbing the var before spawning children would raise the
+ * bar further; it is deliberately not done, because a same-UID process can read
+ * `/proc/<worker-pid>/environ` regardless and container isolation is the real
+ * boundary.
  */
 
 import {
