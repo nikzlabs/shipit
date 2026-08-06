@@ -18,9 +18,10 @@ reachability probe (`planning#1`, closed) and the labels that probe minted.
 - [ ] Add `createdAt` to `ISSUE_FIELDS` in `trackers/linear/adapter.ts` so an issue's original date is readable at all (req 9).
 - [ ] Create the corpus's 20 labels with their Linear colors, plus the five `priority: …` labels that carry priority across.
 - [ ] **Pilot** — copy one issue with a long body, several comments, an internal cross-reference, a label and a priority. Stop there for a human look at the body header, the dated comments and the rewritten references before the format is repeated 322 times.
-- [ ] Copy every issue in key order, predicting each `planning#M` and asserting each create matches. Rewrite the corpus's 1,146 internal `SHI-N` cross-references and 120 `linear.app` URLs as they are written — comment bodies cannot be edited afterwards. Preserve each comment's original date and each issue's creation date (req 9). Emit the `SHI-N → planning#M` mapping incrementally as a durable artifact.
+- [ ] **Pass A** — create all 322 issues in key order with titles, labels, and bodies carrying their `SHI-N` origin and original creation date (req 9). Cross-references stay unrewritten. Append each assigned number to the `SHI-N → planning#M` mapping as it comes back, so the mapping is complete and observed when the pass ends.
 - [ ] Verify a full round trip in the UI: the tab, an issue with comments, a write, and Undo.
-- [ ] Rewrite every reference in this repository from the mapping, in one PR, when nothing else is in flight (req 10): 2,623 mentions across 667 files, 186 doc `issue:` pointers, 221 files with `linear.app` URLs. Use `grep -a` — one source file is flagged binary and would otherwise be skipped.
+- [ ] Rewrite every reference in this repository from the mapping, in one PR, when nothing else is in flight (req 10): 2,623 mentions across 667 files, 186 doc `issue:` pointers, 221 files with `linear.app` URLs. Use `grep -a` — one source file is flagged binary and would otherwise be skipped. Needs Pass A only.
+- [ ] **Pass B** — replay the 1,344 comments with their original dates, and edit the 322 bodies to rewrite their 1,146 internal `SHI-N` cross-references and 120 `linear.app` URLs. Comment bodies cannot be edited afterwards, so a comment's cross-references must be correct when it is posted.
 - [ ] Retire Linear for ShipIt's own planning: drop the `roadmap` declaration and rewrite `CLAUDE.md`'s tracker-sync section (req 11).
 - [ ] Delete `planning#1` and the pilot issue.
 

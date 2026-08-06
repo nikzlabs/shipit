@@ -112,16 +112,29 @@ fixing them later would mean a second edit pass over most of the corpus, and
 **comment bodies cannot be edited at all** through the shim, so a
 comment's cross-references would be permanently stale.
 
-The way out is to **predict the mapping and verify it as we go**. The planning
-repository is empty apart from `planning#1` (a live write probe, closed, titled
-`[dry run] migration probe`) and whatever the pilot in step 6 consumes. Creating
-in key order into a repository where nothing else opens issues or PRs makes
-`SHI-N → planning#(N + offset)` deterministic, where the offset is fixed by
-whatever numbers are already taken when the run starts. The driver asserts the
-returned identifier equals the prediction on every create and aborts on the first
-mismatch, so the risk is a halt, not silent corruption. If it ever does drift, the
-fallback is the two-pass shape — create everything, then edit bodies — accepting
-that comment cross-references stay as `SHI-N`.
+The way out is to **split the copy in two, so the mapping is observed rather than
+predicted**. Creating an issue is what fixes its number, and nothing about a
+comment or a cross-reference influences it. So:
+
+- **Pass A** creates all 322 issues — title, body header, labels, and the body
+  text with its cross-references still in their original `SHI-N` form. Every
+  number is now assigned and recorded.
+- **Pass B** replays the 1,344 comments and edits the 322 bodies, rewriting
+  cross-references from the mapping Pass A produced.
+
+The repo-wide sweep sits between them, against a mapping that is already true.
+
+Predicting `SHI-N → planning#(N + offset)` and asserting each create would also
+work — the repository is empty apart from `planning#1` and the pilot, and nothing
+else opens issues or PRs there — but it buys nothing that Pass A doesn't, and it
+resolves the numbering risk at the latest possible moment instead of the earliest.
+The prediction survives only as a cheap consistency check inside Pass A.
+
+Renaming the Linear tracker to `planning` first, and sweeping references to
+`planning#SHI-304` ahead of the copy, does **not** work as a shortcut: a name
+bound to a GitHub destination requires a numeric suffix
+(`issue-ref-resolution.ts:281`), so every such reference would break at the swap.
+The identifier is what the migration changes; the name is already stable.
 
 This is why nothing else may open an issue or PR in the planning repository while
 the copy runs.
@@ -191,23 +204,27 @@ rather than inheriting it.
    repeats this 322 times, so the format is far cheaper to change here than after.
    The pilot's issue number is consumed either way, so the prediction in step 7
    accounts for it rather than assuming an untouched repository.
-7. **Copy in key order**, predicting each `planning#M` and asserting the create
-   returns it. Each body carries its `SHI-N` origin, its original creation date
-   and, for the 15 sub-issues, its parent. Cross-references inside bodies and
-   comments are rewritten to `planning#M` from the predicted mapping as they are
-   written. Comments replay with their original date in the text (req 9). Closed
-   issues are closed after creation. The mapping is appended to disk as it is
-   built.
+7. **Pass A — create all 322 issues** in key order: title, labels, and a body
+   carrying its `SHI-N` origin, its original creation date and, for the 15
+   sub-issues, its parent. Cross-references stay in their original `SHI-N` form
+   for now. Closed issues are closed after creation. Every assigned number is
+   appended to the `SHI-N → planning#M` mapping as it comes back, which makes the
+   mapping complete and *observed* at the end of this pass.
 8. **Rewrite every reference in this repository** from that mapping in one PR
    (req 10): doc `issue:` frontmatter, inline doc mentions, code comments,
    `CLAUDE.md`. 2,623 mentions across 667 files — it conflicts with every open
-   branch, so it lands when nothing else is in flight.
-9. **Retire Linear** for ShipIt's own planning (req 11): drop the `roadmap`
-   declaration from `shipit.yaml` and rewrite `CLAUDE.md`'s tracker-sync section.
+   branch, so it lands when nothing else is in flight. Because the mapping is
+   already true, this step waits for a convenient moment rather than for the rest
+   of the copy.
+9. **Pass B — replay the 1,344 comments** with their original dates (req 9), and
+   edit the 322 bodies to rewrite their internal cross-references. This is the
+   larger half by write count and the one with no ordering constraints left.
+10. **Retire Linear** for ShipIt's own planning (req 11): drop the `roadmap`
+    declaration from `shipit.yaml` and rewrite `CLAUDE.md`'s tracker-sync section.
 
-Steps 3–7 are the child session's work, with a stop at the pilot for a human look.
-Steps 8–9 are this repository's, and step 8 cannot start until step 7's mapping is
-final.
+Steps 3–7 and 9 are the child session's work, with a stop at the pilot for a human
+look. Steps 8 and 10 are this repository's. Step 8 needs only Pass A, which is why
+the copy is split there.
 
 **Nothing past step 2 has run.** The only writes made to the planning repository
 so far are the reachability probe described under Status — `planning#1`, closed,
