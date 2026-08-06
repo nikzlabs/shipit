@@ -125,6 +125,25 @@ describe("IssuesViewer", () => {
     expect(props.onConnect).toHaveBeenCalledOnce();
   });
 
+  // The tab is the label alone — the backend binding (`owner/repo`, a Linear
+  // team key) used to be appended after a `·` and made the bar overflow the
+  // panel. It survives only as the hover title.
+  it("renders each tracker tab as its label alone, with the binding on hover", () => {
+    const planning: TrackerInfo = {
+      id: "github:nikzlabs/shipit-planning",
+      kind: "github",
+      label: "Planning",
+      configured: true,
+      name: "planning",
+      binding: { key: "nikzlabs/shipit-planning", name: "nikzlabs/shipit-planning" },
+    };
+    render(<IssuesViewer {...defaultProps({ trackers: [LINEAR_CONFIGURED, planning] })} />);
+    const tab = screen.getByRole("button", { name: "Planning" });
+    expect(tab).toHaveAttribute("title", "Planning · nikzlabs/shipit-planning");
+    expect(screen.queryByText(/nikzlabs\/shipit-planning/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Linear" })).toBeInTheDocument();
+  });
+
   it("renders the priority-sorted issue list passed in", () => {
     const props = defaultProps({
       issues: [
