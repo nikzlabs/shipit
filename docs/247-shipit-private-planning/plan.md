@@ -239,7 +239,8 @@ rather than inheriting it.
     branch, so it lands when nothing else is in flight. This is the only step of
     the migration that produces a diff.
 11. **Retire Linear** for ShipIt's own planning (req 11): drop the `roadmap`
-    declaration from `shipit.yaml` and rewrite `CLAUDE.md`'s tracker-sync section.
+    declaration from `shipit.yaml`, and rewrite every part of `CLAUDE.md` that
+    names Linear as the destination — see below, it is more than one section.
 
 Steps 4–9 are the child session's work, with a stop at the pilot for a human look;
 they touch only the tracker. Steps 10 and 11 are this repository's, and are the
@@ -260,6 +261,40 @@ of the planning repository is a one-line `shipit.yaml` edit rather than a second
 sweep of 2,600 mentions. Name support is a hard prerequisite for step 6, not an
 optimization: without it, step 6 hard-codes a repository slug into most files in
 the repository and the whole sweep has to be repeated on the first rename.
+
+## `CLAUDE.md` names Linear in seven places, not one
+
+This repository's own guideline — *create a tracker issue for every design doc* —
+is written into `CLAUDE.md` with Linear as the named destination, so retiring
+Linear means rewriting the guideline, not just the config. It spans three
+sections:
+
+| Line | What it says |
+|---|---|
+| 306 | `issue:` frontmatter shape — "Linear = full URL without the title slug" |
+| 326 | Sync the tracker item; "not `gh issue`, `gh api`, or a Linear MCP" |
+| 328 | "Doc has an `issue:` pointer (Linear *or* GitHub)" |
+| 329 | "Create a **Linear** issue to track it… it defaults to Linear… If Linear isn't connected, the command says so" |
+| 333 | The where-does-a-fact-live test routes coordination facts to "**Linear**" |
+| 340 | The surface table's row is "**The Linear issue**" |
+| 342 | "let Linear hold live state and cross-issue relations" |
+
+Most of these become `planning` at step 11. The right end state is mostly
+*tracker-neutral* wording — "the tracked issue" rather than a named backend —
+since 248 made the destination a declaration rather than a built-in; only the
+places that must name a destination should say `planning`.
+
+**Two of them are already wrong, before any migration**, and are tracked
+separately as [SHI-324](https://linear.app/shipit-ai/issue/SHI-324):
+
+- Line 329's "it defaults to Linear" describes behaviour 248 req 13 deleted.
+  `create` now requires `--tracker NAME`, so an agent following this line runs a
+  bare `create` and has it rejected.
+- Line 306's `issue:` guidance predates req 15's name form, so it teaches the
+  backend-address shape as the one to write.
+
+Those two are a live defect in instructions every turn loads, so they are worth
+fixing now rather than waiting for step 11.
 
 ## Inline badges stop working unless the linkifier learns the name form
 

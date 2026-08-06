@@ -24,7 +24,7 @@ reachability probe (`planning#1`, closed) and the labels that probe minted.
 - [ ] Verify a full round trip in the UI: the tab, an issue with comments, a write, and Undo.
 - [ ] Teach `remarkLinkifyIssues` the name form ([SHI-323](https://linear.app/shipit-ai/issue/SHI-323)) before the sweep — `planning#57` matches nothing today, so inline badges in chat prose would break the moment references are rewritten.
 - [ ] Rewrite every reference in this repository from the mapping, in one PR, when nothing else is in flight (req 10): 2,623 mentions across 667 files, 186 doc `issue:` pointers, 221 files with `linear.app` URLs. Use `grep -a` — one source file is flagged binary and would otherwise be skipped. The migration's only diff.
-- [ ] Retire Linear for ShipIt's own planning: drop the `roadmap` declaration and rewrite `CLAUDE.md`'s tracker-sync section (req 11).
+- [ ] Retire Linear for ShipIt's own planning: drop the `roadmap` declaration, and rewrite all seven places `CLAUDE.md` names Linear as the destination — lines 306, 326, 328, 329, 333, 340, 342, spanning three sections, not just the tracker-sync one (req 11). Prefer tracker-neutral wording; name `planning` only where a destination must be named.
 - [ ] Delete `planning#1` and the pilot issue.
 
 ## Found here, fixed elsewhere
@@ -32,3 +32,5 @@ reachability probe (`planning#1`, closed) and the labels that probe minted.
 - [x] The `shipit` shim truncated piped stdout at 64 KiB — it exited without draining, so any agent running `shipit issue view … --json | jq` on a large issue silently got a cut-off document. Fixed on `main` in `9b031908` (`shim-exit.ts` flushes before exit); not yet in the deployed shim.
 - [x] `trackers/linear/adapter.ts`'s `ISSUE_FIELDS` did not select `createdAt`, so an issue's creation date was unreadable — which req 9 requires. Fixed in the same commit; not yet in the deployed shim.
 - [ ] `shipit issue list` on Linear queries `first: 100` with no pagination. It no longer blocks the export, which walks keys individually, but the limit stands.
+- [ ] `CLAUDE.md` lines 306 and 329 describe behaviour docs/248 deleted — a bare `create` no longer defaults to Linear, and `issue:` should be written in the name form ([SHI-324](https://linear.app/shipit-ai/issue/SHI-324)). Wrong today, independent of the migration.
+- [ ] Inline chat badges don't recognize the name form ([SHI-323](https://linear.app/shipit-ai/issue/SHI-323)) — in progress.
