@@ -34,9 +34,11 @@ routing, tracker names — is a separate feature
 ## Migration off Linear
 
 8. Every Linear issue is copied to the planning repository, closed and canceled
-   ones included.
-9. Every copied comment is carried over, preserving its original date so the
-   chronology of a discussion survives.
+   ones included. A copied issue is open or closed and nothing finer; the
+   distinctions Linear drew above that are not preserved.
+9. Dates are preserved. Every copied comment carries its original date, so the
+   chronology of a discussion survives, and every copied issue records its own
+   original creation date.
 10. Every reference to a migrated issue is updated to its new location: doc
     `issue:` frontmatter, inline mentions in docs, references in code comments,
     and `CLAUDE.md`.
@@ -44,10 +46,14 @@ routing, tracker names — is a separate feature
     planning: it removes Linear from its own `shipit.yaml` declarations, so no new
     issues are filed there and the tab disappears. Linear remains a supported
     tracker kind for any repository that declares it.
+12. Issues are copied in ascending key order, so their relative order survives:
+    of any two migrated issues, the one with the lower Linear key has the lower
+    number in the planning repository.
 
 ## Open questions
 
 None.
+
 ## Resolved questions
 
 Receipts about the tracker *mechanism* live in
@@ -55,6 +61,23 @@ Receipts about the tracker *mechanism* live in
 to ShipIt's own planning. The full deliberation history of the superseded
 `247-private-github-issue-tracker` doc remains in git.
 
+- 2026-08-06 — The user required that issues be migrated **in order**, lowest key
+  first, so the ordering of the resulting numbers matches the ordering of the
+  originals (req 12). Numbers themselves cannot be preserved — GitHub assigns them
+  and shares the sequence with pull requests — but their relative order can be,
+  and that is what makes "later issue, higher number" still read correctly after
+  the migration.
+- 2026-08-06 — Asked whether Linear's six workflow states should survive a copy
+  into a tracker that has only open and closed, the user chose to **let them
+  collapse** (req 8). Encoding them as labels — either both splits or only
+  `canceled`/`duplicate` — was rejected: a new tracker is better re-triaged than
+  carried over with states GitHub does not model. The corpus this applies to is
+  Done 219, Backlog 78, Canceled 10, In Progress 7, Todo 7, Duplicate 1.
+- 2026-08-06 — Asked whether a copied issue keeps its original creation date, the
+  user chose to **record it in the issue body** (req 9), alongside its `SHI-N`
+  origin, so an issue reads consistently with its comments rather than appearing
+  to have been created on the day of the copy. GitHub cannot set a creation date,
+  and reading Linear's needs `createdAt` added to the adapter's issue query.
 - 2026-08-05 — The requirement that a copied comment not present the copying
   account as its author was removed: the copying account and the original author
   are the same person, so the distinction has no observable effect. Comments still
