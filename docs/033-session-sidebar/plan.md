@@ -202,16 +202,32 @@ repo name. The strongest horizontal lines in the rail (the pinned divider, the
 sub-section labels) are *intra*-group, so they out-rank the *inter*-group
 boundary they're competing with.
 
-[`mocks/repo-separation.html`](mocks/repo-separation.html) explores ten
-treatments against the real theme tokens. Every variant renders the identical
-DOM — only the wrapper class differs — and the mock has warm-light/dark and
-4-repo/8-repo toggles so a candidate can be judged where it's hardest.
+- [`mocks/repo-separation.html`](mocks/repo-separation.html) — ten treatments,
+  each rendered in app context. Toggles for warm-light/dark and 4-repo/8-repo.
+- [`mocks/repo-separation-cards.html`](mocks/repo-separation-cards.html) — six
+  ways to get card-style containment, since the obvious one doesn't exist here.
 
-One finding worth carrying into whichever variant ships: **elevation direction
-is not theme-invariant.** A card is *lighter* than the rail it sits on in light
-themes and *darker* in dark ones, so a card-based grouping needs two tokens
-(`--rail-bg` / `--card-bg`), not one hardcoded background pair — and the
-current-session row can't reuse `--color-bg-secondary`, because in dark themes
-that is the card's own surface.
+### The constraint any variant has to satisfy
+
+**There is no third surface behind the repo groups.** The sidebar rail is
+`--color-bg-primary` (`SessionSidebar.tsx:394`) and the chat panel it butts
+against is `--color-bg-secondary` (`AppLayout.tsx:344`). That's the whole
+hierarchy. So:
+
+- In light themes the sidebar is the **lightest** surface in the app; a card
+  cannot be lighter still. In dark themes it's the **darkest**; a card cannot be
+  darker. Any *fill*-based containment therefore has to move in **opposite
+  directions per theme** — which is why the first draft of the mock looked good
+  in warm-light and inverted in dark.
+- Outline- and edge-based containment sidesteps this entirely: a border behaves
+  identically in both. That's why variants 3 and 10 are now outline-based.
+- Two fill options do exist and are mocked, with their costs:
+  **tinted well** (the *group* recesses to `bg-secondary`, which collides with
+  the current-session row's own tint and forces it up to `bg-tertiary`) and
+  **recessing the rail for real** (the sidebar becomes `bg-secondary`, which
+  makes it match the chat panel and collapses the app's main left/right split to
+  a 1px border).
+- **Elevation-only containment is a non-starter.** A shadow on a `#0a0a0a` rail
+  has nothing to darken, so the treatment vanishes in every dark theme.
 
 No variant is chosen yet; nothing here is implemented.
