@@ -34,6 +34,7 @@ import type {
 import { githubHeaders, parseGitHubError } from "../../github-api.js";
 import { formatIssueReference } from "../../../shared/issue-ref.js";
 import {
+  TrackerPermissionError,
   TrackerResolutionError,
   type ListIssuesOptions,
   type SetAssigneeOptions,
@@ -148,6 +149,19 @@ interface GitHubCommentNode {
   html_url?: string | null;
   created_at?: string | null;
   user?: { login?: string | null; avatar_url?: string | null } | null;
+  /**
+   * `…/repos/{owner}/{repo}/issues/{number}` — the issue this comment hangs
+   * off. Present on the by-id comment endpoint, which is how `updateComment`
+   * checks a backend-global comment id against the issue the caller named
+   * (SHI-86). Absent from the per-issue list response, where it is redundant.
+   */
+  issue_url?: string | null;
+}
+
+/** The issue number a comment's `issue_url` points at, or null if unparseable. */
+function issueNumberFromUrl(issueUrl?: string | null): string | null {
+  const match = /\/issues\/(\d+)$/.exec(issueUrl ?? "");
+  return match ? match[1] : null;
 }
 
 function toTrackerComment(node: GitHubCommentNode): TrackerComment {
@@ -434,6 +448,63 @@ export class GitHubTracker implements Tracker {
 
   async deleteComment(commentId: string): Promise<void> {
     await this.api<unknown>("DELETE", `issues/comments/${encodeURIComponent(commentId)}`);
+  }
+
+  async updateComment(
+    issueId: string,
+    commentId: string,
+    body: string,
+  ): Promise<{ comment: TrackerComment; previousBody: string }> {
+    // Read the comment by id BEFORE writing: it is what carries the author and
+    // the owning issue, so both guards and the undo snapshot come off this one
+    // response. The endpoint is repo-scoped, so a comment id belonging to a
+    // different repository 404s here rather than being edited.
+    const existing = await this.fetchComment(commentId);
+    const onIssue = issueNumberFromUrl(existing.issue_url);
+    if (onIssue !== issueId) {
+      const where = onIssue ? ` — it is on #${onIssue}.` : ".";
+      throw new Error(
+        `Comment ${commentId} is not on issue #${issueId}${where} A comment id is repository-global, ` +
+          `so the issue it belongs to is checked against the one named.`,
+      );
+    }
+    const author = existing.user?.login ?? "";
+    const viewer = await this.resolveViewerLogin();
+    if (author.toLowerCase() !== viewer.toLowerCase()) {
+      throw new TrackerPermissionError(
+        `Comment ${commentId} on #${issueId} was written by @${author || "someone else"}, not by ` +
+          `@${viewer} (the identity ShipIt writes as). ShipIt only edits its own comments — post a ` +
+          `new comment instead of rewriting someone else's.`,
+      );
+    }
+    const updated = await this.api<GitHubCommentNode>(
+      "PATCH",
+      `issues/comments/${encodeURIComponent(commentId)}`,
+      { body },
+    );
+    return { comment: toTrackerComment(updated), previousBody: existing.body ?? "" };
+  }
+
+  /** Fetch one comment by its repo-global id (author + owning issue + body). */
+  private async fetchComment(commentId: string): Promise<GitHubCommentNode> {
+    const ref = this.requireRepo();
+    let res: Response;
+    try {
+      res = await this.fetchImpl(
+        `https://api.github.com/repos/${ref.owner}/${ref.repo}/issues/comments/${encodeURIComponent(commentId)}`,
+        { headers: githubHeaders(this.token!) },
+      );
+    } catch (err) {
+      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+    }
+    // A 404 here is overwhelmingly "no such comment in this repo" — the repo
+    // itself was already reachable to get this far — so say that rather than
+    // `assertOk`'s repository-missing-or-inaccessible message.
+    if (res.status === 404) {
+      throw new Error(`Comment ${commentId} not found in ${ref.owner}/${ref.repo}.`);
+    }
+    this.assertOk(res);
+    return (await res.json()) as GitHubCommentNode;
   }
 
   async updateIssue(

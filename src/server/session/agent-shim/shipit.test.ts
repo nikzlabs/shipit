@@ -2028,6 +2028,83 @@ describe("shipit issue", () => {
     expect(out.stdout).toContain("commented on SHI-1");
   });
 
+  // ---- comment edit (SHI-86) ----------------------------------------------
+
+  it("comment edit posts the issue + comment id + new body", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "comment", "edit", "SHI-1", "--comment", "c1", "-b", "corrected"], {
+      "POST /agent-ops/issue/comment/edit": {
+        status: 200,
+        body: { ok: true, summary: "edited a comment on SHI-1" },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/agent-ops/issue/comment/edit",
+      // The ISSUE is named alongside the comment id — a comment id is
+      // backend-global, so the issue is what names the destination and scopes it.
+      body: { tracker: "linear:SHI", trackerName: "roadmap", id: "SHI-1", commentId: "c1", body: "corrected" },
+    });
+    expect(out.stdout).toContain("edited a comment on SHI-1");
+  });
+
+  it("comment edit --json prints the raw write result", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["issue", "comment", "edit", "SHI-1", "--comment", "c1", "-b", "corrected", "--json"],
+      {
+        "POST /agent-ops/issue/comment/edit": {
+          status: 200,
+          body: { ok: true, cardId: "issue-write-1", summary: "edited a comment on SHI-1" },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(JSON.parse(out.stdout)).toMatchObject({ ok: true, cardId: "issue-write-1" });
+  });
+
+  it("comment edit requires --comment", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "comment", "edit", "SHI-1", "-b", "corrected"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--comment");
+    // Points at how to obtain the id rather than leaving the agent guessing.
+    expect(out.stderr).toContain("--comments --json");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("comment edit requires a body", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "comment", "edit", "SHI-1", "--comment", "c1"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--body");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("comment edit surfaces a server refusal (someone else's comment)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "comment", "edit", "SHI-1", "--comment", "c1", "-b", "x"], {
+      "POST /agent-ops/issue/comment/edit": {
+        status: 403,
+        body: { error: "was written by Nik Zherebtsov, not by ShipIt" },
+      },
+    });
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("was written by Nik Zherebtsov");
+  });
+
+  // `comment delete` is deliberately absent; say so rather than letting it fall
+  // through and fail as an unrecognized pointer.
+  it("comment delete is rejected with a pointer at comment edit", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "comment", "delete", "c1"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("no `comment delete`");
+    expect(out.stderr).toContain("comment edit");
+    expect(out.calls).toHaveLength(0);
+  });
+
   it("comment requires a body", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "comment", "SHI-1"]);

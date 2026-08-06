@@ -29,6 +29,7 @@ import {
   createIssueForTracker,
   createLabelForTracker,
   commentOnIssueForTracker,
+  editCommentForTracker,
   updateIssueForTracker,
   setIssueStatusForTracker,
   setIssueAssigneeForTracker,
@@ -1013,6 +1014,35 @@ export async function registerIssueRoutes(
       }
       return handleWrite(request.params.sessionId, tracker, trackerName, id, reply, "Failed to comment", { verb: "comment", content: body }, (github) =>
         commentOnIssueForTracker(credentialStore, tracker, id, body, trackerFetchImpl, github),
+      );
+    },
+  );
+
+  // POST /api/sessions/:sessionId/issue/comment/edit { tracker, id, commentId, body }
+  //   (SHI-86) — rewrite a comment the agent posted. `id` (the issue) is named
+  //   alongside `commentId` because a comment id is backend-global; the adapter
+  //   checks the pairing and refuses a comment ShipIt did not author.
+  app.post<{
+    Params: { sessionId: string };
+    Body: { tracker?: string; trackerName?: string; id?: string; commentId?: string; body?: string };
+  }>(
+    "/api/sessions/:sessionId/issue/comment/edit",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const { tracker, trackerName, id, commentId, body } = request.body ?? {};
+      if (!tracker || !id || !commentId || !body?.trim()) {
+        reply.code(400).send({ error: "tracker, id, commentId and body are required" });
+        return;
+      }
+      // The dedup key's `issueId` slot is the ISSUE (it is also the card's undo
+      // target), so the comment id has to ride in the hashed content or two
+      // edits to different comments on the same issue would collapse into one
+      // — the second silently dropped, with the first's card returned as if it
+      // had succeeded. Hashing `{commentId, body}` keeps replay-of-the-same-edit
+      // absorbed (SHI-112) while keeping distinct comments distinct.
+      const dedup = { verb: "comment-edit", content: JSON.stringify({ commentId, body }) };
+      return handleWrite(request.params.sessionId, tracker, trackerName, id, reply, "Failed to edit comment", dedup, (github) =>
+        editCommentForTracker(credentialStore, tracker, id, commentId, body, trackerFetchImpl, github),
       );
     },
   );

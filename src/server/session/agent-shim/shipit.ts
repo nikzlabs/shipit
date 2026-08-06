@@ -143,6 +143,7 @@ Issues (tracker-neutral; docs/175 + docs/177 + docs/187 + docs/248):
   shipit issue statuses  [--tracker NAME] [--json]
   shipit issue create    --tracker NAME --title T [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--json]
   shipit issue comment   <ref> -b BODY | --body-file FILE [--tracker NAME] [--json]
+  shipit issue comment edit <ref> --comment ID -b BODY | --body-file FILE [--tracker NAME] [--json]
   shipit issue edit      <ref> [--title T] [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--tracker NAME] [--json]
   shipit issue status    <ref> <state> [--tracker NAME] [--json]
   shipit issue assign    <ref> <user|me | --none> [--tracker NAME] [--json]
@@ -161,6 +162,12 @@ Issues (tracker-neutral; docs/175 + docs/177 + docs/187 + docs/248):
   into a possibly-public repo. Writes are do-then-surface: the change is made
   immediately and an inline provenance card with an Undo button is posted in the
   chat; Undo cancels a newly created issue.
+
+  'comment edit' rewrites a comment you already posted — a wrong or stale comment
+  is fixable rather than needing a follow-up saying to ignore it. Get the id from
+  'issue view <ref> --comments --json'; Undo restores the previous body. You can
+  only edit comments ShipIt itself wrote: someone else's is refused, not rewritten.
+  There is no 'comment delete'.
 
   --label is repeatable (or comma-separated) and resolves against the tracker's
   existing labels — an unknown name is rejected with the valid options, not

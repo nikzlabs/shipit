@@ -57,6 +57,7 @@ describe("Integration: issue write idempotency (SHI-112)", () => {
   let githubAuthManager: StubGitHubAuthManager;
   let sessionId: string;
   let commentPostCount: number;
+  let commentPatchCount: number;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -66,6 +67,7 @@ describe("Integration: issue write idempotency (SHI-112)", () => {
     githubAuthManager = new StubGitHubAuthManager();
     await githubAuthManager.setToken("ghp_test_token");
     commentPostCount = 0;
+    commentPatchCount = 0;
 
     const trackerFetch = vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
       // POST a comment → record the call and return the created comment.
@@ -80,6 +82,23 @@ describe("Integration: issue write idempotency (SHI-112)", () => {
           },
           201,
         );
+      }
+      // The identity ShipIt writes as — the authorship guard's other half.
+      if (url.endsWith("/user")) return jsonResponse({ login: "octocat" });
+      // A comment by id: read (guards + prior body) or PATCH (the rewrite).
+      const commentMatch = /\/issues\/comments\/(\d+)$/.exec(url);
+      if (commentMatch) {
+        if (init?.method === "PATCH") {
+          commentPatchCount += 1;
+          const body = init.body ? (JSON.parse(init.body) as { body?: string }).body : "";
+          return jsonResponse({ id: Number(commentMatch[1]), body });
+        }
+        return jsonResponse({
+          id: Number(commentMatch[1]),
+          body: "the original text",
+          issue_url: "https://api.github.com/repos/octocat/hello-world/issues/42",
+          user: { login: "octocat" },
+        });
       }
       if (/\/issues\/\d+/.test(url)) {
         return jsonResponse({
@@ -188,6 +207,60 @@ describe("Integration: issue write idempotency (SHI-112)", () => {
 
     // Different content → two real writes and two distinct cards.
     expect(commentPostCount).toBe(2);
+    const cards = await writeCardsInHistory();
+    expect(cards).toHaveLength(2);
+    expect(cards[0].cardId).not.toBe(cards[1].cardId);
+
+    client.close();
+  });
+
+  // ---- comment edit (SHI-86) ----------------------------------------------
+  //
+  // A comment edit is scoped to a COMMENT, but the dedup key's issue slot holds
+  // the issue (it doubles as the card's undo target). So the comment id rides in
+  // the hashed content. These two tests pin both halves of that choice.
+
+  const editComment = (commentId: string, body: string) =>
+    app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/issue/comment/edit`,
+      payload: { tracker: "github", id: "42", commentId, body },
+    });
+
+  it("a replayed identical comment edit rewrites once and emits one card", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    const first = await editComment("9001", "corrected");
+    expect(first.statusCode).toBe(200);
+    const firstCardId = (first.json() as { cardId: string }).cardId;
+
+    for (let i = 0; i < 3; i++) {
+      const replay = await editComment("9001", "corrected");
+      expect(replay.statusCode).toBe(200);
+      expect((replay.json() as { cardId: string }).cardId).toBe(firstCardId);
+    }
+
+    expect(commentPatchCount).toBe(1);
+    const cards = await writeCardsInHistory();
+    expect(cards).toHaveLength(1);
+    expect(cards[0].cardId).toBe(firstCardId);
+
+    client.close();
+  });
+
+  it("edits to DIFFERENT comments on the same issue are not collapsed", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    // Same issue, same new body, different comments. Keying on the issue alone
+    // would silently drop the second — returning the first's card as if it had
+    // succeeded, leaving one of the two comments un-fixed with nothing to show
+    // for it. Hashing the comment id keeps them distinct.
+    expect((await editComment("9001", "corrected")).statusCode).toBe(200);
+    expect((await editComment("9002", "corrected")).statusCode).toBe(200);
+
+    expect(commentPatchCount).toBe(2);
     const cards = await writeCardsInHistory();
     expect(cards).toHaveLength(2);
     expect(cards[0].cardId).not.toBe(cards[1].cardId);

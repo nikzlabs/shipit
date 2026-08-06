@@ -540,6 +540,33 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].path).toBe("/issue/statuses?tracker=linear");
   });
 
+  it("POST /agent-ops/issue/comment/edit relays the issue + comment id (SHI-86)", async () => {
+    client.setResponse("POST", "/issue/comment/edit", {
+      ok: true, status: 200, body: { ok: true, summary: "edited a comment on SHI-1" },
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/issue/comment/edit",
+      payload: { tracker: "linear:SHI", id: "SHI-1", commentId: "c1", body: "corrected" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/issue/comment/edit");
+    expect(client.calls[0].body).toMatchObject({ id: "SHI-1", commentId: "c1", body: "corrected" });
+  });
+
+  it("POST /agent-ops/issue/comment/edit surfaces a 403 refusal verbatim (SHI-86)", async () => {
+    client.setResponse("POST", "/issue/comment/edit", {
+      ok: false, status: 403, body: { error: "was written by someone else" },
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/issue/comment/edit",
+      payload: { tracker: "github", id: "42", commentId: "9001", body: "x" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toBe("was written by someone else");
+  });
+
   it("GET /agent-ops/issue/view surfaces a 404 verbatim", async () => {
     client.setResponse("GET", "/issue/view", {
       ok: false, status: 404, body: { error: "Issue not found: SHI-99" },

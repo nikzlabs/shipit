@@ -258,6 +258,10 @@ const GOLDEN_CONTAINER_ROUTES = [
   "GET /api/sessions/:id/issue/comments",
   "POST /api/sessions/:sessionId/issue/create",
   "POST /api/sessions/:sessionId/issue/comment",
+  // SHI-86 — `shipit issue comment edit`. Same posture as the writes around it;
+  // the comment it may reach is additionally narrowed server-side to one on the
+  // named issue that ShipIt itself authored.
+  "POST /api/sessions/:sessionId/issue/comment/edit",
   "POST /api/sessions/:sessionId/issue/edit",
   "POST /api/sessions/:sessionId/issue/status",
   "POST /api/sessions/:sessionId/issue/assign",
