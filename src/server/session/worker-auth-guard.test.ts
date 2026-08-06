@@ -12,7 +12,7 @@ import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
 import { registerWorkerAuthGuard } from "./worker-auth-guard.js";
 import { SessionWorker } from "./session-worker.js";
-import { WORKER_AUTH_HEADER } from "../shared/worker-auth.js";
+import { WORKER_AUTH_HEADER, WORKER_TOKEN_ENV } from "../shared/worker-auth.js";
 
 const TOKEN = "b".repeat(64);
 /** A plausible peer: another session's agent container on the shared bridge. */
@@ -21,9 +21,19 @@ const PEER_CONTAINER_IP = "172.18.0.9";
 // NB: `token` is required rather than defaulted — passing an explicit
 // `undefined` to a defaulted parameter would silently take the default and the
 // "no token configured" case would never actually be exercised.
-function buildGuardedApp(token: string | undefined): FastifyInstance {
+//
+// The same hazard has a second form the parameter shape can't express: the guard
+// falls back to `WORKER_TOKEN_ENV`, which is set in EVERY session container, so
+// `token: undefined` used to resolve to the ambient container token and the
+// no-token branch was still never reached (it failed in-container, passed in CI).
+// Pinning `env` to an empty object closes that off here regardless of ambient
+// environment; `server-test-setup.ts` also strips the var suite-wide.
+function buildGuardedApp(
+  token: string | undefined,
+  env: NodeJS.ProcessEnv = {},
+): FastifyInstance {
   const app = Fastify({ logger: false });
-  registerWorkerAuthGuard(app, { token, log: () => {} });
+  registerWorkerAuthGuard(app, { token, env, log: () => {} });
   app.get("/health", async () => ({ status: "ok" }));
   app.post("/agent-ops/voice/note", async () => ({ brokered: true }));
   app.get("/present-files/:id", async () => ({ artifact: true }));
@@ -143,6 +153,47 @@ describe("worker auth guard", () => {
       payload: {},
     });
     expect(terminal.statusCode).toBe(200);
+  });
+
+  // The real container path: `SessionWorker` always passes the `token` key and
+  // its own dep is unset in the standalone entry point, so a live worker is
+  // gated *only* because the env fallback fires. Nothing covered that before —
+  // the suite-wide strip of the var would have hidden a regression that stopped
+  // honouring it, leaving every production worker silently ungated.
+  it("takes the token from the environment when the dep is undefined", async () => {
+    app = buildGuardedApp(undefined, { [WORKER_TOKEN_ENV]: TOKEN });
+
+    const unauthenticated = await app.inject({
+      method: "POST",
+      url: "/terminal/start",
+      remoteAddress: PEER_CONTAINER_IP,
+      payload: {},
+    });
+    expect(unauthenticated.statusCode).toBe(403);
+
+    const authenticated = await app.inject({
+      method: "POST",
+      url: "/terminal/start",
+      remoteAddress: PEER_CONTAINER_IP,
+      headers: { [WORKER_AUTH_HEADER]: TOKEN },
+      payload: {},
+    });
+    expect(authenticated.statusCode).toBe(200);
+  });
+
+  // `SHIPIT_WORKER_TOKEN=` must read as "no token", not as a token nothing can
+  // match: the orchestrator's `workerTokenFromContainerEnv` maps an empty value
+  // to `undefined` and so sends no header, so holding `""` here would 403 every
+  // orchestrator call and brick the session.
+  it("treats an empty env token as no token rather than an unmatchable one", async () => {
+    app = buildGuardedApp(undefined, { [WORKER_TOKEN_ENV]: "" });
+    const res = await app.inject({
+      method: "POST",
+      url: "/terminal/start",
+      remoteAddress: PEER_CONTAINER_IP,
+      payload: {},
+    });
+    expect(res.statusCode).toBe(200);
   });
 
   it("matches the query-stripped path, so ?foo can't smuggle past the prefix", async () => {

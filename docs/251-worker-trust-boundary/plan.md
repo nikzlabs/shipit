@@ -127,9 +127,10 @@ HTTP-layer session check would not be a boundary.
   layers so the header name, the loopback test and the loopback-only prefix list
   cannot drift. `decideWorkerRequest()` is pure and holds the whole decision.
 - **`src/server/session/worker-auth-guard.ts`** (new) —
-  `registerWorkerAuthGuard(app, { token })`: the Fastify `onRequest` wiring plus
-  the "no token configured" startup warning. Registered **first** in
-  `SessionWorker.buildApp()`.
+  `registerWorkerAuthGuard(app, { token, env, log })`: the Fastify `onRequest`
+  wiring plus the "no token configured" startup warning. Registered **first** in
+  `SessionWorker.buildApp()`. `env` defaults to `process.env` and exists so the
+  no-token branch is testable — see [Token resolution](#token-resolution).
 - **`src/server/session/session-worker.ts`** — registers the guard; new
   `workerToken` dep (defaults to the container env).
 - **`src/server/orchestrator/worker-auth.ts`** (new) — token generation, the
@@ -170,6 +171,33 @@ construction — the "someone forgot the annotation" failure mode cannot occur.
   `curl -X POST http://agent-<b-short-id>:9100/agent-ops/session/notify-on-merge-self`
   → 403; from A's own agent, `shipit`/`gh` shims and the `present`/`voice_note`
   tools still work.
+
+## Token resolution
+
+The guard resolves its token as `deps.token ?? env[WORKER_TOKEN_ENV]`, and the
+env half is the **production** path, not a convenience default: `SessionWorker`
+always passes the `token` key, and its own `workerToken` dep is unset in the
+standalone entry point, so a live worker is gated only because the fallback
+fires. That rules out "distinguishing an explicit `undefined` from an absent
+key" as a way to make the no-token case unambiguous — an `in`-based check would
+leave every real worker ungated.
+
+Two consequences worth knowing before editing this file:
+
+- **An empty env value means "no token", not an unmatchable one.** The
+  orchestrator's `workerTokenFromContainerEnv` maps `SHIPIT_WORKER_TOKEN=` to
+  `undefined` and so sends no header. A worker that held `""` as its expected
+  token would 403 every orchestrator call — the bricked session that D3/step 5
+  exists to prevent, reached through an empty value instead of an absent one.
+  Unreachable today (`generateWorkerToken()` never returns empty), fixed anyway
+  because the two halves must agree.
+- **`WORKER_TOKEN_ENV` is set in every session container, so a test asserting the
+  no-token branch is not hermetic by default.** It passed in CI and failed
+  in-container: `token: undefined` fell straight through to the ambient token and
+  the branch was never exercised. `server-test-setup.ts` now strips the var
+  suite-wide (the same treatment as the `GIT_CONFIG_*` injection), and
+  `worker-auth-guard.test.ts` additionally pins `env` so the file does not depend
+  on that setup. Tests cover both halves of the resolution.
 
 ## Known limitations
 
