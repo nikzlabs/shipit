@@ -274,6 +274,21 @@ describe("ToolResult", () => {
       expect(container.querySelector("[data-testid='tool-result-images']")).toBeNull();
       expect(screen.getByText("plain text output")).toBeInTheDocument();
     });
+
+    it("draws the image at natural height, bounded only by width", () => {
+      // A height cap here has nothing behind it: `ToolResult` renders only in
+      // the scrollable tool-call modal and these images have no click-to-full-
+      // size view, so clipping to 256px lost the screenshot with no way back.
+      const imageOnly = JSON.stringify([
+        { type: "image", source: { data: "abc123", media_type: "image/png" } },
+      ]);
+      render(<ToolResult tool="mcp__playwright__browser_take_screenshot" result={result(imageOnly)} />);
+
+      const img = screen.getByAltText("Tool output image 1");
+      expect(img.className).toContain("max-w-full");
+      expect(img.className).toContain("h-auto");
+      expect(img.className).not.toMatch(/\bmax-h-/);
+    });
   });
 });
 

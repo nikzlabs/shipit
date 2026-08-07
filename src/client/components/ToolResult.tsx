@@ -275,10 +275,23 @@ function GenericResult({ content, isError, maxLines, lazy }: { content: string; 
   );
 }
 
-/** Render images from tool result content (e.g. Playwright screenshots). */
+/**
+ * Render images from tool result content (e.g. Playwright screenshots).
+ *
+ * Drawn at natural size, with width the only bound. `ToolResult` renders solely
+ * inside the tool-call modal — a click, and a scrollable one — so there is no
+ * transcript to keep tidy here and nothing gained by shrinking. The old 256px
+ * height cap turned a 1280×720 screenshot into a strip you could not read, and
+ * unlike a user-attached image there is no click-to-full-size view behind it to
+ * recover the detail from. `max-w-full` still fits a screenshot wider than the
+ * modal, scaling it down proportionally rather than clipping it.
+ *
+ * Stacked rather than wrapped for the same reason: a result with two images
+ * gives each the full width instead of squeezing both onto one row.
+ */
 function ToolResultImages({ images }: { images: ToolResultImage[] }) {
   return (
-    <div className="flex gap-2 flex-wrap mt-2" data-testid="tool-result-images">
+    <div className="flex flex-col gap-2 mt-2" data-testid="tool-result-images">
       {images.map((img, i) => {
         const src = img.src ?? `data:${img.mediaType};base64,${img.data}`;
         return (
@@ -287,7 +300,7 @@ function ToolResultImages({ images }: { images: ToolResultImage[] }) {
             src={src}
             alt={`Tool output image ${i + 1}`}
             loading="lazy"
-            className="max-w-full max-h-64 rounded-md border border-(--color-border-secondary)/50 object-contain"
+            className="max-w-full h-auto self-start rounded-md border border-(--color-border-secondary)/50"
           />
         );
       })}

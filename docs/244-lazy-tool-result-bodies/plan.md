@@ -89,9 +89,16 @@ below. What remains on a subagent row is per-step text, which is small.
   lazy with no visible change at all.
 * **The image itself, at today's resolution** — user-row images draw at 96×96
   (`message-media.tsx:53`) behind a click-to-full-size; tool-result images draw
-  at up to 256px (`max-h-64`, `ToolResult.tsx:252`) with **no click affordance
-  at all**. `ChatMessageImage` already carries an optional `src?: string`
-  (`MessageList/types.ts:59`), so a URL-backed path exists in the type today.
+  with **no click affordance at all**. `ChatMessageImage` already carries an
+  optional `src?: string` (`MessageList/types.ts:59`), so a URL-backed path
+  exists in the type today.
+
+  Tool-result images used to carry a 256px height cap (`max-h-64`) on top of
+  that. It has since been removed: `ToolResult` renders only inside the
+  scrollable tool-call modal, so there was no transcript to keep tidy, and the
+  cap reduced a 1280×720 screenshot to an unreadable strip with nothing behind
+  it to recover the detail from. Width is now the only bound (`max-w-full`), so
+  a screenshot wider than the modal scales down proportionally.
 
 ### One thing that must never be truncated
 
