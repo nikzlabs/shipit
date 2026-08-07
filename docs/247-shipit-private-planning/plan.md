@@ -214,21 +214,46 @@ closes + ~26 label creations. Three consequences, each of which shapes the drive
    constraint** — it can run unattended overnight — so pace conservatively. The
    reason to pace is to avoid failures, not to finish sooner.
 
-   No throughput figure here is measured. Reads were observed at ~2s each, and
-   only three writes have been run; the sustained write rate is unknown until the
-   first hundred are timed. Treat any duration in this doc as an order of
-   magnitude, and set the real pace from what the tracker actually returns.
-2. **It must be resumable.** It runs for a long time, across more than one turn.
-   The mapping and a per-issue completion marker are appended to disk after each
-   write, so a restart skips what is already done. Re-running a completed step
-   must be a no-op, not a duplicate. Idle cleanup is not a hazard: `dispose()`
+   **Now measured, by hitting the wall.** Pass A's 330 creates + 237 closes ran
+   at ~1s spacing with no trouble. Pass B, at the same pacing, died after roughly
+   **870 further writes in about 15 minutes** — GitHub's secondary limit on
+   content creation, which allows on the order of 500 an hour. The sustainable
+   pace is therefore **~8s between writes** (~450/hour), which is what `pass-b.py`
+   uses, with a 15-minute backoff-and-retry on a 403. At that rate the comment
+   replay is a ~2-hour job, which is fine — duration was never the constraint.
+
+   **The 403 does not say "rate limit".** The shim reports it as *"the repository
+   either does not exist or the connected GitHub credential cannot access it"* —
+   the same text as a genuinely missing repo or a revoked token, which sends you
+   to check the slug and the credential when the answer is "wait 15 minutes". The
+   distinguishing signal is that **reads keep working**: a secondary limit throttles
+   content creation only. Recorded as a shim finding; the driver retries rather
+   than trusting the message.
+2. **It must be resumable — and "per issue" is the wrong granularity.** The
+   completion marker is written once an issue's comments have *all* landed, but a
+   failure happens **mid-issue**: the rate limit hit `SHI-140` after 3 of its 9
+   comments. A resume keyed only on the marker would have re-posted all 9 and left
+   3 duplicates, silently. `pass-b.py` therefore re-reads the first issue of each
+   run and skips any comment whose rendered body is already present — one extra
+   read per run, since every issue *after* the failure was never touched. Matching
+   on the body rather than on a count keeps it idempotent. Idle cleanup is not a hazard: `dispose()`
    refuses to reap a runner whose agent is running unless explicitly forced
    (`container-session-runner.ts:2521`), so an unattended overnight pass survives.
 3. **Every write posts a persisted transcript card.** `api-routes-issues.ts` emits
    and *persists* an `issue_write_card` per write, with no suppression flag. ~2,000
    cards in one session's history is not something to inflict on a session anyone
-   wants to reopen. The copy therefore runs in its **own child session**, which is
+   wants to reopen. The copy should therefore run in its **own child session**,
    archived when it finishes.
+
+   **It didn't.** Passes A and B were run in the planning session itself, because
+   the export was started there and each subsequent step simply continued. By the
+   time it was noticeable the session held ~950 write cards and the user could no
+   longer see the conversation between them. Nothing was lost — the run is
+   unaffected — but the advice above was written before any of it existed and then
+   not followed, which is the more useful thing to record. The moment to act was
+   the *start of Pass B*, when the volume went from ~330 cards to ~1,700; that is
+   the decision point a future copy should watch for, not the start of the whole
+   job.
 
 The write-dedup window (`handleWrite`) keys on session + tracker + verb + issue id
 + content hash, so two *identical* comment bodies on the *same* issue would have

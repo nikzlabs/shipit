@@ -39,11 +39,35 @@ BARE_NUM = re.compile(r"(?<![\w/#])#(\d+)(?![\w])")
 CODE = re.compile(r"```.*?```|`[^`\n]*`", re.S)
 
 
+WRITE_SLEEP = 8.0        # ~450 writes/hour, under GitHub's secondary limit
+BACKOFF = 900            # 15 min, on a secondary-rate-limit 403
+MAX_RETRIES = 8
+
+
 def sh(args, stdin=None):
     r = subprocess.run(args, capture_output=True, text=True, input=stdin)
     if r.returncode != 0:
         raise RuntimeError(f"{' '.join(args)}\n{r.stdout}\n{r.stderr}")
     return r.stdout
+
+
+def sh_retry(args, stdin=None):
+    """A write that survives GitHub's secondary rate limit.
+
+    The shim reports a secondary-limit 403 as "the repository either does not
+    exist or the credential cannot access it" — the same text it uses for a
+    genuinely missing repo. The two are distinguishable only by the fact that
+    reads keep working, so this retries rather than trusting the message.
+    """
+    for attempt in range(MAX_RETRIES):
+        try:
+            return sh(args, stdin=stdin)
+        except RuntimeError as e:
+            if "403" not in str(e) or attempt == MAX_RETRIES - 1:
+                raise
+            print(f"  … 403 (rate limit); backing off {BACKOFF // 60} min "
+                  f"[{attempt + 1}/{MAX_RETRIES - 1}]", flush=True)
+            time.sleep(BACKOFF)
 
 
 def load_mapping():
@@ -125,6 +149,7 @@ def main():
         done = {l.split("\t")[0] for l in open(DONE) if l.strip()}
         print(f"resuming — {len(done)} issues already replayed")
 
+    first_of_run = True
     tot = {"key": 0, "url": 0, "num": 0}
     ncomments = ntitles = 0
     for p in keys_in_order():
@@ -175,18 +200,34 @@ def main():
         if dry:
             continue
 
+        # The done-file records an issue only once ALL its comments land, but a
+        # failure happens mid-issue — so the first issue of a resumed run may be
+        # partially written. Everything after it was never touched, so this read
+        # is needed exactly once per run. Matching on the rendered body makes the
+        # skip idempotent rather than trusting a count.
+        already = set()
+        if first_of_run:
+            first_of_run = False
+            cur = json.loads(sh(["shipit", "issue", "view", ref, "--comments", "--json"]))
+            already = {(c.get("body") or "").strip() for c in (cur.get("comments") or [])}
+            if already:
+                print(f"  resuming {key}: {len(already)} comments already posted", flush=True)
+
         if new_body != body:
-            sh(["shipit", "issue", "edit", ref, "--body-file", "-"], stdin=new_body)
+            sh_retry(["shipit", "issue", "edit", ref, "--body-file", "-"], stdin=new_body)
+            time.sleep(WRITE_SLEEP)
         if title_changed:
-            sh(["shipit", "issue", "edit", ref, "--title", new_title])
+            sh_retry(["shipit", "issue", "edit", ref, "--title", new_title])
+            time.sleep(WRITE_SLEEP)
         for r in rendered:
-            sh(["shipit", "issue", "comment", ref, "--body-file", "-"], stdin=r)
-            time.sleep(1.0)
+            if r.strip() in already:
+                continue
+            sh_retry(["shipit", "issue", "comment", ref, "--body-file", "-"], stdin=r)
+            time.sleep(WRITE_SLEEP)
         with open(DONE, "a") as f:
             f.write(f"{key}\t{num}\t{len(rendered)}\n")
-        print(f"{key} -> {ref}: {len(rendered)} comments"
+        print(f"{key} -> {ref}: {len(rendered) - len(already & {r.strip() for r in rendered})} comments"
               f"{', title' if title_changed else ''}", flush=True)
-        time.sleep(0.5)
 
     if not only:
         print(f"\ncomments {'to replay' if dry else 'replayed'}: {ncomments}")
