@@ -242,8 +242,18 @@ closes + ~26 label creations. Three consequences, each of which shapes the drive
 3. **Every write posts a persisted transcript card.** `api-routes-issues.ts` emits
    and *persists* an `issue_write_card` per write, with no suppression flag. ~2,000
    cards in one session's history is not something to inflict on a session anyone
-   wants to reopen. The copy therefore runs in its **own child session**, which is
+   wants to reopen. The copy should therefore run in its **own child session**,
    archived when it finishes.
+
+   **It didn't.** Passes A and B were run in the planning session itself, because
+   the export was started there and each subsequent step simply continued. By the
+   time it was noticeable the session held ~950 write cards and the user could no
+   longer see the conversation between them. Nothing was lost — the run is
+   unaffected — but the advice above was written before any of it existed and then
+   not followed, which is the more useful thing to record. The moment to act was
+   the *start of Pass B*, when the volume went from ~330 cards to ~1,700; that is
+   the decision point a future copy should watch for, not the start of the whole
+   job.
 
 The write-dedup window (`handleWrite`) keys on session + tracker + verb + issue id
 + content hash, so two *identical* comment bodies on the *same* issue would have
