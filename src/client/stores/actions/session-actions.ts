@@ -138,6 +138,9 @@ export function fullResetAllStores() {
   useLogStore.getState().reset();
   useUiStore.getState().reset();
   usePreviewStore.getState().reset();
+  // Every session is gone, so the slot keys these are keyed by are dead. The
+  // session-scoped `reset()` above deliberately keeps them (docs/089).
+  usePreviewStore.getState().clearPreviewPaths();
   usePresentStore.getState().reset();
   usePrStore.getState().reset();
   useSettingsStore.getState().reset();

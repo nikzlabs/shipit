@@ -196,6 +196,8 @@ interface PreviewState {
    * dropped rather than stored.
    */
   setPreviewPath: (slotKey: string, path: unknown) => void;
+  /** Forget every remembered path. Full reset only — see `reset`. */
+  clearPreviewPaths: () => void;
   reset: () => void;
 }
 
@@ -279,14 +281,22 @@ const MAX_PATH_LENGTH = 2048;
 /**
  * Narrow an untrusted `path` postMessage payload to something we can safely
  * hand back to an iframe `src` and render in the toolbar, or `null` if we
- * can't. Requires a same-document absolute path: anything else is not
- * something we can render as "where you are", and a protocol-relative
- * `//host/x` would resolve against the slot's origin into a *different* one,
- * putting a foreign host in the tooltip, on the clipboard, and in the URL we
- * restore the preview to.
+ * can't. Requires a same-document absolute path, because the value is resolved
+ * against the preview's origin and anything that can escape that origin puts a
+ * foreign host in the tooltip, on the clipboard, and in the URL we restore the
+ * preview to.
+ *
+ * "Absolute path" has to be read the way the URL parser does, not the way it
+ * looks. For a special scheme (http/https) WHATWG parsing treats `\` as `/` and
+ * strips tab/CR/LF anywhere in the input — so `/\evil.example/x` and
+ * `/<tab>/evil.example/x` both resolve to `https://evil.example/x` despite
+ * passing a naive "starts with a single slash" test. Reject those characters
+ * outright rather than trying to predict the parser.
  */
 export function sanitizePreviewPath(raw: unknown): string | null {
-  if (typeof raw !== "string" || !raw.startsWith("/") || raw.startsWith("//")) return null;
+  if (typeof raw !== "string") return null;
+  if (!raw.startsWith("/") || raw.startsWith("//")) return null;
+  if (/[\\\t\n\r]/.test(raw)) return null;
   return raw.slice(0, MAX_PATH_LENGTH);
 }
 
@@ -294,7 +304,11 @@ function loadPreviewPaths(): Record<string, string> {
   return getLocalStorageObject<Record<string, string>>(PREVIEW_PATHS_KEY, {}, (parsed) => {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
     const out: Record<string, string> = {};
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    // Trailing entries are the most recent (writes re-insert at the end), so an
+    // oversized blob — a tampered one, or one written before the cap existed —
+    // is truncated from the front rather than loaded whole.
+    const entries = Object.entries(parsed as Record<string, unknown>).slice(-MAX_REMEMBERED_PATHS);
+    for (const [key, value] of entries) {
       const path = sanitizePreviewPath(value);
       if (path) out[key] = path;
     }
@@ -469,12 +483,23 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
 
   reset: () => {
     resetDedupState();
-    savePreviewPaths({});
-    set({
+    set((state) => ({
       ...initialState,
       sessionSnapshots: {},
-      previewPaths: {},
-    });
+      // NOT cleared. `reset()` is the session-scoped reset — `resetSessionState`
+      // calls it when the route leaves a session for home or `/{slug}/new`, and
+      // on desktop that is also the moment `AppLayout` unmounts the right panel
+      // and with it the whole iframe pool. Wiping the remembered paths there
+      // would erase them at precisely the moment they have to be read back,
+      // which is the one job this map has. Clearing belongs to
+      // `clearPreviewPaths`, called only from the full reset.
+      previewPaths: state.previewPaths,
+    }));
+  },
+
+  clearPreviewPaths: () => {
+    savePreviewPaths({});
+    set({ previewPaths: {} });
   },
 }));
 

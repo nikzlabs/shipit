@@ -18,6 +18,10 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response()));
   vi.stubGlobal("ResizeObserver", ResizeObserverStub);
   usePreviewStore.getState().reset();
+  // Remembered slot paths deliberately survive `reset()` (they have to outlive
+  // a session switch), and every test here shares the same `_:port` slot key —
+  // so clear them explicitly or one test's route leaks into the next.
+  usePreviewStore.getState().clearPreviewPaths();
 });
 
 afterEach(() => {
@@ -1228,6 +1232,56 @@ describe("PreviewFrame", () => {
       expect(screen.queryByText("Preview authentication required")).not.toBeInTheDocument();
     } finally {
       setTimeoutSpy.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not re-arm the auth-block timer for a slot whose detection already concluded", async () => {
+    // `loadedSlotsRef` only covers slots that came up cleanly. A slot that
+    // never reports "loaded" — a non-HTML root, a failed script injection, a
+    // 502 served during startup — was left unguarded, so every return to that
+    // session re-armed the timer and reloaded the cached iframe. The timer's
+    // premise is "we just fetched and heard nothing back"; on a revisit there
+    // was no fetch, so an expiry carries no signal. Once the detection has
+    // concluded for a slot we keep the verdict and stop re-arming.
+    vi.useFakeTimers();
+    vi.stubEnv("VITE_API_HOST", "example.com:3001");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ ready: true }), { status: 200 })),
+    );
+    const MAX_AUTH_TIMEOUT_MS = 5000;
+
+    try {
+      const previewA: PreviewStatus = { running: true, port: 3000, url: "/preview/session-a/3000/", source: "detected" };
+      const previewB: PreviewStatus = { running: true, port: 5173, url: "/preview/session-b/5173/", source: "detected" };
+      const { rerender } = render(
+        <PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />,
+      );
+
+      // Run out the retry budget without ever reporting "loaded": two silent
+      // reloads, then the verdict.
+      await vi.waitFor(() => expect(screen.queryByTitle("Live Preview")).toBeInTheDocument());
+      for (let i = 0; i < 3; i++) {
+        await vi.advanceTimersByTimeAsync(MAX_AUTH_TIMEOUT_MS + 1);
+      }
+      expect(screen.getByText("Preview authentication required")).toBeInTheDocument();
+
+      const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+      rerender(<PreviewFrame preview={previewB} sessionId="session-b" {...defaultProps} />);
+      await vi.advanceTimersByTimeAsync(0);
+      rerender(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
+      await vi.advanceTimersByTimeAsync(0);
+
+      // No fresh detection timer, and the verdict is still on screen rather
+      // than having silently reset.
+      expect(
+        setTimeoutSpy.mock.calls.filter(([, d]) => d === MAX_AUTH_TIMEOUT_MS),
+      ).toHaveLength(0);
+      expect(screen.getByText("Preview authentication required")).toBeInTheDocument();
+      setTimeoutSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
       vi.unstubAllEnvs();
     }
   });
