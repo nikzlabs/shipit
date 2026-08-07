@@ -13,6 +13,16 @@ dist/
 .release-channel
 .shipit
 
+# Local-install operator state (docs/254). Both live in the checkout and must be
+# IGNORED, not merely untracked: shipit_sync_checkout (deployment/local/lib.sh)
+# refuses to sync when `git status --porcelain` is non-empty, and that lists
+# untracked files — so writing either one permanently broke `update.sh`. The
+# egress opt-out already writes .shipit.env, so this predates docs/254.
+#   .shipit.env                 — operator env (egress opt-out, tailnet opt-in)
+#   .shipit-tailnet.compose.yml — generated tailnet port-binding overlay
+.shipit.env
+.shipit-tailnet.compose.yml
+
 # Playwright MCP browser-driven debugging output (snapshots, console logs)
 .playwright-mcp/
 

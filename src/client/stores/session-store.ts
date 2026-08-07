@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { saveDraftMessage } from "../utils/local-storage.js";
 import type { ChatMessage } from "../components/MessageList.js";
 import type { StreamingActivity } from "../components/StreamingIndicator.js";
-import type { SessionInfo, SessionCapabilities, TurnUsage, RescuePhase, WsRewindPreview, AgentId, ContainerFreshness, SessionSecretBlock } from "../../server/shared/types.js";
+import type { SessionInfo, SessionCapabilities, TurnUsage, RescuePhase, WsRewindPreview, AgentId, ContainerFreshness, SessionSecretBlock, IssueRef } from "../../server/shared/types.js";
 import { useUiStore } from "./ui-store.js";
 
 /**
@@ -96,6 +96,17 @@ interface SessionState {
   pendingWsMessage: Record<string, unknown> | undefined;
   /** Text to prefill into the message input (consumed and cleared by MessageInput). */
   prefillText: string | undefined;
+  /**
+   * SHI-320 — the issue the Issues tab's "Start session" seeded this session
+   * with, waiting to ride along with the first message. It is NOT the prefill
+   * text's twin: the text is consumed by the composer immediately and may then
+   * be edited or discarded, while this stays until the message is actually
+   * sent, which is the moment the server can act on it (branch pin + `→
+   * started`). Scoped by `sessionId` because prefilling doesn't stop the user
+   * from switching sessions first — the send only attaches the ref when the
+   * session it was seeded for is the one being sent to.
+   */
+  pendingIssueRef: { sessionId: string; ref: IssueRef } | undefined;
   /**
    * SHI-10 — a pre-formatted markdown blockquote to *append* into the chat
    * composer when the user clicks the floating "Reply" button on a selection
@@ -242,6 +253,7 @@ interface SessionState {
    * should be a one-click action.
    */
   setPrefillText: (text: string | undefined) => void;
+  setPendingIssueRef: (pending: { sessionId: string; ref: IssueRef } | undefined) => void;
   /** SHI-10 — set the blockquote to append into the composer (see `quoteReplyText`). */
   setQuoteReplyText: (text: string | undefined) => void;
   /** Append a per-turn usage record for the given session. */
@@ -306,6 +318,7 @@ const initialResettableState = {
   rewindPreviews: {} as Record<string, WsRewindPreview>,
   pendingWsMessage: undefined as Record<string, unknown> | undefined,
   prefillText: undefined as string | undefined,
+  pendingIssueRef: undefined as { sessionId: string; ref: IssueRef } | undefined,
   quoteReplyText: undefined as string | undefined,
   historyLoaded: false,
   rescueState: null as RescueState | null,
@@ -562,6 +575,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setPendingWsMessage: (pendingWsMessage) => set({ pendingWsMessage }),
 
   setPrefillText: (prefillText) => set({ prefillText }),
+
+  setPendingIssueRef: (pendingIssueRef) => set({ pendingIssueRef }),
 
   setQuoteReplyText: (quoteReplyText) => set({ quoteReplyText }),
 

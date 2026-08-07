@@ -13,12 +13,12 @@
  * defaults to `chrome` and every browser tool call fails on first invocation
  * with "Chromium distribution 'chrome' is not found at /opt/google/chrome/chrome".
  *
- * We launch through `sh -c` with an explicit `cd` into the output dir because
- * when a browser tool is invoked WITHOUT an explicit path (e.g. a screenshot
- * with a suggestedFilename), `@playwright/mcp` resolves it relative to its own
- * `process.cwd()` — NOT relative to `--output-dir`. If the server inherited the
- * workspace as cwd, screenshots like `shot.png` would land in `/workspace/` and
- * get auto-committed.
+ * We launch through `sh -c` with an explicit `cd` into the output dir, kept for
+ * older `@playwright/mcp` builds that resolved output against `process.cwd()`.
+ * **It does not govern where a named file lands on 0.0.78** — see
+ * {@link PLAYWRIGHT_OUTPUT_DIR} below for what actually decides that. It is
+ * retained rather than removed because the profile/registry paths were not
+ * re-verified against every version we might run; it costs one `cd`.
  *
  * `--isolated` is required under the non-root runtime (docs/150 §8). Without it,
  * `@playwright/mcp` launches a *persistent* browser context and creates its
@@ -52,10 +52,36 @@
  * transcript. That is why the agent instructions (`prompts/skeleton.md`,
  * `shipit-docs/preview.md`) tell the agent to OMIT `filename` rather than to
  * "save screenshots under /tmp/.playwright-mcp/" — the earlier wording made
- * every agent pass a path and silently killed inline screenshots. Auto-named
- * shots land in {@link PLAYWRIGHT_OUTPUT_DIR} anyway (it is both `--output-dir`
- * and the server's cwd), so nothing is gained by naming them. Don't reinstate
- * "always name your screenshots" guidance without re-checking this gate.
+ * every agent pass a path and silently killed inline screenshots. Don't
+ * reinstate "always name your screenshots" guidance without re-checking this
+ * gate.
+ *
+ * ## Where a named file actually lands — NOT the cwd, NOT `--output-dir`
+ *
+ * The two cases take different code paths in playwright-core's tools bundle
+ * (verified against `@playwright/mcp` 0.0.78):
+ *
+ *   - **Auto-named** (no `filename`) → `outputFile()` →
+ *     `path.resolve(config.outputDir, name)`. Our `--output-dir` is absolute,
+ *     so it lands in {@link PLAYWRIGHT_OUTPUT_DIR}. This is the good path.
+ *   - **Explicit `filename`** → `workspaceFile()` →
+ *     `path.resolve(clientWorkspace, filename)`, where `clientWorkspace` is the
+ *     first **root the MCP _client_ advertises**. Claude Code advertises the
+ *     workspace, so a relative `shot.png` resolves to `/workspace/shot.png` and
+ *     is auto-committed into the user's repo. `--output-dir` is not consulted,
+ *     and neither is the server's cwd — the `cd` above cannot prevent this.
+ *
+ * Upstream's own tool description ("Prefer relative file names to stay within
+ * the output directory") is therefore backwards under this configuration, which
+ * is why the agent instructions have to say the opposite explicitly: a named
+ * shot needs an ABSOLUTE path under {@link PLAYWRIGHT_OUTPUT_DIR}. There is no
+ * flag or config key that changes the resolution — the root comes from the
+ * client, not from us — so the instructions ARE the fix, not a workaround for
+ * one we haven't built.
+ *
+ * (Upstream's `checkFile` then allows the write because the workspace is one of
+ * the two allowed roots, which is also why a bare `/tmp/foo.png` — outside both
+ * the output dir and the workspace — is rejected with "File access denied".)
  */
 
 /** Directory the Playwright MCP server writes screenshots/output into. */

@@ -64,6 +64,23 @@ export class TrackerResolutionError extends Error {
   }
 }
 
+/**
+ * A write the tracker would happily perform but ShipIt refuses — thrown by
+ * {@link Tracker.updateComment} when the comment was authored by someone other
+ * than the identity ShipIt writes as (SHI-86).
+ *
+ * Deliberately NOT a {@link TrackerResolutionError}: nothing failed to resolve
+ * and there is no alternative value to retry with, so it carries no options and
+ * the service maps it to **403** rather than 422. An agent that sees it should
+ * post a new comment, not hunt for a form of the request that works.
+ */
+export class TrackerPermissionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TrackerPermissionError";
+  }
+}
+
 export interface Tracker {
   /** Stable id, e.g. "linear". Drives the `?tracker=` query and the sub-tab. */
   readonly id: TrackerId;
@@ -171,6 +188,33 @@ export interface Tracker {
 
   /** Delete a comment by its tracker-internal id (reverses {@link addComment}). */
   deleteComment(commentId: string): Promise<void>;
+
+  /**
+   * Rewrite a comment's body (SHI-86 — `shipit issue comment edit`), returning
+   * the updated comment **and the body it replaced** so the caller can snapshot
+   * the prior text for undo. The prior body comes back from here rather than
+   * from a separate read because the adapter must fetch the comment anyway to
+   * run the two guards below — so the snapshot is taken from the same response
+   * the checks ran against, and costs no extra round-trip.
+   *
+   * Three things are enforced, because a comment id is **backend-global** on
+   * both trackers and the caller-supplied `issueId` is the only thing scoping it:
+   *
+   * 1. The comment must belong to `issueId` — otherwise a global id could
+   *    redirect the write onto an unrelated issue (or, on GitHub, an unrelated
+   *    repository) that the operation never named.
+   * 2. The comment must be authored by the identity ShipIt writes as — the
+   *    acting user's GitHub token, or the deployment's Linear PAT. Editing
+   *    anyone else's comment silently rewrites a human's words, and neither
+   *    backend refuses it, so ShipIt does: {@link TrackerPermissionError}.
+   * 3. Linear only: the issue must belong to the declared team (`assertOwnTeam`,
+   *    the same guard `deleteComment` applies).
+   */
+  updateComment(
+    issueId: string,
+    commentId: string,
+    body: string,
+  ): Promise<{ comment: TrackerComment; previousBody: string }>;
 
   /**
    * Edit an issue's title, description, labels, and/or priority. Returns the

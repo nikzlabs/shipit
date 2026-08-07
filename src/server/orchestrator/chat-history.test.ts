@@ -816,13 +816,18 @@ describe("ChatHistoryManager", () => {
       text: "",
       issueWrite: {
         cardId,
-        tracker: "github",
+        // docs/248 — a card records BOTH the destination the write reached and
+        // the name it was addressed by: the destination so an Undo survives the
+        // repository dropping the declaration (req 11), the name so a re-point
+        // re-targets it (req 16).
+        tracker: "github:acme/planning",
+        trackerName: "planning",
         issueId: "42",
-        identifier: "octocat/hello#42",
+        identifier: "planning#42",
         title: "Bug",
-        url: "https://github.com/octocat/hello/issues/42",
+        url: "https://github.com/acme/planning/issues/42",
         verb: "comment",
-        summary: "commented on octocat/hello#42",
+        summary: "commented on planning#42",
         content: { comment: "Repro'd on staging — clamping the offset. PR incoming." },
         attribution: "user",
         undo: { kind: "comment", commentId: "c-99" },
@@ -863,6 +868,34 @@ describe("ChatHistoryManager", () => {
       expect(card?.undo).toEqual({ kind: "edit", previousLabels: ["backend"], previousPriority: "low" });
     });
 
+    it("round-trips a comment-edit card's previous-body undo snapshot (SHI-86)", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      const msg: PersistedMessage = {
+        role: "assistant",
+        text: "",
+        issueWrite: {
+          cardId: "iw-comment-edit",
+          tracker: "linear",
+          issueId: "SHI-9",
+          identifier: "SHI-9",
+          title: "Doc",
+          verb: "comment-edit",
+          summary: "edited a comment on SHI-9",
+          // Line 2 shows the NEW body; the prior text lives on the snapshot.
+          content: { comment: "Corrected: the migration replays 1,344 comments." },
+          attribution: "workspace",
+          undo: { kind: "comment-edit", commentId: "c-99", previousBody: "the original text" },
+          undoState: "available",
+          createdAt: "2026-06-05T00:00:00.000Z",
+        },
+      };
+      mgr.append("sess-1", msg);
+      const card = new ChatHistoryManager(dbManager).load("sess-1")[0].issueWrite;
+      // The whole card survives a reload — without the snapshot the Undo button
+      // would render with nothing to restore.
+      expect(card).toEqual(msg.issueWrite);
+    });
+
     it("round-trips the docs/189 line-2 content (comment preview, status delta)", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("sess-1", writeCard("iw-comment"));
@@ -897,7 +930,8 @@ describe("ChatHistoryManager", () => {
       mgr.append("sess-1", { role: "user", text: "comment please" });
       mgr.append("sess-1", writeCard("iw-1"));
       const card = mgr.findIssueWriteCard("sess-1", "iw-1");
-      expect(card?.tracker).toBe("github");
+      expect(card?.tracker).toBe("github:acme/planning");
+      expect(card?.trackerName).toBe("planning");
       expect(card?.undo).toEqual({ kind: "comment", commentId: "c-99" });
       expect(mgr.findIssueWriteCard("sess-1", "missing")).toBeNull();
     });
@@ -909,7 +943,7 @@ describe("ChatHistoryManager", () => {
       const card = mgr.load("sess-1")[0].issueWrite;
       expect(card?.undoState).toBe("undone");
       // Original fields survive the merge.
-      expect(card?.summary).toBe("commented on octocat/hello#42");
+      expect(card?.summary).toBe("commented on planning#42");
     });
 
     it("returns false when no write card matches the given id", () => {

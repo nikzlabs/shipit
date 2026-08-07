@@ -42,6 +42,26 @@ export interface PollerService {
 export const MISSING_CONTAINER_GRACE_MS = 30_000;
 
 /**
+ * How long a single `docker compose ps` / `docker inspect` may run before the
+ * poller gives up on it (#2044).
+ *
+ * These are the *only* calls that ever move a service off `starting` or resolve
+ * its container IP, and they were unbounded: `defaultComposeQuery` spawns the
+ * docker CLI and resolves on `close`, so a docker CLI that hangs — a wedged
+ * daemon, an unresponsive socket proxy — never resolves. `pollOnce` then never
+ * returns, while `setInterval` keeps stacking further polls behind the same
+ * wall, and the service registry is frozen for the rest of the session with
+ * nothing recorded anywhere.
+ *
+ * A timeout converts that into the failure the poller already handles: `ps`
+ * bails out for one pass and retries on the next tick, and a hung `inspect` for
+ * one container no longer costs the other containers their IPs. Well above any
+ * healthy call (these are local socket round-trips answering in milliseconds)
+ * and below the poll interval's usefulness horizon.
+ */
+export const COMPOSE_QUERY_TIMEOUT_MS = 30_000;
+
+/**
  * Container states that exist but tell us nothing usable about whether the
  * service is up, and are therefore fed into the missing-container
  * reconciliation pass rather than left to the forward pass (SHI-314).
@@ -151,6 +171,22 @@ export interface ServicePollerOptions {
   afterPoll?: () => void | Promise<void>;
 }
 
+/**
+ * Reject `promise` after {@link COMPOSE_QUERY_TIMEOUT_MS}. The underlying docker
+ * spawn is not killed — we simply stop waiting on it, which is the point: the
+ * poll loop must stay live even when one query does not come back.
+ */
+function withQueryTimeout(promise: Promise<string>, message: string): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), COMPOSE_QUERY_TIMEOUT_MS);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 export class ServicePoller {
   private readonly sessionId: string;
   private readonly workspaceDir: string;
@@ -181,7 +217,12 @@ export class ServicePoller {
   constructor(opts: ServicePollerOptions) {
     this.sessionId = opts.sessionId;
     this.workspaceDir = opts.workspaceDir;
-    this.composeQuery = opts.composeQuery;
+    // Wrapped once here rather than at each call site so no future query can
+    // be added to the poll path unbounded. See COMPOSE_QUERY_TIMEOUT_MS.
+    this.composeQuery = (args, cwd) => withQueryTimeout(
+      opts.composeQuery(args, cwd),
+      `docker ${args[0]} did not answer within ${COMPOSE_QUERY_TIMEOUT_MS}ms`,
+    );
     this.pollIntervalMs = opts.pollIntervalMs;
     this.composeArgs = opts.composeArgs;
     this.isGated = opts.isGated ?? (() => false);

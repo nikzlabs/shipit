@@ -28,7 +28,10 @@
 import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage, SessionMessageOrigin } from "../shared/types.js";
 import { buildTurnMessages, wireAgentListeners } from "./ws-handlers/agent-listeners.js";
 import { createAgentStderrTail } from "./agent-stderr-tail.js";
-import { detectHardExhaustion } from "./ws-handlers/agent-rate-limits.js";
+import {
+  detectHardExhaustion,
+  detectHardExhaustionInTurnText,
+} from "./ws-handlers/agent-rate-limits.js";
 import { resetRunnerTurnState } from "./session-runner.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
@@ -924,7 +927,90 @@ export async function executeAgentTurn(
   // `done` handler would therefore have fixed nothing; the guarantee has to live
   // inside `tryDrain`, which is the one point every drain path goes through.
   let streamingPostTurnFired = false;
+  /**
+   * SHI-247 — the streaming post-turn sequence currently in flight, assigned in
+   * the SAME synchronous block that sets `streamingPostTurnFired`. Anyone who
+   * observes that flag as `true` therefore also observes this promise, which is
+   * what lets `rearmForSelfWokenTurn` wait the finished turn's flow out before
+   * clearing its memoized commit promises.
+   */
+  let streamingPostTurn: Promise<void> | null = null;
+
+  /**
+   * SHI-247 — hand the guards back to a turn the CLI started on its own.
+   *
+   * A `Bash(run_in_background)` job finishing re-invokes the model, and for a
+   * resident streaming process that self-woken turn runs through THIS closure —
+   * the one the finished user turn left attached (listeners are removed only at
+   * the start of the next orchestrator-initiated turn). Every post-turn guard
+   * here is first-wins and scoped to one `executeAgentTurn` call, so the wake
+   * turn's `agent_result` hit `streamingPostTurnFired` and returned early:
+   * no token sync-back, no queue drain, no auto-commit, no push, no PR card.
+   * Production saw two sessions lose a 15-minute `shipit agent run` consult's
+   * edits to this in one hour, and ShipIt's own guidance tells agents to
+   * background that consult — so the wake path is the NORMAL case for
+   * cross-agent review, not a corner. docs/235 §6 deferred this deliberately;
+   * this is that follow-up.
+   *
+   * Three things make it safe to re-arm here:
+   *
+   *   - **Streaming only.** With live steering off the CLI is a one-shot PTY
+   *     that reaps its background tasks at turn end and exits (docs/235 probe
+   *     A), so there is no resident process to wake and nothing to re-arm. It
+   *     also matters that we DON'T: the non-streaming turn drains at
+   *     `agent_result` and commits later in `done`, so clearing `drainFired`
+   *     between the two would let `done` drain the queue a second time.
+   *
+   *   - **Only after this turn's own post-turn flow fired.** `agent_self_wake`
+   *     rides the CLI's `task_notification`, which ALSO fires for a background
+   *     job started earlier in the CURRENT turn and reporting back mid-stream —
+   *     the docs/237 trap that `agent-listeners` guards with `!runner.running`
+   *     (`self-wake-midturn.test.ts`). We cannot reuse that test: `agent-listeners`
+   *     is wired first and has already flipped `running` to true by the time this
+   *     listener runs. `streamingPostTurnFired` is the executor-local equivalent
+   *     — it is set only by this turn's `agent_result` — so `false` means the
+   *     turn that owns these guards is still in flight and a re-arm would let a
+   *     duplicate `agent_result` run the whole post-turn flow twice.
+   *
+   *   - **After the in-flight sequence settles.** The wake can land in the
+   *     window between `streamingPostTurnFired = true` and the finished turn's
+   *     `runCommitAndPr` — a job backgrounded just before the turn ended, with
+   *     the PR round-trip still running, is an ordinary shape. Nulling
+   *     `commitAndPrPromise` there would let the finished turn's flow re-memoize
+   *     it a moment later, and the wake turn would then get that already-settled
+   *     flow back and commit nothing: the same bug, one window narrower.
+   *
+   * `receivedResult` is deliberately NOT reset. It describes the turn this
+   * executor was invoked for, which genuinely produced a result; clearing it
+   * would arm the no-result paths in `done` (the "ended without a response"
+   * error row, `onInterruptedTurn`, and — worst — dispatch's `onNoResultExit`,
+   * which would re-run the user's original prompt) if the wake turn's process
+   * later died. Same for `turnCompleteFired`: the wake turn is not the turn a
+   * dispatch handle is waiting on, so it must not settle it a second time.
+   */
+  const rearmForSelfWokenTurn = async (): Promise<void> => {
+    if (!useStreaming || !streamingPostTurnFired) return;
+    await postTurnStep("await-post-turn", () => streamingPostTurn ?? Promise.resolve());
+    // A second wake can arrive while we await; the first one through re-arms and
+    // the rest see the cleared flag and stand down.
+    if (!streamingPostTurnFired) return;
+    console.log(`[turn] self-wake for ${sessionId}; re-arming the post-turn flow`);
+    tokenSyncFired = false;
+    drainFired = false;
+    streamingPostTurnFired = false;
+    streamingPostTurn = null;
+    commitPromise = null;
+    commitAndPrPromise = null;
+  };
+
   agent.on("event", async (event: AgentEvent) => {
+    // SHI-247 — the CLI is starting a turn nobody asked it for. `agent-listeners`
+    // has already given it a clean accumulator and marked the runner running
+    // (docs/235 §6); this gives it a post-turn flow to end on.
+    if (event.type === "agent_self_wake") {
+      await rearmForSelfWokenTurn();
+      return;
+    }
     if (event.type !== "agent_result") return;
     receivedResult = true;
     // docs/150 req 14 — before ANY post-turn work. Draining the queue or
@@ -935,10 +1021,23 @@ export async function executeAgentTurn(
     // Reads the RAW error: `wireAgentListeners` normalizes onto its own local
     // copy of the event, so its rewrite is not visible here. Both providers'
     // raw usage-limit text is covered by the same detector.
-    if (!input.isQuotaRetry && event.error && detectHardExhaustion(event.error)) {
-      quotaRetryInProgress = true;
-      await retryOnNextAccount();
-      return;
+    //
+    // …and when there is no error at all, the turn's final assistant text. A
+    // Claude CLI that hits the limit mid-turn reports it as an ordinary
+    // assistant message and ends `subtype: "success"`, so gating the retry on
+    // `event.error` alone made that shape — the one production actually hit —
+    // structurally invisible. `turnSummary` is this turn's own (it is cleared
+    // by `resetRunnerTurnState` at turn start) and is already populated:
+    // `wireAgentListeners` runs first and assigns it from `agent_assistant`.
+    if (!input.isQuotaRetry) {
+      const exhausted = event.error
+        ? detectHardExhaustion(event.error)
+        : detectHardExhaustionInTurnText(runner?.turnSummary);
+      if (exhausted) {
+        quotaRetryInProgress = true;
+        await retryOnNextAccount();
+        return;
+      }
     }
     if (useStreaming) {
       if (streamingPostTurnFired) return;
@@ -948,16 +1047,23 @@ export async function executeAgentTurn(
       // abandon the rest of the sequence (and with it the commit). This is the
       // path the ordinary streaming turn ends on, so it is the one that
       // silently dropped a completed turn's work.
-      await postTurnStep("token-sync", trySyncToken);
-      // agent-listeners already set running=false; the resident process is NOT
-      // cleared (the next top-level turn reuses it via reuseExistingAgent).
-      // Drain through the guarded `tryDrain` (not `input.drainNext` directly)
-      // so the streaming `done` handler's drain — added for the abnormal-exit
-      // case below — can't double-drain after this normal end-of-turn drain.
-      await postTurnStep("drain", tryDrain);
-      await postTurnStep("finished-sse", broadcastFinishedIfIdle);
-      await postTurnStep("commit", runCommitAndPr);
-      await postTurnStep("idle", signalIdleIfIdle);
+      //
+      // SHI-247 — published as `streamingPostTurn` in this same synchronous
+      // block so a self-wake landing mid-flow waits it out before re-arming
+      // (see `rearmForSelfWokenTurn`). The sequence and its order are unchanged.
+      streamingPostTurn = (async () => {
+        await postTurnStep("token-sync", trySyncToken);
+        // agent-listeners already set running=false; the resident process is NOT
+        // cleared (the next top-level turn reuses it via reuseExistingAgent).
+        // Drain through the guarded `tryDrain` (not `input.drainNext` directly)
+        // so the streaming `done` handler's drain — added for the abnormal-exit
+        // case below — can't double-drain after this normal end-of-turn drain.
+        await postTurnStep("drain", tryDrain);
+        await postTurnStep("finished-sse", broadcastFinishedIfIdle);
+        await postTurnStep("commit", runCommitAndPr);
+        await postTurnStep("idle", signalIdleIfIdle);
+      })();
+      await streamingPostTurn;
     } else {
       await postTurnStep("token-sync", trySyncToken);
       await postTurnStep("drain", tryDrain);

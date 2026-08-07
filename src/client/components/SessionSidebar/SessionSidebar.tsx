@@ -162,6 +162,13 @@ export function SessionSidebar({
   // Reordering is only meaningful when there's more than one visible repo to swap.
   const reorderEnabled = visibleRepos.length > 1;
 
+  // docs/254 req 11 — draw the per-group identity edges only when there is more
+  // than one group to tell apart. Deliberately keyed off the rendered GROUP
+  // count, not `isSingleRepo`: one repo alongside an Ops or Sandbox group is
+  // still two groups the eye has to separate, and suppressing the treatment
+  // there would leave exactly the blending this feature exists to fix.
+  const separated = repoGroups.length > 1;
+
   const handleDragStart = useCallback(
     (repoUrl: string) => (e: React.DragEvent) => {
       // dataTransfer payload — we read it back on drop. Using a custom MIME
@@ -438,7 +445,13 @@ export function SessionSidebar({
       </div>
 
       {/* Scrollable grouped repo sections */}
-      <div className="flex-1 overflow-y-auto min-h-0 flex flex-col py-1">
+      <div
+        // docs/254 — when the groups are separated the first header band should
+        // meet the sidebar header's bottom border directly, the way a table's
+        // first section header does; a leading 4px of padding made it look
+        // detached. The gap BELOW each group comes from the group's own margin.
+        className={`flex-1 overflow-y-auto min-h-0 flex flex-col pb-1 ${separated ? "" : "pt-1"}`}
+      >
         {repoGroups.length === 0 && hiddenRepos.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-3 px-4 py-8">
             <p className="text-xs text-(--color-text-tertiary) text-center">No repositories yet.</p>
@@ -459,6 +472,7 @@ export function SessionSidebar({
               onSelectCurrent={handleSelectCurrent}
               onArchive={onArchive}
               isTouch={isTouch}
+              separated={separated}
             />
           ) : group.kind === "ops" ? (
             <OpsSessionGroup
@@ -471,6 +485,7 @@ export function SessionSidebar({
               onSelectCurrent={handleSelectCurrent}
               onArchive={onArchive}
               isTouch={isTouch}
+              separated={separated}
             />
           ) : group.kind === "repo" ? (
             <RepoGroup
@@ -502,6 +517,7 @@ export function SessionSidebar({
               onDragLeave={handleDragLeave(group.repo.url)}
               onDrop={handleDrop(group.repo.url)}
               onDragEnd={handleDragEnd}
+              separated={separated}
             />
           ) : (
             <OrphanSessionGroup

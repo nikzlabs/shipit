@@ -485,6 +485,32 @@ describe("SessionManager", () => {
     });
   });
 
+  describe("docs/221: pending agent notice (out-of-band branch move)", () => {
+    it("round-trips through persistence and is consumed exactly once", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      expect(mgr.get("sess-1")?.pendingAgentNotice).toBeUndefined();
+      expect(mgr.consumePendingAgentNotice("sess-1")).toBeUndefined();
+
+      mgr.setPendingAgentNotice("sess-1", "[System] your branch moved");
+      expect(mgr.get("sess-1")?.pendingAgentNotice).toBe("[System] your branch moved");
+
+      // Read-and-clear: the turn that reads it owns it, so a later turn can't
+      // be told a second time about a sync it already heard about.
+      expect(mgr.consumePendingAgentNotice("sess-1")).toBe("[System] your branch moved");
+      expect(mgr.consumePendingAgentNotice("sess-1")).toBeUndefined();
+      expect(mgr.get("sess-1")?.pendingAgentNotice).toBeUndefined();
+    });
+
+    it("last write wins — a second sync supersedes an undelivered first", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.setPendingAgentNotice("sess-1", "first");
+      mgr.setPendingAgentNotice("sess-1", "second");
+      expect(mgr.consumePendingAgentNotice("sess-1")).toBe("second");
+    });
+  });
+
   describe("docs/110: setPinned / archive clears pin", () => {
     it("sets and clears pinnedAt", () => {
       const mgr = new SessionManager(dbManager);

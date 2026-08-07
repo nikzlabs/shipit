@@ -56,6 +56,28 @@ export function saveImagesToUploadsDir(images: ImageAttachment[], workspaceDir: 
 }
 
 /**
+ * docs/144 — context block attached to a message the user DICTATED rather than
+ * typed. Speech-to-text mangles proper nouns, technical terms and homophones in
+ * ways a typo never would ("shipit" → "ship it", "Zustand" → "who stand",
+ * "prod" → "prawn"), and a dictated message often lacks punctuation entirely.
+ * Without this marker the agent reads the artifacts as intent — it treats a
+ * mis-heard identifier as a real one, or asks about phrasing the user never
+ * said. Telling it the input was transcribed lets it read for meaning instead.
+ *
+ * Deliberately does NOT change what the user sees: the persisted chat bubble
+ * keeps the user's text verbatim, exactly like the `<attached_images>` block
+ * above rides the prompt without appearing in the transcript.
+ */
+export const DICTATION_CONTEXT = `<dictated_input>
+This message was dictated by voice and machine-transcribed, not typed. Expect
+mis-heard proper nouns and technical terms, homophones, wrong or missing
+punctuation, and run-on phrasing. Read for intent rather than literally, and
+silently correct the obvious mis-transcriptions. If a garbled part would change
+what you do, ask about that part instead of guessing. Don't remark on the
+transcription quality otherwise.
+</dictated_input>`;
+
+/**
  * Assemble the final prompt string from the user text plus optional file and
  * image context.
  *
@@ -66,20 +88,26 @@ export function saveImagesToUploadsDir(images: ImageAttachment[], workspaceDir: 
  * silently swallowed as literal prose. So for slash invocations we APPEND the
  * context after the user text instead, keeping `/my-skill` at position 0.
  *
+ * `dictated` adds {@link DICTATION_CONTEXT} as one more context block, ordered
+ * by the same rule — so a dictated `/review` still resolves as a slash command.
+ *
  * Extracted as a pure function for unit testability — the ordering decision is
- * the contract. See docs/138.
+ * the contract. See docs/138, docs/144.
  */
 export function assembleAgentPrompt(input: {
   userText: string;
   fileContext: string;
   imageContext: string;
+  /** docs/144 — the user spoke this message; warn the agent about STT artifacts. */
+  dictated?: boolean;
 }): string {
-  const { userText, fileContext, imageContext } = input;
+  const { userText, fileContext, imageContext, dictated } = input;
+  const dictationContext = dictated ? DICTATION_CONTEXT : "";
   const isSlashInvocation = /^\/[a-zA-Z0-9._-]+/.test(userText.trimStart());
   return (
     isSlashInvocation
-      ? [userText, fileContext, imageContext]
-      : [imageContext, fileContext, userText]
+      ? [userText, fileContext, imageContext, dictationContext]
+      : [dictationContext, imageContext, fileContext, userText]
   )
     .filter(Boolean)
     .join("\n\n");

@@ -53,6 +53,40 @@ describe("runtimeKey (SHI-194 — pinned base digest, not the full image id)", (
   });
 });
 
+// docs/248 — when the repo pins a Node version the install runs under THAT
+// Node, so the key has to record it. The absence case is the load-bearing one:
+// an unconditional extra segment would invalidate every overlay base and
+// install marker in the fleet at once.
+describe("runtimeKey (docs/248 — repo-pinned Node)", () => {
+  it("leaves the key byte-identical when no pin is active", () => {
+    const unpinned = runtimeKey({ BASE_IMAGE_DIGEST: "sha256:base" } as NodeJS.ProcessEnv);
+    expect(unpinned).toBe(`sha256:base|${process.arch}|${detectLibc()}|abi${process.versions.modules}`);
+    expect(unpinned).not.toContain("|node");
+  });
+
+  it("appends the pinned version so a tree built under it isn't reused elsewhere", () => {
+    const pinned = runtimeKey({
+      BASE_IMAGE_DIGEST: "sha256:base",
+      SHIPIT_PINNED_NODE: "22.20.1",
+    } as NodeJS.ProcessEnv);
+    expect(pinned).toBe(
+      `sha256:base|${process.arch}|${detectLibc()}|abi${process.versions.modules}|node22.20.1`,
+    );
+  });
+
+  it("changes the key when the pin changes, forcing a reinstall", () => {
+    const before = runtimeKey({
+      BASE_IMAGE_DIGEST: "sha256:base",
+      SHIPIT_PINNED_NODE: "22.20.1",
+    } as NodeJS.ProcessEnv);
+    const after = runtimeKey({
+      BASE_IMAGE_DIGEST: "sha256:base",
+      SHIPIT_PINNED_NODE: "20.19.0",
+    } as NodeJS.ProcessEnv);
+    expect(after).not.toBe(before);
+  });
+});
+
 describe("tuneNpmInstall", () => {
   it("trims audit/fund off the bare npm install forms", () => {
     expect(tuneNpmInstall("npm install")).toBe("npm install --prefer-offline --no-audit --no-fund");

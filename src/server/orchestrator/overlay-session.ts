@@ -39,6 +39,7 @@ import { readBasePointerByHash, type BasePointer, type OverlayScope } from "./ov
 import { makeMarker, serializeMarker } from "../shared/install-marker.js";
 import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import { chownToSessionWorker } from "./session-worker-uid.js";
+import { readNodePin, parseVersion, satisfies } from "../shared/node-pin.js";
 
 // ---------------------------------------------------------------------------
 // Feature flag + eligibility
@@ -101,13 +102,54 @@ export function overlayRuntimeKey(env: NodeJS.ProcessEnv = process.env): string 
   return `${base}|${process.arch}`;
 }
 
+/**
+ * docs/248 — the scope suffix contributed by the repo's own Node version pin.
+ *
+ * `overlayRuntimeKey` describes the *image's* ABI. Once a repo can pin a
+ * different Node, that is no longer the whole story: a base whose native addons
+ * were compiled under the image's Node must not be mounted into a session
+ * running a different major, because the worker-side marker mismatch only
+ * triggers `npm install`, and npm does not rebuild an addon that is already
+ * present. (`install-runtime.ts` records the *resolved* version in the marker;
+ * the orchestrator can't resolve one — it has no network budget here and picks
+ * the lowerdir before the container exists — so it keys on the pin text. Two
+ * sessions on `.nvmrc: 22` months apart may resolve different patch releases,
+ * but `NODE_MODULE_VERSION` is per-major, so sharing a base is correct.)
+ *
+ * Returns `""` — leaving every existing scope byte-identical — when the repo
+ * pins nothing, when the pin is in a form the resolver rejects (the worker
+ * won't switch either), or when the image's Node already satisfies the pin.
+ * That last case is why {@link WORKER_IMAGE_NODE_VERSION} matters: `>=20` on a
+ * Node-24 image is a no-op for the runtime, and treating it as a scope change
+ * would split the base for most repos that declare `engines.node` at all.
+ *
+ * When the image's Node version is unknown (inspect failed, or a base image
+ * that declares none) a pin splits the scope. That errs toward isolation, which
+ * costs one cold install instead of risking an ABI mismatch.
+ */
+export function overlayPinSegment(
+  workspaceDir: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (!workspaceDir) return "";
+  const pin = readNodePin(workspaceDir);
+  if (!pin?.spec) return "";
+  const imageNode = parseVersion(env.WORKER_IMAGE_NODE_VERSION ?? "");
+  if (imageNode && satisfies(imageNode, pin.spec)) return "";
+  return `|pin${pin.raw.replace(/\s+/g, " ").trim()}`;
+}
+
 /** The `(repo, runtime)` base scope for an eligible session, or null if ineligible. */
 export function resolveOverlayScope(
   session: Pick<SessionInfo, "remoteUrl" | "kind">,
   env: NodeJS.ProcessEnv = process.env,
+  workspaceDir?: string,
 ): OverlayScope | null {
   if (!isOverlayEligible(session, env)) return null;
-  return { repoUrl: session.remoteUrl, runtimeKey: overlayRuntimeKey(env) };
+  return {
+    repoUrl: session.remoteUrl,
+    runtimeKey: overlayRuntimeKey(env) + overlayPinSegment(workspaceDir, env),
+  };
 }
 
 // ---------------------------------------------------------------------------

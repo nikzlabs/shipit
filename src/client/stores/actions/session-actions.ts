@@ -9,7 +9,44 @@ import { usePresentStore } from "../present-store.js";
 import { usePrStore } from "../pr-store.js";
 import { useSettingsStore } from "../settings-store.js";
 import { useRepoStore } from "../repo-store.js";
+import { useIssuesStore } from "../issues-store.js";
 import type { AgentId, SessionInfo } from "../../../server/shared/types.js";
+
+/**
+ * The repository a session belongs to, as the Issues tab sees it: the session's
+ * own remote. With no session at all (the `/{slug}/new` route) it's the
+ * sidebar's active repo — the same fallback `IssuesPanel` uses to decide which
+ * repo to offer starting a session on, so the tab is scoped to what it targets.
+ *
+ * A session the list doesn't know yet (a direct URL landing before the session
+ * list loads) gets a per-session sentinel rather than that fallback: the honest
+ * answer is "unknown", and the sidebar's active repo is only a guess, which
+ * would keep an issue open across a repo change (observed with warm sessions,
+ * which aren't in the list). A sentinel differs from every other scope, so an
+ * unknown session always re-scopes — fail closed, per docs/248 req 11.
+ */
+function sessionRepoUrl(sessionId?: string): string | null {
+  const session = useSessionStore.getState();
+  const id = sessionId ?? session.sessionId;
+  if (!id) return useRepoStore.getState().activeRepoUrl ?? null;
+  const found = session.sessions.find((s) => s.id === id);
+  return found ? (found.remoteUrl ?? null) : `session:${id}`;
+}
+
+/**
+ * SHI-325 — re-scope the Issues tab to the repository we're moving to. Issue
+ * trackers are declared per repository (`shipit.yaml`, docs/248), so an open
+ * issue and the loaded lists belong to the repository they were opened from;
+ * carrying them into a repository that doesn't declare that tracker leaves an
+ * unreachable destination on screen, which req 11 forbids. No-ops when the
+ * repository is unchanged, so switching between two sessions of one repository
+ * leaves the open issue alone. `fetchTrackers` (fired on the session change by
+ * `App`) then applies the authoritative check against the new declarations.
+ */
+function scopeIssuesToSession(sessionId?: string) {
+  useIssuesStore.getState().setRepoScope(sessionRepoUrl(sessionId));
+}
+
 /**
  * Resets all session-specific state across all stores.
  * Replaces the three duplicated reset blocks in the old codebase.
@@ -23,6 +60,9 @@ export function resetSessionState() {
   useUiStore.getState().reset();
   usePreviewStore.getState().reset();
   usePresentStore.getState().reset();
+  // Not an unconditional reset: the issues store is repo-scoped, not
+  // session-scoped, and only drops its contents when the repo actually changes.
+  scopeIssuesToSession();
 }
 
 /**
@@ -58,6 +98,9 @@ export function resumeSessionInternal(sessionId: string) {
   useLogStore.getState().reset();
   useUiStore.getState().reset();
   usePresentStore.getState().reset();
+  // Repo-scoped, not session-scoped (SHI-325): clears only when the incoming
+  // session belongs to a different repository than the outgoing one.
+  scopeIssuesToSession(sessionId);
 
   // Restore incoming session's preview state (or reset to defaults)
   preview.restoreSession(sessionId);
@@ -99,6 +142,9 @@ export function fullResetAllStores() {
   usePrStore.getState().reset();
   useSettingsStore.getState().reset();
   useRepoStore.getState().reset();
+  // Every repo is gone, so nothing declares a tracker any more.
+  useIssuesStore.setState({ repoScope: null, trackers: [], infoByTracker: {} });
+  useIssuesStore.getState().reset();
 }
 
 export async function createHeadlessSession(opts: {
@@ -120,6 +166,13 @@ export async function createHeadlessSession(opts: {
    * localStorage, unlike the model/agent pickers.
    */
   armAutoMerge?: boolean;
+  /**
+   * docs/144 — the prompt was dictated by voice. The server folds a
+   * `<dictated_input>` note into the first turn's prompt so the agent reads
+   * mis-heard terms and missing punctuation as transcription artifacts. Rides
+   * the JSON body, or the multipart form as the string "true".
+   */
+  dictated?: boolean;
   /**
    * Raw files to attach to the new session. When present we POST as
    * multipart/form-data so the orchestrator can save them into the new

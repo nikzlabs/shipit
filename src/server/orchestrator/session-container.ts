@@ -46,6 +46,7 @@ import {
 import {
   resolveWorkerImageId as resolveWorkerImageIdFn,
   resolveWorkerBaseDigest as resolveWorkerBaseDigestFn,
+  resolveWorkerNodeVersion as resolveWorkerNodeVersionFn,
   prepareOverlaySpecs as prepareOverlaySpecsFn,
   preparePnpmStore as preparePnpmStoreFn,
   type OverlayProvisionerDeps,
@@ -436,6 +437,12 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * Docker call and the scope falls back to the worker-image-id behavior.
    */
   private workerBaseDigest?: string;
+  /**
+   * docs/248 — cached `NODE_VERSION` from the session-worker image. The overlay
+   * scope compares it against the repo's Node pin to decide whether that pin
+   * actually changes the runtime. Cached as `""` on a miss, same as above.
+   */
+  private workerNodeVersion?: string;
   private standbySessionIds = new Set<string>();
   private healthMonitorState: HealthMonitorState = createHealthMonitorState();
   private _disposed = false;
@@ -936,6 +943,16 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     if (this.workerBaseDigest !== undefined) return this.workerBaseDigest || undefined;
     this.workerBaseDigest = await resolveWorkerBaseDigestFn(this.docker, this.imageName);
     return this.workerBaseDigest || undefined;
+  }
+
+  /**
+   * docs/248 — the Node version baked into the worker image, or undefined when
+   * the image can't be inspected or declares none.
+   */
+  async resolveWorkerNodeVersion(): Promise<string | undefined> {
+    if (this.workerNodeVersion !== undefined) return this.workerNodeVersion || undefined;
+    this.workerNodeVersion = await resolveWorkerNodeVersionFn(this.docker, this.imageName);
+    return this.workerNodeVersion || undefined;
   }
 
   /** Get the container info for a session. */

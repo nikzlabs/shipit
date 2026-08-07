@@ -30,6 +30,7 @@ import {
   listPullRequests,
   listWorkflowRuns,
   viewWorkflowRun,
+  rerunWorkflowRun,
   listWorkflows,
   viewWorkflow,
   mergePullRequest,
@@ -581,7 +582,11 @@ export async function registerGitHubRoutes(
 
   // GET /api/sessions/:id/pr/view — view PR details (current branch's PR by default)
   // GET /api/sessions/:id/pr/view?number=N — view a specific PR
-  app.get<{ Params: { id: string }; Querystring: { number?: string; cwd?: string; repo?: string } }>(
+  // GET /api/sessions/:id/pr/view?comments=true — also read the PR's
+  //   conversation (issue comments, reviews, inline review threads). Opt-in
+  //   because it costs a second round-trip; the merge-polling path
+  //   (`--json state`) never asks for it. docs/255.
+  app.get<{ Params: { id: string }; Querystring: { number?: string; cwd?: string; repo?: string; comments?: string } }>(
     "/api/sessions/:id/pr/view",
     { config: { containerAccessible: true } },
     async (request, reply) => {
@@ -602,6 +607,7 @@ export async function registerGitHubRoutes(
         const pr = await viewPullRequest(git, deps.githubAuthManager, {
           number: num,
           remoteUrl,
+          comments: request.query.comments === "true",
         });
         return { pr };
       } catch (err) {
@@ -614,11 +620,13 @@ export async function registerGitHubRoutes(
     },
   );
 
-  // ---- GitHub Actions reads (read-only — back `gh run` / `gh workflow`) ----
+  // ---- GitHub Actions (back `gh run` / `gh workflow`) ----
   //
   // Repo-aware (cwd/repo) like the PR ops above, and container-accessible so the
-  // gh shim can broker them. Read-only by construction: there is no route to
-  // dispatch, rerun, or cancel a workflow — that stays a human/CI action.
+  // gh shim can broker them. Reads, plus one write — `actions/runs/rerun`, which
+  // re-executes an already-committed workflow on the session's own branch. There
+  // is deliberately no route to *dispatch* a workflow, or to cancel or delete a
+  // run: those choose new code or destroy state, and stay human/CI actions.
 
   // GET /api/sessions/:id/actions/runs — list workflow runs
   app.get<{
@@ -688,6 +696,53 @@ export async function registerGitHubRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to view workflow run: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/actions/runs/rerun — re-run an existing run.
+  //
+  // The one Actions write in this group. Deliberately NOT paired with dispatch /
+  // cancel / delete: re-running re-executes already-committed workflow content
+  // against an existing commit, which the agent already triggers on every turn
+  // via auto-push. The service enforces the own-branch guardrail.
+  app.post<{
+    Params: { id: string };
+    Body: { id?: string | number; failed?: boolean; cwd?: string; repo?: string };
+  }>(
+    "/api/sessions/:id/actions/runs/rerun",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      const body = request.body ?? {};
+      let runId: number | undefined;
+      if (body.id !== undefined && body.id !== "") {
+        // Re-validate rather than trust the shim's check: this route is reachable
+        // from the container directly. Decimal digits only — `Number()` alone
+        // would accept "1e3"/"0x2a"/1.5/true and address a different run.
+        const raw = typeof body.id === "number" ? String(body.id) : body.id;
+        if (typeof raw !== "string" || !/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
+          reply.code(400).send({ error: "Invalid run id" });
+          return;
+        }
+        runId = Number(raw);
+      }
+      try {
+        const session = sessionManager.get(request.params.id);
+        const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, body);
+        const git = createGitManager(gitDir);
+        return await rerunWorkflowRun(git, deps.githubAuthManager, {
+          ...(typeof runId === "number" ? { runId } : {}),
+          onlyFailed: body.failed === true,
+          remoteUrl,
+        });
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to re-run workflow run: ${getErrorMessage(err)}` });
       }
     },
   );

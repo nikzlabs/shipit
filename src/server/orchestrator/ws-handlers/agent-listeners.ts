@@ -36,6 +36,7 @@ import { retireFinishedBackgroundSubagent } from "./subagent-retire.js";
 import { wireAuthRequiredHandler } from "./agent-auth-handler.js";
 import {
   detectHardExhaustion,
+  detectHardExhaustionInTurnText,
   exhaustionLockoutUntil,
   normalizeAgentUsageLimitError,
 } from "./agent-rate-limits.js";
@@ -700,24 +701,46 @@ export function wireAgentListeners(
       return;
     }
 
-    if (event.type === "agent_result" && event.error) {
-      const normalizedError = normalizeAgentUsageLimitError(
-        agent.agentId,
-        event.error,
-        deps.getSubscriptionLimitsSnapshot?.(),
-      );
+    if (event.type === "agent_result") {
+      const normalizedError = event.error
+        ? normalizeAgentUsageLimitError(
+            agent.agentId,
+            event.error,
+            deps.getSubscriptionLimitsSnapshot?.(),
+          )
+        : undefined;
       // docs/150 req 7 — a turn the provider killed for quota is the most
       // reliable exhaustion signal there is: it is the account refusing work,
       // not telemetry describing it. Stamp it against the NORMALIZED text,
       // which is where the reset instant ends up when we could recover one.
+      //
+      // The provider does not always kill the turn, though: a Claude CLI that
+      // hits the limit mid-turn says so in an ordinary assistant message and
+      // then ends `subtype: "success"`, leaving `error` undefined. Fall through
+      // to the turn's final assistant text so that shape still benches the
+      // account (see `detectHardExhaustionInTurnText`).
+      const noticeText = normalizedError ? null : (runner?.turnSummary ?? null);
+      const detected = normalizedError
+        ? detectHardExhaustion(normalizedError)
+        : detectHardExhaustionInTurnText(noticeText);
       const exhaustedSessionId = opts.capturedSessionId;
-      if (exhaustedSessionId && deps.markSessionAccountExhausted) {
-        const detected = detectHardExhaustion(normalizedError);
-        if (detected) {
-          deps.markSessionAccountExhausted(exhaustedSessionId, exhaustionLockoutUntil(detected));
-        }
+      if (exhaustedSessionId && deps.markSessionAccountExhausted && detected) {
+        deps.markSessionAccountExhausted(exhaustedSessionId, exhaustionLockoutUntil(detected));
       }
-      event = { ...event, error: normalizedError };
+      // A turn the provider refused for quota is a FAILED turn even when the
+      // CLI dressed it up as a successful one. Promote it here, where both
+      // channels meet, so everything downstream of this event keeps working off
+      // `error` alone: the docs/182 `lastTurnErrored` flag a few hundred lines
+      // below, the transcript's error row, `shipit session wait`. Without this,
+      // an exhaustion detected on the text channel that has no account left to
+      // fail over to (the retry is bounded to one hop) retires as a success —
+      // which is the incident this whole change exists to prevent, one account
+      // further along. The error path is untouched: it already had both fields.
+      if (normalizedError !== undefined) {
+        event = { ...event, error: normalizedError };
+      } else if (detected && noticeText) {
+        event = { ...event, status: "error", error: noticeText.trim() };
+      }
     }
 
     // Drop auto-resolved tool_result blocks for AskUserQuestion calls we

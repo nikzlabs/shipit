@@ -105,6 +105,27 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
     watcher.stop();
   });
 
+  it("reports a shipit.yaml edit (the config file both the compose reconcile and the client's tracker refresh hang off)", async () => {
+    // SHI-321 / #1622 — `shipit.yaml` must survive the ignore matcher: the
+    // orchestrator's config re-evaluation and the browser's declared-tracker
+    // refresh (docs/248) are both driven by seeing this path in a batch.
+    fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "agent:\n  memory: 2048\n");
+
+    const watcher = new FileWatcher(50);
+    watcher.start(tmpDir);
+    await settle();
+
+    const changesPromise = new Promise<string[]>((resolve) => {
+      watcher.on("changes", resolve);
+    });
+
+    fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "issues:\n  trackers:\n    - name: planning\n");
+
+    expect(await changesPromise).toContain("shipit.yaml");
+
+    watcher.stop();
+  });
+
   it("emits changes event when a file is deleted", async () => {
     fs.writeFileSync(path.join(tmpDir, "doomed.txt"), "bye");
 

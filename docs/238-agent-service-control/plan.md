@@ -126,6 +126,84 @@ It resolves through `ServiceManager.snapshotLogs` (durable log store first,
 `docker compose logs --tail` as the fallback) with ANSI stripped, exactly like
 the HTTP route. The route is unchanged and still works.
 
+### Follow-up: a started service the agent could not reach (#2044)
+
+A manual service started successfully — its own logs showed it compiling and
+serving — while the registry reported `status: "starting"` indefinitely and
+published neither `containerIp` nor `url`. Every documented address (the
+container IP, the compose service name over DNS, the preview subdomain) was
+therefore unavailable, so "start the service, then verify your UI work in the
+browser" was not completable at all.
+
+The status was frozen because **everything that resolves `starting` runs
+downstream of a successful `docker compose ps`** — the poller's forward pass and
+its missing-container reconciliation both need `ps` to answer, and nothing else
+in the manager times a `starting` service out. Any interruption of the poll loop
+(a `ps` that keeps failing, a `reconcile()` whose `start()` threw before reaching
+`poller.start()`, a call wedged ahead of the `pollOnce()` in `startService`)
+pinned every service at whatever status it last had, permanently and silently.
+Three changes, each independently sufficient for the reported case:
+
+- **The address is published as soon as the container has one**, independent of
+  the readiness verdict: `getServices` derives `url` for `starting` as well as
+  `running` (`stopped`/`error` still withhold it — there we have positive
+  evidence the container is gone, so the retained IP is stale rather than
+  merely unverified). A `starting` service's URL may refuse connections; that is
+  a recoverable state, and "no address exists" is not.
+- **`starting` is bounded.** A per-service watchdog (`STARTING_WATCHDOG_MS`,
+  120 s) resolves a service that nothing is legitimately holding there to `error`
+  with a reason that says plainly the container may in fact be running and names
+  `shipit service logs`. It runs off its own timer precisely so it survives the
+  poll loop being down. The two exemptions are the same ones the poller's
+  reconciliation uses — a `compose up` in flight (an image build has no bound)
+  and the install gate — and both re-arm rather than cancel, so a service still
+  stuck once the reason clears is still caught.
+- **The wedge itself is closed**, at both ends of the poll path.
+  `joinSessionNetwork` is bounded at `NETWORK_JOIN_TIMEOUT_MS` (30 s) and
+  `poller.start()` moved into a `finally`.
+  The join is explicitly best-effort — its failure is swallowed as non-fatal —
+  yet every caller sequences it *before* the `pollOnce()` that resolves status
+  and IP, and it can block for a long time: dockerode has no client-side timeout,
+  it awaits the container's egress-firewall readiness promise, and it runs a
+  sidecar container to open egress to the new subnet. A best-effort side quest
+  must not be able to hold up the authoritative read behind it, so a join that
+  overruns is now treated exactly like a join that failed (and logged, which it
+  previously was not — a repeatedly-timing-out join is the same condition that
+  leaves the agent unable to resolve a service by its compose name). The
+  poller's own `docker compose ps` / `docker inspect` are bounded the same way
+  (`COMPOSE_QUERY_TIMEOUT_MS`), wrapped once in the constructor so no future
+  query can join the poll path unbounded: `defaultComposeQuery` resolves on the
+  child's `close`, so a docker CLI that never exits meant `pollOnce` never
+  returned while `setInterval` stacked further polls behind the same wall.
+
+Three corners this opens, all closed in the same change (found by the
+cross-backend review, not by the original analysis):
+
+- **A retained IP must not resurface as an address.** `containerIp` was kept
+  indefinitely, which was harmless only while `running` was the sole
+  URL-publishing state. Now a `stop` → `start` cycle would have republished the
+  dead container's IP — possibly since reassigned — the moment `starting` was
+  written. It is dropped when a status write concludes the container is gone
+  (`stopped`/`error`) and when `withUpInFlight` marks a replacement on its way.
+- **The watchdog's window must outlive the `up` it waits behind.** The window is
+  armed when `starting` is written, which is *before* the `compose up`; a build
+  that consumed most of it would leave only the remainder to cover the network
+  join and the first poll, erroring a service that was coming up perfectly
+  normally. Releasing the in-flight exemption re-arms the clock.
+- **The in-flight exemption is generation-scoped.** `reconcile()` clears
+  `upInFlight` along with the services map: a wedged `up` from the previous
+  compose definition would otherwise exempt the same-named new service from both
+  the missing-container reconciliation and the watchdog for the rest of the
+  session.
+
+Accepted, not fixed: a container looping in Docker's `restarting` state
+oscillates between `error` (watchdog) and `starting` (the poller's `restarting`
+branch) on a ~2-minute cycle. Both labels are defensible for a service that is
+genuinely flapping, and suppressing the transition would need a rule that
+distinguishes watchdog errors from exit errors — mechanism out of proportion to
+the noise. The watchdog message names the restart-loop case explicitly so the
+status is legible either way.
+
 ## Key files
 
 | File | Role |
@@ -136,7 +214,7 @@ the HTTP route. The route is unchanged and still works.
 | `src/server/session/service-request-queue.ts` | Per-request timeout support. |
 | `src/server/session/session-worker.ts` | `GET /services/logs`; per-action timeouts on the bridge. |
 | `src/server/orchestrator/container-session-runner.ts` | `handleServiceRequest` — the `logs` action and real post-poll status. |
-| `src/server/orchestrator/service-manager.ts` | Unchanged; `startService`/`snapshotLogs`/`getServices` are the primitives all of the above call. |
+| `src/server/orchestrator/service-manager.ts` | `startService`/`snapshotLogs`/`getServices` are the primitives all of the above call. Also owns the #2044 follow-up: the `starting` watchdog, the bounded network join, and `url` derivation. |
 | `src/server/orchestrator/prompts/skeleton.md`, `prompts/live-preview.md` | Prompt surfacing — the discoverability half of the fix. |
 | `src/server/shipit-docs/compose.md`, `preview.md` | Agent-facing reference; "user clicks Start" → "the agent starts it". |
 

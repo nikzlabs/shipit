@@ -152,11 +152,14 @@ export async function publishDepDirOverlayBases(
   const env = deps.env ?? process.env;
   if (!isOverlayEnabled(env)) return [];
 
-  const scope = resolveOverlayScope(args.session, env);
-  if (!scope) return [];
-
   const { workspaceDir } = args.session;
   if (!workspaceDir) return [];
+
+  // docs/248 — the scope must be computed with the workspace in hand: a repo
+  // whose Node pin moves it off the image's Node publishes into its own base,
+  // never into the one built under the image's ABI.
+  const scope = resolveOverlayScope(args.session, env, workspaceDir);
+  if (!scope) return [];
 
   // docs/198 — pnpm repos never overlay (the mount side skips them in
   // `prepareOverlaySpecs`), so they have no per-dep-dir base to publish. Skip them

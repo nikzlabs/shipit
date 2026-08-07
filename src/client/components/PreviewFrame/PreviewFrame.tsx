@@ -7,7 +7,7 @@ import { Button } from "../ui/button.js";
 import type { PreviewError } from "../../hooks/usePreviewErrors.js";
 import { usePreviewStore } from "../../stores/preview-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
-import { resolvePreviewHost } from "../../utils/preview-host.js";
+import { resolvePreviewHost, suggestWildcardHost } from "../../utils/preview-host.js";
 import { StartupSteps } from "../StartupSteps.js";
 import { useIframePool } from "../../hooks/useIframePool.js";
 import { usePreviewHealthPoller, buildSubdomainUrl } from "../../hooks/usePreviewHealthPoller.js";
@@ -35,6 +35,12 @@ export interface PreviewStatus {
 
 const READY_BUFFER_LIMIT = 8;
 const READY_BUFFER_TTL_MS = 2_000;
+/**
+ * Cap on a reported preview path. The value is authored by the previewed page,
+ * so it is untrusted input — a pathological one must not reach React or the
+ * clipboard. Long enough that no real route is clipped.
+ */
+const MAX_PATH_LENGTH = 2048;
 
 function previewOrigin(url: string): string | null {
   try {
@@ -85,6 +91,10 @@ export function PreviewFrame({
 }: PreviewFrameProps) {
   const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Current path per slot, as reported by each page's injected script. State,
+  // not a ref — it drives the toolbar. Kept per slot so switching sessions
+  // shows that preview's own route rather than the last one seen anywhere.
+  const [slotPaths, setSlotPaths] = useState<Map<string, string>>(new Map());
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
   const [portSelectorOpen, setPortSelectorOpen] = useState(false);
 
@@ -148,6 +158,13 @@ export function PreviewFrame({
       const [slotSessionId] = key.split(":");
       if (mergedSessionIdSet.has(slotSessionId)) {
         loadedSlotsRef.current.delete(key);
+        reloadableWindowsRef.current.delete(key);
+        setSlotPaths((prev) => {
+          if (!prev.has(key)) return prev;
+          const next = new Map(prev);
+          next.delete(key);
+          return next;
+        });
       }
     }
     pruneSlots((key) => {
@@ -159,6 +176,18 @@ export function PreviewFrame({
 
   // Derive active slot state for overlay/UI logic
   const activeSlotUrl = activeSlot?.url ?? null;
+  const activePath = activeSlotKey ? slotPaths.get(activeSlotKey) ?? null : null;
+  // Resolve against the slot URL to recover the absolute URL for click-to-copy.
+  // Safe despite `activePath` being untrusted: the message handler already
+  // rejected anything that isn't a same-origin absolute path.
+  const activeFullUrl = useMemo(() => {
+    if (!activePath || !activeSlotUrl) return null;
+    try {
+      return new URL(activePath, activeSlotUrl).href;
+    } catch {
+      return null;
+    }
+  }, [activePath, activeSlotUrl]);
   const showIframe = slotOrder.length > 0;
   const activeSlotReady = !!activeSlot;
   const isTransitioning = !activeSlotReady && activePort > 0 && preview?.running && showIframe;
@@ -183,6 +212,13 @@ export function PreviewFrame({
   // came up cleanly.
   const [authBlocked, setAuthBlocked] = useState(false);
   const loadedSlotsRef = useRef<Set<string>>(new Set());
+  // Windows that have reported "loaded", i.e. the injected preview script is
+  // running there and will honour a "shipit-toolbar" command. Unlike
+  // `loadedSlotsRef` this is NOT cleared on refresh — it records a capability,
+  // not the state of the current load. Keyed by slot but storing the window so
+  // a remounted iframe (new element, new contentWindow, script not yet run)
+  // doesn't inherit the old element's confirmation.
+  const reloadableWindowsRef = useRef<Map<string, MessageEventSource>>(new Map());
   const pendingReadyRef = useRef<{ source: MessageEventSource; origin: string; receivedAt: number }[]>([]);
   const authRetryRef = useRef(0);
   const lastAuthUrlRef = useRef<string | null>(null);
@@ -249,6 +285,22 @@ export function PreviewFrame({
       }
       return;
     }
+    if (data.type === "path" && event.source) {
+      const raw = (data as { path?: unknown }).path;
+      // Untrusted — authored by the previewed page. Require a same-document
+      // absolute path: anything else is not something we can render as "where
+      // you are", and a protocol-relative "//host/x" would resolve against the
+      // slot URL into a *different* origin, putting a foreign host in the
+      // tooltip and on the clipboard.
+      if (typeof raw !== "string" || !raw.startsWith("/") || raw.startsWith("//")) return;
+      const value = raw.slice(0, MAX_PATH_LENGTH);
+      for (const [key, el] of iframeRefs.current.entries()) {
+        if (!el?.contentWindow || el.contentWindow !== event.source) continue;
+        setSlotPaths((prev) => (prev.get(key) === value ? prev : new Map(prev).set(key, value)));
+        return;
+      }
+      return;
+    }
     if (data.type !== "loaded") return;
     // Identify which pool slot the message came from by matching
     // `event.source` against each iframe's contentWindow. We can't trust
@@ -258,6 +310,7 @@ export function PreviewFrame({
     for (const [key, el] of iframeRefs.current.entries()) {
       if (el?.contentWindow && el.contentWindow === event.source) {
         loadedSlotsRef.current.add(key);
+        reloadableWindowsRef.current.set(key, el.contentWindow);
         if (key === activeSlotKeyRef.current) {
           authRetryRef.current = 0;
           setAuthBlocked(false);
@@ -319,7 +372,18 @@ export function PreviewFrame({
         // can be re-detected.
         loadedSlotsRef.current.delete(activeSlotKey);
         const el = iframeRefs.current.get(activeSlotKey);
-        if (el && activeSlotUrl) {
+        // Reload the page the preview is CURRENTLY on. Re-assigning `src`
+        // navigates back to the slot's entry URL, so a user who had clicked
+        // into a sub-route (or an SPA route) lost their place and landed on
+        // the front page. The iframe is cross-origin, so we ask the injected
+        // preview script (preview-proxy.ts) to call `location.reload()`.
+        // Slots without that script — a direct non-proxied local preview, a
+        // 502, an auth-gated response — never reported "loaded", and fall
+        // back to the `src` re-assignment, which is also what the auth-retry
+        // escalation needs (a genuinely blocked slot must re-fetch).
+        if (el?.contentWindow && reloadableWindowsRef.current.get(activeSlotKey) === el.contentWindow) {
+          el.contentWindow.postMessage({ source: "shipit-toolbar", type: "reload" }, "*");
+        } else if (el && activeSlotUrl) {
           el.src = activeSlotUrl;
         }
       }
@@ -389,6 +453,8 @@ export function PreviewFrame({
   // Subdomain routing is the only supported container-preview path (the old
   // path-based fallback is gone — it 404'd every absolute asset URL).
   const cannotSubdomainPreview = isContainerMode && isRunning && !!activePort && !!sessionId && previewSubdomainUrl === null;
+  // A concrete host the user could switch to, when one exists (docs/254 req 8).
+  const suggestedWildcardHost = cannotSubdomainPreview ? suggestWildcardHost(apiHost) : null;
 
   // When not running, hide the iframe behind the overlay (but keep DOM element alive)
   const hideIframe = !isRunning && !showStarting;
@@ -441,6 +507,15 @@ export function PreviewFrame({
           a domain with a <code className="px-1.5 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary) text-xs">*</code> DNS record,
           or Tailscale with MagicDNS wildcard resolution.
         </p>
+        {suggestedWildcardHost && (
+          <p className="text-xs text-(--color-text-secondary)">
+            For this host, opening ShipIt at{" "}
+            <code className="px-1.5 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary) text-xs">
+              http://{suggestedWildcardHost}
+            </code>{" "}
+            works without any DNS setup.
+          </p>
+        )}
       </div>
     );
   } else if (authBlocked && activeSlotUrl) {
@@ -528,6 +603,8 @@ export function PreviewFrame({
             ?.contentWindow?.postMessage({ source: "shipit-toolbar", type: "back" }, "*");
         }}
         activeSlotUrl={activeSlotUrl}
+        previewPath={activePath}
+        previewFullUrl={activeFullUrl}
       />
 
       {/* Missing-required-secrets banner (087 Phase 2). One row at the top of

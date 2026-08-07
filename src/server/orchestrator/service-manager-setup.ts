@@ -658,6 +658,16 @@ export function setupServiceManager(
         console.error(`[overlay:${runner.sessionId}] dep-dir spec resolution failed:`, getErrorMessage(err));
       }
     }
+    // The awaits above (a prior stack's `compose down`, worker readiness) can
+    // each outlive the runner. Its `disposed` handler has by then dropped the
+    // manager from `serviceManagers` and stopped it — but `start()` resets
+    // `_disposed` and re-arms the poll loop, so going ahead here would leave an
+    // orphaned manager polling Docker for a session nobody owns, with nothing
+    // left to stop it. Checked as late as possible, immediately before the call.
+    if (runner instanceof ContainerSessionRunner && runner.disposed) {
+      console.log(`[compose:${runner.sessionId}] runner disposed before compose start — skipping`);
+      return;
+    }
     try {
       await mgr.start();
       console.log(`[compose:${runner.sessionId}] Compose stack started`);

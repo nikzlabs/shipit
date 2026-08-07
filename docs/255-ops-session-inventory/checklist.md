@@ -1,0 +1,33 @@
+# Checklist — Ops session inventory lookup
+
+- [x] `requirements.md` written from the operator's report
+- [x] `plan.md` written (surface, metadata-only boundary, rejected alternatives)
+- [x] `SessionManager.findByBranch` / `findByPrNumber` / `findByIdPrefix`
+- [x] `services/host-sessions.ts` — filter composition + allowlist projection
+- [x] `api-routes-host-sessions.ts` — Ops-gated route under the caller's own id
+- [x] Golden route-table snapshot updated (exactly one new entry)
+- [x] `GET /agent-ops/session/host-sessions` worker relay
+- [x] `shipit session find` + `shipit session list --all` shim subcommands
+- [x] `shipit` HELP text
+- [x] `src/server/shipit-docs/ops-session.md` — fourth pillar documented
+- [x] `src/server/shipit-docs/sessions.md` — subcommand table entries
+- [x] Ops workspace recipe (`prompts/trace-a-pr.md`) + template README
+- [x] Unit tests: branch / PR (current + previous) / container-prefix / id / archived / no-match
+- [x] Route tests: ops → 200, non-ops → 403, unknown session → 404, other session's path → guard 403
+- [x] Shim tests alongside the existing `shipit.test.ts` cases
+- [x] `npm run test:dev`, `npm run lint:dev`, `npm run typecheck`
+- [x] Independent fresh-context review against `requirements.md` (Codex, via `shipit agent run`)
+- [x] Review finding: strip credentials from `remoteUrl` at the session crossing
+- [x] Review finding: refuse a project-set `container_name`, point at the label
+- [x] Review finding: `--include-warm` so req 5's "every session" is reachable
+- [x] Review finding: `--offset` paging so a >500-session host is enumerable
+- [x] Review finding: req 7 wording corrected (evicted ≠ archived), receipt filed
+- [x] Second-pass Codex review of the fixes themselves
+- [x] 2nd-pass: fail-closed URL sanitizer (ssh://, query-token, scp, malformed)
+- [x] 2nd-pass: `--container` requires a ShipIt-generated name (bare id → `--id`)
+- [x] 2nd-pass: paging sorts on an immutable key, so live turns can't skip rows
+- [x] 2nd-pass: bad `offset` rejected instead of silently returning page 1
+- [x] 2nd-pass: PR-URL parsing handles `/files`, `?query`, `#fragment`
+- [x] 2nd-pass: `list` host-only flags refused without `--all`
+- [x] 2nd-pass: "any earlier PR" overclaim corrected to the retained one
+- [x] Tracker issue filed and cross-linked (`roadmap#SHI-329`)

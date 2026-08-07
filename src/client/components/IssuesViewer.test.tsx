@@ -19,13 +19,13 @@ const mockNarrow = vi.hoisted(() => ({ value: false }));
 vi.mock("../hooks/useNarrowContainer.js", () => ({ useNarrowContainer: () => mockNarrow.value }));
 
 const LINEAR_CONFIGURED: TrackerInfo = {
-  id: "linear",
+  id: "linear", kind: "linear" as const,
   label: "Linear",
   configured: true,
   binding: { key: "SHI", name: "ShipIt" },
 };
 
-const LINEAR_UNCONFIGURED: TrackerInfo = { id: "linear", label: "Linear", configured: false };
+const LINEAR_UNCONFIGURED: TrackerInfo = { id: "linear", kind: "linear" as const, label: "Linear", configured: false };
 
 function makeIssue(overrides?: Partial<TrackerIssue>): TrackerIssue {
   return {
@@ -123,6 +123,25 @@ describe("IssuesViewer", () => {
     const connect = screen.getByRole("button", { name: /Connect Linear/i });
     fireEvent.click(connect);
     expect(props.onConnect).toHaveBeenCalledOnce();
+  });
+
+  // The tab is the label alone — the backend binding (`owner/repo`, a Linear
+  // team key) used to be appended after a `·` and made the bar overflow the
+  // panel. It survives only as the hover title.
+  it("renders each tracker tab as its label alone, with the binding on hover", () => {
+    const planning: TrackerInfo = {
+      id: "github:nikzlabs/shipit-planning",
+      kind: "github",
+      label: "Planning",
+      configured: true,
+      name: "planning",
+      binding: { key: "nikzlabs/shipit-planning", name: "nikzlabs/shipit-planning" },
+    };
+    render(<IssuesViewer {...defaultProps({ trackers: [LINEAR_CONFIGURED, planning] })} />);
+    const tab = screen.getByRole("button", { name: "Planning" });
+    expect(tab).toHaveAttribute("title", "Planning · nikzlabs/shipit-planning");
+    expect(screen.queryByText(/nikzlabs\/shipit-planning/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Linear" })).toBeInTheDocument();
   });
 
   it("renders the priority-sorted issue list passed in", () => {

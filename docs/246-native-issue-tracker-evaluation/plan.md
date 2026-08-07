@@ -40,7 +40,8 @@ governed by [product requirements](./requirements.md); the scope of this
 research is governed separately by
 [evaluation requirements](./evaluation-requirements.md). Implementation gates
 are recorded in [checklist.md](./checklist.md). The dedicated private-GitHub
-option now has its own focused [requirements and design](../247-private-github-issue-tracker/plan.md);
+option now has its own focused [requirements and migration plan](../247-shipit-private-planning/plan.md),
+and the tracker mechanism it relies on has its own [feature doc](../248-declared-issue-trackers/plan.md);
 this document remains the comparison and selection record.
 
 ## Problem
@@ -180,7 +181,8 @@ storage rather than a vendor issue counter.
 ## Baseline — existing GitHub Issues adapter
 
 The implementation-oriented design for this option is maintained separately in
-[247 — Private GitHub issue tracker](../247-private-github-issue-tracker/plan.md).
+[247 — ShipIt private planning](../247-shipit-private-planning/plan.md) and
+[248 — Declared issue trackers](../248-declared-issue-trackers/plan.md).
 The analysis below explains its place in the option comparison.
 
 ShipIt already implements the complete `Tracker` contract for GitHub Issues in
@@ -636,7 +638,7 @@ authoritative.
 Do not run this gate until C1–C18 are classified in `requirements.md`. GitHub is
 sufficient only if a focused adapter change demonstrates safe routing plus every
 capability marked Required. The detailed routing and validation design lives in
-[doc 247](../247-private-github-issue-tracker/plan.md):
+[doc 248](../248-declared-issue-trackers/plan.md):
 
 - A full private-repo pointer round-trips through list, detail, create/edit,
   comment, undo, seed-time Started, `Refs`, and merged-PR `Closes` without ever

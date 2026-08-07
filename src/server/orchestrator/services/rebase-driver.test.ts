@@ -7,7 +7,12 @@ import { execSync } from "node:child_process";
 import { GitManager } from "../../shared/git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import { SessionRunner } from "../session-runner.js";
-import { runRebaseFlow, buildRebaseConflictPrompt, MAX_REBASE_ITERATIONS } from "./rebase-driver.js";
+import {
+  runRebaseFlow,
+  buildRebaseConflictPrompt,
+  buildBranchSyncAgentNotice,
+  MAX_REBASE_ITERATIONS,
+} from "./rebase-driver.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import type { AgentProcess, AgentEvent, AgentRunParams, WsServerMessage } from "../../shared/types.js";
 
@@ -174,12 +179,17 @@ function makeStubHistory(captured: { role: string; text: string }[]): ChatHistor
   } as unknown as ChatHistoryManager;
 }
 
-/** Minimal stub for SessionManager — only `get` is used by the driver. */
-function makeStubSessionManager(): SessionManager {
+/**
+ * Minimal stub for SessionManager — `get` plus the docs/221 pending-notice slot,
+ * which the driver writes on a manual sync that moved the branch. `notices`
+ * is exposed so a test can assert what the agent will be told next turn.
+ */
+function makeStubSessionManager(notices: string[] = []): SessionManager {
   return {
     get: (sessionId: string) => ({ sessionId, agentSessionId: undefined }),
     setAgentSessionId: () => {},
     setLastTurnErrored: () => {},
+    setPendingAgentNotice: (_id: string, notice: string) => { notices.push(notice); },
     track: () => {},
     list: () => [],
   } as unknown as SessionManager;
@@ -934,6 +944,115 @@ describe("rebase-driver: docs/221 sync card + local base move", () => {
     if (complete?.type === "rebase_complete") {
       expect(complete.baseMoved).toBe(true);
     }
+  });
+});
+
+/**
+ * docs/221 — the agent-facing half of a manual sync. The card tells the user; a
+ * pending notice tells the agent on its next turn, because the sync itself runs
+ * with no turn in flight to prepend to.
+ */
+describe("rebase-driver: docs/221 pending agent notice", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
+
+  beforeEach(() => {
+    vi.mocked(handWorkspaceBackToWorker).mockClear();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-notice-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+    process.env.GIT_EDITOR = "true";
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const depsWithNotices = (
+    git: GitManager,
+    runner: SessionRunner,
+    notices: string[],
+    authed: boolean,
+  ) => ({
+    git,
+    githubAuthManager: makeStubAuth(authed),
+    runner,
+    sessionManager: makeStubSessionManager(notices),
+    chatHistoryManager: makeStubHistory([]),
+    agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+    usageManager: makeStubUsageManager(),
+    sseBroadcast: () => {},
+  });
+
+  it("clean manual sync that moved the branch records a notice for the next turn", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const notices: string[] = [];
+
+    const result = await runFlow(
+      { ...depsWithNotices(git, runner, notices, true), recordSyncCard: true },
+      "main",
+    );
+
+    expect(result.status).toBe("rebased");
+    expect(notices).toHaveLength(1);
+    // Structural anchors only — the prose is copy, not contract.
+    expect(notices[0]).toContain("[System]");
+    expect(notices[0]).toContain("origin/main");
+    expect(notices[0]).toContain("force-pushed");
+  });
+
+  it("does NOT record a notice on the auto-resolve path (recordSyncCard unset)", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const notices: string[] = [];
+
+    const result = await runFlow(depsWithNotices(git, runner, notices, true), "main");
+
+    expect(result.status).toBe("rebased");
+    expect(notices).toEqual([]);
+  });
+
+  it("records no notice when the branch did not move (nothing the agent's context can be stale about)", async () => {
+    const { workDir, git } = setupRepoWithRemote(tmpDir);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const notices: string[] = [];
+
+    const result = await runFlow(
+      { ...depsWithNotices(git, runner, notices, false), recordSyncCard: true },
+      "main",
+    );
+
+    expect(result.status).toBe("up_to_date");
+    expect(notices).toEqual([]);
+  });
+
+  it("buildBranchSyncAgentNotice reports the SHA move and omits force-push when it did not happen", () => {
+    const notice = buildBranchSyncAgentNotice({
+      baseBranch: "master",
+      headFrom: "a1f3c9d1111",
+      headTo: "7e02b482222",
+      forcePushed: false,
+      resolvedConflicts: true,
+    });
+    expect(notice).toContain("origin/master");
+    expect(notice).toContain("a1f3c9d");
+    expect(notice).toContain("7e02b48");
+    expect(notice).toContain("conflicts");
+    expect(notice).not.toContain("force-pushed");
   });
 });
 

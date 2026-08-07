@@ -38,7 +38,15 @@ export const handleTurnSnapshot: Handler<WsTurnSnapshot> = (_ctx, data) => {
     // Only the last row of a RUNNING turn is still being written to; the
     // earlier groups are closed. Mirrors how the live path opens and closes
     // bubbles.
-    streaming: !isFinal && i === data.messages.length - 1,
+    //
+    // A system notice is the exception: it is complete when emitted and is never
+    // written to incrementally. Every `emitNoticeInTurn` fires at turn start,
+    // before the agent has produced any assistant content, so a viewer attaching
+    // in that gap gets a snapshot whose ONLY row is the notice — and marking it
+    // `streaming` invites the live path to merge the agent's first text into it.
+    // `agent-event.ts` refuses that merge, but a row that is never written to
+    // has no business claiming to be open in the first place.
+    streaming: !isFinal && i === data.messages.length - 1 && m.notice !== true,
   }));
   session.setMessages((prev) => [...prev.filter((m) => !m.inProgress), ...snapshot]);
 };

@@ -64,6 +64,24 @@ describe("IssueWriteCard (docs/189)", () => {
     expect(screen.getByText("Confirmed on staging.")).toBeInTheDocument();
   });
 
+  it("renders a comment edit with the new body and anchors to that comment (SHI-86)", () => {
+    const onOpen = vi.fn();
+    seed({
+      verb: "comment-edit",
+      summary: "edited a comment on SHI-48",
+      // Line 2 is the NEW body — the prior text is one Undo click away, and two
+      // clamped blockquotes would not fit the card.
+      content: { comment: "Corrected: it clamps the offset, not the height." },
+      undo: { kind: "comment-edit", commentId: "c-1", previousBody: "it clamps the height" },
+    });
+    render(<IssueWriteCard cardId={CARD_ID} onOpen={onOpen} />);
+    // Distinct from "Commented on" — a rewrite is not a new comment.
+    expect(screen.getByText("Edited a comment on")).toBeInTheDocument();
+    expect(screen.getByText("Corrected: it clamps the offset, not the height.")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("issue-write-card"));
+    expect(onOpen.mock.calls[0][0]).toMatchObject({ anchorCommentId: "c-1" });
+  });
+
   it("renders a title delta and 'description updated' for an edit", () => {
     seed({
       verb: "edit",

@@ -21,6 +21,7 @@ import { extractTurnProse, hasSpeakableProse } from "../../voice/extract-turn-pr
 import type { ChatMessage } from "./types.js";
 import { useMessageScroll } from "./hooks/useMessageScroll.js";
 import { MessageToolElement } from "./MessageToolUse.js";
+import type { AnswerQuestionFn } from "../AskUserQuestion.js";
 import { renderMessageCard } from "./cards/MessageCards.js";
 import { SubAgentSpawnChipRow } from "./cards/SubAgentCards.js";
 import type { TrackerId } from "../../../server/shared/types.js";
@@ -55,7 +56,7 @@ export function MessageList({
   searchMatches?: SearchMatch[];
   currentMatch?: SearchMatch;
   /** Returns whether the answer actually reached the wire (see `sendUserMessage`). */
-  onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>, text: string) => boolean;
+  onAnswerQuestion?: AnswerQuestionFn;
   /** Returns whether the message actually reached the wire (see `sendUserMessage`). */
   onSendFollowUp?: (text: string) => boolean;
   rewindPreviews?: Record<string, WsRewindPreview>;

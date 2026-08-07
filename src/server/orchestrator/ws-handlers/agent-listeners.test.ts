@@ -164,6 +164,71 @@ describe("wireAgentListeners", () => {
       expect(marked).toEqual([]);
       runner.dispose({ force: true });
     });
+
+    // The shape production actually hit: the Claude CLI reported the limit as an
+    // ordinary assistant message and ended the turn `subtype: "success"`, so the
+    // adapter left `error` undefined and this stamp — gated on it — never ran.
+    // The turn retired as a success and the notice became the commit subject.
+    it("benches the account when the limit arrives as assistant text on a success turn", () => {
+      const { agent, runner, marked } = wireForResult();
+      const now = Date.now();
+
+      agent.emit("event", {
+        type: "agent_assistant",
+        content: [{ type: "text", text: "You've hit your session limit · resets 5:10pm (UTC)" }],
+      } as AgentEvent);
+      agent.emit("event", { type: "agent_result" } as AgentEvent);
+
+      expect(marked).toHaveLength(1);
+      expect(marked[0]!.sessionId).toBe("session-1");
+      expect(marked[0]!.until).toBeGreaterThan(now);
+      runner.dispose({ force: true });
+    });
+
+    // A turn the provider refused for quota is a failed turn even when the CLI
+    // dressed it up as a successful one. Without the promotion, an exhaustion
+    // with no account left to fail over to (the retry is bounded to one hop)
+    // still retires as a success — the original incident, one account along.
+    it("promotes a text-detected exhaustion to a failed turn", () => {
+      const { agent, runner } = wireForResult();
+      runner.running = true;
+
+      agent.emit("event", {
+        type: "agent_assistant",
+        content: [{ type: "text", text: "You've hit your session limit · resets 5:10pm (UTC)" }],
+      } as AgentEvent);
+      agent.emit("event", { type: "agent_result", status: "success" } as AgentEvent);
+
+      expect(runner.lastTurnErrored).toBe(true);
+      runner.dispose({ force: true });
+    });
+
+    it("leaves an ordinary success turn marked as a success", () => {
+      const { agent, runner } = wireForResult();
+      runner.running = true;
+
+      agent.emit("event", {
+        type: "agent_assistant",
+        content: [{ type: "text", text: "Done — all tests pass." }],
+      } as AgentEvent);
+      agent.emit("event", { type: "agent_result", status: "success" } as AgentEvent);
+
+      expect(runner.lastTurnErrored).toBe(false);
+      runner.dispose({ force: true });
+    });
+
+    it("leaves the account alone when a success turn's text is ordinary", () => {
+      const { agent, runner, marked } = wireForResult();
+
+      agent.emit("event", {
+        type: "agent_assistant",
+        content: [{ type: "text", text: "Done — all tests pass." }],
+      } as AgentEvent);
+      agent.emit("event", { type: "agent_result" } as AgentEvent);
+
+      expect(marked).toEqual([]);
+      runner.dispose({ force: true });
+    });
   });
 
   describe("blocked-turn errors (docs/150 req 13)", () => {

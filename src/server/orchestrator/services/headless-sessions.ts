@@ -16,6 +16,7 @@ import { ServiceError } from "./types.js";
 import { saveUploadedFile, MAX_UPLOAD_FILES_PER_REQUEST } from "./files.js";
 import type { ClaimSessionService } from "./claim-session.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
+import { buildIssueSeedPrompt } from "../../shared/issue-ref.js";
 
 function assertValidBranchName(name: string): void {
   if (/[\s~^:?*[\\]/.test(name) || name.includes("..")) {
@@ -45,7 +46,7 @@ export function seedFromIssueRef(issueRef: IssueRef): {
   // Branch: the issue's **pointer only**, lowercased and kebabbed so it stays a
   // valid git ref (assertValidBranchName rejects spaces/specials).
   //
-  // docs/247 req 1 — the issue title is deliberately NOT in the branch name. A
+  // docs/248 req 22 — the issue title is deliberately NOT in the branch name. A
   // branch gets pushed to a public remote, so a title from a private planning
   // issue would be published there. The rule is unconditional rather than scoped
   // to "private" issues because ShipIt has no signal for which repositories are
@@ -63,16 +64,13 @@ export function seedFromIssueRef(issueRef: IssueRef): {
       .replace(/^-+|-+$/g, "");
   const branch = slugify(identifier).slice(0, 60).replace(/-+$/g, "") || generateBranchPrefix();
 
-  // Seed prompt: identifier + title + description + link, so the first agent
-  // turn has the full issue context without the user re-typing it.
-  const lines = [`You are working on issue ${identifier}: ${titleText}`];
-  if (issueRef.description?.trim()) {
-    lines.push("", issueRef.description.trim());
-  }
-  if (issueRef.url?.trim()) {
-    lines.push("", `Issue link: ${issueRef.url.trim()}`);
-  }
-  return { prompt: lines.join("\n"), branch, title: `${identifier}: ${titleText}` };
+  // Seed prompt: the pointer only — see `buildIssueSeedPrompt`. The issue's
+  // description is deliberately NOT pasted in; the agent fetches it.
+  return {
+    prompt: buildIssueSeedPrompt({ identifier, title: titleText }),
+    branch,
+    title: `${identifier}: ${titleText}`,
+  };
 }
 
 export interface CreateHeadlessSessionOptions {
@@ -112,6 +110,14 @@ export interface CreateHeadlessSessionOptions {
    * the session row or DB.
    */
   armAutoMerge?: boolean;
+  /**
+   * docs/144 — the prompt was dictated by voice (the quick-capture overlay's
+   * Mode B: hold the hotkey, speak a task, it spawns a session). The first
+   * turn's prompt gets the `<dictated_input>` block so the agent reads
+   * mis-heard terms as transcription artifacts. Never set for a
+   * server-composed prompt (issue seeds, API callers that didn't ask for it).
+   */
+  dictated?: boolean;
 }
 
 export interface CreateHeadlessSessionResult {
@@ -245,6 +251,7 @@ export async function createHeadlessSession(
     systemTurn: undefined,
     onTurnComplete: undefined,
     deliveryId: undefined,
+    dictated: opts.dictated,
   }));
 
   // graduate-session.ts owns the warm → active transition (docs/156).

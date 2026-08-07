@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useIssuesStore, issueLookupId } from "./issues-store.js";
-import type { TrackerIssue } from "../../server/shared/types.js";
+import type { TrackerInfo, TrackerIssue } from "../../server/shared/types.js";
 
 /**
  * Tests for the issues-store master-detail layer (docs/189): the lookup-id
@@ -329,5 +329,208 @@ describe("issues-store status/priority writes (docs/191)", () => {
     expect(err).toBe("Unknown status");
     // The row object is unchanged (same reference).
     expect(useIssuesStore.getState().issuesByTracker.linear[0]).toBe(issue);
+  });
+});
+
+/**
+ * SHI-321 — `fetchTrackers` reports whether the declared set actually changed,
+ * so a caller refreshing on a `shipit.yaml` edit can skip the issue-list fetch
+ * (a real tracker-API round-trip) when the edit touched something else.
+ */
+describe("issues-store fetchTrackers change reporting (SHI-321)", () => {
+  const originalFetchLocal = globalThis.fetch;
+
+  function stub(trackers: TrackerInfo[]): void {
+    globalThis.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ trackers }), { status: 200 }),
+    ) as typeof fetch;
+  }
+
+  const gh: TrackerInfo = { id: "github", label: "GitHub", configured: true, kind: "github" };
+
+  beforeEach(() => {
+    useIssuesStore.setState({ trackers: [], infoByTracker: {} });
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetchLocal;
+    vi.restoreAllMocks();
+  });
+
+  it("reports a change when a declaration is added", async () => {
+    useIssuesStore.setState({ trackers: [gh] });
+    stub([gh, { id: "github:acme/planning", label: "planning", configured: true, kind: "github", name: "planning", binding: { key: "acme/planning", name: "acme/planning" } }]);
+    await expect(useIssuesStore.getState().fetchTrackers()).resolves.toBe(true);
+  });
+
+  it("reports a change when a name is re-pointed at another destination", async () => {
+    useIssuesStore.setState({
+      trackers: [{ id: "linear:SHI", label: "roadmap", configured: true, kind: "linear", name: "roadmap", binding: { key: "SHI", name: "ShipIt" } }],
+    });
+    stub([{ id: "linear:PLAT", label: "roadmap", configured: true, kind: "linear", name: "roadmap", binding: { key: "PLAT", name: "Platform" } }]);
+    await expect(useIssuesStore.getState().fetchTrackers()).resolves.toBe(true);
+  });
+
+  it("reports no change when the same declarations come back", async () => {
+    useIssuesStore.setState({ trackers: [gh] });
+    stub([gh]);
+    await expect(useIssuesStore.getState().fetchTrackers()).resolves.toBe(false);
+  });
+
+  it("reports no change when the request fails", async () => {
+    useIssuesStore.setState({ trackers: [gh] });
+    globalThis.fetch = vi.fn(async () => new Response("nope", { status: 500 })) as typeof fetch;
+    await expect(useIssuesStore.getState().fetchTrackers()).resolves.toBe(false);
+    // A failed refresh leaves the previous view in place rather than blanking it.
+    expect(useIssuesStore.getState().trackers).toEqual([gh]);
+  });
+});
+
+/**
+ * SHI-325 — an open issue must not survive into a repository that doesn't
+ * declare its tracker (docs/248 req 11: an undeclared destination fails
+ * closed). Two halves: `setRepoScope` covers the switch itself (synchronous,
+ * before the new declarations are known), `fetchTrackers` is the authoritative
+ * check once they land.
+ */
+describe("issues-store repo scoping (SHI-325)", () => {
+  const roadmap: TrackerInfo = {
+    id: "linear:SHI",
+    label: "roadmap",
+    configured: true,
+    kind: "linear",
+    name: "roadmap",
+    binding: { key: "SHI", name: "ShipIt" },
+  };
+  const gh: TrackerInfo = { id: "github", label: "GitHub", configured: true, kind: "github" };
+
+  /** An open detail on `roadmap`, with both trackers' lists cached. */
+  function openOnRoadmap(repoUrl: string | null = "https://github.com/acme/app.git"): void {
+    useIssuesStore.setState({
+      repoScope: repoUrl,
+      trackers: [roadmap, gh],
+      infoByTracker: { "linear:SHI": roadmap, github: gh },
+      activeTracker: "linear:SHI",
+      issuesByTracker: { "linear:SHI": [makeIssue()], github: [makeIssue({ id: "gh-1" })] },
+      statusesByTracker: { "linear:SHI": [{ name: "Todo" }] },
+      labelsByTracker: { "linear:SHI": [{ name: "bug" }] },
+      selected: { tracker: "linear:SHI", id: "SHI-1", identifier: "SHI-1" },
+      detail: makeIssue(),
+      comments: [],
+    });
+  }
+
+  function stubTrackers(trackers: TrackerInfo[]): void {
+    globalThis.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ trackers }), { status: 200 }),
+    ) as typeof fetch;
+  }
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+    useIssuesStore.getState().reset();
+    useIssuesStore.setState({ repoScope: null, trackers: [], infoByTracker: {}, activeTracker: "github" });
+  });
+
+  it("drops the open issue and the declarations when the repository changes", () => {
+    openOnRoadmap();
+    useIssuesStore.getState().setRepoScope("https://github.com/acme/other.git");
+
+    const s = useIssuesStore.getState();
+    expect(s.selected).toBeNull();
+    expect(s.detail).toBeNull();
+    expect(s.comments).toBeNull();
+    // The new repository's declarations are unknown until fetchTrackers lands —
+    // rendering the previous repository's is exactly the fail-open req 11 bars.
+    expect(s.trackers).toEqual([]);
+    // Every cached list goes: the caches are keyed by tracker id but their
+    // contents are repo-scoped (the GitHub tracker resolves per session repo).
+    expect(s.issuesByTracker).toEqual({});
+    expect(s.statusesByTracker).toEqual({});
+    expect(s.labelsByTracker).toEqual({});
+    // The gap renders as "loading", not as "not connected".
+    expect(s.loading).toBe(true);
+  });
+
+  it("keeps the open issue when switching between sessions of the same repository", () => {
+    openOnRoadmap("https://github.com/acme/app.git");
+    useIssuesStore.getState().setRepoScope("https://github.com/acme/app.git");
+
+    const s = useIssuesStore.getState();
+    expect(s.selected?.identifier).toBe("SHI-1");
+    expect(s.detail).not.toBeNull();
+    expect(s.issuesByTracker["linear:SHI"]).toHaveLength(1);
+    expect(s.trackers).toHaveLength(2);
+  });
+
+  it("fetchTrackers closes the open issue when its tracker is no longer declared", async () => {
+    openOnRoadmap();
+    stubTrackers([gh]);
+
+    await useIssuesStore.getState().fetchTrackers();
+
+    const s = useIssuesStore.getState();
+    expect(s.selected).toBeNull();
+    expect(s.detail).toBeNull();
+    // Unreachable entries go; the still-declared tracker's cache stays, because
+    // it's the same repository and that destination is still reachable.
+    expect(s.issuesByTracker["linear:SHI"]).toBeUndefined();
+    expect(s.statusesByTracker["linear:SHI"]).toBeUndefined();
+    expect(s.labelsByTracker["linear:SHI"]).toBeUndefined();
+    expect(s.infoByTracker["linear:SHI"]).toBeUndefined();
+    expect(s.issuesByTracker.github).toHaveLength(1);
+    // The sub-tab follows the surviving declaration.
+    expect(s.activeTracker).toBe("github");
+  });
+
+  /**
+   * The case the id-presence check misses, and the one the live repro hit: the
+   * session's own repository's GitHub Issues are the bare `github` id in EVERY
+   * repository (docs/248 req 12), so a cross-repo switch changes the
+   * destination without changing the id.
+   */
+  it("fetchTrackers closes the open issue when its tracker id now names another destination", async () => {
+    const ownRepoA: TrackerInfo = {
+      id: "github",
+      label: "GitHub",
+      configured: true,
+      kind: "github",
+      binding: { key: "octocat/Hello-World", name: "octocat/Hello-World" },
+    };
+    const ownRepoB: TrackerInfo = { ...ownRepoA, binding: { key: "acme/todo-list", name: "acme/todo-list" } };
+    useIssuesStore.setState({
+      repoScope: "https://github.com/octocat/Hello-World",
+      trackers: [ownRepoA],
+      infoByTracker: { github: ownRepoA },
+      activeTracker: "github",
+      issuesByTracker: { github: [makeIssue()] },
+      selected: { tracker: "github", id: "10756", identifier: "octocat/Hello-World#10756" },
+      detail: makeIssue(),
+    });
+    stubTrackers([ownRepoB]);
+
+    await useIssuesStore.getState().fetchTrackers();
+
+    const s = useIssuesStore.getState();
+    expect(s.selected).toBeNull();
+    expect(s.detail).toBeNull();
+    // The old repo's issue list would have been repo B's list under repo A's
+    // rows — the cache goes with the destination that produced it.
+    expect(s.issuesByTracker.github).toBeUndefined();
+    // The declaration itself is the new one, so the sub-tab still works.
+    expect(s.infoByTracker.github).toEqual(ownRepoB);
+  });
+
+  it("fetchTrackers leaves the open issue alone while its tracker is still declared", async () => {
+    openOnRoadmap();
+    stubTrackers([roadmap, gh]);
+
+    await useIssuesStore.getState().fetchTrackers();
+
+    const s = useIssuesStore.getState();
+    expect(s.selected?.identifier).toBe("SHI-1");
+    expect(s.detail).not.toBeNull();
+    expect(s.issuesByTracker["linear:SHI"]).toHaveLength(1);
   });
 });

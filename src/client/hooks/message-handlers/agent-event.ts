@@ -1,7 +1,7 @@
 import type { WsAgentEvent, AgentContentBlock } from "../../../server/shared/types.js";
 import type { ChatMessage, ToolResultBlock } from "../../components/MessageList.js";
 import { activityFromTool } from "../../components/StreamingIndicator.js";
-import { CARD_MESSAGE_FIELDS } from "../../components/visual-elements.js";
+import { isTerminalTranscriptEntry } from "../../components/visual-elements.js";
 import { shipsResultBodyWhole, SUBAGENT_REPORT_TOOL_NAMES } from "../../../server/shared/transcript-slice-tools.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
@@ -26,6 +26,71 @@ function safeCutAt(text: string, max: number): number {
   const code = text.charCodeAt(max - 1);
   // High surrogate at the boundary means its pair starts here — drop it.
   return code >= 0xd800 && code <= 0xdbff ? max - 1 : max;
+}
+
+/**
+ * Cap a JSON content-block array by shortening the TEXT inside it, leaving the
+ * array itself valid JSON.
+ *
+ * An MCP result — a Playwright screenshot above all — is a
+ * `JSON.stringify`'d array of `{type:"text"}` / `{type:"image"}` blocks, and it
+ * is what `parseContentForImages` (`ToolResult.tsx`) re-parses to draw the
+ * image. Being stringified it is ONE line of possibly megabytes, so the raw cap
+ * below cuts it mid-array: the JSON no longer parses, the parse returns null,
+ * and the tool-call modal renders the whole thing — base64 and all — as a wall
+ * of raw JSON instead of the screenshot. That is the exact failure
+ * `transcript-projection.ts`'s `projectBlockArray` was written to avoid on the
+ * serve path ("a block array must never be sliced as a raw string"); the client
+ * cap kept doing it, so every result the projection deliberately leaves inline
+ * — a nested subagent's screenshot, most of all — degraded that way once its
+ * base64 crossed the cap.
+ *
+ * Image blocks are kept WHOLE rather than counted against the budget. There is
+ * nothing to substitute them with here: the `/images/:hash` URL the projection
+ * uses is backed by the persisted row, and a nested result has no committed row
+ * yet. So the choice is the image or nothing, and holding a screenshot the
+ * transcript is about to draw is the point of having it. The bound this gives
+ * up is recovered on the next history load, where the projection replaces the
+ * payload with that URL.
+ *
+ * Returns undefined when `content` isn't a content-block array, leaving the raw
+ * cap to handle it — an ordinary JSON payload from a tool that happens to
+ * return an array is bounded exactly as before.
+ */
+function capContentBlocks(content: string, cap: number): { content: string; textRemoved: boolean } | undefined {
+  if (!content.startsWith("[")) return undefined;
+  let blocks: unknown;
+  try {
+    blocks = JSON.parse(content);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(blocks)) return undefined;
+
+  let isContentBlocks = false;
+  let textRemoved = false;
+  let budget = cap;
+  const capped = blocks.map((b): unknown => {
+    if (typeof b !== "object" || b === null) return b;
+    const block = b as Record<string, unknown>;
+    if (block.type === "image") {
+      isContentBlocks = true;
+      return b;
+    }
+    if (block.type !== "text" || typeof block.text !== "string") return b;
+    isContentBlocks = true;
+    const text = block.text;
+    if (text.length <= budget) {
+      budget -= text.length;
+      return b;
+    }
+    textRemoved = true;
+    const head = text.slice(0, safeCutAt(text, budget));
+    budget = 0;
+    return { ...block, text: head };
+  });
+  if (!isContentBlocks) return undefined;
+  return { content: JSON.stringify(capped), textRemoved };
 }
 
 /**
@@ -109,17 +174,19 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
     if (!parentToolUseId && (textBlocks || toolUseBlocks.length > 0)) {
       session.setMessages((prev) => {
         const last = prev[prev.length - 1];
-        // A card-carrying message (permission prompt, voice note, etc.) is a
-        // terminal transcript entry, never a streaming-text target. It can carry
-        // `streaming: true` after a history reload of an in-progress turn
-        // (`loadSessionHistory` maps `inProgress → streaming`), and the merge
-        // below rebuilds `last` from a fixed field set — so merging into it would
-        // silently DROP its card field, erasing the card. Exclude it from the
-        // merge so the card survives (it falls to the close-and-append branch,
-        // which preserves the card via `...m`). See visual-elements'
-        // CARD_MESSAGE_FIELDS and chat-card-persistence's buffer-cursor advance.
-        const lastIsCard = !!last && CARD_MESSAGE_FIELDS.some((f) => last[f] !== undefined);
-        const canMerge = last?.role === "assistant" && last.streaming && !lastIsCard
+        // A card-carrying message (permission prompt, voice note, etc.) or a
+        // system notice is a terminal transcript entry, never a streaming-text
+        // target. Either can carry `streaming: true` — a card after a history
+        // reload of an in-progress turn (`loadSessionHistory` maps
+        // `inProgress → streaming`), a notice as the last row of a running turn's
+        // `turn_snapshot` — and the merge below rebuilds `last` from a fixed
+        // field set, so merging into it would silently DROP the card/notice
+        // fields. Exclude it from the merge so it survives (it falls to the
+        // close-and-append branch, which preserves everything via `...m`). See
+        // visual-elements' `isTerminalTranscriptEntry` for what qualifies and
+        // why, and chat-card-persistence's buffer-cursor advance.
+        const lastIsTerminal = !!last && isTerminalTranscriptEntry(last);
+        const canMerge = last?.role === "assistant" && last.streaming && !lastIsTerminal
           && !(last.toolResults && last.toolResults.length > 0);
         // Standalone tools like ExitPlanMode and AskUserQuestion should stay
         // with the preceding assistant text even after tool results arrive.
@@ -130,7 +197,7 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
         const isStandaloneOnly = !textBlocks && toolUseBlocks.length > 0
           && toolUseBlocks.every((t) => STANDALONE_MERGE.has(t.name));
         const forceMerge = isStandaloneOnly
-          && last?.role === "assistant" && last.streaming && !lastIsCard;
+          && last?.role === "assistant" && last.streaming && !lastIsTerminal;
         if (canMerge || forceMerge) {
           return [
             ...prev.slice(0, -1),
@@ -220,8 +287,21 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
 
         let capped: { totalLines: number } | undefined;
         if (!shipsWhole && content.length > CLIENT_CONTENT_CAP) {
-          capped = { totalLines: content.split("\n").length };
-          content = content.slice(0, safeCutAt(content, CLIENT_CONTENT_CAP));
+          const totalLines = content.split("\n").length;
+          // Structure-preserving first: a content-block array is capped through
+          // its text so it stays parseable JSON and its image survives. Only a
+          // body that is NOT one falls back to the raw clip.
+          const blocks = capContentBlocks(content, CLIENT_CONTENT_CAP);
+          if (blocks) {
+            content = blocks.content;
+            // The markers mean "this body was shortened, fetch the rest". An
+            // image-only result loses nothing here, so claiming otherwise would
+            // send the modal after a multi-megabyte body it already has.
+            if (blocks.textRemoved) capped = { totalLines };
+          } else {
+            capped = { totalLines };
+            content = content.slice(0, safeCutAt(content, CLIENT_CONTENT_CAP));
+          }
         }
         const cappedAndFetchable = capped && !isNested;
         results.push({

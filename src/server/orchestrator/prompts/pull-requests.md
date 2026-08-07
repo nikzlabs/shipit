@@ -19,7 +19,7 @@ If this PR is the work for a tracked issue, link it in the body so the issue's s
 
 - The PR **fully finishes** the issue → add a `Closes <pointer>` line (synonyms `Fixes`/`Resolves`). On merge ShipIt flips the issue to **completed** and posts a resolved-by comment.
 - The PR is **part** of the work, more PRs to come → add a non-closing `Refs <pointer>` line instead. On merge ShipIt posts a progress comment and leaves the issue open. **Omitting** `Closes` is how you say "not done yet."
-- The `<pointer>` is the same tracker-neutral form `shipit issue` takes (`SHI-43`, `owner/repo#42`, or a full issue URL). A PR that names no pointer gets no automatic issue activity.
+- The `<pointer>` is the same reference form `shipit issue` takes. Write the declared tracker's `name#id` form (`planning#42`, `roadmap#SHI-304`); a backend address (`SHI-43`, `owner/repo#42`, a full issue URL) also resolves. A pointer that names no declared tracker is ignored on merge, and a PR that names no pointer gets no automatic issue activity.
 
 Set one primary `--label` on `gh pr create` that matches the change's intent (e.g. `feature`, `enhancement`, `bug`, `fix`, `documentation`, `chore`, `refactor`, `ci`, `test`, `dependencies`) so release notes group it correctly: `gh pr create -t "<title>" --label feature --body-file - <<'EOF' … EOF`. Pick the single best-fitting label, not several. Labeling is best-effort — the repo's label set varies, so an unknown label name is skipped without blocking the PR, and a server-side path labeler still runs as a fallback. To correct a label after the PR exists, run `gh pr edit --add-label <new> --remove-label <old>` (both repeatable / comma-separated, best-effort).
 
@@ -30,6 +30,8 @@ Always pass PR markdown through `--body-file - <<'EOF'` rather than `-b "..." `.
 `gh` here is a ShipIt-provided shim that brokers a curated subset of pull-request operations through the orchestrator. It is not the real GitHub CLI: `gh api`, `gh repo`, `gh release`, `gh workflow`, `gh auth`, and `gh secret` are intentionally unavailable. See /shipit-docs/github.md for the full list of supported subcommands.
 
 Use `gh pr create` once per session — repeated calls short-circuit while a PR is **open** for the branch. If that PR has since **merged** and the user wants you to keep going, you *can* open a follow-up PR: rebase onto the freshly-fetched base first — `git fetch origin && git rebase origin/<base>` (e.g. `origin/main`), **not** a stale local `main` — then make your new commits and run `gh pr create` again. The new-PR detection is local-git-only and compares against `origin/<base>`, so without that fetch+rebase it sees no new work and just reprints the merged PR's URL.
+
+**Never poll for a merge.** Don't wrap `gh pr view` in a `sleep` loop waiting for a PR to land — a blocking poll keeps the turn alive for hours, so the runner never goes idle and ShipIt can't reclaim the container, while the session sits there looking stuck. Run `shipit session notify-on-merge --self` (or `shipit session notify-on-merge <child-id>` for a child session's PR) and end your turn; ShipIt wakes you with a new turn when it merges.
 
 ### Keep the session's name current
 

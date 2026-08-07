@@ -300,4 +300,55 @@ describe("RepoStore", () => {
       expect(new RepoStore(dbManager).get(url)?.defaultBranch).toBe("trunk");
     });
   });
+
+  // docs/254 — per-repo identity color for the sidebar's group edge.
+  describe("colorIndex", () => {
+    const a = "https://github.com/owner/a.git";
+    const b = "https://github.com/owner/b.git";
+
+    it("assigns a color on add", () => {
+      expect(store.add(a).colorIndex).toBe(0);
+    });
+
+    // req 5 — no two repos share a color while unused colors remain.
+    it("gives each new repo a distinct color", () => {
+      const urls = Array.from({ length: 16 }, (_, i) => `https://github.com/owner/r${i}.git`);
+      const assigned = urls.map((u) => store.add(u).colorIndex);
+      expect(new Set(assigned).size).toBe(16);
+    });
+
+    // req 6 — stable across re-add, which is how unhiding works (add() clears
+    // `hidden`), so a repo coming back out of the Hidden section keeps its color.
+    it("does not reassign on re-add", () => {
+      store.add(a);
+      store.setColorIndex(a, 7);
+      store.add(b);
+      expect(store.add(a).colorIndex).toBe(7);
+    });
+
+    it("does not hand a second repo the colour a hidden repo is holding", () => {
+      store.add(a);
+      store.setHidden(a, true);
+      // `a` holds 0 while hidden; `b` must not collide with it, or unhiding
+      // `a` would produce two identical edges.
+      expect(store.add(b).colorIndex).toBe(1);
+    });
+
+    it("sets and persists an explicit color", () => {
+      store.add(a);
+      expect(store.setColorIndex(a, 11)).toBe(true);
+      expect(new RepoStore(dbManager).get(a)?.colorIndex).toBe(11);
+    });
+
+    it("reports no update for an unknown repo", () => {
+      expect(store.setColorIndex("https://github.com/nope/nope.git", 3)).toBe(false);
+    });
+
+    it("reuses a freed color after a removal", () => {
+      store.add(a);            // 0
+      store.add(b);            // 1
+      store.remove(a);
+      expect(store.add("https://github.com/owner/c.git").colorIndex).toBe(0);
+    });
+  });
 });

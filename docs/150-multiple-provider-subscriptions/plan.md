@@ -1254,6 +1254,66 @@ short-term throttling that a retry fixes. A false positive benches a working
 subscription, so the negative cases are as load-bearing as the positive ones and
 are tested as such.
 
+#### The error is not the only channel the provider uses
+
+The signal does not always arrive as an error. A Claude CLI that hits the limit
+*partway through* a turn reports it as an ordinary assistant message and then
+ends the turn `subtype: "success"` — and the adapter populates
+`agent_result.error` only for a failed turn
+(`session/agents/claude/adapter.ts`). Production hit exactly that on
+2026-08-06: `You've hit your session limit · resets 5:10pm (UTC)` was
+structurally invisible to every detector here, the turn retired as a success
+with a healthy second account sitting idle, and the notice became the
+auto-commit subject.
+
+So each detection site falls through to the turn's **final assistant text**
+when there is no error — `runner.turnSummary` for a primary turn (cleared at
+turn start by `resetRunnerTurnState`, assigned by the listener that is wired
+first, so it is this turn's own and already populated), `SubAgentRunResult.text`
+for a one-shot consult. Matching the newer wording alone would have fixed the
+one incident and left the next wording change to re-break it.
+
+The two channels are asymmetric on purpose. The error channel is the provider
+talking; the text channel carries the *model's* words too, where a phrase match
+is no longer proof — and a false positive there benches a healthy account **and**
+repeats the turn's side effects. So `detectHardExhaustionInTurnText` does not
+reuse `EXHAUSTION_PATTERNS`: it matches only the provider's own notice grammar,
+**anchored at the start** of a message short enough to be a notice
+(`MAX_LIMIT_NOTICE_CHARS`). Anchoring is what tells the notice apart from "The
+Vercel deploy failed because your account is out of credits" — an 85-character
+turn summary that the generic patterns match. The generic API phrasings
+(`quota exceeded`, `out of credits`) are dropped from the text channel entirely:
+they are how an API reports a spent balance, never something a CLI writes into
+the chat, so admitting them buys no coverage and costs exactly that.
+
+A text-detected exhaustion is also **promoted to a failed turn** where the two
+channels meet in `agent-listeners.ts` — `status: "error"` plus the notice as
+`error`. Everything downstream keeps working off `error` alone (the docs/182
+`lastTurnErrored` flag, the transcript's error row, `shipit session wait`), and
+without the promotion an exhaustion with no account left to fail over to — the
+retry is bounded to one hop (req 14) — would retire as a success, which is the
+incident this exists to prevent, one account further along. The one-shot consult
+path does the same thing at the end of its fallback loop.
+
+For the same reason the error is checked *instead of*, not before-falling-through-to,
+the text: a non-quota failure whose partial output happens to end on
+notice-shaped words must not bench anything.
+
+One known gap, accepted: for Codex the CLI can emit `agent_result` *before* the
+final assistant text streams in (see `SessionRunner.pendingCommitLink`), so the
+summary may not be populated when a detector asks. That costs nothing relative
+to today — Codex reports a spent subscription by failing the turn, which the
+error channel already covers — and closing it would mean carrying the text on
+the terminal event itself, a bigger change than the incident warrants.
+
+The window alternation in `EXHAUSTION_PATTERNS` tracks the CLI's own wording
+and has to be widened when that wording moves — `session` was added, and
+`usage` made optional, for this incident. The wall-clock reset form the notice
+carries (`resets 5:10pm (UTC)`) is parsed to the next instant that clock time
+occurs, and only when the text names UTC explicitly: without a zone the hour is
+meaningless here, and guessing one would produce a lockout hours wrong in
+either direction, so the 15-minute fallback below is the right answer there.
+
 When the provider names a reset instant, that becomes the lockout. When it does
 not, `UNKNOWN_RESET_LOCKOUT_MS` (15 minutes) does. Neither extreme was
 acceptable: no stamp means the next turn walks into the same wall, which is the

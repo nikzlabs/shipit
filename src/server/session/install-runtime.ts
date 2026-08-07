@@ -55,7 +55,15 @@ export function runtimeKey(env: NodeJS.ProcessEnv = process.env): string {
   const base = env.BASE_IMAGE_DIGEST ?? env.SESSION_WORKER_IMAGE_ID ?? env.IMAGE_DIGEST ?? "unknown";
   const libc = detectLibc();
   const abi = process.versions.modules;
-  return `${base}|${process.arch}|${libc}|abi${abi}`;
+  const key = `${base}|${process.arch}|${libc}|abi${abi}`;
+  // docs/248 — when the repo pins a Node version, the install runs under THAT
+  // Node, not the worker's, so `process.versions.modules` above describes the
+  // wrong ABI. `node-runtime.ts` exports the resolved version here after
+  // putting it on PATH. Appended only when a pin is active, so every unpinned
+  // repo keeps its existing key byte-for-byte — an unconditional extra segment
+  // would invalidate every overlay base and install marker in the fleet at once
+  // and force a global cold reinstall for a feature almost no repo uses.
+  return env.SHIPIT_PINNED_NODE ? `${key}|node${env.SHIPIT_PINNED_NODE}` : key;
 }
 
 export function detectLibc(): string {

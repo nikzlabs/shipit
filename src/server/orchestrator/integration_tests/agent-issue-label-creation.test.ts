@@ -45,6 +45,9 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+/** The declared destination these tests address (docs/248 req 13). */
+const DECLARED_TRACKER = "github:octocat/hello-world";
+
 describe("Integration: issue label creation (SHI-230)", () => {
   let app: FastifyInstance;
   let port: number;
@@ -127,6 +130,14 @@ describe("Integration: issue label creation (SHI-230)", () => {
     const created = await createTestSession(sessionManager, tmpDir);
     sessionId = created.sessionId;
     sessionManager.setRemoteUrl(sessionId, "https://github.com/octocat/hello-world.git");
+    // docs/248 req 13 — a create (of an issue OR a label) always names its
+    // destination, and the orchestrator refuses the unnamed `github` id as a
+    // backstop against a `curl` that bypasses the shim. So these tests declare
+    // the session's own repository under a name and address it by that.
+    fs.writeFileSync(
+      path.join(created.sessionDir, "shipit.yaml"),
+      "issues:\n  trackers:\n    - kind: github\n      repo: octocat/hello-world\n      name: planning\n",
+    );
   });
 
   afterEach(async () => {
@@ -153,7 +164,7 @@ describe("Integration: issue label creation (SHI-230)", () => {
       app.inject({
         method: "POST",
         url: `/api/sessions/${sessionId}/issue/label/create`,
-        payload: { tracker: "github", name: "t3code", color: "#0ea5e9" },
+        payload: { tracker: DECLARED_TRACKER, name: "t3code", color: "#0ea5e9" },
       });
 
     const first = await post();
@@ -191,7 +202,7 @@ describe("Integration: issue label creation (SHI-230)", () => {
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/issue/label/create`,
-      payload: { tracker: "github", name: "Security" },
+      payload: { tracker: DECLARED_TRACKER, name: "Security" },
     });
     expect(res.statusCode).toBe(409);
     expect((res.json() as { error: string }).error).toContain("already exists");
@@ -209,7 +220,7 @@ describe("Integration: issue label creation (SHI-230)", () => {
       method: "POST",
       url: `/api/sessions/${sessionId}/issue/create`,
       payload: {
-        tracker: "github",
+        tracker: DECLARED_TRACKER,
         title: "New thing",
         body: "",
         labels: ["security", "t3code"],
@@ -228,7 +239,8 @@ describe("Integration: issue label creation (SHI-230)", () => {
     const cards = await writeCardsInHistory();
     expect(cards).toHaveLength(2);
     expect(cards[0]).toMatchObject({ verb: "label", identifier: "t3code" });
-    expect(cards[1]).toMatchObject({ verb: "create", identifier: "octocat/hello-world#7" });
+    // req 15 — the card carries the declared name form.
+    expect(cards[1]).toMatchObject({ verb: "create", identifier: "planning#7" });
 
     client.close();
   });
@@ -240,7 +252,7 @@ describe("Integration: issue label creation (SHI-230)", () => {
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/issue/create`,
-      payload: { tracker: "github", title: "New thing", body: "", labels: ["t3code"] },
+      payload: { tracker: DECLARED_TRACKER, title: "New thing", body: "", labels: ["t3code"] },
     });
     expect(res.statusCode).toBe(422);
     const error = (res.json() as { error: string }).error;

@@ -411,7 +411,7 @@ the pinned agent's already-present credentials and provisions nothing).
 
 - **Per-turn cap (the real fan-out bound).** The runner tracks
   `subAgentSpawnsThisTurn`, incremented on each spawn reaching
-  `services/sub-agent.ts`, reset at primary-turn start. Modest hard cap in v0
+  `services/sub-agent.ts`, refilled on each new human instruction. Modest hard cap in v0
   (**3 per turn**) — enough for "review with both other models" or a couple
   of delegations, low enough to bound a misbehaving-primary loop. A call past
   the cap returns an error without spawning. This is the **forgery-resistant**
@@ -420,6 +420,37 @@ the pinned agent's already-present credentials and provisions nothing).
   sub-agent forges past the best-effort depth guard — decrements the same
   budget. Spam across turns is not a separate concern: bounded by normal turn
   rate and the user's intent.
+
+  **Where the budget refills matters as much as its size.** It was originally
+  refilled in exactly one place, inside `resetRunnerTurnState`, i.e. only when an
+  orchestrator turn *starts*. That covers ordinary, queued, retried and adopted
+  turns (all enter `executeAgentTurn`) and self-woken turns (docs/235 —
+  `agent_self_wake` calls it behind `!runner.running`). It does **not** cover
+  **live steering**: a message the user types while the agent is mid-turn is
+  injected into the running turn on purpose (docs/140), starting no orchestrator
+  turn. On that path the budget had no refill point at all, so in a session where
+  the agent is usually busy — the ordinary shape once it backgrounds consults —
+  every typed message drew on one budget of 3, and `shipit agent run` was then
+  refused with "cap reached for this turn" on a turn the user experiences as
+  brand new.
+
+  The budget therefore has its own `resetSubAgentSpawnBudget`
+  (`session-runner.ts`), called from `resetRunnerTurnState` **and** from the WS
+  steer branch in `ws-handlers/send-message.ts`. It never calls
+  `resetRunnerTurnState` on the steer path: that would clear the accumulator
+  mid-turn and destroy the running turn's chat history (docs/237).
+
+  The refill trigger is deliberately **a human keystroke** — a WS `send_message`
+  from a browser client, which no agent can emit — so §5's forgery-resistant
+  bound is untouched. Three agent-reachable alternatives were considered and
+  rejected for the same reason: refilling on `agent_self_wake` (any finished
+  `Bash(run_in_background)` job emits the notification it rides on), refilling at
+  CLI turn *end* (`agent_result` is neither once-per-turn — Codex emits two for
+  one turn — nor exhaustive, since `done`-without-result paths exist, and it
+  opens an idle window in which a spawn request scheduled before the boundary
+  lands against the fresh budget), and refilling on a *programmatic* steer
+  (`trySteerDispatch`, reachable by a parent agent messaging its child).
+  Guard: `integration_tests/sub-agent-budget-steering.test.ts`.
 - **Cost / wall-clock cap.** Wall-clock cap on each subprocess (30 min, raised
   from the initial 5 min because real consults — audits, large-diff reviews,
   generation — routinely overran it; override via `SHIPIT_SUB_AGENT_TIMEOUT_MS`);

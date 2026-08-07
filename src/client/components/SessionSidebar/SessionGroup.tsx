@@ -8,7 +8,78 @@ import { OverflowMenu } from "../ui/overflow-menu.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import type { SessionInfo, RepoInfo } from "../../../server/shared/types.js";
 import { SessionItem } from "./SessionItem.js";
+import { repoColorVar } from "../../../server/shared/repo-colors.js";
 import { isRecentlyResolved } from "./useSessionGrouping.js";
+
+/**
+ * docs/254 — the per-group identity edge. A 3px colored line on the LEFT of the
+ * group, plus a faint band on the header so it reads as a section header rather
+ * than another row.
+ *
+ * Two things about this are load-bearing and were established by mocking it
+ * (`docs/033-session-sidebar/mocks/repo-separation-spine.html`, option 5b):
+ *
+ * · The edge lives on the GROUP element, never on the header. The header is
+ *   `sticky top-0`, so an edge on the header visibly breaks at the seam the
+ *   moment it pins; on the group it paints behind the pinned band and the line
+ *   stays continuous for the group's whole height.
+ * · The band fill must be OPAQUE. Every `*-subtle` token is `rgba()`, and a
+ *   translucent sticky header lets session rows scroll straight through it —
+ *   which is why the band is a `color-mix` COMPOSITED over `--color-bg-primary`
+ *   rather than the hue at low alpha, and why the header keeps an opaque
+ *   background class underneath it in every state.
+ */
+function groupEdgeStyle(color: string | undefined): React.CSSProperties | undefined {
+  return color ? { borderLeftWidth: 3, borderLeftStyle: "solid", borderLeftColor: color } : undefined;
+}
+
+/**
+ * The header band: a wash of the group's OWN color rather than a neutral fill
+ * (`header-band-weight.html`, option E). See `--repo-band-mix` in `index.css`
+ * for why it's this faint.
+ *
+ * The result must be OPAQUE, because the header is sticky. Note `color-mix`
+ * interpolates rather than compositing, so mixing over an opaque backdrop does
+ * NOT launder a translucent input — the output alpha is the interpolated one.
+ * Both inputs are therefore required to be opaque, which `repo-palette.test.ts`
+ * asserts for the palette AND for the semantic tokens Ops and Sandbox pass in.
+ */
+export function groupBandFill(color: string): string {
+  return `color-mix(in srgb, ${color} var(--repo-band-mix), var(--color-bg-primary))`;
+}
+
+function groupBandStyle(color: string | undefined): React.CSSProperties | undefined {
+  return color ? { backgroundColor: groupBandFill(color) } : undefined;
+}
+
+/**
+ * Always on the header, in every state. Not a layer *beneath* the wash — the
+ * inline `background-color` simply wins where there is one. This is the FALLBACK
+ * for the two states that produce no wash at all (unseparated, and a repo row
+ * written before the color backfill), so a sticky header is never left
+ * transparent for rows to scroll through.
+ */
+const HEADER_BASE_CLASS = "bg-(--color-bg-primary)";
+
+/**
+ * Gap below a separated group. Without it two adjacent edges meet and read as
+ * ONE continuous rail that changes color partway down, which is the opposite of
+ * the "each repo owns a bounded run" the edge exists to convey. Zero when
+ * unseparated, so the unseparated sidebar keeps exactly its previous spacing.
+ */
+export const GROUP_GAP_CLASS = "mb-1.5";
+
+/**
+ * Inset above and below a separated group's rows — 4px, deliberately the SAME as
+ * the list's own `gap-1` row-to-row spacing. One rhythm inside the group: the
+ * first row sits the same distance below the header band as the rows sit from
+ * each other, and the colored edge stops the same distance below the last row.
+ * Anything larger reads as the edge overshooting its content.
+ *
+ * Only applied when separated. Without a band there is nothing to clear, and the
+ * unseparated group keeps its original `pb-2`.
+ */
+export const BAND_CLEARANCE_CLASS = "pt-1 pb-1";
 
 /**
  * docs/128 — pinned group for privileged ops/host-debugging sessions. Keyed off
@@ -24,6 +95,7 @@ export function OpsSessionGroup({
   onSelectCurrent,
   onArchive,
   isTouch,
+  separated,
 }: {
   sessions: SessionInfo[];
   currentSessionId?: string;
@@ -33,11 +105,21 @@ export function OpsSessionGroup({
   onSelectCurrent?: () => void;
   onArchive: (sessionId: string) => void;
   isTouch: boolean;
+  /** docs/254 — whether the sidebar is drawing per-group identity edges. */
+  separated?: boolean;
 }) {
   if (sessions.length === 0) return null;
+  // docs/254 req 10 — a non-repo group gets its OWN semantic color, not a
+  // palette entry, so the palette keeps meaning "a repository". Ops is amber,
+  // matching the warning tone this group's docstring has always described.
+  const color = separated ? "var(--color-warning)" : undefined;
+  const edge = groupEdgeStyle(color);
   return (
-    <div className="flex flex-col">
-      <div className="flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 bg-(--color-bg-primary) z-10">
+    <div className={`flex flex-col ${separated ? GROUP_GAP_CLASS : ""}`} style={edge} data-testid="ops-group">
+      <div
+        className={`flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 z-10 ${HEADER_BASE_CLASS}`}
+        style={groupBandStyle(color)}
+      >
         <button
           onClick={onToggleCollapse}
           className="flex items-center gap-1.5 flex-1 min-w-0 text-left group"
@@ -56,7 +138,7 @@ export function OpsSessionGroup({
         </button>
       </div>
       {!isCollapsed && (
-        <div className="flex flex-col gap-1">
+        <div className={`flex flex-col gap-1 ${separated ? BAND_CLEARANCE_CLASS : ""}`}>
           {sessions.map((session) => (
             <SessionItem
               key={session.id}
@@ -89,6 +171,7 @@ export function SandboxSessionGroup({
   onSelectCurrent,
   onArchive,
   isTouch,
+  separated,
 }: {
   sessions: SessionInfo[];
   currentSessionId?: string;
@@ -98,11 +181,20 @@ export function SandboxSessionGroup({
   onSelectCurrent?: () => void;
   onArchive: (sessionId: string) => void;
   isTouch: boolean;
+  /** docs/254 — whether the sidebar is drawing per-group identity edges. */
+  separated?: boolean;
 }) {
   if (sessions.length === 0) return null;
+  // docs/254 req 10 — semantic color, not a palette entry. Sandbox already owns
+  // teal (`--color-sandbox`) on its Cube icon; the edge reuses it.
+  const color = separated ? "var(--color-sandbox)" : undefined;
+  const edge = groupEdgeStyle(color);
   return (
-    <div className="flex flex-col">
-      <div className="flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 bg-(--color-bg-primary) z-10">
+    <div className={`flex flex-col ${separated ? GROUP_GAP_CLASS : ""}`} style={edge} data-testid="sandbox-group">
+      <div
+        className={`flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 z-10 ${HEADER_BASE_CLASS}`}
+        style={groupBandStyle(color)}
+      >
         <button
           onClick={onToggleCollapse}
           className="flex items-center gap-1.5 flex-1 min-w-0 text-left group"
@@ -121,7 +213,7 @@ export function SandboxSessionGroup({
         </button>
       </div>
       {!isCollapsed && (
-        <div className="flex flex-col gap-1">
+        <div className={`flex flex-col gap-1 ${separated ? BAND_CLEARANCE_CLASS : ""}`}>
           {sessions.map((session) => (
             <SessionItem
               key={session.id}
@@ -215,6 +307,7 @@ export function RepoGroup({
   onDragLeave,
   onDrop,
   onDragEnd,
+  separated,
 }: {
   repo: RepoInfo;
   sessions: SessionInfo[];
@@ -247,8 +340,19 @@ export function RepoGroup({
   onDragLeave: (e: React.DragEvent) => void;
   onDrop: (e: React.DragEvent) => void;
   onDragEnd: (e: React.DragEvent) => void;
+  /**
+   * docs/254 — draw the per-repo identity edge + header band. False when the
+   * sidebar shows a single repo (req 11): there is nothing to separate it from,
+   * so the treatment would be pure chrome.
+   */
+  separated: boolean;
 }) {
   const repoName = parseRepoName(repo.url);
+  // docs/254 — `colorIndex` is undefined only for a row written by a build
+  // older than the backfill migration; such a repo simply gets no edge rather
+  // than an arbitrary one, so the color a user sees is always one that's stored.
+  const color = separated && repo.colorIndex !== undefined ? repoColorVar(repo.colorIndex) : undefined;
+  const edge = groupEdgeStyle(color);
 
   // FLIP animation for session rows reordering (PR merged sinks to bottom) or
   // exiting (archive). Library defaults — single duration/easing per parent,
@@ -317,7 +421,13 @@ export function RepoGroup({
 
   return (
     <div
-      className={`flex flex-col relative ${isBeingDragged ? "opacity-40" : ""}`}
+      className={`flex flex-col relative ${separated ? GROUP_GAP_CLASS : ""} ${isBeingDragged ? "opacity-40" : ""}`}
+      // docs/254 — the edge is a border on THIS element (see groupEdgeStyle):
+      // it spans the header, the pinned sub-section, `New session`, every
+      // session row and `Recently resolved`, and keeps painting behind the
+      // sticky header while it's pinned.
+      style={edge}
+      data-repo-color-index={separated ? repo.colorIndex : undefined}
       onDragOver={draggable ? onDragOver : undefined}
       onDragLeave={draggable ? onDragLeave : undefined}
       onDrop={draggable ? onDrop : undefined}
@@ -333,7 +443,8 @@ export function RepoGroup({
       )}
       {/* Repo header row */}
       <div
-        className="flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 bg-(--color-bg-primary) z-10 group/header"
+        className={`flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 z-10 group/header ${HEADER_BASE_CLASS}`}
+        style={groupBandStyle(color)}
         draggable={draggable}
         onDragStart={draggable ? onDragStart : undefined}
         onDragEnd={draggable ? onDragEnd : undefined}
@@ -415,7 +526,7 @@ export function RepoGroup({
 
       {/* Session list — hidden when collapsed */}
       {!isCollapsed && (
-        <div ref={listRef} className="flex flex-col gap-1 pb-2">
+        <div ref={listRef} data-testid="group-session-list" className={`flex flex-col gap-1 ${separated ? BAND_CLEARANCE_CLASS : "pb-2"}`}>
           {(() => {
             // New session row — matches SessionItem shape so it can render as
             // selected. docs/110 — rendered below the pinned sub-section (see the

@@ -398,6 +398,12 @@ export async function registerSessionCrudRoutes(
        * "true"/"false".
        */
       armAutoMerge?: boolean;
+      /**
+       * docs/144 — the prompt was dictated by voice (quick-capture Mode B), so
+       * the first turn's prompt carries the `<dictated_input>` hint. Multipart
+       * sends it as the string "true"/"false".
+       */
+      dictated?: boolean;
     };
   }>(
     "/api/sessions/headless",
@@ -410,6 +416,7 @@ export async function registerSessionCrudRoutes(
       let reasoning: string | undefined;
       let issueRef: IssueRef | undefined;
       let armAutoMerge = false;
+      let dictated = false;
       const uploadInputs: { filename: string; data: Buffer }[] = [];
 
       if (request.isMultipart()) {
@@ -443,6 +450,9 @@ export async function registerSessionCrudRoutes(
               case "armAutoMerge":
                 armAutoMerge = value === "true";
                 break;
+              case "dictated":
+                dictated = value === "true";
+                break;
               default:
                 break;
             }
@@ -465,6 +475,11 @@ export async function registerSessionCrudRoutes(
           return;
         }
         armAutoMerge = body.armAutoMerge === true;
+        if (body.dictated !== undefined && typeof body.dictated !== "boolean") {
+          reply.code(400).send({ error: "dictated must be a boolean" });
+          return;
+        }
+        dictated = body.dictated === true;
       }
 
       try {
@@ -482,6 +497,7 @@ export async function registerSessionCrudRoutes(
             ...(reasoning !== undefined ? { reasoning } : {}),
             ...(uploadInputs.length > 0 ? { uploads: uploadInputs } : {}),
             armAutoMerge,
+            ...(dictated ? { dictated: true } : {}),
           },
           deps.defaultAgentId,
           deps.credentialsDir,

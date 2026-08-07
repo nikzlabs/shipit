@@ -29,6 +29,12 @@
  * token — so the SHI-311 fix does not depend on the token plumbing being right.
  * Everything else is orchestrator-facing and gated on the token.
  *
+ * SHI-239 adds the mirror-image group, {@link LIFECYCLE_PATHS}: routes only the
+ * ORCHESTRATOR ever calls, where loopback is explicitly NOT sufficient. Loopback
+ * is an identity signal ("something in this container"), not an authorization
+ * one, and `/agent/*` is the one place where the difference has teeth — see
+ * {@link LIFECYCLE_PATHS} for the incident it prevents.
+ *
  * Shared by both layers so the header name, the loopback test, and the
  * loopback-only prefix list cannot drift between the worker that enforces them
  * (`session/worker-auth-guard.ts`) and the orchestrator that satisfies them
@@ -65,6 +71,51 @@ export const LOOPBACK_ONLY_PREFIXES: readonly string[] = [
 ];
 
 /**
+ * SHI-239 — lifecycle-mutating routes, which a loopback caller may NOT reach
+ * without the token. The inverse of {@link LOOPBACK_ONLY_PREFIXES}: only the
+ * orchestrator has any business starting, killing or steering the resident
+ * agent, so "came from inside this container" buys nothing here.
+ *
+ * The hazard is an ACCIDENT, not an attacker. `container-session-runner.ts`
+ * treats two consecutive 409s on `/agent/start` as a stale worker agent and
+ * clears it with `/agent/kill` (docs/142 Problem B2). So any in-container
+ * process that POSTs `127.0.0.1:$WORKER_PORT/agent/start` — most famously an
+ * integration-test fixture whose `ContainerSessionRunner` pointed at a live
+ * worker address (prod incident 2026-07-25, session 6e1e22fa) — collides with
+ * the resident agent and gets it SIGTERMed mid-turn. With this set the stray
+ * caller is refused BEFORE the 409, so the recovery loop never arms.
+ *
+ * PR #1741 fenced that specific trigger (fixtures now use dead loopback ports,
+ * plus a static tripwire in `dead-worker-port.test.ts`); this closes the surface
+ * behind it, which matters because ShipIt dogfoods itself and the agent
+ * routinely runs the very suite that caused the incident.
+ *
+ * Exact paths, not a prefix: `GET /agent/status` is a health/adoption probe and
+ * must stay open, and `/agent-ops/*` is a different group entirely (it is
+ * loopback-ONLY — the agent's legitimate route to `/agent/spawn` is
+ * `agent-ops-routes.ts` relaying through the orchestrator, which comes back over
+ * the bridge holding the token).
+ *
+ * Scope note: this contains accidents, not a determined same-UID process. The
+ * worker's env is inherited by the agent it spawns, so anything in the container
+ * can read {@link WORKER_TOKEN_ENV} and present it deliberately. Container
+ * isolation remains the boundary for that; an accidental caller does not set an
+ * auth header.
+ */
+export const LIFECYCLE_PATHS: ReadonlySet<string> = new Set([
+  "/agent/start",
+  "/agent/interrupt",
+  "/agent/kill",
+  "/agent/spawn",
+  "/agent/cancel",
+  "/agent/stdin",
+  "/agent/message",
+  "/agent/permission-mode",
+  "/agent/compact",
+  "/agent/permission/resolve",
+]);
+
+/**
  * Paths served to anyone that can reach the port. `/health` is a liveness probe
  * that returns a constant and is dialed by `waitForWorkerHealth` before the
  * orchestrator has a runner (and by container-level health checks), so gating it
@@ -72,9 +123,98 @@ export const LOOPBACK_ONLY_PREFIXES: readonly string[] = [
  */
 const UNAUTHENTICATED_PATHS: readonly string[] = ["/health"];
 
+/**
+ * The spellings of `pathname` that could reach a handler, so a protected route
+ * cannot be smuggled past the guard in percent-encoded form.
+ *
+ * Fastify's router canonicalizes before matching: `find-my-way` runs the path
+ * through `decodeURI` when it contains an escape it will not defer to per-param
+ * decoding (`lib/url-sanitizer.js:safeDecodeURI`). So `POST /agent/%6bill`
+ * matches the `/agent/kill` handler, and a guard comparing only the raw URL sees
+ * an unrecognized path and waves it through — verified as a live bypass before
+ * this existed, on BOTH this module's route groups.
+ *
+ * Rather than replicate `find-my-way`'s conditional (which decides *whether* to
+ * decode from the escapes present, and which is theirs to change), this returns
+ * every candidate and the callers deny if ANY of them is protected. That is
+ * deliberately conservative: it can only ever add a denial, never remove one. An
+ * over-denial costs a 403 on a path the router would have 404'd anyway.
+ *
+ * `decodeURI` — not `decodeURIComponent` — because that is what the router uses:
+ * it leaves reserved characters like `%2F` encoded, which is exactly why
+ * `/agent%2Fkill` does NOT reach the kill handler and must not be denied here.
+ */
+/**
+ * The path Fastify's router will actually match, derived from the raw request
+ * target exactly as `find-my-way` derives it.
+ *
+ * This lives here, not at the Fastify wiring, because deriving it wrongly is the
+ * bug class this module keeps hitting: the guard classifies one string while the
+ * router dispatches on another. Two vectors were live before this existed, both
+ * reproduced against a real server on a real socket (`app.inject` normalizes
+ * them away, so an inject-only probe misses both):
+ *
+ *  - **Fragment.** The guard split only on `?`, but `find-my-way` treats a raw
+ *    `#` as a delimiter too (`lib/url-sanitizer.js`, charCode 35). So
+ *    `POST /agent/kill#x` classified as the unprotected `/agent/kill#x` and
+ *    dispatched to the `/agent/kill` handler. It defeated the decode fix as
+ *    well: `/agent/%6bill#x` reached the same handler.
+ *  - **Absolute-form request target.** `find-my-way` strips scheme+authority
+ *    when the target does not begin with `/` (`index.js`, `FULL_PATH_REGEXP`),
+ *    while the guard classified the whole absolute URL. So
+ *    `POST http://127.0.0.1:9100/agent/kill` was served.
+ *
+ * `;` is deliberately NOT a delimiter here: `find-my-way`'s `useSemicolonDelimiter`
+ * defaults to false and the worker passes no override, so `/agent/kill;x=1`
+ * genuinely 404s rather than reaching the handler. Splitting on it would deny
+ * paths the router never routes — harmless for lifecycle paths, but it would
+ * also truncate a legitimate `/present-files/<id>` whose id contains one.
+ *
+ * The delimiter scan starts at index 1, mirroring `safeDecodeURI`'s loop, so a
+ * target that IS a delimiter at position 0 is left alone and 404s as it does now.
+ */
+export function routerPathname(rawUrl: string): string {
+  let path = rawUrl.length > 0 ? rawUrl : "/";
+  // Only when it does not already start with `/` — same condition as the router.
+  if (path.charCodeAt(0) !== 47) path = path.replace(/^https?:\/\/.*?\//, "/");
+  const cut = path.slice(1).search(/[?#]/);
+  return cut === -1 ? path : path.slice(0, cut + 1);
+}
+
+function pathVariants(pathname: string): string[] {
+  try {
+    const decoded = decodeURI(pathname);
+    return decoded === pathname ? [pathname] : [pathname, decoded];
+  } catch {
+    // A malformed escape (`%zz`). The router answers 400 without routing it, so
+    // the raw form is the only spelling that could ever have matched.
+    return [pathname];
+  }
+}
+
 /** Whether `pathname` is one of the loopback-only route groups. */
 export function isLoopbackOnlyPath(pathname: string): boolean {
-  return LOOPBACK_ONLY_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+  return pathVariants(pathname).some((candidate) =>
+    LOOPBACK_ONLY_PREFIXES.some((prefix) => candidate.startsWith(prefix)),
+  );
+}
+
+/**
+ * Whether `pathname` is a lifecycle-mutating route ({@link LIFECYCLE_PATHS}).
+ *
+ * Checks every spelling from {@link pathVariants}, and strips a trailing slash.
+ * Fastify's router does not strip one (`ignoreTrailingSlash` is off, so
+ * `/agent/kill/` 404s), which makes that part belt-and-braces — but the guard
+ * deciding membership differently from the router is exactly the mismatch that
+ * the encoded-path bypass was.
+ */
+export function isLifecyclePath(pathname: string): boolean {
+  return pathVariants(pathname).some((candidate) => {
+    const normalized = candidate.length > 1 && candidate.endsWith("/")
+      ? candidate.slice(0, -1)
+      : candidate;
+    return LIFECYCLE_PATHS.has(normalized);
+  });
 }
 
 /**
@@ -126,8 +266,17 @@ export function tokensMatch(expected: string | undefined, presented: unknown): b
 // ---------------------------------------------------------------------------
 
 export interface WorkerRequestOrigin {
-  /** Path without querystring. */
-  pathname: string;
+  /**
+   * The RAW request target, exactly as Fastify received it (`request.url`) —
+   * querystring, fragment and absolute form all still attached.
+   *
+   * Deliberately not a pre-stripped pathname: callers that derived one
+   * themselves is how both the fragment and absolute-form bypasses happened.
+   * {@link routerPathname} canonicalizes it here, so the guard and the router
+   * cannot disagree about which path a request is for. Passing an
+   * already-derived pathname is still safe — the derivation is idempotent.
+   */
+  url: string;
   /** The real TCP peer address (`request.socket.remoteAddress`). */
   remoteAddress: string | undefined | null;
   /** Value of {@link WORKER_AUTH_HEADER} on the request, if any. */
@@ -150,6 +299,7 @@ export interface WorkerAuthDecision {
     | "token"
     | "no-token-configured"
     | "loopback-only"
+    | "lifecycle-needs-token"
     | "bad-token";
 }
 
@@ -161,13 +311,22 @@ export interface WorkerAuthDecision {
  *  1. `/health` — always open.
  *  2. Loopback-only groups — loopback or 403, regardless of any token. This is
  *     the SHI-311 fix proper and is enforced unconditionally.
- *  3. Loopback — the container's own agent; allowed everywhere else too. It
- *     already has a shell in this container, so gating it against its own worker
- *     would protect nothing.
- *  4. A matching token — the orchestrator.
- *  5. No token configured → allow, with the caller logging a warning.
+ *  3. Lifecycle routes on a token-configured worker — the token decides, and
+ *     loopback does NOT substitute for it (SHI-239). Sits ahead of step 4
+ *     precisely because that step would otherwise wave the caller through.
+ *  4. Loopback — the container's own agent; allowed on everything that is left.
+ *  5. A matching token — the orchestrator.
+ *  6. No token configured → allow, with the caller logging a warning.
  *
- * Step 5 is a deliberate compatibility fallback, not an oversight. Container env
+ * Step 4 is narrower than it reads. Loopback is trusted for the REST of the
+ * surface because the agent already has a shell in this container, so gating it
+ * against its own worker's file/service/terminal routes would protect nothing it
+ * cannot do directly. `/agent/*` is the exception that motivated step 3: there
+ * the worker holds something the caller does NOT otherwise have — the live agent
+ * process and the orchestrator's belief about it — and a stray `/agent/start`
+ * gets that agent killed (see {@link LIFECYCLE_PATHS}).
+ *
+ * Step 6 is a deliberate compatibility fallback, not an oversight. Container env
  * is written by the orchestrator at creation, so an *older* orchestrator running
  * a *newer* worker image would create containers with no {@link WORKER_TOKEN_ENV}
  * and, under a fail-closed rule, every orchestrator→worker call would 403 —
@@ -175,18 +334,35 @@ export interface WorkerAuthDecision {
  * behavior that shipped before this guard, so it is a strict non-regression, and
  * the loopback-only rule in step 2 (which needs no token) still closes the
  * reported hole in that configuration.
+ *
+ * Step 3 defers to that same fallback: an unconfigured worker keeps its old
+ * behavior on lifecycle routes too. That is what keeps in-process tests (which
+ * build a `SessionWorker` with no token and drive `/agent/start` over loopback)
+ * working, and it means a mid-deploy skew degrades to the pre-SHI-239 surface
+ * rather than to a session that cannot start a turn.
  */
 export function decideWorkerRequest(origin: WorkerRequestOrigin): WorkerAuthDecision {
-  if (UNAUTHENTICATED_PATHS.includes(origin.pathname)) {
+  // Canonicalized HERE rather than by the caller — see WorkerRequestOrigin.url.
+  const pathname = routerPathname(origin.url);
+
+  if (UNAUTHENTICATED_PATHS.includes(pathname)) {
     return { allow: true, reason: "unauthenticated-path" };
   }
 
   const loopback = isLoopbackAddress(origin.remoteAddress);
 
-  if (isLoopbackOnlyPath(origin.pathname)) {
+  if (isLoopbackOnlyPath(pathname)) {
     return loopback
       ? { allow: true, reason: "loopback" }
       : { allow: false, reason: "loopback-only" };
+  }
+
+  // SHI-239 — ahead of the blanket loopback allow below, so a caller inside this
+  // container cannot start/kill the resident agent just by being inside it.
+  if (origin.configuredToken !== undefined && isLifecyclePath(pathname)) {
+    return tokensMatch(origin.configuredToken, origin.presentedToken)
+      ? { allow: true, reason: "token" }
+      : { allow: false, reason: "lifecycle-needs-token" };
   }
 
   if (loopback) return { allow: true, reason: "loopback" };

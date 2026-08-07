@@ -9,12 +9,12 @@ user-invocable: true
 ShipIt uses **automatic deployments via platform Git integration** — no manual deploy button or
 ShipIt-managed build. Users connect their repo to Vercel, Cloudflare Pages, or Netlify once, and
 every push triggers the platform's native deploy pipeline. Since ShipIt auto-pushes after every
-Claude turn, deploys happen automatically.
+agent turn, deploys happen automatically.
 
 ## How It Works
 
 1. User imports their GitHub repo on a hosting platform (Vercel, Cloudflare Pages, Netlify)
-2. ShipIt's auto-push after Claude turns triggers the platform's deploy pipeline
+2. ShipIt's auto-push after agent turns triggers the platform's deploy pipeline
 3. The platform creates GitHub Deployments on each deploy
 4. ShipIt's `PrStatusPoller` fetches deployment status via the GitHub GraphQL API
 5. Deployment status (URLs, state) appears in the PR lifecycle card

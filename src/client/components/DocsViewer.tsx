@@ -13,6 +13,7 @@ import type { DocEntry } from "../../server/shared/types.js";
 import { compareDocsByRecency } from "../../server/shared/doc-sort.js";
 import { hasTrackedPlanSibling, hasTrackedSibling, isTracked } from "../utils/doc-paths.js";
 import { parseIssueRef } from "../../server/shared/issue-ref.js";
+import { resolveUiIssueRef } from "../stores/issues-store.js";
 import type { TrackerId } from "../../server/shared/types.js";
 
 /**
@@ -87,31 +88,34 @@ function ChecklistProgressBadge({
  * chip stops row-click propagation so clicking it opens the issue rather than
  * the doc modal.
  *
- * When `onOpenIssue` is wired and the pointer resolves to a known tracker
- * (Linear / GitHub), the chip opens ShipIt's inline issue detail view rather
- * than linking out to the upstream tracker (CLAUDE.md §2: inline beats
- * link-out — the deep link to Linear/GitHub lives inside that view). An
- * unknown-shape pointer has no inline view to open, so it keeps the external
- * link (or a plain badge when not even a URL is derivable).
+ * When `onOpenIssue` is wired and the pointer resolves to a **declared**
+ * destination (docs/248 req 11 — all three reference forms resolve here, and one
+ * that names nothing declared does not), the chip opens ShipIt's inline issue
+ * detail view rather than linking out to the upstream tracker (CLAUDE.md §2:
+ * inline beats link-out — the deep link lives inside that view). An unresolvable
+ * pointer has no inline view to open, so it stays legible as the external link
+ * it already was, or a plain badge when not even a URL is derivable — never a
+ * broken in-app link.
  */
 function IssueChip({ issue, onOpenIssue }: { issue: string; onOpenIssue?: OpenDocIssue }) {
-  const ref = parseIssueRef(issue);
+  const resolution = resolveUiIssueRef(issue);
+  const ref = resolution.ok ? resolution.ref : parseIssueRef(issue);
 
-  if (onOpenIssue && ref.tracker !== "unknown") {
-    const tracker = ref.tracker;
+  if (onOpenIssue && resolution.ok) {
+    const resolved = resolution.ref;
     return (
       <button
         type="button"
         onClick={(e) => {
           e.stopPropagation();
           onOpenIssue({
-            tracker,
-            identifier: ref.identifier,
-            ...(ref.issueId ? { id: ref.issueId } : {}),
-            ...(ref.url ? { url: ref.url } : {}),
+            tracker: resolved.tracker,
+            identifier: resolved.identifier,
+            id: resolved.issueId,
+            ...(resolved.url ? { url: resolved.url } : {}),
           });
         }}
-        title={`Open ${ref.identifier} in ShipIt`}
+        title={`Open ${resolved.identifier} in ShipIt`}
         className="inline-flex cursor-pointer"
       >
         <Badge
@@ -137,7 +141,7 @@ function IssueChip({ issue, onOpenIssue }: { issue: string; onOpenIssue?: OpenDo
       target="_blank"
       rel="noopener noreferrer"
       onClick={(e) => e.stopPropagation()}
-      title={`Open ${ref.identifier} in ${ref.tracker === "unknown" ? "the tracker" : ref.tracker}`}
+      title={`Open ${ref.identifier} in the tracker`}
       className="inline-flex"
     >
       <Badge

@@ -214,6 +214,8 @@ export async function wakeSessionWithTurn(
         }
       : { onTurnComplete: undefined }),
     deliveryId: opts.deliveryId,
+    // A wake turn is composed by the orchestrator — never spoken.
+    dictated: undefined,
     execution: undefined,
     images: undefined,
     files: undefined,

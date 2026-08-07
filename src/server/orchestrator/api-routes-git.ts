@@ -31,6 +31,7 @@ import {
 } from "./services/index.js";
 import { detectAndReArmResetSession } from "./services/pr-rearm.js";
 import {
+  buildManualResetAgentNotice,
   resetBranchToBaseExplicit,
   type ExplicitResetOutcome,
 } from "./services/pre-turn-reset.js";
@@ -52,6 +53,47 @@ interface ExplicitResetPresentationDeps {
   fallbackPr?: { prNumber: number; prUrl: string } | undefined;
   outcome: ExplicitResetOutcome;
   reArmResetSession: () => Promise<void>;
+}
+
+/**
+ * docs/221 — park the agent-facing notice for a reset the USER asked for.
+ *
+ * The "Sync with `<base>`" menu item lands on THIS route (not `/git/rebase`)
+ * once the PR has merged, and the agent was as unaware of it as it was of a
+ * manual rebase. Unlike the docs/218 pre-turn reset, nothing here can prepend to
+ * a prompt — there is no turn — so the sentence is parked for the next one.
+ *
+ * `runner.running` is the discriminator between this route's two callers. The
+ * `shipit branch reset-to-base` shim can only run from inside an agent turn, and
+ * the agent reads the outcome in its own tool result, so telling it again next
+ * turn would be noise. Anything arriving with no turn in flight — the menu click,
+ * or a human running the shim in the terminal panel — is news to the agent.
+ *
+ * Best-effort: the reset already succeeded and is recorded for the user, so a
+ * failed notice write must not turn that into a reported failure.
+ */
+export function recordManualResetAgentNotice(deps: {
+  setPendingAgentNotice: (sessionId: string, notice: string) => void;
+  runner: SessionRunnerInterface | undefined;
+  sessionId: string;
+  outcome: ExplicitResetOutcome;
+  prNumber?: number;
+}): void {
+  if (deps.outcome.outcome !== "reset" || !deps.outcome.base) return;
+  if (deps.runner?.running) return;
+  try {
+    deps.setPendingAgentNotice(
+      deps.sessionId,
+      buildManualResetAgentNotice({
+        base: deps.outcome.base,
+        fromSha: deps.outcome.fromSha,
+        toSha: deps.outcome.toSha,
+        prNumber: deps.prNumber,
+      }),
+    );
+  } catch (err) {
+    console.error("[reset-to-base] recording the agent notice failed:", getErrorMessage(err));
+  }
 }
 
 /**
@@ -142,6 +184,15 @@ export async function registerGitRoutes(
         ...(force ? [{ force: { reason } }] as const : []),
       );
       const previous = sessionManager.get(sessionId)?.previousMergedPr;
+
+      recordManualResetAgentNotice({
+        setPendingAgentNotice: (id, notice) => sessionManager.setPendingAgentNotice(id, notice),
+        runner: deps.runnerRegistry.get(sessionId),
+        sessionId,
+        outcome,
+        prNumber: prStatus?.prNumber ?? previous?.number,
+      });
+
       await presentExplicitResetSuccess({
         runner: deps.runnerRegistry.get(sessionId),
         chatHistoryManager: deps.chatHistoryManager,
