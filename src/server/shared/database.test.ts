@@ -349,10 +349,12 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
       expect(rewindPastRespread([0, 1, 2])).toEqual(spread(3));
     });
 
-    // The colors are a set, not a per-row position: dragging repos around the
-    // sidebar changes display order while every color stays where it was, and
-    // that workspace still deserves the re-spread.
-    it("re-spreads regardless of which repo holds which sequential color", () => {
+    // The guard reads the value SET, not each row's position, so a workspace
+    // whose url→color mapping no longer matches display order is still
+    // re-spread. Both a sidebar reorder and a manual swap of two repos' colors
+    // produce this state and the stored data cannot tell them apart — see the
+    // note on the migration itself.
+    it("re-spreads a workspace whose colors no longer match display order", () => {
       expect(rewindPastRespread([2, 0, 1])).toEqual([
         REPO_COLOR_ASSIGNMENT_ORDER[2], REPO_COLOR_ASSIGNMENT_ORDER[0], REPO_COLOR_ASSIGNMENT_ORDER[1],
       ]);
