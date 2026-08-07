@@ -4,6 +4,7 @@ import hljs from "highlight.js";
 import { Button } from "./ui/button.js";
 import type { ToolResultBlock } from "./MessageList.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useDevicePixelRatio } from "../hooks/useDevicePixelRatio.js";
 
 interface ToolResultImage {
   /** Base64 payload — only present on results the client parsed locally. */
@@ -278,28 +279,57 @@ function GenericResult({ content, isError, maxLines, lazy }: { content: string; 
 /**
  * Render images from tool result content (e.g. Playwright screenshots).
  *
- * Drawn at **natural size, never scaled** — a screenshot wider than the modal
- * scrolls sideways instead of shrinking to fit. Fitting is the tempting default
- * and it is the wrong one here: a downscaled screenshot looks like a faithful
- * one, so the reader has no way to tell whether the blur they are squinting at
- * is in the page or in the render. A scrollbar says which.
+ * Drawn so that **one pixel of the image is one physical pixel of the display**
+ * — never resampled, in either direction. A screenshot too wide for that scrolls
+ * sideways rather than shrinking to fit. Fitting is the tempting default and it
+ * is the wrong one here: a resampled screenshot looks like a faithful one, so
+ * the reader has no way to tell whether the blur they are squinting at is in the
+ * page or in the render. A scrollbar says which.
  *
- * That leaves `ToolResult` with no size bound at all, which is fine because it
- * renders solely inside the tool-call modal — a click, already scrollable in
- * both axes, with no transcript around it to keep tidy. Two earlier bounds are
- * gone for the same reason: a 256px height cap that reduced a 1280×720 shot to
- * an unreadable strip, and the `max-w-full` that replaced it. Neither had a
- * click-to-full-size view behind it to recover the detail from.
+ * Hitting that on a high-DPI display takes the `srcSet` density descriptor.
+ * These screenshots are 1× — headless Chromium runs at `deviceScaleFactor: 1`,
+ * so a 1280 CSS-px viewport captures as 1280 image pixels whatever `scale` the
+ * agent passes. Laid out with no descriptor, a browser treats an image pixel as
+ * a *CSS* pixel, so on a 2× display those 1280 pixels get smeared across 2560
+ * physical ones. That is the stretch: a bitmap magnified 2×, sitting next to
+ * text the same display renders sharply. Declaring the density as the viewer's
+ * own ratio makes the browser lay the image out at `naturalWidth / dpr`, which
+ * lands each image pixel on exactly one physical pixel.
  *
- * `max-w-none` is load-bearing — Tailwind's preflight sets `img { max-width:
- * 100% }`, which would silently re-fit the image inside the scroller and leave
- * a scrollbar that never scrolls. The frame sits on the scroll container, not
- * the image, so the border stays put while the picture moves under it.
+ * The consequence is deliberate and worth knowing: on a 2× display the shot
+ * occupies half the CSS width it used to, so it reads *smaller* than the page it
+ * captured. Sharp-and-smaller beats big-and-smeared for the thing this view is
+ * for — checking what the page actually looked like.
+ *
+ * **The descriptor decides the layout size outright — it is not a hint the
+ * browser weighs against the display.** Verified in Chromium: `srcset="X 2x"`
+ * lays X out at half its natural width even at `dpr === 1`, and `1.5x` / `3x` /
+ * a Windows-scaling `1.7647…x` all divide exactly. `src` naming the same URL
+ * does not override it and costs no second request. Two things follow. The
+ * descriptor MUST carry the *live* ratio — a stale one mis-sizes the image with
+ * no fallback, which is why {@link useDevicePixelRatio} re-arms on change rather
+ * than reading `devicePixelRatio` once. And at `dpr === 1` this is exactly a
+ * no-op, so nothing changes for an ordinary display.
+ *
+ * A base64 `data:` URL is safe in `srcset` despite the comma after `;base64`:
+ * candidates are split on commas that follow whitespace, and base64 contains
+ * none. (A `utf8,<svg …>` data URL is *not* safe — its spaces do split it. Also
+ * verified, by breaking it.)
+ *
+ * Two earlier bounds are gone, for the reason above: a 256px height cap that
+ * reduced a 1280×720 shot to an unreadable strip, and the `max-w-full` that
+ * replaced it. Neither had a click-to-full-size view behind it to recover the
+ * detail from. `max-w-none` is load-bearing — Tailwind's preflight sets
+ * `img { max-width: 100% }`, which would silently re-fit the image inside the
+ * scroller and leave a scrollbar that never scrolls. The frame sits on the
+ * scroll container, not the image, so it stays put while the picture moves
+ * under it.
  *
  * Stacked rather than wrapped: a result with two images gives each the full
  * width instead of squeezing both onto one row.
  */
 function ToolResultImages({ images }: { images: ToolResultImage[] }) {
+  const dpr = useDevicePixelRatio();
   return (
     <div className="flex flex-col gap-2 mt-2" data-testid="tool-result-images">
       {images.map((img, i) => {
@@ -311,6 +341,7 @@ function ToolResultImages({ images }: { images: ToolResultImage[] }) {
           >
             <img
               src={src}
+              srcSet={`${src} ${dpr}x`}
               alt={`Tool output image ${i + 1}`}
               loading="lazy"
               className="block max-w-none h-auto"

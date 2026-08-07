@@ -101,12 +101,31 @@ below. What remains on a subagent row is per-step text, which is small.
   screenshot to an unreadable strip.
 
   Fitting the width (`max-w-full`) was the intermediate step and is also wrong,
-  for a subtler reason worth keeping: **a downscaled screenshot is
+  for a subtler reason worth keeping: **a resampled screenshot is
   indistinguishable from a faithful one**, so a reader squinting at a blurry
   control cannot tell whether the blur is in the page or in the render. A
   scrollbar answers that; a silent resample does not. `max-w-none` on the image
   is load-bearing — Tailwind preflight's `img { max-width: 100% }` would
   otherwise re-fit it and leave a scrollbar that never scrolls.
+
+  The same argument then applies in the *other* direction, which "natural size"
+  alone does not cover: these screenshots are 1× (headless Chromium runs at
+  `deviceScaleFactor: 1`), so on a high-DPI display an image pixel laid out as a
+  CSS pixel is smeared across `dpr²` physical ones — magnified, beside text the
+  same display renders sharply. The fix is a `srcSet` density descriptor
+  carrying the viewer's own ratio, which lays the image out at
+  `naturalWidth / dpr` and lands each image pixel on exactly one physical pixel.
+  Verified in Chromium rather than assumed, because the mechanism is easy to get
+  backwards: **the descriptor sets the layout size outright**, it is not a hint
+  weighed against the display (`srcset="X 2x"` halves X even at `dpr === 1`), and
+  `src` naming the same URL neither overrides it nor costs a second request.
+  `1.5x`, `3x` and a Windows-scaling `1.7647…x` all divide exactly. Two
+  consequences: the descriptor must carry the *live* ratio, so
+  `useDevicePixelRatio` re-arms its media query on every change instead of
+  reading `devicePixelRatio` once — there is no fallback if it goes stale; and at
+  `dpr === 1` the whole thing is a no-op. A base64 `data:` URL is safe in
+  `srcset` (candidates split on commas that follow whitespace, and base64 has
+  none) where a `utf8,<svg …>` one is not.
 
 ### One thing that must never be truncated
 
