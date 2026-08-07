@@ -37,7 +37,7 @@ repair it or raise it with the user.
 
 | Form | Example |
 |---|---|
-| tracker name + backend id | `planning#306`, `planning#123` |
+| tracker name + backend id | `roadmap#SHI-304`, `planning#123` |
 | tracker name + number | `roadmap#304` |
 | the backend's canonical address | `SHI-304`, `owner/repo#42`, an issue URL |
 

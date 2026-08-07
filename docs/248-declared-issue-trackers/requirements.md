@@ -60,7 +60,7 @@ off Linear — is a separate feature
 
     | Form | Example |
     |---|---|
-    | tracker name + backend id | `planning#306`, `planning#123` |
+    | tracker name + backend id | `roadmap#SHI-304`, `planning#123` |
     | tracker name + number | `roadmap#304` |
     | the backend's canonical issue address | `SHI-304`, `owner/repo#42` |
 

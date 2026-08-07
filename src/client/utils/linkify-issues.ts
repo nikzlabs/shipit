@@ -2,7 +2,7 @@
  * `remarkLinkifyIssues` — turn bare issue references in prose into in-app badges.
  *
  * The agent (and humans) routinely mention issues inline as a bare reference —
- * "tracked in TRACKER-43", "blocked on planning#81", "see planning#57". A full
+ * "tracked in TRACKER-43", "blocked on roadmap#SHI-79", "see planning#57". A full
  * issue *URL* is already intercepted by `parseTrackerIssueLink` → opens the
  * in-app Issues viewer; a bare reference stayed plain text because no absolute
  * URL is derivable from it. But the in-app viewer doesn't need a URL — the
@@ -54,7 +54,7 @@ export const ISSUE_LINK_SCHEME = "shipit-issue:";
  * A reference-shaped token, in the two forms that appear in prose (docs/248
  * req 10). The alternation is ordered, and the order is load-bearing:
  *
- * 1. **Name form** — `planning#306`, `planning#57`. The name and id shapes
+ * 1. **Name form** — `roadmap#SHI-304`, `planning#57`. The name and id shapes
  *    mirror `NAMED_REF_RE` in `shared/issue-ref.ts`, which is what ultimately
  *    parses the token; keeping them in step means anything we badge is something
  *    the resolver can read. The lookbehind additionally rejects a leading `/` so

@@ -15,7 +15,7 @@
 
 ## planning#325 — recognize the docs/248 name form in prose
 
-- [x] `ISSUE_TOKEN_RE` matches the name form (`planning#306`, `planning#57`)
+- [x] `ISSUE_TOKEN_RE` matches the name form (`roadmap#SHI-304`, `planning#57`)
       ahead of the bare key, so the whole token — not just its trailing key —
       is carried through `ISSUE_LINK_SCHEME`
 - [x] Name-form lookbehind rejects a leading `/` so a GitHub short form

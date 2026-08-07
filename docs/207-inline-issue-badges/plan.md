@@ -1,6 +1,6 @@
 ---
 issue: planning#154
-description: Bare issue references in chat/markdown prose (TRACKER-43, planning#321, planning#57) render as inline badges that open the in-app Issues viewer; on mobile the click also switches to the workspace panel.
+description: Bare issue references in chat/markdown prose (TRACKER-43, roadmap#SHI-319, planning#57) render as inline badges that open the in-app Issues viewer; on mobile the click also switches to the workspace panel.
 ---
 
 # Inline issue badges for bare issue references
@@ -29,7 +29,7 @@ lookup id (`Tracker.getIssue(key)`). This feature closes that gap the same way
   chat / docs / PR-body / tooltip markdown renders as a small monospace pill in
   the accent color. Clicking it opens the issue in the inline Issues viewer.
   Both of docs/248 req 10's prose-legible forms are recognized: the **bare key**
-  (`TRACKER-43`) and the **name form** (`planning#321`, `planning#57`).
+  (`TRACKER-43`) and the **name form** (`roadmap#SHI-319`, `planning#57`).
 - **The badge does not grow the line height.** It renders at `text-[0.85em]`
   with `leading-none` and horizontal-only padding, so it stays within the
   surrounding prose line box (an explicit requirement — badges must not push
@@ -56,7 +56,7 @@ than one, must never resolve to a guess.
 
 Prose was the last surface that hadn't been brought onto that resolver. The
 matcher here predated the name form, so `planning#321` badged only its
-`planning#321` tail and left `roadmap#` outside the pill, and `planning#57` — the form
+`SHI-319` tail and left `roadmap#` outside the pill, and `planning#57` — the form
 ShipIt's own references take after docs/247's migration — matched nothing at all.
 The gate was Linear-team-specific (compare the token's prefix against the
 connected workspace's bound team key), which had no answer for a GitHub name

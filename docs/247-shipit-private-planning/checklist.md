@@ -2,8 +2,8 @@
 
 **The tracker side is done, and so is the reference sweep.** 330 issues copied to
 `planning#3`–`#332`, 1,164 comments replayed, and 2,236 references rewritten
-across 684 files in this repository. **Waiting at human gate 3.** What remains
-after that is step 11 — retiring Linear.
+across 684 files in this repository, verified as a pure substitution rather than
+reviewed by eye. What remains is step 11 — retiring Linear.
 
 ## Cleared
 
@@ -30,7 +30,8 @@ after that is step 11 — retiring Linear.
 - [x] Teach `remarkLinkifyIssues` the name form ([SHI-323](https://linear.app/shipit-ai/issue/SHI-323)) before the sweep. *(Landed — `linkify-issues.ts` matches the name form first, so a badge covers the whole reference rather than half of it.)*
 - [x] **Mechanical half of the sweep** — [`sweep.py`](./sweep.py), 511 files, 1,778 rewrites (1,560 bare keys, 26 name-form, 192 `linear.app` issue URLs). Typecheck clean, full suite green (699 files, 10,305 tests), lint clean. *(2026-08-07.)*
 - [x] **Manual half** — the citations inside test and key-shape files, via [`sweep-tests.py`](./sweep-tests.py) (rewrites only provable citations: comment lines and `describe`/`it` titles, never a line carrying a data marker), plus three classes it could not see: two false positives from the loose `bare ` marker (`git-lfs-store.ts`, `docs/042`), 24 hyphen-prefixed prose citations (`pre-SHI-194`, `post-SHI-192` — the `(?<![\w-])` lookbehind skips these by design), and one `SHI-129-protected` heading. 431 + 27 lines. *(2026-08-07.)*
-- [ ] **Human gate 3** — review the diff. What deliberately remains is **544 mentions across 71 files, none of them pointers**: `SHI-N` as the *shape of a Linear key* in fixtures and parser tests, and reference-syntax examples that teach the three forms. Linear support stays in the product (248 req 3), so these stay `SHI-N` permanently rather than waiting for a later pass.
+- [x] **Human gate 3 — replaced by an assertion.** 684 files is not reviewable by eye, so [`verify-sweep.py`](./verify-sweep.py) proves the property instead: every changed line is byte-identical to its original once reference tokens are blanked from both sides, every substitution agrees with `mapping.tsv`, and no line was added or removed. **2,158 changed lines, 2,230 substitutions, 0 differing outside a reference, 0 disagreeing with the mapping.** It caught 12 genuinely broken lines that `tsc` and the full suite both passed — see plan.md → *Gate 3 is a check, not a read*.
+- [ ] What deliberately remains is **544 mentions across 71 files, none of them pointers**: `SHI-N` as the *shape of a Linear key* in fixtures and parser tests, and reference-syntax examples that teach the three forms. Linear support stays in the product (248 req 3), so these stay `SHI-N` permanently rather than waiting for a later pass. Nothing to do — recorded so a future reader doesn't mistake them for a missed pass.
 - [ ] Retire Linear for ShipIt's own planning. **Human gate 4** — confirm nothing still depends on it; recoverable by re-declaring. Drop the `roadmap` declaration, and rewrite all seven places `CLAUDE.md` names Linear as the destination — lines 306, 326, 328, 329, 333, 340, 342, spanning three sections, not just the tracker-sync one (req 11). Prefer tracker-neutral wording; name `planning` only where a destination must be named.
 - [ ] Delete `planning#1` and the pilot `planning#2`.
 

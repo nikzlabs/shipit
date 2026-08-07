@@ -15,7 +15,7 @@
  *
  * | Form                        | Example                          | What this parser reports |
  * |---|---|---|
- * | tracker name + backend id   | `planning#306`, `planning#123`| `trackerName` + raw `issueId` |
+ * | tracker name + backend id   | `roadmap#SHI-304`, `planning#123`| `trackerName` + raw `issueId` |
  * | tracker name + number       | `roadmap#304`                    | `trackerName` + raw `issueId` |
  * | the backend's canonical address | `SHI-304`, `owner/repo#42`, an issue URL | a concrete `tracker` id |
  *
@@ -96,7 +96,7 @@ const GITHUB_SHORT_RE = /^([^/\s]+)\/([^/\s#]+)#(\d+)$/;
  */
 const LINEAR_KEY_RE = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
 /**
- * docs/248 req 10 — the two name forms, `planning#123` and `planning#306`.
+ * docs/248 req 10 — the two name forms, `planning#123` and `roadmap#SHI-304`.
  *
  * A free slot in the existing grammar: `GITHUB_SHORT_RE` requires the slash and
  * a bare `#42` is deliberately rejected as ambiguous, so adding this makes no

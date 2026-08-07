@@ -527,6 +527,33 @@ Three classes escaped both scripts, and each is a different kind of blind spot:
   prose that hyphenates a reference.
 - **One heading**, `SHI-129-protected`, for the same reason from the other side.
 
+### Gate 3 is a check, not a read
+
+684 files and 2,230 substitutions is not reviewable by eye — scrolling a diff
+that size is not review, and treating it as such is how a bad rewrite ships. The
+gate's own principle applies: *an assertion that needs a human is a missing
+assertion.*
+
+[`verify-sweep.py`](./verify-sweep.py) supplies the assertion. For every changed
+line it blanks out the reference tokens on both sides — the four source forms on
+the old side, `planning#M` on the new — and requires the remainders to be
+byte-identical, the token counts to match, and every substitution to agree with
+`mapping.tsv`. Anything else survives blanking: a reflow, a dropped character, a
+mangled URL, an unrelated edit riding along.
+
+**It found real damage on the first honest run**, in 12 lines the test suite and
+`tsc` were both happy with. They were the ones where `roadmap#SHI-304` was an
+*example of the name form*, printed beside `planning#57` to contrast a
+Linear-backed reference with a GitHub-backed one; rewriting it collapsed both
+examples into the same shape, and `docs/207` ended up reading "`planning#321` tail
+and left `roadmap#` outside the pill". The cause was `sweep-tests.py` not
+honouring `sweep.py`'s exclusions and carrying `"reference form"` but not
+`"name form"` among its markers. All 12 restored.
+
+Final state: **2,158 changed lines, 2,230 substitutions, zero differing outside a
+reference, zero disagreeing with the mapping** — a pure substitution, asserted
+rather than eyeballed.
+
 **What deliberately remains is 544 mentions across 71 files, and none of them are
 pointers.** They are `SHI-N` as the *shape of a Linear key* — fixtures and parser
 tests for the Linear adapter, the shim's key parsing, the viewer rendering a
