@@ -8,7 +8,13 @@ description: Separate harness from service so a user can run any configured serv
 
 Implements [`requirements.md`](./requirements.md), which has no open questions.
 
-**Visual reference:** [`mockup.html`](./mockup.html) — the Settings **Services** screen
+**Visual reference — the picker:** [`mockup-picker.html`](./mockup-picker.html) — an
+**interactive** prototype of the two-selector composer (harness, then model). Change the
+credentials, the installed harness set and whether the session has taken a turn, and the
+selectors react. It is the artifact for the picker decision below; open it and drive it
+rather than reading the description.
+
+**Visual reference — Settings:** [`mockup.html`](./mockup.html) — the Settings **Services** screen
 (catalogue rows, credential entry, which rows show a usage indicator), the **Harnesses**
 screen (the derived service×style join, and the background-work setting), and the
 in-session model picker with its attribution. Self-contained static HTML; open it
@@ -140,7 +146,9 @@ credential from the selected model's service, after the scrub. Eligibility moves
 
 It is also where req 3 becomes observable: the moment a custom model is offered, it is
 offered in the one picker alongside everything else, with no separate surface for a
-vendor's own models.
+vendor's own models. The composer's picker splits in two here — harness and model as
+separate controls, model rows grouped by service — because this is the phase where
+harness-as-group-header stops being able to express the list.
 
 **This is the phase where the feature exists.** A fresh session on DeepSeek V4 Flash under
 the Claude Code harness takes a turn, with no Anthropic credential anywhere. The spike
@@ -234,10 +242,45 @@ service declares under that harness's style, filtered to services with a usable
 credential (reqs 6, 8). Note the entry is the **pair**, not the model id — the same id
 can come from more than one service at different prices.
 
-It stays **one picker**, listing every eligible model the same way regardless of which
+It stays **one model picker**, listing every eligible model the same way regardless of which
 service provides it (req 3). A vendor's own models must not get a separate surface or a
 privileged position in this one — that is the same rule as "Anthropic is a catalogue row
 like any other", seen from the UI side.
+
+**Two selectors, not one: harness and model separate** ([prototype](./mockup-picker.html)).
+Today `ModelAgentSelector` is a single dropdown whose group headers are *harnesses*, because
+harness and provider are the same thing. Once they are separated, that grouping is wrong
+twice over: the group header is needed for the **service** — which is what the credential,
+the price, the billing pill and the usage indicator all hang off — and the harness stops
+being a group at all. It becomes an axis that selects *which* list you are looking at.
+
+This does not touch req 3, which is about models: model selection stays one list in one
+place. The harness is a different choice with different consequences, and the decisive one
+is that **it is not reversible**. Per-agent credential isolation pins the harness for life
+at the first turn (`docs/138`), while models stay switchable (req 4). Today that asymmetry is
+rendered as greyed rows and a lock badge on a group header *inside* the model menu, so the
+single most consequential fact about the session is visible only to someone who opens a
+dropdown and reads it. Two controls make it structural: one is disabled with the reason on
+it, the other is fully live, and both are legible on the closed composer.
+
+The split has one real cost and one new interaction, both worth deciding deliberately:
+
+- **The other harness's models become invisible.** The combined picker showed everything and
+  greyed what you could not have — worse as a lock affordance, better as a map. The
+  mitigation is a footer on the model menu naming what is one switch away, and it must not
+  offer a switch a pinned session cannot make. That footer is the whole mitigation.
+- **Switching harness can strand the selected model.** Keep the model when the new harness
+  also offers that exact `(service, model)` pair — which is why `deepseek-v4-flash` survives
+  a Claude Code → Codex switch — and otherwise move to the first eligible model and say so.
+  Landing somewhere else silently would contradict req 11; refusing the switch would make an
+  enabled control lie. The combined picker never had this case, because there the harness and
+  model moved together by construction.
+
+A third case looks new and is not: removing a service's credential mid-session strands the
+selection with no successor to move to (req 13's map never crosses services). Req 12 already
+answers it — an API key does not fail over, so ShipIt stops and says so. The split only
+changes *where* that surfaces, from a failed turn to a picker state you can see before
+sending.
 
 **Full separation is the point.** No code path should ask "which vendor's agent is
 this?" to decide anything about credentials. Concretely, req 2 means a user with only a

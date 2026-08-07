@@ -1,0 +1,735 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Custom models — two-selector picker prototype</title>
+<style>
+  :root {
+    --bg-page: #0a0a0b;
+    --bg-modal: #111113;
+    --bg-secondary: #18181b;
+    --bg-elevated: #1f1f23;
+    --bg-hover: #26262b;
+    --border: #2a2a30;
+    --border-soft: #1f1f24;
+    --text-primary: #ececee;
+    --text-secondary: #a1a1aa;
+    --text-tertiary: #6b6b74;
+    --accent: #6366f1;
+    --accent-soft: #818cf8;
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 600px at 80% -10%, #15151a 0%, transparent 60%),
+      var(--bg-page);
+    color: var(--text-primary);
+    padding: 40px 24px 90px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  .page-title { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
+  .page-sub { font-size: 13px; color: var(--text-secondary); line-height: 1.65; margin: 0 0 32px; }
+  code.k {
+    background: var(--bg-secondary); border: 1px solid var(--border-soft);
+    padding: 1px 5px; border-radius: 4px; font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .section-label {
+    font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--text-tertiary); margin: 0 0 12px;
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  .section-label .n {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: var(--bg-elevated); border: 1px solid var(--border);
+    color: var(--text-secondary); font-size: 10px; letter-spacing: 0;
+  }
+  .cols { display: grid; grid-template-columns: 300px 1fr; gap: 22px; align-items: start; }
+  .card {
+    background: var(--bg-modal); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px 18px;
+  }
+  .card h3 {
+    margin: 0 0 3px; font-size: 12px; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--text-secondary);
+  }
+  .card .hint { font-size: 11.5px; color: var(--text-tertiary); line-height: 1.5; }
+
+  /* ---- scenario knobs ---- */
+  .knob-group { margin-top: 14px; }
+  .knob-group + .knob-group { border-top: 1px solid var(--border-soft); padding-top: 14px; }
+  .knob-title {
+    font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--text-tertiary); margin-bottom: 8px;
+  }
+  label.knob {
+    display: flex; align-items: center; gap: 9px;
+    padding: 5px 7px; border-radius: 7px; cursor: pointer; font-size: 13px;
+  }
+  label.knob:hover { background: var(--bg-secondary); }
+  label.knob input { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
+  label.knob .sub { color: var(--text-tertiary); font-size: 11px; margin-left: auto; }
+
+  /* ---- transcript above the composer, so menus have room to open upward ---- */
+  .transcript {
+    height: 250px; display: flex; flex-direction: column; justify-content: flex-end;
+    gap: 10px; padding: 0 4px 14px;
+  }
+  .bubble {
+    align-self: flex-start; max-width: 78%; font-size: 13px; line-height: 1.6;
+    padding: 9px 13px; border-radius: 11px;
+    border: 1px solid var(--border); background: var(--bg-modal);
+    color: var(--text-secondary);
+  }
+  .bubble.user {
+    align-self: flex-end; background: var(--bg-elevated); color: var(--text-primary);
+  }
+  .bubble .dots::before { content: "\25CF"; color: var(--accent); font-size: 9px; }
+  .transcript-note {
+    font-size: 11.5px; color: var(--text-tertiary); text-align: center; padding-top: 4px;
+  }
+
+  /* ---- composer ---- */
+  .composer {
+    background: var(--bg-modal); border: 1px solid var(--border);
+    border-radius: 14px; padding: 14px 16px 12px;
+  }
+  .composer-input {
+    color: var(--text-tertiary); font-size: 14px; padding: 6px 2px 16px;
+  }
+  .composer-bar { display: flex; align-items: center; gap: 8px; }
+  .composer-bar .spacer { flex: 1; }
+  .send {
+    background: var(--accent); color: #fff; border: none; border-radius: 8px;
+    width: 30px; height: 30px; font-size: 14px; cursor: default;
+  }
+
+  /* ---- selector triggers ---- */
+  .sel { position: relative; }
+  .trigger {
+    display: inline-flex; align-items: center; gap: 7px;
+    background: transparent; border: 1px solid transparent;
+    color: var(--text-secondary); font: inherit; font-size: 12.5px; font-weight: 500;
+    padding: 6px 9px; border-radius: 8px; cursor: pointer;
+  }
+  .trigger:hover:not([disabled]) { background: var(--bg-hover); }
+  .trigger[disabled] { cursor: default; opacity: .72; }
+  .trigger.open { background: var(--bg-hover); border-color: var(--border); }
+  .trigger .caret { color: var(--text-tertiary); font-size: 9px; }
+  .trigger .lock { color: var(--text-tertiary); font-size: 11px; }
+  .trigger .lead {
+    color: var(--text-tertiary); font-size: 10px; letter-spacing: .07em;
+    text-transform: uppercase;
+  }
+  .divider { width: 1px; height: 18px; background: var(--border); }
+
+  /* ---- dropdown ---- */
+  .menu {
+    position: absolute; bottom: calc(100% + 8px); left: 0;
+    min-width: 268px; background: var(--bg-elevated);
+    border: 1px solid var(--border); border-radius: 11px;
+    padding: 5px; z-index: 40;
+    box-shadow: 0 18px 40px rgba(0,0,0,.55);
+  }
+  .menu.right { left: auto; right: 0; }
+  .menu-label {
+    display: flex; align-items: center; gap: 7px;
+    padding: 7px 9px 4px; font-size: 10px; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--text-tertiary);
+  }
+  .menu-label .grow { flex: 1; }
+  .item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 9px; border-radius: 7px; font-size: 13px; cursor: pointer;
+  }
+  .item:hover { background: var(--bg-hover); }
+  .item.sel-row { background: rgba(99,102,241,.14); color: var(--accent-soft); }
+  .item.disabled { opacity: .4; cursor: default; }
+  .item.disabled:hover { background: transparent; }
+  .item .grow { flex: 1; }
+  .item .mono, .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+  }
+  .item .check { color: var(--accent); font-size: 12px; }
+  .menu-foot {
+    border-top: 1px solid var(--border-soft); margin-top: 4px;
+    padding: 9px 10px 6px; font-size: 11.5px; color: var(--text-tertiary); line-height: 1.55;
+  }
+  .menu-empty { padding: 14px 11px; font-size: 12.5px; color: var(--text-tertiary); line-height: 1.6; }
+
+  /* ---- pills ---- */
+  .pill {
+    font-size: 10px; padding: 2px 7px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--text-tertiary);
+    letter-spacing: .02em; text-transform: none; white-space: nowrap;
+  }
+  .pill.sub { border-color: #3b3565; background: #1d1a33; color: #b3a9ee; }
+  .pill.key { border-color: #2f4a3a; background: #16241c; color: #86c9a3; }
+  .pill.style {
+    border-color: #333; background: #1c1c20; color: var(--text-secondary);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  /* ---- state readout ---- */
+  .readout { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .banner {
+    display: flex; gap: 10px; align-items: flex-start;
+    border-radius: 9px; padding: 10px 13px; font-size: 12.5px; line-height: 1.6;
+    border: 1px solid var(--border); background: var(--bg-secondary);
+    color: var(--text-secondary);
+  }
+  .banner.warn { border-color: #4a3a18; background: #221a0d; color: #e8c98a; }
+  .banner.info { border-color: #2c3556; background: #15192c; color: #a8b4e8; }
+  .banner b { color: inherit; }
+  .banner .ico { font-size: 13px; line-height: 1.35; }
+
+  .attrib {
+    border: 1px solid var(--border); border-radius: 9px;
+    background: var(--bg-secondary); padding: 11px 13px;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px;
+  }
+  .attrib .lbl { color: var(--text-tertiary); font-size: 11px; }
+  .chip {
+    font-size: 11.5px; padding: 3px 8px; border-radius: 6px;
+    background: var(--bg-elevated); border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  /* ---- notes ---- */
+  .notes { display: flex; flex-direction: column; gap: 12px; margin-top: 26px; }
+  .note {
+    border: 1px solid var(--border); border-left: 2px solid var(--accent);
+    background: var(--bg-modal); border-radius: 9px; padding: 12px 15px;
+    font-size: 12.5px; line-height: 1.68; color: var(--text-secondary);
+  }
+  .note b { color: var(--text-primary); }
+  .note .req {
+    display: inline-block; font-size: 10px; letter-spacing: .04em;
+    background: #1d1d3a; border: 1px solid #33336a; color: #a5a5e8;
+    padding: 1px 6px; border-radius: 4px; margin-right: 7px; vertical-align: 1px;
+  }
+  .note .callout {
+    margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--border);
+    color: var(--text-tertiary); font-size: 12px;
+  }
+  .note.against { border-left-color: var(--warning); }
+  .note.against .req { background: #2a2110; border-color: #4a3a18; color: #e8c98a; }
+
+  /* ---- before/after ---- */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 8px; }
+  .compare .card { padding: 0; overflow: hidden; }
+  .compare .cap {
+    padding: 11px 15px; border-bottom: 1px solid var(--border-soft);
+    font-size: 12px; color: var(--text-secondary);
+  }
+  .compare .cap b { color: var(--text-primary); }
+  .compare .body { padding: 15px; }
+  .fakemenu {
+    background: var(--bg-elevated); border: 1px solid var(--border);
+    border-radius: 10px; padding: 5px; width: 258px;
+  }
+  hr.sep { border: none; border-top: 1px solid var(--border-soft); margin: 46px 0 34px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1 class="page-title">Two selectors: harness, then model</h1>
+<p class="page-sub">
+  Prototype for <code class="k">docs/252-custom-models</code>. Today one dropdown lists models
+  grouped by <i>harness</i>, because harness and provider are the same thing. Once they are
+  separated, that grouping is wrong — the harness stops being a group and becomes an axis.
+  This splits it into two selectors and lets you drive the result.
+  <b>The left panel is prototype scaffolding, not proposed UI</b> — it stands in for what
+  Settings and the deployment would decide.
+</p>
+
+<div class="section-label"><span class="n">1</span> Interactive — change the knobs, open the selectors</div>
+
+<div class="cols">
+  <div class="card">
+    <h3>Scenario</h3>
+    <div class="hint">Stands in for Settings &rarr; Services, the install&rsquo;s harness set, and how far the session has got.</div>
+
+    <div class="knob-group">
+      <div class="knob-title">Credentials configured</div>
+      <div id="knob-creds"></div>
+    </div>
+
+    <div class="knob-group">
+      <div class="knob-title">Harnesses installed</div>
+      <div id="knob-harnesses"></div>
+    </div>
+
+    <div class="knob-group">
+      <div class="knob-title">Session</div>
+      <label class="knob">
+        <input type="checkbox" id="knob-pinned" />
+        <span>Has taken its first turn</span>
+        <span class="sub">pins harness</span>
+      </label>
+    </div>
+  </div>
+
+  <div>
+    <div class="transcript">
+      <div class="bubble user">Add a rate limit to the upload endpoint</div>
+      <div class="bubble agent">
+        <span class="dots"></span> Reading <span class="mono">src/server/routes/upload.ts</span>&hellip;
+      </div>
+      <div class="transcript-note">
+        The selectors sit in the composer, so the menus open upward — as they do in ShipIt.
+      </div>
+    </div>
+    <div class="composer">
+      <div class="composer-input">Describe what you want to build&hellip;</div>
+      <div class="composer-bar">
+        <div class="sel" id="sel-harness"></div>
+        <div class="divider"></div>
+        <div class="sel" id="sel-model"></div>
+        <div class="spacer"></div>
+        <button class="send">&uarr;</button>
+      </div>
+    </div>
+
+    <div class="readout" id="readout"></div>
+  </div>
+</div>
+
+<div class="notes">
+  <div class="note">
+    <span class="req">req 3</span><b>Model selection is still one place.</b> Req 3 says every
+    model is selected the same way in the same place — it says nothing about the harness, which
+    is a different choice with different consequences. Splitting them keeps one model list
+    while giving the harness the affordance it actually needs.
+  </div>
+  <div class="note">
+    <span class="req">docs/138</span><b>This is the real argument for the split: the lock.</b>
+    Per-agent credential isolation pins the harness for life after the first turn, while models
+    stay switchable (<span class="req" style="margin:0">req 4</span>). Today that shows up as
+    greyed-out rows scattered inside one model list, with a lock badge on a group header — you
+    have to open the menu and read it to find out. Two selectors make it structural: one
+    control is disabled with the reason on it, the other is fully live.
+    <div class="callout">
+      Toggle <i>Has taken its first turn</i>. In the combined picker this state is legible
+      only from inside the dropdown; here it is visible on the closed composer.
+    </div>
+  </div>
+  <div class="note">
+    <span class="req">req 6</span><b>The model list is the harness&rsquo;s style joined against
+    your credentials.</b> Switch to Codex with only a DeepSeek key and you get one model, not
+    two — the service speaks both styles but declares only <code class="k">deepseek-v4-flash</code>
+    under <code class="k">openai-responses</code>. The grouping is by <i>service</i>, because
+    that is what decides the credential, the price and the billing pill.
+  </div>
+  <div class="note">
+    <span class="req">req 14</span><b>Uninstalled harnesses are absent, not greyed.</b> Cursor
+    appears in the harness list only once the deployment installs it. Being installed is a
+    precondition of the credential rule, not an exception to it — so the two knobs compose:
+    no install means no models whatever your keys.
+  </div>
+  <div class="note">
+    <b>Entries are pairs, not model ids.</b> Give OpenRouter a key and
+    <code class="k">deepseek-v4-flash</code> appears twice, under two services, at two prices.
+    One list of bare model ids could not express that; two rows under two group headers can.
+  </div>
+  <div class="note against">
+    <span class="req">cost</span><b>The other harness&rsquo;s models become invisible.</b> The
+    combined picker showed everything at once and greyed what you could not have, which is
+    worse as a lock affordance but better as a map. Splitting hides the other harness entirely,
+    so the model menu carries a footer naming what is one switch away. Worth deciding
+    deliberately: that footer is the whole mitigation.
+  </div>
+  <div class="note against">
+    <span class="req">open</span><b>Switching harness can strand the selected model.</b> The
+    prototype keeps the model when the new harness also offers it (that is why
+    <code class="k">deepseek-v4-flash</code> survives a Claude&nbsp;Code &rarr; Codex switch)
+    and otherwise moves to the first eligible model and says so. Silently landing somewhere
+    else would contradict req 11; refusing the switch would make the harness selector lie about
+    being enabled. This is the one interaction the split creates that the combined picker never
+    had, because there the model and harness moved together by construction.
+  </div>
+  <div class="note">
+    <span class="req">req 12</span><b>Removing a credential strands a running session — and
+    that is already the specified behaviour.</b> Uncheck the service the session is on. Req 8
+    says its models stop being selectable, but the session is already <i>on</i> one, and unlike
+    a retirement (req 13) there is no successor of the same service to move to. Req 12 answers
+    it without needing a new rule: an API key does not fail over, so ShipIt stops and says so.
+    <div class="callout">
+      What the split adds is only <i>where</i> that shows up — a picker state you can see
+      before you send, rather than a failure you discover by taking a turn.
+    </div>
+  </div>
+</div>
+
+<hr class="sep" />
+
+<div class="section-label"><span class="n">2</span> Against today — same state, both shapes</div>
+<div class="compare">
+  <div class="card">
+    <div class="cap"><b>Today</b> — one menu, grouped by harness</div>
+    <div class="body">
+      <div class="fakemenu">
+        <div class="menu-label"><span class="grow">Claude Code</span></div>
+        <div class="item"><span class="grow mono">opus-5</span></div>
+        <div class="item"><span class="grow mono">sonnet-5</span></div>
+        <div class="item"><span class="grow mono">haiku-4.5</span></div>
+        <div class="menu-label"><span class="grow">Codex</span><span class="pill">&#128274; locked</span></div>
+        <div class="item disabled"><span class="grow mono">gpt-5.6-sol</span></div>
+        <div class="item disabled"><span class="grow mono">gpt-5.6-mini</span></div>
+      </div>
+      <div class="hint" style="margin-top:13px">
+        The group header is the harness, so a service cannot be a group — and once custom
+        services exist there is nowhere to put &ldquo;DeepSeek&rdquo;. The lock lives on a
+        header you only see with the menu open.
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="cap"><b>Proposed</b> — harness is an axis, service is the group</div>
+    <div class="body">
+      <div class="fakemenu">
+        <div class="menu-label"><span class="grow">Anthropic</span><span class="pill sub">Subscription</span></div>
+        <div class="item"><span class="grow mono">opus-5</span></div>
+        <div class="item"><span class="grow mono">sonnet-5</span></div>
+        <div class="menu-label"><span class="grow">DeepSeek</span><span class="pill key">API key</span></div>
+        <div class="item sel-row"><span class="grow mono">deepseek-v4-flash</span><span class="check">&#10003;</span></div>
+        <div class="item"><span class="grow mono">deepseek-v4-pro</span></div>
+        <div class="menu-foot">3 more models on <b>Codex</b> — switch harness to see them.</div>
+      </div>
+      <div class="hint" style="margin-top:13px">
+        The harness moved out to its own control, freeing the group header for the service —
+        which is what the billing pill, the usage indicator and the credential all hang off.
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<script>
+// ---------------------------------------------------------------- catalogue
+const HARNESSES = [
+  { id:'claude', name:'Claude Code', style:'anthropic-messages', version:'v2.4.1', preinstalled:true  },
+  { id:'codex',  name:'Codex',       style:'openai-responses',   version:'v0.9.3', preinstalled:true  },
+  { id:'cursor', name:'Cursor',      style:'openai-responses',   version:'v1.2.0', preinstalled:false },
+];
+
+// Per style, the models the catalogue declares work there (req 6) — note DeepSeek
+// declares both of its models under anthropic-messages but only one under openai-responses.
+const SERVICES = [
+  { id:'anthropic',  name:'Anthropic',  auth:'sub', preset:true,
+    styles:{ 'anthropic-messages':['opus-5','sonnet-5','haiku-4.5'] } },
+  { id:'openai',     name:'OpenAI',     auth:'sub', preset:true,
+    styles:{ 'openai-responses':['gpt-5.6-sol','gpt-5.6-mini'] } },
+  { id:'deepseek',   name:'DeepSeek',   auth:'key', preset:true,
+    styles:{ 'anthropic-messages':['deepseek-v4-flash','deepseek-v4-pro'],
+             'openai-responses':['deepseek-v4-flash'] } },
+  { id:'openrouter', name:'OpenRouter', auth:'key', preset:false,
+    styles:{ 'anthropic-messages':['deepseek-v4-flash','kimi-k3'],
+             'openai-responses':['deepseek-v4-flash','kimi-k3'] } },
+  { id:'fireworks',  name:'Fireworks',  auth:'key', preset:false,
+    styles:{ 'openai-responses':['deepseek-v4-flash','qwen4-coder'] } },
+];
+
+const svc = id => SERVICES.find(s => s.id === id);
+const hns = id => HARNESSES.find(h => h.id === id);
+
+// ---------------------------------------------------------------- state
+const state = {
+  creds: new Set(SERVICES.filter(s => s.preset).map(s => s.id)),
+  installed: new Set(HARNESSES.filter(h => h.preinstalled).map(h => h.id)),
+  pinned: false,
+  harness: 'claude',
+  service: 'deepseek',
+  model: 'deepseek-v4-flash',
+  open: null,     // 'harness' | 'model' | null
+  note: null,     // transient explanation of an automatic move
+};
+
+// Every (service, model) pair a harness can offer: its style must be spoken by a
+// service you hold a credential for, and the catalogue must declare the model there.
+function eligible(harnessId) {
+  const h = hns(harnessId);
+  if (!h || !state.installed.has(harnessId)) return [];
+  const out = [];
+  for (const s of SERVICES) {
+    if (!state.creds.has(s.id)) continue;
+    for (const m of (s.styles[h.style] || [])) out.push({ service: s.id, model: m });
+  }
+  return out;
+}
+
+const isEligible = (hId, sId, m) =>
+  eligible(hId).some(e => e.service === sId && e.model === m);
+
+// Models one harness switch away, for the footer that mitigates the split's cost.
+function elsewhereCount() {
+  let n = 0;
+  for (const h of HARNESSES) {
+    if (h.id === state.harness || !state.installed.has(h.id)) continue;
+    n += eligible(h.id).length;
+  }
+  return n;
+}
+function elsewhereNames() {
+  return HARNESSES
+    .filter(h => h.id !== state.harness && state.installed.has(h.id) && eligible(h.id).length)
+    .map(h => h.name);
+}
+
+// ---------------------------------------------------------------- actions
+function pickHarness(id) {
+  if (state.pinned || id === state.harness) { state.open = null; return render(); }
+  state.harness = id;
+  state.note = null;
+  // Keep the model when the new harness also offers this exact pair; otherwise move
+  // to the first eligible one and say so. Never land somewhere silently (req 11).
+  if (!isEligible(id, state.service, state.model)) {
+    const first = eligible(id)[0];
+    if (first) {
+      state.note = {
+        kind: 'info',
+        text: `<b>${state.model}</b> is not offered on ${hns(id).name}, so the session moved to `
+            + `<b>${first.model}</b> via ${svc(first.service).name}.`,
+      };
+      state.service = first.service;
+      state.model = first.model;
+    } else {
+      state.note = {
+        kind: 'warn',
+        text: `${hns(id).name} has no models — no service you hold a credential for speaks `
+            + `<code class="k">${hns(id).style}</code>.`,
+      };
+    }
+  }
+  state.open = null;
+  render();
+}
+
+function pickModel(serviceId, model) {
+  state.service = serviceId;
+  state.model = model;
+  state.note = null;
+  state.open = null;
+  render();
+}
+
+function toggleMenu(which) {
+  state.open = state.open === which ? null : which;
+  render();
+}
+
+// ---------------------------------------------------------------- render
+function harnessSelector() {
+  const h = hns(state.harness);
+  const open = state.open === 'harness';
+  const list = HARNESSES.filter(x => state.installed.has(x.id));
+
+  let menu = '';
+  if (open && !state.pinned) {
+    const rows = list.map(x => {
+      const n = eligible(x.id).length;
+      const sel = x.id === state.harness;
+      return `<div class="item ${sel ? 'sel-row' : ''}" onclick="pickHarness('${x.id}')">
+        <span class="grow">${x.name}</span>
+        <span class="pill style">${x.style}</span>
+        <span class="check">${sel ? '&#10003;' : ''}</span>
+      </div>
+      <div style="padding:0 9px 6px 9px;font-size:11px;color:var(--text-tertiary)">
+        ${n ? `${n} model${n === 1 ? '' : 's'} available` : 'no credentialed service speaks this style'}
+      </div>`;
+    }).join('');
+    menu = `<div class="menu">
+      <div class="menu-label"><span class="grow">Harness</span></div>
+      ${rows}
+      <div class="menu-foot">
+        Installed at deploy time. ${HARNESSES.length - list.length} more supported by ShipIt,
+        not installed here.
+      </div>
+    </div>`;
+  }
+
+  const lock = state.pinned
+    ? `<span class="lock" title="Locked for this session after the first turn — per-agent credential isolation">&#128274;</span>`
+    : `<span class="caret">&#9660;</span>`;
+
+  return `${menu}
+    <button class="trigger ${open ? 'open' : ''}" ${state.pinned ? 'disabled' : ''}
+            onclick="toggleMenu('harness')"
+            title="${state.pinned ? 'The harness is fixed once the session has taken a turn.' : 'Which agent CLI runs this session'}">
+      <span class="lead">Harness</span>
+      <span>${h ? h.name : '—'}</span>
+      ${lock}
+    </button>`;
+}
+
+function modelSelector() {
+  const open = state.open === 'model';
+  const rows = eligible(state.harness);
+  const stranded = !isEligible(state.harness, state.service, state.model);
+
+  let menu = '';
+  if (open) {
+    let inner = '';
+    if (!rows.length) {
+      inner = `<div class="menu-empty">
+        No models. ${state.installed.has(state.harness)
+          ? `No service you hold a credential for speaks <code class="k">${hns(state.harness).style}</code>.`
+          : 'This harness is not installed.'}
+      </div>`;
+    } else {
+      let lastSvc = null;
+      for (const r of rows) {
+        if (r.service !== lastSvc) {
+          const s = svc(r.service);
+          inner += `<div class="menu-label">
+            <span class="grow">${s.name}</span>
+            <span class="pill ${s.auth === 'sub' ? 'sub' : 'key'}">${s.auth === 'sub' ? 'Subscription' : 'API key'}</span>
+          </div>`;
+          lastSvc = r.service;
+        }
+        const sel = !stranded && r.service === state.service && r.model === state.model;
+        inner += `<div class="item ${sel ? 'sel-row' : ''}" onclick="pickModel('${r.service}','${r.model}')">
+          <span class="grow mono">${r.model}</span>
+          <span class="check">${sel ? '&#10003;' : ''}</span>
+        </div>`;
+      }
+      // The footer is the whole mitigation for hiding the other harness's models, so
+      // it must not offer a switch the session can no longer make.
+      const n = elsewhereCount();
+      if (n) {
+        const where = `<b>${elsewhereNames().join('</b>, <b>')}</b>`;
+        inner += `<div class="menu-foot">${state.pinned
+          ? `${n} more model${n === 1 ? '' : 's'} on ${where}, out of reach — the harness is
+             fixed for this session.`
+          : `${n} more model${n === 1 ? '' : 's'} on ${where} — switch harness to see
+             ${n === 1 ? 'it' : 'them'}.`}
+        </div>`;
+      }
+    }
+    menu = `<div class="menu right">${inner}</div>`;
+  }
+
+  const s = svc(state.service);
+  return `${menu}
+    <button class="trigger ${open ? 'open' : ''}" onclick="toggleMenu('model')"
+            title="Model, grouped by the service that provides it">
+      <span class="lead">Model</span>
+      <span class="mono" ${stranded ? 'style="color:var(--warning)"' : ''}>${state.model}</span>
+      <span class="pill ${s.auth === 'sub' ? 'sub' : 'key'}">${s.name}</span>
+      <span class="caret">&#9660;</span>
+    </button>`;
+}
+
+function readout() {
+  const out = [];
+  const s = svc(state.service);
+  const stranded = !isEligible(state.harness, state.service, state.model);
+
+  if (stranded) {
+    out.push(`<div class="banner warn"><span class="ico">&#9888;</span><div>
+      <b>${state.model}</b> via ${s.name} is no longer available on ${hns(state.harness).name}
+      — ${state.creds.has(s.id)
+          ? 'this harness&rsquo;s API style does not offer it.'
+          : `you removed the ${s.name} credential.`}
+      The session cannot take a turn until you pick another model.
+      <div style="margin-top:5px;color:var(--text-tertiary)">
+        Deliberately not auto-moved: the alternatives are a different vendor at a different
+        price, which req 12 says is the user&rsquo;s call and not ShipIt&rsquo;s.
+      </div>
+    </div></div>`);
+  } else if (state.note) {
+    out.push(`<div class="banner ${state.note.kind}"><span class="ico">&#8635;</span>
+      <div>${state.note.text}</div></div>`);
+  }
+
+  if (state.pinned) {
+    out.push(`<div class="banner"><span class="ico">&#128274;</span><div>
+      Harness fixed to <b>${hns(state.harness).name}</b> for this session — per-agent credential
+      isolation pins it at the first turn (docs/138). Models stay switchable (req 4).
+    </div></div>`);
+  }
+
+  if (!stranded) {
+    out.push(`<div class="attrib">
+      <span class="lbl">Running</span>
+      <span class="chip">${state.model}</span>
+      <span class="lbl">via</span>
+      <span class="chip">${s.name}</span>
+      <span class="pill ${s.auth === 'sub' ? 'sub' : 'key'}">${s.auth === 'sub' ? 'Subscription' : 'API key'}</span>
+      <span class="lbl">on</span>
+      <span class="chip">${hns(state.harness).name}</span>
+      ${s.auth === 'key' ? '<span class="lbl">no quota to report</span>' : ''}
+    </div>`);
+  }
+  return out.join('');
+}
+
+function knobs() {
+  document.getElementById('knob-creds').innerHTML = SERVICES.map(s => `
+    <label class="knob">
+      <input type="checkbox" ${state.creds.has(s.id) ? 'checked' : ''}
+             onchange="toggleCred('${s.id}')" />
+      <span>${s.name}</span>
+      <span class="sub">${s.auth === 'sub' ? 'subscription' : 'API key'}</span>
+    </label>`).join('');
+
+  document.getElementById('knob-harnesses').innerHTML = HARNESSES.map(h => `
+    <label class="knob">
+      <input type="checkbox" ${state.installed.has(h.id) ? 'checked' : ''}
+             onchange="toggleInstalled('${h.id}')" />
+      <span>${h.name}</span>
+      <span class="sub">${h.style}</span>
+    </label>`).join('');
+}
+
+function toggleCred(id) {
+  state.creds.has(id) ? state.creds.delete(id) : state.creds.add(id);
+  state.note = null;
+  render();
+}
+function toggleInstalled(id) {
+  state.installed.has(id) ? state.installed.delete(id) : state.installed.add(id);
+  // Falling back is the deployment changing under the session, not a user choice —
+  // land on the first installed harness rather than pretending the old one is there.
+  if (!state.installed.has(state.harness)) {
+    const first = HARNESSES.find(h => state.installed.has(h.id));
+    if (first) { state.harness = first.id; state.note = null; }
+  }
+  render();
+}
+
+function render() {
+  document.getElementById('sel-harness').innerHTML = harnessSelector();
+  document.getElementById('sel-model').innerHTML = modelSelector();
+  document.getElementById('readout').innerHTML = readout();
+  knobs();
+  document.getElementById('knob-pinned').checked = state.pinned;
+}
+
+document.getElementById('knob-pinned').addEventListener('change', e => {
+  state.pinned = e.target.checked;
+  state.open = null;
+  render();
+});
+
+// Capture phase on purpose: the trigger's own onclick re-renders and detaches the
+// event target, so by the bubble phase `closest('.sel')` walks a node with no parents
+// and reports every click as outside — closing the menu the same tick it opened.
+document.addEventListener('click', e => {
+  if (state.open && !e.target.closest('.sel')) { state.open = null; render(); }
+}, true);
+
+render();
+</script>
+</body>
+</html>
