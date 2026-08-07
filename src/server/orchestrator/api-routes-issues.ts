@@ -13,6 +13,7 @@
  */
 
 import { randomUUID, createHash } from "node:crypto";
+import fs from "node:fs";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import {
@@ -116,6 +117,48 @@ function readDeclaredTrackers(
 }
 
 /**
+ * Whether the answer to "what does this repository declare?" is *not yet
+ * knowable* for this session — as opposed to "it declares nothing".
+ *
+ * `readDeclaredTrackers` degrades a missing checkout to zero declarations, and
+ * the two are indistinguishable in the response. They are not the same thing: a
+ * disk-evicted session (docs/161) keeps its `workspaceDir` in the session row
+ * while the directory itself is gone, and activation re-clones it from the bare
+ * cache *asynchronously* (`finishRestore`). The browser's tracker fetch races
+ * that re-clone and reliably wins, so a session switch to an evicted session
+ * cached "declares nothing" — and since the client refetches only on the next
+ * session change or Issues-tab open, every inline `planning#147` badge in the
+ * transcript stayed plain text until the user opened the tab.
+ *
+ * Saying so lets the client retry instead of caching the empty answer.
+ *
+ * **The directory existing is not the test.** `restoreSessionWorkspace` deletes
+ * the remnant and clones into the same path (`services/session.ts`), and
+ * `git clone` creates the target directory long before the checkout lands — so
+ * `existsSync` goes true within milliseconds while `shipit.yaml` is still absent
+ * (mid-clone) or on the wrong branch (cloned, not yet checked out). A client
+ * retrying on that signal would stop on the first retry and cache the empty
+ * answer anyway, which is the bug it was added to fix. The authoritative signal
+ * is the **disk tier**: eviction sets `evicted` (`tier-escalation.ts`) and only
+ * the very end of a successful restore sets it back to `hot`, after the branch
+ * checkout and the LFS materialization.
+ *
+ * So pending means: this session has a workspace path, and either the tier says
+ * a restore is still owed or the path isn't on disk at all (a genuine fs loss,
+ * or the instant before the re-clone starts). `light` keeps its checkout and is
+ * not pending. A session with no workspace at all (standalone/sandbox) declares
+ * nothing, permanently; neither it nor an unknown session id is pending.
+ */
+function areDeclarationsPending(
+  sessionManager: SessionManager,
+  sessionId: string | undefined,
+): boolean {
+  const session = sessionId ? sessionManager.get(sessionId) : undefined;
+  if (!session?.workspaceDir) return false;
+  return session.diskTier === "evicted" || !fs.existsSync(session.workspaceDir);
+}
+
+/**
  * Whether a `TrackerIssue.status.type` represents a finished issue. Both GitHub
  * (closed → "completed") and Linear ("completed"/"canceled") normalize onto the
  * same vocabulary, so a `--state closed` filter is tracker-neutral.
@@ -183,10 +226,22 @@ export async function registerIssueRoutes(
     );
   }
 
-  // GET /api/trackers — configured-tracker metadata (drives the sub-tabs).
+  // GET /api/trackers — configured-tracker metadata (drives the sub-tabs) plus,
+  // when the session's checkout isn't on disk yet, the flag that says the empty
+  // declaration set is a "not yet" rather than an answer (see
+  // `areDeclarationsPending`). Omitted when false so the response shape is
+  // unchanged for every session whose workspace is present.
   app.get<{ Querystring: { sessionId?: string } }>("/api/trackers", async (request) => {
+    // Readiness is sampled BEFORE the declarations are read, never after: a
+    // restore that completes between the two reads would otherwise pair an empty
+    // read with a ready verdict — the one combination the client caches forever.
+    // Sampling first can only err towards "pending", which costs a retry.
+    const pending = areDeclarationsPending(sessionManager, request.query.sessionId);
     const github = resolveGitHubContext(request.query.sessionId);
-    return { trackers: listTrackers(credentialStore, trackerFetchImpl, github) };
+    return {
+      trackers: listTrackers(credentialStore, trackerFetchImpl, github),
+      ...(pending ? { declarationsPending: true } : {}),
+    };
   });
 
   // GET /api/issues?tracker=linear[&includeDone=true][&sessionId=...] —
