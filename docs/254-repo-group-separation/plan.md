@@ -64,15 +64,39 @@ violates one will look correct in a static screenshot and break in use.
 
 ### Assignment
 
-`pickRepoColorIndex` takes the **lowest-numbered free** color, not the next one
-round-robin, so the early colors stay stable as repos come and go: removing repo
-#2 and adding another gives the new repo #2's old slot rather than shifting
-everyone along (req 5, req 6). Hidden repos are counted as holders, so unhiding
-one can never collide with a color handed out while it was out of sight. Past 16
-repos it wraps to the least-used index — the first repeat req 5 allows.
+`pickRepoColorIndex` takes the **first free** color in
+`REPO_COLOR_ASSIGNMENT_ORDER`, not the next one round-robin, so the early colors
+stay stable as repos come and go: removing the second repo and adding another
+gives the new repo that freed slot rather than shifting everyone along (req 5,
+req 6). Hidden repos are counted as holders, so unhiding one can never collide
+with a color handed out while it was out of sight. Past 16 repos it wraps to the
+least-used index — the first repeat req 5 allows — breaking ties by assignment
+order so the repeats spread out too.
 
 A re-add (which is also how *unhide* works, since `add()` clears `hidden`) never
 reassigns; it only fills a hole left by an older build.
+
+**Assignment order is not palette order**, and the gap between them is the whole
+point. The palette is laid out as a hue wheel because that is what the picker
+grid wants; assignment originally walked it by index, so a workspace's first
+three repos got Clay, Ochre and Mustard — three adjacent warm ochres that read as
+one color in the rail. Every pair passed the mutual-distinguishability test (all
+16 entries are ≥44 apart), which is exactly the lesson: *"no two entries are
+identical"* does not give you *"the ones actually in use look different"*, and
+only the second is visible to a user with three repos.
+
+So `REPO_COLOR_ASSIGNMENT_ORDER` is a farthest-point traversal of the palette —
+each entry is the one whose closest approach to any already-assigned color is
+largest, scored as the worse of its light and dark values, since a pair can
+separate on one surface and not the other. Distance to the nearest color already
+on screen goes 268 → 161 → 121 → 95 for repos two through five, against
+68 → 53 → 58 → 82 walking the palette in order.
+
+`repo-palette.test.ts` guards the property as the user meets it — *as each repo
+arrives, how far is its color from the nearest one already in use* — with a
+strict floor over the first handful and a relative check that spread must beat
+sequential at 3, 5 and 8 repos. That last one is stated as a comparison so it
+keeps its meaning if the palette is ever retuned.
 
 ### Suppression
 
@@ -108,13 +132,22 @@ described "the amber ops group" while the wrench rendered `text-secondary`.
 Existing repos are backfilled rather than left NULL — the edge *is* the feature,
 so a workspace upgrading into it with every repo uncolored would see nothing at
 all. The backfill walks rows in the sidebar's own display order and hands out
-distinct low indices, which is what `pickRepoColorIndex` would have produced had
-those repos been added under this build, so an upgraded workspace and a fresh one
-agree.
+distinct low indices, matching what `pickRepoColorIndex` produced at the time.
 
-The palette size is **inlined as `16`** in the migration rather than imported. A
-migration must keep reproducing the same result forever; following a constant
-would let a later, larger palette retroactively recolor old repos.
+Those low indices are the adjacent hues described under *Assignment*, so a
+**second migration re-spreads them** onto the assignment order. It is guarded,
+because by then a color can also be a deliberate choice and nothing records
+which: it runs only when the workspace still holds the exact contiguous prefix
+`{0..N-1}` the old scheme could produce, and bails on anything else. That
+compares the value **set**, not each row's position, so it survives a sidebar
+reorder (which moves rows while the colors stay put) but not a single visit to
+the picker — at which point the whole workspace is left alone. A repo wearing the
+color its owner picked outranks an optimal spread.
+
+The first migration stays exactly as it shipped: a migration must keep
+reproducing the same result forever, which is also why both **inline** their
+palette data (`16`, and the order itself) rather than importing it. Following a
+constant would let a later retune retroactively recolor old repos.
 
 ## Changing a color
 

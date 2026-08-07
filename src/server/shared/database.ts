@@ -847,9 +847,12 @@ const MIGRATIONS: Migration[] = [
   // Existing rows are backfilled here rather than left NULL: the edge is the
   // whole feature, so a workspace that upgrades into it with every repo
   // uncolored would see nothing at all. Backfill walks rows in the sidebar's own
-  // display order and hands out distinct low indices, which is exactly what
-  // `pickRepoColorIndex` would have produced had the repos been added under this
-  // build — so an upgraded workspace and a fresh one agree.
+  // display order and hands out distinct low indices, matching what
+  // `pickRepoColorIndex` produced at the time.
+  //
+  // Those low indices are adjacent hues, which read as nearly the same color —
+  // the migration below re-spreads them. This one stays as it shipped: a
+  // migration must keep reproducing the same result forever.
   (db) => {
     db.exec("ALTER TABLE repos ADD COLUMN color_index INTEGER");
     const rows = db
@@ -866,6 +869,38 @@ const MIGRATIONS: Migration[] = [
     // reproducing the same result forever, so it can't follow a constant that
     // later changes — a bigger palette must not retroactively recolor old repos.
     rows.forEach((row, i) => update.run(i % 16, row.url));
+  },
+  // docs/254 — re-spread the repo colors assigned by the migration above.
+  //
+  // The palette is a hue wheel and assignment used to walk it in index order, so
+  // the first repos got 0, 1, 2 — three adjacent warm ochres that read as the
+  // same color in the sidebar, which is precisely what the per-repo edge exists
+  // to prevent. Assignment now walks a farthest-point order instead
+  // (`REPO_COLOR_ASSIGNMENT_ORDER`), and this remaps existing rows onto it so an
+  // upgraded workspace looks like a fresh one rather than keeping the mush.
+  //
+  // Guarded, because a color can also be a deliberate choice: the remap runs
+  // only when the workspace still holds the exact contiguous prefix
+  // {0..N-1} that the old scheme could produce. Any other shape means someone
+  // used the picker, and then we leave the whole workspace alone — a repo
+  // wearing the color its owner chose matters more than an optimal spread.
+  // (Checking the SET rather than each row's position also survives a sidebar
+  // reorder, which changes display order while the colors stay put.)
+  (db) => {
+    // Inlined for the same reason as above: frozen input, frozen output.
+    const ORDER = [6, 12, 3, 9, 1, 4, 10, 5, 15, 8, 11, 2, 14, 0, 13, 7];
+    const rows = db.prepare("SELECT url, color_index FROM repos").all() as {
+      url: string;
+      color_index: number | null;
+    }[];
+    if (rows.length === 0 || rows.length > ORDER.length) return;
+    const values = rows.map((r) => r.color_index);
+    if (values.some((v) => v === null)) return;
+    const distinct = new Set(values as number[]);
+    if (distinct.size !== rows.length) return;
+    for (let i = 0; i < rows.length; i++) if (!distinct.has(i)) return;
+    const update = db.prepare("UPDATE repos SET color_index = ? WHERE url = ?");
+    for (const row of rows) update.run(ORDER[row.color_index!], row.url);
   },
 ];
 
