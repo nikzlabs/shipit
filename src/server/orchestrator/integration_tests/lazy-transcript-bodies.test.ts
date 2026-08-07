@@ -1,5 +1,5 @@
 /**
- * Integration test for lazy transcript bodies (docs/244, SHI-267).
+ * Integration test for lazy transcript bodies (docs/244, planning#269).
  *
  * Drives the real orchestrator so the whole round-trip is exercised: a
  * transcript containing a megabyte tool output, a Write with a big file body,
@@ -43,11 +43,11 @@ const SCREENSHOT = Buffer.from("x".repeat(200_000)).toString("base64");
 // nothing at all — so the assertions below can only tell the two cases apart if
 // their bodies differ.
 const SUBAGENT_REPORT = Array.from({ length: 5_000 }, (_, i) => `finding ${i}`).join("\n");
-// A cross-agent consult's verbatim output (SHI-297). Deliberately distinct from
+// A cross-agent consult's verbatim output (planning#299). Deliberately distinct from
 // SUBAGENT_REPORT above, whose head still ships in the same payload — so an
 // "is it on the wire?" assertion can tell the two apart.
 const CONSULT_OUTPUT = Array.from({ length: 5_000 }, (_, i) => `review note ${i}`).join("\n");
-// SHI-296 — the input side. A heredoc command and a subagent prompt are both
+// planning#298 — the input side. A heredoc command and a subagent prompt are both
 // routinely kilobytes, and the transcript draws 80 characters of the first and
 // none of the second.
 const HEAVY_COMMAND = `gh pr create --body-file - <<'EOF'\n${Array.from({ length: 800 }, (_, i) => `body line ${i}`).join("\n")}\nEOF`;
@@ -56,7 +56,7 @@ const TASK_PROMPT = Array.from({ length: 400 }, (_, i) => `instruction ${i}`).jo
 // (`findPlanContent` → `PlanApproval`), so it must survive the projection.
 const PLAN_BODY = Array.from({ length: 300 }, (_, i) => `## Step ${i}`).join("\n");
 
-describe("Integration: lazy transcript bodies (SHI-267)", () => {
+describe("Integration: lazy transcript bodies (planning#269)", () => {
   let app: FastifyInstance;
   let tmpDir: string;
   let dbManager: DatabaseManager;
@@ -157,7 +157,7 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     expect(body).not.toContain(FILE_BODY.slice(-200));
     expect(body).not.toContain("stdout line 0");
     expect(body).not.toContain("stdout line 39999");
-    // …and the same for the input side (SHI-296): the command's tail and the
+    // …and the same for the input side (planning#298): the command's tail and the
     // subagent's prompt are behind clicks too.
     expect(body).not.toContain("body line 799");
     expect(body).not.toContain("instruction 399");
@@ -218,7 +218,7 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
   });
 
   /**
-   * SHI-296. Everything below this comment is the input side of requirement 1:
+   * planning#298. Everything below this comment is the input side of requirement 1:
    * before it, a megabyte `Bash` command shipped whole behind an 80-character
    * summary and a `Task` prompt shipped whole behind a collapsed disclosure.
    */
@@ -270,7 +270,7 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
   });
 
   it("serves the whole stored input from the fetch endpoint", async () => {
-    // The response is the input verbatim (SHI-296), not the three Edit/Write
+    // The response is the input verbatim (planning#298), not the three Edit/Write
     // fields it used to name: the projection now shortens or removes keys for
     // every tool, so what a caller needs back depends on the tool.
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-inputs/write-1` });
@@ -451,7 +451,7 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     }
   });
 
-  it("serves a sub-agent consult as its preview line, with the output behind a fetch (SHI-297)", async () => {
+  it("serves a sub-agent consult as its preview line, with the output behind a fetch (planning#299)", async () => {
     // A cross-agent review is routinely tens of kilobytes and the card face
     // draws one 140-character line of it, so the rest is modal-only content —
     // the same shape as a tool result, and the same treatment.

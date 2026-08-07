@@ -198,7 +198,7 @@ describe("issues-store comments (docs/189 follow-up)", () => {
     expect(useIssuesStore.getState().comments).toBeNull();
   });
 
-  it("openIssue carries an anchorCommentId onto the selection (SHI-103)", async () => {
+  it("openIssue carries an anchorCommentId onto the selection (planning#105)", async () => {
     globalThis.fetch = routeFetch();
     await useIssuesStore.getState().openIssue({
       tracker: "linear",
@@ -253,7 +253,7 @@ describe("issues-store status/priority writes (docs/191)", () => {
     ]);
   });
 
-  it("fetchLabels caches the tracker's available label set (SHI-92 foundation)", async () => {
+  it("fetchLabels caches the tracker's available label set (planning#94 foundation)", async () => {
     globalThis.fetch = vi.fn(async () =>
       new Response(
         JSON.stringify({
@@ -333,11 +333,11 @@ describe("issues-store status/priority writes (docs/191)", () => {
 });
 
 /**
- * SHI-321 — `fetchTrackers` reports whether the declared set actually changed,
+ * planning#323 — `fetchTrackers` reports whether the declared set actually changed,
  * so a caller refreshing on a `shipit.yaml` edit can skip the issue-list fetch
  * (a real tracker-API round-trip) when the edit touched something else.
  */
-describe("issues-store fetchTrackers change reporting (SHI-321)", () => {
+describe("issues-store fetchTrackers change reporting (planning#323)", () => {
   const originalFetchLocal = globalThis.fetch;
 
   function stub(trackers: TrackerInfo[]): void {
@@ -387,13 +387,13 @@ describe("issues-store fetchTrackers change reporting (SHI-321)", () => {
 });
 
 /**
- * SHI-325 — an open issue must not survive into a repository that doesn't
+ * planning#327 — an open issue must not survive into a repository that doesn't
  * declare its tracker (docs/248 req 11: an undeclared destination fails
  * closed). Two halves: `setRepoScope` covers the switch itself (synchronous,
  * before the new declarations are known), `fetchTrackers` is the authoritative
  * check once they land.
  */
-describe("issues-store repo scoping (SHI-325)", () => {
+describe("issues-store repo scoping (planning#327)", () => {
   const roadmap: TrackerInfo = {
     id: "linear:SHI",
     label: "roadmap",

@@ -1,5 +1,5 @@
 /**
- * Tests for the browser-only egress settings routes (docs/172, SHI-90).
+ * Tests for the browser-only egress settings routes (docs/172, planning#92).
  *
  * These routes back the Settings → Network egress section. They are NOT
  * `containerAccessible` (verified by the golden route-table test in

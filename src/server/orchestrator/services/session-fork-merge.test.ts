@@ -9,7 +9,7 @@ import { mergeSession } from "./session-fork-merge.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import type { SessionManager } from "../sessions.js";
 
-// SHI-144 (analog): the root orchestrator's `git.merge` into the *active*
+// planning#146 (analog): the root orchestrator's `git.merge` into the *active*
 // session's booted clone re-roots BOTH `.git` and the worktree files it
 // rewrites — so `mergeSession` must hand BOTH back to the worker uid, not just
 // `.git` (handing only `.git` back left the merged worktree files root-owned and
@@ -44,7 +44,7 @@ function makeStubSessionManager(source: { branch: string; workspaceDir: string }
   } as unknown as SessionManager;
 }
 
-describe("session-fork-merge: mergeSession ownership handoff (SHI-144 analog)", () => {
+describe("session-fork-merge: mergeSession ownership handoff (planning#146 analog)", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
   let origGitEditor: string | undefined;

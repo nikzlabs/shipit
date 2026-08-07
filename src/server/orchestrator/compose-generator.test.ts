@@ -886,7 +886,7 @@ describe("generateComposeOverride env_file injection", () => {
     expect(override).not.toContain(".shipit/.env.api");
   });
 
-  // SHI-290 — a service missing from the map gets NO env_file rather than the
+  // planning#292 — a service missing from the map gets NO env_file rather than the
   // old `.shipit/.env.<service>` fallback. Nothing writes that file any more, so
   // referencing it would fail the whole stack at `up` time instead of one
   // service, and it named a path inside the user's git clone (docs/246 req 7).
@@ -1004,7 +1004,7 @@ describe("generateComposeOverride — Docker-secrets mode", () => {
     expect(afterRedis).not.toContain("secrets-entrypoint");
   });
 
-  // SHI-285 — the wrapper mount used to come out of the workspace volume, which
+  // planning#287 — the wrapper mount used to come out of the workspace volume, which
   // is why a generated `secrets-entrypoint.sh` had to be copied into the user's
   // git clone (docs/246 req 1). It is now bind-mounted from its staged absolute
   // path, so the mount is identical whether or not a workspace volume exists.

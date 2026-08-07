@@ -1,5 +1,5 @@
 /**
- * SHI-277 — `shipit branch reset-to-base --force`, the break-glass for a branch
+ * planning#279 — `shipit branch reset-to-base --force`, the break-glass for a branch
  * whose work shipped under a DIFFERENT commit.
  *
  * These tests build the stranded state for real — a bare "remote", a multi-commit

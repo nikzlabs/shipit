@@ -1,5 +1,5 @@
 /**
- * Tests for the Tier C allow-once policy store (docs/172, SHI-90).
+ * Tests for the Tier C allow-once policy store (docs/172, planning#92).
  */
 
 import { describe, it, expect, beforeEach } from "vitest";

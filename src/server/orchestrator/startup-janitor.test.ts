@@ -449,9 +449,9 @@ describe("runDiskJanitor", () => {
     expect(fs.existsSync(path.join(sessionRoot, "overlay"))).toBe(false);
   });
 
-  // SHI-197 — the archived-workspace backstop is now ON by default at the single
+  // planning#199 — the archived-workspace backstop is now ON by default at the single
   // cold-artifact retention (30d), no longer gated behind a disabled-by-default
-  // knob. It's pure crash-recovery (SHI-192 frees the workspace synchronously at
+  // knob. It's pure crash-recovery (planning#194 frees the workspace synchronously at
   // archive time), so a workspace this old only exists if that synchronous
   // cleanup crashed — exactly what the backstop is here to mop up.
   it("archive backstop runs by default at the cold-artifact retention", async () => {
@@ -1110,7 +1110,7 @@ describe("runDiskJanitor", () => {
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, 1, 1, 'evicted')",
     ).run(archivedId, "Archived", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
-    // SHI-179: disk-evicted but NOT user-archived — still LIVE (re-clones on
+    // planning#181: disk-evicted but NOT user-archived — still LIVE (re-clones on
     // activation), so its credentials must be PRESERVED.
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, 0, 0, 'evicted')",
@@ -1140,7 +1140,7 @@ describe("runDiskJanitor", () => {
     expect(result.credentialDirsRemoved).toBe(2);
   });
 
-  it("preserves per-session logs for disk-evicted-but-live sessions; reaps user-archived/untracked (SHI-179)", async () => {
+  it("preserves per-session logs for disk-evicted-but-live sessions; reaps user-archived/untracked (planning#181)", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -1182,7 +1182,7 @@ describe("runDiskJanitor", () => {
     expect(result.logDirsRemoved).toBe(2);
   });
 
-  it("archived-workspace sweep skips disk-evicted-but-live sessions (SHI-179)", async () => {
+  it("archived-workspace sweep skips disk-evicted-but-live sessions (planning#181)", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -1304,7 +1304,7 @@ describe("runDiskJanitor", () => {
   });
 
   // -------------------------------------------------------------------------
-  // SHI-222 — orphan egress-sidecar sweep (backstop for the crash-site reap)
+  // planning#224 — orphan egress-sidecar sweep (backstop for the crash-site reap)
   // -------------------------------------------------------------------------
 
   it("reaps egress sidecars whose netns parent is gone, and spares the live ones", async () => {

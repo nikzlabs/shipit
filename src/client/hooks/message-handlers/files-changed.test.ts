@@ -7,7 +7,7 @@ import type { HandlerContext } from "./types.js";
 import type { TrackerInfo, WsFilesChanged } from "../../../server/shared/types.js";
 
 /**
- * SHI-321 — the browser's view of a repository's `issues.trackers`
+ * planning#323 — the browser's view of a repository's `issues.trackers`
  * declarations must follow a `shipit.yaml` edit, since the server re-reads the
  * file per request while the client only refetched on session change and
  * Issues-tab activation. The file watcher already delivers `files_changed` with
@@ -60,7 +60,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("handleFilesChanged — tracker declarations (SHI-321)", () => {
+describe("handleFilesChanged — tracker declarations (planning#323)", () => {
   it("refetches the tracker list when shipit.yaml changes", async () => {
     stubFetch([tracker(), tracker({ id: "github:acme/planning", name: "planning", kind: "github" })]);
 

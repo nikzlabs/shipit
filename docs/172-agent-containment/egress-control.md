@@ -488,7 +488,7 @@ hole is real. (If a future change *did* attach the agent to the `<shortId>` netw
 same `connectToNetwork` hook would cover it — the fix is at the attach point, not per
 network kind.)
 
-## Settings & UX (browser-only, SHI-129-protected)
+## Settings & UX (browser-only, planning#131-protected)
 
 All egress configuration is mutated **only from the browser**. planning#131's guard is
 default-deny per route: a route is reachable from a container only if it declares
@@ -619,7 +619,7 @@ Reuses `egress-allowlist.ts` (already merged on the planning#92 branch):
   native builds were affected by its absence).
 - Operator extras (`SESSION_EGRESS_ALLOWLIST`) + the browser-managed allowlist above.
 - **Live MCP hosts** from the credential store (configured HTTP servers + OAuth providers).
-  Post-SHI-129 the agent can no longer add an MCP server from inside the container, so this
+  Post-planning#131 the agent can no longer add an MCP server from inside the container, so this
   derived set is now user-controlled and tamper-proof — the sub-hole flagged earlier is
   closed.
 - GitHub resolved via `gh api meta` CIDR ranges at the gateway (Anthropic's pattern), not

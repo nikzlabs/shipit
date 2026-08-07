@@ -243,7 +243,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(JSON.parse(init?.body as string)).toEqual({ title: "New doc", body: "tracks docs/187" });
   });
 
-  it("creates with labels validated against the repo's labels (SHI-92)", async () => {
+  it("creates with labels validated against the repo's labels (planning#94)", async () => {
     const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const u = url as string;
       if ((init?.method ?? "GET") === "GET" && u.includes("/labels")) {
@@ -258,7 +258,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(JSON.parse(post[1]?.body as string).labels).toEqual(["security"]);
   });
 
-  it("rejects an unknown label with the repo's candidate list (SHI-92)", async () => {
+  it("rejects an unknown label with the repo's candidate list (planning#94)", async () => {
     const fetchImpl = vi.fn(async (url: RequestInfo | URL) =>
       (url as string).includes("/labels") ? jsonResponse([{ name: "security" }]) : issueResponse(),
     );
@@ -269,7 +269,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     });
   });
 
-  it("rejects --priority on GitHub (no native priority field) (SHI-92)", async () => {
+  it("rejects --priority on GitHub (no native priority field) (planning#94)", async () => {
     const fetchImpl = vi.fn(async () => issueResponse());
     const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
     await expect(tracker.createIssue({ title: "New", body: "", priority: "high" })).rejects.toMatchObject({
@@ -279,7 +279,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("rejects --parent on GitHub (issues are flat, no sub-issues) (SHI-206)", async () => {
+  it("rejects --parent on GitHub (issues are flat, no sub-issues) (planning#208)", async () => {
     const fetchImpl = vi.fn(async () => issueResponse());
     const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
     await expect(tracker.createIssue({ title: "New", body: "", parent: "octo/repo#1" })).rejects.toMatchObject({
@@ -290,7 +290,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("surfaces labels with normalized colors on a read (SHI-92 + foundation)", async () => {
+  it("surfaces labels with normalized colors on a read (planning#94 + foundation)", async () => {
     const tracker = new GitHubTracker({
       token: "t",
       repo: REPO,
@@ -333,7 +333,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(fetchImpl.mock.calls[0][0] as string).toContain("/repos/octocat/hello-world/labels");
   });
 
-  it("creates a repo label with a #-stripped color and name-as-id (SHI-230)", async () => {
+  it("creates a repo label with a #-stripped color and name-as-id (planning#232)", async () => {
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
       jsonResponse({ name: "t3code", color: "0ea5e9" }),
     );
@@ -349,7 +349,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(JSON.parse(init?.body as string)).toEqual({ name: "t3code", color: "0ea5e9", description: "T3 code area" });
   });
 
-  it("deletes an unused label on undo (SHI-230)", async () => {
+  it("deletes an unused label on undo (planning#232)", async () => {
     const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       if ((init?.method ?? "GET") === "GET") {
         expect(url as string).toContain("issues?labels=t3code&state=all&per_page=1");
@@ -363,7 +363,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(del[0]).toContain("/labels/t3code");
   });
 
-  it("refuses to delete a label that issues now carry, naming a carrier (SHI-230)", async () => {
+  it("refuses to delete a label that issues now carry, naming a carrier (planning#232)", async () => {
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
       jsonResponse([{ number: 42 }]),
     );
@@ -448,7 +448,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(init?.method).toBe("DELETE");
   });
 
-  // ---- comment edit (SHI-86) ----------------------------------------------
+  // ---- comment edit (planning#88) ----------------------------------------------
   //
   // A comment id is repository-global, so the adapter reads the comment by id
   // first and checks two things before writing: that it hangs off the issue the
@@ -476,7 +476,7 @@ describe("GitHubTracker writes (docs/177)", () => {
       return jsonResponse({ id: 555, body: JSON.parse(init?.body as string).body, html_url: "http://c" });
     });
 
-  it("edits a comment via PATCH and returns the body it replaced (SHI-86)", async () => {
+  it("edits a comment via PATCH and returns the body it replaced (planning#88)", async () => {
     const fetchImpl = commentEditFetch();
     const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
     const { comment, previousBody } = await tracker.updateComment("42", "555", "new text");
@@ -489,7 +489,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(JSON.parse(patch[1]?.body as string)).toEqual({ body: "new text" });
   });
 
-  it("refuses to edit a comment on a different issue than the one named (SHI-86)", async () => {
+  it("refuses to edit a comment on a different issue than the one named (planning#88)", async () => {
     const fetchImpl = commentEditFetch({
       comment: { issue_url: "https://api.github.com/repos/octocat/hello-world/issues/99" },
     });
@@ -498,7 +498,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(fetchImpl.mock.calls.some((c) => c[1]?.method === "PATCH")).toBe(false);
   });
 
-  it("refuses to edit a comment written by someone else (SHI-86)", async () => {
+  it("refuses to edit a comment written by someone else (planning#88)", async () => {
     const fetchImpl = commentEditFetch({ comment: { user: { login: "some-human" } } });
     const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
     await expect(tracker.updateComment("42", "555", "new")).rejects.toMatchObject({
@@ -514,7 +514,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     await expect(tracker.updateComment("42", "555", "new")).resolves.toMatchObject({ previousBody: "old text" });
   });
 
-  it("reports a missing comment as missing, not as an unreachable repo (SHI-86)", async () => {
+  it("reports a missing comment as missing, not as an unreachable repo (planning#88)", async () => {
     const fetchImpl = vi.fn(async () => new Response("", { status: 404 }));
     const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
     await expect(tracker.updateComment("42", "555", "new")).rejects.toThrow(

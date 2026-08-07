@@ -45,7 +45,7 @@ function fakeRunner(groups: { text: string; toolUse: unknown[] }[] = []): {
     steeredMessages: [],
     getTurnEventBuffer: () => [...turnEventBuffer],
     lastPersistedBufferIndex: 0,
-    // docs/244 / SHI-297 — the real runner's committed-body marker, which
+    // docs/244 / planning#299 — the real runner's committed-body marker, which
     // `persistTurnInProgress` fills in as it writes.
     committedBodyIds: createCommittedBodyIds(),
   } as unknown as SessionRunnerInterface;
@@ -80,7 +80,7 @@ describe("chat-card-persistence", () => {
   });
 
   it("advances lastPersistedBufferIndex past the buffer so a later switch/reconnect doesn't replay pre-card events onto the snapshot", () => {
-    // Reproduces the vanishing-permission-card bug (SHI-112): a gated tool's
+    // Reproduces the vanishing-permission-card bug (planning#114): a gated tool's
     // `agent_assistant` was buffered but unpersisted (the buffer cursor only
     // moved at tool-result boundaries), so emitChatCard persisted a snapshot
     // AHEAD of the cursor. On a session switch the buffered event replayed on
@@ -105,7 +105,7 @@ describe("chat-card-persistence", () => {
     expect(runner.lastPersistedBufferIndex).toBe(runner.getTurnEventBuffer().length);
   });
 
-  it("persistTurnInProgress records what it wrote as committed (docs/244, SHI-297)", () => {
+  it("persistTurnInProgress records what it wrote as committed (docs/244, planning#299)", () => {
     // The reconnect snapshot may only strip a body once the row holding it is on
     // disk. `persistTurnInProgress` is one of the two writers that puts a turn
     // there (the tool-result boundary is the other), so it is also where the

@@ -125,7 +125,7 @@ describe("runAgentToCompletion", () => {
     expect(res.text).toBe("Final streamed answer.");
   });
 
-  it("joins every completed message when a run answers across several (SHI-245)", async () => {
+  it("joins every completed message when a run answers across several (planning#247)", async () => {
     const agent = new FakeAgent();
     const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
     // Codex shape: deltas, then the completed message re-emitted — twice, because

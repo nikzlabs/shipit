@@ -244,13 +244,13 @@ describe("createIdleEnforcer", () => {
     expect(destroy).toHaveBeenCalledWith("a");
   });
 
-  // SHI-296 — the prod incident: a BACKGROUNDED `shipit agent run` consult (the
+  // planning#298 — the prod incident: a BACKGROUNDED `shipit agent run` consult (the
   // shape docs/236 tells agents to prefer) ends the primary turn, so `running`
   // is false; and with no resident streaming process `backgroundTaskCount` reads
   // 0 too. The session looked perfectly idle and its container was destroyed 12
   // minutes into an `xhigh` Codex review, leaving only a `cancelled` card.
   //
-  // The assertion that matters is `destroy` — the SHI-278 runner-level guard
+  // The assertion that matters is `destroy` — the planning#280 runner-level guard
   // already made `dispose` decline, and it declined AFTER `container.stop` had
   // been issued, which is exactly why it didn't save the review.
   it("never destroys the container of a runner with an in-flight sub-agent spawn", async () => {
@@ -307,7 +307,7 @@ describe("createIdleEnforcer", () => {
     expect(destroy).toHaveBeenCalledWith("consulting");
   });
 
-  // SHI-296, second half — the enforcer used to fire `destroy` and `dispose`
+  // planning#298, second half — the enforcer used to fire `destroy` and `dispose`
   // unconditionally in sequence, so a runner that declined disposal still lost
   // its container (and was left pointed at a dead one). A declined dispose must
   // now mean the container is left alone.
@@ -784,10 +784,10 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     });
   });
 
-  // SHI-298 — the second thing a local spawn has no worker to do for it. The
+  // planning#300 — the second thing a local spawn has no worker to do for it. The
   // adapter's MCP write and the MCP env both happen at `createAgent`, next to
   // the account-scoped HOME above.
-  describe("MCP on a local spawn (SHI-298)", () => {
+  describe("MCP on a local spawn (planning#300)", () => {
     function localFactoryWithMcp(opts: { credentialStore?: CredentialStore } = {}) {
       const written: (AgentMcpWriteContext | null)[] = [];
       const localAgentFactory = vi.fn((): AgentProcess => {
@@ -828,7 +828,7 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
       runner.dispose({ force: true });
     });
 
-    it("without a credential store the spawn is unwrapped (pre-SHI-298 behavior)", () => {
+    it("without a credential store the spawn is unwrapped (pre-planning#300 behavior)", () => {
       const { factory, written } = localFactoryWithMcp();
       const runner = factory({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
       runner.createAgent!("claude").run({ prompt: "hi", cwd: "/tmp/s1" });

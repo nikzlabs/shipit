@@ -26,7 +26,7 @@ beforeEach(() => {
   useSessionStore.setState({ messages: [], historyLoaded: true });
 });
 
-describe("handleAgentEvent — card carrier message is never a merge target (SHI-112)", () => {
+describe("handleAgentEvent — card carrier message is never a merge target (planning#114)", () => {
   // A permission card persisted in an in-progress turn comes back from
   // loadSessionHistory with `streaming: true` (inProgress → streaming). A
   // buffered pre-card `agent_assistant` replayed on switch/reconnect must NOT
@@ -265,7 +265,7 @@ describe("what the cap must NOT do (docs/244 round-3)", () => {
   }
 
   /**
-   * SHI-291 — the same no-recovery rule, arrived at from the other direction.
+   * planning#293 — the same no-recovery rule, arrived at from the other direction.
    * The Ask branch of `MessageToolUse` returns before the output modal, so a
    * capped answer has no click, no modal and no fetch to get its tail back.
    */

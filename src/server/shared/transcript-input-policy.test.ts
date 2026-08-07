@@ -9,7 +9,7 @@ import {
 
 /**
  * The input-side counterpart of the `rendersResultContentInline` drift guard
- * (SHI-296). Each case below is pinned to a *call site*, not to a hunch about
+ * (planning#298). Each case below is pinned to a *call site*, not to a hunch about
  * what a tool's input contains — the failure mode this feature has hit twice is
  * an answer that was true of the renderer when it was written and stopped being
  * true when the renderer moved.

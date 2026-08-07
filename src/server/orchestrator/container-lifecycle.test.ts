@@ -57,7 +57,7 @@ describe("buildMounts", () => {
     // shared root, so a Claude session can't read Codex's creds and vice versa.
     expect(result.binds).toContain("/credentials/sessions/sess-1:/credentials:rw");
     expect(result.binds).not.toContain("/credentials:/credentials:rw");
-    // docs/246 / SHI-286 — every session mounts the container-visible slice of
+    // docs/246 / planning#288 — every session mounts the container-visible slice of
     // its state dir; there is no "no state dir" case left to skip it for.
     expect(result.binds).toContain(
       "/workspace/sessions/sess-1/state/shared:/session-state:rw",
@@ -125,7 +125,7 @@ describe("buildMounts", () => {
     expect(result.binds.filter((b) => b.includes("/pnpm-store"))).toHaveLength(0);
   });
 
-  // docs/172 Gap 6 (SHI-45) — /uploads is mounted READ-ONLY. The agent only
+  // docs/172 Gap 6 (planning#47) — /uploads is mounted READ-ONLY. The agent only
   // consumes user uploads, it never writes them, so a `:ro` mount removes the
   // ability for a prompt-injected agent to delete or tamper with them.
   it("mounts uploadsDir at /uploads read-only as a bind mount (dev mode)", () => {
@@ -342,7 +342,7 @@ describe("buildMounts — ops session host mounts (docs/128)", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildEnv", () => {
-  // docs/246 / SHI-286 — the worker writes its install marker here, and the
+  // docs/246 / planning#288 — the worker writes its install marker here, and the
   // state dir is ALWAYS mounted, so this is unconditional. It used to fall back
   // to an in-clone `${workspaceDir}/.shipit` for a session with no mountable
   // state dir (the flat layout); nothing has that shape any more, and the
@@ -464,7 +464,7 @@ describe("buildEnv", () => {
     expect(env.some((e) => e.startsWith("SESSION_WORKER_IMAGE_ID="))).toBe(false);
   });
 
-  // SHI-194 — the orchestrator resolves the worker's pinned base-image digest at
+  // planning#196 — the orchestrator resolves the worker's pinned base-image digest at
   // startup into BASE_IMAGE_DIGEST; buildEnv forwards it so the worker's
   // install-runtime runtimeKey() (the install-marker ABI gate) keys on the same
   // base digest the orchestrator's overlayRuntimeKey() scope uses.
@@ -650,7 +650,7 @@ describe("buildContainerConfig", () => {
     expect(config.sessionStateDir).toBe("/workspace/sessions/s1/state");
   });
 
-  // SHI-286 — unlike `scratchDir`/`uploadsDir`, the state dir is NOT
+  // planning#288 — unlike `scratchDir`/`uploadsDir`, the state dir is NOT
   // overridable. The old `sessionStateDir?` opt was dead in production, and it
   // would now silently diverge: the container would mount `<custom>/shared`
   // while `preStampInstallMarker` (which derives from the clone path) wrote the
@@ -670,7 +670,7 @@ describe("buildContainerConfig", () => {
     expect(config.sessionStateDir).toBe("/workspace/sessions/s1/state");
   });
 
-  // SHI-286 — a pre-`workspace/` flat session (clone === session dir) is refused
+  // planning#288 — a pre-`workspace/` flat session (clone === session dir) is refused
   // outright. The two rejected alternatives: a bare `dirname` gives every flat
   // session on the host the SAME `<sessionsRoot>/state` (one shared install
   // marker), and the previous "no state dir" answer let ShipIt keep writing its
@@ -696,7 +696,7 @@ describe("destroyContainer — overlay volume teardown", () => {
    * Minimal fake Docker that records every `volume rm` by name, plus every
    * child container removed by the `shipit-parent-session` sweep.
    *
-   * `children` seeds `listContainers` — SHI-222: it used to return `[]`
+   * `children` seeds `listContainers` — planning#224: it used to return `[]`
    * unconditionally, so the sweep in `cleanupSessionDockerResources` (the thing
    * that reaps a session's egress sidecars on teardown) was never actually
    * asserted by any test.
@@ -788,7 +788,7 @@ describe("destroyContainer — overlay volume teardown", () => {
     expect(deps.containers.has("sess-x")).toBe(false);
   });
 
-  // SHI-222 — the parent-label sweep is what reaps a session's Tier B/C egress
+  // planning#224 — the parent-label sweep is what reaps a session's Tier B/C egress
   // sidecars (docs/172) on teardown. It was previously untested here (the fake's
   // `listContainers` returned `[]`), which is how the crash-path leak went
   // unnoticed for so long: nothing pinned the behavior either way.
@@ -830,7 +830,7 @@ describe("destroyContainer — overlay volume teardown", () => {
     expect(deps.containers.has("sess-x")).toBe(false);
   });
 
-  // Round 5 (SHI-222) — with the crash-site reaper live, the die-triggered reap
+  // Round 5 (planning#224) — with the crash-site reaper live, the die-triggered reap
   // races this sweep for the same two sidecars on EVERY healthy destroy, so a 404
   // on child remove is the routine "the reaper got there first" outcome. Warning
   // on it would spam every clean shutdown. Mutation-verified: revert the
@@ -877,10 +877,10 @@ describe("destroyContainer — overlay volume teardown", () => {
 });
 
 // ---------------------------------------------------------------------------
-// prepareOverlayDirs — overlay dir creation + worker-uid handoff (SHI-145)
+// prepareOverlayDirs — overlay dir creation + worker-uid handoff (planning#147)
 // ---------------------------------------------------------------------------
 
-describe("prepareOverlayDirs (SHI-145)", () => {
+describe("prepareOverlayDirs (planning#147)", () => {
   let tmpDir: string;
   const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
 

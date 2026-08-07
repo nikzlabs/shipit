@@ -75,7 +75,7 @@ describe("SubagentCall work timeline", () => {
 });
 
 /**
- * SHI-287 — the report the user reads.
+ * planning#289 — the report the user reads.
  *
  * The parsing itself is covered exhaustively in
  * `utils/group-events-by-parent.test.ts`; these two assert the thing that was
@@ -281,7 +281,7 @@ describe("SubagentCall long report", () => {
 });
 
 /**
- * SHI-296 — the prompt is the heaviest thing on a subagent card and it sits
+ * planning#298 — the prompt is the heaviest thing on a subagent card and it sits
  * behind a collapsed disclosure, so docs/244's projection drops it and leaves
  * only its length. These pin the two halves of that: the collapsed header must
  * look exactly as it does when the prompt arrived whole (req 8), and expanding

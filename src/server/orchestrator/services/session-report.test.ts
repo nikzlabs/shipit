@@ -1,5 +1,5 @@
 /**
- * Unit tests for upward / lateral session reports (docs/233, SHI-241).
+ * Unit tests for upward / lateral session reports (docs/233, planning#243).
  *
  * Covers the two halves of delivery — the persisted card in each recipient's
  * history and the queued system turn on its runner — plus the guards that make
@@ -66,7 +66,7 @@ function makeFakeRegistry(): { registry: SessionRunnerRegistry; runners: Map<str
   return { registry, runners };
 }
 
-/** Parent with three children (the cohort from the SHI-241 report). */
+/** Parent with three children (the cohort from the planning#243 report). */
 function makeCohort() {
   const db = new DatabaseManager(":memory:");
   const sessionManager = new SessionManager(db);

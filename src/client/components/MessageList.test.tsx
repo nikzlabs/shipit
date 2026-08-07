@@ -764,7 +764,7 @@ describe("MessageList", () => {
       expect(screen.queryByLabelText("Fork current state")).not.toBeInTheDocument();
     });
 
-    it("offers fork-only at intermediate gaps while loading (SHI-182)", () => {
+    it("offers fork-only at intermediate gaps while loading (planning#184)", () => {
       // While a turn runs, in-place rewind (chat/code/both) is hidden but fork
       // stays available — it spins off a new session and doesn't mutate this one.
       const onRewindAtGap = vi.fn();
@@ -996,7 +996,7 @@ describe("MessageList", () => {
     });
 
     it("renders a view chip when the bridge payload is a bare JSON object (legacy shipit-present name)", () => {
-      // SHI-128 consolidated the per-tool servers into `shipit`, but pre-SHI-128
+      // planning#130 consolidated the per-tool servers into `shipit`, but pre-planning#130
       // sessions persisted the tool call under `mcp__shipit-present__present`.
       // isPresentTool still recognizes the legacy server name so those cards render.
       usePresentStore.getState().hydrate([
@@ -1775,7 +1775,7 @@ describe("MessageList", () => {
     });
   });
 
-  // SHI-78 — the spawned-session card's "Open" button must route through the
+  // planning#80 — the spawned-session card's "Open" button must route through the
   // router-aware onResumeSession handler (which resets per-session stores and
   // navigates), not the bare setSessionId fallback. The bare fallback left a
   // stale URL and stale messages, which on mobile surfaced as a truncated

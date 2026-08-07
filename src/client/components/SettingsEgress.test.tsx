@@ -75,7 +75,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("SettingsEgress (docs/172, SHI-90)", () => {
+describe("SettingsEgress (docs/172, planning#92)", () => {
   it("loads on mount and renders the containment toggle", async () => {
     stubFetch([]);
     render(<SettingsEgress />);

@@ -7,7 +7,7 @@
  * them ~1s after the agent launches would leave the session with no resolver and
  * no HTTPS.
  *
- * SHI-222: that keep-list has to be INCARNATION-aware. Both egress labels are
+ * planning#224: that keep-list has to be INCARNATION-aware. Both egress labels are
  * keyed on the session id, which is stable across container recreations — so a
  * label-only match also spares the sidecars of a PREVIOUS, dead agent container.
  * Those share a torn-down network namespace and are pure garbage. The test is
@@ -119,7 +119,7 @@ function makeCli(world: World) {
   return { cli, removed };
 }
 
-describe("ComposeCli.killStaleContainers — egress sidecar keep-list (SHI-222)", () => {
+describe("ComposeCli.killStaleContainers — egress sidecar keep-list (planning#224)", () => {
   it("spares the CURRENT incarnation's sidecars (their netns parent is running)", async () => {
     const { cli, removed } = makeCli({
       children: ["res-new", "proxy-new", "stale-web"],

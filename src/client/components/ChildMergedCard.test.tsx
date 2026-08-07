@@ -5,7 +5,7 @@ import { ChildMergedCard } from "./ChildMergedCard.js";
 /**
  * Tests for the in-chat `ChildMergedCard` (docs/196). The card is static — every
  * value is a prop persisted on the message row — so these pin the three
- * variants' copy: merged, closed-unmerged, and the SHI-258 delivery-failure
+ * variants' copy: merged, closed-unmerged, and the planning#260 delivery-failure
  * follow-up that says the agent did NOT start.
  */
 
@@ -35,7 +35,7 @@ describe("ChildMergedCard", () => {
     expect(screen.getByText(/did not ship/)).toBeTruthy();
   });
 
-  it("delivery failure: says the agent never started and how to continue (SHI-258)", () => {
+  it("delivery failure: says the agent never started and how to continue (planning#260)", () => {
     render(
       <ChildMergedCard
         {...BASE}

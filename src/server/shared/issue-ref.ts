@@ -15,7 +15,7 @@
  *
  * | Form                        | Example                          | What this parser reports |
  * |---|---|---|
- * | tracker name + backend id   | `roadmap#SHI-304`, `planning#123`| `trackerName` + raw `issueId` |
+ * | tracker name + backend id   | `planning#306`, `planning#123`| `trackerName` + raw `issueId` |
  * | tracker name + number       | `roadmap#304`                    | `trackerName` + raw `issueId` |
  * | the backend's canonical address | `SHI-304`, `owner/repo#42`, an issue URL | a concrete `tracker` id |
  *
@@ -36,7 +36,7 @@
  *    `/repos/{owner}/{repo}/issues/${id}`), and the **key** for Linear. The
  *    combined `identifier` is NOT what `getIssue` wants — passing `owner/repo#42`
  *    to GitHub yields `/issues/owner%2Frepo%2342` → 404. For a *name* form the
- *    raw suffix is reported as-is; normalizing `roadmap#304` to `SHI-304` needs
+ *    raw suffix is reported as-is; normalizing `roadmap#304` to `planning#306` needs
  *    the declaration, so the resolver does it.
  */
 
@@ -74,7 +74,7 @@ export interface ParsedIssueRef {
   /**
    * Tracker-native id for `Tracker.getIssue(id)`: the bare number for GitHub,
    * the key for Linear. For a name form this is the raw suffix as written
-   * (`304` or `SHI-304`) — the resolver normalizes it once it knows the kind.
+   * (`304` or `planning#306`) — the resolver normalizes it once it knows the kind.
    * Absent for an unrecognized shape.
    */
   issueId?: string;
@@ -96,7 +96,7 @@ const GITHUB_SHORT_RE = /^([^/\s]+)\/([^/\s#]+)#(\d+)$/;
  */
 const LINEAR_KEY_RE = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
 /**
- * docs/248 req 10 — the two name forms, `planning#123` and `roadmap#SHI-304`.
+ * docs/248 req 10 — the two name forms, `planning#123` and `planning#306`.
  *
  * A free slot in the existing grammar: `GITHUB_SHORT_RE` requires the slash and
  * a bare `#42` is deliberately rejected as ambiguous, so adding this makes no
@@ -184,7 +184,7 @@ export function formatIssueReference(opts: {
   kind: "github" | "linear";
   /** Canonical identity: GitHub `owner/repo`, Linear team key. */
   key?: string | undefined;
-  /** Tracker-native id: a GitHub number, a Linear key (`SHI-304`). */
+  /** Tracker-native id: a GitHub number, a Linear key (`planning#306`). */
   issueId: string;
 }): string {
   if (opts.trackerName) return `${opts.trackerName}#${opts.issueId}`;
@@ -262,7 +262,7 @@ export function extractIssueRefsFromText(text: string | null | undefined): Parse
   // a URL's path (`…/issues/5` has no `#`, but `github.com/o/r#5` would).
   collect(/(?<![\w/])[^/\s#]+\/[^/\s#]+#\d+/g, 0);
   // Bare Linear keys, gated on an `issue` lead-in (the separator allows
-  // `issue SHI-9`, `issue: SHI-9`, `issue #SHI-9`).
+  // `issue planning#11`, `issue: planning#11`, `issue #planning#11`).
   collect(/\bissue\b[\s:#-]*([A-Za-z][A-Za-z0-9]*-\d+)/gi, 1);
   // docs/248 name refs, gated on the same lead-in (`issue planning#42`).
   collect(/\bissue\b[\s:]*([A-Za-z0-9][A-Za-z0-9._-]*#(?:[A-Za-z][A-Za-z0-9]*-\d+|\d+))/gi, 1);

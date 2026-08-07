@@ -13,7 +13,7 @@
  * {@link IN_CLONE_SHIPIT_PATH} for why matching the directory join, rather than
  * the artifact names, is the invariant.
  *
- * **There is no allowlist, and that is the point (SHI-290).** The check used to
+ * **There is no allowlist, and that is the point (planning#292).** The check used to
  * carry an exemption map, which meant it asserted "only these files may" rather
  * than "no file does" — and because the granularity was per FILE, a new
  * forbidden writer added to an already-exempt file passed silently. The map is
@@ -53,7 +53,7 @@ const REPO_ROOT = path.resolve(fileURLToPath(import.meta.url), "../../../..");
  * directory to the writer on another, so no single expression matched. Matching
  * the DIRECTORY join is the invariant — what gets written into it is irrelevant.
  *
- * SHI-286 closed a third bypass, and it was not hypothetical: the version that
+ * planning#288 closed a third bypass, and it was not hypothetical: the version that
  * recognised only a DOUBLE-quoted `.shipit` never saw `buildEnv`'s
  * `` `${workspaceDir}/.shipit` `` — a live in-clone path that sat green in CI
  * for the whole of docs/246. So `\}/\.shipit` now catches a template

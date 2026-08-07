@@ -67,7 +67,7 @@ describe("projectToolResult", () => {
   });
 
   /**
-   * SHI-291. The Ask branch of `MessageToolUse` returns before the output
+   * planning#293. The Ask branch of `MessageToolUse` returns before the output
    * modal, so a sliced answer's tail is unreachable — not behind a click,
    * gone. Found by the independent requirements review: it had been recorded
    * as a requirement-4 shortfall, but it also broke requirement 2 (nothing
@@ -125,7 +125,7 @@ describe("projectToolResult", () => {
    * The failure mode this branch exists to avoid. A report's normal encoding is
    * a `JSON.stringify`'d block array — ONE line — so the generic slice's line
    * cap never fires and its byte backstop cuts mid-array. The client would then
-   * fail to parse it and render raw JSON at the user, which is SHI-287 all over
+   * fail to parse it and render raw JSON at the user, which is planning#289 all over
    * again.
    */
   it("keeps a block-array report parseable after clamping", () => {
@@ -268,7 +268,7 @@ describe("projectToolUse", () => {
   });
 
   /**
-   * SHI-296. Everything below is what "only Edit/Write are projected" left on
+   * planning#298. Everything below is what "only Edit/Write are projected" left on
    * the wire: a megabyte `Bash` command behind an 80-character summary, a
    * kilobyte subagent prompt behind a collapsed disclosure, an MCP argument
    * object nothing draws at all.
@@ -484,7 +484,7 @@ describe("projectMessagesForWire", () => {
   });
 });
 
-describe("projectConsultCardForWire (SHI-297)", () => {
+describe("projectConsultCardForWire (planning#299)", () => {
   const consultCard = (over: Partial<SubAgentConsultCard> = {}): SubAgentConsultCard => ({
     cardId: "card-1",
     spawnId: "sp-1",
@@ -639,7 +639,7 @@ describe("a body only leaves the wire once its row is on disk", () => {
     expect(block.input.content).toBe(bigOutput);
   });
 
-  it("the snapshot strips the part of the turn a boundary already committed (SHI-297)", () => {
+  it("the snapshot strips the part of the turn a boundary already committed (planning#299)", () => {
     // The blanket `allRowsPersisted: false` was conservative for the WHOLE turn,
     // so a mid-turn reconnect re-sent every Edit body and nested result the turn
     // had accumulated — including ones written to disk several boundaries ago.

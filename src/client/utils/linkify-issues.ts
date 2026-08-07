@@ -2,7 +2,7 @@
  * `remarkLinkifyIssues` — turn bare issue references in prose into in-app badges.
  *
  * The agent (and humans) routinely mention issues inline as a bare reference —
- * "tracked in TRACKER-43", "blocked on roadmap#SHI-79", "see planning#57". A full
+ * "tracked in TRACKER-43", "blocked on planning#81", "see planning#57". A full
  * issue *URL* is already intercepted by `parseTrackerIssueLink` → opens the
  * in-app Issues viewer; a bare reference stayed plain text because no absolute
  * URL is derivable from it. But the in-app viewer doesn't need a URL — the
@@ -22,15 +22,15 @@
  *   or ambiguous. Keeping the gate at render is what lets the parse stay pure +
  *   memoized on `text` while the declared-tracker state lives in a store.
  * - **That split matters MORE since the name form landed** (docs/248 req 10, and
- *   SHI-323 which added it here). `<name>#<id>` is a far more collision-prone
+ *   planning#325 which added it here). `<name>#<id>` is a far more collision-prone
  *   shape than an uppercase key — `PR#3`, `issue#5`, `channel#2` all match — so
  *   the render-time resolver is the only thing standing between ordinary prose
  *   and a badge. A token that doesn't resolve must degrade to *exactly* its
  *   original text.
  * - **Whole token, not half of one.** The name form is matched first, so
- *   `roadmap#SHI-319` produces one `shipit-issue:roadmap#SHI-319` link covering
- *   the whole reference. Matching only the bare-key tail would badge `SHI-319`
- *   and leave `roadmap#` outside the pill as stray text (the SHI-323 defect).
+ *   `planning#321` produces one `shipit-issue:planning#321` link covering
+ *   the whole reference. Matching only the bare-key tail would badge `planning#321`
+ *   and leave `roadmap#` outside the pill as stray text (the planning#325 defect).
  * - **Uppercase only for the bare-key form.** Real Linear keys are uppercase;
  *   restricting to uppercase drops a whole class of lowercase prose false
  *   positives before the gate. The name form has no such luxury — `planning#57`
@@ -54,14 +54,14 @@ export const ISSUE_LINK_SCHEME = "shipit-issue:";
  * A reference-shaped token, in the two forms that appear in prose (docs/248
  * req 10). The alternation is ordered, and the order is load-bearing:
  *
- * 1. **Name form** — `roadmap#SHI-304`, `planning#57`. The name and id shapes
+ * 1. **Name form** — `planning#306`, `planning#57`. The name and id shapes
  *    mirror `NAMED_REF_RE` in `shared/issue-ref.ts`, which is what ultimately
  *    parses the token; keeping them in step means anything we badge is something
  *    the resolver can read. The lookbehind additionally rejects a leading `/` so
  *    a GitHub short form (`owner/repo#42`) isn't half-matched as `repo#42`.
- * 2. **Bare key** — `SHI-304`. Unchanged from before the name form existed,
+ * 2. **Bare key** — `planning#306`. Unchanged from before the name form existed,
  *    including its lookbehind, which deliberately permits a leading `#` so
- *    `issue #SHI-3` still badges.
+ *    `issue #planning#5` still badges.
  *
  * Matching the name form first is what makes a badge cover the whole reference
  * rather than its trailing key. Neither branch decides anything: the resolver at

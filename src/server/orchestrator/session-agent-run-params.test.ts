@@ -64,7 +64,7 @@ function setup(session: SessionInfo | undefined) {
   return { run, captured };
 }
 
-describe("buildAgentRunParams — SHI-265 destructive-git guard", () => {
+describe("buildAgentRunParams — planning#267 destructive-git guard", () => {
   it("arms the guard when the session has a recorded mergedHeadSha", async () => {
     const { run, captured } = setup(
       makeSession({ mergedAt: new Date().toISOString(), mergedHeadSha: "abc123" }),

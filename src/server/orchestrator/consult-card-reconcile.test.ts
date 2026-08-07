@@ -9,7 +9,7 @@ import {
 import type { SubAgentConsultCard } from "../shared/types.js";
 
 /**
- * SHI-307 / docs/249 — the boot sweep that finishes consult cards the previous
+ * planning#309 / docs/249 — the boot sweep that finishes consult cards the previous
  * orchestrator could not, because the only handle able to finish them died with
  * it. These run against a REAL `ChatHistoryManager` where the point is the DB
  * round-trip, and against stubs where the point is failure isolation.
@@ -31,7 +31,7 @@ const consult = (
   },
 });
 
-describe("reconcileOrphanedConsultCards (SHI-307)", () => {
+describe("reconcileOrphanedConsultCards (planning#309)", () => {
   let dbManager: DatabaseManager;
 
   beforeEach(() => {

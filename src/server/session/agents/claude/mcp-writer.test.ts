@@ -5,13 +5,13 @@ import { ClaudeAdapter } from "./adapter.js";
 import type { AgentMcpBridge, McpServerConfig } from "../agent-process.js";
 
 /**
- * docs/088 / docs/125 / docs/155 hair 10 / SHI-128 — ClaudeAdapter writes a
+ * docs/088 / docs/125 / docs/155 hair 10 / planning#130 — ClaudeAdapter writes a
  * per-turn `--mcp-config` JSON file bundling the built-in Playwright server, the
  * consolidated `shipit` bridge (when present), and any user-configured MCP
  * servers (with `$secret:` placeholders resolved against process.env). Missing
  * secrets drop the server and report it back via onServerFailed.
  */
-describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10, SHI-128)", () => {
+describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10, planning#130)", () => {
   let adapter: ClaudeAdapter;
   let onServerFailed: ReturnType<typeof vi.fn<(name: string, reason: string) => void>>;
   const writtenPaths: string[] = [];

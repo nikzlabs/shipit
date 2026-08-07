@@ -64,7 +64,7 @@ describe("IssueWriteCard (docs/189)", () => {
     expect(screen.getByText("Confirmed on staging.")).toBeInTheDocument();
   });
 
-  it("renders a comment edit with the new body and anchors to that comment (SHI-86)", () => {
+  it("renders a comment edit with the new body and anchors to that comment (planning#88)", () => {
     const onOpen = vi.fn();
     seed({
       verb: "comment-edit",
@@ -153,12 +153,12 @@ describe("IssueWriteCard (docs/189)", () => {
       title: "Rewind handle hugs long user bubbles",
       url: "https://linear.app/x/issue/SHI-48",
       // A comment write threads the created comment's id so the detail view
-      // lands on that exact comment (SHI-103).
+      // lands on that exact comment (planning#105).
       anchorCommentId: "c-1",
     });
   });
 
-  it("does not anchor to a comment for a non-comment write (SHI-103)", () => {
+  it("does not anchor to a comment for a non-comment write (planning#105)", () => {
     const onOpen = vi.fn();
     seed({ verb: "status", undo: { kind: "status", previousStatus: "In Progress" } });
     render(<IssueWriteCard cardId={CARD_ID} onOpen={onOpen} />);

@@ -1,5 +1,5 @@
 /**
- * Integration test for issue-**write** idempotency (SHI-112).
+ * Integration test for issue-**write** idempotency (planning#114).
  *
  * A crashed turn (exit 137 / OOM) that is retried — or a resumed agent CLI
  * session — re-drives the tail `shipit issue …` shim verbatim: it re-executes
@@ -47,7 +47,7 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-describe("Integration: issue write idempotency (SHI-112)", () => {
+describe("Integration: issue write idempotency (planning#114)", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
@@ -214,7 +214,7 @@ describe("Integration: issue write idempotency (SHI-112)", () => {
     client.close();
   });
 
-  // ---- comment edit (SHI-86) ----------------------------------------------
+  // ---- comment edit (planning#88) ----------------------------------------------
   //
   // A comment edit is scoped to a COMMENT, but the dedup key's issue slot holds
   // the issue (it doubles as the card's undo target). So the comment id rides in

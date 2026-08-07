@@ -432,7 +432,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   /**
    * planning#196 — cached `BASE_IMAGE_DIGEST` baked into the session-worker image, the
    * ABI fingerprint the overlay scope now keys on instead of `workerImageId`.
-   * Resolved once via `resolveWorkerBaseDigest`; a failed inspect / pre-SHI-194
+   * Resolved once via `resolveWorkerBaseDigest`; a failed inspect / pre-planning#196
    * image (no baked digest) is cached as `""` (a miss) so there is no per-session
    * Docker call and the scope falls back to the worker-image-id behavior.
    */
@@ -936,7 +936,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * pinned-base ABI fingerprint the overlay scope keys on. Mirrors
    * {@link resolveWorkerImageId}'s caching (incl. caching a miss as `""`) so it
    * adds no per-session Docker call. Returns `undefined` when the image can't be
-   * inspected or carries no baked digest (a pre-SHI-194 image) — the caller then
+   * inspected or carries no baked digest (a pre-planning#196 image) — the caller then
    * leaves the scope on the worker-image-id / `"unknown"` fallback.
    */
   async resolveWorkerBaseDigest(): Promise<string | undefined> {

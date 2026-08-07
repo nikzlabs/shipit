@@ -1,5 +1,5 @@
 /**
- * docs/201 / SHI-129 — container ↔ browser trust boundary guard.
+ * docs/201 / planning#131 — container ↔ browser trust boundary guard.
  *
  * Three concerns:
  *   1. Pure helpers — `isHardDeniedGlobal`, `normalizeRemoteIp`.
@@ -290,14 +290,14 @@ const GOLDEN_CONTAINER_ROUTES = [
   "GET /api/sessions/:id/issue/comments",
   "POST /api/sessions/:sessionId/issue/create",
   "POST /api/sessions/:sessionId/issue/comment",
-  // SHI-86 — `shipit issue comment edit`. Same posture as the writes around it;
+  // planning#88 — `shipit issue comment edit`. Same posture as the writes around it;
   // the comment it may reach is additionally narrowed server-side to one on the
   // named issue that ShipIt itself authored.
   "POST /api/sessions/:sessionId/issue/comment/edit",
   "POST /api/sessions/:sessionId/issue/edit",
   "POST /api/sessions/:sessionId/issue/status",
   "POST /api/sessions/:sessionId/issue/assign",
-  // SHI-230 — `shipit issue label create` broker target; same posture as the
+  // planning#232 — `shipit issue label create` broker target; same posture as the
   // issue writes above (own-session scoped, do-then-surface card with undo,
   // tracker token stays orchestrator-side).
   "POST /api/sessions/:sessionId/issue/label/create",
@@ -317,7 +317,7 @@ const GOLDEN_CONTAINER_ROUTES = [
   "GET /api/sessions/:id/host-sessions",
   // agent — shipit agent run / shipit agent result. The result read is
   // own-session scoped like the spawn (the worker injects the caller's id), and
-  // returns only that session's own persisted consult cards (SHI-245).
+  // returns only that session's own persisted consult cards (planning#247).
   "POST /api/sessions/:id/agent/spawn",
   "GET /api/sessions/:id/agent/result",
   // session — shipit session create/list/view/wait/message/archive + notify-on-merge
@@ -334,7 +334,7 @@ const GOLDEN_CONTAINER_ROUTES = [
   // counterpart is deliberately browser-only.
   "POST /api/sessions/:sessionId/notify-on-merge-self",
   "POST /api/sessions/:id/branch/reset-to-base",
-  // docs/233 (SHI-241) — the upward channel: `shipit session whoami` resolves
+  // docs/233 (planning#243) — the upward channel: `shipit session whoami` resolves
   // the CALLING session's own cohort, and `shipit session report` pushes a
   // report to its parent / siblings. Own-session scoped like every route above:
   // the worker injects the caller's id and recipients are derived server-side
@@ -344,10 +344,10 @@ const GOLDEN_CONTAINER_ROUTES = [
   // bridges — voice_note / report_shipit_bug
   "POST /api/sessions/:sessionId/voice-note",
   "POST /api/sessions/:sessionId/bug-report",
-  // docs/207 (SHI-153) — the `propose_actions` tool relays an action checklist
+  // docs/207 (planning#155) — the `propose_actions` tool relays an action checklist
   // card here; container-reachable so the worker can broker it.
   "POST /api/sessions/:sessionId/propose-actions",
-  // docs/172 Tier C (SHI-90) — the SNI proxy queries this for an unknown host.
+  // docs/172 Tier C (planning#92) — the SNI proxy queries this for an unknown host.
   // Query-only: it returns allow/deny and may surface an allow-once card, but
   // cannot GRANT (granting is the browser-only `egress_decision` WS path).
   "GET /api/egress/decision",

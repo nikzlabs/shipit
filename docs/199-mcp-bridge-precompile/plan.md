@@ -85,7 +85,7 @@ time and run it with plain `node`:
   `dist/mcp-bridges/mcp-shipit-bridge.js`. The `@modelcontextprotocol/sdk` is
   **inlined**, so the bundle has zero runtime `node_modules` dependency. A
   `createRequire` banner covers any transitive CJS `require`. npm script:
-  `build:bridges`. (Pre-SHI-128 this built six separate bundles.)
+  `build:bridges`. (Pre-planning#130 this built six separate bundles.)
 - `src/server/session/mcp-bridge-paths.ts` — `resolveBridge(basename)` prefers
   `dist/mcp-bridges/<basename>.js` (launched with `process.execPath`) and falls
   back to running the `.ts` source through tsx when the bundle is absent
@@ -125,7 +125,7 @@ now live in ONE server named `shipit`, so their names are `mcp__shipit__<tool>`
   `…__report_shipit_bug`) — NOT a `mcp__shipit__*` glob — so the permission tool
   (the CLI's `--permission-prompt-tool`, never model-callable) stays unlisted.
 - Client present-card detection (`message-tools.tsx`) matches both `shipit` and
-  the legacy `shipit-present` server so pre-SHI-128 persisted cards still render.
+  the legacy `shipit-present` server so pre-planning#130 persisted cards still render.
 
 ## Key files
 

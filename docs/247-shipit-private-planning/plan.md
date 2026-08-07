@@ -509,8 +509,31 @@ toward skipping: a citation wrongly left alone is caught by the manual pass, whi
 a wrongly-rewritten example is silent damage.
 
 The mechanical half ran on 2026-08-07: **511 files, 1,778 rewrites**, typecheck
-clean, full suite green (699 files, 10,305 tests), lint clean. About 1,400
-mentions remain for the manual half, and that is gate 3's actual work.
+clean, full suite green (699 files, 10,305 tests), lint clean.
+
+The manual half then inverted the rule. Rather than "rewrite everything except
+known-bad lines", [`sweep-tests.py`](./sweep-tests.py) rewrites **only lines that
+are provably citations** — a comment, or a `describe`/`it` title that carries no
+data marker — and leaves the rest. 431 lines across 156 files, suite still green.
+
+Three classes escaped both scripts, and each is a different kind of blind spot:
+
+- **Two false positives from the `bare ` marker.** `git-lfs-store.ts:6` says
+  "via the bare repo cache (docs/232, SHI-236)" — an ordinary citation on a line
+  the syntax-example heuristic vetoed because of an unrelated English word.
+- **24 hyphen-prefixed prose citations** — `pre-SHI-194`, `post-SHI-192`. The
+  `(?<![\w-])` lookbehind skips a key preceded by a hyphen *by design*, so it
+  never matches inside a compound identifier; the cost is that it also misses
+  prose that hyphenates a reference.
+- **One heading**, `SHI-129-protected`, for the same reason from the other side.
+
+**What deliberately remains is 544 mentions across 71 files, and none of them are
+pointers.** They are `SHI-N` as the *shape of a Linear key* — fixtures and parser
+tests for the Linear adapter, the shim's key parsing, the viewer rendering a
+Linear issue — plus reference-syntax examples that teach the three forms. Linear
+support stays in the product (248 req 3); ShipIt retires it for *itself* by not
+declaring it. So those stay `SHI-N` permanently. They are not a later pass's
+backlog, and reading them as one would break the tests that keep Linear working.
 
 ## Where a human has to look
 

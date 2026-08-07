@@ -11,7 +11,7 @@
  *     tell a real OOM from a plain SIGKILL (docs/239).
  *   - the missing-container reconciliation pass, which is the only thing that
  *     ever notices a service whose container was *removed* rather than exited
- *     (SHI-314).
+ *     (planning#316).
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest";
@@ -79,7 +79,7 @@ describe("ServicePoller — afterPoll hook (docs/128)", () => {
   });
 });
 
-describe("ServicePoller — missing-container reconciliation (SHI-314)", () => {
+describe("ServicePoller — missing-container reconciliation (planning#316)", () => {
   afterEach(() => {
     vi.useRealTimers();
   });

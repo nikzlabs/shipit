@@ -166,7 +166,7 @@ describe("resolveIssueRef — fail closed (req 11)", () => {
   });
 
   // Still fails closed, and is NOT the name-wins case below: a GitHub tracker's
-  // issues are numbered, so `SHI-3` names no issue there at all. There is nothing
+  // issues are numbered, so `planning#5` names no issue there at all. There is nothing
   // to prefer the name *to*, which is the difference from a Linear team key.
   it("rejects a Linear-shaped suffix on a GitHub tracker", () => {
     const result = resolveIssueRef("planning#SHI-3", [OWN, PLANNING]);
@@ -176,7 +176,7 @@ describe("resolveIssueRef — fail closed (req 11)", () => {
   });
 
   // req 16 — in a name form the NAME wins and an embedded backend id is
-  // advisory. This is what lets `roadmap#SHI-304`, written before `roadmap` was
+  // advisory. This is what lets `planning#306`, written before `roadmap` was
   // re-pointed to another team, keep resolving instead of failing on the stale
   // key. Deliberately an exception to reqs 11/17: nothing is guessed, one of two
   // stated things is preferred, and the name still identifies exactly one

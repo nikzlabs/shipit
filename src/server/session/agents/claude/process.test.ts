@@ -709,11 +709,11 @@ describe("ClaudeProcess", () => {
       expect(tools).toContain("mcp__playwright__");
     });
 
-    // docs/149 / SHI-128 — the worker-registered `shipit` MCP server isn't a
+    // docs/149 / planning#130 — the worker-registered `shipit` MCP server isn't a
     // user-configured server, so its tools never flow through `mcpServerNames`.
     // They must be allowlisted explicitly by name or headless `-p` mode rejects
     // them as "permission not yet granted" — including from review subagents.
-    // After SHI-128 the named tools live under the single `shipit` server.
+    // After planning#130 the named tools live under the single `shipit` server.
     // docs/220 — the `submit_review` tool was removed; it must NOT appear in the
     // allowlist any longer (cross-agent reviews surface in the consult card,
     // same-model reviews are prose).
@@ -770,11 +770,11 @@ describe("ClaudeProcess", () => {
       expect(tools.split(",")).toContain("mcp__shipit__voice_note");
     });
 
-    // docs/207 / SHI-153: the built-in `propose_actions` tool (action-checklist
+    // docs/207 / planning#155: the built-in `propose_actions` tool (action-checklist
     // cards) must be allowlisted in every mode — it only posts a card and writes
     // ShipIt's own state, so it's safe under plan mode like the other internal
     // tools. Without the entry headless `-p` mode hangs on "permission not yet
-    // granted" (the original SHI-153 regression).
+    // granted" (the original planning#155 regression).
     it.each([
       ["auto" as const, undefined],
       ["plan" as const, "plan" as const],
@@ -791,7 +791,7 @@ describe("ClaudeProcess", () => {
       expect(tools.split(",")).toContain("mcp__shipit__propose_actions");
     });
 
-    // SHI-128: the consolidated server's `permission_prompt` tool is the CLI's
+    // planning#130: the consolidated server's `permission_prompt` tool is the CLI's
     // --permission-prompt-tool and is deliberately NOT model-callable, so it must
     // NOT appear in the allowlist (we list the five model-facing tools by name
     // rather than a `mcp__shipit__*` glob to keep it out).

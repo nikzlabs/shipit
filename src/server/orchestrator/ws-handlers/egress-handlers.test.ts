@@ -1,5 +1,5 @@
 /**
- * Tests for the Tier C egress allow-once WS handler (docs/172, SHI-90),
+ * Tests for the Tier C egress allow-once WS handler (docs/172, planning#92),
  * focusing on the durable write-through + live reload on "Add to allowlist".
  */
 

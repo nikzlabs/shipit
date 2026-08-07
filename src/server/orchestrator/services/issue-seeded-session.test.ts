@@ -1,5 +1,5 @@
 /**
- * Unit tests for `pinIssueSeededSession` (SHI-320).
+ * Unit tests for `pinIssueSeededSession` (planning#322).
  *
  * The contract is narrow but load-bearing: whatever happens to the git rename,
  * the caller must come away with pins that make `graduateSession` skip AI

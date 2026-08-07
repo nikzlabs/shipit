@@ -19,7 +19,7 @@ import { SESSION_WORKSPACE_SUBDIR, SESSION_STATE_SUBDIR } from "./session-state-
  * `<sessionDir>/workspace`, ShipIt's state dir at its `state/` sibling.
  *
  * `ServiceManager` resolves the state dir from the clone path (docs/246), and
- * since SHI-286 it REFUSES a clone that doesn't sit at `workspace/` rather than
+ * since planning#288 it REFUSES a clone that doesn't sit at `workspace/` rather than
  * falling back to writing into the clone — so a bare temp dir is no longer a
  * valid workspace. Returns the session dir; the clone is its `workspace/` child.
  */
@@ -37,7 +37,7 @@ function stateOf(workspaceDir: string): string {
 /**
  * The orchestrator-private service-env root for a clone produced by
  * {@link makeSessionDir} — a sibling of `workspace/`, so it is outside the
- * clone. `ServiceManager` requires one (SHI-290): there is no longer an
+ * clone. `ServiceManager` requires one (planning#292): there is no longer an
  * in-clone `.shipit/.env.<svc>` fallback, and a root that resolves inside the
  * clone is refused outright.
  */
@@ -795,7 +795,7 @@ services:
     expect(webEnv).toContain("STRIPE_KEY=sk_test_123");
     expect(apiEnv).toContain("DATABASE_URL=postgres://x");
 
-    // SHI-290 — and nowhere near the user's clone.
+    // planning#292 — and nowhere near the user's clone.
     expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(false);
 
     // Scoping: web should not see api's secrets and vice versa
@@ -1001,7 +1001,7 @@ services:
 
     const override = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
     expect(override).toContain("env_file:");
-    // SHI-290 — the reference is the absolute out-of-clone path, never
+    // planning#292 — the reference is the absolute out-of-clone path, never
     // `.shipit/.env.api` inside the user's repository.
     expect(override).toContain(serviceEnvFile(dir, "test-session", "api"));
     expect(override).not.toContain(".shipit/.env.api");
@@ -1150,7 +1150,7 @@ services:
     // No .env.api in the workspace — agent can't read it
     expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
 
-    // SHI-285 — the entrypoint wrapper is staged in the secrets root, NOT in
+    // planning#287 — the entrypoint wrapper is staged in the secrets root, NOT in
     // the clone, where the post-turn `git add -A` would commit it into the
     // user's repository (docs/246 req 1).
     const stagedWrapper = path.join(secretsRoot, "_entrypoint", "secrets-entrypoint.sh");
@@ -1169,7 +1169,7 @@ services:
     fs.rmSync(secretsRoot, { recursive: true, force: true });
   });
 
-  // SHI-285 / docs/246 req 1 — the whole point: a Docker-secrets session leaves
+  // planning#287 / docs/246 req 1 — the whole point: a Docker-secrets session leaves
   // the git clone untouched. Before the fix this test failed on
   // `.shipit/secrets-entrypoint.sh`.
   it("Docker-secrets mode writes nothing into the clone", async () => {

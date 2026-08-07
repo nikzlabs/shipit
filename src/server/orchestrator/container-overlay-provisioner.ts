@@ -90,7 +90,7 @@ export async function resolveWorkerImageId(docker: Docker, imageName: string): P
  * so it reads it out of the image's `Config.Env` here, once at startup.
  *
  * Returns `""` (a miss) when the image can't be inspected OR carries no
- * `BASE_IMAGE_DIGEST` (a pre-SHI-194 worker image) — the caller then leaves the
+ * `BASE_IMAGE_DIGEST` (a pre-planning#196 worker image) — the caller then leaves the
  * scope on the `SESSION_WORKER_IMAGE_ID`/`"unknown"` fallback, i.e. the prior
  * behavior, never a wrong reuse. Cached by the caller, incl. the miss.
  */

@@ -1,5 +1,5 @@
 /**
- * SHI-247 — a SELF-WOKEN turn must auto-commit, push and run the PR flow.
+ * planning#249 — a SELF-WOKEN turn must auto-commit, push and run the PR flow.
  *
  * The Claude CLI starts a turn on its own when a `Bash(run_in_background)` job
  * finishes. For a resident streaming process that turn runs through the listener

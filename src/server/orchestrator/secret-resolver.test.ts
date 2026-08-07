@@ -485,7 +485,7 @@ describe("writeAgentEnvFile", () => {
     expect(() => writeAgentEnvFile({ workspaceDir: dir, body: "" })).not.toThrow();
   });
 
-  // SHI-286 — the legacy flat layout is refused rather than degraded back into
+  // planning#288 — the legacy flat layout is refused rather than degraded back into
   // the clone. A session of that shape is unserviceable by decision.
   it("refuses a clone that is not <sessionDir>/workspace", () => {
     const flat = fs.mkdtempSync(path.join(os.tmpdir(), "agent-env-flat-"));
@@ -733,7 +733,7 @@ describe("composeSecretFilePath (Phase 1 follow-up)", () => {
   });
 });
 
-describe("stageSecretsEntrypoint (SHI-285)", () => {
+describe("stageSecretsEntrypoint (planning#287)", () => {
   let tmpDir: string;
 
   function setup() {

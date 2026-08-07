@@ -3,7 +3,7 @@
  * Claude Code settings file baked into /etc/shipit/managed-settings.json and
  * always passed to the CLI via --settings for the `claude` agent.
  *
- * SHI-36 / docs/097 — "Explicit session-agent permissions". These assertions
+ * planning#38 / docs/097 — "Explicit session-agent permissions". These assertions
  * are the executable contract the design doc asks for: they fail if the
  * explicit permission policy is removed or its load-bearing deny rules are
  * weakened. Today the real CLI's enforcement can't run in this harness (the
@@ -125,7 +125,7 @@ describe("managed-settings.json", () => {
     }
   });
 
-  describe("does NOT block the agent's own memory updates (SHI-36 follow-up)", () => {
+  describe("does NOT block the agent's own memory updates (planning#38 follow-up)", () => {
     // /root/.claude/projects/<cwd>/memory/ lives inside the same .claude tree as
     // the credentials (via the /credentials/.claude symlink). The deny list is
     // deliberately file-specific, not a /root/.claude/** or /credentials/** tree

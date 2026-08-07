@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
  *
  * The fix for the 0.5-CPU agent-default failure is that the bridge ships as a
  * self-contained plain-JS bundle run with `node` (no per-spawn tsx compile, no
- * runtime node_modules resolution). SHI-128 then consolidated the five per-tool
+ * runtime node_modules resolution). planning#130 then consolidated the five per-tool
  * bridges into ONE `mcp-shipit-bridge` server whose exposed tools are chosen via
  * the `SHIPIT_MCP_TOOLS` env. This test asserts both properties end-to-end: it
  * bundles `mcp-shipit-bridge` (which pulls in every `mcp-tools/*` module) with
@@ -74,7 +74,7 @@ function handshake(bundlePath: string, cwd: string, tools: string): Promise<stri
   });
 }
 
-describe("precompiled MCP bridge bundle (docs/199, SHI-128)", () => {
+describe("precompiled MCP bridge bundle (docs/199, planning#130)", () => {
   it("runs the consolidated bridge under node with no node_modules and registers the selected tools", async () => {
     const buildDir = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-build-"));
     // Run dir is a separate temp dir with no node_modules — proves the bundle is

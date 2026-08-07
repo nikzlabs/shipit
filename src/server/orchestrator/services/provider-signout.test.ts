@@ -11,7 +11,7 @@ import type { AgentAuthManager } from "../agent-auth-manager.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 
 /**
- * SHI-283 — provider-wide sign-out has to take the account away from the
+ * planning#285 — provider-wide sign-out has to take the account away from the
  * sessions running on it, not just delete the rows.
  *
  * The row is not where the token lives: every pinned session holds its own copy

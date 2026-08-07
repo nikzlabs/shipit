@@ -46,21 +46,21 @@ describe("PreparedDispatch brand (docs/240 Fix A)", () => {
   it("SHI-259: a hand-built AgentDispatchOptions cannot be dispatched (type-level)", () => {
     const runner = newRunner();
 
-    // THE regression guard. SHI-259's turn-adoption drain built exactly this
+    // THE regression guard. planning#261's turn-adoption drain built exactly this
     // shape — `{ text }` plus a few attachment fields — and handed it to
     // `runner.dispatch`, silently dropping `execution`, `systemTurn`,
     // `postTurn`, and `onTurnComplete`. It typechecked, so nothing caught it
     // until a notify-on-merge watch stranded in production.
     const handRolled: AgentDispatchOptions = { text: "child PR merged", activity: "Resuming…" };
-    // @ts-expect-error SHI-259 — dispatch accepts only a PreparedDispatch; a
+    // @ts-expect-error planning#261 — dispatch accepts only a PreparedDispatch; a
     // hand-built literal (the shape every re-narrowing drain produced) must not
     // compile. If this line stops erroring, Fix A has been undone.
     runner.dispatch(handRolled);
 
-    // @ts-expect-error SHI-259 — the same for an inline literal.
+    // @ts-expect-error planning#261 — the same for an inline literal.
     runner.dispatch({ text: "inline literal" });
 
-    // @ts-expect-error SHI-259 — and for the direct executor entry point.
+    // @ts-expect-error planning#261 — and for the direct executor entry point.
     void runner.runDispatchedTurn({ text: "inline literal" });
 
     runner.dispose({ force: true });

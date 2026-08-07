@@ -184,8 +184,8 @@ describe("MarkdownContent tracker-issue links", () => {
     );
   });
 
-  // SHI-323 — docs/248 req 10's name form in prose. Before this, the matcher
-  // caught only the `SHI-319` half of `roadmap#SHI-319` and nothing at all of
+  // planning#325 — docs/248 req 10's name form in prose. Before this, the matcher
+  // caught only the `planning#321` half of `planning#321` and nothing at all of
   // `planning#57`, and the gate was a Linear-team-prefix comparison with no
   // answer for either.
   it("badges a whole name form carrying a Linear key", async () => {

@@ -46,7 +46,7 @@ describe("SubAgentConsultCardRow (docs/220)", () => {
     expect(screen.queryByTestId("sub-agent-consult-output")).toBeNull();
   });
 
-  // SHI-307 — a consult the boot reconcile cancelled reads exactly like one the
+  // planning#309 — a consult the boot reconcile cancelled reads exactly like one the
   // USER cancelled unless the card says otherwise, so ShipIt's own explanation
   // renders on the card face.
   it("shows ShipIt's explanation of a terminal status alongside the summary", () => {
@@ -70,7 +70,7 @@ describe("SubAgentConsultCardRow (docs/220)", () => {
     expect(screen.queryByTestId("sub-agent-consult-status-detail")).toBeNull();
   });
 
-  // SHI-278 — the same card also carries the DURABLE in-flight state, so a
+  // planning#280 — the same card also carries the DURABLE in-flight state, so a
   // backgrounded consult still shows up after a switch/reload/restart.
   it("renders the pending state as an in-progress row", () => {
     render(<SubAgentConsultCardRow card={card({ status: "pending", durationMs: undefined, costUsd: undefined })} />);
@@ -82,13 +82,13 @@ describe("SubAgentConsultCardRow (docs/220)", () => {
 });
 
 /**
- * docs/244 / SHI-297 — the lazy consult output. The transcript payload carries
+ * docs/244 / planning#299 — the lazy consult output. The transcript payload carries
  * only the preview line the card face draws; the viewer is the click that
  * fetches the rest. Server tests prove the payload is stripped — these prove the
  * UI actually puts the output back on screen, which is the half a refactor could
  * silently drop while every server test stayed green.
  */
-describe("SubAgentConsultCardRow lazy output (docs/244, SHI-297)", () => {
+describe("SubAgentConsultCardRow lazy output (docs/244, planning#299)", () => {
   const PREVIEW = "Two findings, both in the projection…";
   const lazyCard = card({ outputMarkdown: PREVIEW, outputTruncated: true });
 
@@ -152,7 +152,7 @@ describe("SubAgentConsultCardRow lazy output (docs/244, SHI-297)", () => {
 
   it("issues no request at all for a card that arrived whole", async () => {
     // Short consults stay under the strip floor, and rows persisted before
-    // SHI-297 carry no marker — both must render straight from the payload.
+    // planning#299 carry no marker — both must render straight from the payload.
     stubSession();
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

@@ -348,7 +348,7 @@ describe("LinearTracker writes (docs/177)", () => {
     await expect(tracker.deleteComment("gone")).resolves.toBeUndefined();
   });
 
-  // ---- comment edit (SHI-86) ----------------------------------------------
+  // ---- comment edit (planning#88) ----------------------------------------------
   //
   // A comment id is workspace-global, so the adapter reads the comment (plus
   // `viewer`) in one query and checks three things before the mutation: the
@@ -376,7 +376,7 @@ describe("LinearTracker writes (docs/177)", () => {
     },
   ];
 
-  it("updates a comment and returns the body it replaced (SHI-86)", async () => {
+  it("updates a comment and returns the body it replaced (planning#88)", async () => {
     const fetchImpl = routerFetch(commentEditRoutes());
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
     expect(await tracker.updateComment("SHI-1", "c1", "new text")).toEqual({
@@ -385,7 +385,7 @@ describe("LinearTracker writes (docs/177)", () => {
     });
   });
 
-  it("refuses to edit a comment on a different issue than the one named (SHI-86)", async () => {
+  it("refuses to edit a comment on a different issue than the one named (planning#88)", async () => {
     const fetchImpl = routerFetch(
       commentEditRoutes({ issue: { id: "uuid-9", identifier: "SHI-9", team: { key: "SHI" } } }),
     );
@@ -396,7 +396,7 @@ describe("LinearTracker writes (docs/177)", () => {
     ).toBe(false);
   });
 
-  it("refuses to edit a comment written by someone else (SHI-86)", async () => {
+  it("refuses to edit a comment written by someone else (planning#88)", async () => {
     const fetchImpl = routerFetch(
       commentEditRoutes({ user: { id: "u-human", displayName: "Nik Zherebtsov" } }),
     );
@@ -498,7 +498,7 @@ describe("LinearTracker writes (docs/177)", () => {
     await expect(tracker.createIssue({ title: "x", body: "" })).rejects.toThrow(/missing declared team/);
   });
 
-  it("creates with resolved labelIds and a mapped priority (SHI-92)", async () => {
+  it("creates with resolved labelIds and a mapped priority (planning#94)", async () => {
     const fetchImpl = routerFetch([
       { match: "IssueLabels", data: { issueLabels: { nodes: [{ id: "lab-sec", name: "security" }, { id: "lab-be", name: "backend" }] } } },
       { match: "issueCreate", data: { issueCreate: { success: true, issue: issueNode({ identifier: "SHI-9" }) } } },
@@ -511,7 +511,7 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(input).toMatchObject({ teamId: "team-123", title: "New", labelIds: ["lab-sec"], priority: 2 });
   });
 
-  it("rejects an unknown label with the candidate list (no create) (SHI-92)", async () => {
+  it("rejects an unknown label with the candidate list (no create) (planning#94)", async () => {
     const fetchImpl = routerFetch([
       { match: "IssueLabels", data: { issueLabels: { nodes: [{ id: "lab-sec", name: "security" }] } } },
     ]);
@@ -524,7 +524,7 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("creates a sub-issue with a resolved parentId (SHI-206)", async () => {
+  it("creates a sub-issue with a resolved parentId (planning#208)", async () => {
     const fetchImpl = routerFetch([
       { match: "IssueId", data: { issue: { id: "uuid-parent", team: { key: "SHI" } } } },
       { match: "issueCreate", data: { issueCreate: { success: true, issue: issueNode({ identifier: "SHI-9" }) } } },
@@ -537,7 +537,7 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(input).toMatchObject({ teamId: "team-123", title: "Child", parentId: "uuid-parent" });
   });
 
-  it("reparents via issueUpdate with a resolved parentId (SHI-206)", async () => {
+  it("reparents via issueUpdate with a resolved parentId (planning#208)", async () => {
     const fetchImpl = routerFetch([
       { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "SHI" } } } },
       { match: "issueUpdate", data: { issueUpdate: { success: true, issue: issueNode() } } },
@@ -550,7 +550,7 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(input).toEqual({ parentId: "uuid-1" });
   });
 
-  it("detaches a sub-issue with parentId: null on --parent none (SHI-206)", async () => {
+  it("detaches a sub-issue with parentId: null on --parent none (planning#208)", async () => {
     const fetchImpl = routerFetch([
       { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "SHI" } } } },
       { match: "issueUpdate", data: { issueUpdate: { success: true, issue: issueNode() } } },
@@ -563,7 +563,7 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("surfaces labels with their colors on a read (SHI-92 + foundation)", async () => {
+  it("surfaces labels with their colors on a read (planning#94 + foundation)", async () => {
     const fetchImpl = routerFetch([
       {
         match: "query Issue",
@@ -603,7 +603,7 @@ describe("LinearTracker writes (docs/177)", () => {
     ]);
   });
 
-  it("creates a team-scoped label and returns its id for undo (SHI-230)", async () => {
+  it("creates a team-scoped label and returns its id for undo (planning#232)", async () => {
     const fetchImpl = routerFetch([
       {
         match: "issueLabelCreate",
@@ -618,12 +618,12 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(input).toEqual({ teamId: "team-123", name: "t3code", color: "#0ea5e9", description: "T3 code area" });
   });
 
-  it("throws creating a label without a team binding (SHI-230)", async () => {
+  it("throws creating a label without a team binding (planning#232)", async () => {
     const tracker = new LinearTracker({ token: "t", teamKey: null, fetchImpl: routerFetch([]) });
     await expect(tracker.createLabel({ name: "x" })).rejects.toThrow(/missing declared team/);
   });
 
-  it("deletes an unused label on undo (SHI-230)", async () => {
+  it("deletes an unused label on undo (planning#232)", async () => {
     const fetchImpl = routerFetch([
       { match: "LabelUsage", data: { issueLabel: { issues: { nodes: [] } } } },
       { match: "issueLabelDelete", data: { issueLabelDelete: { success: true } } },
@@ -636,7 +636,7 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(deleteCall).toBeDefined();
   });
 
-  it("refuses to delete a label that issues now carry, naming a carrier (SHI-230)", async () => {
+  it("refuses to delete a label that issues now carry, naming a carrier (planning#232)", async () => {
     const fetchImpl = routerFetch([
       { match: "LabelUsage", data: { issueLabel: { issues: { nodes: [{ identifier: "SHI-9" }] } } } },
     ]);
@@ -648,7 +648,7 @@ describe("LinearTracker writes (docs/177)", () => {
     }
   });
 
-  it("treats an already-deleted label as an idempotent undo no-op (SHI-230)", async () => {
+  it("treats an already-deleted label as an idempotent undo no-op (planning#232)", async () => {
     const fetchImpl = routerFetch([{ match: "LabelUsage", data: { issueLabel: null } }]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
     await expect(tracker.deleteUnusedLabel("lbl-gone", "old")).resolves.toBeUndefined();
@@ -808,7 +808,7 @@ describe("LinearTracker writes (docs/177)", () => {
   });
 });
 
-describe("resolveLinearPriority (SHI-92)", () => {
+describe("resolveLinearPriority (planning#94)", () => {
   it("maps normalized levels to Linear's numeric field", () => {
     expect(resolveLinearPriority("urgent")).toBe(1);
     expect(resolveLinearPriority("high")).toBe(2);

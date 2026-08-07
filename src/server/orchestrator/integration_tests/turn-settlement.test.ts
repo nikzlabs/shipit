@@ -8,7 +8,7 @@
  *
  * What each guards:
  *
- *   - **SHI-260** — `onTurnComplete` used to be passed only to attempt zero, so
+ *   - **planning#262** — `onTurnComplete` used to be passed only to attempt zero, so
  *     a turn that exited with no result and retried fired it ZERO times: neither
  *     the retry's success nor its failure reached the caller. A notify-on-merge
  *     watch therefore sat at `merge-observed` looking healthy forever. Retries
@@ -16,7 +16,7 @@
  *   - **The errored case** — docs/239 flagged `wakeSessionWithTurn` discarding
  *     `errored`, which lets a consumer conclude "delivered" for a turn that
  *     crashed. The outcome must say so.
- *   - **SHI-259** — a callback-bearing system turn queued behind an ADOPTED turn
+ *   - **planning#261** — a callback-bearing system turn queued behind an ADOPTED turn
  *     (one that outlived an orchestrator restart) must still run as a system
  *     turn and settle. The adoption drain used to rebuild the options by hand
  *     and drop `systemTurn` / `onTurnComplete` / `postTurn` / `execution`.
@@ -209,10 +209,10 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     runner.dispose({ force: true });
   });
   // -------------------------------------------------------------------------
-  // SHI-264 — the delivery a turn carries, and when it stops being live
+  // planning#266 — the delivery a turn carries, and when it stops being live
   // -------------------------------------------------------------------------
   //
-  // `runner.hasDelivery(id)` replaces SHI-258's in-memory `inFlight` set as the
+  // `runner.hasDelivery(id)` replaces planning#260's in-memory `inFlight` set as the
   // answer to "is this server-side delivery still pending?". These drive the
   // real turn lifecycle to pin when that answer flips, because the consumer
   // (`merge-watch`) treats a stale `true` as "do not retry, ever" and a

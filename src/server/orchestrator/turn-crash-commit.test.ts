@@ -8,7 +8,7 @@
  *
  *     runner.running = false; await tryDrain(); emitFinishedIfIdle(); finishTurn();
  *
- * and `tryDrain` commits ONLY when a turn is queued behind this one (the SHI-262
+ * and `tryDrain` commits ONLY when a turn is queued behind this one (the planning#264
  * guarantee). With an empty queue — the ordinary shape of "the agent died" —
  * nothing committed at all: everything the turn wrote sat uncommitted and
  * unpushed until some later turn happened to sweep it up with `git add -A`, and
@@ -173,7 +173,7 @@ describe("post-turn commit when the agent process dies", () => {
 
   /**
    * The same crash, but a queued turn drains behind it and starts by discarding
-   * working-tree state. The SHI-262 commit-before-drain covers this one; the
+   * working-tree state. The planning#264 commit-before-drain covers this one; the
    * test pins that the crash-path change did not disturb it (and, via the
    * `autoCommit` call count, that the two paths share one commit rather than
    * staging twice).

@@ -16,7 +16,7 @@ import {
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import type { AgentProcess, AgentEvent, AgentRunParams, WsServerMessage } from "../../shared/types.js";
 
-// SHI-144: the rebase driver must hand the workspace (BOTH `.git` AND the
+// planning#146: the rebase driver must hand the workspace (BOTH `.git` AND the
 // worktree) back to the worker uid after its root-run git ops (the
 // `postTurn: "none"` path elides the usual post-turn handoff). It does so via the
 // shared `handWorkspaceBackToWorker` helper, whose `.git`/worktree/dep-dir
@@ -697,7 +697,7 @@ describe("rebase-driver: runRebaseFlow", () => {
     ).rejects.toThrow(/Cannot resolve base branch/);
   });
 
-  // SHI-144: every `runRebaseFlow` exit path must hand BOTH `.git` AND the
+  // planning#146: every `runRebaseFlow` exit path must hand BOTH `.git` AND the
   // worktree back to the worker uid, because the driver runs its git ops as the
   // root orchestrator (which re-roots both) and dispatches resolution turns with
   // `postTurn: "none"` (which elides the usual post-turn handoff). Handing only

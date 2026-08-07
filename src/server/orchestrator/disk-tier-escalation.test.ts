@@ -398,10 +398,10 @@ describe("escalateDiskTiers", () => {
     expect(fs.existsSync(scratchFile)).toBe(true); // sibling scratch/ spared
   });
 
-  // SHI-192 — eviction must ALSO reclaim the regenerable `overlay/` upper sibling
+  // planning#194 — eviction must ALSO reclaim the regenerable `overlay/` upper sibling
   // (the docs/183 install-delta cache), which the legacy reclaim orphaned —
   // ~60 GB of leaked uppers on prod. `uploads/` stays durable.
-  it("light → evicted wipes workspace/ AND overlay/ but spares uploads/ (SHI-192)", async () => {
+  it("light → evicted wipes workspace/ AND overlay/ but spares uploads/ (planning#194)", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const sessionRoot = path.join(tmpDir, "sess-evict-overlay");
@@ -460,7 +460,7 @@ describe("escalateDiskTiers", () => {
   });
 
   // ---------------------------------------------------------------------
-  // SHI-294 — `autoCommit` returns a null hash from THREE paths, and only one
+  // planning#296 — `autoCommit` returns a null hash from THREE paths, and only one
   // of them ("nothing to commit") is safe to wipe. The other two are normal
   // returns, not throws, so they used to fall past the `if (commitHash)` gate
   // straight into the wipe — destroying uncommitted work with no reflog entry.
@@ -1043,7 +1043,7 @@ describe("escalateDiskTiers", () => {
     expect(disposed).not.toContain("gone");
   });
 
-  // SHI-197 — a custom ladder threads through and overrides the defaults.
+  // planning#199 — a custom ladder threads through and overrides the defaults.
   it("honors a custom ladder threshold", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
@@ -1061,7 +1061,7 @@ describe("escalateDiskTiers", () => {
   });
 });
 
-// SHI-197 — the ladder ordering invariant is asserted once at startup so an
+// planning#199 — the ladder ordering invariant is asserted once at startup so an
 // incoherent env override fails fast instead of misbehaving at runtime.
 describe("assertDiskLadderOrdering", () => {
   it("accepts the default ladder", () => {

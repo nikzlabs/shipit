@@ -1,9 +1,9 @@
 # ShipIt private planning — checklist
 
-**The tracker side is done.** Steps 4 through 9 have run: 330 issues copied to
-`planning#3`–`#332`, 1,164 comments replayed, every reference rewritten. What
-remains is this repository's side — the reference sweep (step 10) and retiring
-Linear (step 11), both human-gated.
+**The tracker side is done, and so is the reference sweep.** 330 issues copied to
+`planning#3`–`#332`, 1,164 comments replayed, and 2,236 references rewritten
+across 684 files in this repository. **Waiting at human gate 3.** What remains
+after that is step 11 — retiring Linear.
 
 ## Cleared
 
@@ -29,8 +29,8 @@ Linear (step 11), both human-gated.
 - [x] Land `shipit issue comment edit` first (docs/177). *(Shipped 2026-08-07 in `1ed8cc08` and confirmed live in the **deployed** shim by editing a comment on `planning#1` end to end. Comments were the only thing the copy writes that could not be corrected afterwards; that is no longer true.)*
 - [x] Teach `remarkLinkifyIssues` the name form ([SHI-323](https://linear.app/shipit-ai/issue/SHI-323)) before the sweep. *(Landed — `linkify-issues.ts` matches the name form first, so a badge covers the whole reference rather than half of it.)*
 - [x] **Mechanical half of the sweep** — [`sweep.py`](./sweep.py), 511 files, 1,778 rewrites (1,560 bare keys, 26 name-form, 192 `linear.app` issue URLs). Typecheck clean, full suite green (699 files, 10,305 tests), lint clean. *(2026-08-07.)*
-- [ ] **Manual half — Human gate 3.** ~1,400 `SHI-N` mentions remain, all deliberately left: every **test file** (a rewritten fixture silently changes what a test asserts — this actually happened, see plan.md), 20 named **data files** where `SHI-N` is the shape of a Linear key rather than a pointer, 42 **syntax-example lines** listed in `/persist/pilot/sweep-skipped.txt`, and this doc folder. Review and rewrite by hand.
-- [ ] ~~Rewrite every reference in this repository from the mapping, in one PR, when nothing else is in flight (req 10).~~ **Human gate 3** — review the diff by category: 2,797 mentions across 686 files, 196 doc `issue:` pointers, 224 files with `linear.app` URLs. **Not a blanket rewrite** — ~330 lines across 12 files use `SHI-N` as test *data* (a Linear key's shape, which is what the code under test parses), not as a pointer; those files are excluded and reviewed by hand. See plan.md → *The sweep is not a blanket rewrite*. Use `grep -a` — one source file is flagged binary and would otherwise be skipped. The migration's only diff.
+- [x] **Manual half** — the citations inside test and key-shape files, via [`sweep-tests.py`](./sweep-tests.py) (rewrites only provable citations: comment lines and `describe`/`it` titles, never a line carrying a data marker), plus three classes it could not see: two false positives from the loose `bare ` marker (`git-lfs-store.ts`, `docs/042`), 24 hyphen-prefixed prose citations (`pre-SHI-194`, `post-SHI-192` — the `(?<![\w-])` lookbehind skips these by design), and one `SHI-129-protected` heading. 431 + 27 lines. *(2026-08-07.)*
+- [ ] **Human gate 3** — review the diff. What deliberately remains is **544 mentions across 71 files, none of them pointers**: `SHI-N` as the *shape of a Linear key* in fixtures and parser tests, and reference-syntax examples that teach the three forms. Linear support stays in the product (248 req 3), so these stay `SHI-N` permanently rather than waiting for a later pass.
 - [ ] Retire Linear for ShipIt's own planning. **Human gate 4** — confirm nothing still depends on it; recoverable by re-declaring. Drop the `roadmap` declaration, and rewrite all seven places `CLAUDE.md` names Linear as the destination — lines 306, 326, 328, 329, 333, 340, 342, spanning three sections, not just the tracker-sync one (req 11). Prefer tracker-neutral wording; name `planning` only where a destination must be named.
 - [ ] Delete `planning#1` and the pilot `planning#2`.
 

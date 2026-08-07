@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { formatEvictBlockedNotice, type EvictBlockReason } from "./evict-blocked-notice.js";
 import type { SecretFinding } from "../../shared/secret-scan.js";
 
-// SHI-294 — the notice a user sees when disk eviction refuses to wipe a
+// planning#296 — the notice a user sees when disk eviction refuses to wipe a
 // checkout whose uncommitted work couldn't be committed.
 describe("formatEvictBlockedNotice", () => {
   const finding: SecretFinding = {

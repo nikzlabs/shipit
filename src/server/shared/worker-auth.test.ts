@@ -1,5 +1,5 @@
 /**
- * SHI-311 — policy tests for the worker trust boundary. These cover
+ * planning#313 — policy tests for the worker trust boundary. These cover
  * `decideWorkerRequest` and its helpers directly; the Fastify wiring is covered
  * in `session/worker-auth-guard.test.ts`.
  */
@@ -224,9 +224,9 @@ describe("decideWorkerRequest", () => {
       expect(denied.reason).toBe("bad-token");
     }
 
-    // The lifecycle routes are refused for the same peer, under SHI-239's rule
+    // The lifecycle routes are refused for the same peer, under planning#241's rule
     // rather than this one — a stricter reason for a strictly narrower group, so
-    // the SHI-311 guarantee is unchanged.
+    // the planning#313 guarantee is unchanged.
     for (const path of ["/agent/message", "/agent/kill"]) {
       const denied = decide({ url: path });
       expect(denied.allow, path).toBe(false);

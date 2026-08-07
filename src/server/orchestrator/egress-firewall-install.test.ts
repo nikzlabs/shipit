@@ -1,5 +1,5 @@
 /**
- * Tests for the Tier A egress install wiring (docs/172 Gap 1, SHI-90).
+ * Tests for the Tier A egress install wiring (docs/172 Gap 1, planning#92).
  *
  * Covers the unit-testable seams: the flag gate, the GitHub-meta fetch
  * (parse / cache / fallback), the allow-set inputs, and the installer's env
@@ -179,7 +179,7 @@ describe("installEgressFirewall", () => {
 });
 
 // ---------------------------------------------------------------------------
-// allowEgressToSubnets (fake Docker) — SHI-90 preview reachability
+// allowEgressToSubnets (fake Docker) — planning#92 preview reachability
 // ---------------------------------------------------------------------------
 
 describe("allowEgressToSubnets", () => {

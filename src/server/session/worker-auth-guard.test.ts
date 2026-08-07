@@ -1,5 +1,5 @@
 /**
- * SHI-311 — the guard as Fastify sees it, plus the end-to-end assertion that
+ * planning#313 — the guard as Fastify sees it, plus the end-to-end assertion that
  * `SessionWorker` actually installs it (the part that would silently regress if
  * someone reordered `buildApp`).
  *

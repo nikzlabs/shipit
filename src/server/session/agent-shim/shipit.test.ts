@@ -1324,7 +1324,7 @@ describe("shipit session archive", () => {
 });
 
 // ---------------------------------------------------------------------------
-// shipit session whoami / report  (docs/233, SHI-241) — the upward channel
+// shipit session whoami / report  (docs/233, planning#243) — the upward channel
 // ---------------------------------------------------------------------------
 
 const COHORT_BODY = {
@@ -1996,7 +1996,7 @@ describe("shipit issue", () => {
 
   it("still rejects --priority on a qualified GitHub destination", async () => {
     // The GitHub feature gaps are properties of the adapter, so they apply
-    // identically to a declared/named repository (SHI-310 covers fixing them
+    // identically to a declared/named repository (planning#312 covers fixing them
     // for both destinations at once).
     const { run } = makeRunner();
     const out = await run([
@@ -2107,10 +2107,10 @@ describe("shipit issue", () => {
     expect(out.stderr).toContain("tracker hiccup");
   });
 
-  // ---- Untrusted-input envelope (SHI-85 / docs/176) ----------------------
+  // ---- Untrusted-input envelope (planning#87 / docs/176) ----------------------
   //
   // Fetched issue free-text is attacker-influenceable, so the shim wraps it in
-  // the SHI-98 provenance envelope ("data, not instructions"). Defense-in-depth,
+  // the planning#100 provenance envelope ("data, not instructions"). Defense-in-depth,
   // never the barrier — the real controls are environment-layer (egress/tokens).
 
   it("view wraps the issue title + body in the untrusted-input envelope", async () => {
@@ -2233,7 +2233,7 @@ describe("shipit issue", () => {
     expect(out.stdout).toContain("commented on SHI-1");
   });
 
-  // ---- comment edit (SHI-86) ----------------------------------------------
+  // ---- comment edit (planning#88) ----------------------------------------------
 
   it("comment edit posts the issue + comment id + new body", async () => {
     const { run } = makeRunner();
@@ -2393,7 +2393,7 @@ describe("shipit issue", () => {
     expect(out.calls).toHaveLength(0);
   });
 
-  it("create forwards repeated + comma-separated labels and a priority (SHI-92)", async () => {
+  it("create forwards repeated + comma-separated labels and a priority (planning#94)", async () => {
     const { run } = makeRunner();
     const out = await run(
       ["issue", "create", "--tracker", "roadmap", "--title", "Backlog", "--label", "security", "--label", "infra,backend", "--priority", "high"],
@@ -2408,7 +2408,7 @@ describe("shipit issue", () => {
     });
   });
 
-  it("create rejects --priority on GitHub before any broker call (SHI-92)", async () => {
+  it("create rejects --priority on GitHub before any broker call (planning#94)", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "create", "--tracker", "hello", "--title", "x", "--priority", "high"]);
     expect(out.exitCode).not.toBe(0);
@@ -2416,7 +2416,7 @@ describe("shipit issue", () => {
     expect(out.calls).toHaveLength(0);
   });
 
-  it("create rejects an invalid --priority value (SHI-92)", async () => {
+  it("create rejects an invalid --priority value (planning#94)", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "create", "--tracker", "roadmap", "--title", "x", "--priority", "sometimes"]);
     expect(out.exitCode).not.toBe(0);
@@ -2424,7 +2424,7 @@ describe("shipit issue", () => {
     expect(out.calls).toHaveLength(0);
   });
 
-  it("create --json reflects the resolved labels and priority (SHI-92)", async () => {
+  it("create --json reflects the resolved labels and priority (planning#94)", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "create", "--tracker", "roadmap", "--title", "x", "--label", "security", "--json"], {
       "POST /agent-ops/issue/create": {
@@ -2436,7 +2436,7 @@ describe("shipit issue", () => {
     expect(JSON.parse(out.stdout)).toMatchObject({ labels: ["security"], priority: "High" });
   });
 
-  it("edit forwards labels and priority (SHI-92)", async () => {
+  it("edit forwards labels and priority (planning#94)", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "edit", "SHI-1", "--label", "backend", "--priority", "low"], {
       "POST /agent-ops/issue/edit": { status: 200, body: { ok: true, summary: "edited labels & priority on SHI-1" } },
@@ -2445,7 +2445,7 @@ describe("shipit issue", () => {
     expect(out.calls[0].body).toMatchObject({ tracker: "linear:SHI", id: "SHI-1", labels: ["backend"], priority: "low" });
   });
 
-  it("edit allows a labels-only change (no title/body) (SHI-92)", async () => {
+  it("edit allows a labels-only change (no title/body) (planning#94)", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "edit", "SHI-1", "--label", "infra"], {
       "POST /agent-ops/issue/edit": { status: 200, body: { ok: true, summary: "edited labels on SHI-1" } },
@@ -2454,7 +2454,7 @@ describe("shipit issue", () => {
     expect(out.calls[0].body).toMatchObject({ id: "SHI-1", labels: ["infra"] });
   });
 
-  // ---- Parent / sub-issue nesting (SHI-206) ------------------------------
+  // ---- Parent / sub-issue nesting (planning#208) ------------------------------
 
   it("create forwards a resolved --parent key", async () => {
     const { run } = makeRunner();
@@ -2546,7 +2546,7 @@ describe("shipit issue", () => {
     expect(out.calls).toHaveLength(0);
   });
 
-  // ---- Lean list --json + --full (SHI-199, Gap 3) ------------------------
+  // ---- Lean list --json + --full (planning#201, Gap 3) ------------------------
 
   it("list --json drops each issue's body by default (token economy)", async () => {
     const { run } = makeRunner();
@@ -2583,7 +2583,7 @@ describe("shipit issue", () => {
     expect(rows[0].description).toBe("the full body");
   });
 
-  // ---- labels / statuses discovery (SHI-199, Gap 2) ----------------------
+  // ---- labels / statuses discovery (planning#201, Gap 2) ----------------------
 
   it("labels lists the tracker's pickable label names (one per line)", async () => {
     const { run } = makeRunner();
@@ -2651,7 +2651,7 @@ describe("shipit issue", () => {
     expect(out.calls).toHaveLength(0);
   });
 
-  // ---- per-subcommand --help (SHI-199, smaller note) ---------------------
+  // ---- per-subcommand --help (planning#201, smaller note) ---------------------
 
   it("`issue list --help` points to the canonical issue docs", async () => {
     const { run } = makeRunner();
@@ -2672,7 +2672,7 @@ describe("shipit issue", () => {
     expect(out.calls).toHaveLength(0);
   });
 
-  // ---- label create (SHI-230) --------------------------------------------
+  // ---- label create (planning#232) --------------------------------------------
 
   it("label create posts to the broker and reports the summary", async () => {
     const { run } = makeRunner();
@@ -2744,7 +2744,7 @@ describe("shipit issue", () => {
     expect(out.stderr).toContain("already exists");
   });
 
-  it("create forwards --create-missing-labels (SHI-230)", async () => {
+  it("create forwards --create-missing-labels (planning#232)", async () => {
     const { run } = makeRunner();
     const out = await run(
       ["issue", "create", "--tracker", "roadmap", "--title", "T", "--label", "t3code", "--create-missing-labels"],
@@ -2765,7 +2765,7 @@ describe("shipit issue", () => {
     expect(out.calls[0].body as Record<string, unknown>).not.toHaveProperty("createMissingLabels");
   });
 
-  it("edit forwards --create-missing-labels (SHI-230)", async () => {
+  it("edit forwards --create-missing-labels (planning#232)", async () => {
     const { run } = makeRunner();
     const out = await run(
       ["issue", "edit", "SHI-9", "--label", "t3code", "--create-missing-labels"],
@@ -2886,7 +2886,7 @@ describe("runShim — agent run", () => {
     expect(out.stderr).toContain("Unsupported shipit agent subcommand");
   });
 
-  it("names the run and points at `agent result` so a copy can be re-read (SHI-245)", async () => {
+  it("names the run and points at `agent result` so a copy can be re-read (planning#247)", async () => {
     const { run } = makeRunner();
     const file = await promptFile("review");
     const out = await run(["agent", "run", "--agent", "codex", "--prompt-file", file], {
@@ -2905,7 +2905,7 @@ describe("runShim — agent run", () => {
 });
 
 // ---------------------------------------------------------------------------
-// shipit agent result (SHI-245 — re-read a finished run's persisted output)
+// shipit agent result (planning#247 — re-read a finished run's persisted output)
 // ---------------------------------------------------------------------------
 
 describe("runShim — agent result", () => {
@@ -3067,7 +3067,7 @@ describe("shipit agent result — exit codes (docs/248)", () => {
     expect(out.stderr).toContain("no output");
   });
 
-  // SHI-307 — the boot reconcile turns a card stranded `pending` by an
+  // planning#309 — the boot reconcile turns a card stranded `pending` by an
   // orchestrator restart into a terminal `cancelled` one. That is a deliberate
   // change in what a waiting caller observes: the same poll that used to answer
   // 4 ("come back later") forever now answers 3 ("the run failed"), which is the
@@ -3091,7 +3091,7 @@ describe("shipit agent result — exit codes (docs/248)", () => {
   it("prints ShipIt's explanation on stderr, keeping stdout in the sub-agent's voice", async () => {
     // `statusDetail` is ShipIt's commentary, not the consultant's words. Putting
     // it on stdout would hand a caller our apology as if Codex had written it —
-    // the SHI-245 "one artifact" guarantee runs the other way.
+    // the planning#247 "one artifact" guarantee runs the other way.
     const { run } = makeRunner();
     const out = await run(["agent", "result"], {
       "GET /agent-ops/agent/result": {
@@ -3230,7 +3230,7 @@ describe("shipit agent result --wait (docs/248)", () => {
     expect(out.exitCode).toBe(3);
   });
 
-  // SHI-307 — the scenario this whole reconcile exists for, from the waiting
+  // planning#309 — the scenario this whole reconcile exists for, from the waiting
   // caller's side. The orchestrator dies mid-consult; the wait rides out the
   // resets; the rebooted orchestrator's boot sweep has marked the card
   // `cancelled`, so the wait ENDS instead of running to its timeout and being
@@ -3436,7 +3436,7 @@ describe("shipit agent result --wait (docs/248)", () => {
 });
 
 /**
- * SHI-277 — the `--force` break-glass. The shim's job is the flag contract and
+ * planning#279 — the `--force` break-glass. The shim's job is the flag contract and
  * the request body; the safety decision is the orchestrator's (and is re-checked
  * there, because the HTTP route is container-reachable on its own).
  */

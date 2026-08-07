@@ -234,7 +234,7 @@ describe("formatToolDuration (docs/185)", () => {
 });
 
 /**
- * SHI-296 — the tool-call modal is the only view that draws a tool's whole
+ * planning#298 — the tool-call modal is the only view that draws a tool's whole
  * input, so it is where the keys docs/244's projection removed come back.
  * Opening the modal is the click requirement 8 licenses a loading state for.
  *

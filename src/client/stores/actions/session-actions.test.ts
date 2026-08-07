@@ -170,7 +170,7 @@ describe("resumeSessionInternal", () => {
   });
 
   /**
-   * SHI-325 — the issues store is repo-scoped, not session-scoped: it's dropped
+   * planning#327 — the issues store is repo-scoped, not session-scoped: it's dropped
    * when the incoming session belongs to another repository (whose `shipit.yaml`
    * declares a different tracker set), and left alone within one repository.
    */

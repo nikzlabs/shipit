@@ -1,5 +1,5 @@
 /**
- * Tests for the durable egress allowlist + containment store (docs/172, SHI-90).
+ * Tests for the durable egress allowlist + containment store (docs/172, planning#92).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";

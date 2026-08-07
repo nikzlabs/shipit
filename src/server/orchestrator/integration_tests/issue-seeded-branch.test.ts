@@ -1,5 +1,5 @@
 /**
- * Integration test for SHI-320 — the Issues tab's "Start session", end to end.
+ * Integration test for planning#322 — the Issues tab's "Start session", end to end.
  *
  * Since docs/236 that action does NOT create the session: it prefills the chat
  * composer, so the session becomes real only when the user sends the first
@@ -71,7 +71,7 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-describe("Integration: issue-seeded session branch + started (SHI-320)", () => {
+describe("Integration: issue-seeded session branch + started (planning#322)", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;

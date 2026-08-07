@@ -289,7 +289,7 @@ describe("IssuesViewer", () => {
     expect(screen.getByText("High")).toBeInTheDocument();
   });
 
-  it("renders label chips under the title, capping with a +N overflow (SHI-92)", () => {
+  it("renders label chips under the title, capping with a +N overflow (planning#94)", () => {
     const issue = makeIssue({
       labels: ["bug", "design", "infra", "ui", "git", "docs"].map((name) => ({ name })),
     });

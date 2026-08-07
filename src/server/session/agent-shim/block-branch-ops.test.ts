@@ -195,7 +195,7 @@ describe("block-branch-ops.mjs", () => {
         // catch it. Guarding against a `git`-prefix false positive.
         "shipit branch reset-to-base",
         "shipit branch reset-to-base && npm test",
-        // SHI-277 — the brokered break-glass must pass too. It is the only
+        // planning#279 — the brokered break-glass must pass too. It is the only
         // sanctioned override, so a hook that caught it would leave a stranded
         // session with nothing but the hand-rolled reset this hook blocks.
         'shipit branch reset-to-base --force --reason "content shipped via cherry-pick"',

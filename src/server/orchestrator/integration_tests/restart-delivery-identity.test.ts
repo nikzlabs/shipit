@@ -1,6 +1,6 @@
 /**
  * Integration tests for durable DELIVERY IDENTITY across an orchestrator
- * restart (SHI-264, docs/240's "later" layer).
+ * restart (planning#266, docs/240's "later" layer).
  *
  * The gap these close: turn adoption reconnects the orchestrator to a turn that
  * outlived it, but the adopted turn used to reconstruct no completion
@@ -8,7 +8,7 @@
  * process. So for a turn dispatched on behalf of a notify-on-merge WATCH, after
  * a restart the turn kept running, the watch stayed non-terminal because nothing
  * could settle it, and `reconcilePending` queued a SECOND wake behind the
- * still-running first one. Startup ordering (adoption before reconcile, SHI-259)
+ * still-running first one. Startup ordering (adoption before reconcile, planning#261)
  * kept them from colliding; it never stopped the duplicate.
  *
  * The fix derives liveness instead of tracking it: the wake-turn carries a
@@ -114,7 +114,7 @@ function mergedPrStatus(sessionId: string, prNumber = 7): PrStatusSummary {
   };
 }
 
-describe("Integration: durable delivery identity across a restart (SHI-264)", () => {
+describe("Integration: durable delivery identity across a restart (planning#266)", () => {
   let worker: SessionWorker;
   let workerUrl: string;
   let lastAgent: FakeWorkerAgent;
@@ -194,7 +194,7 @@ describe("Integration: durable delivery identity across a restart (SHI-264)", ()
       }),
       scheduleAutoPush: () => {},
       buildRunParams: async (_sessionId, _agentId, prompt) => ({ prompt, cwd: "/workspace" }),
-      // SHI-264 — the hook under test. In production this is threaded from
+      // planning#266 — the hook under test. In production this is threaded from
       // `bootstrap-managers.ts`; here it points at the same manager the watch
       // lives on, which is the whole point: the adopted turn must settle the
       // ORIGINAL watch.
@@ -268,7 +268,7 @@ describe("Integration: durable delivery identity across a restart (SHI-264)", ()
   }
 
   /**
-   * The bootstrap ordering, verbatim (SHI-259): adopt first, THEN reconcile.
+   * The bootstrap ordering, verbatim (planning#261): adopt first, THEN reconcile.
    * Reconcile is what used to queue the duplicate, so running them in this order
    * is exactly the scenario under test.
    */

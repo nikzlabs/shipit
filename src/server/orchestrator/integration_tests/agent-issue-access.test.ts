@@ -295,7 +295,7 @@ describe("Integration: agent issue access (docs/175)", () => {
     expect(stdout).toContain("The Linear body.");
   });
 
-  it("view --comments reads the GitHub thread after the issue body (SHI-137)", async () => {
+  it("view --comments reads the GitHub thread after the issue body (planning#139)", async () => {
     const { stdout, exitCode } = await runIssueShim([
       "issue", "view", "octocat/hello-world#42", "--comments",
     ]);
@@ -309,7 +309,7 @@ describe("Integration: agent issue access (docs/175)", () => {
     expect(stdout).toContain("second GH comment");
   });
 
-  it("view --comments --json embeds a comments array on the issue (SHI-137)", async () => {
+  it("view --comments --json embeds a comments array on the issue (planning#139)", async () => {
     const { stdout, exitCode } = await runIssueShim([
       "issue", "view", "octocat/hello-world#42", "--comments", "--json",
     ]);
@@ -320,7 +320,7 @@ describe("Integration: agent issue access (docs/175)", () => {
     expect(issue.comments[0].author?.name).toBe("octocat");
   });
 
-  it("view --comments reads the Linear thread with the same shape (SHI-137)", async () => {
+  it("view --comments reads the Linear thread with the same shape (planning#139)", async () => {
     credentialStore.setLinearToken("lin_api_x");
         const { stdout, exitCode } = await runIssueShim(["issue", "view", "TRACKER-28", "--comments"]);
     expect(exitCode).toBe(0);
@@ -416,7 +416,7 @@ describe("Integration: agent issue access (docs/175)", () => {
     expect(stderr).toContain("Session is not active");
   });
 
-  it("accepts `issue label create` and brokers it to the label route (SHI-230)", async () => {
+  it("accepts `issue label create` and brokers it to the label route (planning#232)", async () => {
     // Same reach-the-route proof as `issue create` above: this harness has no
     // active runner, so the label route declines with 409 — the shim parsed the
     // verb, defaulted nothing wrong, and relayed POST /agent-ops/issue/label/create.
@@ -428,7 +428,7 @@ describe("Integration: agent issue access (docs/175)", () => {
     expect(stderr).toContain("Session is not active");
   });
 
-  it("rejects `issue label delete` at the shim (SHI-230 — create only)", async () => {
+  it("rejects `issue label delete` at the shim (planning#232 — create only)", async () => {
     const { stderr, exitCode } = await runIssueShim(["issue", "label", "delete", "t3code"]);
     expect(exitCode).not.toBe(0);
     expect(stderr).toContain("only `label create` is supported");

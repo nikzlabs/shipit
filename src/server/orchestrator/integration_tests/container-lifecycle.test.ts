@@ -93,7 +93,7 @@ function createFakeDocker() {
  *
  * Mirrors `createSessionDirFactory`: the clone is `<sessionDir>/workspace`, with
  * ShipIt's state dir as its sibling. Container creation resolves the state dir
- * from the clone path and refuses anything else (docs/246 / SHI-286), so the
+ * from the clone path and refuses anything else (docs/246 / planning#288), so the
  * layout is load-bearing here, not cosmetic.
  */
 async function createSession(
@@ -215,7 +215,7 @@ describe("container lifecycle integration", () => {
 
   it("orphan cleanup removes stale containers", async () => {
     // Simulate an orphan container from a previous orchestrator run. Real paths:
-    // `create` mkdirs the state dir, unconditionally since SHI-286, so a
+    // `create` mkdirs the state dir, unconditionally since planning#288, so a
     // `/workspace/...` literal is an EACCES wherever that isn't writable.
     const orphanDir = path.join(sessionsDir, "orphan");
     await containerManager.create({

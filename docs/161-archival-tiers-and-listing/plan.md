@@ -429,7 +429,7 @@ two coincidental 30-day startup-janitor knobs
 (`DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` + `DISK_JANITOR_CACHE_DAYS`) collapse into
 one `DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS` (`COLD_ARTIFACT_RETENTION_DAYS`,
 default 30) covering both the cold caches and the now-vestigial archived-workspace
-backstop (post-SHI-192 the workspace is freed synchronously at archive time, so
+backstop (post-planning#194 the workspace is freed synchronously at archive time, so
 that sweep is pure crash-recovery and is no longer independently tunable — it's
 now ON by default at the shared retention rather than disabled-by-default).
 

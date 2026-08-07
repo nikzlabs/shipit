@@ -299,7 +299,7 @@ describe("autoResetMergedBranchOnContinue", () => {
   });
 
   /**
-   * SHI-295 — a skip on a MERGED session must never be silent again.
+   * planning#297 — a skip on a MERGED session must never be silent again.
    *
    * The production incident was diagnosed by proving a negative: one session's
    * log showed `[git] Reset --hard`, the broken one showed nothing at all — no
@@ -308,7 +308,7 @@ describe("autoResetMergedBranchOnContinue", () => {
    * These pin the clause-per-skip contract so the next investigation greps one
    * line and the next user reads one notice.
    */
-  describe("skip reporting (SHI-295)", () => {
+  describe("skip reporting (planning#297)", () => {
     it.each([
       ["dirty-tree", { isClean: vi.fn().mockResolvedValue(false) }, "uncommitted changes"],
       ["detached-head", { currentBranchOrNull: vi.fn().mockResolvedValue(null) }, "HEAD is detached"],

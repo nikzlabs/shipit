@@ -230,11 +230,11 @@ describe("git-config: writeContainerGitConfig (docs/088 finding #5)", () => {
   });
 });
 
-// docs/150 §7 addendum — the SHI-31 activation blocker. When the session worker
+// docs/150 §7 addendum — the planning#33 activation blocker. When the session worker
 // runs as an unprivileged uid, the root orchestrator's git ops over the
 // worker-owned worktrees are refused with "detected dubious ownership" unless
 // `safe.directory` is configured in the (trusted) global git config.
-describe("git-config: safe.directory gating (SHI-31)", () => {
+describe("git-config: safe.directory gating (planning#33)", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
   let origUid: string | undefined;

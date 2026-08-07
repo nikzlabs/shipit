@@ -7,7 +7,7 @@ import {
 
 /**
  * Regression guard for the docs/150 §8 non-root browser bug (regressed by
- * SHI-145). The Playwright MCP launches a *persistent* browser context by
+ * planning#147). The Playwright MCP launches a *persistent* browser context by
  * default and creates its per-cwd profile dir under `registryDirectory`, which
  * playwright-core resolves to `PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers`
  * — pre-installed read-only and root-owned. As the unprivileged `shipit` user
