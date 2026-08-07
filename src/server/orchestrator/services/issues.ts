@@ -454,6 +454,27 @@ export interface LabelCreation {
 }
 
 /**
+ * One label EDIT as a do-then-surface write (planning#88) — `shipit issue label edit`.
+ * The same shape as {@link LabelCreation} with the reverse-write snapshot for
+ * the fields that changed, plus the card's second-line content.
+ */
+export interface LabelEdit {
+  label: IssueLabel;
+  summary: string;
+  undo: Extract<IssueWriteUndo, { kind: "label-edit" }>;
+  content: IssueWriteContent;
+}
+
+/** Both label writes share the card-minting shape the route consumes. */
+export type LabelWrite = LabelCreation | LabelEdit;
+
+/** Compare two label colors ignoring `#` and casing (`#D73A4A` === `d73a4a`). */
+function sameColor(a: string | undefined, b: string | undefined): boolean {
+  const norm = (v: string | undefined) => (v ?? "").trim().replace(/^#/, "").toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/**
  * Clip a comment body to a short preview for the provenance card's second line
  * (docs/189). Collapses runs of whitespace to keep the two-line clamp honest,
  * then truncates with an ellipsis. The full comment lives in the tracker.
@@ -540,7 +561,17 @@ export async function createLabelForTracker(
   }
   const clash = existing.find((l) => l.name.toLowerCase() === trimmed.toLowerCase());
   if (clash) {
-    throw new ServiceError(409, `Label "${clash.name}" already exists on ${tracker.label} — nothing to create.`);
+    // Deliberately still an error, not update-if-different (planning#88): this path is
+    // also reached by `--create-missing-labels`, where the name came from a
+    // `--label` typo, and a create that repainted a live label carried by
+    // hundreds of issues is the worst outcome a typo could have. Correcting a
+    // label is a deliberate act, so it gets a deliberate verb — which the
+    // message now names, because before it the rejection was a dead end.
+    throw new ServiceError(
+      409,
+      `Label "${clash.name}" already exists on ${tracker.label} — nothing to create. ` +
+        `To change its color, name or description, run \`shipit issue label edit --name "${clash.name}"\`.`,
+    );
   }
   let created: IssueLabel & { id: string };
   try {
@@ -552,6 +583,146 @@ export async function createLabelForTracker(
     label: { name: created!.name, ...(created!.color ? { color: created!.color } : {}) },
     summary: `created label "${created!.name}"`,
     undo: { kind: "label", labelId: created!.id, labelName: created!.name },
+  };
+}
+
+/**
+ * Correct an existing label — rename, recolor, re-describe (planning#88 —
+ * `shipit issue label edit`). Do-then-surface like every other write: applied
+ * immediately, with a provenance card whose Undo restores the prior values.
+ *
+ * This closes the gap `label create` left open. Create refuses a name that
+ * already exists in any casing (deliberately — see below), and there is no
+ * delete, so a label minted with the wrong color or casing was permanently
+ * wrong through ShipIt: docs/247 hit exactly that with `Feature` and
+ * `priority: high` minted grey by a reachability probe, on 147 issues between
+ * them, with nothing in the product able to fix it.
+ *
+ * **Rename is in scope, and it is not a re-labeling.** Both backends rename in
+ * place, so every issue carrying the label keeps carrying it and simply displays
+ * the new name — which is also what makes the undo a true reverse write. The
+ * `Bug` / `bug` casing collision that motivated this can only be fixed by a
+ * rename.
+ *
+ * **`label create` keeps failing on an existing name** rather than becoming
+ * update-if-different. Create is reachable from `--create-missing-labels`, where
+ * the name comes from a `--label` typo; a create that quietly repainted a live
+ * label carried by 147 issues would be the worst possible outcome of a typo.
+ * Correcting a label is a deliberate act, so it gets a deliberate verb.
+ *
+ * Failure modes are all pre-write: an unknown label is a 404 naming the valid
+ * set, a new name colliding with a DIFFERENT label is a 409 (neither backend
+ * merges cleanly, and a silent merge is unrecoverable), and an edit that would
+ * change nothing is a 409 rather than a card with a meaningless Undo.
+ */
+export async function updateLabelForTracker(
+  credentialStore: CredentialStore,
+  trackerId: string,
+  name: string,
+  patch: { name?: string; color?: string; description?: string },
+  fetchImpl?: FetchImpl,
+  github?: GitHubTrackerContext,
+): Promise<LabelEdit> {
+  const trimmed = name.trim();
+  if (!trimmed) throw new ServiceError(400, "A label name is required");
+  const newName = patch.name?.trim();
+  if (patch.name !== undefined && !newName) {
+    throw new ServiceError(400, "The new label name cannot be empty");
+  }
+  if (patch.name === undefined && patch.color === undefined && patch.description === undefined) {
+    throw new ServiceError(400, "At least one of name, color or description is required");
+  }
+  const tracker = resolveConfiguredTracker(credentialStore, trackerId, fetchImpl, github);
+
+  let target: (IssueLabel & { id: string; description?: string }) | null;
+  try {
+    target = await tracker.findLabel(trimmed);
+  } catch (err) {
+    throw new ServiceError(502, err instanceof Error ? err.message : String(err));
+  }
+  if (!target) {
+    // Name the valid set the way every other resolution failure does, so the
+    // agent corrects the name instead of retrying blind. Best-effort: a failed
+    // list must not mask the real answer ("no such label").
+    let options: string[] = [];
+    try {
+      options = (await tracker.listLabels()).map((l) => l.name).slice(0, 50);
+    } catch {
+      // Leave the list empty rather than replacing "no such label" with a
+      // secondary failure the agent can do nothing with.
+    }
+    const list = options.length > 0 ? ` Existing labels: ${options.join(", ")}.` : "";
+    throw new ServiceError(404, `No label "${trimmed}" exists on ${tracker.label}.${list}`);
+  }
+
+  // A rename onto a name a DIFFERENT label already holds is refused: GitHub
+  // rejects it outright and Linear would leave two labels the agent then has to
+  // reconcile, so neither backend gives us a merge worth exposing. A
+  // casing-only rename (`bug` → `Bug`) is the label itself, not a collision.
+  if (newName && newName.toLowerCase() !== target.name.toLowerCase()) {
+    let clash: (IssueLabel & { id: string }) | null;
+    try {
+      clash = await tracker.findLabel(newName);
+    } catch (err) {
+      throw new ServiceError(502, err instanceof Error ? err.message : String(err));
+    }
+    if (clash) {
+      throw new ServiceError(
+        409,
+        `Label "${clash.name}" already exists on ${tracker.label}, so "${target.name}" cannot be renamed to ` +
+          `"${newName}" — ShipIt does not merge labels. Re-label the issues onto "${clash.name}" instead.`,
+      );
+    }
+  }
+
+  // Narrow the patch to what actually differs, so the undo snapshot restores
+  // only fields this write really changed.
+  const renamed = newName !== undefined && newName !== target.name;
+  const recolored = patch.color !== undefined && !sameColor(patch.color, target.color);
+  const redescribed = patch.description !== undefined && patch.description !== (target.description ?? "");
+  if (!renamed && !recolored && !redescribed) {
+    throw new ServiceError(
+      409,
+      `Label "${target.name}" already has those values on ${tracker.label} — nothing to change.`,
+    );
+  }
+
+  let updated: IssueLabel & { id: string; description?: string };
+  try {
+    updated = await tracker.updateLabel(target.id, {
+      ...(renamed && newName ? { name: newName } : {}),
+      ...(recolored ? { color: patch.color! } : {}),
+      ...(redescribed ? { description: patch.description! } : {}),
+    });
+  } catch (err) {
+    toResolutionServiceError(err);
+  }
+
+  const parts: string[] = [];
+  if (renamed) parts.push(`renamed "${target.name}" → "${updated!.name}"`);
+  if (recolored) parts.push(`color → ${updated!.color ?? patch.color}`);
+  if (redescribed) parts.push(patch.description ? "description updated" : "description cleared");
+  const attrParts: string[] = [];
+  if (recolored) attrParts.push(`color → ${updated!.color ?? patch.color}`);
+  if (redescribed) attrParts.push(patch.description ? "description updated" : "description cleared");
+  return {
+    label: { name: updated!.name, ...(updated!.color ? { color: updated!.color } : {}) },
+    summary: `edited label ${parts.join(", ")}`,
+    undo: {
+      kind: "label-edit",
+      // The id AFTER the write: on GitHub the name IS the id, so a rename moves
+      // it, and undo has to address the label as it now stands.
+      labelId: updated!.id,
+      ...(renamed ? { previousName: target.name } : {}),
+      // Only restorable when the tracker told us the prior color; both do in
+      // practice (every label carries one), so the omission is a formality.
+      ...(recolored && target.color ? { previousColor: target.color } : {}),
+      ...(redescribed ? { previousDescription: target.description ?? "" } : {}),
+    },
+    content: {
+      ...(renamed ? { label: { before: target.name, after: updated!.name } } : {}),
+      ...(attrParts.length > 0 ? { attrs: attrParts.join(" · ") } : {}),
+    },
   };
 }
 
@@ -947,6 +1118,21 @@ export async function undoIssueWrite(
         // Delete the created label only while nothing carries it; the adapter
         // throws an explanation otherwise, which surfaces on the card (planning#232).
         await tracker.deleteUnusedLabel(card.undo.labelId, card.undo.labelName);
+        return;
+      case "label-edit": {
+        // Restore exactly the fields the edit changed (planning#88). A rename undoes
+        // in place like the forward write did, so no issue is re-labeled either
+        // way; a field the edit never touched is absent from the snapshot and is
+        // therefore left alone rather than being reset to a guess.
+        const restore = {
+          ...(card.undo.previousName !== undefined ? { name: card.undo.previousName } : {}),
+          ...(card.undo.previousColor !== undefined ? { color: card.undo.previousColor } : {}),
+          ...(card.undo.previousDescription !== undefined
+            ? { description: card.undo.previousDescription }
+            : {}),
+        };
+        await tracker.updateLabel(card.undo.labelId, restore);
+      }
     }
   } catch (err) {
     toResolutionServiceError(err);

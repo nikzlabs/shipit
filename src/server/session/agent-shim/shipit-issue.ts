@@ -679,31 +679,49 @@ function reportWrite(res: { status: number; body: Record<string, unknown> }, dep
   success(deps.io, lines.join("\n"));
 }
 
-/** Accepted `--color` shapes for `label create` — a 6-digit hex, `#` optional. */
+/** Accepted `--color` shapes for the label verbs — a 6-digit hex, `#` optional. */
 const LABEL_COLOR_RE = /^#?[0-9a-fA-F]{6}$/;
 
 /**
- * `shipit issue label create` — mint a tracker label so `--label` can apply it
- * (planning#232). Do-then-surface like the other writes: created immediately, with a
- * provenance card whose Undo deletes the label if it's still unused. It mutates a
- * tracker's CONFIG, so docs/248 req 13's rule applies as it does to
- * `issue create`: `--tracker <name>` is required, there is no default.
- * `label` is a verb group so future label verbs can slot in, but only `create`
- * exists — listing stays on `shipit issue labels`.
+ * `shipit issue label <create|edit>` — the two writes that target a tracker's
+ * label set rather than an issue.
+ *
+ * `create` (planning#232) mints a label so `--label` can apply it; `edit` (planning#88)
+ * corrects one that already exists with the wrong color, casing or description.
+ * Both are do-then-surface, with a provenance card whose Undo reverses them
+ * (delete-if-unused for a create, restore-the-prior-values for an edit), and
+ * both mutate a tracker's CONFIG, so docs/248 req 13's rule applies as it does
+ * to `issue create`: `--tracker <name>` is required, there is no default.
+ *
+ * There is deliberately no `label delete`: undo would have to re-create the
+ * label, which mints a fresh one that no issue carries — an Undo button that
+ * lies. A label that genuinely must go is deleted in the tracker's own UI, which
+ * warns how many issues it will strip it from.
  */
 export async function handleIssueLabel(args: string[], deps: RunDeps): Promise<void> {
   const sub = args[0];
-  if (sub !== "create") {
+  if (sub === "delete" || sub === "rm" || sub === "remove") {
     fail(
       deps.io,
-      "shipit issue label: only `label create` is supported. " +
+      "shipit issue label: there is no `label delete` — undoing one would mint a fresh label that no " +
+        "issue carries, so the Undo on its card would be a lie. Fix a wrong label with " +
+        "`shipit issue label edit` (rename/recolor in place, every issue keeps it); if it truly must go, " +
+        "delete it in the tracker's own UI, which warns how many issues it strips it from.",
+    );
+  }
+  if (sub !== "create" && sub !== "edit") {
+    fail(
+      deps.io,
+      "shipit issue label: only `label create` and `label edit` are supported. " +
         "List existing labels with `shipit issue labels`; apply them with --label on create/edit.",
     );
   }
+  const isEdit = sub === "edit";
   const parsed = parseFlags(args.slice(1), {
     values: {
       "--name": "name",
       "-n": "name",
+      "--new-name": "newName",
       "--color": "color",
       "--description": "description",
       "-d": "description",
@@ -712,29 +730,45 @@ export async function handleIssueLabel(args: string[], deps: RunDeps): Promise<v
     booleans: { "--json": "json" },
   });
   if (parsed.unsupported.length > 0) {
-    fail(deps.io, `Unsupported flag for shipit issue label create: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+    fail(deps.io, `Unsupported flag for shipit issue label ${sub}: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
   const name = parsed.values.name;
   if (!name?.trim()) {
-    fail(deps.io, "shipit issue label create: --name is required.");
+    fail(deps.io, `shipit issue label ${sub}: --name is required.`);
   }
-  // Creating a label mutates a tracker's CONFIG, so like `issue create` it always
-  // names its destination (req 13's reasoning applies unchanged — a forgotten
-  // flag would mint a label in this session's own repository).
+  if (!isEdit && parsed.values.newName !== undefined) {
+    fail(deps.io, "shipit issue label create: --new-name applies to `label edit` (a create names the label with --name).");
+  }
+  if (
+    isEdit &&
+    parsed.values.newName === undefined &&
+    parsed.values.color === undefined &&
+    parsed.values.description === undefined
+  ) {
+    fail(
+      deps.io,
+      "shipit issue label edit: pass at least one of --new-name, --color or --description — --name only says which label to edit.",
+    );
+  }
+  // Writing a tracker's label set mutates its CONFIG, so like `issue create` it
+  // always names its destination (req 13's reasoning applies unchanged — a
+  // forgotten flag would repaint a label in this session's own repository).
   const destinations = await loadDestinations(deps);
-  const target = requireCreateTarget(deps.io, "label create", parsed.values.tracker, destinations);
+  const target = requireCreateTarget(deps.io, `label ${sub}`, parsed.values.tracker, destinations);
   const tracker = target.tracker;
   const color = parsed.values.color;
   if (color !== undefined && !LABEL_COLOR_RE.test(color.trim())) {
-    fail(deps.io, `shipit issue label create: --color must be a 6-digit hex like '#0ea5e9' (got '${color}').`);
+    fail(deps.io, `shipit issue label ${sub}: --color must be a 6-digit hex like '#0ea5e9' (got '${color}').`);
   }
   const payload: Record<string, unknown> = { tracker, name: name.trim() };
   if (target.trackerName) payload.trackerName = target.trackerName;
   if (color !== undefined) payload.color = color.trim();
   if (parsed.values.description !== undefined) payload.description = parsed.values.description;
-  const res = await deps.call("POST", "/agent-ops/issue/label/create", payload, deps.env);
+  if (isEdit && parsed.values.newName !== undefined) payload.newName = parsed.values.newName.trim();
+  const path = isEdit ? "/agent-ops/issue/label/edit" : "/agent-ops/issue/label/create";
+  const res = await deps.call("POST", path, payload, deps.env);
   if (res.status < 200 || res.status >= 300) {
-    fail(deps.io, formatError(res, "Failed to create label"), 1);
+    fail(deps.io, formatError(res, `Failed to ${isEdit ? "edit" : "create"} label`), 1);
   }
   reportWrite(res, deps, parsed.booleans.has("json"));
 }

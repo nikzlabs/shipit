@@ -385,6 +385,12 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/issue/label/create", request.body ?? {}, reply),
   );
 
+  // POST /agent-ops/issue/label/edit { tracker, name, newName?, color?, description? } (planning#88)
+  app.post<{ Body: { tracker?: string; trackerName?: string; name?: string; newName?: string; color?: string; description?: string } }>(
+    "/agent-ops/issue/label/edit",
+    async (request, reply) => relay("POST", "/issue/label/edit", request.body ?? {}, reply),
+  );
+
   // POST /agent-ops/issue/comment { tracker, id, body }
   app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; body?: string } }>(
     "/agent-ops/issue/comment",

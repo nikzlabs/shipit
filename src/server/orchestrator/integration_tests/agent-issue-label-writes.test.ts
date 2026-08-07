@@ -1,14 +1,18 @@
 /**
- * Integration test for tracker label creation (planning#232).
+ * Integration test for the tracker label writes (planning#232 create, planning#88 edit).
  *
  * Drives the real orchestrator (`buildApp()`) with a live WS viewer (which puts
  * a runner in the registry) and a faked GitHub REST layer whose repo label set
- * is MUTABLE, asserting the two creation paths end-to-end:
+ * is MUTABLE, asserting the label write paths end-to-end:
  *
  *  - `POST /issue/label/create` (the `shipit issue label create` broker target)
  *    mints the label, emits + persists one `verb: "label"` provenance card with
  *    a delete-if-unused undo snapshot, and is idempotent across a verbatim
  *    replay (same dedup contract as the other writes, planning#114);
+ *  - `POST /issue/label/edit` corrects an existing label's color/casing, persists
+ *    a `verb: "label-edit"` card whose undo restores the prior values, absorbs a
+ *    replay, and keeps edits to DIFFERENT labels distinct (the dedup key's
+ *    target slot is the label, so the second must not collapse into the first);
  *  - `POST /issue/create` with `createMissingLabels` mints unknown labels first
  *    (one extra card per minted label, before the main create card) and reports
  *    them as `createdLabels`; WITHOUT the flag an unknown label still fails,
@@ -48,7 +52,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 /** The declared destination these tests address (docs/248 req 13). */
 const DECLARED_TRACKER = "github:octocat/hello-world";
 
-describe("Integration: issue label creation (planning#232)", () => {
+describe("Integration: issue label writes (planning#232 create, planning#88 edit)", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
@@ -57,8 +61,9 @@ describe("Integration: issue label creation (planning#232)", () => {
   let sessionManager: SessionManager;
   let githubAuthManager: StubGitHubAuthManager;
   let sessionId: string;
-  let repoLabels: string[];
+  let repoLabels: { name: string; color?: string; description?: string }[];
   let labelPostCount: number;
+  let labelPatchCount: number;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -67,8 +72,9 @@ describe("Integration: issue label creation (planning#232)", () => {
     credentialStore = createTestCredentialStore(tmpDir);
     githubAuthManager = new StubGitHubAuthManager();
     await githubAuthManager.setToken("ghp_test_token");
-    repoLabels = ["security"];
+    repoLabels = [{ name: "security", color: "ededed" }];
     labelPostCount = 0;
+    labelPatchCount = 0;
 
     const trackerFetch = vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
       const method = init?.method ?? "GET";
@@ -76,11 +82,25 @@ describe("Integration: issue label creation (planning#232)", () => {
       if (url.endsWith("/labels") && method === "POST") {
         labelPostCount += 1;
         const body = JSON.parse(init?.body ?? "{}") as { name: string; color?: string };
-        repoLabels.push(body.name);
-        return jsonResponse({ name: body.name, color: body.color ?? "ededed" }, 201);
+        const created = { name: body.name, color: body.color ?? "ededed" };
+        repoLabels.push(created);
+        return jsonResponse(created, 201);
+      }
+      // Rename/recolor in place, addressed by the label's CURRENT name — GitHub's
+      // own contract, and why a rename doesn't re-label a single issue.
+      if (url.includes("/labels/") && method === "PATCH") {
+        labelPatchCount += 1;
+        const name = decodeURIComponent(url.slice(url.indexOf("/labels/") + "/labels/".length));
+        const target = repoLabels.find((l) => l.name === name);
+        if (!target) return jsonResponse({ message: "Not Found" }, 404);
+        const body = JSON.parse(init?.body ?? "{}") as { new_name?: string; color?: string; description?: string };
+        if (body.new_name !== undefined) target.name = body.new_name;
+        if (body.color !== undefined) target.color = body.color;
+        if (body.description !== undefined) target.description = body.description;
+        return jsonResponse({ ...target });
       }
       if (url.includes("/labels") && method === "GET") {
-        return jsonResponse(repoLabels.map((name) => ({ name })));
+        return jsonResponse(repoLabels.map((l) => ({ ...l })));
       }
       // Create an issue on the session repo.
       if (url.endsWith("/issues") && method === "POST") {
@@ -207,6 +227,132 @@ describe("Integration: issue label creation (planning#232)", () => {
     expect(res.statusCode).toBe(409);
     expect((res.json() as { error: string }).error).toContain("already exists");
     expect(labelPostCount).toBe(0);
+    expect(await writeCardsInHistory()).toHaveLength(0);
+
+    client.close();
+  });
+
+  it("label edit recolors, persists a restore-the-prior-values card, and dedups a replay", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+
+    const post = () =>
+      app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/issue/label/edit`,
+        payload: { tracker: DECLARED_TRACKER, name: "security", color: "#8b5cf6" },
+      });
+
+    const first = await post();
+    expect(first.statusCode).toBe(200);
+    const body = first.json() as { ok: boolean; cardId: string; summary: string; label: { color?: string } };
+    expect(body.ok).toBe(true);
+    expect(body.label.color).toBe("#8b5cf6");
+    expect(repoLabels[0].color).toBe("8b5cf6");
+
+    const replay = await post();
+    expect((replay.json() as { cardId: string }).cardId).toBe(body.cardId);
+    expect(labelPatchCount).toBe(1);
+
+    const cards = await writeCardsInHistory();
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({
+      cardId: body.cardId,
+      verb: "label-edit",
+      identifier: "security",
+      issueId: "",
+      // The snapshot names only what changed, so undo can't revert a field the
+      // edit never touched.
+      undo: { kind: "label-edit", labelId: "security", previousColor: "#ededed" },
+      undoState: "available",
+      content: { attrs: "color → #8b5cf6" },
+    });
+
+    client.close();
+  });
+
+  it("label edit renames in place and undo puts the previous name back", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/issue/label/edit`,
+      payload: { tracker: DECLARED_TRACKER, name: "security", newName: "Security" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(repoLabels[0].name).toBe("Security");
+    const card = (await writeCardsInHistory())[0];
+    expect(card).toMatchObject({
+      verb: "label-edit",
+      identifier: "Security",
+      content: { label: { before: "security", after: "Security" } },
+      // The undo address is the post-rename id — on GitHub the name IS the id.
+      undo: { kind: "label-edit", labelId: "Security", previousName: "security" },
+    });
+
+    // Undo is the reverse write: rename it back, in place, again touching no
+    // issue that carries it.
+    client.send({ type: "undo_issue_write", cardId: card.cardId });
+    let update = await client.receiveType("issue_write_update");
+    while ((update as { undoState?: string }).undoState === "undoing") {
+      update = await client.receiveType("issue_write_update");
+    }
+    expect(update).toMatchObject({ cardId: card.cardId, undoState: "undone" });
+    expect(repoLabels[0].name).toBe("security");
+
+    client.close();
+  });
+
+  it("two edits to DIFFERENT labels each get their own write and card", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+    repoLabels.push({ name: "bug", color: "d73a4a" });
+
+    const editSecurity = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/issue/label/edit`,
+      payload: { tracker: DECLARED_TRACKER, name: "security", color: "#8b5cf6" },
+    });
+    // Same patch content, different target label: if the dedup key ignored the
+    // label, the second would silently collapse into the first and come back
+    // with its card, leaving `bug` un-fixed with nothing to show for it.
+    const editBug = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/issue/label/edit`,
+      payload: { tracker: DECLARED_TRACKER, name: "bug", color: "#8b5cf6" },
+    });
+    expect(editSecurity.statusCode).toBe(200);
+    expect(editBug.statusCode).toBe(200);
+    expect((editBug.json() as { cardId: string }).cardId).not.toBe(
+      (editSecurity.json() as { cardId: string }).cardId,
+    );
+    expect(labelPatchCount).toBe(2);
+    expect(await writeCardsInHistory()).toHaveLength(2);
+
+    client.close();
+  });
+
+  it("label edit 404s on an unknown label and 409s on a no-op, without a card", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+
+    const missing = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/issue/label/edit`,
+      payload: { tracker: DECLARED_TRACKER, name: "t3code", color: "#8b5cf6" },
+    });
+    expect(missing.statusCode).toBe(404);
+    expect((missing.json() as { error: string }).error).toContain("security"); // the valid set
+
+    const noop = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/issue/label/edit`,
+      payload: { tracker: DECLARED_TRACKER, name: "security", color: "#EDEDED" },
+    });
+    expect(noop.statusCode).toBe(409);
+
+    expect(labelPatchCount).toBe(0);
     expect(await writeCardsInHistory()).toHaveLength(0);
 
     client.close();

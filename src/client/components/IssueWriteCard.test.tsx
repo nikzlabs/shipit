@@ -97,6 +97,28 @@ describe("IssueWriteCard (docs/189)", () => {
     expect(screen.getByText("description updated")).toBeInTheDocument();
   });
 
+  it("renders a label edit with the rename delta and the recolor, and does not open an issue (planning#88)", () => {
+    const onOpen = vi.fn();
+    seed({
+      verb: "label-edit",
+      // A label write records tracker CONFIG: the identifier is the label's
+      // name as it now stands, and there is no issue behind it.
+      issueId: "",
+      identifier: "Bug",
+      title: "",
+      summary: 'edited label renamed "bug" → "Bug"',
+      content: { label: { before: "bug", after: "Bug" }, attrs: "color → #d73a4a" },
+      undo: { kind: "label-edit", labelId: "Bug", previousName: "bug", previousColor: "#ededed" },
+    });
+    render(<IssueWriteCard cardId={CARD_ID} onOpen={onOpen} />);
+    expect(screen.getByText("Edited label")).toBeInTheDocument();
+    // Line 1 shows the name it has NOW, so line 2 has to carry the prior one.
+    expect(screen.getByText("bug")).toBeInTheDocument();
+    expect(screen.getByText("color → #d73a4a")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("issue-write-card"));
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
   it("renders a status transition for a status write", () => {
     seed({
       verb: "status",

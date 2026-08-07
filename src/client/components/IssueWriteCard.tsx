@@ -73,6 +73,7 @@ const VERB_LABEL: Record<IssueWriteVerb, string> = {
   assignee: "Assigned",
   create: "Created",
   label: "Created label",
+  "label-edit": "Edited label",
 };
 
 /** Per-verb icon. The comment gets a filled bubble so the common write pops. */
@@ -93,6 +94,10 @@ function VerbIcon({ verb }: { verb: IssueWriteVerb }) {
     case "create":
       return <PlusCircleIcon size={size} weight="fill" />;
     case "label":
+      return <TagIcon size={size} weight="fill" />;
+    // Outline against the filled creation icon, the same quieter-sibling
+    // treatment `comment-edit` gets next to `comment`.
+    case "label-edit":
       return <TagIcon size={size} />;
   }
 }
@@ -149,6 +154,21 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
         </div>
       );
     }
+    // A label edit: line 1 already shows the name the label has NOW, so line 2
+    // carries the one it replaced (a rename) and/or the recolor (planning#88).
+    if (card.verb === "label-edit" && (content.label || content.attrs)) {
+      return (
+        <div className="space-y-0.5">
+          {content.label && (
+            <div>
+              <span className="text-(--color-text-tertiary)">name </span>
+              <Delta before={content.label.before} after={content.label.after} />
+            </div>
+          )}
+          {content.attrs && <div className="text-(--color-text-tertiary)">{content.attrs}</div>}
+        </div>
+      );
+    }
     if (card.verb === "status" && content.status) {
       return <Delta before={content.status.from} after={content.status.to} />;
     }
@@ -168,9 +188,9 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
   const anchorCommentId =
     card.undo.kind === "comment" || card.undo.kind === "comment-edit" ? card.undo.commentId : undefined;
 
-  // A label-creation card records tracker CONFIG, not an issue — the identifier
-  // is the label name, so there is nothing to open inline (planning#232).
-  const isLabelCard = card.verb === "label";
+  // A label card records tracker CONFIG, not an issue — the identifier is the
+  // label name, so there is nothing to open inline (planning#232, planning#88).
+  const isLabelCard = card.verb === "label" || card.verb === "label-edit";
 
   // The whole card opens the issue inline. Derive the lookup id from the
   // display identifier (uniform across trackers) rather than `card.issueId`,

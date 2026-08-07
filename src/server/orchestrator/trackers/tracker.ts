@@ -175,6 +175,43 @@ export interface Tracker {
   createLabel(input: { name: string; color?: string; description?: string }): Promise<IssueLabel & { id: string }>;
 
   /**
+   * Look one label up by display name (case-insensitive), or null when the
+   * tracker has none by that name (planning#88 — `shipit issue label edit`).
+   *
+   * Distinct from {@link listLabels}, which returns the pickable `{name, color}`
+   * set the UI renders: this carries the tracker-internal `id` {@link updateLabel}
+   * writes through and the `description`, so one lookup both resolves the target
+   * and yields the snapshot undo restores. Linear prefers a label owned by the
+   * declared team over a same-named one in another team; the team guard in
+   * `updateLabel` is what actually refuses the latter.
+   */
+  findLabel(name: string): Promise<(IssueLabel & { id: string; description?: string }) | null>;
+
+  /**
+   * Rewrite an existing label's name, color and/or description in the bound
+   * scope (planning#88), returning it as it now stands. `id` is the tracker-internal
+   * id from {@link findLabel} / {@link createLabel} (Linear UUID; for GitHub the
+   * label's current name IS its id). Only the fields present in `patch` are
+   * touched.
+   *
+   * A rename is deliberately in scope and is NOT a re-labeling: both backends
+   * rename in place (`PATCH /labels/{name}` with `new_name`; `issueLabelUpdate`),
+   * so every issue carrying the label keeps carrying it and simply displays the
+   * new name — which is what makes the reverse write a true undo. Callers
+   * pre-check that a new name doesn't collide with a DIFFERENT label, because
+   * neither backend merges cleanly.
+   *
+   * Linear only: the label must belong to the declared team (`assertOwnTeam`, the
+   * guard `deleteUnusedLabel` also applies) — a label id is workspace-global, so
+   * the check is enforced here, server-side, where a direct relay POST can't
+   * bypass it.
+   */
+  updateLabel(
+    id: string,
+    patch: { name?: string; color?: string; description?: string },
+  ): Promise<IssueLabel & { id: string; description?: string }>;
+
+  /**
    * Delete a label ONLY when no issues carry it — the reverse write behind a
    * label-creation card's Undo (planning#232). When the label is in use the adapter
    * throws with an explanation (surfaced as the card's undo error) instead of

@@ -80,21 +80,30 @@ now shows the shape a guard would take, but the undo asymmetry is undecided.
 - [ ] `comment delete` — adapters already have `deleteComment`, reachable today only via a card's Undo. Needs an authorship guard: the id is backend-global, so an unguarded command could delete human discussion the agent never wrote.
 - [ ] Decide how a delete's card presents undo, given that re-posting mints a new id, author and timestamp rather than restoring the original.
 
-## Proposed — label edit
-`label create` is the only label verb, and it refuses a name that already exists
-in any casing. So a label that exists with the wrong color or casing is
-permanently wrong through ShipIt — there is no edit and no delete, and Undo
-reaches only the most recent write.
+## label edit (planning#88)
+See plan.md → *Extension — `label edit`*. `label create` was the only label verb
+and refuses a name that already exists in any casing, so a label minted with the
+wrong color or casing was permanently wrong through ShipIt — docs/247 hit that
+with `Feature`, `priority: high` and `Bug`/`bug`, on 147 issues.
 
-docs/247 hit this for real while preparing the migration: `Feature` and
-`priority: high` had been minted grey by an earlier reachability probe, and
-Linear's `Bug` collided with GitHub's default lowercase `bug`. Together those are
-the corpus's two most-used labels, on 147 issues. The consequences were cosmetic,
-but nothing in the product could fix them.
+- [x] **Rename is in scope** — both backends rename IN PLACE (`new_name` / `issueLabelUpdate`), so no issue is re-labeled and the undo is exactly symmetric; the `Bug`/`bug` casing collision has no other fix. Guarded: a rename onto a *different* existing label is a 409 (no merging), a casing-only rename is not a collision, a no-op edit is a 409.
+- [x] **`label create` keeps failing on an existing name** — not update-if-different: `--create-missing-labels` feeds it from `--label` typos, so a create must never repaint a live label. The 409 now names `label edit` instead of dead-ending.
+- [x] `Tracker.findLabel` (case-insensitive, carries id + description) + `Tracker.updateLabel`; Linear re-reads the label's team and refuses another team's (`assertOwnTeam`, server-side so a direct relay POST can't bypass it)
+- [x] `updateLabelForTracker` + `undoIssueWrite` `label-edit` case (restores only the fields the write changed; `labelId` is the id AFTER the write, since on GitHub the name IS the id)
+- [x] `POST /api/sessions/:id/issue/label/edit` + relay `/agent-ops/issue/label/edit`; `handleLabelWrite` shares the runner/dedup/card path with `label create`
+- [x] Dedup key: the `issueId` slot names THE LABEL being edited (empty for a create, whose name rides in the hashed content) — two edits to different labels must not collapse
+- [x] Shim `shipit issue label edit --name NAME [--new-name] [--color] [--description]`; `--tracker` required (req 13); `label delete` refused with the reason + a pointer at edit
+- [x] Card: `label-edit` verb + outline tag icon + line 2 (rename delta / recolor), non-navigable like the creation card
+- [x] Docs: `shipit-docs/issues.md` (Editing a label + the no-delete rationale), plan.md, this checklist
+- [x] Tests: adapters (both kinds, team guard), service (undo restores color/name, 404/409s), shim (flags, `--json`, delete refusal), integration (card persistence, replay dedup, distinct-label non-collapse, undo), chat-history round-trip, client card
 
-- [ ] `label edit --name NAME [--color …] [--description …]` — rename is the open question: it silently re-labels every issue carrying it, which is a much larger blast radius than a recolor and may deserve to stay out.
-- [ ] Decide whether `label create` on an existing name should keep failing, or update-if-different. Failing is the safer default (a typo can't repaint a live label), so probably keep it and let `edit` be explicit.
-- [ ] `label delete` — same shape as `comment delete`: destructive, un-undoable in any honest sense (recreating mints a fresh label that no issue carries), so it needs its own decision rather than riding along with edit.
+## Proposed — label delete
+Still out of scope; see plan.md → *Proposed — deleting a label*. Undo would mint
+a fresh label that no issue carries, so it would restore the name and lose every
+association — a button that lies. Both trackers delete labels from their own UI
+with a warning naming how many issues it strips it from, which is the honest
+place for a one-way act (§3, not a gap).
+- [ ] Revisit only if someone can answer what its undo means.
 
 ## Deferred
 - [ ] Jira adapter (transitions-based status) when the tracker lands

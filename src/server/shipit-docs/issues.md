@@ -63,7 +63,7 @@ declaration): it fails rather than picking one.
 ### Naming a tracker without a reference
 
 For the tracker-wide verbs — `list`, `labels`, `statuses`, `create`,
-`label create` — use `--tracker <name>`:
+`label create`, `label edit` — use `--tracker <name>`:
 
 ```
 shipit issue list                          # this session's own repository
@@ -87,9 +87,9 @@ adding a second one.
 **`shipit issue create` is the exception: it always requires `--tracker <name>`.**
 There is no default and no unnamed fallback, because for a public code repository
 the unnamed destination is the *public* repo — a forgotten flag would file a
-planning issue publicly. The same rule applies to `shipit issue label create`. To
-let `create` reach its own issues, a repository declares itself and gives it a
-name.
+planning issue publicly. The same rule applies to the `shipit issue label` verbs,
+which mutate a tracker's label configuration. To let `create` reach its own
+issues, a repository declares itself and gives it a name.
 
 ## Reading (read-only)
 
@@ -157,7 +157,8 @@ guessing:
   values `--label` accepts on `create`/`edit`. An unknown `--label` is rejected
   (it won't silently create a stray label), so checking here first avoids a
   guess-and-retry. `--json` adds each label's color. To mint a genuinely new
-  label, see *Creating labels* under Writing below.
+  label, see *Creating labels* under Writing below; to fix one that exists with
+  the wrong color or casing, *Editing a label*.
 - `shipit issue statuses` prints the tracker's assignable statuses as
   `name (type)` — the valid targets for `shipit issue status <reference> <state>`.
   You can pass either the native `name` or the normalized `type`
@@ -213,6 +214,7 @@ shipit issue edit    <reference> [--title T] [--body B | --body-file FILE] [--la
 shipit issue status  <reference> <state>              # normalized type OR native name
 shipit issue assign  <reference> <user|me | --none>
 shipit issue label create --tracker NAME --name NAME [--color '#rrggbb'] [--description TEXT]
+shipit issue label edit   --tracker NAME --name NAME [--new-name NAME] [--color '#rrggbb'] [--description TEXT]
 ```
 
 ### Create
@@ -296,8 +298,7 @@ When the label you want genuinely doesn't exist yet, you have two paths:
   provenance card with **Undo** is posted; Undo **deletes** the label while it's
   still unused, and refuses with an explanation once issues carry it. A
   same-name label already existing (any casing) is an error — nothing is
-  created. Only `label create` exists (no `label delete`/`edit`); list the
-  current set with `shipit issue labels`.
+  created, and the error points you at `label edit` to change it instead.
 - **`--create-missing-labels`** on `issue create` / `issue edit` creates any
   unknown `--label` names on the fly before applying them. Opt-in only — without
   the flag unknown names keep failing, so a typo still can't spawn a label.
@@ -307,6 +308,39 @@ When the label you want genuinely doesn't exist yet, you have two paths:
 
 Prefer checking `shipit issue labels` first and reusing an existing label;
 reach for creation when the label set genuinely lacks the category.
+
+### Editing a label
+
+```
+shipit issue label edit --tracker NAME --name NAME [--new-name NAME] [--color '#rrggbb'] [--description TEXT]
+```
+
+`label edit` **corrects a label that already exists** — wrong color, wrong
+casing, stale description. `--name` says which label to edit (matched
+case-insensitively, so a mis-cased label is reachable); pass at least one of
+`--new-name` / `--color` / `--description` to say what to change.
+
+- **A rename happens in place.** Every issue carrying the label keeps carrying
+  it and simply shows the new name — nothing is re-labeled, on either tracker.
+  That is also what makes Undo a true reverse write: it renames back.
+- **Undo restores the previous values** of exactly the fields you changed. A
+  field you didn't touch is not snapshotted and is left alone.
+- **Renaming onto a name a different label already has is refused (409)** —
+  ShipIt does not merge labels. Re-label those issues onto the existing label
+  instead.
+- **An edit that would change nothing is refused (409)** rather than posting a
+  card with a meaningless Undo. An unknown `--name` is a 404 listing the valid
+  labels.
+- `create` still **fails** on a name that already exists rather than quietly
+  updating it: `--create-missing-labels` feeds `create` from `--label` values, so
+  a typo must never be able to repaint a live label. Correcting one is a
+  deliberate act with a deliberate verb.
+
+**There is no `label delete`.** Undoing a delete would mint a *fresh* label that
+no issue carries — the associations are gone and the Undo button would be a lie.
+If a label truly must go, delete it in the tracker's own UI, which tells you how
+many issues it will be stripped from. Fixing a wrong label with `label edit` is
+almost always what was actually wanted.
 
 ### Priority
 

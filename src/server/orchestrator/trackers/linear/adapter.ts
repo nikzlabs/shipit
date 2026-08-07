@@ -641,6 +641,82 @@ export class LinearTracker implements Tracker {
     return { id: label.id, name: label.name, ...(label.color ? { color: label.color } : {}) };
   }
 
+  async findLabel(name: string): Promise<(IssueLabel & { id: string; description?: string }) | null> {
+    if (!this.token) {
+      throw new Error("Linear is not configured (missing token)");
+    }
+    // The same workspace-wide `issueLabels` set `listLabels`/`resolveLabelIds`
+    // read, filtered here in JS so "already exists" means the same thing in all
+    // three (planning#88). Workspace-wide means a same-named label can exist in
+    // another team, so prefer this tracker's own team, then a workspace-level
+    // label (no team), and leave anything else to `updateLabel`'s team guard.
+    const data = await this.gql<{
+      issueLabels: {
+        nodes: { id: string; name: string; color?: string | null; description?: string | null; team?: { key?: string | null } | null }[];
+      };
+    }>(`query FindIssueLabels { issueLabels(first: 250) { nodes { id name color description team { key } } } }`, {});
+    const needle = name.trim().toLowerCase();
+    const matches = data.issueLabels.nodes.filter((l) => l.name?.toLowerCase() === needle);
+    if (matches.length === 0) return null;
+    const found =
+      matches.find((l) => l.team?.key?.toUpperCase() === this.teamKey) ??
+      matches.find((l) => !l.team) ??
+      matches[0];
+    return {
+      id: found.id,
+      name: found.name,
+      ...(found.color ? { color: found.color } : {}),
+      ...(found.description ? { description: found.description } : {}),
+    };
+  }
+
+  async updateLabel(
+    id: string,
+    patch: { name?: string; color?: string; description?: string },
+  ): Promise<IssueLabel & { id: string; description?: string }> {
+    // Same workspace-global reach as `deleteUnusedLabel`: a label id resolves
+    // across teams, so re-read the label's team and refuse another team's —
+    // here, server-side, where a direct relay POST can't skip it. A
+    // workspace-level label has no team and is left alone (it is reachable by
+    // every team, including the declared one).
+    const owner = await this.gql<{ issueLabel: { team: { key: string } | null } | null }>(
+      `query LabelOwner($id: String!) { issueLabel(id: $id) { team { key } } }`,
+      { id },
+    );
+    if (!owner.issueLabel) throw new Error(`Linear label not found: ${id}`);
+    if (owner.issueLabel.team) this.assertOwnTeam(id, owner.issueLabel.team.key);
+    const input: Record<string, unknown> = {};
+    // Linear wants a `#rrggbb` color; tolerate a bare hex from the caller, the
+    // same normalization `createLabel` applies.
+    if (patch.name !== undefined) input.name = patch.name;
+    if (patch.color !== undefined) input.color = patch.color.startsWith("#") ? patch.color : `#${patch.color}`;
+    if (patch.description !== undefined) input.description = patch.description;
+    const data = await this.gql<{
+      issueLabelUpdate: {
+        success: boolean;
+        issueLabel: { id: string; name: string; color?: string | null; description?: string | null } | null;
+      };
+    }>(
+      `mutation LabelUpdate($id: String!, $input: IssueLabelUpdateInput!) {
+        issueLabelUpdate(id: $id, input: $input) {
+          success
+          issueLabel { id name color description }
+        }
+      }`,
+      { id, input },
+    );
+    const label = data.issueLabelUpdate.issueLabel;
+    if (!data.issueLabelUpdate.success || !label) {
+      throw new Error("Linear rejected the label update");
+    }
+    return {
+      id: label.id,
+      name: label.name,
+      ...(label.color ? { color: label.color } : {}),
+      ...(label.description ? { description: label.description } : {}),
+    };
+  }
+
   async deleteUnusedLabel(id: string, name: string): Promise<void> {
     // Usage check first: undo must never strip a label off issues that adopted
     // it — one carrier is enough to refuse, so fetch a single node.

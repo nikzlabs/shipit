@@ -33,9 +33,11 @@ shipit issue label create --name NAME [--color '#rrggbb'] [--description TEXT] [
 - Tracker-neutral; **defaults to Linear** (no pointer to infer from, same rule
   as `issue create`). `--tracker github` creates a repo label on the session's
   repo.
-- `label` is a verb *group* (future label verbs can slot in) but only `create`
-  exists — there is deliberately no `label delete`/`edit`; listing stays on the
-  existing `shipit issue labels`.
+- `label` is a verb *group* (future label verbs can slot in); at the time of this
+  doc only `create` existed. **planning#88 later added `label edit`** (rename /
+  recolor / describe, undo restores the prior values) — see
+  docs/177 → *Extension — `label edit`*. There is still deliberately no
+  `label delete`; listing stays on the existing `shipit issue labels`.
 - A same-name label already existing (case-insensitive) is a **409** — nothing
   is created, so re-runs can't fork casing variants.
 - The shim validates `--color` (`#?rrggbb`) before the round-trip; adapters
@@ -109,10 +111,13 @@ adapters:
   and the standalone verb are deliberate acts.
 - **Create-only surface.** Deleting/renaming labels is tracker gardening with
   blast radius across other issues; the only delete path is the Undo of a
-  creation, gated on the label being unused.
+  creation, gated on the label being unused. *(planning#88 revisited the renaming
+  half: because both backends rename IN PLACE, a rename re-labels nothing and
+  undoes symmetrically, so `label edit` is now supported. Deleting still isn't.)*
 - **Duplicate name → error, not idempotent success.** A 409 tells the agent the
   label already exists (just use it); silently succeeding would hide casing
-  mismatches.
+  mismatches. Still true after planning#88 — `label edit` is the deliberate verb for
+  changing one, so `create` never has to guess whether a repaint was intended.
 - **Reuse `IssueWriteCard` with a `label` verb** rather than a new card type —
   same call docs/187 made for `create`; persistence and client render are
   inherited with two small client-side additions (verb label/icon, no-open).

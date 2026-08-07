@@ -349,6 +349,47 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(JSON.parse(init?.body as string)).toEqual({ name: "t3code", color: "0ea5e9", description: "T3 code area" });
   });
 
+  it("finds a label by name case-insensitively, carrying its description (planning#88)", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse([{ name: "Bug", color: "d73a4a", description: "Something broken" }]),
+    );
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    // Matching ignores casing precisely so a label whose CASING is wrong is
+    // reachable — that is the thing `label edit` exists to fix.
+    expect(await tracker.findLabel("bug")).toEqual({
+      id: "Bug",
+      name: "Bug",
+      color: "#d73a4a",
+      description: "Something broken",
+    });
+    expect(await tracker.findLabel("nope")).toBeNull();
+  });
+
+  it("renames a label in place via new_name, with a #-stripped color (planning#88)", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ name: "Bug", color: "d73a4a", description: "Broken" }),
+    );
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    const label = await tracker.updateLabel("bug", { name: "Bug", color: "#d73a4a", description: "Broken" });
+    // The name IS the id on GitHub, so a rename moves it — the returned id is
+    // the post-rename address the undo snapshot has to carry.
+    expect(label).toEqual({ id: "Bug", name: "Bug", color: "#d73a4a", description: "Broken" });
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toContain("/repos/octocat/hello-world/labels/bug");
+    expect(init?.method).toBe("PATCH");
+    expect(JSON.parse(init?.body as string)).toEqual({ new_name: "Bug", color: "d73a4a", description: "Broken" });
+  });
+
+  it("sends only the fields a label edit touched (planning#88)", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ name: "Feature", color: "8b5cf6" }),
+    );
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    await tracker.updateLabel("Feature", { color: "8b5cf6" });
+    // No `new_name` — a recolor must not restate (and so risk rewriting) the name.
+    expect(JSON.parse(fetchImpl.mock.calls[0][1]?.body as string)).toEqual({ color: "8b5cf6" });
+  });
+
   it("deletes an unused label on undo (planning#232)", async () => {
     const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       if ((init?.method ?? "GET") === "GET") {

@@ -511,6 +511,41 @@ export class GitHubTracker implements Tracker {
     return { id: node.name, name: node.name, ...(color ? { color } : {}) };
   }
 
+  async findLabel(name: string): Promise<(IssueLabel & { id: string; description?: string }) | null> {
+    // Matched against the repo's label list rather than `GET /labels/{name}`,
+    // because that endpoint wants the exact casing and the whole point of this
+    // lookup is to reach a label whose casing is wrong (planning#88). The list is the
+    // same set `resolveLabels` matches, so both agree on what "already exists"
+    // means. GitHub deletes and patches labels BY NAME, so the name is the id.
+    const needle = name.trim().toLowerCase();
+    const found = (await this.fetchRepoLabelNodes()).find((l) => l.name.toLowerCase() === needle);
+    return found ? { id: found.name, ...found } : null;
+  }
+
+  async updateLabel(
+    id: string,
+    patch: { name?: string; color?: string; description?: string },
+  ): Promise<IssueLabel & { id: string; description?: string }> {
+    // `PATCH /labels/{current_name}` renames IN PLACE via `new_name` — every
+    // issue carrying the label keeps carrying it — and wants the hex without '#'.
+    const body: Record<string, unknown> = {};
+    if (patch.name !== undefined) body.new_name = patch.name;
+    if (patch.color !== undefined) body.color = patch.color.replace(/^#/, "");
+    if (patch.description !== undefined) body.description = patch.description;
+    const node = await this.api<{ name: string; color?: string | null; description?: string | null }>(
+      "PATCH",
+      `labels/${encodeURIComponent(id)}`,
+      body,
+    );
+    const color = normalizeGitHubColor(node.color);
+    return {
+      id: node.name,
+      name: node.name,
+      ...(color ? { color } : {}),
+      ...(node.description ? { description: node.description } : {}),
+    };
+  }
+
   async deleteUnusedLabel(id: string, name: string): Promise<void> {
     const ref = this.requireRepo();
     // Usage check first: one carrying issue (or PR — labels apply to both) is
@@ -679,6 +714,18 @@ export class GitHubTracker implements Tracker {
 
   /** Fetch the repo's labels (first 100, name + normalized color). */
   private async fetchRepoLabels(): Promise<IssueLabel[]> {
+    // Drop `description` here: this backs `listLabels`, whose payload the Issues
+    // tab renders as chips. `findLabel` reads the fuller shape instead.
+    return (await this.fetchRepoLabelNodes()).map(({ name, color }) => ({ name, ...(color ? { color } : {}) }));
+  }
+
+  /**
+   * Fetch the repo's labels with everything a label EDIT needs (planning#88): the
+   * description, plus the name that doubles as the label's id. Case-insensitive
+   * matching against this set is what `findLabel` and `resolveLabels` share, so
+   * a casing difference never forks a second label.
+   */
+  private async fetchRepoLabelNodes(): Promise<{ name: string; color?: string; description?: string }[]> {
     const ref = this.requireRepo();
     let res: Response;
     try {
@@ -690,12 +737,20 @@ export class GitHubTracker implements Tracker {
       throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
     await this.assertOk(res);
-    const nodes = (await res.json()) as { name?: string | null; color?: string | null }[];
+    const nodes = (await res.json()) as {
+      name?: string | null;
+      color?: string | null;
+      description?: string | null;
+    }[];
     return nodes
       .filter((n) => Boolean(n?.name))
       .map((n) => {
         const color = normalizeGitHubColor(n.color);
-        return { name: n.name!, ...(color ? { color } : {}) };
+        return {
+          name: n.name!,
+          ...(color ? { color } : {}),
+          ...(n.description ? { description: n.description } : {}),
+        };
       });
   }
 
