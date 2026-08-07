@@ -233,6 +233,9 @@ export async function runSubAgent(
   // §5 — the forgery-resistant per-turn cap. Keyed by the worker-injected
   // SESSION_ID (this runner), so every spawn in the turn — including any a
   // sub-agent forges past the depth guard — decrements the same budget.
+  // `resetSubAgentSpawnBudget` refills it on each new human instruction —
+  // including a message STEERED into a running turn, which starts no
+  // orchestrator turn and so used to leave the cap latched shut.
   if (runner.subAgentSpawnsThisTurn >= SUB_AGENT_PER_TURN_CAP) {
     throw rejectSpawn(sessionId, subAgentId, 429, "per_turn_cap",
       `Sub-agent spawn cap reached for this turn (max ${SUB_AGENT_PER_TURN_CAP}).`);

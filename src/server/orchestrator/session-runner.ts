@@ -800,10 +800,48 @@ export function resetRunnerTurnState(runner: SessionRunnerInterface): void {
   // docs/244 / SHI-297 — nothing of the new turn is on disk yet, so no body of
   // it may leave the reconnect snapshot until a boundary writes it.
   clearCommittedBodyIds(runner.committedBodyIds);
-  // docs/144 — reset the per-turn sub-agent spawn budget at primary-turn start.
-  runner.subAgentSpawnsThisTurn = 0;
+  // docs/144 — a turn the orchestrator starts is a turn boundary for the spawn
+  // budget too. Not the only one: see `resetSubAgentSpawnBudget`.
+  resetSubAgentSpawnBudget(runner);
   // docs/163 — clear per-turn voice-note state (authored flag + attention cap).
   resetVoiceNoteTurnState(runner);
+}
+
+/**
+ * docs/144 — refill the per-turn sub-agent spawn budget (`shipit agent run`).
+ *
+ * Split out of `resetRunnerTurnState` because the two have different safe-reset
+ * points, and coupling them left one refill point missing:
+ *
+ *  - `resetRunnerTurnState` clears `chatMessageGroups`, so it may only run when
+ *    no turn is in flight. That is why `agent_self_wake` resets **only** when
+ *    `!runner.running` — a mid-turn `task_notification` resetting there would
+ *    erase the running turn's opening from chat history for good (docs/237,
+ *    `integration_tests/self-wake-midturn.test.ts`).
+ *  - The budget is not transcript state. Refilling it is harmless at any
+ *    boundary, and it must happen at every point a NEW INSTRUCTION arrives —
+ *    which is not the same set as "a new orchestrator turn starts".
+ *
+ * The gap that made the cap latch shut: **live steering**. A message the user
+ * types while the agent is mid-turn is injected into the running turn on
+ * purpose (docs/140) — no orchestrator turn starts, so `resetRunnerTurnState`
+ * never runs. In a session where the agent is usually busy (the ordinary shape
+ * once it backgrounds consults, which is what ShipIt's guidance tells it to do)
+ * every typed message kept drawing on one budget of 3, and `shipit agent run`
+ * was then refused with "cap reached for this turn" on a turn the user
+ * experiences as brand new.
+ *
+ * So `ws-handlers/send-message.ts` calls this from its steer branch. The
+ * trigger is a WS message from a browser client — a human keystroke, which no
+ * agent can emit — so the forgery-resistant fan-out bound (docs/144 §5) is
+ * untouched. Deliberately NOT called from agent-reachable events: a
+ * programmatic steer (`trySteerDispatch`) or a CLI terminal event would let an
+ * agent top up its own budget without a human ever asking for anything.
+ */
+export function resetSubAgentSpawnBudget(
+  runner: Pick<SessionRunnerInterface, "subAgentSpawnsThisTurn">,
+): void {
+  runner.subAgentSpawnsThisTurn = 0;
 }
 
 /**
@@ -1031,7 +1069,9 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
 
   /**
    * docs/144 — count of sub-agent spawns reaching `services/sub-agent.ts` this
-   * primary turn. Reset to 0 at turn start (`resetRunnerTurnState`). The
+   * primary turn. Refilled by {@link resetSubAgentSpawnBudget} wherever a new
+   * human instruction arrives: turn start (`resetRunnerTurnState`) and a
+   * user-typed message steered into a running turn (`send-message.ts`). The
    * forgery-resistant fan-out bound: keyed by the worker-injected SESSION_ID, so
    * every spawn in the turn — including any a sub-agent forges past the
    * best-effort depth guard — decrements the same budget (cap = 3).
