@@ -16,10 +16,7 @@ compose: docker-compose.yml
 issues:
   trackers:
     # docs/247 — ShipIt's own planning lives in a private repository, separate
-    # from this public source repo. The Linear tracker that used to sit here
-    # (`kind: linear`, team SHI, named `roadmap`) was dropped once all 330 issues
-    # had been copied and every reference in this repo rewritten. Re-adding it
-    # restores read access to the originals; nothing else depends on it.
+    # from this public source repo.
     - kind: github
       repo: nikzlabs/shipit-planning
       name: planning
