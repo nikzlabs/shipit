@@ -84,9 +84,15 @@ const HMR_WS_PATCH = `<script>(function(){` +
     // Chromium: 1 own entry, length 9). The Navigation API's entry list is
     // scoped to this frame, so `canGoBack` answers the right question and
     // `back()` cannot move anything but us.
+    // No `history.back()` fallback: there is no way to ask the legacy API
+    // whether *this frame* can go back (its `history.length` is the joint
+    // length), so on a browser without the Navigation API we refuse to
+    // traverse and report `canGoBack:false`, which greys the button out. All
+    // three engines ship the API (Chrome 102, Safari 18.2, Firefox 147), so
+    // this costs a button nobody has rather than keeping the bug alive.
     `var nav=window.navigation;` +
     `var travel=function(dir){` +
-      `if(!nav){history[dir]();return}` +
+      `if(!nav)return;` +
       `if(dir==="back"?!nav.canGoBack:!nav.canGoForward)return;` +
       // Rejects with InvalidStateError if the entry list moved under us
       // between the check and the call. Swallow both promises rather than
@@ -110,11 +116,11 @@ const HMR_WS_PATCH = `<script>(function(){` +
     // Report the current path (never the host) so the toolbar can show where
     // the preview is. The parent cannot read this itself — the iframe is
     // cross-origin — so the page has to push it out. `canGoBack` rides along
-    // so the toolbar can disable Back when there is nothing behind us; it is
-    // omitted (leaving the button enabled) on browsers with no Navigation API.
+    // so the toolbar can disable Back when there is nothing behind us — false
+    // without the Navigation API, matching `travel`'s refusal to traverse.
     `var rp=function(){try{window.parent.postMessage({source:"shipit-preview",` +
       `type:"path",path:location.pathname+location.search+location.hash,` +
-      `canGoBack:nav?nav.canGoBack:undefined},"*")}catch(e){}};` +
+      `canGoBack:nav?nav.canGoBack:false},"*")}catch(e){}};` +
     `rp();` +
     // A load-time read alone goes stale the instant a client-side router moves
     // without a navigation, so wrap the two History methods that do it. We patch
@@ -124,7 +130,14 @@ const HMR_WS_PATCH = `<script>(function(){` +
       `history[n]=function(){var r=o.apply(this,arguments);rp();return r}};` +
     `wrap("pushState");wrap("replaceState");` +
     `window.addEventListener("popstate",rp);` +
-    `window.addEventListener("hashchange",rp)` +
+    `window.addEventListener("hashchange",rp);` +
+    // An app that drives the Navigation API directly (`navigation.navigate()`,
+    // or a router in navigation-API mode) changes the current entry without
+    // touching the History methods we wrapped, so neither the path nor
+    // `canGoBack` would ever update. `currententrychange` fires after any
+    // same-document entry change and is the one signal that covers all of
+    // them; duplicate reports are free, since the parent compares values.
+    `if(nav)nav.addEventListener("currententrychange",rp)` +
   `}` +
   `})()</script>`;
 

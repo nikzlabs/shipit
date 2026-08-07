@@ -369,21 +369,37 @@ describe("PreviewFrame", () => {
   });
 
   it("tracks canGoBack per slot, so a background preview cannot disable Back", async () => {
-    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
-    render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
-    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
-    window.dispatchEvent(new MessageEvent("message", {
-      data: { source: "shipit-preview", type: "path", path: "/here", canGoBack: true },
-      source: iframe.contentWindow,
-    }));
+    // The pool keeps other sessions' iframes mounted and they keep reporting.
+    // A single shared value would let a background preview at *its* base grey
+    // out Back for the preview the user is actually looking at.
+    const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const previewB: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "vite" };
+    const { rerender } = render(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
+    await screen.findByTitle("Live Preview");
 
-    // A window that owns no slot is dropped entirely.
-    window.dispatchEvent(new MessageEvent("message", {
-      data: { source: "shipit-preview", type: "path", path: "/elsewhere", canGoBack: false },
-      source: window,
-    }));
+    rerender(<PreviewFrame preview={previewB} sessionId="session-b" {...defaultProps} />);
+    const foreground = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const background = screen.getByTitle("Background Preview") as HTMLIFrameElement;
+    expect(background).toHaveAttribute("src", "http://localhost:5173");
 
+    const report = (iframe: HTMLIFrameElement, canGoBack: boolean) => window.dispatchEvent(
+      new MessageEvent("message", {
+        data: { source: "shipit-preview", type: "path", path: "/", canGoBack },
+        source: iframe.contentWindow,
+      }),
+    );
+
+    report(foreground, true);
     expect(await screen.findByTitle("Back")).toBeEnabled();
+
+    report(background, false);
+    expect(await screen.findByTitle("Back")).toBeEnabled();
+
+    // ...and the background report was *recorded* against its own slot rather
+    // than dropped — switching back to it shows the disabled state. Without
+    // this the test would also pass if the message had been ignored entirely.
+    rerender(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
+    expect(await screen.findByTitle("Nothing to go back to in the preview")).toBeDisabled();
   });
 
   it("replies to the SDK ready handshake with authoritative visibility", async () => {

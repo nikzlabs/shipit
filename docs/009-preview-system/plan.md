@@ -47,12 +47,29 @@ scoped to the frame, so `canGoBack` answers the right question and
 `canGoBack` first and swallows both result promises, since the call still rejects
 with `InvalidStateError` if the entry list moves in between.
 
+**There is deliberately no `history.back()` fallback.** A browser without the
+Navigation API offers no way to ask whether *this frame* can go back, so falling
+back to `history.back()` would just reinstate the bug for those users. The script
+instead refuses to traverse and reports `canGoBack: false`, so the button is
+visibly disabled rather than silently inert. All three engines ship the API
+(Chrome 102, Safari 18.2, Firefox 147), so this costs a button essentially nobody
+has.
+
 The script reports `canGoBack` on every `path` message, and `PreviewFrame` keeps
-it per slot so the toolbar can disable Back when there is nothing behind — the
-button greys out instead of silently doing nothing. It is only ever a boolean or
-absent; absent means a browser with no Navigation API, where the slot stays
-"unknown", Back stays enabled, and the injected script falls back to
-`history.back()` rather than losing the button entirely.
+it per slot — the pool leaves other sessions' iframes mounted and reporting, so a
+single shared value would let a background preview at its own base grey out Back
+for the preview on screen. The value is untrusted page-authored input like the
+path beside it: a non-boolean is ignored, leaving the slot "unknown" and Back
+enabled. Unknown is the right default there, because it is also the state of a
+**non-proxied local preview** whose page never ran our script at all — clicking
+Back posts a message nobody receives, which is inert but not a leak.
+
+`rp` fires on `pushState` / `replaceState` (wrapped), `popstate`, `hashchange`,
+**and `navigation`'s `currententrychange`**. That last one is not redundant: an
+app that drives the Navigation API directly (`navigation.navigate()`, or a router
+in navigation-API mode) changes the current entry without touching the History
+methods we wrapped, so both the path display and `canGoBack` would otherwise
+freeze at their load-time values.
 
 **Refresh reloads the page the preview is currently on, not the slot's entry
 URL.** Re-assigning the iframe's `src` — the obvious implementation, and what

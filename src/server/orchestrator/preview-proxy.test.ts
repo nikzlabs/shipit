@@ -107,7 +107,13 @@ function navResult(rejection?: string) {
 
 function runInjectedScript(
   initial = { pathname: "/", search: "", hash: "" },
-  navigation?: { canGoBack: boolean; canGoForward: boolean; back: () => unknown; forward: () => unknown },
+  navigation?: {
+    canGoBack: boolean;
+    canGoForward: boolean;
+    back: () => unknown;
+    forward: () => unknown;
+    addEventListener: (type: string, fn: (e?: unknown) => void) => void;
+  },
 ) {
   const posted: PostedMessage[] = [];
   const listeners = new Map<string, ((e?: unknown) => void)[]>();
@@ -143,13 +149,18 @@ function runInjectedScript(
 /** A Navigation API stub that records which traversals were attempted. */
 function fakeNavigation(opts: { canGoBack?: boolean; canGoForward?: boolean; rejectWith?: string } = {}) {
   const calls: string[] = [];
+  const navListeners = new Map<string, ((e?: unknown) => void)[]>();
   return {
     calls,
+    navListeners,
     nav: {
       canGoBack: opts.canGoBack ?? true,
       canGoForward: opts.canGoForward ?? true,
       back: () => { calls.push("back"); return navResult(opts.rejectWith); },
       forward: () => { calls.push("forward"); return navResult(opts.rejectWith); },
+      addEventListener: (type: string, fn: (e?: unknown) => void) => {
+        navListeners.set(type, [...(navListeners.get(type) ?? []), fn]);
+      },
     },
   };
 }
@@ -157,7 +168,7 @@ function fakeNavigation(opts: { canGoBack?: boolean; canGoForward?: boolean; rej
 describe("injected preview script — path reporting", () => {
   it("reports the current path to the parent on load", () => {
     const { posted } = runInjectedScript({ pathname: "/orders/8842", search: "?tab=open", hash: "" });
-    expect(posted).toContainEqual({ source: "shipit-preview", type: "path", path: "/orders/8842?tab=open" });
+    expect(posted).toContainEqual({ source: "shipit-preview", type: "path", path: "/orders/8842?tab=open", canGoBack: false });
   });
 
   it("never includes the host or port in the reported value", () => {
@@ -252,12 +263,20 @@ describe("injected preview script — toolbar history navigation", () => {
     expect(rejections).toEqual([]);
   });
 
-  it("falls back to history.back() where the Navigation API is missing", () => {
-    // Older browsers keep today's behavior rather than losing the button.
+  it("refuses to traverse at all where the Navigation API is missing", () => {
+    // There is no legacy way to ask whether *this frame* can go back, so
+    // `history.back()` here would be the original bug: it would walk the
+    // top-level ShipIt page back.
     const { toolbar, traversed } = runInjectedScript(undefined, undefined);
     toolbar("back");
     toolbar("forward");
-    expect(traversed).toEqual(["history.back", "history.forward"]);
+    expect(traversed).toEqual([]);
+  });
+
+  it("reports canGoBack false without the Navigation API, so the button is disabled", () => {
+    // Refusing to traverse silently would leave a live-looking, inert button.
+    const { posted } = runInjectedScript(undefined, undefined);
+    expect(posted.find((m) => m.type === "path")?.canGoBack).toBe(false);
   });
 
   it("reload is unaffected by the traversal guard", () => {
@@ -281,10 +300,21 @@ describe("injected preview script — toolbar history navigation", () => {
     expect(posted.filter((m) => m.type === "path").map((m) => m.canGoBack)).toEqual([false, true]);
   });
 
-  it("omits canGoBack where the Navigation API is missing, leaving Back enabled", () => {
-    const { posted } = runInjectedScript(undefined, undefined);
-    const path = posted.find((m) => m.type === "path");
-    expect(path?.canGoBack).toBeUndefined();
+  it("re-reports when the app drives the Navigation API instead of History", () => {
+    // A router in navigation-API mode calls `navigation.navigate()`, which
+    // never touches the History methods we wrapped — without this listener
+    // both the path display and canGoBack would silently freeze.
+    const { nav, navListeners } = fakeNavigation({ canGoBack: false });
+    const { posted, location } = runInjectedScript(undefined, nav);
+
+    location.pathname = "/orders/8842";
+    nav.canGoBack = true;
+    for (const fn of navListeners.get("currententrychange") ?? []) fn();
+
+    expect(posted.filter((m) => m.type === "path")).toEqual([
+      { source: "shipit-preview", type: "path", path: "/", canGoBack: false },
+      { source: "shipit-preview", type: "path", path: "/orders/8842", canGoBack: true },
+    ]);
   });
 });
 
