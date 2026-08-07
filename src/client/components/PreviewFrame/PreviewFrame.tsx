@@ -35,12 +35,6 @@ export interface PreviewStatus {
 
 const READY_BUFFER_LIMIT = 8;
 const READY_BUFFER_TTL_MS = 2_000;
-/**
- * Cap on a reported preview path. The value is authored by the previewed page,
- * so it is untrusted input — a pathological one must not reach React or the
- * clipboard. Long enough that no real route is clipped.
- */
-const MAX_PATH_LENGTH = 2048;
 
 function previewOrigin(url: string): string | null {
   try {
@@ -54,8 +48,6 @@ interface PreviewFrameProps {
   preview: PreviewStatus | null;
   /** Current session ID — part of the iframe-pool slot key (`sessionId:port`). */
   sessionId?: string;
-  /** Sessions whose PR has merged; background iframes for these sessions are torn down. */
-  mergedSessionIds?: string[];
   /** All detected ports available for selection. */
   detectedPorts: number[];
   /** The currently selected port override, or null to use the default. */
@@ -78,7 +70,6 @@ interface PreviewFrameProps {
 export function PreviewFrame({
   preview,
   sessionId,
-  mergedSessionIds = [],
   detectedPorts,
   selectedPort,
   onSelectPort,
@@ -91,10 +82,12 @@ export function PreviewFrame({
 }: PreviewFrameProps) {
   const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
   const [refreshKey, setRefreshKey] = useState(0);
-  // Current path per slot, as reported by each page's injected script. State,
-  // not a ref — it drives the toolbar. Kept per slot so switching sessions
-  // shows that preview's own route rather than the last one seen anywhere.
-  const [slotPaths, setSlotPaths] = useState<Map<string, string>>(new Map());
+  // Current path per slot, as reported by each page's injected script. Kept per
+  // slot so switching sessions shows that preview's own route rather than the
+  // last one seen anywhere, and held in the store rather than in component
+  // state so it also survives this component unmounting — a slot recreated
+  // later re-enters at the same path instead of the front page.
+  const slotPaths = usePreviewStore((s) => s.previewPaths);
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
   const [portSelectorOpen, setPortSelectorOpen] = useState(false);
 
@@ -116,12 +109,10 @@ export function PreviewFrame({
   // Slots are keyed by "sessionId:port". Only the active slot is visible.
   // Background slots keep their iframes alive in the DOM. See `useIframePool`
   // for LRU eviction and `usePreviewHealthPoller` for slot creation.
-  const { slots, slotOrder, iframeRefs, createdSlotsRef, pollingRef, promoteSlot, setSlot, pruneSlots } = useIframePool();
+  const { slots, slotOrder, iframeRefs, createdSlotsRef, pollingRef, promoteSlot, setSlot } = useIframePool();
 
   const activeSlotKey = activePort ? `${sessionId ?? "_"}:${activePort}` : null;
   const activeSlot = activeSlotKey ? slots.get(activeSlotKey) ?? null : null;
-  const mergedSessionKey = mergedSessionIds.join("\0");
-  const mergedSessionIdSet = useMemo(() => new Set(mergedSessionIds), [mergedSessionKey]);
 
   // Container mode detection for the current preview
   const isContainerMode = !!(preview?.url?.startsWith("/preview/"));
@@ -147,43 +138,19 @@ export function PreviewFrame({
     setSlot,
   });
 
-  // Merged sessions are terminal: keep the active iframe mounted while the user
-  // is viewing that session, but tear down its background iframe as soon as the
-  // user switches away so completed PR previews do not keep running invisibly.
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    if (mergedSessionIdSet.size === 0) return;
-    for (const key of slotOrder) {
-      if (key === activeSlotKey) continue;
-      const [slotSessionId] = key.split(":");
-      if (mergedSessionIdSet.has(slotSessionId)) {
-        loadedSlotsRef.current.delete(key);
-        reloadableWindowsRef.current.delete(key);
-        setSlotPaths((prev) => {
-          if (!prev.has(key)) return prev;
-          const next = new Map(prev);
-          next.delete(key);
-          return next;
-        });
-      }
-    }
-    pruneSlots((key) => {
-      if (key === activeSlotKey) return false;
-      const [slotSessionId] = key.split(":");
-      return mergedSessionIdSet.has(slotSessionId);
-    });
-  }, [activeSlotKey, mergedSessionIdSet, pruneSlots, slotOrder]);
-
   // Derive active slot state for overlay/UI logic
   const activeSlotUrl = activeSlot?.url ?? null;
-  const activePath = activeSlotKey ? slotPaths.get(activeSlotKey) ?? null : null;
+  const activePath = activeSlotKey ? slotPaths[activeSlotKey] ?? null : null;
   // Resolve against the slot URL to recover the absolute URL for click-to-copy.
-  // Safe despite `activePath` being untrusted: the message handler already
-  // rejected anything that isn't a same-origin absolute path.
+  // `activePath` is untrusted and `sanitizePreviewPath` has already rejected
+  // everything that could escape the origin — but this value goes to the user's
+  // clipboard, so re-check the resolved origin here rather than inheriting that
+  // guarantee. A mismatch means the sanitizer missed something; show no URL.
   const activeFullUrl = useMemo(() => {
     if (!activePath || !activeSlotUrl) return null;
     try {
-      return new URL(activePath, activeSlotUrl).href;
+      const resolved = new URL(activePath, activeSlotUrl);
+      return resolved.origin === new URL(activeSlotUrl).origin ? resolved.href : null;
     } catch {
       return null;
     }
@@ -210,7 +177,25 @@ export function PreviewFrame({
   // all in-iframe state (scroll, form inputs, SPA route). Keying loaded
   // state per slot lets us skip the timer for slots we've already confirmed
   // came up cleanly.
-  const [authBlocked, setAuthBlocked] = useState(false);
+  //
+  // A confirmed load is not the only way a slot stops being a fresh fetch,
+  // though. The timer's whole premise is "we just requested this URL and heard
+  // nothing back" — on a revisit there was no request, so an expiry carries no
+  // signal at all. `authSettledRef` therefore records the verdict for a slot
+  // whose detection already ran to a conclusion, so returning to a preview that
+  // never reported "loaded" (non-HTML root, failed injection, a 502 served
+  // during startup) re-shows that verdict instead of force-reloading the cached
+  // iframe again. Both are cleared by a manual refresh, which IS a fresh fetch.
+  const [authBlockedSlots, setAuthBlockedSlots] = useState<ReadonlySet<string>>(() => new Set());
+  const authSettledRef = useRef<Map<string, string>>(new Map());
+  const markAuthBlocked = (key: string, blocked: boolean) =>
+    setAuthBlockedSlots((prev) => {
+      if (prev.has(key) === blocked) return prev;
+      const next = new Set(prev);
+      if (blocked) next.add(key);
+      else next.delete(key);
+      return next;
+    });
   const loadedSlotsRef = useRef<Set<string>>(new Set());
   // Windows that have reported "loaded", i.e. the injected preview script is
   // running there and will honour a "shipit-toolbar" command. Unlike
@@ -228,6 +213,7 @@ export function PreviewFrame({
   activeSlotKeyRef.current = activeSlotKey;
   const MAX_AUTH_TIMEOUT_MS = 5000;
   const MAX_AUTH_RETRIES = 2;
+  const authBlocked = !!activeSlotKey && authBlockedSlots.has(activeSlotKey);
 
   const replyToVisibilityReady = (
     source: MessageEventSource,
@@ -286,17 +272,13 @@ export function PreviewFrame({
       return;
     }
     if (data.type === "path" && event.source) {
-      const raw = (data as { path?: unknown }).path;
-      // Untrusted — authored by the previewed page. Require a same-document
-      // absolute path: anything else is not something we can render as "where
-      // you are", and a protocol-relative "//host/x" would resolve against the
-      // slot URL into a *different* origin, putting a foreign host in the
-      // tooltip and on the clipboard.
-      if (typeof raw !== "string" || !raw.startsWith("/") || raw.startsWith("//")) return;
-      const value = raw.slice(0, MAX_PATH_LENGTH);
+      // The payload is untrusted (authored by the previewed page); the store
+      // sanitizes it and drops anything that isn't a same-document absolute
+      // path. Which slot it came from is decided here by matching the source
+      // window, never by trusting the message.
       for (const [key, el] of iframeRefs.current.entries()) {
         if (!el?.contentWindow || el.contentWindow !== event.source) continue;
-        setSlotPaths((prev) => (prev.get(key) === value ? prev : new Map(prev).set(key, value)));
+        usePreviewStore.getState().setPreviewPath(key, (data as { path?: unknown }).path);
         return;
       }
       return;
@@ -311,10 +293,12 @@ export function PreviewFrame({
       if (el?.contentWindow && el.contentWindow === event.source) {
         loadedSlotsRef.current.add(key);
         reloadableWindowsRef.current.set(key, el.contentWindow);
-        if (key === activeSlotKeyRef.current) {
-          authRetryRef.current = 0;
-          setAuthBlocked(false);
-        }
+        // A late "loaded" overturns a blocked verdict — the page came up after
+        // all, so the slot must not stay settled or the overlay would come back
+        // on the next visit.
+        authSettledRef.current.delete(key);
+        markAuthBlocked(key, false);
+        if (key === activeSlotKeyRef.current) authRetryRef.current = 0;
         return;
       }
     }
@@ -333,16 +317,20 @@ export function PreviewFrame({
     // Without this guard the timer would expire (no fresh postMessage on
     // revisit), force-reload the iframe, and discard the user's in-iframe state.
     if (loadedSlotsRef.current.has(activeSlotKey)) {
-      setAuthBlocked(false);
+      markAuthBlocked(activeSlotKey, false);
       return;
     }
+    // Detection already concluded for this slot at this URL. Re-arming would
+    // time out against a cached iframe that isn't fetching anything and reload
+    // it for no reason; the recorded verdict is already on screen.
+    if (authSettledRef.current.get(activeSlotKey) === activeSlotUrl) return;
     // Reset the retry budget when the user navigates to a different preview URL.
     // refreshKey changes (manual or auto retry) keep the existing budget.
     if (lastAuthUrlRef.current !== activeSlotUrl) {
       lastAuthUrlRef.current = activeSlotUrl;
       authRetryRef.current = 0;
     }
-    setAuthBlocked(false);
+    markAuthBlocked(activeSlotKey, false);
     const timer = setTimeout(() => {
       if (loadedSlotsRef.current.has(activeSlotKey)) return;
       if (authRetryRef.current < MAX_AUTH_RETRIES) {
@@ -353,7 +341,8 @@ export function PreviewFrame({
         setRefreshKey((k) => k + 1);
         return;
       }
-      setAuthBlocked(true);
+      authSettledRef.current.set(activeSlotKey, activeSlotUrl);
+      markAuthBlocked(activeSlotKey, true);
     }, MAX_AUTH_TIMEOUT_MS);
     return () => clearTimeout(timer);
   }, [activeSlotKey, activeSlotUrl, previewSubdomainUrl, isLocalPreview, refreshKey]);
@@ -364,13 +353,15 @@ export function PreviewFrame({
   useEffect(() => {
     if (refreshKey !== lastRefreshKey.current) {
       lastRefreshKey.current = refreshKey;
-      setAuthBlocked(false);
       if (activeSlotKey) {
+        markAuthBlocked(activeSlotKey, false);
         // A manual refresh (or the auth-retry escalation) intentionally
-        // throws away the cached "loaded" state for this slot so the
-        // detection timer re-arms and a genuinely auth-blocked response
-        // can be re-detected.
+        // throws away the cached "loaded" state and any settled verdict for
+        // this slot so the detection timer re-arms and a genuinely
+        // auth-blocked response can be re-detected. This is a real fetch, so
+        // an expiry means something again.
         loadedSlotsRef.current.delete(activeSlotKey);
+        authSettledRef.current.delete(activeSlotKey);
         const el = iframeRefs.current.get(activeSlotKey);
         // Reload the page the preview is CURRENTLY on. Re-assigning `src`
         // navigates back to the slot's entry URL, so a user who had clicked
@@ -540,7 +531,7 @@ export function PreviewFrame({
             variant="secondary"
             size="md"
             onClick={() => {
-              setAuthBlocked(false);
+              if (activeSlotKey) markAuthBlocked(activeSlotKey, false);
               authRetryRef.current = 0;
               setRefreshKey((k) => k + 1);
             }}

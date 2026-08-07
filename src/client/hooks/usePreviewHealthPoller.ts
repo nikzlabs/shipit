@@ -1,5 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: poll external preview server URL until ready with cancellation (external system sync)
 import { useEffect } from "react";
+import { usePreviewStore } from "../stores/preview-store.js";
 import type { PreviewStatus } from "../components/PreviewFrame.js";
 import type { IframeSlot } from "./useIframePool.js";
 
@@ -52,6 +53,14 @@ function buildSubdomainUrl(
  * path-based fallback (it can't render real apps: absolute asset paths 404
  * without the `/preview/{id}/{port}` prefix). When no subdomain can be built
  * (raw-IP host), returns `null` so PreviewFrame shows the empty-state.
+ *
+ * `path` is the slot's remembered location (`previewPaths` in the preview
+ * store). Creating a slot is what happens after every event that drops an
+ * iframe — LRU eviction, a `PreviewFrame` unmount, a page reload — and
+ * entering at the origin root would silently send the user back to the app's
+ * front page each time. It is sanitized at the store boundary, and resolved
+ * against the origin here so a value that somehow isn't same-origin cannot
+ * point the iframe at another host.
  */
 function computePreviewUrl(
   sessionId: string,
@@ -59,15 +68,27 @@ function computePreviewUrl(
   preview: PreviewStatus,
   apiHost: string,
   apiProtocol: string = window.location.protocol,
+  path?: string | null,
 ): { url: string; containerMode: boolean } | null {
   if (!preview.running || !port) return null;
   const isContainer = preview.url?.startsWith("/preview/") ?? false;
-  if (isContainer) {
-    const subdomain = buildSubdomainUrl(sessionId, port, apiHost, apiProtocol);
-    if (!subdomain) return null;
-    return { url: subdomain, containerMode: true };
+  const base = isContainer
+    ? buildSubdomainUrl(sessionId, port, apiHost, apiProtocol)
+    : `http://localhost:${port}`;
+  if (!base) return null;
+  return { url: withPath(base, path), containerMode: isContainer };
+}
+
+/** Resolve `path` against `base`, keeping the result on `base`'s origin. */
+function withPath(base: string, path?: string | null): string {
+  if (!path) return base;
+  try {
+    const resolved = new URL(path, base);
+    if (resolved.origin !== new URL(base).origin) return base;
+    return resolved.href;
+  } catch {
+    return base;
   }
-  return { url: `http://localhost:${port}`, containerMode: false };
 }
 
 export interface UsePreviewHealthPollerParams {
@@ -180,8 +201,18 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
       // fires on cancellation/unmount).
       pollingRef.current.delete(key);
 
-      // Compute the URL and add the slot
-      const result = computePreviewUrl(sessionId ?? "_", activePort, preview, apiHost, apiProtocol);
+      // Compute the URL and add the slot. Read the remembered path here rather
+      // than through a dep so a path reported while we were polling still
+      // counts, and so this effect doesn't re-run on every navigation inside
+      // an already-created slot.
+      const result = computePreviewUrl(
+        sessionId ?? "_",
+        activePort,
+        preview,
+        apiHost,
+        apiProtocol,
+        usePreviewStore.getState().previewPaths[key],
+      );
       if (result) {
         createdSlotsRef.current.add(key);
         setSlot(key, { url: result.url, containerMode: result.containerMode });

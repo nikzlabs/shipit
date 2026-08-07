@@ -18,6 +18,10 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response()));
   vi.stubGlobal("ResizeObserver", ResizeObserverStub);
   usePreviewStore.getState().reset();
+  // Remembered slot paths deliberately survive `reset()` (they have to outlive
+  // a session switch), and every test here shares the same `_:port` slot key —
+  // so clear them explicitly or one test's route leaks into the next.
+  usePreviewStore.getState().clearPreviewPaths();
 });
 
 afterEach(() => {
@@ -255,6 +259,46 @@ describe("PreviewFrame", () => {
     }));
     expect(screen.queryByText("/from-nowhere")).not.toBeInTheDocument();
     expect(screen.getByText("/visible")).toBeInTheDocument();
+  });
+
+  it("recreates a dropped slot at the path it was last on, not the front page", async () => {
+    // The pool can lose a slot for reasons the user didn't ask for: LRU
+    // eviction, this component unmounting (navigating home, a page reload), a
+    // container restart. Re-entering at the origin root dumped them back on the
+    // app's front page every time. The remembered path lives in the store, so
+    // it outlives the pool.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const { unmount } = render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "path", path: "/orders/8842?tab=open" },
+      source: iframe.contentWindow,
+    }));
+    await screen.findByText("/orders/8842");
+
+    unmount();
+
+    render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    expect(await screen.findByTitle("Live Preview")).toHaveAttribute(
+      "src",
+      "http://localhost:5173/orders/8842?tab=open",
+    );
+  });
+
+  it("does not restore one slot's path into another slot", async () => {
+    const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const previewB: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "vite" };
+    const { unmount } = render(<PreviewFrame preview={previewA} sessionId="s1" {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "path", path: "/deep/route" },
+      source: iframe.contentWindow,
+    }));
+    await screen.findByText("/deep/route");
+    unmount();
+
+    render(<PreviewFrame preview={previewB} sessionId="s2" {...defaultProps} />);
+    expect(await screen.findByTitle("Live Preview")).toHaveAttribute("src", "http://localhost:3000");
   });
 
   it("posts a back-navigation message to the active iframe when Back is clicked", async () => {
@@ -844,37 +888,13 @@ describe("PreviewFrame", () => {
     expect(iframe).toHaveAttribute("src", "http://localhost:5173");
   });
 
-  it("removes a merged session iframe from the background pool after session switch", async () => {
-    const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
-    const previewB: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "vite" };
-    const { rerender } = render(
-      <PreviewFrame
-        preview={previewA}
-        sessionId="session-a"
-        mergedSessionIds={["session-a"]}
-        {...defaultProps}
-      />,
-    );
-    const iframeA = await screen.findByTitle("Live Preview");
-    expect(iframeA).toHaveAttribute("src", "http://localhost:5173");
-
-    // The merged session stays visible while it is active, then its iframe is
-    // unmounted once another session becomes active.
-    rerender(
-      <PreviewFrame
-        preview={previewB}
-        sessionId="session-b"
-        mergedSessionIds={["session-a"]}
-        {...defaultProps}
-      />,
-    );
-
-    await screen.findByTitle("Live Preview");
-    expect(screen.queryByTitle("Background Preview")).not.toBeInTheDocument();
-    expect(screen.getByTitle("Live Preview")).toHaveAttribute("src", "http://localhost:3000");
-  });
-
-  it("keeps a non-merged session iframe in the background pool after session switch", async () => {
+  it("keeps a session iframe in the background pool after session switch", async () => {
+    // No slot is dropped on a switch, whatever the session's PR phase. A merged
+    // PR used to prune its session's background slot, which meant returning to
+    // that session reloaded the preview onto the app's front page — for a
+    // saving of nothing, since a mounted iframe doesn't keep a container alive
+    // (idle reclamation is driven by viewers and agent turns). LRU eviction is
+    // now the only thing that drops a slot.
     const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     const previewB: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "vite" };
     const { rerender } = render(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
@@ -1212,6 +1232,56 @@ describe("PreviewFrame", () => {
       expect(screen.queryByText("Preview authentication required")).not.toBeInTheDocument();
     } finally {
       setTimeoutSpy.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not re-arm the auth-block timer for a slot whose detection already concluded", async () => {
+    // `loadedSlotsRef` only covers slots that came up cleanly. A slot that
+    // never reports "loaded" — a non-HTML root, a failed script injection, a
+    // 502 served during startup — was left unguarded, so every return to that
+    // session re-armed the timer and reloaded the cached iframe. The timer's
+    // premise is "we just fetched and heard nothing back"; on a revisit there
+    // was no fetch, so an expiry carries no signal. Once the detection has
+    // concluded for a slot we keep the verdict and stop re-arming.
+    vi.useFakeTimers();
+    vi.stubEnv("VITE_API_HOST", "example.com:3001");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ ready: true }), { status: 200 })),
+    );
+    const MAX_AUTH_TIMEOUT_MS = 5000;
+
+    try {
+      const previewA: PreviewStatus = { running: true, port: 3000, url: "/preview/session-a/3000/", source: "detected" };
+      const previewB: PreviewStatus = { running: true, port: 5173, url: "/preview/session-b/5173/", source: "detected" };
+      const { rerender } = render(
+        <PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />,
+      );
+
+      // Run out the retry budget without ever reporting "loaded": two silent
+      // reloads, then the verdict.
+      await vi.waitFor(() => expect(screen.queryByTitle("Live Preview")).toBeInTheDocument());
+      for (let i = 0; i < 3; i++) {
+        await vi.advanceTimersByTimeAsync(MAX_AUTH_TIMEOUT_MS + 1);
+      }
+      expect(screen.getByText("Preview authentication required")).toBeInTheDocument();
+
+      const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+      rerender(<PreviewFrame preview={previewB} sessionId="session-b" {...defaultProps} />);
+      await vi.advanceTimersByTimeAsync(0);
+      rerender(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
+      await vi.advanceTimersByTimeAsync(0);
+
+      // No fresh detection timer, and the verdict is still on screen rather
+      // than having silently reset.
+      expect(
+        setTimeoutSpy.mock.calls.filter(([, d]) => d === MAX_AUTH_TIMEOUT_MS),
+      ).toHaveLength(0);
+      expect(screen.getByText("Preview authentication required")).toBeInTheDocument();
+      setTimeoutSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
       vi.unstubAllEnvs();
     }
   });

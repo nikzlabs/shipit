@@ -23,15 +23,18 @@ export interface IframePool {
   promoteSlot: (key: string) => void;
   /** Add or update a slot with the given URL/containerMode metadata. */
   setSlot: (key: string, slot: IframeSlot) => void;
-  /** Remove slots matching a predicate and clear their tracking refs. */
-  pruneSlots: (shouldRemove: (key: string) => boolean) => void;
 }
 
 /**
  * Iframe pool: retains one iframe per (session, port) slot, keyed by
  * `${sessionId}:${port}`. Only the active slot is visible; background slots
- * keep their iframes mounted so re-attach is instant. LRU eviction keeps the
- * pool from growing without bound across many sessions/ports.
+ * keep their iframes mounted so re-attach is instant. LRU eviction past
+ * {@link MAX_IFRAME_SLOTS} is the *only* thing that drops a slot — nothing
+ * else may evict on its own, because a dropped iframe is a reload the user
+ * sees as their preview resetting. (A merged PR used to prune its session's
+ * background slot; it bought nothing — container reclamation is driven by
+ * viewers and agent turns, not by a mounted iframe — and reliably destroyed
+ * exactly the preview the user came back to.)
  *
  * The hook exposes the pool data structures and the two mutation operations
  * (`promoteSlot`, `setSlot`). Consumers own the rendering — they read
@@ -76,33 +79,6 @@ export function useIframePool(): IframePool {
     });
   }, []);
 
-  const pruneSlots = useCallback((shouldRemove: (key: string) => boolean) => {
-    // Apply `shouldRemove` independently in each updater. We must NOT collect
-    // the removed keys in one updater and read them in the other: React invokes
-    // functional `setState` updaters lazily during the next render, not at the
-    // call site, so any set populated inside the `setSlotOrder` updater is still
-    // empty when synchronous code after it runs. Evaluating the predicate in
-    // both updaters keeps `slots` and `slotOrder` in lockstep — critical now
-    // that the render reads `slots` directly (see PreviewFrame).
-    setSlotOrder((prev) => {
-      const next = prev.filter((key) => !shouldRemove(key));
-      return next.length === prev.length ? prev : next;
-    });
-    setSlots((prev) => {
-      let changed = false;
-      const updated = new Map(prev);
-      for (const key of prev.keys()) {
-        if (!shouldRemove(key)) continue;
-        updated.delete(key);
-        iframeRefs.current.delete(key);
-        createdSlotsRef.current.delete(key);
-        pollingRef.current.delete(key);
-        changed = true;
-      }
-      return changed ? updated : prev;
-    });
-  }, []);
-
   return {
     slots,
     slotOrder,
@@ -111,6 +87,5 @@ export function useIframePool(): IframePool {
     pollingRef,
     promoteSlot,
     setSlot,
-    pruneSlots,
   };
 }
