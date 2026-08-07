@@ -419,6 +419,17 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
   );
 
   const displayContent = parsed?.text ?? (lazy?.full ?? result.content);
+  // The previews below read `lazy.full` in preference to the `content` prop
+  // (`useExpandable`), so the two have to be in the SAME units. For a content-
+  // block array they are not: `displayContent` is the text we just unwrapped out
+  // of the blocks, while `lazy.full` is the raw `JSON.stringify`'d array. Handing
+  // the raw one through drew the whole array — image payload and all — as the
+  // text panel directly under the screenshot it had already rendered, which is
+  // what a `browser_take_screenshot` modal showed. Substitute the unwrapped text
+  // so the fetched tail arrives as the same kind of thing the preview started with.
+  const textLazy = lazy && parsed && lazy.full !== undefined
+    ? { ...lazy, full: parsed.text }
+    : lazy;
   const images = parsed?.images ?? [];
   const hasImages = images.length > 0;
   const hasContent = !!displayContent;
@@ -457,13 +468,13 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
   let textResult = null;
   if (hasContent || result.isError) {
     if (tool === "Bash") {
-      textResult = <BashResult content={displayContent} isError={result.isError} maxLines={textMaxLines} lazy={lazy} />;
+      textResult = <BashResult content={displayContent} isError={result.isError} maxLines={textMaxLines} lazy={textLazy} />;
     } else if (tool === "Read") {
-      textResult = <ReadResult content={displayContent} maxLines={textMaxLines} lazy={lazy} />;
+      textResult = <ReadResult content={displayContent} maxLines={textMaxLines} lazy={textLazy} />;
     } else if (tool === "Grep" || tool === "Glob") {
-      textResult = <GrepResult content={displayContent} maxLines={textMaxLines} lazy={lazy} />;
+      textResult = <GrepResult content={displayContent} maxLines={textMaxLines} lazy={textLazy} />;
     } else {
-      textResult = <GenericResult content={displayContent} isError={result.isError} maxLines={textMaxLines} lazy={lazy} />;
+      textResult = <GenericResult content={displayContent} isError={result.isError} maxLines={textMaxLines} lazy={textLazy} />;
     }
   }
 

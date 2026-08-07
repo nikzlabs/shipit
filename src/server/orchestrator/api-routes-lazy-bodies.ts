@@ -19,7 +19,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import type { PersistedMessage } from "./chat-history.js";
-import { imageHash } from "./transcript-projection.js";
+import { imageHash, substituteResultImages } from "./transcript-projection.js";
 import type { ToolResultEntry } from "./session-runner.js";
 
 /** Every tool result in a message, including those nested under a subagent. */
@@ -86,6 +86,16 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
   };
 
   // GET /api/sessions/:id/tool-results/:toolUseId — the full result body.
+  //
+  // "Full" means the whole TEXT, not the base64 the projection already replaced
+  // with a URL. A caller reaches this endpoint because something wants to draw
+  // the body's text — "Show all N lines", the report modal — and the images in
+  // it are already on screen, painted from `/images/:hash` out of this same row.
+  // Serving the stored bytes verbatim re-sent every screenshot as base64 the
+  // moment a tool-call modal opened, which is exactly the transfer docs/244
+  // exists to remove, and put the raw JSON array in reach of the text preview.
+  // `substituteResultImages` is a no-op for the text-only results that are the
+  // overwhelming majority, so this costs a `startsWith` per fetch.
   app.get<{ Params: { id: string; toolUseId: string } }>(
     "/api/sessions/:id/tool-results/:toolUseId",
     async (request, reply) => {
@@ -97,7 +107,10 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
       for (const msg of messages) {
         for (const r of allToolResults(msg)) {
           if (r.toolUseId === request.params.toolUseId) {
-            reply.send({ content: r.content, isError: r.isError ?? false });
+            reply.send({
+              content: substituteResultImages(request.params.id, r.content),
+              isError: r.isError ?? false,
+            });
             return;
           }
         }

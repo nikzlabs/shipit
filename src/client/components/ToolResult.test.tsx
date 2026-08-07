@@ -406,4 +406,40 @@ describe("ToolResult — lazy body fetch (planning#269 req 1)", () => {
     expect(spy).not.toHaveBeenCalled();
     expect(screen.getByText(/all here/)).toBeInTheDocument();
   });
+
+  /**
+   * The fetched body of an MCP image result is a content-block ARRAY, while the
+   * text the previews draw is what `parseContentForImages` unwraps out of it.
+   * `useExpandable` prefers `lazy.full` over its `content` prop, so passing the
+   * raw array through put the whole `JSON.stringify`'d payload — the base64
+   * screenshot included — into the text panel underneath the image it had just
+   * drawn. That is what a `browser_take_screenshot` tool-call modal rendered.
+   */
+  it("draws the unwrapped text, not the raw block array, once an image result's body arrives", async () => {
+    useSessionStore.setState({ sessionId: "s1" });
+    const BASE64 = `iVBORw0KGgoAAAANSUhEUg${"A".repeat(200)}`;
+    const raw = JSON.stringify([
+      { type: "text", text: "### Result\nScreenshot of viewport" },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: BASE64 } },
+    ]);
+    // What the serve-path projection ships: text emptied, image behind a URL.
+    const onWire = JSON.stringify([
+      { type: "text", text: "" },
+      { type: "image", source: { type: "base64", media_type: "image/png", shipit_url: "/api/sessions/s1/images/abc" } },
+    ]);
+    stubFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ content: raw }) }));
+
+    const { container } = render(
+      <ToolResult
+        tool="mcp__playwright__browser_take_screenshot"
+        result={{ toolUseId: "toolu_shot", content: onWire, truncated: true, totalLines: 2 }}
+      />,
+    );
+
+    await screen.findByText(/Screenshot of viewport/);
+    expect(container.textContent).not.toContain(BASE64);
+    expect(container.textContent).not.toContain('"type":"image"');
+    // The image still renders — the point is the text panel, not the picture.
+    expect(screen.getByTestId("tool-result-images")).toBeInTheDocument();
+  });
 });

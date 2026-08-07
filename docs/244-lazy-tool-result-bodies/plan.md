@@ -150,6 +150,36 @@ A body that is *not* a content-block array (a tool returning an ordinary JSON
 array) still takes the raw cap unchanged. Guard tests:
 `agent-event.test.ts` → *the cap never breaks an MCP content-block array*.
 
+## And so did the lazy fetch — the third instance
+
+Same bug class, third surface, reported from the field: opening the tool-call
+modal on a `browser_take_screenshot` result drew the screenshot **and**, beneath
+it, the whole `JSON.stringify`'d array with its base64 payload as the text panel.
+Two independent defects, either sufficient on its own:
+
+* **`/api/sessions/:id/tool-results/:toolUseId` served the stored bytes
+  verbatim.** A caller reaches it because something wants the body's *text*; the
+  images in it are already on screen, painted from `/images/:hash` out of that
+  same row. So the endpoint re-sent every screenshot as base64 the moment a modal
+  opened — the exact transfer this feature exists to remove, on the one path that
+  had never been projected. It now applies `substituteResultImages`, the same
+  function the report branch of `projectToolResult` already ran for the same
+  reason.
+* **`ToolResult` handed the previews a lazy body in the wrong units.**
+  `useExpandable` prefers `lazy.full` over its `content` prop, and for a block
+  array the two are different kinds of thing: `content` is the text
+  `parseContentForImages` unwrapped out of the blocks, `lazy.full` is the raw
+  array. The raw one won, so the fetched payload rendered as the text preview.
+  `ToolResult` now substitutes `parsed.text` into the lazy body before passing it
+  down.
+
+The lesson the first two instances already taught, restated: **a content-block
+array must be unwrapped before any text-shaped code touches it** — slicing,
+capping, serving, or previewing. Guard tests: `lazy-transcript-bodies.test.ts` →
+*substitutes images in the fetched tool-result body instead of re-sending
+base64*; `ToolResult.test.tsx` → *draws the unwrapped text, not the raw block
+array, once an image result's body arrives*.
+
 ## The planning#268 dependency is not real
 
 planning#269 was sequenced after planning#268 "because it depends on `rowId` being on the
