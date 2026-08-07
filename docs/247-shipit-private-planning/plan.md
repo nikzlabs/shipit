@@ -26,11 +26,12 @@ assumed:
 The declaration landed on `main` in its own PR, so the tab is live. What remains
 is the copy, the reference rewrite, and retiring Linear.
 
-One gate is open, and it is the same merge-is-not-a-deploy trap: the two shim and
-adapter fixes the export depends on are on `main` (`9b031908`) but **not yet in
-the deployed shim** — verified from a session container, where a piped large issue
-still truncates at 65,536 bytes and `createdAt` is still absent. Confirm both
-before exporting.
+The last open gate — the merge-is-not-a-deploy one — is now closed. The two shim
+and adapter fixes the export depends on (`9b031908`) have reached the **deployed**
+shim, confirmed from a session container on 2026-08-07: `SHI-56` and `SHI-90`,
+the two issues that previously came back at exactly 65,536 bytes through a pipe,
+now return 119,606 and 87,179; and `createdAt` is present on the issue and on
+every comment. Nothing blocks the export.
 
 ## Why a private repository
 
@@ -214,13 +215,18 @@ Two defects found while probing this migration are **fixed on `main`**
 - The Linear adapter's `ISSUE_FIELDS` did not select `createdAt`, so an issue's
   original creation date was unreadable. Req 9 needs it, and it is now selected.
 
-**Neither is live in the deployed shim yet** — checked from a session container:
-the piped form still returns exactly 65,536 bytes and `createdAt` is still absent.
-This is the same merge-is-not-a-deploy gap the sequencing constraints call out for
-248, and it gates the export: run it only after confirming from a fresh session
-that a piped large issue returns its full length and that `createdAt` comes back.
-Until then the export must redirect to files and never pipe, which is a sound
-habit regardless.
+**Both are now live in the deployed shim** — re-checked from a session container
+on 2026-08-07, after an earlier check had found neither. `SHI-56` and `SHI-90`
+pipe at 119,606 and 87,179 bytes rather than 65,536, and `createdAt` comes back on
+the issue and on every comment. The export should still redirect to files rather
+than pipe, which is a sound habit regardless of the fix.
+
+**Comments come back newest-first.** `view --comments --json` returns them in
+strictly descending `createdAt` order — SHI-56's 77 run from `2026-08-07` down to
+`2026-06-17`. Pass B posts them in conversation order, so it must reverse the
+array. Posting as-returned would invert all 1,344 conversations while every date
+header still read correctly, which is exactly the kind of error a spot-check
+passes over.
 
 Two smaller traps in the same family: `src/client/hooks/useLazyToolInput.ts`
 contains a byte that makes `grep` treat it as binary, so the reference sweep needs
@@ -327,8 +333,8 @@ the tracker is used day to day, not about what the code does.
 1. ~~Create the planning repository and confirm the credential reaches it.~~ Done.
 2. ~~Land, release and deploy 248.~~ Done.
 3. ~~Add `createdAt` to the Linear adapter, and stop the shim truncating piped
-   output.~~ Both on `main` (`9b031908`) — but confirm they have reached the
-   **deployed** shim before step 4, since the export depends on both.
+   output, then confirm both have reached the **deployed** shim.~~ Done —
+   `9b031908` is live, verified from a session container on 2026-08-07.
 4. **Export Linear** — 322 keys, `view --comments --json` redirected to a file per
    key, resumable, outside the workspace. Read-only, and it doubles as the
    archive. Already run once; the copy session re-runs it for itself.
@@ -354,7 +360,8 @@ the tracker is used day to day, not about what the code does.
    makes the mapping complete and *observed* at the end of this pass.
    **Human gate 2 at the end of this step**, before anything reads the mapping.
 9. **Pass B — finish the tracker side.** Replay the 1,344 comments with their
-   original dates (req 9), and edit the 322 bodies so their internal
+   original dates (req 9) — **reversing each issue's array, since the export
+   returns comments newest-first** — and edit the 322 bodies so their internal
    cross-references point at `planning#M`. Both are tracker writes against the
    mapping Pass A produced; **nothing in this repository changes**, so this step
    opens no PR and can run for as long as the pacing requires.
