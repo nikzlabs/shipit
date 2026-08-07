@@ -4,7 +4,12 @@ import { ToolResult, truncateLines, parseContentForImages } from "./ToolResult.j
 import type { ToolResultBlock } from "./MessageList.js";
 import { useSessionStore } from "../stores/session-store.js";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  // Globals are stubbed per-test (fetch, devicePixelRatio); a failing test must
+  // not leak its stub into the next one.
+  vi.unstubAllGlobals();
+});
 
 function result(content: string, isError?: boolean): ToolResultBlock {
   return { toolUseId: "toolu_test", content, isError };
@@ -292,6 +297,23 @@ describe("ToolResult", () => {
       expect(img.className).toContain("max-w-none");
       expect(img.className).not.toMatch(/\bmax-[wh]-(?!none)/);
       expect(img.parentElement?.className).toContain("overflow-x-auto");
+    });
+
+    it("declares the viewer's pixel density so a 1x screenshot isn't magnified", () => {
+      // Our screenshots are 1x — headless Chromium runs at deviceScaleFactor 1.
+      // With no density declared the browser treats an image pixel as a CSS
+      // pixel, so a 2x display smears 1280 of them across 2560 physical pixels:
+      // a bitmap magnified 2x beside text the same display renders sharply.
+      vi.stubGlobal("devicePixelRatio", 2);
+      const imageOnly = JSON.stringify([
+        { type: "image", source: { data: "abc123", media_type: "image/png" } },
+      ]);
+      render(<ToolResult tool="mcp__playwright__browser_take_screenshot" result={result(imageOnly)} />);
+
+      const img = screen.getByAltText("Tool output image 1");
+      const src = img.getAttribute("src")!;
+      // Same URL in both, so the candidate list costs no second request.
+      expect(img.getAttribute("srcset")).toBe(`${src} 2x`);
     });
   });
 });
