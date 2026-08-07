@@ -326,6 +326,27 @@ other cross-reference.
 existing lowercase `bug`; `--label "priority: high"` read back as
 `priority: High` through `mapGitHubPriority`; `status completed` closed it.
 
+**Editing a body later works, and was verified rather than assumed.** Pass B
+depends on it entirely — the pilot is copied with its cross-references still
+reading `SHI-31`, and only Pass B can fix them, once the mapping exists.
+`shipit issue edit planning#2 --body-file …` replaced the body, left labels,
+priority and closed state untouched, and restored the original byte-for-byte on a
+second edit. So a body is not a one-way write; the sequencing in this plan is a
+matter of doing the work once rather than of what is possible.
+
+That probe also exposed **two traps in the rewrite itself**:
+
+- **The header's own key must survive.** `> Migrated from Linear **SHI-145**` is
+  the origin marker required by req 9. A blanket `SHI-N → planning#M` sweep would
+  rewrite it into a pointer at itself and destroy the provenance the header exists
+  to carry. The rewrite has to skip the header line, or run only below the rule.
+- **A Linear reference is usually a markdown link, not a bare key.** 90 of the 122
+  `linear.app` URLs are `[SHI-31](https://linear.app/…/SHI-31/slug)`, where the key
+  appears *twice* — once as the label, once inside the URL. Rewriting the two
+  occurrences independently yields `[planning#57](https://linear.app/…/planning#57/slug)`:
+  a live link to a dead system wearing the right name. The link has to be rewritten
+  as a unit. The remaining 21 are bare URLs.
+
 Three things the pilot surfaced that the plan did not have:
 
 - **980 bare `#N` references, across 216 issues** — overwhelmingly ShipIt's own
