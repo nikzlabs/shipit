@@ -275,20 +275,47 @@ function GenericResult({ content, isError, maxLines, lazy }: { content: string; 
   );
 }
 
-/** Render images from tool result content (e.g. Playwright screenshots). */
+/**
+ * Render images from tool result content (e.g. Playwright screenshots).
+ *
+ * Drawn at **natural size, never scaled** — a screenshot wider than the modal
+ * scrolls sideways instead of shrinking to fit. Fitting is the tempting default
+ * and it is the wrong one here: a downscaled screenshot looks like a faithful
+ * one, so the reader has no way to tell whether the blur they are squinting at
+ * is in the page or in the render. A scrollbar says which.
+ *
+ * That leaves `ToolResult` with no size bound at all, which is fine because it
+ * renders solely inside the tool-call modal — a click, already scrollable in
+ * both axes, with no transcript around it to keep tidy. Two earlier bounds are
+ * gone for the same reason: a 256px height cap that reduced a 1280×720 shot to
+ * an unreadable strip, and the `max-w-full` that replaced it. Neither had a
+ * click-to-full-size view behind it to recover the detail from.
+ *
+ * `max-w-none` is load-bearing — Tailwind's preflight sets `img { max-width:
+ * 100% }`, which would silently re-fit the image inside the scroller and leave
+ * a scrollbar that never scrolls. The frame sits on the scroll container, not
+ * the image, so the border stays put while the picture moves under it.
+ *
+ * Stacked rather than wrapped: a result with two images gives each the full
+ * width instead of squeezing both onto one row.
+ */
 function ToolResultImages({ images }: { images: ToolResultImage[] }) {
   return (
-    <div className="flex gap-2 flex-wrap mt-2" data-testid="tool-result-images">
+    <div className="flex flex-col gap-2 mt-2" data-testid="tool-result-images">
       {images.map((img, i) => {
         const src = img.src ?? `data:${img.mediaType};base64,${img.data}`;
         return (
-          <img
+          <div
             key={i}
-            src={src}
-            alt={`Tool output image ${i + 1}`}
-            loading="lazy"
-            className="max-w-full max-h-64 rounded-md border border-(--color-border-secondary)/50 object-contain"
-          />
+            className="overflow-x-auto rounded-md border border-(--color-border-secondary)/50"
+          >
+            <img
+              src={src}
+              alt={`Tool output image ${i + 1}`}
+              loading="lazy"
+              className="block max-w-none h-auto"
+            />
+          </div>
         );
       })}
     </div>
@@ -419,6 +446,17 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
   );
 
   const displayContent = parsed?.text ?? (lazy?.full ?? result.content);
+  // The previews below read `lazy.full` in preference to the `content` prop
+  // (`useExpandable`), so the two have to be in the SAME units. For a content-
+  // block array they are not: `displayContent` is the text we just unwrapped out
+  // of the blocks, while `lazy.full` is the raw `JSON.stringify`'d array. Handing
+  // the raw one through drew the whole array — image payload and all — as the
+  // text panel directly under the screenshot it had already rendered, which is
+  // what a `browser_take_screenshot` modal showed. Substitute the unwrapped text
+  // so the fetched tail arrives as the same kind of thing the preview started with.
+  const textLazy = lazy && parsed && lazy.full !== undefined
+    ? { ...lazy, full: parsed.text }
+    : lazy;
   const images = parsed?.images ?? [];
   const hasImages = images.length > 0;
   const hasContent = !!displayContent;
@@ -457,20 +495,32 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
   let textResult = null;
   if (hasContent || result.isError) {
     if (tool === "Bash") {
-      textResult = <BashResult content={displayContent} isError={result.isError} maxLines={textMaxLines} lazy={lazy} />;
+      textResult = <BashResult content={displayContent} isError={result.isError} maxLines={textMaxLines} lazy={textLazy} />;
     } else if (tool === "Read") {
-      textResult = <ReadResult content={displayContent} maxLines={textMaxLines} lazy={lazy} />;
+      textResult = <ReadResult content={displayContent} maxLines={textMaxLines} lazy={textLazy} />;
     } else if (tool === "Grep" || tool === "Glob") {
-      textResult = <GrepResult content={displayContent} maxLines={textMaxLines} lazy={lazy} />;
+      textResult = <GrepResult content={displayContent} maxLines={textMaxLines} lazy={textLazy} />;
     } else {
-      textResult = <GenericResult content={displayContent} isError={result.isError} maxLines={textMaxLines} lazy={lazy} />;
+      textResult = <GenericResult content={displayContent} isError={result.isError} maxLines={textMaxLines} lazy={textLazy} />;
     }
   }
+
+  // A projected screenshot arrives as an emptied text block plus a URL-backed
+  // image, so `hasImages` carries it past both status branches above and the
+  // text half of it can fail silently: the picture renders and the body that
+  // never loaded leaves no trace. The image is still the useful part, so this
+  // reports the miss beside it rather than replacing it.
+  const imageBodyFailed = hasImages && !hasContent && !!lazy?.error;
 
   return (
     <div>
       {textResult}
       {hasImages && <ToolResultImages images={images} />}
+      {imageBodyFailed && (
+        <div className="mt-1 text-xs text-(--color-error)" role="status">
+          Couldn&apos;t load this output.
+        </div>
+      )}
     </div>
   );
 }

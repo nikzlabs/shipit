@@ -274,6 +274,25 @@ describe("ToolResult", () => {
       expect(container.querySelector("[data-testid='tool-result-images']")).toBeNull();
       expect(screen.getByText("plain text output")).toBeInTheDocument();
     });
+
+    it("draws the image at natural size and scrolls rather than scaling it", () => {
+      // Neither bound has anything behind it: `ToolResult` renders only in the
+      // scrollable tool-call modal and these images have no click-to-full-size
+      // view. A height cap lost the screenshot outright; fitting the width was
+      // quieter and worse — a downscaled shot is indistinguishable from a
+      // faithful one, so the reader can't tell whose blur they're looking at.
+      const imageOnly = JSON.stringify([
+        { type: "image", source: { data: "abc123", media_type: "image/png" } },
+      ]);
+      render(<ToolResult tool="mcp__playwright__browser_take_screenshot" result={result(imageOnly)} />);
+
+      const img = screen.getByAltText("Tool output image 1");
+      // `max-w-none` beats Tailwind preflight's `img { max-width: 100% }`, which
+      // would re-fit the image and leave a scrollbar that never scrolls.
+      expect(img.className).toContain("max-w-none");
+      expect(img.className).not.toMatch(/\bmax-[wh]-(?!none)/);
+      expect(img.parentElement?.className).toContain("overflow-x-auto");
+    });
   });
 });
 
@@ -405,5 +424,66 @@ describe("ToolResult — lazy body fetch (planning#269 req 1)", () => {
 
     expect(spy).not.toHaveBeenCalled();
     expect(screen.getByText(/all here/)).toBeInTheDocument();
+  });
+
+  /**
+   * The fetched body of an MCP image result is a content-block ARRAY, while the
+   * text the previews draw is what `parseContentForImages` unwraps out of it.
+   * `useExpandable` prefers `lazy.full` over its `content` prop, so passing the
+   * raw array through put the whole `JSON.stringify`'d payload — the base64
+   * screenshot included — into the text panel underneath the image it had just
+   * drawn. That is what a `browser_take_screenshot` tool-call modal rendered.
+   */
+  it("draws the unwrapped text, not the raw block array, once an image result's body arrives", async () => {
+    useSessionStore.setState({ sessionId: "s1" });
+    const BASE64 = `iVBORw0KGgoAAAANSUhEUg${"A".repeat(200)}`;
+    // Over RESULT_STRIP_FLOOR_BYTES, or the server would have shipped this text
+    // inline and there would be nothing to fetch.
+    const TEXT = `### Result\nScreenshot of viewport\n${"await page.screenshot({ scale: 'css' });\n".repeat(8)}`;
+    const raw = JSON.stringify([
+      { type: "text", text: TEXT },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: BASE64 } },
+    ]);
+    // What the serve-path projection ships: text emptied, image behind a URL.
+    const onWire = JSON.stringify([
+      { type: "text", text: "" },
+      { type: "image", source: { type: "base64", media_type: "image/png", shipit_url: "/api/sessions/s1/images/abc" } },
+    ]);
+    stubFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ content: raw }) }));
+
+    const { container } = render(
+      <ToolResult
+        tool="mcp__playwright__browser_take_screenshot"
+        result={{ toolUseId: "toolu_shot", content: onWire, truncated: true, totalLines: 10 }}
+      />,
+    );
+
+    await screen.findByText(/Screenshot of viewport/);
+    expect(container.textContent).not.toContain(BASE64);
+    expect(container.textContent).not.toContain('"type":"image"');
+    // The image still renders — the point is the text panel, not the picture.
+    expect(screen.getByTestId("tool-result-images")).toBeInTheDocument();
+  });
+
+  it("reports a failed body fetch beside the image instead of failing silently", async () => {
+    useSessionStore.setState({ sessionId: "s1" });
+    // The projected screenshot shape: emptied text, URL-backed image. `hasImages`
+    // carries it past the "(no output)" / error branches, so a failed text fetch
+    // used to leave no trace at all.
+    const onWire = JSON.stringify([
+      { type: "text", text: "" },
+      { type: "image", source: { type: "base64", media_type: "image/png", shipit_url: "/api/sessions/s1/images/abc" } },
+    ]);
+    stubFetch(() => Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) }));
+
+    render(
+      <ToolResult
+        tool="mcp__playwright__browser_take_screenshot"
+        result={{ toolUseId: "toolu_shot2", content: onWire, truncated: true, totalLines: 10 }}
+      />,
+    );
+
+    expect(await screen.findByText("Couldn't load this output.")).toBeInTheDocument();
+    expect(screen.getByTestId("tool-result-images")).toBeInTheDocument();
   });
 });

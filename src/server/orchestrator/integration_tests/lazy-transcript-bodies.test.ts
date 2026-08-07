@@ -23,6 +23,7 @@ import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../agents/claude/auth-manager.js";
 import { GitManager } from "../../shared/git.js";
 import type { CredentialStore } from "../credential-store.js";
+import { parseSubagentReport } from "../../shared/subagent-report.js";
 import {
   StubAuthManager,
   FakeClaudeProcess,
@@ -426,6 +427,71 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
     const res = await app.inject({ method: "GET", url });
     expect(res.statusCode).toBe(200);
     expect(res.rawPayload.toString("base64")).toBe(png);
+  });
+
+  it("substitutes images in the fetched tool-result body instead of re-sending base64", async () => {
+    // The tool-call modal fetches this endpoint to draw a screenshot result's
+    // TEXT — the image beside it is already painted from /images/:hash. Serving
+    // the stored bytes verbatim put the whole base64 payload back on the wire
+    // the moment the modal opened, undoing the transfer this feature exists to
+    // remove, and handed the client a raw block array to render as text.
+    const png = Buffer.from("modal-fetch-png-bytes").toString("base64");
+    history.append(sessionId, {
+      role: "assistant",
+      text: "shot",
+      toolUse: [{ type: "tool_use", id: "shot-3", name: "mcp__playwright__browser_take_screenshot", input: {} }],
+      toolResults: [{
+        toolUseId: "shot-3",
+        content: JSON.stringify([
+          { type: "text", text: "### Result\ncaptured the viewport" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: png } },
+        ]),
+      }],
+    });
+
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-results/shot-3` });
+    expect(res.statusCode).toBe(200);
+    const { content } = res.json() as { content: string };
+    expect(content).not.toContain(png);
+    // The text the fetch exists to deliver is whole, and the image is still
+    // reachable — through the URL, which is the point.
+    expect(content).toContain("captured the viewport");
+    const url = (JSON.parse(content) as { source?: { shipit_url?: string } }[])
+      .find((b) => b.source?.shipit_url)!.source!.shipit_url!;
+    const img = await app.inject({ method: "GET", url });
+    expect(img.statusCode).toBe(200);
+    expect(img.rawPayload.toString("base64")).toBe(png);
+  });
+
+  it("keeps a report's accounting footer a separate block when substituting its images", async () => {
+    // `parseSubagentReport` recognizes the CLI's footer ONLY as the last text
+    // block, so the image substitution must not restructure the array around it.
+    // The collapse that `projectBlockArray` applies when it *slices* would turn
+    // the footer into prose and drop the header chips it feeds.
+    const png = Buffer.from("report-png-bytes").toString("base64");
+    const footer = "subagent_tokens: 4210\ntool_uses: 7\nduration_ms: 91000";
+    history.append(sessionId, {
+      role: "assistant",
+      text: "task",
+      toolUse: [{ type: "tool_use", id: "task-img", name: "Task", input: { description: "d" } }],
+      toolResults: [{
+        toolUseId: "task-img",
+        content: JSON.stringify([
+          { type: "text", text: "Here is what I found.\nIt took a while." },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: png } },
+          { type: "text", text: footer },
+        ]),
+      }],
+    });
+
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-results/task-img` });
+    expect(res.statusCode).toBe(200);
+    const { content } = res.json() as { content: string };
+    expect(content).not.toContain(png);
+
+    const { text, meta } = parseSubagentReport(content);
+    expect(meta).toBe(footer);
+    expect(text).toBe("Here is what I found.\nIt took a while.");
   });
 
   it("does not 304 an image that doesn't exist", async () => {

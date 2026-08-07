@@ -57,7 +57,7 @@ function safeCutAt(text: string, max: number): number {
  * cap to handle it — an ordinary JSON payload from a tool that happens to
  * return an array is bounded exactly as before.
  */
-function capContentBlocks(content: string, cap: number): { content: string; textRemoved: boolean } | undefined {
+function capContentBlocks(content: string, cap: number): { content: string; textRemoved: boolean; totalLines: number } | undefined {
   if (!content.startsWith("[")) return undefined;
   let blocks: unknown;
   try {
@@ -70,6 +70,11 @@ function capContentBlocks(content: string, cap: number): { content: string; text
   let isContentBlocks = false;
   let textRemoved = false;
   let budget = cap;
+  // Counted over the TEXT, not the serialized array. `totalLines` labels a
+  // "Show all N lines" button on the unwrapped text, and a stringified block
+  // array is one physical line — so measuring `content` advertised "Show all 1
+  // lines" for a body of thousands. Same units mismatch as the cap itself.
+  let totalLines = 0;
   const capped = blocks.map((b): unknown => {
     if (typeof b !== "object" || b === null) return b;
     const block = b as Record<string, unknown>;
@@ -80,6 +85,9 @@ function capContentBlocks(content: string, cap: number): { content: string; text
     if (block.type !== "text" || typeof block.text !== "string") return b;
     isContentBlocks = true;
     const text = block.text;
+    // `parseContentForImages` joins text blocks with a newline, so each block
+    // after the first contributes its own lines plus the joining one.
+    totalLines += text.split("\n").length + (totalLines > 0 ? 1 : 0);
     if (text.length <= budget) {
       budget -= text.length;
       return b;
@@ -90,7 +98,7 @@ function capContentBlocks(content: string, cap: number): { content: string; text
     return { ...block, text: head };
   });
   if (!isContentBlocks) return undefined;
-  return { content: JSON.stringify(capped), textRemoved };
+  return { content: JSON.stringify(capped), textRemoved, totalLines };
 }
 
 /**
@@ -297,7 +305,8 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
             // The markers mean "this body was shortened, fetch the rest". An
             // image-only result loses nothing here, so claiming otherwise would
             // send the modal after a multi-megabyte body it already has.
-            if (blocks.textRemoved) capped = { totalLines };
+            // The count comes from the blocks' own text — see `capContentBlocks`.
+            if (blocks.textRemoved) capped = { totalLines: blocks.totalLines };
           } else {
             capped = { totalLines };
             content = content.slice(0, safeCutAt(content, CLIENT_CONTENT_CAP));

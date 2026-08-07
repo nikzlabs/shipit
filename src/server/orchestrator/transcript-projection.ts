@@ -117,7 +117,11 @@ export function substituteResultImages(sessionId: string, content: string): stri
  *
  * Text blocks are collapsed into one because that is what the client already
  * renders: `parseContentForImages` joins them with newlines into a single
- * preview body.
+ * preview body. **Except in `keep` mode**, which changes no text at all and so
+ * must not change its shape either — `parseSubagentReport` recognizes the CLI's
+ * accounting footer *only* as a separate final text block, so collapsing an
+ * image-bearing report's blocks turned its footer into prose and dropped the
+ * header chips it feeds.
  *
  * Returns null when `content` isn't a block array, leaving the ordinary
  * string-slicing path to handle it.
@@ -172,6 +176,11 @@ function projectBlockArray(
     }
     const b = block as Record<string, unknown>;
     if (b.type === "text") {
+      // Nothing was sliced, so nothing about the text is ours to restructure.
+      if (mode === "keep") {
+        rewritten.push(block);
+        continue;
+      }
       if (textEmitted) continue;
       textEmitted = true;
       rewritten.push({ ...b, text });

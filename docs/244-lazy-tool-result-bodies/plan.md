@@ -89,9 +89,24 @@ below. What remains on a subagent row is per-step text, which is small.
   lazy with no visible change at all.
 * **The image itself, at today's resolution** — user-row images draw at 96×96
   (`message-media.tsx:53`) behind a click-to-full-size; tool-result images draw
-  at up to 256px (`max-h-64`, `ToolResult.tsx:252`) with **no click affordance
-  at all**. `ChatMessageImage` already carries an optional `src?: string`
-  (`MessageList/types.ts:59`), so a URL-backed path exists in the type today.
+  with **no click affordance at all**. `ChatMessageImage` already carries an
+  optional `src?: string` (`MessageList/types.ts:59`), so a URL-backed path
+  exists in the type today.
+
+  Tool-result images used to carry a 256px height cap (`max-h-64`) on top of
+  that. **They now carry no size bound at all** — natural size, scrolling
+  sideways when wider than the modal. `ToolResult` renders only inside the
+  tool-call modal, which is a click and already scrollable in both axes, so
+  there was never a transcript to keep tidy; the cap simply reduced a 1280×720
+  screenshot to an unreadable strip.
+
+  Fitting the width (`max-w-full`) was the intermediate step and is also wrong,
+  for a subtler reason worth keeping: **a downscaled screenshot is
+  indistinguishable from a faithful one**, so a reader squinting at a blurry
+  control cannot tell whether the blur is in the page or in the render. A
+  scrollbar answers that; a silent resample does not. `max-w-none` on the image
+  is load-bearing — Tailwind preflight's `img { max-width: 100% }` would
+  otherwise re-fit it and leave a scrollbar that never scrolls.
 
 ### One thing that must never be truncated
 
@@ -149,6 +164,58 @@ rebuilds the array, mirroring the serve path. Two consequences worth stating:
 A body that is *not* a content-block array (a tool returning an ordinary JSON
 array) still takes the raw cap unchanged. Guard tests:
 `agent-event.test.ts` → *the cap never breaks an MCP content-block array*.
+
+## And so did the lazy fetch — the third instance
+
+Same bug class, third surface, reported from the field: opening the tool-call
+modal on a `browser_take_screenshot` result drew the screenshot **and**, beneath
+it, the whole `JSON.stringify`'d array with its base64 payload as the text panel.
+Two independent defects, either sufficient on its own:
+
+* **`/api/sessions/:id/tool-results/:toolUseId` served the stored bytes
+  verbatim.** A caller reaches it because something wants the body's *text*; the
+  images in it are already on screen, painted from `/images/:hash` out of that
+  same row. So the endpoint re-sent every screenshot as base64 the moment a modal
+  opened — the exact transfer this feature exists to remove, on the one path that
+  had never been projected. It now applies `substituteResultImages`, the same
+  function the report branch of `projectToolResult` already ran for the same
+  reason.
+* **`ToolResult` handed the previews a lazy body in the wrong units.**
+  `useExpandable` prefers `lazy.full` over its `content` prop, and for a block
+  array the two are different kinds of thing: `content` is the text
+  `parseContentForImages` unwrapped out of the blocks, `lazy.full` is the raw
+  array. The raw one won, so the fetched payload rendered as the text preview.
+  `ToolResult` now substitutes `parsed.text` into the lazy body before passing it
+  down.
+
+The lesson the first two instances already taught, restated: **a content-block
+array must be unwrapped before any text-shaped code touches it** — slicing,
+capping, serving, or previewing. Guard tests: `lazy-transcript-bodies.test.ts` →
+*substitutes images in the fetched tool-result body instead of re-sending
+base64*; `ToolResult.test.tsx` → *draws the unwrapped text, not the raw block
+array, once an image result's body arrives*.
+
+Cross-backend review of that fix surfaced three more, two of them in code the
+fix newly depended on:
+
+* **`projectBlockArray`'s `keep` mode was collapsing text blocks.** It changes no
+  text, so it had no business changing the array's shape either — but it emitted
+  one text block regardless of mode. `parseSubagentReport` recognizes the CLI's
+  accounting footer *only* as a separate final text block, so an image-bearing
+  subagent report came back from the endpoint with its footer glued onto the
+  prose: metadata rendered to the reader, header chips gone. Latent on the serve
+  path before this (the report branch already called `substituteResultImages`);
+  routing the fetch through the same function is what would have made it visible.
+  `keep` now passes text blocks through untouched.
+* **A failed body fetch on an image result was silent.** A projected screenshot is
+  an emptied text block plus a URL-backed image, so `hasImages` carries it past
+  both the loading and the error branch: the picture rendered and the body that
+  never loaded left no trace. The miss is now reported beside the image rather
+  than in place of it.
+* **`capContentBlocks` measured `totalLines` in the wrong units** — over the
+  serialized array rather than the text inside it. A stringified block array is
+  one physical line, so a capped result advertised *"Show all 1 lines"* for a body
+  of thousands. Same mismatch as the two above, one layer down.
 
 ## The planning#268 dependency is not real
 
