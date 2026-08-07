@@ -33,12 +33,16 @@ the two issues that previously came back at exactly 65,536 bytes through a pipe,
 now return 119,606 and 87,179; and `createdAt` is present on the issue and on
 every comment.
 
-**Steps 4 and 5 have run** (2026-08-07): the corpus is exported to
-`/persist/linear-export/` — 330 issues, 0 misses — and the 20 Linear labels plus
-four `priority: …` labels exist on the planning repository. `shipit issue comment
-edit` also shipped and deployed in between, which removes the one irreversible
-step this plan was built around; the consequences are folded into gate 1 below.
-**No issue has been copied.** The next step is the pilot, which stops at a human.
+**Steps 4, 5 and 6 have run** (2026-08-07): the corpus is exported to
+`/persist/linear-export/` — 330 issues, 0 misses — the 20 Linear labels plus four
+`priority: …` labels exist, and `SHI-145` is copied to `planning#2` as the pilot.
+`shipit issue comment edit` also shipped and deployed in between, which removes
+the one irreversible step this plan was built around; the consequences are folded
+into gate 1 below.
+
+**Waiting at human gate 1.** One issue is copied and nothing further will be
+written until the format is signed off. The format is written up under *The copy
+format, as piloted* — read that alongside `planning#2` itself.
 
 ## Why a private repository
 
@@ -287,6 +291,58 @@ outside the git workspace (it holds private planning content) — it is written 
 `/persist/linear-export/`, which is per-session, so a child session re-runs it
 rather than inheriting it.
 
+## The copy format, as piloted
+
+`SHI-145` was copied to `planning#2` on 2026-08-07 — chosen because it exercises
+every awkward part at once: a 4 KB body, four comments, two internal
+cross-references, three labels (including `Bug`, which hits the case collision),
+`High` priority (the grey label), and a closed state.
+
+**Issue body** — a one-line header, then a rule, then the original body verbatim:
+
+```markdown
+> Migrated from Linear **SHI-145**, created 2026-06-14.
+
+---
+
+<original body>
+```
+
+The header deliberately carries **no link back to Linear**. Pass B rewrites the
+122 `linear.app` URLs already in the corpus precisely because they die when Linear
+is retired; minting 330 new ones in the headers would be self-defeating. Sub-issues
+add `Sub-issue of SHI-224.` to the header line, which Pass B rewrites like any
+other cross-reference.
+
+**Comments** — the same shape, one blockquote line carrying the original date:
+
+```markdown
+> _Originally posted 2026-06-14._
+
+<comment body>
+```
+
+**Everything else round-tripped as designed.** `--label Bug` resolved onto the
+existing lowercase `bug`; `--label "priority: high"` read back as
+`priority: High` through `mapGitHubPriority`; `status completed` closed it.
+
+Three things the pilot surfaced that the plan did not have:
+
+- **980 bare `#N` references, across 216 issues** — overwhelmingly ShipIt's own
+  "Resolved by ShipIt on merge of PR #1354" comments. In Linear these are inert
+  text. Inside a GitHub repository they are references, and they resolve against
+  **the planning repo**, not `nikzlabs/shipit` where the PR actually lives. Pass B
+  must qualify them to `nikzlabs/shipit#1354`, which is unambiguous in both
+  renderers. This is the same class of miss as the corpus referencing itself: a
+  string that was inert in Linear becomes active in GitHub.
+- **Five titles carry a cross-reference** (`SHI-79`, `SHI-144`, `SHI-145`,
+  `SHI-164`, `SHI-259`). Pass B rewrites bodies and comments; titles need the same
+  treatment, and `issue edit --title` already exists.
+- **Comment order is backwards between the two trackers.** Linear returns
+  newest-first, GitHub oldest-first. The reversal Pass B applies is a *Linear-side*
+  correction — verifying the result must not reverse a second time. The pilot's
+  four comments read in the right order on both sides.
+
 ## Where a human has to look
 
 Four points in this migration need a person, not a passing test. They are marked
@@ -301,17 +357,26 @@ and an assertion that needs a human is a missing assertion.
 
 ### Gate 1 — the pilot, before the format is repeated 330 times
 
-**Look at:** the one copied issue, in the Issues tab. Specifically —
+**Look at:** `planning#2` in the Issues tab — the copied `SHI-145`. Specifically —
 
 - Does the body header read well? It carries the `SHI-N` origin and the original
   creation date, and it will sit at the top of all 330.
 - Do the replayed comments read as a conversation? Each is prefixed with its
   original date, and the prefix format is what makes a two-year-old discussion
   legible or noisy.
-- Did the internal cross-references get rewritten to the right issues, and do
-  they resolve when clicked?
 - Do labels and the `priority: …` label look right, and does the priority read
-  back correctly in the list?
+  back correctly in the list? This is also where the three known-wrong label
+  colors show up — `bug` lowercase and off-red, `priority: high` grey.
+- How do the bare `#N` PR references render? The pilot's comments mention
+  `#1354` and `#1453`, which live in `nikzlabs/shipit`, not here. This is the
+  finding that most needs a look at a real rendered issue.
+
+**Not checkable at this gate:** whether a rewritten cross-reference *resolves*
+when clicked. A single piloted issue has nothing to point at — its targets are
+created in Pass A. The pilot is therefore copied in Pass A's form, with
+cross-references still reading `SHI-31`; judging the rewritten form is gate 2's
+job, once the mapping exists. This gate was originally written as if one issue
+could check resolution, which by construction it cannot.
 
 **Why a human:** every one of these is "does this read well", which no test
 asserts.
@@ -338,6 +403,9 @@ is creating the issues themselves, since a number, once assigned, is never reuse
   originals show the right title, labels and open/closed state?
 - Does the list read in a sensible order — lowest Linear key first (req 12)?
 - Does the mapping cover every key, with no duplicates?
+- **Inherited from gate 1:** pick a rewritten cross-reference and click it. Does
+  it land on the issue the `SHI-N` originally meant? One piloted issue had nothing
+  to point at, so this is the first moment resolution can be checked at all.
 
 **Why a human:** the agent asserts all of this, but the sweep that follows rewrites
 2,797 references in 686 files from this mapping. A wrong mapping propagates into
@@ -397,14 +465,14 @@ the tracker is used day to day, not about what the code does.
    contributes none (req 8).~~ Done 2026-08-07 — 21 created, all 24 now resolve.
    Three arrived with the wrong color and **cannot be corrected through the
    shim**; see below.
-6. **Pilot: copy exactly one issue and stop. — Human gate 1.** Pick one that exercises the awkward
-   parts — a long body, several comments, at least one internal `SHI-N`
-   cross-reference, a label and a priority — and copy it end to end. Then look at
-   it in the Issues tab and decide whether the body header, the dated comments and
-   the rewritten cross-references read the way they should. Everything downstream
-   repeats this 330 times, so the format is far cheaper to change here than after.
-   The pilot's issue number is consumed either way, so Pass A's consistency check
-   accounts for it rather than assuming an untouched repository.
+6. ~~**Pilot: copy exactly one issue and stop.**~~ Done 2026-08-07 — `SHI-145` →
+   `planning#2`, chosen because it exercises a 4 KB body, four comments, two
+   cross-references, three labels including the colliding `Bug`, `High` priority
+   and a closed state. The format it established is written up under *The copy
+   format, as piloted*. **Waiting at Human gate 1.** Everything downstream repeats
+   this 330 times, so the format is far cheaper to change now than after. The
+   pilot consumed `planning#2`, so Pass A's consistency check starts from #3
+   rather than assuming an untouched repository.
 7. **Sync to the latest `main`.** Everything after this point is measured against
    the working tree — the mapping is applied to it, and the sweep rewrites it — so
    the copy starts from a current base rather than a stale one.
@@ -416,11 +484,15 @@ the tracker is used day to day, not about what the code does.
    makes the mapping complete and *observed* at the end of this pass.
    **Human gate 2 at the end of this step**, before anything reads the mapping.
 9. **Pass B — finish the tracker side.** Replay the 1,390 comments with their
-   original dates (req 9) — **reversing each issue's array, since the export
-   returns comments newest-first** — and edit the 330 bodies so their internal
-   cross-references point at `planning#M`. Both are tracker writes against the
-   mapping Pass A produced; **nothing in this repository changes**, so this step
-   opens no PR and can run for as long as the pacing requires.
+   original dates (req 9) — **reversing each issue's array, since the Linear
+   export returns comments newest-first** — and rewrite references in the 330
+   bodies, the 1,390 comments and the **5 titles** that carry one. Three rewrites,
+   not one: internal `SHI-N` → `planning#M` from the mapping (1,174), `linear.app`
+   URLs → the same (122), and the **980 bare `#N`** PR references → the qualified
+   `nikzlabs/shipit#N`, since inside this repository a bare `#N` points here rather
+   than at the source repo. All tracker writes against the mapping Pass A produced;
+   **nothing in this repository changes**, so this step opens no PR and can run for
+   as long as the pacing requires.
 10. **Rewrite every reference in this repository** — **Human gate 3.** From that mapping, in one PR
     (req 10): doc `issue:` frontmatter, inline doc mentions, code comments,
     `CLAUDE.md`. 2,797 mentions across 686 files — it conflicts with every open
