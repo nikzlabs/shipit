@@ -54,8 +54,16 @@ generated from it and gate 3 reviews that diff:
 | Open / closed | 93 open, 237 closed, exactly matching the Linear split |
 | Spot-check | 10 sampled issues: title, state, labels and header all correct |
 
-**Waiting at human gate 2.** Nothing reads the mapping until it is confirmed —
-see the gate below for what to look at and why it is worth the stop.
+**Pass B is done too** — 1,164 comments replayed and every reference rewritten,
+verified across all 330 issues: no unrewritten `SHI-N`, no unrewritten
+`linear.app` issue URL, no unqualified bare `#N`, no duplicate comment, no
+malformed header. 226 comments were not posted, all of them byte-identical
+same-day repeats collapsed by the write-dedup window; see *Write volume and
+pacing*.
+
+**The tracker side of this migration is finished.** What remains is this
+repository's side: the reference sweep (step 10, gate 3) and retiring Linear
+(step 11, gate 4).
 
 ## Why a private repository
 
@@ -255,10 +263,25 @@ closes + ~26 label creations. Three consequences, each of which shapes the drive
    the decision point a future copy should watch for, not the start of the whole
    job.
 
-The write-dedup window (`handleWrite`) keys on session + tracker + verb + issue id
-+ content hash, so two *identical* comment bodies on the *same* issue would have
-the second silently swallowed. Prefixing each replayed comment with its original
-date (req 9) makes bodies distinct, which removes the hazard as a side effect.
+The write-dedup window (`handleWrite`, `api-routes-issues.ts:733`) keys on session
++ tracker + verb + issue id + content hash over a 10-minute window, so two
+*identical* comment bodies on the *same* issue have the second silently swallowed.
+
+This doc previously claimed the date prefix (req 9) made bodies distinct and so
+"removes the hazard as a side effect". **That was wrong, and it cost 226
+comments.** The prefix only disambiguates when the *dates* differ — byte-identical
+comments posted on the same day render identically, and Pass B posts an issue's
+comments back-to-back, well inside the window. Measured after the fact across all
+330 issues: 17 issues short, 226 comments not posted, **226 explained by an
+identical rendered body, zero unexplained**. Every distinct comment is present.
+
+What collapsed was entirely ShipIt's own merge-bot noise — `SHI-126` and
+`SHI-128` each carried the *same* "Resolved by ShipIt on merge of PR #1294"
+comment **89 times**. So the copy is arguably cleaner than the original. It was
+still an accident rather than a decision, which is the part worth recording: a
+dedup window silently made a fidelity choice the migration never made explicitly.
+A driver that wanted true 1:1 fidelity would have to disambiguate identical
+same-day bodies deliberately.
 
 ## Export fidelity
 
