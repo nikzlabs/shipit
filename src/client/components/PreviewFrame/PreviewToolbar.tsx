@@ -108,7 +108,7 @@ export function PreviewToolbar({
   const setCustomSize = usePreviewStore((s) => s.setCustomSize);
 
   return (
-    <div className="flex items-center justify-between px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs text-(--color-text-secondary)">
+    <div className="flex items-center justify-between gap-2 px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs text-(--color-text-secondary)">
       <span className="flex items-center gap-2">
         {showSelector ? (
           <DropdownMenu open={portSelectorOpen} onOpenChange={setPortSelectorOpen}>
