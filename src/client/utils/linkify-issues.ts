@@ -59,7 +59,7 @@ export const ISSUE_LINK_SCHEME = "shipit-issue:";
  *    parses the token; keeping them in step means anything we badge is something
  *    the resolver can read. The lookbehind additionally rejects a leading `/` so
  *    a GitHub short form (`owner/repo#42`) isn't half-matched as `repo#42`.
- * 2. **Bare key** — `planning#306`. Unchanged from before the name form existed,
+ * 2. **Bare key** — `SHI-304`. Unchanged from before the name form existed,
  *    including its lookbehind, which deliberately permits a leading `#` so
  *    `issue #planning#5` still badges.
  *

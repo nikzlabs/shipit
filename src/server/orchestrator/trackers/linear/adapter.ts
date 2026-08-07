@@ -481,7 +481,7 @@ export class LinearTracker implements Tracker {
   // ---- Writes (docs/177) ----------------------------------------------------
 
   /**
-   * Resolve a key (`planning#30`) or UUID to the issue's UUID — mutations want it.
+   * Resolve a key (`SHI-28`) or UUID to the issue's UUID — mutations want it.
    *
    * docs/248 reqs 11/17 — Linear's `issue(id:)` lookup is **workspace-global**,
    * not team-scoped, so an id belonging to another team resolves happily. That

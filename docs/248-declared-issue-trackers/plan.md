@@ -514,7 +514,7 @@ together. The user settled all four; they are now requirements 6, 11 and 16.
   destinations from callers, not only from the parser — and is now exercised
   directly in `issue-ref-resolution.test.ts` rather than through a `shipit.yaml`
   fixture, which is what the integration test used to do.
-- **In a name form, the name wins.** `planning#306` re-targets after `roadmap`
+- **In a name form, the name wins.** `roadmap#SHI-304` re-targets after `roadmap`
   moves to team `OPS`, rather than failing on the stale key. This is the feature's
   one deliberate departure from fail-closed, and it is narrow on purpose: the name
   already identifies exactly one declared destination, so the rule *prefers one of

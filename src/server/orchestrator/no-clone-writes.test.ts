@@ -109,7 +109,7 @@ describe("no ShipIt-generated writes inside a session clone (docs/246 req 7)", (
       "These files put a ShipIt-generated artifact inside the user's git clone, where the "
         + "post-turn `git add -A` will commit it into their repository. Write to the session "
         + "state dir instead (see session-state-dir.ts). This check has no allowlist by design "
-        + "(SHI-290) — if the path you are adding is the orchestrator's OWN workspace root "
+        + "(planning#292) — if the path you are adding is the orchestrator's OWN workspace root "
         + "rather than a session clone, route it through global-system-prompt.ts or give the "
         + "variable a name that says so, rather than re-introducing an exemption.",
     ).toEqual([]);

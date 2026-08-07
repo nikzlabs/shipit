@@ -106,7 +106,7 @@ describe("escalateDiskTiers", () => {
   }
 
   /**
-   * A session checkout on `main`. SHI-294 — pushed to a bare `origin` by
+   * A session checkout on `main`. planning#296 — pushed to a bare `origin` by
    * default, because eviction now requires the tip to be recoverable from the
    * remote; `noRemote` produces the un-evictable "this checkout is the only
    * copy" shape.

@@ -43,6 +43,10 @@ if len(set(mapping.values())) != len(mapping):
     sys.exit("mapping has duplicate destination numbers")
 
 MD_LINK = re.compile(r"\[([^\]]*)\]\((https://linear\.app/[^/\s]+/issue/(SHI-\d+)[^\s)]*)\)")
+# A markdown autolink `<https://…>` loses its angle brackets too, because
+# `<planning#166>` is not a valid autolink. Absorb them with the URL, or the
+# remainders differ by exactly those two characters.
+ANGLE = re.compile(r"<https://linear\.app/[^/\s]+/issue/(SHI-\d+)[^\s>]*>")
 URL = re.compile(r"""https://linear\.app/[^/\s]+/issue/(SHI-\d+)[^\s)"'`<>\],]*""")
 NAME = re.compile(r"(?<![A-Za-z0-9_])roadmap#(SHI-\d+)(?![A-Za-z0-9_])")
 KEY = re.compile(r"(?<![A-Za-z0-9_])(SHI-\d+)(?![A-Za-z0-9_])")
@@ -53,7 +57,7 @@ HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@")
 
 def blank_old(s):
     keys = []
-    for pat, grp in ((MD_LINK, 3), (URL, 1), (NAME, 1), (KEY, 1)):
+    for pat, grp in ((MD_LINK, 3), (ANGLE, 1), (URL, 1), (NAME, 1), (KEY, 1)):
         s = pat.sub(lambda m: (keys.append(m.group(grp)), TOK)[1], s)
     return s, keys
 

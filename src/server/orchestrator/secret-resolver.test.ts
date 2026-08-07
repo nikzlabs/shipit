@@ -432,7 +432,7 @@ describe("writeAgentEnvFile", () => {
   /**
    * A real session layout: the clone at `<sessionDir>/workspace`. docs/246 writes
    * `.env.agent` into the `state/` sibling, resolved from the clone path — and
-   * SHI-286 removed the in-clone fallback, so a bare temp dir is now refused.
+   * planning#288 removed the in-clone fallback, so a bare temp dir is now refused.
    * Returns the clone.
    */
   function setup() {

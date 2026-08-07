@@ -55,7 +55,7 @@ fail-closed rules: a reference naming no declared destination, or matching more
 than one, must never resolve to a guess.
 
 Prose was the last surface that hadn't been brought onto that resolver. The
-matcher here predated the name form, so `planning#321` badged only its
+matcher here predated the name form, so `roadmap#SHI-319` badged only its
 `SHI-319` tail and left `roadmap#` outside the pill, and `planning#57` — the form
 ShipIt's own references take after docs/247's migration — matched nothing at all.
 The gate was Linear-team-specific (compare the token's prefix against the
@@ -79,10 +79,10 @@ now has no gate logic of its own.
    `linear.app/.../issue/TRACKER-43` URL is left for the tracker-URL branch.
    Fenced `code` blocks stay verbatim.
    - `ISSUE_TOKEN_RE` is an **ordered** alternation: the **name form** first
-     (`<name>#<planning#306|57>`, mirroring `NAMED_REF_RE` in `shared/issue-ref.ts`),
+     (`<name>#<SHI-304|57>`, mirroring `NAMED_REF_RE` in `shared/issue-ref.ts`),
      the **bare uppercase key** second. The order is what makes a badge cover
      the whole reference — the bare-key branch would otherwise take just the
-     `planning#321` tail of `planning#321`. The name form's lookbehind also
+     `SHI-319` tail of `roadmap#SHI-319`. The name form's lookbehind also
      rejects a leading `/`, so a GitHub short form (`owner/repo#42`) isn't
      half-matched as `repo#42`; the bare-key branch's lookbehind is unchanged
      (it still permits a leading `#`, so `issue #planning#5` keeps badging).

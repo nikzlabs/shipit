@@ -29,7 +29,7 @@ each item is where it is.
 ## Resolution
 
 - [x] Add a resolver layer above `parseIssueRef`, keeping that parser pure and context-free. Req 11's fail-closed and ambiguity rules live in the resolver, not at each caller.
-- [x] Resolve all three forms: `name#123`, `name#planning#306`, and each backend's canonical address (req 10).
+- [x] Resolve all three forms: `name#123`, `name#SHI-304`, and each backend's canonical address (req 10).
 - [x] Give each `kind` its canonical-address format, so a backend added later brings its own instead of being special-cased in the parser.
 - [x] Route the eight current `parseIssueRef` call sites through the resolver — `tracker-link.ts`, `DocsViewer.tsx`, `FrontmatterHeader.tsx`, `pr-issue-refs.ts`, `shipit-issue.ts` (×3), `issue-lifecycle.ts`.
 - [x] Feed the client resolver from the store that already holds the tracker list, rather than adding a second fetch.
@@ -103,7 +103,7 @@ pointer-derived destinations, `seedFromIssueRef`'s pointer-only branch names
   rejected: it would mean identifying a *declaration* rather than its
   destination, threading a new id through tabs, cards, routes and persisted rows
   for a configuration nobody wanted.
-- [x] **In a name form the name wins.** `planning#306` re-targets after
+- [x] **In a name form the name wins.** `roadmap#SHI-304` re-targets after
   `roadmap` moves to another team instead of failing on the stale key. A chosen
   exception to the fail-closed posture, not a hole in it — the name still
   identifies exactly one declared destination, so nothing is guessed. Keeps the

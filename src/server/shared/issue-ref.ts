@@ -36,7 +36,7 @@
  *    `/repos/{owner}/{repo}/issues/${id}`), and the **key** for Linear. The
  *    combined `identifier` is NOT what `getIssue` wants — passing `owner/repo#42`
  *    to GitHub yields `/issues/owner%2Frepo%2342` → 404. For a *name* form the
- *    raw suffix is reported as-is; normalizing `roadmap#304` to `planning#306` needs
+ *    raw suffix is reported as-is; normalizing `roadmap#304` to `SHI-304` needs
  *    the declaration, so the resolver does it.
  */
 
@@ -184,7 +184,7 @@ export function formatIssueReference(opts: {
   kind: "github" | "linear";
   /** Canonical identity: GitHub `owner/repo`, Linear team key. */
   key?: string | undefined;
-  /** Tracker-native id: a GitHub number, a Linear key (`planning#306`). */
+  /** Tracker-native id: a GitHub number, a Linear key (`SHI-304`). */
   issueId: string;
 }): string {
   if (opts.trackerName) return `${opts.trackerName}#${opts.issueId}`;
