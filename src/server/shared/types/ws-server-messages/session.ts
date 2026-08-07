@@ -80,7 +80,7 @@ export interface WsSessionContainerFreshness {
  * transcript content: it stays on screen for as long as the block holds and
  * disappears the moment a commit lands. The notice scrolled away under later
  * turns, which is exactly how the block went unnoticed while every subsequent
- * turn silently failed to commit (SHI-315).
+ * turn silently failed to commit (planning#317).
  *
  * `block: null` clears the banner.
  */

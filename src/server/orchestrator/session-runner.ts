@@ -33,7 +33,7 @@ export { runDispatchedTurn };
 // lives outside this file to keep the import graph acyclic.
 import { trySteerDispatch } from "./dispatch-steering.js";
 import { resetVoiceNoteTurnState } from "./voice/voice-note-router.js";
-// docs/244 / SHI-297 — the committed-body marker the reconnect snapshot reads.
+// docs/244 / planning#299 — the committed-body marker the reconnect snapshot reads.
 // `transcript-projection.ts` imports only TYPES from this module, so this edge
 // is one-way at runtime.
 import {
@@ -202,7 +202,7 @@ export interface QueuedMessage {
   /** Another session's agent supplied this prompt, rather than the user. */
   messageOrigin?: SessionMessageOrigin;
   /**
-   * SHI-255 — which executor must run this entry when it drains.
+   * planning#257 — which executor must run this entry when it drains.
    *
    * `"interactive"` — a user-typed WS message (the client already rendered an
    * optimistic bubble, so the drain must NOT echo one). Carries only text +
@@ -248,7 +248,7 @@ export interface QueuedMessage {
    */
   onTurnComplete?: (outcome: TurnOutcome) => void;
   /**
-   * SHI-264 — durable delivery identity, carried through the queue so a wake-turn
+   * planning#266 — durable delivery identity, carried through the queue so a wake-turn
    * waiting behind a busy parent still answers `runner.hasDelivery(id)` while it
    * sits there. Without this the queued window would read as "not in flight" and
    * the retry supervisor would fire a duplicate.
@@ -271,7 +271,7 @@ export interface AgentDispatchOptions {
   /** Another session's agent supplied this prompt, rather than the user. */
   messageOrigin?: SessionMessageOrigin;
   /**
-   * SHI-255 — which executor must run this turn if it ends up queued behind a
+   * planning#257 — which executor must run this turn if it ends up queued behind a
    * running turn. Defaults to `"dispatched"` (this IS the dispatch path). The
    * WS send handler passes `"interactive"` for a user-typed message it delegates
    * here, so the drain reproduces the interactive turn (no server echo bubble on
@@ -322,7 +322,7 @@ export interface AgentDispatchOptions {
    */
   onTurnComplete?: (outcome: TurnOutcome) => void;
   /**
-   * SHI-264 — durable identity for a turn dispatched on behalf of a server-side
+   * planning#266 — durable identity for a turn dispatched on behalf of a server-side
    * DELIVERY (today: a notify-on-merge wake, `watchId:attempt`). Unlike
    * `onTurnComplete` — an in-memory callback that dies with the process — this
    * id is persisted with the dispatch, sent to the worker, and reported back
@@ -374,7 +374,7 @@ export class AgentTurnAdmissionError extends Error {
  *   - **steered** — the message was injected into the running turn, so there is
  *     no separate turn to complete; settle immediately as `steered`. (Only
  *     reachable for a dispatch carrying neither `systemTurn` nor a completion
- *     callback — SHI-254's guard in `isSteerableDispatch`.)
+ *     callback — planning#256's guard in `isSteerableDispatch`.)
  *   - **enqueued** — the settlement is chained onto the entry's
  *     `onTurnComplete`, which rides the in-memory queue, so it resolves when the
  *     entry later drains and runs (or `dropped` if the queue is cleared).
@@ -434,7 +434,7 @@ export function dispatchOnRunner(
   // system turn. Cleared by `executeAgentTurn` on completion.
   if (opts.systemTurn) runner.systemTurnInProgress = true;
   runner.running = true;
-  // SHI-264 — publish the delivery in the SAME synchronous tick as `running`,
+  // planning#266 — publish the delivery in the SAME synchronous tick as `running`,
   // for the same reason: `runDispatchedTurn` is async (attachment resolution,
   // agent creation, run-param assembly) and `executeAgentTurn` only sets it much
   // later, so the gap would read as "this delivery is not in flight" and let the
@@ -457,7 +457,7 @@ export function dispatchOnRunner(
   // Owned here for the same reason completion and setup failure are: one place
   // starts a dispatched turn, so one place can observe it losing its runner.
   //
-  // SHI-280 adds the second way a started turn can lose its ability to settle
+  // planning#282 adds the second way a started turn can lose its ability to settle
   // itself, with the runner still very much alive: every event of the turn was
   // dropped on the way from the worker (in the field, an `_agent` slot that was
   // empty from `agent_init` onward), so the terminal `agent_result` never
@@ -481,13 +481,13 @@ export function dispatchOnRunner(
     runner.off("turn_abandoned", onTurnAbandoned);
   })();
   void runner.runDispatchedTurn(chained).catch((err: unknown) => {
-    // SHI-263 — the setup half of a dispatched turn (attachment preparation,
+    // planning#265 — the setup half of a dispatched turn (attachment preparation,
     // `createAgent`, run-param assembly) runs BEFORE `executeAgentTurn` owns the
     // turn, so a throw there never reaches the executor's settling `finally`.
     // Left uncaught it produced three simultaneous bad states: the handle never
     // resolved (an awaiting caller hung forever), `running` /
     // `systemTurnInProgress` stayed true so the session looked busy with no turn
-    // running, and — worst — SHI-258's `isDeliveryInFlight` saw a live runner and
+    // running, and — worst — planning#260's `isDeliveryInFlight` saw a live runner and
     // read the dead attempt as *indefinitely in flight*, so the watch was never
     // retried and never reached `delivery-failed` short of a restart. That is
     // exactly the stranding class docs/240's settlement exists to end, reached
@@ -503,9 +503,9 @@ export function dispatchOnRunner(
     );
     if (opts.systemTurn) runner.systemTurnInProgress = false;
     runner.running = false;
-    // SHI-264 — the turn never started, so the delivery is not in flight. Left
+    // planning#266 — the turn never started, so the delivery is not in flight. Left
     // set, it would read as live forever and suppress every retry — the same
-    // stranding class SHI-263 fixed for the settlement itself.
+    // stranding class planning#265 fixed for the settlement itself.
     if (opts.deliveryId !== undefined && runner.activeDeliveryId === opts.deliveryId) {
       runner.activeDeliveryId = undefined;
     }
@@ -525,7 +525,7 @@ export function dispatchOnRunner(
     // whatever is queued behind it would otherwise sit there until the next
     // user-initiated turn. Re-entering `dispatchOnRunner` (rather than
     // hand-rolling a drain) keeps the entry on the branded, settlement-carrying
-    // path — the SHI-255 / SHI-259 rule.
+    // path — the planning#257 / planning#261 rule.
     if (runner.queueLength > 0) {
       const next = runner.dequeue();
       if (next) {
@@ -549,7 +549,7 @@ export function dispatchOnRunner(
  * producers, exactly like every path out of it.
  */
 export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
-  // SHI-255 — default to the dispatched executor: it is the superset path (it
+  // planning#257 — default to the dispatched executor: it is the superset path (it
   // restores `systemTurn` / `onTurnComplete` / `postTurn` / `activity`), so an
   // untagged dispatch can never be narrowed away by the interactive drain.
   const queued: QueuedMessage = { text: opts.text, execution: opts.execution ?? "dispatched" };
@@ -614,7 +614,7 @@ export interface SystemTurnDeps {
    */
   buildRunParams: (sessionId: string, agentId: AgentId, prompt: string) => Promise<AgentRunParams>;
   /**
-   * SHI-264 — re-acquire the completion settlement for a DELIVERY whose turn
+   * planning#266 — re-acquire the completion settlement for a DELIVERY whose turn
    * outlived an orchestrator restart.
    *
    * Turn adoption rebuilds a live turn from the worker's report, but the
@@ -797,7 +797,7 @@ export function resetRunnerTurnState(runner: SessionRunnerInterface): void {
   runner.recordedCards = [];
   runner.wasInterrupted = false;
   runner.pendingCommitLink = null;
-  // docs/244 / SHI-297 — nothing of the new turn is on disk yet, so no body of
+  // docs/244 / planning#299 — nothing of the new turn is on disk yet, so no body of
   // it may leave the reconnect snapshot until a boundary writes it.
   clearCommittedBodyIds(runner.committedBodyIds);
   // docs/144 — a turn the orchestrator starts is a turn boundary for the spawn
@@ -884,7 +884,7 @@ export interface SessionRunnerEvents {
   idle: [];
   disposed: [];
   /**
-   * SHI-280 — the turn that was running on this runner has been declared dead
+   * planning#282 — the turn that was running on this runner has been declared dead
    * WITHOUT any terminal agent event: the stuck-running reconciler
    * (`verifyRunningState`) asked the worker, was told no agent is running, and
    * reset `running` to false.
@@ -951,7 +951,7 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   /** docs/235 — descriptions of the outstanding background tasks, for the chat status line. */
   readonly backgroundTaskDescriptions: string[];
   /**
-   * SHI-296 — number of sub-agent spawns this runner is currently brokering
+   * planning#298 — number of sub-agent spawns this runner is currently brokering
    * (docs/144 `shipit agent run`). Non-zero means a consult is live *right now*
    * on the worker, independent of whether any turn is running: docs/236 tells
    * agents to background long consults, so the primary turn routinely ends
@@ -965,7 +965,7 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    */
   readonly subAgentSpawnsInFlight: number;
   /**
-   * docs/235, SHI-296 — the union liveness axis every container-reclaim path
+   * docs/235, planning#298 — the union liveness axis every container-reclaim path
    * must consult: `running || backgroundTaskCount > 0 || subAgentSpawnsInFlight > 0`.
    *
    * `running` alone is NOT sufficient — it is only ever set by an
@@ -974,7 +974,7 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * container destroyed underneath it. Neither is `running || backgroundTaskCount`:
    * a backgrounded sub-agent consult ends the primary turn (`running` false) and
    * needs no resident streaming process (so `backgroundTaskCount` reads 0), which
-   * is how SHI-296 reaped a live 12-minute Codex review.
+   * is how planning#298 reaped a live 12-minute Codex review.
    *
    * Conversely `running` must NOT be widened to cover background tasks:
    * `send-message.ts` branches on it to decide whether an incoming user message
@@ -1100,7 +1100,7 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   getQueueSnapshot(): { text: string; position: number }[];
 
   /**
-   * SHI-264 — the durable DELIVERY id of the turn currently RUNNING on this
+   * planning#266 — the durable DELIVERY id of the turn currently RUNNING on this
    * runner, when it was dispatched on behalf of a server-side delivery
    * (a notify-on-merge wake, either `kind`). Undefined for an ordinary turn and
    * between turns.
@@ -1114,11 +1114,11 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    */
   activeDeliveryId: string | undefined;
   /**
-   * SHI-264 — is `deliveryId` still live on this runner: RUNNING as the current
+   * planning#266 — is `deliveryId` still live on this runner: RUNNING as the current
    * turn, or QUEUED behind one?
    *
    * This is the "derive liveness rather than track it" primitive docs/240 called
-   * for. SHI-258's in-memory `inFlight` set was *tracked* state living beside
+   * for. planning#260's in-memory `inFlight` set was *tracked* state living beside
    * the runner, so it desynchronized from a disposed runner, an adopted turn, or
    * a second runner for the same session. Asking the runner that actually owns
    * the turn (and, after a restart, whose answer came from the worker's
@@ -1126,7 +1126,7 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    */
   hasDelivery(deliveryId: string): boolean;
   /**
-   * SHI-316 — GROUND TRUTH for "is a turn in flight in this session right now?",
+   * planning#318 — GROUND TRUTH for "is a turn in flight in this session right now?",
    * asked of whatever actually owns the agent process.
    *
    * `running` is the orchestrator's local mirror of that fact, and every bug in
@@ -1163,7 +1163,7 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    *  On viewer attach, only events after this index need to be replayed. */
   lastPersistedBufferIndex: number;
   /**
-   * docs/244 / SHI-297 — which of the running turn's heavy bodies are already on
+   * docs/244 / planning#299 — which of the running turn's heavy bodies are already on
    * disk, so the reconnect `turn_snapshot` can strip the committed prefix
    * instead of re-sending the whole turn whole. Maintained by
    * `markMessagesCommitted` at each `replaceInProgress`, cleared at turn start.
@@ -1181,7 +1181,7 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * Every tool on the internal `shipit` MCP bridge is a transport to the
    * worker's `/agent-ops/*` surface, so an in-process runner — which has no
    * worker — is given no bridge at all rather than tools that ECONNREFUSE. See
-   * {@link LOCAL_SHIPIT_BRIDGE} in `local-agent-mcp.ts` (SHI-298), which is
+   * {@link LOCAL_SHIPIT_BRIDGE} in `local-agent-mcp.ts` (planning#300), which is
    * where that decision and its follow-up live.
    * Maintained from the SSE `present_content` / `present_cleared` stream so
    * `attachToRunner` can replay a `present_state` message to a late- or
@@ -1301,13 +1301,13 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    *
    * docs/240 — takes a {@link PreparedDispatch}, never a bare
    * `AgentDispatchOptions`: a hand-built literal cannot be dispatched, which is
-   * what makes a re-narrowing drain site (SHI-255, SHI-259) a compile error
+   * what makes a re-narrowing drain site (planning#257, planning#261) a compile error
    * instead of a review catch. Returns a {@link TurnHandle} whose `settled`
    * promise resolves exactly once with the turn's {@link TurnOutcome}.
    */
   dispatch(opts: PreparedDispatch): TurnHandle;
   /**
-   * SHI-255 — run `opts` as a server-dispatched turn NOW, bypassing the
+   * planning#257 — run `opts` as a server-dispatched turn NOW, bypassing the
    * send-or-queue decision. This is the queue-drain re-entry for entries tagged
    * `execution: "dispatched"`: whichever drain shifts them (the dispatched one or
    * the WS interactive one) hands them back to `runDispatchedTurn`, so the full
@@ -1319,7 +1319,7 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   /** True once `setSystemTurnDeps` has been called — i.e. `runDispatchedTurn` is usable. */
   readonly canRunDispatchedTurn: boolean;
   /**
-   * SHI-299 — arm the shared debounced post-turn push for this runner's
+   * planning#301 — arm the shared debounced post-turn push for this runner's
    * workspace, for a commit made OUTSIDE a turn.
    *
    * The one caller today is the sub-agent completion path
@@ -1395,7 +1395,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _steeredMessages: SteeredMessage[] = [];
   private _recordedCards: RecordedChatCard[] = [];
   private _messageQueue: QueuedMessage[] = [];
-  /** SHI-264 — see `SessionRunnerInterface.activeDeliveryId`. */
+  /** planning#266 — see `SessionRunnerInterface.activeDeliveryId`. */
   activeDeliveryId: string | undefined;
   private _terminal: TerminalProcess | null = null;
   private _terminalOutputBuffer = "";
@@ -1454,7 +1454,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   // streaming process the answer is definitionally zero.
   get backgroundTaskCount(): number { return this._backgroundTasks.count(this._isStreamingActive); }
   get backgroundTaskDescriptions(): string[] { return this._backgroundTasks.descriptions(this._isStreamingActive); }
-  // SHI-296 — a live consult is a fact we own (the in-flight handle set), not a
+  // planning#298 — a live consult is a fact we own (the in-flight handle set), not a
   // reported hint, so it needs no `isStreamingActive` gate.
   get subAgentSpawnsInFlight(): number { return this._subAgentHandles.size; }
   get agentBusy(): boolean {
@@ -1523,7 +1523,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
 
   getAgent(): AgentProcess | null { return this.agent; }
   setAgent(a: AgentProcess | null): void {
-    // SHI-316 — a DIFFERENT, newer process taking this slot means the one being
+    // planning#318 — a DIFFERENT, newer process taking this slot means the one being
     // pushed out will never settle its own turn (its terminal event, if it ever
     // arrives, is ignored as stale). Tell it, so `executeAgentTurn` can settle
     // the superseded turn as `interrupted`. Mirrors `ContainerSessionRunner`
@@ -1561,7 +1561,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     return this._messageQueue.length;
   }
   dequeue(): QueuedMessage | undefined { return this._messageQueue.shift(); }
-  /** SHI-264 — see `SessionRunnerInterface.hasDelivery`. */
+  /** planning#266 — see `SessionRunnerInterface.hasDelivery`. */
   hasDelivery(deliveryId: string): boolean {
     if (this.activeDeliveryId === deliveryId) return true;
     return this._messageQueue.some((m) => m.deliveryId === deliveryId);
@@ -1665,7 +1665,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
 
   get canRunDispatchedTurn(): boolean { return this._systemTurnDeps !== null; }
 
-  /** SHI-299 — see `SessionRunnerInterface.schedulePostTurnPush`. */
+  /** planning#301 — see `SessionRunnerInterface.schedulePostTurnPush`. */
   schedulePostTurnPush(): void {
     this._systemTurnDeps?.scheduleAutoPush(this.sessionDir);
   }
@@ -1707,7 +1707,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
       console.log(`[session-runner:${this.sessionId}] dispose() skipped — agent is running`);
       return;
     }
-    // SHI-296 — same protection for a BACKGROUNDED sub-agent consult, mirroring
+    // planning#298 — same protection for a BACKGROUNDED sub-agent consult, mirroring
     // ContainerSessionRunner. The primary turn ends while the spawn keeps
     // running, so `_isRunning` is false and a lifecycle-driven teardown would
     // otherwise cancel a live review. An explicit `{ force: true }` still

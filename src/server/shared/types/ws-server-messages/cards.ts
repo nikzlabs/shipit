@@ -74,7 +74,7 @@ export interface WsBugReportFailed {
 }
 
 /**
- * docs/172 / SHI-90 — the inline egress allow-once card. Emitted when the Tier C
+ * docs/172 / planning#92 — the inline egress allow-once card. Emitted when the Tier C
  * SNI proxy denies a non-allowlisted host and the orchestrator's decision
  * endpoint surfaces it for the user. The user's choice comes back as
  * `egress_decision`; the resolution echoes via `WsEgressPromptResolved`.
@@ -89,7 +89,7 @@ export interface WsEgressPromptCard {
   createdAt: string;
 }
 
-/** docs/172 / SHI-90 — terminal state for an egress allow-once card. */
+/** docs/172 / planning#92 — terminal state for an egress allow-once card. */
 export interface WsEgressPromptResolved {
   type: "egress_prompt_resolved";
   sessionId: string;
@@ -98,7 +98,7 @@ export interface WsEgressPromptResolved {
 }
 
 /**
- * docs/193 / SHI-112 — the inline permission-request card (agent-agnostic).
+ * docs/193 / planning#114 — the inline permission-request card (agent-agnostic).
  * Emitted when an agent backend raises a gated action the user must approve (a
  * sensitive-file edit, an escalated command). Carries everything the card
  * renders; the user's answer comes back as `resolve_permission`.
@@ -227,7 +227,7 @@ export interface WsSubAgentConsultCard {
 }
 
 /**
- * docs/207 / SHI-153 — the persisted "action checklist" transcript card. Emitted
+ * docs/207 / planning#155 — the persisted "action checklist" transcript card. Emitted
  * via `emitChatCard` so it both broadcasts live AND records in-band with the
  * turn, surviving a reconnect, a session switch, and a full reload. Carries the
  * full `ActionChecklistCard`; the card has no lifecycle (it is an immutable,

@@ -471,7 +471,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // ---- File review store ----
   const reviewStore = new FileReviewStore(databaseManager);
 
-  // ---- Egress allowlist store (docs/172, SHI-90) ----
+  // ---- Egress allowlist store (docs/172, planning#92) ----
   // Durable user allowlist + containment toggle, fed into the resolver/proxy
   // composition and the per-session containment gate at container start.
   const egressAllowlistStore = new EgressAllowlistStore(databaseManager);

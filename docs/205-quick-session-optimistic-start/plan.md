@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-139
+issue: planning#141
 description: Quick-capture fires a new session optimistically — overlay closes immediately; success is silent (session appears via SSE), failures surface an error toast.
 ---
 

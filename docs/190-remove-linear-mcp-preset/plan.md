@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-104
+issue: planning#106
 description: Remove Linear as a built-in one-click MCP OAuth provider; Notion becomes the sole seeded provider, Linear stays connectable manually.
 ---
 

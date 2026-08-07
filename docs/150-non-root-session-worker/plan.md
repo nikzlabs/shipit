@@ -1,7 +1,7 @@
 ---
 title: Non-root session worker runtime
 description: Run the session worker, agent CLI, terminal, install hooks, and MCP servers as an unprivileged user instead of root.
-issue: https://linear.app/shipit-ai/issue/SHI-31
+issue: planning#33
 ---
 
 # 150 — Non-root Session Worker Runtime
@@ -409,7 +409,7 @@ guaranteed on the underlying volume.
 The orchestrator must run with capabilities to chown to a different UID
 (it does today — it runs as root). No new privilege is needed.
 
-#### 7.1 Addendum — `safe.directory` and the post-boot git/compose writers (SHI-31 activation blocker)
+#### 7.1 Addendum — `safe.directory` and the post-boot git/compose writers (planning#33 activation blocker)
 
 A deploy validation with `SHIPIT_SESSION_WORKER_UID=1000` (the "validate the
 orchestrator-coupled paths" rollout step) surfaced two gaps this section's
@@ -473,7 +473,7 @@ wired. Completed in this PR (all gated, all no-ops when the flag is unset):
   **whole workspace** (`.git` AND the worktree) back after its git ops via
   `handWorkspaceBackToWorker`.
 
-  **SHI-145 — these paths must hand the *worktree* back, not just `.git`.** The
+  **planning#147 — these paths must hand the *worktree* back, not just `.git`.** The
   early assumption (below) that "the worktree files are always written by the
   agent as the worker, so only `.git` needs the handoff" holds for the *post-turn
   auto-commit* but is **false for session setup**: the root orchestrator's
@@ -680,7 +680,7 @@ runtime. `chmod a+rX` (capital X = "directory or already-executable") gives
 the runtime user read+traverse access without making every file
 executable.
 
-#### 8.1 Addendum — the read-only browser store breaks the MCP's *profile* dir (SHI-145 regression)
+#### 8.1 Addendum — the read-only browser store breaks the MCP's *profile* dir (planning#147 regression)
 
 A live session surfaced a gap this section's reasoning missed. The §8 design
 correctly makes the browser *binary* read-only and readable by `shipit` — but
@@ -706,7 +706,7 @@ profile `mkdir` fails with EACCES. The browser binary itself
 names it `chromium`, title "Chrome for Testing") is correctly pre-installed and
 readable; there is **no runtime download**. The `mcp-chrome-for-testing-<hash>`
 name is the *profile* dir, not a browser revision — the `mcp-` prefix and
-cwd-hash suffix are the tell. Before SHI-145 the worker ran as root and the
+cwd-hash suffix are the tell. Before planning#147 the worker ran as root and the
 profile `mkdir` into the root-owned store silently succeeded, which is why this
 only surfaced after the non-root move.
 
@@ -812,11 +812,11 @@ After validation, audit `CapAdd` and remove `DAC_OVERRIDE` and
 `NET_BIND_SERVICE` if no regressions surface in the worker, terminal, or
 MCP tool exercises.
 
-## Writable paths (groundwork for SHI-97 — ReadonlyRootfs/seccomp)
+## Writable paths (groundwork for planning#99 — ReadonlyRootfs/seccomp)
 
-SHI-97 makes the container root filesystem read-only (`ReadonlyRootfs: true`)
+planning#99 makes the container root filesystem read-only (`ReadonlyRootfs: true`)
 with explicit writable mounts. That work needs an exact inventory of every path
-the non-root worker writes to. Enumerated here as part of SHI-31 so SHI-97 can
+the non-root worker writes to. Enumerated here as part of planning#33 so planning#99 can
 flip the rootfs without a write-permission scavenger hunt:
 
 | Path | Writer | Notes |
@@ -825,10 +825,10 @@ flip the rootfs without a write-permission scavenger hunt:
 | `/uploads` | orchestrator (chowned), agent | Mount. |
 | `/credentials` | orchestrator (chowned §7), agent CLIs | Mount; per-session subtree. |
 | `/dep-cache` | package managers | Mount; shared per-repo. |
-| `/tmp` | agent, Playwright MCP (`/tmp/.playwright-mcp`) | tmpfs candidate for SHI-97. Must stay **exec** (npm lifecycle scripts); a `noexec` tmpfs breaks installs. |
+| `/tmp` | agent, Playwright MCP (`/tmp/.playwright-mcp`) | tmpfs candidate for planning#99. Must stay **exec** (npm lifecycle scripts); a `noexec` tmpfs breaks installs. |
 | `/home/shipit` | agent CLIs, npm | Includes `~/.claude`, `~/.codex` (symlinks into `/credentials`), `~/.claude.json`, `~/.npm-global` (global installs), `~/.npm` (npm cache), `~/.cache` (tool caches). Needs its own writable mount/tmpfs under ReadonlyRootfs. |
 
-Read-only and **must stay** so under SHI-97 (never written at runtime):
+Read-only and **must stay** so under planning#99 (never written at runtime):
 `/app`, `/app/node_modules`, `/opt/agent-cli`, `/opt/playwright-browsers`
 (installed `a+rX` at build time), `/usr/local/bin` shims, `/etc/shipit`
 (agent hooks + managed settings). The worker process is exec'd from `/app` and
@@ -955,7 +955,7 @@ behavior with the new UID, then remove add-backs one by one with targeted tests.
   `/root`).
 - `src/server/shipit-docs/environment.md` documents the non-root runtime home.
 
-## Implementation note — what is actually flag-gated (SHI-31)
+## Implementation note — what is actually flag-gated (planning#33)
 
 The implementation deviates from the original Rollout step 1 below in one
 deliberate way, because ShipIt ships the orchestrator **and** the session-worker

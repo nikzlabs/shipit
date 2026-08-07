@@ -1,6 +1,6 @@
 # Action checklist cards — checklist
 
-Implemented in SHI-153. Items below are the build steps; all are complete.
+Implemented in planning#155. Items below are the build steps; all are complete.
 
 - [x] `propose_actions` MCP tool in `src/server/session/mcp-tools/propose-actions.ts` (mirror `ask.ts`)
 - [x] Register the tool in the shipit MCP bridge + Codex parity (both `SHIPIT_MCP_TOOLS` lists)

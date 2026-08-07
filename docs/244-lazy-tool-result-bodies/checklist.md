@@ -14,7 +14,7 @@
 - [x] Verify what each column actually draws inline vs. behind a click
 - [x] Confirm the constraint consumers (AskUserQuestion, ExitPlanMode, Present, subagent report)
 - [x] Confirm persist path is uncapped and the 1 MB cap is client-only
-- [x] Determine whether the SHI-266 / `rowId` dependency is real (it isn't)
+- [x] Determine whether the planning#268 / `rowId` dependency is real (it isn't)
 - [x] Decide: project the live WS path as well as history
 - [x] Confirm slice size → 40 lines, capped at 16 KB (derived from Bash's 30). That derivation expired when the previews moved into the modal; the slice now governs only the unknown-tool fallback and image-result text — see *Requirement 1 — met* below.
 - [x] Confirm thumbnail size → **no thumbnail is generated at all**; served at stored resolution and scaled down with CSS
@@ -23,7 +23,7 @@
 > Those two lines read as decisions *about* thumbnails and have been misread as
 > implying that thumbnailing exists. It does not: there is no image processing
 > anywhere in the repo. Both are decisions **not** to thumbnail — one about
-> generating, one about storing. See requirement 9 and SHI-300.
+> generating, one about storing. See requirement 9 and planning#302.
 
 ## Server — tool results
 - [x] Add `truncated` / `totalLines` / `totalBytes` to the tool-result type
@@ -38,7 +38,7 @@
 - [x] Strip body from the wire behind a `truncated` marker
 - [x] `GET /api/sessions/:id/tool-inputs/:toolUseId`
 
-## Server — every other tool input (SHI-296)
+## Server — every other tool input (planning#298)
 - [x] Per-tool, per-key policy (`inputKeyTreatment`, `shared/transcript-input-policy.ts`) rather than a second hardcoded tool set — the input-side counterpart of `rendersResultContentInline`
 - [x] `keep` for the keys the one-line summary draws (`file_path`, `pattern`, `query`, `url`), for the tools that render their whole input as the card itself (`AskUserQuestion`, `TodoWrite`, `apply_patch`), for a subagent's `description`/`subagent_type`/`skill`/`args`, and for a `present` card's `title`
 - [x] `head` for `command` — 80 characters, the number `message-tools.tsx` slices to. Imported, not restated, so the deletion is provably invisible
@@ -47,9 +47,9 @@
 - [x] `inputChars` — the original length of each shortened/removed string key, so `SubagentCall`'s `Prompt (N chars)` toggle keeps its label
 - [x] 200-byte floor, same reasoning as the result floor. Consequence: a small Edit now keeps its strings; `DiffBlock` recomputes identical stats from them
 - [x] `GET …/tool-inputs/:toolUseId` returns the input verbatim (`{ input }`) rather than the three Edit/Write fields — what a caller needs back depends on the tool
-- [x] Unchanged: *when* the projection may run. An input still only leaves the wire once its row is committed — always on the history path, and on the reconnect snapshot for the ids SHI-297's `committedBodyIds.toolInputs` records. The live emit still ships inputs whole, because an `agent_assistant` row is not committed until the next tool-result boundary. `projectToolUse` sits behind those gates and knows nothing about them
+- [x] Unchanged: *when* the projection may run. An input still only leaves the wire once its row is committed — always on the history path, and on the reconnect snapshot for the ids planning#299's `committedBodyIds.toolInputs` records. The live emit still ships inputs whole, because an `agent_assistant` row is not committed until the next tool-result boundary. `projectToolUse` sits behind those gates and knows nothing about them
 
-## Client — every other tool input (SHI-296)
+## Client — every other tool input (planning#298)
 - [x] `useLazyToolInput` — one keyed fetch shared by the diff modal, the tool-call modal and the subagent prompt; `DiffBlock` migrated onto it
 - [x] Tool-call modal fetches on mount and renders the recovered keys; keeps the fields it already has and shows "Loading input…" rather than blanking, and surfaces a failed fetch
 - [x] Subagent prompt disclosure renders from `inputChars` while collapsed and fetches on expand (the expand is the click req 8 licenses a loading state for)
@@ -119,19 +119,19 @@
 > *Independent requirements review* at the end. Several gaps were filed against
 > one requirement while breaking others, and one entry was stale.
 
-- [x] ~~Req 5 says "tool inputs"; only Edit/Write are projected, other tool inputs ship whole. **Also req 1**: a 1 MB Bash command ships whole while the transcript shows its first 80 characters, and a `Task` prompt ships whole while sitting behind a collapsed disclosure.~~ — **fixed (SHI-296).** Replaced with a per-tool, per-key policy; see *Server/Client — every other tool input* above and `plan.md` → *2. Tool inputs*. Fixing it also surfaced a live regression the original gap had not named: a `.claude/plans/` `Write` body **is** drawn inline (`findPlanContent` → `PlanApproval`), so the blanket Edit/Write strip had been blanking the plan card on every history load.
+- [x] ~~Req 5 says "tool inputs"; only Edit/Write are projected, other tool inputs ship whole. **Also req 1**: a 1 MB Bash command ships whole while the transcript shows its first 80 characters, and a `Task` prompt ships whole while sitting behind a collapsed disclosure.~~ — **fixed (planning#298).** Replaced with a per-tool, per-key policy; see *Server/Client — every other tool input* above and `plan.md` → *2. Tool inputs*. Fixing it also surfaced a live regression the original gap had not named: a `.claude/plans/` `Write` body **is** drawn inline (`findPlanContent` → `PlanApproval`), so the blanket Edit/Write strip had been blanking the plan card on every history load.
 - [ ] `apply_patch`'s `changes` still ships whole (reqs 1/5). Its inline `+N -M` is derived from each change's `diff`, so deferring the bodies needs per-change stats and a per-change fetch key — a second lazy mechanism, for one backend's tool. Kept as a `keep` rather than half-done.
 - [ ] `pattern` / `query` / `url` / `AskUserQuestion.questions` are kept whole however long (req 1). They render inline with no bound in code — the one-liner clips them with CSS, whose width depends on the viewport — so any slice would be a guess at what a wide screen shows. Tens of bytes in practice.
 - [x] ~~Byte backstop on a single long line removes text that used to render inline, and labels it "Show all 1 lines" (reqs 1/8)~~ — **stale, withdrawn.** Written when the previews were in the transcript. `ToolResult` now renders only inside the click-opened `ToolOutputModal`, where req 8 expressly permits loading, so this is no longer a transcript-level finding.
-- [x] ~~A >16 KB free-form AskUserQuestion answer would be sliced (req 4)~~ — **fixed (SHI-291).** It broke reqs 2 and 8 as well as 4: the Ask branch returns before the output modal, so the tail was unreachable rather than deferred, and the Ask card *is* the transcript. `WHOLE_RESULT_TOOL_NAMES` is now the set every bound agrees on — the server's 16 KB backstop and the client's 1 MB cap both read it. That also fixed a second, opposite error the review had not named: the client cap keyed off `SUBAGENT_TOOLS`, the *layout* set, so it spared `Skill` (no report, fetchable) while capping `AskUserQuestion` (no recovery).
+- [x] ~~A >16 KB free-form AskUserQuestion answer would be sliced (req 4)~~ — **fixed (planning#293).** It broke reqs 2 and 8 as well as 4: the Ask branch returns before the output modal, so the tail was unreachable rather than deferred, and the Ask card *is* the transcript. `WHOLE_RESULT_TOOL_NAMES` is now the set every bound agrees on — the server's 16 KB backstop and the client's 1 MB cap both read it. That also fixed a second, opposite error the review had not named: the client cap keyed off `SUBAGENT_TOOLS`, the *layout* set, so it spared `Skill` (no report, fetchable) while capping `AskUserQuestion` (no recovery).
 - [ ] A modal-only result at or under `RESULT_STRIP_FLOOR_BYTES` (200) ships whole though nothing renders it without a click (req 1) — **undisclosed until the review**. Recorded here as the deviation it is; the floor itself stays deliberate.
-- [x] ~~Inline image thumbnails point at the full-resolution URL, so the bytes transfer on viewport entry rather than on click (reqs 1 and 9)~~ — **accepted, not fixed (SHI-292).** Human decision, 2026-08-04: images are infrequent enough that transferring them with the transcript is fine. Requirement 9 now states the actual position — **no resizing at ingest or when serving** — with two dated receipts in `requirements.md`. An interim "up to 256×256" bound was written and then dropped: it assumed downsampling happened somewhere, and nothing in the repo resizes images at any point. **SHI-300** revisits image handling end to end, including whether the agent's copy has to stay full-fidelity (it reads these images too, which is what makes ingest-time resizing unattractive).
-- [x] ~~`message_steered` echoes full base64 images unprojected~~ — **fixed (SHI-297).**
-- [x] ~~`sub_agent_consult_card.outputMarkdown` is modal-only content shipped whole~~ — **fixed (SHI-297).**
-- [x] ~~Reconnect snapshot resends already-committed tool inputs~~ — **fixed (SHI-297).** Live nested subagent results stay unprojected, which is correct and is now named as such rather than left implicit.
+- [x] ~~Inline image thumbnails point at the full-resolution URL, so the bytes transfer on viewport entry rather than on click (reqs 1 and 9)~~ — **accepted, not fixed (planning#294).** Human decision, 2026-08-04: images are infrequent enough that transferring them with the transcript is fine. Requirement 9 now states the actual position — **no resizing at ingest or when serving** — with two dated receipts in `requirements.md`. An interim "up to 256×256" bound was written and then dropped: it assumed downsampling happened somewhere, and nothing in the repo resizes images at any point. **planning#302** revisits image handling end to end, including whether the agent's copy has to stay full-fidelity (it reads these images too, which is what makes ingest-time resizing unattractive).
+- [x] ~~`message_steered` echoes full base64 images unprojected~~ — **fixed (planning#299).**
+- [x] ~~`sub_agent_consult_card.outputMarkdown` is modal-only content shipped whole~~ — **fixed (planning#299).**
+- [x] ~~Reconnect snapshot resends already-committed tool inputs~~ — **fixed (planning#299).** Live nested subagent results stay unprojected, which is correct and is now named as such rather than left implicit.
 - [x] ~~The client's 1 MB cap sliced a content-block array as a raw string~~ — **fixed.** The serve path has `projectBlockArray` precisely because a `JSON.stringify`'d MCP result is one line that a byte cut leaves unparseable; the client cap did the raw cut anyway, so an over-cap screenshot rendered as a wall of raw JSON instead of an image. It only reached results the projection leaves inline — a nested subagent's screenshot above all. `capContentBlocks` now caps the text inside the blocks and keeps the image whole. See `plan.md` → *The client cap had the block-array bug too*.
 
-## The three remaining browser-facing paths (SHI-297)
+## The three remaining browser-facing paths (planning#299)
 
 All three were the same shape — a path reaching the browser without going
 through `projectMessagesForWire` / `projectAgentEventForWire` — and all three
@@ -155,7 +155,7 @@ is committed*.
         preview is a no-op.
       - `finalizeConsultCard` now **persists before it emits**. The stored card
         stays whole — it is what the endpoint serves and what `shipit agent
-        result` reads, so SHI-245's "the agent's copy and the user's copy are one
+        result` reads, so planning#247's "the agent's copy and the user's copy are one
         artifact" is unaffected; the preview is transport only.
       - The 200-byte floor applies, for the same reason it does to a tool result.
 - [x] **Reconnect snapshot: a committed-prefix marker.** `CommittedBodyIds` on
@@ -225,14 +225,14 @@ Run after the req-1 fix merged. Two of the five checks are done and are now
       (`[{"type":"text","text":"…"}]`) instead of the extracted prose. The
       exemption returns the result untouched, so the renderer is receiving
       exactly what it received before docs/244 — `SubagentCall` simply didn't
-      parse a block array. Filed as SHI-287 and **since fixed**:
+      parse a block array. Filed as planning#289 and **since fixed**:
       `parseSubagentReport` (`client/utils/group-events-by-parent.ts`) splits
       the array into report text and the CLI's accounting footer, structurally
       rather than lexically. Written up in docs/109.
 
 Blocked, with the reason:
 
-- [ ] **A screenshot result end-to-end** (blocked on **SHI-298**). Still no real-shape data. Neither local
+- [ ] **A screenshot result end-to-end** (blocked on **planning#300**). Still no real-shape data. Neither local
       CLI transcript contains an image block, and the dogfood cannot produce one
       either — inner sessions have no Playwright MCP server, so the agent has no
       browser tool at all (it said so itself when asked). The synthetic coverage
@@ -242,7 +242,7 @@ Blocked, with the reason:
       follow-up) or capturing a real image-bearing transcript from a
       containerized session.
 
-## Verification (SHI-296)
+## Verification (planning#298)
 - [x] `npm run typecheck`, `npm run lint:dev`
 - [x] `transcript-input-policy.test.ts` — the drift guard, one case per enumerated call site (same manual-enumeration caveat as the result-side guard, stated in the file)
 - [x] `transcript-projection.test.ts` — head slice, drops, `inputChars`, key-order preservation, the floor, the plan-document exemption and its near-miss
@@ -255,7 +255,7 @@ Blocked, with the reason:
 - [x] `npm run typecheck`
 - [x] `npm run lint:dev`
 - [x] Feature test files green
-- [x] SHI-297: `transcript-projection.test.ts`, `lazy-transcript-bodies.test.ts`,
+- [x] planning#299: `transcript-projection.test.ts`, `lazy-transcript-bodies.test.ts`,
       `lazy-bodies-live-turn.test.ts` (mid-turn reconnect), `live-steering.test.ts`
       (steered image), `sub-agent.test.ts` (emit projected / persist whole),
       `chat-card-persistence.test.ts` (the marker is set where the write happens),
@@ -283,13 +283,13 @@ What the review found that we had not:
   as a req-4 gap; it also breaks req 2 (nothing displays or fetches the tail —
   it is unreachable, not deferred) and req 8 (the Ask card *is* the transcript).
   Verified: the Ask branch in `message-tools.tsx` returns before the output
-  modal. → **SHI-291**.
+  modal. → **planning#293**.
 - **Image thumbnails transfer full-resolution bytes pre-click.** The 96×96
   render points at the same content-addressed URL as the full-size preview, so
   `loading="lazy"` fetches the whole image on viewport entry. Reduced *CSS
   dimensions*, not reduced bytes — req 9's second clause never fires. Verified
   in `message-media.tsx`, which documents the choice but never recorded it as a
-  req-1 shortfall. → **SHI-292**.
+  req-1 shortfall. → **planning#294**.
 - **The 200-byte floor is an undisclosed req-1 deviation.** Real, and the
   review is right that the checklist marked it *complete* rather than
   *deviating*. Now recorded as a gap; the floor itself stays.

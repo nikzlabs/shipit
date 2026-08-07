@@ -18,7 +18,7 @@
  * every session's state would collide in one directory. So
  * {@link sessionStateDirForWorkspace} derives only when the clone sits at
  * `<sessionDir>/workspace` — the shape `createSessionDirFactory` guarantees —
- * and REFUSES anything else (SHI-286). One resolver, so the host side and the
+ * and REFUSES anything else (planning#288). One resolver, so the host side and the
  * container mount can never disagree about where a session's state lives.
  *
  * Nothing user-authored ever lived in a clone's `.shipit/`: the per-repo config
@@ -68,14 +68,14 @@ export function sessionStateDir(sessionDir: string): string {
  * `createSessionDirFactory` guarantees for every session it creates: the two
  * sides share {@link SESSION_WORKSPACE_SUBDIR}.
  *
- * **Anything else throws** (SHI-286). The two alternatives were both worse. A
+ * **Anything else throws** (planning#288). The two alternatives were both worse. A
  * bare `path.dirname` fallback re-creates the bug this contract was written to
  * kill: a flat-layout clone (`<sessionsRoot>/<id>`) resolves to
  * `<sessionsRoot>/state`, one directory shared by every such session on the
  * host, with a single `.install-done` between them. And the fallback this
  * replaced — return `null`, let the caller keep writing into the clone — is the
  * placement docs/246 exists to end; it is what forced req 1 to carry an
- * allowlist. A production census (SHI-286: 307 rows, `flat == 0`, archived
+ * allowlist. A production census (planning#288: 307 rows, `flat == 0`, archived
  * included) found no session of that shape, and the accepted consequence of
  * refusing is that a database carrying one would be **unserviceable rather than
  * degraded**. Failing here names that at the point of resolution instead of
@@ -86,7 +86,7 @@ export function sessionStateDirForWorkspace(workspaceDir: string): string {
     throw new Error(
       `[session-state] cannot resolve a state dir for clone ${workspaceDir}: expected it to sit at `
         + `<sessionDir>/${SESSION_WORKSPACE_SUBDIR}. Sessions created before that layout are no longer `
-        + "serviceable (SHI-286).",
+        + "serviceable (planning#288).",
     );
   }
   return sessionStateDir(path.dirname(workspaceDir));

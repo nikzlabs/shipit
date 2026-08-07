@@ -85,7 +85,7 @@ export interface WorkerHttpOpts {
    */
   timeoutMs?: number;
   /**
-   * SHI-278 — abort an in-flight request from outside. Used by
+   * planning#280 — abort an in-flight request from outside. Used by
    * `ContainerSessionRunner.dispose` to cancel a long-lived sub-agent spawn
    * whose container is about to be destroyed, so the awaiting caller learns the
    * run is over (and can land a terminal card) instead of hanging on a socket
@@ -111,7 +111,7 @@ export class WorkerTimeoutError extends Error {
 }
 
 /**
- * SHI-278 — thrown when a worker request was aborted via {@link WorkerHttpOpts.signal}.
+ * planning#280 — thrown when a worker request was aborted via {@link WorkerHttpOpts.signal}.
  * Distinguishable from a timeout or a generic transport error so the caller can
  * report "cancelled" rather than "failed".
  */
@@ -170,7 +170,7 @@ export async function workerPost(baseUrl: string, path: string, body?: unknown, 
   return new Promise((resolve, reject) => {
     const url = new URL(path, baseUrl);
     const payload = body !== undefined ? JSON.stringify(body) : undefined;
-    // SHI-311 — prove we're the orchestrator, not a peer session container.
+    // planning#313 — prove we're the orchestrator, not a peer session container.
     const headers: Record<string, string | number> = { ...workerAuthHeaders(baseUrl) };
     if (payload) {
       headers["Content-Type"] = "application/json";
@@ -249,7 +249,7 @@ export async function workerPut(baseUrl: string, path: string, body?: unknown, o
   return new Promise((resolve, reject) => {
     const url = new URL(path, baseUrl);
     const payload = body !== undefined ? JSON.stringify(body) : undefined;
-    // SHI-311 — see workerPost.
+    // planning#313 — see workerPost.
     const headers: Record<string, string | number> = { ...workerAuthHeaders(baseUrl) };
     if (payload) {
       headers["Content-Type"] = "application/json";
@@ -302,7 +302,7 @@ export async function workerGet(baseUrl: string, path: string, opts?: WorkerHttp
         port: url.port,
         path: url.pathname,
         method: "GET",
-        // SHI-311 — see workerPost.
+        // planning#313 — see workerPost.
         headers: workerAuthHeaders(baseUrl),
         ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
       },

@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-174
+issue: planning#176
 title: Subdomain-only previews (remove path-based fallback and the auto/always mode)
 description: Drop the broken path-based preview iframe fallback and the previewSubdomains auto/always switch; standardize on subdomain routing with a clear empty-state when a host can't carry wildcard subdomains.
 ---

@@ -114,7 +114,7 @@ export interface ComposeOverrideOptions {
     /** Returns the compose-side `file:` path for a given secret name. */
     filePathFor: (name: string) => string;
     /**
-     * SHI-285 — absolute, DAEMON-SIDE path of the staged entrypoint wrapper
+     * planning#287 — absolute, DAEMON-SIDE path of the staged entrypoint wrapper
      * (`stageSecretsEntrypoint()`), e.g.
      * `/var/lib/shipit/secrets/_entrypoint/secrets-entrypoint.sh`. The override
      * bind-mounts it into each secret-consuming service container at
@@ -138,7 +138,7 @@ export interface ComposeOverrideOptions {
    * always resolves outside the session's git clone.
    *
    * A service missing from the map gets **no** `env_file:` entry rather than a
-   * fallback path (SHI-290 — there is no longer an in-clone file to fall back
+   * fallback path (planning#292 — there is no longer an in-clone file to fall back
    * to). `ServiceSecretsResolver.sync()` populates one entry per
    * secret-declaring service and always runs before the override is generated,
    * so a gap here means secrets haven't been resolved at all.
@@ -819,7 +819,7 @@ export function generateComposeOverride(
       const consumed = (ds.perService[svc.name] ?? []).filter((n) => ds.secretNames.includes(n));
       if (consumed.length > 0) {
         entry.secrets = consumed.map((n) => `shipit-${n}`);
-        // SHI-285 — bind-mount the wrapper read-only from its staged absolute
+        // planning#287 — bind-mount the wrapper read-only from its staged absolute
         // path. One mount shape for every setup: the wrapper no longer rides
         // the workspace volume (which is what forced it to live inside the
         // user's git clone), and the daemon resolves this source exactly as it
@@ -847,7 +847,7 @@ export function generateComposeOverride(
       //
       // No entry → no `env_file:`. There used to be a
       // `?? \`.shipit/.env.${svc.name}\`` fallback for the in-workspace write
-      // path; that writer is gone (SHI-290), so the fallback would now name a
+      // path; that writer is gone (planning#292), so the fallback would now name a
       // file nothing creates and fail the whole stack at `up` time. Absence
       // means `sync()` hasn't run, which is also when there is no file to point
       // at.

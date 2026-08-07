@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { EgressAllowlistEntry, EgressAllowlistView } from "../../server/shared/types.js";
 
 /**
- * Egress containment settings store (docs/172 / SHI-90).
+ * Egress containment settings store (docs/172 / planning#92).
  *
  * Backs the Settings → Advanced → "Network egress" section: the default-on
  * global containment toggle (Contained vs Open), the per-session containment
@@ -18,7 +18,7 @@ import type { EgressAllowlistEntry, EgressAllowlistView } from "../../server/sha
  * Mutations are optimistic where it helps perceived latency, then reconciled
  * against the server's authoritative effective view (`refresh`).
  *
- * The `/api/egress/*` routes are NOT `containerAccessible` — SHI-129's
+ * The `/api/egress/*` routes are NOT `containerAccessible` — planning#131's
  * default-deny keeps the contained agent from reaching them to loosen its own
  * containment.
  */
@@ -38,7 +38,7 @@ interface EgressState {
    * Whether this deployment can actually ENFORCE containment (enforcement on +
    * sidecar image configured). When containment is the policy but this is false,
    * the panel warns "Contained — NOT enforced on this deployment" instead of a
-   * reassuring green state (docs/172, SHI-90).
+   * reassuring green state (docs/172, planning#92).
    */
   enforcementActive: boolean;
   /** In-scope session override: null = inherit global, true/false = force. */

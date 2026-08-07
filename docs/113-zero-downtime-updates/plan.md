@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-269
+issue: planning#271
 description: Updates replace only the orchestrator; running sessions and mid-turn work survive via boot-time re-adoption, guarded by an additive-only wire-contract CI check.
 ---
 

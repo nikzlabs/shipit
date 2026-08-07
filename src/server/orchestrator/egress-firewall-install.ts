@@ -1,15 +1,15 @@
 /**
- * Egress firewall install — Tier A enforcement wiring (docs/172 Gap 1, SHI-90).
+ * Egress firewall install — Tier A enforcement wiring (docs/172 Gap 1, planning#92).
  *
  * Launches the short-lived privileged **installer sidecar** that shares the
  * agent container's network namespace and applies the default-deny `iptables`
  * `OUTPUT` policy + `ipset` allow-set (see `docker/egress-sidecar/init-firewall.sh`
  * and `docs/172-agent-containment/egress-control.md`). The agent container keeps
- * `CapDrop: ["ALL"]` / non-root (SHI-31); the capability to install the rules
+ * `CapDrop: ["ALL"]` / non-root (planning#33); the capability to install the rules
  * lives only in this sidecar, which exits immediately after — the rules persist
  * in the netns and the agent cannot flush them.
  *
- * Enabled by default (SHI-90 default-on): containment runs unless an operator
+ * Enabled by default (planning#92 default-on): containment runs unless an operator
  * explicitly sets `SESSION_EGRESS_ENFORCE=0`. The install gate also requires the
  * sidecar image (`SESSION_EGRESS_SIDECAR_IMAGE`) — a contained session whose
  * deployment can't supply it fails closed (see `container-lifecycle.ts`). The
@@ -209,7 +209,7 @@ export async function installEgressFirewall(
   }
 }
 
-// --- Intra-session subnet allow (SHI-90 — preview reachability) -------------
+// --- Intra-session subnet allow (planning#92 — preview reachability) -------------
 
 export interface AllowEgressToSubnetsOpts {
   /** Docker id of the running agent container whose netns we add the rule to. */
@@ -225,7 +225,7 @@ export interface AllowEgressToSubnetsOpts {
 /**
  * Re-open the agent's default-deny egress to its OWN session/compose network
  * subnet(s), so the (multi-homed) agent — and its in-netns Playwright browser —
- * can reach preview service containers by IP (docs/172 Gap 1, SHI-90).
+ * can reach preview service containers by IP (docs/172 Gap 1, planning#92).
  *
  * The Tier A installer (`init-firewall.sh`) runs at agent-container creation and
  * only allows the *default-gateway* bridge subnet; a session's compose/preview

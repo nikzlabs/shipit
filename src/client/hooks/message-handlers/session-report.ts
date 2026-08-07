@@ -3,7 +3,7 @@ import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler } from "./types.js";
 
 /**
- * docs/233 (SHI-241) — render a `SessionReportCard` inline when another session
+ * docs/233 (planning#243) — render a `SessionReportCard` inline when another session
  * in this session's cohort pushes a report to it (`shipit session report`): a
  * child reporting up to its parent, or a sibling on a `--to cohort` broadcast.
  *

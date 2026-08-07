@@ -1,5 +1,5 @@
 /**
- * docs/201 / SHI-129 — container ↔ browser trust boundary on the orchestrator API.
+ * docs/201 / planning#131 — container ↔ browser trust boundary on the orchestrator API.
  *
  * Session containers reach the orchestrator over the Docker bridge network with
  * no caller authentication. Without a gate, a prompt-injected agent can `curl`

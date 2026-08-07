@@ -78,7 +78,7 @@ export interface BootstrapManagersDeps {
   deps: AppDeps;
   mgrs: ManagerSet;
   /**
-   * docs/172 (SHI-90) egress containment resolver. Computed in `index.ts`
+   * docs/172 (planning#92) egress containment resolver. Computed in `index.ts`
    * (before the Fastify app + this call, to preserve the original ordering of
    * the UID guard) and fed straight into the container manager setup here.
    */
@@ -186,7 +186,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // ---- Runner factory ----
   // docs/150 — `localAgentFactory` + `providerAccountManager` let a local-mode
   // runner spawn its CLI against the account this session was routed to.
-  // SHI-298 — `credentialStore` is the MCP env that spawn carries, standing in
+  // planning#300 — `credentialStore` is the MCP env that spawn carries, standing in
   // for the worker secrets push local mode has no worker to receive.
   const effectiveRunnerFactory = buildRunnerFactory({
     deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog,
@@ -279,7 +279,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // poller exists.
   const prStatusPollerRef: { ref: PrStatusPoller | null } = { ref: null };
 
-  // SHI-264 — the same forward-ref shape for the merge-watch manager, which is
+  // planning#266 — the same forward-ref shape for the merge-watch manager, which is
   // likewise built after the runner registry. Turn adoption (wired into every
   // runner's system-turn deps) reaches it to re-acquire the settlement for a
   // delivery whose wake-turn outlived an orchestrator restart.
@@ -478,7 +478,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     readSystemPrompt: readSystemPromptApp,
     generateText,
     getPrStatusPoller: () => prStatusPollerRef.ref ?? undefined,
-    // SHI-264 — same lazy-resolution shape, same reason: the merge-watch manager
+    // planning#266 — same lazy-resolution shape, same reason: the merge-watch manager
     // is built after the registry it dispatches into. Turn adoption calls this
     // with the delivery id the worker reported, so a wake-turn that outlived a
     // restart settles its ORIGINAL watch instead of a duplicate being queued.
@@ -503,10 +503,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const drainQueueForSession = (sessionId: string): void => {
     const runner = runnerRegistry.get(sessionId);
     if (!runner) return;
-    // SHI-255 — the shared release, never a hand-rolled field copy: this drain
+    // planning#257 — the shared release, never a hand-rolled field copy: this drain
     // (post auto-conflict-resolve) previously dropped `systemTurn`, `postTurn`,
     // and `onTurnComplete`, so a docs/196 wake-turn that queued during a rebase
-    // ran as an ordinary turn and never signalled completion. SHI-280 moved the
+    // ran as an ordinary turn and never signalled completion. planning#282 moved the
     // body into `releaseQueuedTurn` so the stuck-running recovery — the other
     // path with no turn of its own to drain from — shares it.
     releaseQueuedTurn(runner);
@@ -567,7 +567,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // the orchestrator was down (loadPersisted, run inside createPrStatusPoller,
   // has already seeded the snapshots this reads). Best-effort, off the boot path.
   mergeWatchManager.setPrStatusLookup((id) => prStatusPoller.getStatus(id));
-  // SHI-259 (second half) — the reconcile itself is deliberately NOT started
+  // planning#261 (second half) — the reconcile itself is deliberately NOT started
   // here. It must run AFTER the docs/240 turn-adoption sweep (see the
   // `reattachInFlightTurns` block below), which is what chains it.
 
@@ -812,7 +812,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     containerManager, getBareCacheDir, warmSessionForRepo, credentialStore,
   }, migratedRepoUrls);
 
-  // ---- SHI-307 / docs/249: finish consult cards the previous orchestrator couldn't ----
+  // ---- planning#309 / docs/249: finish consult cards the previous orchestrator couldn't ----
   // `runSubAgent` holds the only handle that can flip a consult card out of
   // `pending`, and that handle died with the previous process — so every pending
   // card in the DB right now is orphaned, by construction (the sweep runs before
@@ -833,7 +833,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // destroyed and registered for recreation before a reconnecting viewer races
   // to attach to the old container.
   //
-  // SHI-259 (second half) — the notify-on-merge reconcile is CHAINED off this
+  // planning#261 (second half) — the notify-on-merge reconcile is CHAINED off this
   // sweep rather than launched independently. Both used to be fire-and-forget
   // with reconcile going first, so `reconcilePending` could redispatch a
   // wake-turn for a watch still at `merge-observed` while the ORIGINAL turn was
@@ -853,7 +853,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   void (async () => {
     // docs/196 — re-derive any watch whose child PR reached a terminal state
     // while the orchestrator was down. Ordered AFTER the sweep above, on
-    // purpose (SHI-259).
+    // purpose (planning#261).
     try {
       await mergeWatchManager.reconcilePending();
     } catch (err: unknown) {

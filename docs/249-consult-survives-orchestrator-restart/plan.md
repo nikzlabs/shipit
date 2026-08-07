@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-307
+issue: planning#309
 title: A sub-agent consult survives an orchestrator restart
 description: Boot reconcile that finishes consult cards stranded `pending` when the orchestrator died mid-run, so the card stops claiming to be in flight.
 ---
@@ -114,7 +114,7 @@ turn's row rebuild", which asserts it through a real `buildApp`.
 ### Where the explanation lives: `statusDetail`, not `outputMarkdown`
 
 `outputMarkdown` is the sub-agent's verbatim words. It is what
-`shipit agent result` prints on **stdout**, and SHI-245 guarantees it is the same
+`shipit agent result` prints on **stdout**, and planning#247 guarantees it is the same
 artifact the user reads. Writing ShipIt's apology there would hand a calling
 agent our prose in the consultant's voice — the guarantee runs the other way.
 
@@ -159,5 +159,5 @@ so it is covered explicitly in `shipit.test.ts` from both the one-shot and the
 Recover the lost output. Doing so would mean a durable worker-side record of
 each run plus an orchestrator re-attach after restart — and would still need
 this sweep underneath it, for the cases where the container died too. Scoped out
-deliberately; SHI-307's other harm ("the work was done and thrown away") remains
+deliberately; planning#309's other harm ("the work was done and thrown away") remains
 true, and re-running the consult is the answer.

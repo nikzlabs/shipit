@@ -1,5 +1,5 @@
 /**
- * Egress DNS install — Tier B resolver launch (docs/172 Gap 1, SHI-90).
+ * Egress DNS install — Tier B resolver launch (docs/172 Gap 1, planning#92).
  *
  * Builds the dnsmasq config (via `egress-dns.ts`) and launches the long-lived
  * controlled-resolver sidecar in the agent's netns. Sequencing in
@@ -14,7 +14,7 @@
  *
  * Unit-tested seams: domain derivation, config base64 encoding, the flag gate,
  * and the sidecar launch config (fake Docker). The actual dnsmasq behavior +
- * iptables interaction is verified on a live host (the SHI-90 Tier B checklist).
+ * iptables interaction is verified on a live host (the planning#92 Tier B checklist).
  */
 
 import os from "node:os";
@@ -66,7 +66,7 @@ export function orchestratorCallbackHost(env: NodeJS.ProcessEnv = process.env): 
  * this, an environment that leaves `SHIPIT_ORCHESTRATOR_HOST` unset (e.g. the dev
  * compose) sets `SHIPIT_HOST=<os.hostname()>` but allowlists nothing, so dnsmasq
  * refuses the orchestrator name and the worker→orchestrator callback channel breaks
- * under Tier B (found in SHI-90 Tier B host verification). IP literals are skipped
+ * under Tier B (found in planning#92 Tier B host verification). IP literals are skipped
  * (no DNS needed); the bridge subnet they live on is already allowed by Tier A.
  */
 export function orchestratorInternalNames(env: NodeJS.ProcessEnv = process.env): string[] {
@@ -92,7 +92,7 @@ export const OPS_DOCKER_PROXY_DNS_NAME = "docker-socket-proxy";
  * Tier B resolver REFUSES any name not on its allowlist (the deliberate
  * anti-DNS-tunneling design — no default server), so without this rule an ops
  * agent's `DOCKER_HOST` lookup is refused even though L3 connectivity is fine
- * (SHI-90 Tier B host verification: `getent hosts docker-socket-proxy` → REFUSED).
+ * (planning#92 Tier B host verification: `getent hosts docker-socket-proxy` → REFUSED).
  * Added ONLY for ops sessions so ordinary sessions still can't resolve it.
  */
 export function sessionInternalNames(

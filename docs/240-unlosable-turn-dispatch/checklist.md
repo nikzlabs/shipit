@@ -30,7 +30,7 @@
       of silently eating the signal
 - [x] `onTurnComplete` kept as an adapter over `settled` (`withSettlement`)
 
-## SHI-259's second half
+## planning#261's second half
 
 - [x] The adoption sweep is awaited before watch reconciliation (`bootstrap-managers.ts`)
 
@@ -40,14 +40,14 @@
       (`prepared-dispatch.test.ts`, `@ts-expect-error` — an unused directive fails typecheck)
 - [x] Type-level: an incomplete `prepareDispatch` init fails to compile
 - [x] Exhaustiveness: adding a field without updating the converter fails
-- [x] A callback-bearing system turn queued behind an **adopted** turn settles (SHI-259)
-- [x] No-result retry that succeeds settles once with success (SHI-260)
-- [x] Exhausted retries settle once with failure (SHI-260)
+- [x] A callback-bearing system turn queued behind an **adopted** turn settles (planning#261)
+- [x] No-result retry that succeeds settles once with success (planning#262)
+- [x] Exhausted retries settle once with failure (planning#262)
 - [x] An errored turn settles with the error outcome
 - [x] A dropped queue entry settles as `dropped`
-- [x] Existing SHI-254 / SHI-255 / SHI-258 regressions still pass
+- [x] Existing planning#256 / planning#257 / planning#260 regressions still pass
 
-## Fix C — durable `deliveryId` (SHI-264; the follow-up docs/239 gated)
+## Fix C — durable `deliveryId` (planning#266; the follow-up docs/239 gated)
 
 - [x] Durable `deliveryId` reported by the worker; liveness derived, not tracked —
       `watchId:attempt` minted + persisted with the attempt, sent on `/agent/start`,
@@ -62,7 +62,7 @@
       cleared in `settleTurn` before the consumer is told
 - [x] `attemptDelivery` guards on derived liveness at the single delivery funnel, so
       `reconcilePending` redispatches only when no live worker reports the delivery
-- [x] SHI-258's `inFlight` set reduced to a `dispatching` re-entrancy lock over one
+- [x] planning#260's `inFlight` set reduced to a `dispatching` re-entrancy lock over one
       `await`, released in a `finally`
 - [x] Both watch kinds (`child` + `self`) covered; settlement contract unchanged
       (exactly-once, `finally`, `errored` preserved)
@@ -73,7 +73,7 @@
       turn-lifecycle halves in `merge-watch.test.ts` /
       `integration_tests/turn-settlement.test.ts`
 
-## Fix D — the stuck-running recovery is a terminal path (SHI-280)
+## Fix D — the stuck-running recovery is a terminal path (planning#282)
 
 - [x] `turn_abandoned` runner event; `dispatchOnRunner` settles the abandoned turn as
       `dropped` through the same chained-callback path as `disposed`

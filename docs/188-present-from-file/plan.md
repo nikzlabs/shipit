@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-91
+issue: planning#93
 description: Make the `present` tool file-based — the agent writes a file and presents it by path, so prototypes can be tracked in git and rendered in the Present tab at the same time.
 ---
 

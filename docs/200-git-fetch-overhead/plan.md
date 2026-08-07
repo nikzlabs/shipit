@@ -1,10 +1,10 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-76
+issue: planning#78
 title: Git fetch overhead before session creation
 description: Benchmark of the latency cost of running git fetch before every new session, with a freshness-strategy recommendation.
 ---
 
-# Git fetch overhead before session creation (SHI-76)
+# Git fetch overhead before session creation (planning#78)
 
 ## Question
 

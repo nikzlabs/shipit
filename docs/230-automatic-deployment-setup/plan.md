@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-237
+issue: planning#239
 title: Optional automatic deployment setup
 description: Connect newly created repositories to a hosting provider without leaving ShipIt's repository-creation flow.
 ---

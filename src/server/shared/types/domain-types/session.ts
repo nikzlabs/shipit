@@ -265,7 +265,7 @@ export interface SessionInfo {
    */
   mergeWatch?: SessionMergeWatch;
   /**
-   * docs/213 / SHI-315 — the session's auto-commit is currently refused because
+   * docs/213 / planning#317 — the session's auto-commit is currently refused because
    * the working tree carries a likely credential. Present ⇒ blocked.
    *
    * Persisted rather than held on the runner, because that is what makes the
@@ -340,7 +340,7 @@ export interface PreviousMergedPr {
 }
 
 /**
- * docs/213 / SHI-315 — the sticky record of an auto-commit refused by the
+ * docs/213 / planning#317 — the sticky record of an auto-commit refused by the
  * secret scanner. Stored as JSON on the session row.
  *
  * `findings` are already redacted at the detector (only a short public prefix +
@@ -377,7 +377,7 @@ export interface SessionMergeWatch {
    * docs/196's parent→child watch.
    *
    * Deliberately one optional discriminator on the EXISTING row rather than a
-   * second watch subsystem: `merge-observed`, the SHI-258 retry supervisor, the
+   * second watch subsystem: `merge-observed`, the planning#260 retry supervisor, the
    * polling gate and `reconcilePending` then all come by inheritance. The
    * accepted cost is that a session cannot be parent-watched and self-watching
    * at the same time — the row holds one watch — so a self-arm is refused while
@@ -407,13 +407,13 @@ export interface SessionMergeWatch {
    * - `merge-observed` — the poller saw the merge and surfaced the card, but the
    *   actionable wake-turn has not RUN to completion yet. Covers both "queued
    *   behind a busy parent" and "the last delivery attempt threw"; the retry
-   *   supervisor tells those apart (SHI-258, see `merge-watch.ts`).
+   *   supervisor tells those apart (planning#260, see `merge-watch.ts`).
    * - `delivered` — the merge wake-turn actually ran. Terminal, fire-once.
    * - `closed-unmerged` — the PR closed without merging; a distinct wake-turn was
    *   enqueued so the parent doesn't proceed as if the work shipped. Terminal.
    * - `delivery-failed` — delivery threw `MAX_DELIVERY_ATTEMPTS` times; the watch
    *   gives up and surfaces a failure card into the parent instead of retrying
-   *   forever (SHI-258). Terminal.
+   *   forever (planning#260). Terminal.
    */
   state: "armed" | "merge-observed" | "delivered" | "closed-unmerged" | "delivery-failed";
   /** ISO instant the watch was armed. */
@@ -423,20 +423,20 @@ export interface SessionMergeWatch {
   /** ISO instant the wake-turn was enqueued into the parent. */
   deliveredAt?: string;
   /**
-   * SHI-258 — how many times `deliverWakeTurn` has been *invoked* for this watch
+   * planning#260 — how many times `deliverWakeTurn` has been *invoked* for this watch
    * (not how many times it failed). Persisted so the attempt budget survives an
    * orchestrator restart; drives both the retry backoff and the
    * `delivery-failed` cap.
    */
   deliveryAttempts?: number;
   /**
-   * SHI-258 — ISO instant of the most recent delivery attempt. The retry
+   * planning#260 — ISO instant of the most recent delivery attempt. The retry
    * supervisor's backoff anchor: a stalled watch is only re-attempted once the
    * backoff window since this instant has elapsed.
    */
   lastAttemptAt?: string;
   /**
-   * SHI-264 — durable identity of the most recent delivery attempt
+   * planning#266 — durable identity of the most recent delivery attempt
    * (`watchId:attempt`), stamped onto the wake-turn, sent to the worker, and
    * reported back from its `/agent/status`.
    *
@@ -452,9 +452,9 @@ export interface SessionMergeWatch {
    * row) can never have an old delivery re-settle the new watch.
    */
   deliveryId?: string;
-  /** SHI-258 — message from the most recent failed delivery attempt, if any. */
+  /** planning#260 — message from the most recent failed delivery attempt, if any. */
   lastDeliveryError?: string;
-  /** SHI-258 — ISO instant the watch gave up (`delivery-failed`). */
+  /** planning#260 — ISO instant the watch gave up (`delivery-failed`). */
   failedAt?: string;
 }
 
@@ -482,7 +482,7 @@ export interface ChildMergedCard {
   /** Merge commit SHA, when known (merged outcome only). */
   mergeSha?: string;
   /**
-   * SHI-258 — when set, this card is the *delivery-failure* variant: the merge
+   * planning#260 — when set, this card is the *delivery-failure* variant: the merge
    * (or close) was observed and the first card already told the user, but the
    * actionable wake-turn could never be delivered into this session (the
    * container wouldn't boot, credentials wouldn't refresh, …) and the watch has
@@ -524,7 +524,7 @@ export interface SelfMergeWatchCard {
 }
 
 /**
- * docs/233 (SHI-241) — how urgently a session report needs the recipient's
+ * docs/233 (planning#243) — how urgently a session report needs the recipient's
  * attention. Shapes both the card's tone and the wake-turn's instruction:
  *
  * - `fyi`     — informational; the recipient probably needs no action.
@@ -534,7 +534,7 @@ export interface SelfMergeWatchCard {
 export type SessionReportSeverity = "fyi" | "warn" | "blocker";
 
 /**
- * docs/233 (SHI-241) — payload for the inline "session report" transcript card
+ * docs/233 (planning#243) — payload for the inline "session report" transcript card
  * surfaced into a RECIPIENT session when another session in its cohort pushes a
  * report upward (`shipit session report`).
  *

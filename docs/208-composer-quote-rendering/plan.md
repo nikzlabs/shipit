@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-155
+issue: planning#157
 title: Composer quote rendering
 description: Should quoted content in the message composer get richer rendering than plain text? Recommendation and rationale.
 ---
@@ -19,7 +19,7 @@ plain markdown `> ` lines inside the `<textarea>` with no special visual
 treatment. This doc investigates whether quoted content should get a richer
 rendering (styled blockquote, removable reply chip, hybrid) and makes a call.
 
-It spun out of the action-checklist-cards work (**SHI-153**,
+It spun out of the action-checklist-cards work (**planning#155**,
 `docs/207-action-checklist-cards/plan.md`): one affordance there, "Add
 comment…", seeds the composer with a quoted snapshot of the card's `[x]`/`[ ]`
 lines that the user then annotates and sends. But the concern is
@@ -183,7 +183,7 @@ the model change.
    is good enough: the `> ` convention is already legible, and a mirrored
    backdrop is finicky against `field-sizing` + scroll. We keep it on file as a
    possible future polish rather than open work — no spike is scheduled.
-4. **Guidance for action-cards (SHI-153): assume plain editable text.** The
+4. **Guidance for action-cards (planning#155): assume plain editable text.** The
    "Add comment…" snapshot should be inserted exactly as it is today — markdown
    text the user freely trims and annotates. Do **not** build the action-card on
    a chip or rich-editor representation; the plainest substrate is also the most
@@ -206,5 +206,5 @@ right one. The net result is **no code change** — we keep what ships today.
 ## Related
 
 - `docs/167-chat-quote-reply/plan.md` — the existing quote-reply producer.
-- `docs/207-action-checklist-cards/plan.md` (SHI-153) — the action-card flow
+- `docs/207-action-checklist-cards/plan.md` (planning#155) — the action-card flow
   whose "Add comment…" affordance motivated this investigation.

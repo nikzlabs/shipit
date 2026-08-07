@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-150
+issue: planning#152
 title: Nested issues + two-level sorting
 description: Render sub-issues nested under their parent and let the user define a two-level (primary → secondary) sort order.
 ---
@@ -26,7 +26,7 @@ This doc proposes nested rendering plus a user-defined **two-level** sort.
 - **Recursive — arbitrary depth.** Nesting recurses to any depth (decision: confirmed). Each level adds one indent step + tree spine; collapsing any node hides its whole subtree. The tree is built from the flat `filteredIssues` by walking `parentId` links, so depth is whatever the data declares.
 - **Collapse state persists globally.** An explicit collapse/expand is saved to **localStorage** as `{ [issueId]: boolean }`, **not scoped to a session or repo** (decision: confirmed) — the issue list itself isn't session- or repo-scoped, so its collapse state shouldn't be either. The map holds only the user's *explicit* toggles; an untouched parent falls back to the layout default (below). (Client-only; no server round-trip.)
 - **Mobile (card layout) is collapsible too — and defaults collapsed** (decision: revised). A long sub-issue list is unusable on a phone, so on the narrow/card layout a parent **folds by default** and shows a tappable **"N nested issues"** row; tapping expands it. The desktop/table layout keeps its **expanded-by-default + disclosure caret**. The two share one override map, so the **only** thing that differs by layout is the *default for untouched parents* (wide → expanded, narrow → collapsed); an explicit toggle applies everywhere. The layout is chosen by measuring the panel's `@container` width against the same `@sm` breakpoint (24rem) that flips the row between table and card, so collapse behavior and visual layout always agree. Child cards still carry the faint **4px/level (cap 3)** indent.
-- **Orphan promotion.** A child whose parent is **not in the current set** (parent is Done and `includeDone` is off, on another team, or beyond the 100-issue fetch cap) is **promoted to the top level** with a `↳ in SHI-300` hint, rather than silently dropped. This is the load-bearing edge case — the fetched window almost never contains every parent. With recursion this applies at any level: a subtree whose root is missing reattaches at the nearest present ancestor, or the top level if none.
+- **Orphan promotion.** A child whose parent is **not in the current set** (parent is Done and `includeDone` is off, on another team, or beyond the 100-issue fetch cap) is **promoted to the top level** with a `↳ in planning#302` hint, rather than silently dropped. This is the load-bearing edge case — the fetched window almost never contains every parent. With recursion this applies at any level: a subtree whose root is missing reattaches at the nearest present ancestor, or the top level if none.
 
 ### Two-level sorting
 
@@ -53,7 +53,7 @@ Sort preference (primary/secondary key + direction, group on/off) should persist
 
 ```ts
 parentId?: string;         // tracker-internal id of the parent issue, when nested
-parentIdentifier?: string; // human id ("SHI-90") — for the orphan hint without a second fetch
+parentIdentifier?: string; // human id ("planning#92") — for the orphan hint without a second fetch
 updatedAt?: string;        // ISO-8601 last-updated, for the "Last updated" sort key
 ```
 

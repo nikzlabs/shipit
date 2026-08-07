@@ -38,7 +38,7 @@ export function initGlobalGitConfig(credentialsDir: string): void {
     // git may not be installed yet (unlikely but safe)
   }
 
-  // docs/150 §7 addendum (SHI-31 activation blocker). When the session worker
+  // docs/150 §7 addendum (planning#33 activation blocker). When the session worker
   // runs as an unprivileged uid (SHIPIT_SESSION_WORKER_UID set), each session's
   // workspace under /workspace is owned by that uid (e.g. 1000), but THIS
   // orchestrator process keeps running git as root. Git's CVE-2022-24765

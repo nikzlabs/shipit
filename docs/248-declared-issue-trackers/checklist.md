@@ -29,7 +29,7 @@ each item is where it is.
 ## Resolution
 
 - [x] Add a resolver layer above `parseIssueRef`, keeping that parser pure and context-free. Req 11's fail-closed and ambiguity rules live in the resolver, not at each caller.
-- [x] Resolve all three forms: `name#123`, `name#SHI-304`, and each backend's canonical address (req 10).
+- [x] Resolve all three forms: `name#123`, `name#planning#306`, and each backend's canonical address (req 10).
 - [x] Give each `kind` its canonical-address format, so a backend added later brings its own instead of being special-cased in the parser.
 - [x] Route the eight current `parseIssueRef` call sites through the resolver — `tracker-link.ts`, `DocsViewer.tsx`, `FrontmatterHeader.tsx`, `pr-issue-refs.ts`, `shipit-issue.ts` (×3), `issue-lifecycle.ts`.
 - [x] Feed the client resolver from the store that already holds the tracker list, rather than adding a second fetch.
@@ -74,7 +74,7 @@ pointer-derived destinations, `seedFromIssueRef`'s pointer-only branch names
 
 ## Closed after this doc's requirements landed
 
-- [x] Req 22 on the **in-app** path (SHI-320). The Issues tab's "Start session"
+- [x] Req 22 on the **in-app** path (planning#322). The Issues tab's "Start session"
   stopped going through `seedFromIssueRef` when docs/236 made it prefill the
   composer, so the branch was AI-named from a prompt beginning with the issue
   title, and no `issueRef` reached `markIssueStartedFromSeed`. Both now ride the
@@ -103,7 +103,7 @@ pointer-derived destinations, `seedFromIssueRef`'s pointer-only branch names
   rejected: it would mean identifying a *declaration* rather than its
   destination, threading a new id through tabs, cards, routes and persisted rows
   for a configuration nobody wanted.
-- [x] **In a name form the name wins.** `roadmap#SHI-304` re-targets after
+- [x] **In a name form the name wins.** `planning#306` re-targets after
   `roadmap` moves to another team instead of failing on the stale key. A chosen
   exception to the fail-closed posture, not a hole in it — the name still
   identifies exactly one declared destination, so nothing is guessed. Keeps the
@@ -116,7 +116,7 @@ pointer-derived destinations, `seedFromIssueRef`'s pointer-only branch names
 Filed; the tracker holds its status from here.
 
 - [x] **The browser's declaration view can go stale.**
-  ([SHI-321](https://linear.app/shipit-ai/issue/SHI-321)) `fetchTrackers` ran on
+  (planning#323) `fetchTrackers` ran on
   session change and on Issues-tab activation, so editing `shipit.yaml` with the
   tab already open didn't re-resolve names until one of those happened. The
   server reads the file per request, so only the client was affected. Fixed by
@@ -135,7 +135,7 @@ Filed; the tracker holds its status from here.
   months." This closed a live defect, not just a wording gap — Undo preferred the
   recorded *name*, so a re-pointed `planning` rewrote a **different repository's**
   issue of the same number, with a test asserting that as correct.
-- [x] **An open issue does not survive a repo switch** (SHI-325) — the detail
+- [x] **An open issue does not survive a repo switch** (planning#327) — the detail
   falls back to the list when its destination is no longer reachable from the
   session being switched to (req 11). Reproduced live in the dogfood inner
   ShipIt with two repositories before fixing, and the repro is what corrected the

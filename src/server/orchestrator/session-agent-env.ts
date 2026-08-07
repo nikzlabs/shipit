@@ -438,7 +438,7 @@ export async function prepareSessionAgentEnvironment(
     }
   }
 
-  // Step 1b (SHI-282): the local-mode twin of Step 1. Every branch above is
+  // Step 1b (planning#284): the local-mode twin of Step 1. Every branch above is
   // gated on `ContainerSessionRunner`, and in local mode there is no container
   // — so a dogfood turn spawned a CLI whose HOME had never been given
   // credentials at all, for either agent.
@@ -525,8 +525,8 @@ export async function prepareSessionAgentEnvironment(
     // turn rather than killing it.
     await ensureLocalAgentOpsHost({ sessionId });
 
-    // Step 1c (docs/118, SHI-59): the local-mode workspace-trust write — the third
-    // container-gated writer this mode was missing, after SHI-282 and SHI-298.
+    // Step 1c (docs/118, planning#61): the local-mode workspace-trust write — the third
+    // container-gated writer this mode was missing, after planning#284 and planning#300.
     //
     // The Claude CLI silently drops a workspace's own `.claude/settings.json`
     // `permissions.allow` entries until that workspace is trusted ("Ignoring N

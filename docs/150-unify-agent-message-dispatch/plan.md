@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-234
+issue: planning#236
 description: Send system-initiated prompts (Create PR, preview/compose errors, service logs) directly to the agent instead of prefilling the input, and funnel every server-side dispatch through the same send-or-queue primitive.
 ---
 

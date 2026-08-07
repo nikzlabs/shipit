@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-214
+issue: planning#216
 title: Shared browser event-listener hook
 description: A correct-cleanup useEventListener/useEventListeners primitive that centralizes the addEventListener/removeEventListener-same-reference contract several client hooks hand-roll.
 ---
@@ -13,14 +13,14 @@ inside many `useEffect`s.
 
 This is the deferred item from `docs/225-component-dedup-refactors` — the
 "Explicitly not doing → Generic SSE/event-listener abstraction" catalog entry
-(originating catalog **SHI-212**). It was deferred for a specific reason, recorded
+(originating catalog **planning#214**). It was deferred for a specific reason, recorded
 verbatim there:
 
 > The proposed sketches had broken cleanup (`removeEventListener` with a fresh
 > closure removes nothing). A correct version is possible but is careful work,
 > not a quick win — deferred until someone needs it.
 
-This doc is that careful version. It tracks under **SHI-214**. The deliverable of
+This doc is that careful version. It tracks under **planning#216**. The deliverable of
 the first PR is the **hook + its tests only** — call-site migration is explicitly
 a follow-up so the primitive can be reviewed in isolation.
 

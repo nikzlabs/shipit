@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-250
+issue: planning#252
 description: Rebuild a running turn from one atomic server snapshot at attach, instead of stitching an HTTP history read onto a separately-cursored WS replay.
 ---
 

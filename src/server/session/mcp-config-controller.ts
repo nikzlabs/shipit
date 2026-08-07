@@ -47,7 +47,7 @@ export class McpConfigController {
   }
 
   /**
-   * Resolve how to launch the consolidated internal MCP bridge (SHI-128).
+   * Resolve how to launch the consolidated internal MCP bridge (planning#130).
    * `resolveBridge` (docs/199) prefers the precompiled JS bundle in
    * `dist/mcp-bridges/` (launched with `node` — no per-spawn tsx compile, which
    * is what made the bridges miss the CLI's 2000ms MCP pre-wait at the 0.5-CPU

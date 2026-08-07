@@ -944,7 +944,7 @@ export class ProviderAccountManager {
    * the CLI in its container actually reads. Call the service-layer
    * `signOutProvider` (`services/settings.ts`) instead — it carries the
    * running-turn guard, retires resident agent processes, revokes the
-   * per-session copies, and then calls this (SHI-283).
+   * per-session copies, and then calls this (planning#285).
    */
   signOutProvider(provider: AgentId): void {
     for (const account of this.list(provider)) {

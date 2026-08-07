@@ -1,7 +1,7 @@
 import type { SecretFinding } from "../../shared/secret-scan.js";
 
 /**
- * SHI-294 — why the pre-eviction auto-commit refused, as far as the disk ladder
+ * planning#296 — why the pre-eviction auto-commit refused, as far as the disk ladder
  * needs to care. Mirrors the refusal branches of `GitManager.autoCommit`
  * (`shared/git.ts`), collapsing anything it can't attribute into `"unknown"` so
  * a future refusal path still produces a message instead of a blank one.
@@ -12,7 +12,7 @@ export type EvictBlockReason =
   | { kind: "unknown" };
 
 /**
- * SHI-294 — build the persisted chat notice shown when the `light → evicted`
+ * planning#296 — build the persisted chat notice shown when the `light → evicted`
  * rung refuses to reclaim a session because its uncommitted work could not be
  * made durable (the auto-commit was refused by the secret scanner or by an
  * unresolved merge state).

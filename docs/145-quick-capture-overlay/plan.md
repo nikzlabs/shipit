@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-248
+issue: planning#250
 description: Global-hotkey overlay that captures a prompt and spawns a new session in the background, without leaving the current view.
 ---
 

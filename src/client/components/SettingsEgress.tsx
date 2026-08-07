@@ -133,7 +133,7 @@ function AllowlistRow({
 }
 
 /**
- * Settings → Network — "Network egress" (docs/172 / SHI-90).
+ * Settings → Network — "Network egress" (docs/172 / planning#92).
  *
  * A **global-only** first-class allowlist editor: the default-on containment
  * toggle and the *global* effective allowlist with provenance — user-added

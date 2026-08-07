@@ -1,6 +1,6 @@
 ---
 description: Let users pin sessions to the top of their repo group, just below the New session button, sticky across reloads and drag-reorderable within the pinned set.
-issue: https://linear.app/shipit-ai/issue/SHI-48
+issue: planning#50
 ---
 
 # 110 — Pinned Sessions

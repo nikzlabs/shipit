@@ -1,12 +1,12 @@
 /**
- * Egress firewall — Tier A allow-set construction (docs/172 Gap 1, SHI-90).
+ * Egress firewall — Tier A allow-set construction (docs/172 Gap 1, planning#92).
  *
  * Tier A is the un-bypassable floor: a default-deny `iptables OUTPUT` policy plus
  * an `ipset` of permitted destination IPs/CIDRs, installed **inside the agent
  * container's network namespace** by a short-lived privileged sidecar
  * (`--network container:<agent> --cap-add NET_ADMIN`) — see
  * `docs/172-agent-containment/egress-control.md`. The agent itself has no
- * `NET_ADMIN` (and, since SHI-31, runs non-root), so it can neither install nor
+ * `NET_ADMIN` (and, since planning#33, runs non-root), so it can neither install nor
  * flush these rules.
  *
  * This module owns the **data** half — what goes in the ipset — which is pure,
@@ -144,7 +144,7 @@ export function parseGitHubMetaCidrs(meta: unknown): string[] {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Intra-session subnet extraction (SHI-90 — preview reachability)
+// Intra-session subnet extraction (planning#92 — preview reachability)
 // ---------------------------------------------------------------------------
 
 /**

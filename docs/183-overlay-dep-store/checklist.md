@@ -225,7 +225,7 @@ makes them all correct for N volumes. See `plan.md` → "Disk cleanup under the 
       atomic-swap old-gen reclaim), all gated behind `OVERLAY_DEP_STORE`. No agent-facing `shipit-docs`
       change needed (the overlay is transparent to the agent; escalation behavior is unchanged when the
       flag is off).
-- [x] **SHI-193 — base GC switched from a 30-day age cutoff to a deterministic live-mount check.** A base
+- [x] **planning#195 — base GC switched from a 30-day age cutoff to a deterministic live-mount check.** A base
       scope keys on `overlayRuntimeKey` (worker-image id + arch), so a worker-image rebuild rotates every
       scope hash and old-image scopes go obsolete the instant the image rolls — the age proxy over-retained
       ~26 GB of dead scopes (measured: 46 of 47 prod scope dirs). `sweepOrphanedOverlayBases` now keeps a
@@ -306,17 +306,17 @@ behind the flag, one PR each; FINDINGS.md has the full forensics.
       ~22.5 s npm pass, 316 KB upper. **Depth sweep d2→d15 + flatten + post-flatten: flat
       22.2–25 s at every depth → `DEFAULT_DEPTH_CAP = 16` stands.** The canary also found and
       fixed two ship-blockers (PR #1256 check-ignore dir-pattern; PR #1257 install-resync race).
-- [x] **Flip `OVERLAY_DEP_STORE` default ON (SHI-127 step 2, done this PR)** — after the prod canary
+- [x] **Flip `OVERLAY_DEP_STORE` default ON (planning#129 step 2, done this PR)** — after the prod canary
       soaked green (zero `skipped-empty`, bases advancing cleanly, disk flat — see FINDINGS.md), the
       default in `isOverlayEnabled()` was inverted: the store is **ON unless `OVERLAY_DEP_STORE=0`/`false`**
       is set as an explicit **kill switch** (retained one release for emergency rollback). All of Phases
-      1–6 are merged and the flag invariant was satisfied. **Remaining SHI-127 follow-ups (still
+      1–6 are merged and the flag invariant was satisfied. **Remaining planning#129 follow-ups (still
       unchecked):** delete the env var + flag-off code paths (step 3), and canary-host cleanup (step 4).
       **Rollout status: default flipped ON 2026-06-13 (this PR).** The prod-VPS canary
       (`deployment/vps/.env`, flag on since 2026-06-11) soaked green, so the default in
       `isOverlayEnabled()` is now ON with `OVERLAY_DEP_STORE=0`/`false` retained as a one-release kill
       switch. The remaining rollout (delete the flag → canary cleanup) is tracked in
-      [SHI-127](https://linear.app/shipit-ai/issue/SHI-127) — the flag is a temporary rollout gate, not a
+      planning#129 — the flag is a temporary rollout gate, not a
       permanent configuration dimension.
       **Flip preconditions (all satisfied before the flip):** (a) a few quiet soak days (zero
       `skipped-empty`, zero overlay compose failures, bounded `overlay-base/` growth); (b) **SATISFIED

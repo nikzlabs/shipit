@@ -46,7 +46,7 @@ export interface PrepareRunParamsInput {
    */
   sandboxActive?: boolean;
   /**
-   * SHI-265 — `true` iff the session is merged with a recorded `mergedHeadSha`,
+   * planning#267 — `true` iff the session is merged with a recorded `mergedHeadSha`,
    * i.e. sitting in the state `shipit branch reset-to-base` guards. Claude's hook
    * forwards it to the adapter as `guardDestructiveGit`, which sets
    * SHIPIT_GUARD_DESTRUCTIVE_GIT=1 so the managed-settings.json PreToolUse hook

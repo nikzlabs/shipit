@@ -12,13 +12,13 @@
  * turns a queued entry back into a running turn used to re-derive the options
  * field by field, so each new drain site quietly narrowed them:
  *
- *   - SHI-255 — the interactive drain (and a third drain in
+ *   - planning#257 — the interactive drain (and a third drain in
  *     `bootstrap-managers.ts`) rebuilt the options by hand and lost `systemTurn`
  *     + `onTurnComplete`; a notify-on-merge wake-turn queued behind a user turn
  *     ran as an ordinary turn and its watch never advanced.
- *   - SHI-259 — turn adoption added a **fourth** hand-rolled drain doing exactly
- *     the same thing, days after SHI-255 shipped, written by an author
- *     reasonably following the surrounding code. SHI-255's own write-up had
+ *   - planning#261 — turn adoption added a **fourth** hand-rolled drain doing exactly
+ *     the same thing, days after planning#257 shipped, written by an author
+ *     reasonably following the surrounding code. planning#257's own write-up had
  *     claimed a later drain "cannot re-narrow an entry without deliberately
  *     bypassing that module". Nobody bypassed anything deliberately.
  *
@@ -46,7 +46,7 @@
  * a field to `AgentDispatchOptions` and BOTH fail until it is handled here — and
  * every `prepareDispatch` caller fails too, because the init is complete.
  *
- * SHI-255's converter round-trip test is still wanted alongside this: it guards a
+ * planning#257's converter round-trip test is still wanted alongside this: it guards a
  * different surface (a field dropped *inside* the converter) than the brand does
  * (the converter bypassed entirely).
  */
@@ -206,7 +206,7 @@ export function queuedMessageToDispatchOptions(next: QueuedMessage): PreparedDis
     // docs/196 → docs/240 — carry the completion signal so an enqueued turn
     // still settles when it drains (the merge-watch busy path depends on this).
     onTurnComplete: next.onTurnComplete,
-    // SHI-264 — and the DURABLE half of the same signal, so the entry answers
+    // planning#266 — and the DURABLE half of the same signal, so the entry answers
     // `runner.hasDelivery(id)` for the whole time it waits in the queue.
     deliveryId: next.deliveryId,
     // docs/144 — a message dictated while a turn was running still tells the

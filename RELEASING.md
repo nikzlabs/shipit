@@ -238,4 +238,4 @@ prepare never *looks* successful while the merge would silently no-op.
   checkout sits on a release tag's commit, so `git describe --tags --exact-match`
   names it `vX.Y.Z`; otherwise `main @ <short-sha>`.
 - The Android wrapper's version (`versionCode` / `versionName`) is **not** yet
-  synced — tracked separately (SHI-66).
+  synced — tracked separately (planning#68).

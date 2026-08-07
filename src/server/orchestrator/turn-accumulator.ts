@@ -39,7 +39,7 @@ export class TurnAccumulator {
   private _turnEventBuffer: WsServerMessage[] = [];
   lastPersistedBufferIndex = 0;
 
-  /** docs/244 / SHI-297 — see `SessionRunnerInterface.committedBodyIds`. */
+  /** docs/244 / planning#299 — see `SessionRunnerInterface.committedBodyIds`. */
   readonly committedBodyIds = createCommittedBodyIds();
 
   // ---- Queue ----

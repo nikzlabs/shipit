@@ -665,7 +665,7 @@ export async function registerSessionSpawnRoutes(
   );
 
   // ===========================================================================
-  // Upward / lateral session reports (docs/233, SHI-241)
+  // Upward / lateral session reports (docs/233, planning#243)
   //
   // The counterpart to the parent→child routes above: these two are called with
   // the REPORTING session's own id (the worker injects it), so a child can at

@@ -1,6 +1,6 @@
 /**
  * Boot reconcile for sub-agent consult cards stranded by an orchestrator
- * restart (SHI-307, docs/249).
+ * restart (planning#309, docs/249).
  *
  * ## The strand
  *

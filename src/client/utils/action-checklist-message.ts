@@ -1,6 +1,6 @@
 /**
  * action-checklist-message — pure builders for the two messages an
- * `ActionChecklistCard` produces (docs/207 / SHI-153).
+ * `ActionChecklistCard` produces (docs/207 / planning#155).
  *
  * Both are built from the action `payload`s (the self-contained instructions),
  * NOT the short display labels, so they stand alone no matter how much time has

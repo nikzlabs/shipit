@@ -36,7 +36,7 @@ import type { AutoResolveResult } from "../auto-conflict-resolve-manager.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 
 // Hand the whole session workspace (worktree + `.git`) back to the worker uid
-// after the rebase driver's root git ops (SHI-144). A rebase rewrites BOTH as
+// after the rebase driver's root git ops (planning#146). A rebase rewrites BOTH as
 // root:root, and because the driver dispatches turns with `postTurn: "none"`
 // the normal post-turn handoff never runs — so without the worktree handback the
 // non-root agent can run git but can't EDIT the conflicted files it must
@@ -353,7 +353,7 @@ export async function runRebaseFlow(
         conflicts: result.conflicts.map((c) => ({ path: c.path })),
       });
 
-      // SHI-144: `git.rebase` above ran as the root orchestrator and re-rooted
+      // planning#146: `git.rebase` above ran as the root orchestrator and re-rooted
       // BOTH `.git` AND the worktree — including the conflicted files this turn's
       // agent must EDIT. Hand the whole workspace back to the worker uid BEFORE
       // the resolution turn so the non-root agent can both run git and write the
@@ -394,7 +394,7 @@ export async function runRebaseFlow(
     runner.emitMessage({ type: "rebase_complete", sessionId: runner.sessionId, forcePushed });
     return { status: "conflicts_resolved", iterations: iter, forcePushed };
   } finally {
-    // SHI-144 / docs/150 §7: every orchestrator git op above (fetch, rebase,
+    // planning#146 / docs/150 §7: every orchestrator git op above (fetch, rebase,
     // rebaseContinue, stageAll, forcePush, rebaseAbort) runs as root and leaves
     // BOTH `.git` and the rewritten worktree files root-owned. Unlike a normal
     // turn, the rebase driver dispatches its resolution turns with
@@ -593,7 +593,7 @@ export async function runAutoResolveAttempt(
   try {
     if (await git.isRebaseInProgress()) {
       try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
-      // SHI-144: the abort above ran as root and may have re-rooted `.git` +
+      // planning#146: the abort above ran as root and may have re-rooted `.git` +
       // worktree; hand the whole workspace back so the next agent op isn't
       // blocked on a root-owned tree.
       handWorkspaceBackToWorker(runner.sessionDir);
@@ -689,7 +689,7 @@ export async function runAutoResolveAttempt(
   const winner = await Promise.race([flowPromise, timeoutPromise]);
   settled = true;
   if (timeoutHandle) clearTimeout(timeoutHandle);
-  // SHI-144: on the timeout path the teardown's `git.rebaseAbort()` ran as root
+  // planning#146: on the timeout path the teardown's `git.rebaseAbort()` ran as root
   // (and resolves the race only after it completes), so `.git` + worktree can be
   // left root-owned without `runRebaseFlow`'s finally having the last write. Hand
   // the whole workspace back here too — redundant but harmless on the normal

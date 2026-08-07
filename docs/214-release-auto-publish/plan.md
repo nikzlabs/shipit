@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-172
+issue: planning#174
 title: Auto-publish releases via a maintenance branch, driven by a deterministic command
 description: Cut a release fully from ShipIt — the agent opens a version-bump PR into the release branch, you merge it, CI auto-tags and publishes. No manual git, works for any repo.
 ---
@@ -17,7 +17,7 @@ npm run release / git push` run by hand. That's the failure mode the product
 principles forbid.
 
 This doc specifies the path that closes the gap, building on an existing
-**foundation** from `docs/171-release-from-ui` (SHI-71): the release lifecycle
+**foundation** from `docs/171-release-from-ui` (planning#73): the release lifecycle
 card + poller + markers + store/UI (`release-status-poller.ts`,
 `release-markers.ts`, `release-store.ts`, `ReleaseLifecycleCard.tsx`),
 multi-ecosystem version detection + semver (`release-version.ts`), and the

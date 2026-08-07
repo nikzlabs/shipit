@@ -100,7 +100,7 @@ export interface LifecycleDeps {
   dockerProxyHost?: string;
   dockerProxyPort?: number;
   /**
-   * docs/172 Gap 1 (SHI-90) — Tier A egress enforcement. When `egressEnforce` is
+   * docs/172 Gap 1 (planning#92) — Tier A egress enforcement. When `egressEnforce` is
    * true, after the agent container starts a privileged installer sidecar is run
    * in its netns to apply the default-deny iptables/ipset firewall (using
    * `egressSidecarImage`). Both come from `SESSION_EGRESS_ENFORCE` /
@@ -109,21 +109,21 @@ export interface LifecycleDeps {
   egressEnforce?: boolean;
   egressSidecarImage?: string;
   /**
-   * docs/172 Tier B (SHI-90) — controlled DNS. When true (requires
+   * docs/172 Tier B (planning#92) — controlled DNS. When true (requires
    * `egressEnforce`), the agent's resolv.conf is pointed at an in-netns dnsmasq
    * resolver that forwards only allowlisted domains (closing DNS tunneling) and
    * pins resolved IPs into the egress ipset. From `SESSION_EGRESS_DNS=1`.
    */
   egressDns?: boolean;
   /**
-   * docs/172 Tier C (SHI-90) — transparent SNI proxy. When true (requires
+   * docs/172 Tier C (planning#92) — transparent SNI proxy. When true (requires
    * `egressDns`), a long-lived SNI-peek proxy is launched in the agent's netns
    * and the installer REDIRECTs the agent's :443 to it for hostname-level HTTPS
    * policy (closing the CDN co-tenancy gap). From `SESSION_EGRESS_PROXY=1`.
    */
   egressProxy?: boolean;
   /**
-   * docs/172 (SHI-90) — per-session egress configuration resolved at container
+   * docs/172 (planning#92) — per-session egress configuration resolved at container
    * start from the durable allowlist store + live MCP credential store. Lets the
    * browser global toggle / per-session override govern whether THIS session is
    * contained (so "Open mode" skips the firewall install entirely) and feeds the
@@ -141,7 +141,7 @@ export interface LifecycleDeps {
    */
   reopenJoinedEgress?: (sessionId: string) => Promise<void>;
   /**
-   * docs/172 Gap 5 (SHI-97) — kernel-tier hardening, all env-gated default-OFF
+   * docs/172 Gap 5 (planning#99) — kernel-tier hardening, all env-gated default-OFF
    * (resolved in session-container.ts from `container-hardening.ts`). Omitted in
    * tests / when the operator hasn't opted in → byte-for-byte unchanged.
    *
@@ -277,7 +277,7 @@ export function buildMounts(
   }
 
   // Mount the uploads directory for user-uploaded files **read-only**
-  // (docs/172 Gap 6 / SHI-45). The agent has no legitimate write need under
+  // (docs/172 Gap 6 / planning#47). The agent has no legitimate write need under
   // /uploads — uploads are produced by the user from the browser, the agent
   // only consumes them — so a `:ro` mount removes the ability for a
   // prompt-injected agent to delete or tamper with the user's uploads. This is
@@ -438,7 +438,7 @@ export function buildEnv(
     `WORKSPACE_DIR=${workspaceDir}`,
     // docs/246 — where the worker writes the install marker: the mounted slice
     // of the session's state dir, never a path inside the clone. Every session
-    // gets the mount (SHI-286 removed the un-mountable flat layout), so this is
+    // gets the mount (planning#288 removed the un-mountable flat layout), so this is
     // unconditional and the worker can rely on the directory existing.
     `SHIPIT_SESSION_STATE_DIR=${CONTAINER_SESSION_STATE_DIR}`,
     `WORKER_PORT=${workerPort}`,
@@ -492,7 +492,7 @@ export function buildEnv(
     env.push(`SESSION_WORKER_IMAGE_ID=${workerImageId}`);
   }
 
-  // SHI-194 — forward the pinned base-image digest so the worker's install-runtime
+  // planning#196 — forward the pinned base-image digest so the worker's install-runtime
   // `runtimeKey()` (the install-marker ABI gate) keys on the SAME base digest the
   // orchestrator's `overlayRuntimeKey()` scope uses. The worker image also bakes
   // `BASE_IMAGE_DIGEST` as an ENV, so this forward is normally identical to the
@@ -587,14 +587,14 @@ export async function waitForWorkerHealth(workerUrl: string): Promise<void> {
 /**
  * Create the orchestrator-visible lower/upper/work dirs an overlay spec needs
  * before the daemon mounts it, and hand the per-session dirs to the worker uid
- * (docs/183 × docs/150, SHI-145).
+ * (docs/183 × docs/150, planning#147).
  *
  * The daemon's `mount -t overlay` fails with ENOENT unless lowerdir, upperdir AND
  * workdir all exist, and nothing else creates them: a cold scope has no published
  * base yet (no `overlay-base/<hash>/`; an empty `g0` lowerdir is a valid cold
  * start), and the per-session upper/work dirs are born here.
  *
- * **The ownership handoff (SHI-145).** These dirs are created by the **root**
+ * **The ownership handoff (planning#147).** These dirs are created by the **root**
  * orchestrator, but the non-root worker (uid `SHIPIT_SESSION_WORKER_UID`) is what
  * writes through the merged mount. overlayfs creates a new upper file with the
  * fsuid of the writing process, so the worker can only `npm install` a NEW dep if
@@ -795,7 +795,7 @@ export async function createContainer(
     env.push("SHIPIT_SKIP_WORKSPACE_CHOWN=1");
   }
 
-  // docs/172 Gap 5 (SHI-97) — under a read-only rootfs, /home/shipit is a tmpfs
+  // docs/172 Gap 5 (planning#99) — under a read-only rootfs, /home/shipit is a tmpfs
   // (see readonlyRootfsTmpfs) which shadows the image-baked credential symlinks
   // (`.claude`→/credentials, etc.). Signal the non-root entrypoint to re-create
   // them into the tmpfs HOME before it gosu-drops. No-op when readonly-rootfs is
@@ -808,7 +808,7 @@ export async function createContainer(
   // Expose orchestrator API so the agent can query service status/logs
   env.push(...await buildOrchestratorCallbackEnv(config.sessionId));
 
-  // SHI-311 — the per-container secret the worker requires on every call that
+  // planning#313 — the per-container secret the worker requires on every call that
   // doesn't come from its own loopback, i.e. every orchestrator call. Fresh per
   // container so a token learned in one session opens nothing in another; the
   // container env is the source of truth, so an orchestrator restart re-reads it
@@ -913,7 +913,7 @@ export async function createContainer(
     // orchestrator-visible twins (`orchDirs`, same volume via stateDir — the spec's
     // own paths are daemon-host paths the orchestrator container cannot reach) AND
     // hands the per-session upper/work dirs to the worker uid so the non-root agent
-    // can `npm install` into the overlay (SHI-145).
+    // can `npm install` into the overlay (planning#147).
     if (config.overlaySpecs) {
       prepareOverlayDirs(config.overlaySpecs);
       for (const spec of config.overlaySpecs) {
@@ -958,7 +958,7 @@ export async function createContainer(
         // affects only this session — least privilege (no Privileged installer).
         // Gated on Tier C (egressProxy); unset otherwise so Tier A/B are unchanged.
         Sysctls: deps.egressProxy ? { "net.ipv4.conf.all.route_localnet": "1" } : undefined,
-        // docs/172 Gap 5 (SHI-97) — kernel-tier hardening, all env-gated
+        // docs/172 Gap 5 (planning#99) — kernel-tier hardening, all env-gated
         // default-OFF (see container-hardening.ts). With every flag unset this
         // is byte-for-byte the prior config: no Runtime override (Docker default
         // runc), SecurityOpt: ["no-new-privileges"], ReadonlyRootfs: false, no
@@ -1013,17 +1013,17 @@ export async function createContainer(
 
     sc.containerIp = networkInfo.IPAddress;
     sc.workerUrl = `http://${sc.containerIp}:${deps.workerPort}`;
-    // SHI-311 — bind the token to the base URL the transports key off. Done the
+    // planning#313 — bind the token to the base URL the transports key off. Done the
     // moment the URL is known, before anything can dial it.
     setWorkerAuthToken(sc.workerUrl, sc.workerToken);
 
-    // docs/172 Gap 1 (SHI-90) Tier A — install the default-deny egress firewall
+    // docs/172 Gap 1 (planning#92) Tier A — install the default-deny egress firewall
     // into the agent's netns via a privileged sidecar, BEFORE the container is
     // declared ready (no user turn has run yet, so the injected-agent surface
     // doesn't exist until after this point). Fail-closed: if the firewall can't
     // be installed we throw, and the catch below tears the container down rather
     // than run it with unrestricted egress. Gated on the flag → default no-op.
-    // docs/172 (SHI-90) — the browser global toggle / per-session override can
+    // docs/172 (planning#92) — the browser global toggle / per-session override can
     // turn containment OFF for a session ("Open mode — stop babysitting"); when
     // it does we skip the firewall install entirely. The composed extra-host
     // allowlist (operator extras + live MCP hosts + durable user allowlist) is
@@ -1076,12 +1076,12 @@ export async function createContainer(
       // session label so cleanupSessionDockerResources tears it down on destroy,
       // PLUS a distinct EGRESS_RESOLVER_LABEL so the compose pre-start stale-sweep
       // (killStaleContainers) doesn't mistake this long-lived sidecar for a stale
-      // compose container and SIGKILL it (docs/172 Bug-2 fix, SHI-90).
+      // compose container and SIGKILL it (docs/172 Bug-2 fix, planning#92).
       if (deps.egressDns) {
         const configB64 = buildResolverConfigB64({
           // Ops sessions additionally need their docker-socket-proxy compose
           // alias forwarded to Docker's embedded DNS — without it the Tier B
-          // resolver REFUSES DOCKER_HOST by name (SHI-90 Tier B host verification).
+          // resolver REFUSES DOCKER_HOST by name (planning#92 Tier B host verification).
           internalDomains: sessionInternalNames({ opsSession: config.opsSession }),
           extraDomains: egressCfg.extraHosts,
           ...(egressCfg.base ? { base: egressCfg.base } : {}),
@@ -1181,7 +1181,7 @@ export async function createContainer(
     // them — the agent container itself isn't parent-session-labeled, so the
     // explicit stop/remove around the cleanup is still required.
     deps.containers.delete(config.sessionId);
-    // SHI-311 — same reasoning as destroyContainer: the URL may already be
+    // planning#313 — same reasoning as destroyContainer: the URL may already be
     // registered (the throw can come after the IP was resolved), and this
     // container is going away.
     clearWorkerAuthToken(sc.workerUrl);
@@ -1272,7 +1272,7 @@ export async function cleanupSessionDockerResources(
         // 304 = already stopped, 409 = removal already in progress, 404 = already
         // gone — all safe to ignore, they're the outcome we wanted.
         //
-        // 404 is now *routine*, not exceptional (SHI-222): every orchestrator
+        // 404 is now *routine*, not exceptional (planning#224): every orchestrator
         // teardown stops the agent container, which fires a Docker `die`, which
         // fires the crash-site egress reap — so the reaper and this sweep race for
         // the same two sidecars on every healthy destroy. Whoever loses sees a 404.
@@ -1346,7 +1346,7 @@ export async function destroyContainer(
   if (!sc) return;
 
   sc.status = "stopping";
-  // SHI-311 — drop the token binding with the container. Bridge IPs are
+  // planning#313 — drop the token binding with the container. Bridge IPs are
   // recycled, so a stale entry would otherwise hand the previous container's
   // token to whatever lands on that address next.
   clearWorkerAuthToken(sc.workerUrl);
@@ -1442,7 +1442,7 @@ export function buildContainerConfig(
     // this session's state lives. Throws for a clone that isn't
     // `<sessionDir>/workspace`.
     //
-    // Deliberately NOT overridable (SHI-286). It used to accept an explicit
+    // Deliberately NOT overridable (planning#288). It used to accept an explicit
     // `sessionStateDir`, which no production caller ever passed and which the
     // overlay pre-stamp would now ignore: `preStampInstallMarker` derives the
     // marker's home from the clone path, so an override would mount

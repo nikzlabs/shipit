@@ -1,26 +1,26 @@
 ---
 title: Egress control for session containers (Gap 1)
 description: Default-deny outbound egress for session containers via a gateway middlebox — iptables floor, controlled DNS, and a transparent allowlisting proxy — delivered in one sequential PR.
-issue: https://linear.app/shipit-ai/issue/SHI-90
+issue: planning#92
 ---
 
 # Egress control for session containers
 
-This is the detailed design for **Gap 1** of [agent containment](./plan.md) (SHI-90):
+This is the detailed design for **Gap 1** of [agent containment](./plan.md) (planning#92):
 default-deny outbound network egress for session containers, so a prompt-injected
 agent cannot exfiltrate credentials (its own OAuth token, MCP tokens, the brokered
 GitHub PAT) to an arbitrary host. Per Anthropic's
 [How we contain Claude](https://www.anthropic.com/engineering/how-we-contain-claude),
 once approval friction is removed this is the load-bearing environment-layer defense.
 
-It depends on and composes with **SHI-129** (`docs/201-container-api-trust-boundary/`):
+It depends on and composes with **planning#131** (`docs/201-container-api-trust-boundary/`):
 that work default-denies the orchestrator API for container-origin requests, which is
 what makes egress *settings* (the global toggle, the allowlist) safe to mutate from the
 browser — the contained agent can't reach those routes to loosen its own containment.
 
 ## Why the current PR is not yet a real control
 
-The first cut (PR for SHI-90) injects `HTTP_PROXY`/`HTTPS_PROXY` into the container and
+The first cut (PR for planning#92) injects `HTTP_PROXY`/`HTTPS_PROXY` into the container and
 runs an allowlisting forward proxy in the orchestrator. That is a **policy engine without
 enforcement**: the env vars are a convention only cooperative clients honor. The actual
 adversary — an injected agent — opens a raw socket that ignores `HTTP_PROXY` and reaches
@@ -69,7 +69,7 @@ this design.
 
 ## Architecture: netns-sidecar enforcement (resolved)
 
-The agent container runs with `CapDrop: ["ALL"]` (no `NET_ADMIN`) and, since SHI-31, as a
+The agent container runs with `CapDrop: ["ALL"]` (no `NET_ADMIN`) and, since planning#33, as a
 non-root user — by design, and we keep it that way. So the firewall/DNS/proxy **cannot and
 must not** be administered *by* the agent. But the controls still apply *inside the agent's
 own network namespace* — installed from the outside by a trusted, orchestrator-launched
@@ -94,7 +94,7 @@ earlier sketch): it needs **no second network, no routing/default-gateway change
 cross-container attribution** — everything lives in one netns, so "the agent" and "the
 enforcement point" are the same kernel network stack. The agent still can't bypass it (no
 `NET_ADMIN` to flush rules; the loopback proxy + owner-match is the istio/cilium-init
-pattern), and it composes cleanly A→B→C as sidecars added to the same netns. SHI-31's
+pattern), and it composes cleanly A→B→C as sidecars added to the same netns. planning#33's
 non-root agent makes the owner-match exemption unambiguous (agent uid ≠ sidecar uid).
 
 Key properties:
@@ -188,7 +188,7 @@ substrate (the gateway container, the internal-network topology, the session att
 so splitting them across PRs would mean landing and reverting scaffolding. We therefore
 deliver **all three in one PR**, as a sequence of **self-contained commits — one per tier,
 each independently green** (build + tests) — so review and `git bisect` stay tractable even
-though the unit of *enablement* is the whole thing. The PR closes SHI-90; nothing claims
+though the unit of *enablement* is the whole thing. The PR closes planning#92; nothing claims
 egress is contained until Tier C lands. The Phase-2 identity-validating proxy remains a
 separate follow-up (it builds on the Tier C hook).
 
@@ -283,7 +283,7 @@ proxy launch omits the var → no identity scoping (Tier C host-allowlist behavi
 operator-global env, so every contained session currently gets the same rules. A per-session
 Settings editor would feed `durableRules` (the seam is in place).
 
-## Intra-session preview reachability (SHI-90 follow-up)
+## Intra-session preview reachability (planning#92 follow-up)
 
 Tier A's installer (`init-firewall.sh`) runs at **agent-container creation** and, for
 local destinations, allows only the agent's **default-gateway bridge subnet** (the
@@ -473,7 +473,7 @@ network `shipit-session-<shortId>` (`config.sessionId.slice(0, 12)`, created ear
   `network.connect`/`connectToNetwork` targets the short-id network (the only such calls
   target the full-id **compose** network).
 - This is **by design, not an oversight.** Keeping child containers off the agent's /
-  orchestrator's network is the SHI-135 isolation property (`docker-proxy-sanitize.ts`): a
+  orchestrator's network is the planning#137 isolation property (`docker-proxy-sanitize.ts`): a
   child on the orchestrator network would present an unknown IP that the API trust boundary
   would mis-classify as a trusted browser origin. The agent operates its children through
   the **Docker API proxy** (`DOCKER_HOST` → docker-socket-proxy), not by direct IP, so it
@@ -490,7 +490,7 @@ network kind.)
 
 ## Settings & UX (browser-only, SHI-129-protected)
 
-All egress configuration is mutated **only from the browser**. SHI-129's guard is
+All egress configuration is mutated **only from the browser**. planning#131's guard is
 default-deny per route: a route is reachable from a container only if it declares
 `config: { containerAccessible: true }`, so the egress settings routes are protected
 simply by **not** setting that flag — the contained agent cannot reach them to loosen its
@@ -589,7 +589,7 @@ Stored orchestrator-side alongside MCP servers / secrets.
     `pendingRestart` = `startedContained !== null && startedContained !== effectiveContained`.
     The route reads the live value via `deps.containerManager.get(sessionId)` — an in-memory
     record lookup, **not** the agent's netns — so the value stays on the browser-only egress
-    surface (SHI-129); no new container-reachable route. When pending, the dialog shows
+    surface (planning#131); no new container-reachable route. When pending, the dialog shows
     "Pending · applies on next container start".
   - **Restart reuses the existing lifecycle control.** "Restart to apply now" calls the
     existing `POST /api/sessions/:id/container/restart` (the same `services/recovery.ts`
@@ -611,7 +611,7 @@ Stored orchestrator-side alongside MCP servers / secrets.
 
 ## Allowlist composition
 
-Reuses `egress-allowlist.ts` (already merged on the SHI-90 branch):
+Reuses `egress-allowlist.ts` (already merged on the planning#92 branch):
 
 - Base list (`EGRESS_DEFAULT_ALLOWLIST`): agent APIs, `.github.com` / `.githubusercontent.com`,
   npm/yarn/pypi, and `.nodejs.org` (node-gyp downloads the Node headers tarball there to
@@ -641,7 +641,7 @@ as an operator default / fail-secure floor).
   + gateway attachment).
 - `egress-gateway.*` (new) — the middlebox: iptables/ipset setup, controlled resolver,
   transparent proxy. NET_ADMIN lives here, never in the agent container.
-- Intra-session preview reachability (SHI-90 follow-up, GH #1495) —
+- Intra-session preview reachability (planning#92 follow-up, GH #1495) —
   `docker/egress-sidecar/allow-subnet.sh` (the netns rule-adder),
   `allowEgressToSubnets` + `extractNetworkSubnets` (orchestrator-side, unit-tested in
   `egress-firewall-install.test.ts` / `egress-firewall.test.ts`), wired in
@@ -666,9 +666,9 @@ as an operator default / fail-secure floor).
   `useServerEvents.ts`.
 - Blocked-egress card — persisted transcript card (see CLAUDE.md side-channel-card rule):
   `chat-card-persistence.ts`, `chat-history.ts`, client `visual-elements.ts`.
-- `egress-orphan-reaper.ts` (SHI-222) — sidecar orphan cleanup; see below.
+- `egress-orphan-reaper.ts` (planning#224) — sidecar orphan cleanup; see below.
 
-## Sidecar lifecycle and orphan cleanup (SHI-222)
+## Sidecar lifecycle and orphan cleanup (planning#224)
 
 The Tier B resolver and Tier C proxy are launched with
 `NetworkMode: container:<agentContainerId>` — they have no network stack of their
@@ -814,7 +814,7 @@ escalation.
 
 - `anthropics/claude-code` `.devcontainer/init-firewall.sh` (iptables/ipset reference; the
   DNS-open tradeoff).
-- `docs/201-container-api-trust-boundary/` (SHI-129) — the browser↔container API boundary
+- `docs/201-container-api-trust-boundary/` (planning#131) — the browser↔container API boundary
   this relies on.
 - `SECURITY-MODEL.md` → "Agent and container containment" / "Known limitations".
 - [How we contain Claude](https://www.anthropic.com/engineering/how-we-contain-claude).

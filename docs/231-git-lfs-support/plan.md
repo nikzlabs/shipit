@@ -172,7 +172,7 @@ binary is present.
   N× cost. Deferred from this doc because it introduces a shared object store
   across sessions, with `git lfs prune` and cross-hardlink `chown` interactions
   that wanted their own design pass. **Now designed and implemented in
-  `docs/232-shared-lfs-object-store` (SHI-236)**, behind
+  `docs/232-shared-lfs-object-store` (planning#238)**, behind
   `SHIPIT_GIT_LFS_SHARED_STORE=1` — that doc resolves both concerns: kernel
   hardlink refcounting makes prune safe, and `.git/lfs/objects` data files are
   excluded from the ownership handback exactly as `.git/objects` already was.

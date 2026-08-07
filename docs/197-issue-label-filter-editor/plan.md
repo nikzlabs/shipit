@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-121
+issue: planning#123
 description: Filter the Issues list by label, and edit an issue's labels inline on its detail page.
 ---
 

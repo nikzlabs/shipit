@@ -401,7 +401,7 @@ export async function registerBootstrapRoutes(
         // no row left to reach them from. Signing back in goes through "Add
         // account", which creates a fresh row.
         //
-        // SHI-283 — it also takes the account away from the sessions pinned to
+        // planning#285 — it also takes the account away from the sessions pinned to
         // it (resident agent retired, per-session credential copy revoked), and
         // carries the running-turn guard the per-account disconnect has: never
         // rewrite credentials under a live agent. It throws before touching

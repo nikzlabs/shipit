@@ -21,7 +21,7 @@
  *
  * NOT related to `MAX_ISSUE_FREETEXT_CHARS` / `MAX_ISSUE_COMMENTS_CHARS` in
  * `shipit-issue.ts` — those deliberately clamp the *human-readable* issue
- * rendering as a context-stuffing defense (SHI-85 / docs/176) and are untouched.
+ * rendering as a context-stuffing defense (planning#87 / docs/176) and are untouched.
  */
 
 /** Writes handed to a stream that have not reported completion yet. */

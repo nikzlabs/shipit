@@ -1,5 +1,5 @@
 /**
- * SHI-295 — refuse the silent post-turn auto-push on a session whose pull
+ * planning#297 — refuse the silent post-turn auto-push on a session whose pull
  * request has already merged.
  *
  * ## The failure this exists to stop

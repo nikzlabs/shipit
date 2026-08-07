@@ -1,6 +1,6 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-152
-description: Bare issue references in chat/markdown prose (TRACKER-43, roadmap#SHI-319, planning#57) render as inline badges that open the in-app Issues viewer; on mobile the click also switches to the workspace panel.
+issue: planning#154
+description: Bare issue references in chat/markdown prose (TRACKER-43, planning#321, planning#57) render as inline badges that open the in-app Issues viewer; on mobile the click also switches to the workspace panel.
 ---
 
 # Inline issue badges for bare issue references
@@ -29,7 +29,7 @@ lookup id (`Tracker.getIssue(key)`). This feature closes that gap the same way
   chat / docs / PR-body / tooltip markdown renders as a small monospace pill in
   the accent color. Clicking it opens the issue in the inline Issues viewer.
   Both of docs/248 req 10's prose-legible forms are recognized: the **bare key**
-  (`TRACKER-43`) and the **name form** (`roadmap#SHI-319`, `planning#57`).
+  (`TRACKER-43`) and the **name form** (`planning#321`, `planning#57`).
 - **The badge does not grow the line height.** It renders at `text-[0.85em]`
   with `leading-none` and horizontal-only padding, so it stays within the
   surrounding prose line box (an explicit requirement — badges must not push
@@ -55,12 +55,12 @@ fail-closed rules: a reference naming no declared destination, or matching more
 than one, must never resolve to a guess.
 
 Prose was the last surface that hadn't been brought onto that resolver. The
-matcher here predated the name form, so `roadmap#SHI-319` badged only its
-`SHI-319` tail and left `roadmap#` outside the pill, and `planning#57` — the form
+matcher here predated the name form, so `planning#321` badged only its
+`planning#321` tail and left `roadmap#` outside the pill, and `planning#57` — the form
 ShipIt's own references take after docs/247's migration — matched nothing at all.
 The gate was Linear-team-specific (compare the token's prefix against the
 connected workspace's bound team key), which had no answer for a GitHub name
-form and reproduced req 11's ambiguity rule by hand. SHI-323 closed both halves:
+form and reproduced req 11's ambiguity rule by hand. planning#325 closed both halves:
 the matcher learned the name form, and the gate became `resolveIssueRef` over the
 declared destinations — the same shared implementation the markdown-href branch,
 the doc `issue:` chips and the `shipit issue` shim already used. docs/248's own
@@ -79,13 +79,13 @@ now has no gate logic of its own.
    `linear.app/.../issue/TRACKER-43` URL is left for the tracker-URL branch.
    Fenced `code` blocks stay verbatim.
    - `ISSUE_TOKEN_RE` is an **ordered** alternation: the **name form** first
-     (`<name>#<SHI-304|57>`, mirroring `NAMED_REF_RE` in `shared/issue-ref.ts`),
+     (`<name>#<planning#306|57>`, mirroring `NAMED_REF_RE` in `shared/issue-ref.ts`),
      the **bare uppercase key** second. The order is what makes a badge cover
      the whole reference — the bare-key branch would otherwise take just the
-     `SHI-319` tail of `roadmap#SHI-319`. The name form's lookbehind also
+     `planning#321` tail of `planning#321`. The name form's lookbehind also
      rejects a leading `/`, so a GitHub short form (`owner/repo#42`) isn't
      half-matched as `repo#42`; the bare-key branch's lookbehind is unchanged
-     (it still permits a leading `#`, so `issue #SHI-3` keeps badging).
+     (it still permits a leading `#`, so `issue #planning#5` keeps badging).
 2. `react-markdown`'s default `urlTransform` would strip the unknown
    `shipit-issue:` scheme to `""`, losing the token — so `message-markdown.tsx`
    passes a small `urlTransform` that passes that scheme through and delegates

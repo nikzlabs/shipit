@@ -3,7 +3,7 @@ import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler } from "./types.js";
 
 /**
- * docs/207 / SHI-153 — an action checklist card (the agent ran `propose_actions`).
+ * docs/207 / planning#155 — an action checklist card (the agent ran `propose_actions`).
  * Append a marker chat message carrying the full payload so it renders inline
  * where the actions were proposed. The card has no lifecycle and no client store
  * (it's an immutable, reusable message composer), so — like the issue-ref card —

@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-180
+issue: planning#182
 title: Persistent session scratch (non-git, survives container restart)
 description: A host-backed per-session scratch mount that persists across container teardown, so present artifacts (and other non-git files) survive a restart without being committed to git.
 ---
@@ -213,7 +213,7 @@ mount layer, but it's already yes at the storage layer**:
   are `Subpath`s of the *same* workspace named volume. The bytes already live in
   one place; there is nothing to consolidate.
 - **Mount layer — must stay two mounts.** `/uploads` is `:ro` deliberately
-  (docs/172 Gap 6 / SHI-45): the agent must not write or delete the *user's*
+  (docs/172 Gap 6 / planning#47): the agent must not write or delete the *user's*
   uploaded files — a prompt-injection containment boundary. `/persist` is `:rw`
   (the agent's *own* scratch). A single mount can't be both read-only and
   writable. Folding them means either dropping uploads to `:rw` (a security

@@ -1,5 +1,5 @@
 /**
- * Issue tracker routes (docs/170 — inline tracker Issues tab; SHI-80).
+ * Issue tracker routes (docs/170 — inline tracker Issues tab; planning#82).
  *
  * These are global `/api/...` routes, not `/api/sessions/:id/...`, because they
  * predate per-session tracker scoping. Since docs/248 that scoping is what they
@@ -499,7 +499,7 @@ export async function registerIssueRoutes(
 
   // GET /api/sessions/:id/issue/labels?tracker= — the tracker's pickable label
   // set (name + color), so the agent can discover valid `--label` values up front
-  // instead of guessing and tripping the create/edit rejection (SHI-199). The
+  // instead of guessing and tripping the create/edit rejection (planning#201). The
   // session-scoped sibling of the UI's `GET /api/issue/labels`: GitHub binds to
   // this session's repo, Linear is workspace-wide. A discovery read — emits NO
   // transcript card (label config isn't an issue the user would navigate to).
@@ -527,7 +527,7 @@ export async function registerIssueRoutes(
 
   // GET /api/sessions/:id/issue/statuses?tracker= — the tracker's assignable
   // statuses (name + type + color), so the agent can pick a valid `issue status`
-  // target without first `view`-ing an issue (SHI-199). Same session-scoping +
+  // target without first `view`-ing an issue (planning#201). Same session-scoping +
   // no-card contract as the labels route above.
   app.get<{ Params: { id: string }; Querystring: { tracker?: string } }>(
     "/api/sessions/:id/issue/statuses",
@@ -552,9 +552,9 @@ export async function registerIssueRoutes(
   );
 
   // GET /api/sessions/:id/issue/comments?tracker=&id= — read an issue's comment
-  // thread (SHI-137). The read-only sibling of the comment WRITE route below:
+  // thread (planning#139). The read-only sibling of the comment WRITE route below:
   // brokered through the orchestrator so the tracker token never enters the
-  // container, container-accessible + own-session scoped by the SHI-129 guard.
+  // container, container-accessible + own-session scoped by the planning#131 guard.
   // It emits NO transcript card — the agent reaches comments via
   // `shipit issue view --comments`, whose `view` leg already surfaced the
   // jump-to-issue card, so a second card here would just duplicate it.
@@ -707,7 +707,7 @@ export async function registerIssueRoutes(
     reply.code(500).send({ error: `${fallback}: ${getErrorMessage(err)}` });
   }
 
-  // ---- Write idempotency (SHI-112) ----------------------------------------
+  // ---- Write idempotency (planning#114) ----------------------------------------
   //
   // The `shipit issue {comment,edit,status,assign,create}` write relay is
   // re-driven verbatim when a crashed turn (exit 137 / OOM) is retried or the
@@ -744,7 +744,7 @@ export async function registerIssueRoutes(
   }
 
   /**
-   * Emit + persist the provenance card for one label creation (SHI-230) — used
+   * Emit + persist the provenance card for one label creation (planning#232) — used
    * by the standalone `label create` route and by `--create-missing-labels` on
    * create/edit (one card per minted label, so a flag-driven creation is as
    * visible and undoable as an explicit one). The card reuses the issue-write
@@ -837,7 +837,7 @@ export async function registerIssueRoutes(
       return;
     }
     // Labels minted by --create-missing-labels each get their own card, BEFORE
-    // the main write card — the creation happened first (SHI-230).
+    // the main write card — the creation happened first (planning#232).
     for (const creation of outcome.labelCreations ?? []) {
       emitLabelCreationCard(runner, sessionId, trackerId, creation, trackerName);
     }
@@ -872,7 +872,7 @@ export async function registerIssueRoutes(
       { chatHistoryManager: deps.chatHistoryManager, sessionId },
     );
     // Surface the resolved labels + priority so `shipit issue ... --json` reflects
-    // what was actually applied (SHI-92), not just the title/identifier.
+    // what was actually applied (planning#94), not just the title/identifier.
     const result = {
       ok: true,
       cardId: card.cardId,
@@ -883,10 +883,10 @@ export async function registerIssueRoutes(
       // colored read shape back to names here.
       labels: (outcome.issue.labels ?? []).map((l) => l.name),
       priority: outcome.issue.priority.label,
-      // Reflect the resolved parent (SHI-206) so `--json` shows the nesting that
+      // Reflect the resolved parent (planning#208) so `--json` shows the nesting that
       // was applied; absent when the issue is top-level.
       ...(outcome.issue.parentIdentifier ? { parent: outcome.issue.parentIdentifier } : {}),
-      // Labels minted on the fly by --create-missing-labels (SHI-230), so the
+      // Labels minted on the fly by --create-missing-labels (planning#232), so the
       // shim can report exactly what was created vs merely applied.
       ...(outcome.labelCreations && outcome.labelCreations.length > 0
         ? { createdLabels: outcome.labelCreations.map((c) => c.label.name) }
@@ -897,7 +897,7 @@ export async function registerIssueRoutes(
   }
 
   // POST /api/sessions/:sessionId/issue/create
-  //   { tracker, title, body, labels?, priority?, createMissingLabels? } (docs/187, SHI-92, SHI-230)
+  //   { tracker, title, body, labels?, priority?, createMissingLabels? } (docs/187, planning#94, planning#232)
   app.post<{
     Params: { sessionId: string };
     Body: { tracker?: string; trackerName?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean };
@@ -928,7 +928,7 @@ export async function registerIssueRoutes(
   );
 
   // POST /api/sessions/:sessionId/issue/label/create { tracker, name, color?, description? }
-  //   (SHI-230) — mint a tracker label so `--label` can apply it. Do-then-surface
+  //   (planning#232) — mint a tracker label so `--label` can apply it. Do-then-surface
   //   like every other write: created immediately, provenance card with Undo
   //   (undo deletes the label if it's still unused). The one write that targets
   //   tracker CONFIG rather than an issue, so it bypasses handleWrite (no
@@ -1019,7 +1019,7 @@ export async function registerIssueRoutes(
   );
 
   // POST /api/sessions/:sessionId/issue/comment/edit { tracker, id, commentId, body }
-  //   (SHI-86) — rewrite a comment the agent posted. `id` (the issue) is named
+  //   (planning#88) — rewrite a comment the agent posted. `id` (the issue) is named
   //   alongside `commentId` because a comment id is backend-global; the adapter
   //   checks the pairing and refuses a comment ShipIt did not author.
   app.post<{
@@ -1039,7 +1039,7 @@ export async function registerIssueRoutes(
       // edits to different comments on the same issue would collapse into one
       // — the second silently dropped, with the first's card returned as if it
       // had succeeded. Hashing `{commentId, body}` keeps replay-of-the-same-edit
-      // absorbed (SHI-112) while keeping distinct comments distinct.
+      // absorbed (planning#114) while keeping distinct comments distinct.
       const dedup = { verb: "comment-edit", content: JSON.stringify({ commentId, body }) };
       return handleWrite(request.params.sessionId, tracker, trackerName, id, reply, "Failed to edit comment", dedup, (github) =>
         editCommentForTracker(credentialStore, tracker, id, commentId, body, trackerFetchImpl, github),
@@ -1048,7 +1048,7 @@ export async function registerIssueRoutes(
   );
 
   // POST /api/sessions/:sessionId/issue/edit
-  //   { tracker, id, title?, body?, labels?, priority?, createMissingLabels? } (SHI-92, SHI-230)
+  //   { tracker, id, title?, body?, labels?, priority?, createMissingLabels? } (planning#94, planning#232)
   app.post<{
     Params: { sessionId: string };
     Body: { tracker?: string; trackerName?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean };

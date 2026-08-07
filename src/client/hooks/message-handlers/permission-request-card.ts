@@ -4,7 +4,7 @@ import { usePermissionStore } from "../../stores/permission-store.js";
 import type { Handler } from "./types.js";
 
 /**
- * docs/193 / SHI-112 — the inline permission-request card. Seed the payload into
+ * docs/193 / planning#114 — the inline permission-request card. Seed the payload into
  * the permission store (keyed by requestId so a later resolved update can swap
  * it in place) and append a marker chat message so it renders inline where the
  * agent's action was gated.

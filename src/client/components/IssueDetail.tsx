@@ -82,7 +82,7 @@ export interface IssueDetailProps {
   commentsError: string | null;
   /**
    * Tracker-native id of a comment to scroll to + highlight once the thread
-   * lands (SHI-103) — e.g. the comment the agent just posted, opened from its
+   * lands (planning#105) — e.g. the comment the agent just posted, opened from its
    * provenance card. Consumed (cleared via `onAnchorConsumed`) after anchoring.
    */
   anchorCommentId?: string;
@@ -387,7 +387,7 @@ function IssueCommentItem({
   registerRef,
 }: {
   comment: TrackerComment;
-  /** Briefly flash the row when it's the anchored comment (SHI-103). */
+  /** Briefly flash the row when it's the anchored comment (planning#105). */
   highlighted?: boolean;
   /** Register the row element so the thread can scroll it into view. */
   registerRef?: (el: HTMLLIElement | null) => void;
@@ -445,7 +445,7 @@ function IssueComments({
   const itemRefs = useRef(new Map<string, HTMLLIElement>());
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
 
-  // Anchor to a specific comment once the thread lands (SHI-103). Fires when
+  // Anchor to a specific comment once the thread lands (planning#105). Fires when
   // the anchor and the fetched thread are both present; scrolls the row into
   // view, flashes it, and consumes the anchor (whether or not the comment is in
   // the list — a stale/paged id mustn't keep re-firing on every thread update).

@@ -99,7 +99,7 @@ export async function postTurnCommit(
   });
 
   /**
-   * SHI-295 — the single auto-push site for this turn, gated on the merged-branch
+   * planning#297 — the single auto-push site for this turn, gated on the merged-branch
    * guard (`services/merged-push-guard.ts`, which carries the full rationale).
    *
    * A merged session's branch has no open pull request and, on most repos, no
@@ -157,7 +157,7 @@ export async function postTurnCommit(
     const firstLine = opts.turnSummary.split("\n")[0]?.slice(0, 120) || "Agent turn";
     const { commitHash, conflictedFiles, rebaseInProgress, secretFindings } = await git.autoCommit(firstLine);
     if (secretFindings.length > 0 && opts.sessionId) {
-      // docs/213 / SHI-315 — the commit was refused because the staged diff
+      // docs/213 / planning#317 — the commit was refused because the staged diff
       // carried a likely secret. `recordSecretBlock` owns all three responses:
       // the persisted redacted notice (as before), the sticky banner state, and
       // a bounded remediation turn so the agent learns its work did not land.
@@ -173,7 +173,7 @@ export async function postTurnCommit(
         secretFindings,
       );
     }
-    // SHI-315 — the scan actually ran and came back clean, so any standing block
+    // planning#317 — the scan actually ran and came back clean, so any standing block
     // is over. Deliberately NOT cleared on the conflict/rebase branch:
     // `autoCommit` returns there BEFORE staging or scanning, so a secret still in
     // the tree would go unscanned and the banner would clear on a lie. Only "no

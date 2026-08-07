@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-177
+issue: planning#179
 title: Tailscale MagicDNS app + sslip.io previews (preview-host override)
 description: Serve the app/WS on the node's native MagicDNS name while routing only preview iframes through sslip.io, self-healing on tailnet IP changes.
 ---

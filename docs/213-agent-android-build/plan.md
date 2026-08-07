@@ -1,6 +1,6 @@
 ---
 description: Make ShipIt build, test & preview Android apps for any repo — including web/Android monorepos — with the build toolchain baked into the session image (the agent runs Gradle, including the repo's own snapshot tests) and the running app as a user-defined emulator Compose service. No new shipit.yaml fields.
-issue: https://linear.app/shipit-ai/issue/SHI-170
+issue: planning#172
 ---
 
 # 213 — Android build, test & preview as a ShipIt platform capability
@@ -33,11 +33,11 @@ Android side had none.)*
 **Dogfood target — now `android-snapshot-test/`.** The `android/` wrapper was a thin **WebView shell**:
 `layoutlib` can't render a `WebView` and it had no native UI, so it could never validate the snapshot,
 emulator, or interactive-control parts of the loop. It has since been **removed entirely** (superseded by
-the installable PWA — [docs/222](../222-pwa-installable/plan.md), SHI-208; see
+the installable PWA — [docs/222](../222-pwa-installable/plan.md), planning#210; see
 [docs/116](../116-android-webview-app/plan.md)). The canonical Android target in this repo is now
 **`android-snapshot-test/`**, a real native Compose app that exercises every tier — `assembleDebug`, JVM
 unit tests, Paparazzi snapshots, and (via a launchable `MainActivity`) install + launch on the emulator.
-`android-overlay-test/` covers the off-matrix SDK overlay. A future SHI-205 template can adopt these as its
+`android-overlay-test/` covers the off-matrix SDK overlay. A future planning#207 template can adopt these as its
 starting fixtures.
 
 ## Recommendation
@@ -324,7 +324,7 @@ Each phase is shippable on its own and ordered by value-per-effort.
 - **Phase 2 — snapshot tests as the visual signal.** Confirm the baked `layoutlib` runtime runs the repo's
   Paparazzi/Roborazzi tests headlessly; document `record`/`verify` in the skill; surface rendered/diff PNGs
   inline (`present` / PR artifact). Adds visual verification with no emulator and no platform harness. (A
-  native test app from the SHI-205 template exercises this end to end.)
+  native test app from the planning#207 template exercises this end to end.)
 - **Phase 3 — running-app enabler.** The narrowly-scoped `/dev/kvm` `devices:` allowance in the compose
   generator + the canonical emulator Compose recipe in `compose.md` and the skill. Confirm host KVM.
 - **Phase 4 — runtime debug, drive & interactive preview (mostly free).** With the emulator service up, the
@@ -348,7 +348,7 @@ green in a fresh session). What landed and where:
   `JAVA_HOME` mirrored like `PLAYWRIGHT_BROWSERS_PATH`, with a guard test (`container-lifecycle.test.ts`).
 - **Egress allowlist** (`egress-allowlist.ts` `EGRESS_DEFAULT_ALLOWLIST`): added the JVM/Android artifact
   registries — `.gradle.org`, `dl.google.com` (exact, *not* `.google.com`), `maven.google.com`,
-  `.maven.apache.org`, `.maven.org`, `.sonatype.org`. The default-deny firewall (SHI-90) otherwise blocks
+  `.maven.apache.org`, `.maven.org`, `.sonatype.org`. The default-deny firewall (planning#92) otherwise blocks
   Gradle dependency resolution (`UnknownHostException`), so the baked toolchain couldn't build without these
   — discovered during end-to-end verification. Read-only artifact CDNs, same posture as the npm/pypi entries.
 - **Gradle wrapper** committed under `android/` (`gradlew`, `gradlew.bat`, `gradle/wrapper/*`) pinned to 8.7.
@@ -356,7 +356,7 @@ green in a fresh session). What landed and where:
   resolves via the `.gradle.org` allowlist entry; the baked `gradle` avoids it entirely.
 - **Agent surfacing**: `src/server/shipit-docs/android.md` (baked into every image at `/shipit-docs/` — the
   platform-global reference that reaches *any* repo) + the `.claude/skills/android-build` skill (covers
-  ShipIt's own `android/` dogfood; the SHI-205 template / a future platform-injection step distributes it to
+  ShipIt's own `android/` dogfood; the planning#207 template / a future platform-injection step distributes it to
   user repos). `environment.md` + the docs `README.md` index updated.
 - **Phase 2** is documentation over the same baked toolchain: `android.md` + the skill carry the
   `record`/`verify` snapshot loop and the **read-the-diff-PNG → `present` it** habit. No new orchestrator
@@ -389,13 +389,13 @@ post-deploy on the new session-worker image.
 
 ## Relationship to other work
 
-- **SHI-53 / doc 116 (the WebView wrapper) is retired.** The wrapper and its release pipeline were removed;
-  the installable **PWA** ([docs/222](../222-pwa-installable/plan.md), SHI-208) supersedes it. That removal
+- **planning#55 / doc 116 (the WebView wrapper) is retired.** The wrapper and its release pipeline were removed;
+  the installable **PWA** ([docs/222](../222-pwa-installable/plan.md), planning#210) supersedes it. That removal
   does **not** affect this capability: this doc is the *platform* build/test/preview capability for **any**
   Android repo, and it never depended on the wrapper — the wrapper was only a convenient (and, being a
   WebView shell, quite limited) dogfood target. `android-snapshot-test/` replaces it in that role, and is
   strictly better: it can exercise snapshots and the emulator, which the wrapper never could.
-- Tracked by **SHI-170**, under umbrella **SHI-204**; sibling **SHI-205** = an Android project template for
+- Tracked by **planning#172**, under umbrella **planning#206**; sibling **planning#207** = an Android project template for
   new repos (which can adopt the in-repo fixtures as its starting point).
 - The API-35 edge-to-edge work that originally motivated Phase 1/2 applied to the wrapper and is moot now
   that it's removed; the capability itself stands on its own.

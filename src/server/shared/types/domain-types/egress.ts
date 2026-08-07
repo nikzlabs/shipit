@@ -1,4 +1,4 @@
-// ---- Egress settings (docs/172 / SHI-90) ----
+// ---- Egress settings (docs/172 / planning#92) ----
 
 /**
  * Global egress containment settings surfaced to the browser Settings panel.
@@ -18,7 +18,7 @@ export interface EgressSettings {
    * this is false the UI must warn ("Contained — NOT enforced on this deployment")
    * rather than show a reassuring green state: the policy says contain, but a
    * session would fail closed (or, if disabled, run open) instead of being
-   * contained. Distinguishes policy from enforcement (docs/172, SHI-90).
+   * contained. Distinguishes policy from enforcement (docs/172, planning#92).
    */
   enforcementActive: boolean;
 }

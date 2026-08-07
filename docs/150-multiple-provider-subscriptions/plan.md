@@ -1,6 +1,6 @@
 ---
 description: Allow multiple subscription accounts for the same agent provider and automatically fail over when the active subscription is exhausted.
-issue: https://linear.app/shipit-ai/issue/SHI-56
+issue: planning#58
 ---
 
 # 150 — Multiple provider subscriptions and quota failover
@@ -296,7 +296,7 @@ failure (`routeFromSelection`), so no preflight turns that into a clean refusal
 for an already-pinned session.
 
 **The same removal on the sign-out path
-([SHI-283](https://linear.app/shipit-ai/issue/SHI-283)):** provider-wide sign-out
+(planning#285):** provider-wide sign-out
 (`DELETE /api/auth/api-key`, `DELETE /api/codex-auth`) had the same defect at a
 different entry point — `ProviderAccountManager.signOutProvider` erased every
 account's *source* credentials and rows but never the per-session copies, so

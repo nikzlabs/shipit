@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-272
+issue: planning#274
 title: Agent interface SDK
 description: Let JavaScript in service previews and presented artifacts compose and send messages to the agent that owns the session.
 ---

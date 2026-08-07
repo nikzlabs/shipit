@@ -1,4 +1,4 @@
-# Egress firewall sidecar — docs/172-agent-containment Gap 1 (SHI-90).
+# Egress firewall sidecar — docs/172-agent-containment Gap 1 (planning#92).
 #
 # A tiny privileged image the orchestrator runs in the agent container's network
 # namespace (`--network container:<agent> --cap-add NET_ADMIN`). One image, three

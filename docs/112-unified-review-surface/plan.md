@@ -1,6 +1,6 @@
 
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-240
+issue: planning#242
 description: One review surface for files and design docs — anchored comments, drafts per (session, file), send → prompt → history.
 ---
 # 112 — Unified Review Surface

@@ -1,6 +1,6 @@
 /**
  * EgressPromptCard — inline allow-once card for a blocked egress host (docs/172,
- * SHI-90, Tier C).
+ * planning#92, Tier C).
  *
  * Rendered at the chat position where the Tier C SNI proxy denied a connection
  * to a non-allowlisted host. Offers the user three choices:

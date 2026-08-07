@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-124
+issue: planning#126
 description: Repository file references — explicit markdown links and bare paths in prose (e.g. issue bodies) — open the in-app file preview modal with line jumping, instead of navigating to a broken session URL.
 ---
 

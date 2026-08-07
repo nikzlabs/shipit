@@ -68,7 +68,7 @@ with a real agent turn. Nothing outstanding.
       exists and does the rest.
 - [x] Shared with the WS path rather than reimplemented:
       `services/materialize-runner.ts` holds the archived guard, the agent
-      reconciliation and the SHI-179 workspace restore; `activateSession` and
+      reconciliation and the planning#181 workspace restore; `activateSession` and
       the dispatch route both call it.
 - [x] Checked the other `/agent/dispatch` callers before relaxing the 404. The
       only ones are client buttons (`client/utils/dispatch-agent-message.ts` →

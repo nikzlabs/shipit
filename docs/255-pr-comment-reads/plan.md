@@ -1,5 +1,5 @@
 ---
-issue: roadmap#SHI-328
+issue: planning#330
 title: Reading PR comments through the gh shim — design
 description: How the shim, the agent-ops broker, and the orchestrator surface PR conversation reads.
 ---
@@ -125,7 +125,7 @@ finding (one whose code has since moved) would render as a bare filename.
 
 Comment bodies, review summaries, and diff hunks are authored by whoever can
 comment on the PR — on a public repo, anyone. The plain `--comments` rendering
-therefore goes through the SHI-98 envelope (`shared/untrusted-input.ts`, new
+therefore goes through the planning#100 envelope (`shared/untrusted-input.ts`, new
 `pr` source), size-capped, exactly as the `shipit issue` shim treats issue text.
 The `--json` output stays structured: it is already unambiguously data.
 

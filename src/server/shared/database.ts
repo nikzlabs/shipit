@@ -506,7 +506,7 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN pinned_at TEXT");
   },
-  // docs/193 / SHI-112 — persist sensitive-action permission-request cards (and
+  // docs/193 / planning#114 — persist sensitive-action permission-request cards (and
   // their approved/denied/expired terminal state) so they survive a session
   // switch / full reload. The card arrives off the agent-event stream (the
   // PermissionBroker's `agent_permission_request` broadcast) and is recorded
@@ -607,7 +607,7 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN ai_review TEXT");
   },
-  // docs/172 / SHI-90 — persist Tier C egress allow-once cards (and their
+  // docs/172 / planning#92 — persist Tier C egress allow-once cards (and their
   // allowed-once / added / denied terminal state) so they survive a session
   // switch / full reload. The card arrives off the agent-event stream (the SNI
   // proxy's deny → orchestrator decision endpoint) and is recorded in-band via
@@ -616,7 +616,7 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN egress_prompt TEXT");
   },
-  // docs/172 / SHI-90 — durable egress allowlist + containment settings. The
+  // docs/172 / planning#92 — durable egress allowlist + containment settings. The
   // Tier A/B/C enforcement was per-session in-memory (allow-once) and read its
   // allowlist only from env + the live credential store; this makes the user's
   // "Add to allowlist" decisions and the global containment toggle survive a
@@ -674,7 +674,7 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_presentations_session ON presentations(session_id);
     `);
   },
-  // docs/207 / SHI-153 — persist "action checklist" cards so they survive a
+  // docs/207 / planning#155 — persist "action checklist" cards so they survive a
   // session switch / full reload. The card arrives off the agent-event stream
   // (the `propose_actions` tool's HTTP relay) and is recorded in-band via
   // emitChatCard; without this column the inline card renders live but vanishes
@@ -761,7 +761,7 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE repos ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0");
   },
-  // docs/233 (SHI-241) — persist the inline "session report" card so a report
+  // docs/233 (planning#243) — persist the inline "session report" card so a report
   // pushed from a child/sibling survives a session switch / full reload. The
   // card is appended to the RECIPIENT's history from an HTTP relay that fires
   // outside any of the recipient's turns, so without this column it would render
@@ -821,7 +821,7 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN session_renamed TEXT");
   },
-  // docs/213 / SHI-315 — sticky "auto-commit blocked by the secret scanner"
+  // docs/213 / planning#317 — sticky "auto-commit blocked by the secret scanner"
   // state, as JSON (`SessionSecretBlock`). Persisted rather than kept on the
   // runner because the runner dies with the idle container: the block outlives
   // it (the credential is in the working tree), so the warning has to as well.

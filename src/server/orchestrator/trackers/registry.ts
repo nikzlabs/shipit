@@ -1,5 +1,5 @@
 /**
- * Declared-tracker registry (docs/170, SHI-80; reworked by docs/248).
+ * Declared-tracker registry (docs/170, planning#82; reworked by docs/248).
  *
  * Holds the set of trackers a session can reach and drives the Issues tab's
  * sub-tabs. Under requirement 1 that set is **exactly what the session's

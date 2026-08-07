@@ -1,5 +1,5 @@
 // Tests for the Tier C SNI proxy. Focus: Phase-2 SNI-scoped identity validation
-// (docs/172, SHI-90) and the supporting allowlist/SNI-peek primitives. These are
+// (docs/172, planning#92) and the supporting allowlist/SNI-peek primitives. These are
 // pure unit tests — no netns, no iptables — plus one end-to-end peekSNI test over
 // a real loopback TLS handshake.
 package main

@@ -11,7 +11,7 @@
  * forwards it to the orchestrator's session-scoped `/api/sessions/:id/…` routes
  * and pipes the response back 1:1, holding no state of its own. (The tools that
  * genuinely need a worker — `present`, `permission_prompt`, `ask` — are served
- * by the worker itself and are NOT in scope here; they remain SHI-303.) So the
+ * by the worker itself and are NOT in scope here; they remain planning#305.) So the
  * only thing standing between local mode and a working `gh` is something that
  * accepts those paths and knows which session is asking.
  *
@@ -37,7 +37,7 @@
  * listening on its own loopback port; the shim is pointed at it through
  * `SHIPIT_AGENT_OPS_URL` in that session's spawn env. The session is therefore
  * a property of the LISTENER, not of the request, which is what the worker's
- * broker guarantees via its `SESSION_ID` env and what SHI-303's sketch (mount
+ * broker guarantees via its `SESSION_ID` env and what planning#305's sketch (mount
  * `/agent-ops` on the orchestrator keyed by a path segment) would have given up.
  *
  * Honest scope of that guarantee: it makes the sanctioned path session-bound.

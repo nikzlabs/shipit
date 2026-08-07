@@ -1,5 +1,5 @@
 /**
- * Egress decision API route (docs/172 Gap 1, SHI-90 — Tier C allow-once).
+ * Egress decision API route (docs/172 Gap 1, planning#92 — Tier C allow-once).
  *
  * Surface:
  *   GET /api/egress/decision?host=<sni>&session=<sessionId>
@@ -102,7 +102,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
   // Whether this deployment can actually ENFORCE containment (enforcement on +
   // sidecar image configured). Resolved once at registration — it's a fixed
   // function of the process env. The honest signal the browser uses to
-  // distinguish containment policy from enforcement (docs/172, SHI-90).
+  // distinguish containment policy from enforcement (docs/172, planning#92).
   const enforcementActive = deps.egressEnforcementActive ?? false;
 
   // The containment a session's LIVE container was actually started with — the
@@ -110,15 +110,15 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
   // running container exists (nothing plumbed to diff against, nothing to
   // restart). Reads the in-memory container record (the egress sidecars are a
   // creation-time topology choice recorded there), never the agent's netns, so
-  // this stays on the browser-only surface (SHI-129).
+  // this stays on the browser-only surface (planning#131).
   const liveContained = (sessionId: string): boolean | null => {
     const sc = deps.containerManager?.get(sessionId);
     if (sc?.status !== "running") return null;
     return sc.egressContainedAtStart ?? null;
   };
 
-  // ---- Browser-only egress settings (docs/172, SHI-90) ------------------
-  // NO `containerAccessible` flag: SHI-129's default-deny keeps the contained
+  // ---- Browser-only egress settings (docs/172, planning#92) ------------------
+  // NO `containerAccessible` flag: planning#131's default-deny keeps the contained
   // agent from reaching these to loosen its own containment. Registered only
   // when a store is wired (test setups without egress can omit it).
   if (store) {

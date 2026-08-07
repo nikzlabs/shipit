@@ -106,7 +106,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     egressAllowlistStore, credentialStore, runtimeMode, isTestMode, stateDir, sessionManager,
   } = mgrs;
 
-  // ---- Egress containment config resolver (docs/172, SHI-90) ----
+  // ---- Egress containment config resolver (docs/172, planning#92) ----
   // The single seam that turns the durable allowlist store + the live MCP
   // credential store + operator env extras into a per-session egress decision at
   // container start: whether to contain the session (global toggle / per-session

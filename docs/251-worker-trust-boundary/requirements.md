@@ -1,6 +1,6 @@
-# Requirements — session-worker trust boundary (SHI-311)
+# Requirements — session-worker trust boundary (planning#313)
 
-Source: SHI-311, filed after a cross-agent review of PR #1975 (docs/250) surfaced it.
+Source: planning#313, filed after a cross-agent review of PR #1975 (docs/250) surfaced it.
 The finding is pre-existing and unrelated to that change; it affects the whole
 `/agent-ops/*` surface.
 

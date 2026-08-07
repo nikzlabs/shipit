@@ -46,7 +46,7 @@ export interface MessageCardCallbacks {
     identifier: string;
     title?: string;
     url?: string;
-    /** Comment to scroll to + highlight once the thread lands (SHI-103). */
+    /** Comment to scroll to + highlight once the thread lands (planning#105). */
     anchorCommentId?: string;
   }) => void;
   /** Returns whether the message actually reached the wire (see `sendUserMessage`). */
@@ -223,7 +223,7 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/172 / SHI-90 — egress allow-once card. Carries no chat text of its
+  // docs/172 / planning#92 — egress allow-once card. Carries no chat text of its
   // own; render the inline `EgressPromptCard` (which reads its payload +
   // phase from the egress-prompt store) and skip the bubble path.
   if (msg.egressPrompt) {
@@ -236,7 +236,7 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/193 / SHI-112 — permission-request card. Carries no chat text of
+  // docs/193 / planning#114 — permission-request card. Carries no chat text of
   // its own; render the inline `PermissionRequestCard` (which reads its
   // payload + phase from the permission store) and skip the bubble path.
   if (msg.permissionPrompt) {
@@ -275,7 +275,7 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/207 / SHI-153 — action checklist card. Carries no chat text of
+  // docs/207 / planning#155 — action checklist card. Carries no chat text of
   // its own; renders the interactive `ActionChecklistCard` straight from the
   // message payload (no store, no lifecycle). Submit reuses the same
   // follow-up sender as the rest of the chat (queue-aware, one message →

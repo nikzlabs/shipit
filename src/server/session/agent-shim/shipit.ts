@@ -473,7 +473,7 @@ const SESSION_HANDLERS: Record<
   wait: handleSessionWait,
   archive: handleSessionArchive,
   "notify-on-merge": handleSessionNotifyOnMerge,
-  // docs/233 (SHI-241) — the upward channel. Every subcommand above operates
+  // docs/233 (planning#243) — the upward channel. Every subcommand above operates
   // parent→child; these are the only ones a session can point at itself.
   report: handleSessionReport,
   whoami: handleSessionWhoami,
@@ -719,7 +719,7 @@ async function dispatchSource(args: string[], deps: RunDeps, io: ShimIO): Promis
  * Dispatch a `shipit issue <sub>` invocation (docs/175 read + docs/177 +
  * docs/187 write). Reads map to view/list/labels/statuses; writes (create/
  * comment/edit/status/assign) are do-then-surface. Only destructive verbs
- * (close/delete) are gated. `<sub> --help` prints per-subcommand usage (SHI-199).
+ * (close/delete) are gated. `<sub> --help` prints per-subcommand usage (planning#201).
  */
 async function dispatchIssue(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
   const sub = args[0];
@@ -748,7 +748,7 @@ async function dispatchIssue(args: string[], deps: RunDeps, io: ShimIO): Promise
 }
 
 /**
- * Dispatch a `shipit agent <sub>` invocation (docs/144, SHI-245). `run` is the
+ * Dispatch a `shipit agent <sub>` invocation (docs/144, planning#247). `run` is the
  * one-shot sub-agent spawn primitive; `result` re-reads a finished run's
  * persisted output.
  */

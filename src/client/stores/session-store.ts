@@ -97,7 +97,7 @@ interface SessionState {
   /** Text to prefill into the message input (consumed and cleared by MessageInput). */
   prefillText: string | undefined;
   /**
-   * SHI-320 — the issue the Issues tab's "Start session" seeded this session
+   * planning#322 — the issue the Issues tab's "Start session" seeded this session
    * with, waiting to ride along with the first message. It is NOT the prefill
    * text's twin: the text is consumed by the composer immediately and may then
    * be edited or discarded, while this stays until the message is actually
@@ -108,7 +108,7 @@ interface SessionState {
    */
   pendingIssueRef: { sessionId: string; ref: IssueRef } | undefined;
   /**
-   * SHI-10 — a pre-formatted markdown blockquote to *append* into the chat
+   * planning#12 — a pre-formatted markdown blockquote to *append* into the chat
    * composer when the user clicks the floating "Reply" button on a selection
    * inside a chat message bubble. Distinct from `prefillText` (which replaces
    * the whole draft): this is consumed by MessageInput by appending to the
@@ -154,7 +154,7 @@ interface SessionState {
   /** Runtime worker/orchestrator build comparison for the active session. */
   containerFreshness: ContainerFreshness | null;
   /**
-   * docs/213 / SHI-315 — non-null while the active session's auto-commit is
+   * docs/213 / planning#317 — non-null while the active session's auto-commit is
    * refused because a likely credential sits in the working tree. Drives the
    * sticky `SecretBlockBanner`; the accompanying chat notice is a separate,
    * scrollable transcript row. Seeded on attach/session-switch from
@@ -254,7 +254,7 @@ interface SessionState {
    */
   setPrefillText: (text: string | undefined) => void;
   setPendingIssueRef: (pending: { sessionId: string; ref: IssueRef } | undefined) => void;
-  /** SHI-10 — set the blockquote to append into the composer (see `quoteReplyText`). */
+  /** planning#12 — set the blockquote to append into the composer (see `quoteReplyText`). */
   setQuoteReplyText: (text: string | undefined) => void;
   /** Append a per-turn usage record for the given session. */
   appendTurnUsage: (sessionId: string, turn: TurnUsage) => void;

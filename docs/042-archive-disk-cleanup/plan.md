@@ -79,7 +79,7 @@ Build-time prunes (BuildKit cache, dangling images) deliberately **do not** live
 - DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS=30
 ```
 
-SHI-197 collapsed the two coincidental 30-day knobs (`DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` + `DISK_JANITOR_CACHE_DAYS`) into this single cold-artifact retention covering both the archived-workspace crash-recovery backstop and the cold caches. Self-hosted deployments using their own compose file get the safe 30-day default unless they override it.
+planning#199 collapsed the two coincidental 30-day knobs (`DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` + `DISK_JANITOR_CACHE_DAYS`) into this single cold-artifact retention covering both the archived-workspace crash-recovery backstop and the cold caches. Self-hosted deployments using their own compose file get the safe 30-day default unless they override it.
 
 ## Key files
 

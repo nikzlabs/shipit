@@ -200,7 +200,7 @@ export class CodexEventHandler {
    * isn't being asked.
    *
    * Decision enums come from the generated v2 schema (`codex app-server
-   * generate-json-schema`, confirmed SHI-112): v2 CommandExecution/FileChange
+   * generate-json-schema`, confirmed planning#114): v2 CommandExecution/FileChange
    * ApprovalDecision allow is `"accept"`; deny is `"decline"` (deny + continue
    * the turn) — NOT `"reject"`, which the schema does not define (the only other
    * deny variant, `"cancel"`, denies AND interrupts the turn, which is not our

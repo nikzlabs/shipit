@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-86
+issue: planning#88
 title: Agent issue writes — through the unified tracker interface, not MCP
 description: Let the agent comment on, edit, re-status, and re-assign issues across all trackers via one ShipIt-brokered Tracker write interface, with a do-then-surface provenance card. Includes the cross-tracker status/assignee mapping.
 ---
@@ -213,7 +213,7 @@ visible, attributable, and reversible. It composes with docs/176 (so a write the
 agent was *steered* into by malicious issue content is still surfaced and
 undoable) and docs/172 (egress/token isolation).
 
-### Write idempotency across crash/retry (SHI-112)
+### Write idempotency across crash/retry (planning#114)
 
 The write relay (`handleWrite` in `api-routes-issues.ts`) must be **idempotent**
 against turn resume/retry. When a turn crashes (exit 137 / OOM) and is retried —
@@ -287,9 +287,9 @@ to the container.
   surfaced on the read type as `TrackerIssue.assigneeId` (populated from the raw
   API node), so the snapshot captures an exact id rather than the display name.
 
-## Extension — labels + priority on create/edit (SHI-92)
+## Extension — labels + priority on create/edit (planning#94)
 
-`create`/`edit` originally carried only title/body. SHI-92 adds two attribute
+`create`/`edit` originally carried only title/body. planning#94 adds two attribute
 flags, tracker-neutral but explicit about per-tracker capability:
 
 - **`--label NAME`** (repeatable / comma-separated) on both `create` and `edit`.
@@ -314,15 +314,15 @@ write `summary`), `--json` returns the resolved `labels` + `priority`, and the
 `edit` undo snapshot gains `previousLabels` / `previousPriority`. `TrackerIssue`
 gains an optional `labels: string[]` populated by both adapters.
 
-## Extension — `--parent` for sub-issue nesting (SHI-206)
+## Extension — `--parent` for sub-issue nesting (planning#208)
 
 The read model (docs/206) surfaces `parentId` / `parentIdentifier`, but the write
 surface had no way to *set* them — building an umbrella issue with children meant
-dropping into the Linear UI. SHI-206 adds **`--parent <pointer>`** on both
+dropping into the Linear UI. planning#208 adds **`--parent <pointer>`** on both
 `create` and `edit`, tracker-neutral in shape but Linear-only in capability:
 
 - The value is the same tracker-neutral pointer everything else takes (a key like
-  `SHI-204` or a Linear issue URL); the shim resolves it to the parent's issue key
+  `planning#206` or a Linear issue URL); the shim resolves it to the parent's issue key
   via `parseIssueRef`. The Linear adapter resolves that key → the parent's UUID
   (`resolveUuid`) and sets `parentId` on the `issueCreate` / `issueUpdate` input.
 - **Linear-only.** **GitHub issues are flat** (no parent/sub-issue relation), so
@@ -342,7 +342,7 @@ dropping into the Linear UI. SHI-206 adds **`--parent <pointer>`** on both
 folded alongside `labels`/`priority`. The `IssueWriteUndo` `edit` variant carries
 `previousParentId?: string | null`.
 
-## Extension — `comment edit` (SHI-86)
+## Extension — `comment edit` (planning#88)
 
 A comment used to be write-once. `shipit issue comment` posted one and nothing
 took it back, so an agent that posted a wrong or stale comment could only post
@@ -421,7 +421,7 @@ the `issueId` slot, which stays the issue because it doubles as the card's undo
 target. Keying on the issue alone would collapse two edits to *different*
 comments on the same issue — silently dropping the second and returning the
 first's card as if it had succeeded, leaving a comment un-fixed with nothing to
-show for it. Replay of the *same* edit is still absorbed (SHI-112). Pinned by
+show for it. Replay of the *same* edit is still absorbed (planning#114). Pinned by
 `agent-issue-write-idempotency.test.ts`.
 
 The card is a distinct verb (`comment-edit`, "Edited a comment on …") rather than
@@ -451,7 +451,7 @@ it, which removes most of the pressure for a delete.
 
 ## Key files
 
-- `src/server/orchestrator/trackers/tracker.ts` — add write methods + `TrackerComment`, optional `availableStatuses` on read types; `updateComment` (SHI-86) and `TrackerPermissionError` (a refusal, not a resolution failure → 403).
+- `src/server/orchestrator/trackers/tracker.ts` — add write methods + `TrackerComment`, optional `availableStatuses` on read types; `updateComment` (planning#88) and `TrackerPermissionError` (a refusal, not a resolution failure → 403).
 - `src/server/orchestrator/trackers/linear/adapter.ts` — `commentCreate`/`issueUpdate` + state/user resolution via `linearGraphql()`.
 - `src/server/orchestrator/trackers/github/adapter.ts` — `addComment`/`deleteComment`/`updateIssue`/state/assignees via the adapter's injectable `fetchImpl` + `githubHeaders` (the `fetchGitHub` header pattern; testable against a fake). `github-auth-issues.ts` is unchanged — it keeps the global-`fetch` `createIssue` for bug-filing only.
 - `src/server/orchestrator/services/issues.ts` — `commentOnIssueForTracker` / `updateIssueForTracker` / `setIssueStatusForTracker` / `setIssueAssigneeForTracker`, each snapshotting prior state for undo.

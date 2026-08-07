@@ -1,6 +1,6 @@
 /**
  * Pure slicing primitives for the lazy transcript-body projection (docs/244,
- * SHI-267). Kept dependency-free and isomorphic — the orchestrator uses these
+ * planning#269). Kept dependency-free and isomorphic — the orchestrator uses these
  * to build the wire payload, and the client imports the constants to prove its
  * inline previews still fit inside a slice.
  *
@@ -42,7 +42,7 @@ export const TRANSCRIPT_SLICE_BYTES = 16 * 1024;
 export const RESULT_STRIP_FLOOR_BYTES = 200;
 
 /**
- * Characters of a sub-agent consult's output drawn on the card face (SHI-297).
+ * Characters of a sub-agent consult's output drawn on the card face (planning#299).
  *
  * The consult card renders a single collapsed preview line and puts the rest
  * behind a click (`SubAgentCards.tsx`), so the preview is the only part of a

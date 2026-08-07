@@ -94,7 +94,7 @@ export interface SessionWorkerDeps {
   /** Factory for the worker→orchestrator client. Injectable so tests can stub the orchestrator. */
   createOrchestratorClient?: () => OrchestratorClient;
   /**
-   * SHI-311 — the per-session token the orchestrator presents on its calls.
+   * planning#313 — the per-session token the orchestrator presents on its calls.
    * Defaults to `SHIPIT_WORKER_TOKEN` from the container env; injectable so the
    * guard's remote-caller behavior is testable in-process.
    */
@@ -143,7 +143,7 @@ export class SessionWorker extends EventEmitter {
   // read from disk lazily on each serve, never retained (see PresentRegistry).
   private readonly presentRegistry = new PresentRegistry();
 
-  // SHI-112 / docs/193 — agent-agnostic approval broker. Holds pending
+  // planning#114 / docs/193 — agent-agnostic approval broker. Holds pending
   // sensitive-action requests (Claude via the `--permission-prompt-tool`
   // bridge; Codex via its app-server approval channel), broadcasts the
   // canonical request/resolved events, and tracks the per-session remember-set.
@@ -206,7 +206,7 @@ export class SessionWorker extends EventEmitter {
   private buildApp(): FastifyInstance {
     const app = Fastify({ logger: false });
 
-    // SHI-311 — registered FIRST so its `onRequest` hook runs ahead of every
+    // planning#313 — registered FIRST so its `onRequest` hook runs ahead of every
     // handler below. The worker listens on 0.0.0.0 (the orchestrator dials it
     // by bridge IP), which also puts it in reach of every other session's
     // container; this is what keeps those callers out.
@@ -410,7 +410,7 @@ export class SessionWorker extends EventEmitter {
   }
 
   /**
-   * docs/193 — the permission round-trip, as a long poll (Thread B / SHI-112).
+   * docs/193 — the permission round-trip, as a long poll (Thread B / planning#114).
    *
    * The Claude `--permission-prompt-tool` bridge drives it in two steps so a
    * long wait rides over a transient worker blip instead of dying on one

@@ -99,9 +99,9 @@ self-heals while the broken half does not.
 
 - [x] `npm run typecheck` + `npm run lint:dev` green each phase
 - [x] Update `plan.md` "as built" notes where reality diverges
-- [x] Comment progress on SHI-189 per PR (`Refs SHI-189`; final PR `Closes SHI-189`)
+- [x] Comment progress on planning#191 per PR (`Refs planning#191`; final PR `Closes planning#191`)
 
-## Phase 6 — SHI-295: neither the skipped reset nor the merged-branch push is silent ✅
+## Phase 6 — planning#297: neither the skipped reset nor the merged-branch push is silent ✅
 
 From a production incident (session `37a74020`, PR #1963): the reset silently didn't
 fire, the post-turn auto-push then **recreated** the branch GitHub had deleted at

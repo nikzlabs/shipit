@@ -17,7 +17,7 @@ phases keep the original component filename as the directory entry (e.g. `Settin
 **Per-phase done criteria (same for all):** extract → re-export from facade so the public
 surface is byte-identical → move matching tests alongside the new modules → `npm run
 typecheck` + `npm run lint:dev` clean → no behavior change. Open one PR per phase with
-`Refs SHI-131`.
+`Refs planning#133`.
 
 > The plan's "Suggested sequencing" is a **priority hint** (do the highest-payoff ones
 > first if capacity is limited), **not** a dependency order. Any phase can start at any time.

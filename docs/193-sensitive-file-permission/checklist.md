@@ -1,4 +1,4 @@
-# Checklist — 193 sensitive-file permission prompt (SHI-112)
+# Checklist — 193 sensitive-file permission prompt (planning#114)
 
 - [x] Agent-agnostic `PermissionBroker` (request/resolve/remember/teardown — no timeout, no expiry)
 - [x] Claude `--permission-prompt-tool` bridge + adapter/process wiring
@@ -12,5 +12,5 @@
 - [x] Client: store, `PermissionRequestCard`, message handlers, render, rehydrate, send wiring
 - [x] Tests: broker, persistence, process flag, mcp registration, codex routing, worker round-trip, render guard
 - [x] Typecheck + lint clean
-- [x] Verify end-to-end in a real container session (manual): `.npmrc` edit surfaces the card; approve lets the write land; "remember" suppresses re-prompts — all verified live (SHI-112)
+- [x] Verify end-to-end in a real container session (manual): `.npmrc` edit surfaces the card; approve lets the write land; "remember" suppresses re-prompts — all verified live (planning#114)
 - [x] Confirm the Codex deny enum against `codex app-server generate-json-schema` — live schema has no `"reject"`; v2 deny is `"decline"` (`"cancel"` also interrupts the turn), v1 is `"denied"`. Fixed the stale `"reject"` mapping in `codex-event-handler.ts`

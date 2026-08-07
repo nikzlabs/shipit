@@ -541,7 +541,7 @@ export function assertNoRunningPinnedSessions(
  *
  * Shared by the two entry points that leave a session without the account it
  * was running on — the per-account disconnect (docs/150 req 23) and the
- * provider-wide sign-out (SHI-283). Deleting the account row is not enough on
+ * provider-wide sign-out (planning#285). Deleting the account row is not enough on
  * its own: the session holds its *own* copy of the OAuth token, and that copy is
  * what the CLI in the container reads.
  *
@@ -577,7 +577,7 @@ function retireSessionProviderAccount(
 }
 
 /**
- * SHI-283 — sign out of a provider entirely: every connected account's row and
+ * planning#285 — sign out of a provider entirely: every connected account's row and
  * source credentials, **plus** every pinned session's own copy of the token.
  *
  * `ProviderAccountManager.signOutProvider` deletes the account rows and the

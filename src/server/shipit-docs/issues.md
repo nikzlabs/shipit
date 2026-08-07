@@ -37,7 +37,7 @@ repair it or raise it with the user.
 
 | Form | Example |
 |---|---|
-| tracker name + backend id | `roadmap#SHI-304`, `planning#123` |
+| tracker name + backend id | `planning#306`, `planning#123` |
 | tracker name + number | `roadmap#304` |
 | the backend's canonical address | `SHI-304`, `owner/repo#42`, an issue URL |
 
@@ -48,7 +48,7 @@ declaration being re-pointed at a different repository or team, and it is the
 form ShipIt itself emits.
 
 In that form **the name wins**: if the declaration is re-pointed and the id you
-wrote no longer matches it — `roadmap#SHI-304` after `roadmap` moves to team
+wrote no longer matches it — `planning#306` after `roadmap` moves to team
 `OPS` — the reference resolves to `OPS-304` rather than failing. The name is what
 identifies the destination; the id inside it is a convenience for readers.
 
@@ -249,7 +249,7 @@ the first — which piles up in exactly the surface that is meant to be read.
 Get the comment's id from the read path — no separate lookup exists or is needed:
 
 ```
-shipit issue view roadmap#SHI-86 --comments --json   # each comment carries `id` and `url`
+shipit issue view planning#88 --comments --json   # each comment carries `id` and `url`
 ```
 
 Both the **issue reference and the comment id** are required. A comment id is
@@ -322,7 +322,7 @@ prior priority.
 
 `--parent <reference>` nests the issue under a parent as a Linear sub-issue, on
 both `create` and `edit`. The pointer is the same tracker-neutral form everything
-else takes — `roadmap#SHI-204`, a key (`SHI-204`), or a Linear issue URL. It must
+else takes — `planning#206`, a key (`planning#206`), or a Linear issue URL. It must
 resolve to the **same** tracker as the issue being written: Linear nests only
 within a team. On `edit`, `--parent none`
 (or `null`/`detach`) **detaches** the issue back to top-level, mirroring

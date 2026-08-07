@@ -20,7 +20,7 @@
  * separate open glyph. Undo is the one nested action; it stops propagation so
  * it doesn't also open the issue. For a comment write the card threads the
  * created comment's id into the open payload, so the detail view scrolls to and
- * highlights that exact comment (SHI-103).
+ * highlights that exact comment (planning#105).
  *
  * The authorship line ("by the ShipIt agent (workspace token)") is gone: the
  * card is self-evidently the agent's (it lives in the agent's transcript and
@@ -59,7 +59,7 @@ export interface IssueWriteCardProps {
     identifier: string;
     title?: string;
     url?: string;
-    /** Comment to land on inside the detail view (SHI-103) — a comment write. */
+    /** Comment to land on inside the detail view (planning#105) — a comment write. */
     anchorCommentId?: string;
   }) => void;
 }
@@ -164,12 +164,12 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
   })();
 
   // For a comment write the undo snapshot carries the created comment's id —
-  // thread it through so the detail view lands on that exact comment (SHI-103).
+  // thread it through so the detail view lands on that exact comment (planning#105).
   const anchorCommentId =
     card.undo.kind === "comment" || card.undo.kind === "comment-edit" ? card.undo.commentId : undefined;
 
   // A label-creation card records tracker CONFIG, not an issue — the identifier
-  // is the label name, so there is nothing to open inline (SHI-230).
+  // is the label name, so there is nothing to open inline (planning#232).
   const isLabelCard = card.verb === "label";
 
   // The whole card opens the issue inline. Derive the lookup id from the

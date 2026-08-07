@@ -1,6 +1,6 @@
 /**
  * WS handler for resolving a sensitive-action permission request
- * (docs/193 / SHI-112).
+ * (docs/193 / planning#114).
  *
  * The *request* card arrives off the agent-event stream (the worker's
  * `PermissionBroker` broadcasts `agent_permission_request`, persisted via

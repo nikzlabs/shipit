@@ -1,5 +1,5 @@
 /**
- * GitHub Issues tracker adapter (docs/170, SHI-80).
+ * GitHub Issues tracker adapter (docs/170, planning#82).
  *
  * The second tracker behind the inline Issues tab, alongside Linear. Two things
  * make it different from `LinearTracker`, and both trace back to GitHub issues
@@ -15,7 +15,7 @@
  *    AND a resolved `{owner, repo}` are both present.
  *
  * Read-only: `listIssues()` / `getIssue()` only. Editing/triage and the
- * `/shipit` push trigger are explicitly out of scope (SHI-43 / docs/156).
+ * `/shipit` push trigger are explicitly out of scope (planning#45 / docs/156).
  *
  * GitHub has no native numeric priority enum like Linear, so priority is
  * **label-derived** (`priority:high`, `P1`, `critical`, …) with a "No priority"
@@ -153,7 +153,7 @@ interface GitHubCommentNode {
    * `…/repos/{owner}/{repo}/issues/{number}` — the issue this comment hangs
    * off. Present on the by-id comment endpoint, which is how `updateComment`
    * checks a backend-global comment id against the issue the caller named
-   * (SHI-86). Absent from the per-issue list response, where it is redundant.
+   * (planning#88). Absent from the per-issue list response, where it is redundant.
    */
   issue_url?: string | null;
 }
@@ -517,7 +517,7 @@ export class GitHubTracker implements Tracker {
     if (patch.title !== undefined) body.title = patch.title;
     if (patch.description !== undefined) body.body = patch.description;
     // GitHub's PATCH `labels` replaces the full set — the service hands us the
-    // already-merged set (SHI-92). Validate names against the repo's labels
+    // already-merged set (planning#94). Validate names against the repo's labels
     // first so a typo can't silently spawn a new label.
     if (patch.labels !== undefined) body.labels = await this.resolveLabels(patch.labels);
     return this.patchIssue(id, body);
@@ -548,7 +548,7 @@ export class GitHubTracker implements Tracker {
   }
 
   /**
-   * Resolve label display names against the repo's existing labels (SHI-92).
+   * Resolve label display names against the repo's existing labels (planning#94).
    * GitHub's write API would silently CREATE any label name it doesn't know, so
    * we validate up front and reject an unknown name with the candidate list
    * (`kind: "label"`) — mirroring assignee resolution and avoiding label sprawl
@@ -603,7 +603,7 @@ export class GitHubTracker implements Tracker {
   }
 
   /**
-   * GitHub Issues has no native priority field (SHI-92). Rather than silently
+   * GitHub Issues has no native priority field (planning#94). Rather than silently
    * dropping `--priority`, we reject it with a clear message pointing at the
    * label convention. The shim also rejects it before the round-trip; this is
    * the server-side backstop so a direct API call can't no-op.
@@ -620,7 +620,7 @@ export class GitHubTracker implements Tracker {
 
   /**
    * GitHub Issues are flat — there is no native parent/sub-issue relation
-   * (SHI-206). Rather than silently dropping `--parent`, we reject any attempt to
+   * (planning#208). Rather than silently dropping `--parent`, we reject any attempt to
    * set OR detach a parent with a clear message. The shim rejects it before the
    * round-trip; this is the server-side backstop so a direct API call can't no-op.
    */

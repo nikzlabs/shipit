@@ -206,7 +206,7 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
   //
   // The slice length is imported, not literal: docs/244's projection ships only
   // this many characters of `command`, so the two have to be the same number or
-  // the transcript starts showing less than it used to (SHI-296).
+  // the transcript starts showing less than it used to (planning#298).
   const commandText = "command" in tool.input && tool.input.command
     ? (tool.input.command as string).slice(0, COMMAND_SUMMARY_CHARS)
     : null;
@@ -481,7 +481,7 @@ export function formatToolDuration(ms: number): string {
  * `result` prop populated and the output replaces the indicator in place.
  *
  * This modal is the only view that draws a tool's *whole* input, so it is where
- * the keys docs/244 removed come back (SHI-296). Opening it is the click, and
+ * the keys docs/244 removed come back (planning#298). Opening it is the click, and
  * the fetched input replaces the projected one wholesale rather than merging:
  * the stored input is authoritative and preserves the original key order the
  * fields are laid out in.

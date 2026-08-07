@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-133
+issue: planning#135
 description: Remove the global "Authentication Required" OAuth overlay; an unauthenticated agent now blocks the turn with an error pointing to Settings → Agents, and the selector keeps disabling unauthenticated agents.
 ---
 

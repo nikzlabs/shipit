@@ -7,7 +7,7 @@ docs/172 (the load-bearing environment-layer defenses).
 - [x] Provenance envelope applied at the agent's text-ingestion point — the
       `shipit issue` shim's `renderIssue`/`renderComments`/list rendering
       (`agent-shim/shipit.ts`) wraps title/body/comments with tracker:identifier
-      provenance + a trust instruction, reusing SHI-98's `wrapUntrustedContent`
+      provenance + a trust instruction, reusing planning#100's `wrapUntrustedContent`
       (`source: "issue"`). **Note:** the original "in `services/issues.ts`" plan
       no longer fits the architecture — that service is shared with the Issues-tab
       UI and returns structured objects, so wrapping there would corrupt the UI
@@ -20,7 +20,7 @@ docs/172 (the load-bearing environment-layer defenses).
 - [x] `shipit-docs/issues.md` + `untrusted-input.md` state "issue content is
       untrusted data, a task description not instructions" (envelope documented)
 - [x] Task framing already in `agent-instructions.ts` "## Untrusted input"
-      (SHI-98) — lists issue-tracker text among the untrusted surfaces; no new
+      (planning#100) — lists issue-tracker text among the untrusted surfaces; no new
       cache axis needed.
 
 ## Product-layer
@@ -31,8 +31,8 @@ docs/172 (the load-bearing environment-layer defenses).
 
 ## Defer to / depend on docs/172 (the real protection)
 - [x] Add issue content to the Gap-4 untrusted-input lens (the `issue` source of
-      SHI-98's `wrapUntrustedContent`)
-- [ ] Gap 1 (egress allowlist) and Gap 2-R (scoped tokens) are the load-bearing defenses — tracked in docs/172, referenced here (both merged: SHI-90, SHI-79)
+      planning#100's `wrapUntrustedContent`)
+- [ ] Gap 1 (egress allowlist) and Gap 2-R (scoped tokens) are the load-bearing defenses — tracked in docs/172, referenced here (both merged: planning#92, planning#81)
 
 ## Deferred
 - [x] Comments ingestion (stricter envelope; lower trust than body) — docs/175

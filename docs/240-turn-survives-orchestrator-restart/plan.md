@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-257
+issue: planning#259
 description: A session whose agent turn is mid-flight when the orchestrator restarts comes back running — the turn is adopted, its events persist, and the post-turn commit/push/PR flow still fires.
 ---
 

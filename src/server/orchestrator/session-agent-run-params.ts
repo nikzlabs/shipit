@@ -115,7 +115,7 @@ export async function buildAgentRunParams(
   const sessionKind = sessionInfo?.kind;
   const isOps = sessionKind === "ops";
   const isSandbox = sessionKind === "sandbox";
-  // SHI-265 — a recorded `mergedHeadSha` means the PR merged and ShipIt anchored
+  // planning#267 — a recorded `mergedHeadSha` means the PR merged and ShipIt anchored
   // the branch's pre-merge tip: the exact state `shipit branch reset-to-base`
   // guards, and the only one where a hand-rolled `git reset --hard` can silently
   // destroy unmerged work. Arms the PreToolUse hook's destructive-git rule for

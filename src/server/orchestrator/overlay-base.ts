@@ -488,7 +488,7 @@ export interface PublishBaseArgs {
   materialize?: MaterializeFn;
   /**
    * Hand the freshly-materialized base generation to the session worker uid
-   * (docs/183 × docs/150, SHI-145). Defaults to `chownTreeToSessionWorker`, a
+   * (docs/183 × docs/150, planning#147). Defaults to `chownTreeToSessionWorker`, a
    * no-op unless `SHIPIT_SESSION_WORKER_UID` is set. The base is materialized by
    * the **root** orchestrator (tar extract + copy), so its files are root-owned;
    * overlayfs copy-up preserves the *lower* file's ownership, so a root-owned
@@ -598,7 +598,7 @@ async function finalize(
 ): Promise<PublishResult> {
   const baseDir = await materialize(candidate.snapshotDir, scopeHash, next.generation, linkDedupBaseDir);
   // Hand the just-materialized generation to the worker uid BEFORE the pointer is
-  // written (SHI-145). At this point no session can have mounted it (specs read
+  // written (planning#147). At this point no session can have mounted it (specs read
   // the pointer to pick a generation, and we haven't published yet), so chowning
   // its own files is race-free. Hardlink-dedup shares inodes with the superseded
   // generation, but that generation is itself worker-owned (it was chowned when

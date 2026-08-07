@@ -18,7 +18,7 @@ Design only so far — nothing implemented. No schema change, no migration.
 - [ ] **Snap the window start to a `role: "user"` row** — backward only (no cap ⇒ no forward-snap case)
 - [ ] `?limit=N` on `GET /history`; absent ⇒ byte-identical to today
 - [ ] `&beforeId=` returns `{ messages, omittedBefore, hasMore }` only — skips git log + file tree
-- [ ] **Every page runs through `transcript-projection`** — an unprojected older page reintroduces the full bodies SHI-267 removed
+- [ ] **Every page runs through `transcript-projection`** — an unprojected older page reintroduces the full bodies planning#269 removed
 - [ ] Older pages pass `allRowsPersisted: true` (every row in an older page is committed by construction)
 - [ ] `omittedBefore` is a **head-anchored** count, not a tail offset
 - [ ] Cursor invalidation + window reload after any history rewrite, incl. the cross-tab broadcast path

@@ -226,7 +226,7 @@ export function requeueUndeliveredSteers(
   runner.steeredMessages = steers.filter((s) => !isUndelivered(s));
   for (const s of undelivered) {
     // A user-typed steer that fell into the turn-end gap — re-queued as the
-    // interactive turn it always was (SHI-255).
+    // interactive turn it always was (planning#257).
     const queued: QueuedMessage = {
       text: s.text,
       execution: s.agentInterface ? "dispatched" : "interactive",

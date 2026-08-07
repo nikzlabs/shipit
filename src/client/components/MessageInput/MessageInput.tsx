@@ -303,7 +303,7 @@ export function MessageInput({
     });
   }, [surface]);
 
-  // SHI-10 — consume a quote-reply blockquote from the store and *append* it to
+  // planning#12 — consume a quote-reply blockquote from the store and *append* it to
   // the current draft (unlike prefill, which replaces). This lets the user
   // quote a passage from a chat bubble without losing what they've already
   // typed. We focus the textarea and drop the cursor on the trailing blank line

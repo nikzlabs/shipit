@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-167
+issue: planning#169
 title: Ephemeral orchestrator (scale-to-zero)
 description: Analysis of shutting the orchestrator down when no browser is connected and reviving it on the next request without losing state.
 ---

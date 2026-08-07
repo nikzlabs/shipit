@@ -577,7 +577,7 @@ export default function App() {
           void navigate(`/session/${currentSessionId}`, { replace: true });
         }
 
-        // SHI-320 — first message of a session the Issues tab seeded from an
+        // planning#322 — first message of a session the Issues tab seeded from an
         // issue. Only the session it was seeded for may claim it: prefilling
         // doesn't pin the user to that session, and the ref must not follow
         // them into an unrelated one.
@@ -1059,7 +1059,7 @@ export default function App() {
   useEffect(() => {
     void (async () => {
       await useIssuesStore.getState().fetchTrackers();
-      // SHI-325 — the list is repo-scoped too: the GitHub tracker resolves
+      // planning#327 — the list is repo-scoped too: the GitHub tracker resolves
       // against the session's repo binding, so the same tracker id yields
       // different issues per session. Refetch whenever the tab is showing one
       // (the fetch-on-open effect above is keyed on `rightTab`, so it does NOT
@@ -1342,7 +1342,7 @@ export default function App() {
       // before sending, instead of scrolling past a pasted description.
       useSessionStore.getState().setPrefillText(buildIssueSeedPrompt(issue));
 
-      // SHI-320 — the prompt above is not enough for the server to know this
+      // planning#322 — the prompt above is not enough for the server to know this
       // session came from an issue, and inferring it from the text would be
       // guesswork (the user is free to rewrite it). Park the ref against the
       // session we just landed in; `handleSend` attaches it to the first
@@ -1953,7 +1953,7 @@ export default function App() {
           <div className="flex flex-col gap-2">
             {isLoading && <AgentStatusBar activity={activity} />}
             {wsSessionId && <RebaseBanner sessionId={wsSessionId} />}
-            {/* SHI-315 — sits directly under the rebase banner: both render a
+            {/* planning#317 — sits directly under the rebase banner: both render a
                 live "your work is not landing" condition, and neither is
                 dismissible. */}
             <SecretBlockBanner />

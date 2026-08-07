@@ -489,7 +489,7 @@ absent or already matches, so the steady-state path is unchanged. Key files:
 `pr-status-parser.ts` (query + `GraphQLResponse.nameWithOwner`),
 `pr-status-poller.ts` (`canonicalApiTarget`).
 
-The same retarget is needed by the **post-merge fast path** (SHI-159). After
+The same retarget is needed by the **post-merge fast path** (planning#161). After
 ShipIt merges a PR, `forceVerifySessionPrState` runs a one-shot REST any-state
 probe — it deliberately bypasses `pollRepo` because the bulk query is
 `states: [OPEN]` and GitHub's GraphQL view can still report a just-merged PR as

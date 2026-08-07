@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-89
+issue: planning#91
 description: Surface a read-only navigation card in the chat whenever the agent views an issue (`shipit issue view`), so any agent issue interaction — not just edits — leaves a quick jump-to-issue affordance in the transcript.
 ---
 

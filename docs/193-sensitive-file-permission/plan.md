@@ -1,9 +1,9 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-112
+issue: planning#114
 description: Surface an agent-agnostic approve/deny card when an agent's edit to a sensitive file (or escalated action) is gated, so the user can grant it.
 ---
 
-# 193 — Sensitive-file permission prompt (SHI-112)
+# 193 — Sensitive-file permission prompt (planning#114)
 
 ## Context
 
@@ -152,7 +152,7 @@ Key properties:
     only when the card isn't in this turn's recorded set. This mirrors the
     `emitOrReplaceChatCard` rationale used by docs/203's mid-turn re-review.
   - **A mid-turn card must also advance the turn-event replay cursor (the
-    "pending card vanishes on switch" bug, SHI-112).** `emitChatCard` persists a
+    "pending card vanishes on switch" bug, planning#114).** `emitChatCard` persists a
     snapshot of the turn-so-far the instant the card fires — but a gated tool's
     `agent_assistant` event sits *unpersisted* in the turn-event buffer
     (`lastPersistedBufferIndex` only advanced at tool-result / agent_result
@@ -219,7 +219,7 @@ A future backend implements `setPermissionRequester` (or bridges to
   → deny. Sensitive-file edits there remain a dead-end (dev-only, already
   degraded per docs/118). Production (container) is the path that matters.
 - The Codex deny enum is confirmed against `codex app-server generate-json-schema`
-  (SHI-112): v2 deny is `"decline"` (deny + continue the turn; `"cancel"` would
+  (planning#114): v2 deny is `"decline"` (deny + continue the turn; `"cancel"` would
   also interrupt — not our semantics) and v1 deny is `"denied"`. An earlier
   inferred value `"reject"` was stale — the schema defines no such variant — and
   is fixed in `codex-event-handler.ts`. Allow (`accept`/`approved`) is confirmed

@@ -54,7 +54,7 @@ const REF_RE = /\b(?:references?|refs?)\b\s*:?\s+(\S+)/gi;
 
 /** Strip surrounding markdown/punctuation noise from a captured pointer token. */
 function cleanToken(raw: string): string {
-  // Drop a trailing sentence punctuation (`Closes SHI-43.`) and any wrapping
+  // Drop a trailing sentence punctuation (`Closes planning#45.`) and any wrapping
   // parens/brackets/backticks/quotes a body might put around the pointer.
   return raw.replace(/^[([`"']+/, "").replace(/[).,;:!?\]`"']+$/, "");
 }

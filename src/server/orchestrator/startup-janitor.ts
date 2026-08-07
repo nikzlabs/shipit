@@ -29,9 +29,9 @@
  *     teardown, `killStaleContainers`) handle the happy path — this is
  *     the safety net for when they didn't run (unclean shutdown).
  *   - **Archived session workspaces** older than `coldArtifactRetentionDays`
- *     (SHI-197). Pure crash-recovery backstop for archives where `fs.rm`
+ *     (planning#199). Pure crash-recovery backstop for archives where `fs.rm`
  *     didn't run — `archiveSession` already drops the workspace synchronously
- *     at archive time (SHI-192) on a healthy host, so this normally finds
+ *     at archive time (planning#194) on a healthy host, so this normally finds
  *     nothing. Chat history, usage, and session metadata are preserved;
  *     `unarchiveSession` re-clones from the bare cache.
  *   - **Dead `dep-cache/<hash>/nm-store` directories** for live repos. The
@@ -41,7 +41,7 @@
  *     the worker never writes nm-store again, so later sweeps no-op — which is
  *     why this one-shot migration cleanup stays here rather than on the periodic
  *     pass (it neither accumulates with the clock nor recovers from a crash).
- *   - **Orphan egress sidecars** (SHI-222) — the Tier B resolver / Tier C SNI
+ *   - **Orphan egress sidecars** (planning#224) — the Tier B resolver / Tier C SNI
  *     proxy (docs/172) share the agent container's network namespace, so when
  *     the agent container dies theirs dies with it and they strand in `Exited`
  *     with nothing to remove them. Identified by parent-liveness, NOT by the
@@ -62,7 +62,7 @@
  * burn cycles doing nothing. Startup is the natural "we just came back
  * from possibly-unclean shutdown — clean up after the previous run" moment.
  *
- * Steady-growth sweeps live elsewhere (SHI-196): the disk reclaim that grows with
+ * Steady-growth sweeps live elsewhere (planning#198): the disk reclaim that grows with
  * the CLOCK — unreferenced repo/dep caches, `repo-memory/`, obsolete overlay bases,
  * stale pnpm stores — moved to `runSteadyStateReclaim` (`steady-state-reclaim.ts`),
  * which rides the periodic disk-tier escalation pass (`escalateDiskTiers`, fired at
@@ -85,18 +85,18 @@
  *     primary cleanup didn't happen.
  *
  * Behavior knobs (env vars):
- *   - DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS (SHI-197): the single
+ *   - DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS (planning#199): the single
  *     cold-artifact retention, in days, read once in `startup-monitors.ts` and
  *     shared by two consumers. In THIS module it governs the crash-recovery
  *     archived-workspace backstop (user-archived sessions whose `workspaceDir`
  *     survived a crashed synchronous cleanup); the same value also drives the
  *     steady-state cold-cache reclaim (`repo-cache` / `dep-cache` / `pnpm-store`
- *     / `repo-memory`) in `steady-state-reclaim.ts` (SHI-196 moved those sweeps
+ *     / `repo-memory`) in `steady-state-reclaim.ts` (planning#198 moved those sweeps
  *     onto the periodic escalation pass). Replaces the two coincidental
  *     `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` (default `0`, disabled) +
  *     `DISK_JANITOR_CACHE_DAYS` (default `30`) knobs. Default `30`. The
  *     archived-workspace sweep is no longer independently tunable: it's pure
- *     crash-recovery (SHI-192 frees the workspace synchronously at archive
+ *     crash-recovery (planning#194 frees the workspace synchronously at archive
  *     time), so it rides the same retention.
  *   - DISK_JANITOR_ORPHAN_BRANCHES: when `"false"`, disables the
  *     orphan-`shipit/*`-branch sweep. Default enabled (set the env var to
@@ -129,14 +129,14 @@ export interface DiskJanitorDeps {
   /** Root that holds the `dep-cache/<hash>/nm-store` subtree this janitor reaps. */
   stateDir: string;
   /**
-   * SHI-197 — the single cold-artifact retention (days). In this module it
+   * planning#199 — the single cold-artifact retention (days). In this module it
    * drives the crash-recovery archived-workspace backstop (sweep archived
    * session workspaces older than this); post-SHI-196 the cold caches that once
    * shared a knob with it live in `steady-state-reclaim.ts`, but both still read
    * the SAME value (the old `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` +
    * `DISK_JANITOR_CACHE_DAYS` coincidentally-30d pair collapsed into one). The
    * archived-workspace sweep is no longer independently tunable: it's pure
-   * crash-recovery (SHI-192 frees the workspace synchronously at archive time —
+   * crash-recovery (planning#194 frees the workspace synchronously at archive time —
    * see `sweepArchivedWorkspaces`). Defaults to {@link COLD_ARTIFACT_RETENTION_DAYS}.
    */
   coldArtifactRetentionDays?: number;
@@ -175,7 +175,7 @@ export interface DiskJanitorDeps {
   /** Default true. Set false to disable the branch sweep entirely. */
   sweepOrphanBranches?: boolean;
   /**
-   * SHI-222 — Docker client for the orphan egress-sidecar sweep. The Tier B/C
+   * planning#224 — Docker client for the orphan egress-sidecar sweep. The Tier B/C
    * sidecars (docs/172) share the agent container's network namespace, so when
    * the agent dies its sidecars are stranded in `Exited` with nothing to remove
    * them. The crash site itself now reaps them (`container-health.ts`); this
@@ -215,15 +215,15 @@ export interface DiskJanitorResult {
   credentialDirsRemoved: number;
   /** docs/192 — per-session `logs/` dirs removed (archived or untracked sessions). */
   logDirsRemoved: number;
-  /** SHI-222 — egress sidecars (docs/172) whose netns parent is gone or stopped. */
+  /** planning#224 — egress sidecars (docs/172) whose netns parent is gone or stopped. */
   orphanEgressSidecarsRemoved: number;
 }
 
 /**
- * SHI-197 — the one cold-artifact retention default (days). Read once in
+ * planning#199 — the one cold-artifact retention default (days). Read once in
  * `startup-monitors.ts` and shared by both the crash-recovery archived-workspace
  * backstop (here) and the steady-state cold-cache reclaim
- * (`steady-state-reclaim.ts`, SHI-196), which previously had two coincidental
+ * (`steady-state-reclaim.ts`, planning#198), which previously had two coincidental
  * `30`-day knobs that could drift apart.
  */
 export const COLD_ARTIFACT_RETENTION_DAYS = 30;
@@ -247,9 +247,9 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
   const paceMs = deps.paceMs ?? 0;
-  // SHI-197 — the single cold-artifact retention; here it drives the
+  // planning#199 — the single cold-artifact retention; here it drives the
   // archived-workspace crash-recovery backstop (the cold caches that share this
-  // value are swept by `steady-state-reclaim.ts` on the periodic pass, SHI-196).
+  // value are swept by `steady-state-reclaim.ts` on the periodic pass, planning#198).
   const coldDays = deps.coldArtifactRetentionDays ?? COLD_ARTIFACT_RETENTION_DAYS;
 
   try {
@@ -304,7 +304,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     }
   }
 
-  // SHI-222 — egress sidecars whose netns parent (the agent container) is gone
+  // planning#224 — egress sidecars whose netns parent (the agent container) is gone
   // or stopped. Unlike every other sweep here, this one needs NO active-sessions
   // cross-reference: parent-liveness is the entire test, so it correctly reaps
   // orphans belonging to sessions that are still very much alive (the common
@@ -359,7 +359,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
  * (provisioned on first turn); they should not outlive the session.
  *
  * Preserved: dirs for **live, non-user-archived** sessions — i.e. sessions
- * still in `allIds()` and NOT user-archived. SHI-179: a disk-EVICTED session
+ * still in `allIds()` and NOT user-archived. planning#181: a disk-EVICTED session
  * (`listArchived()` = `disk_tier = 'evicted'`) is NOT eligible — it is still
  * live state the user can return to (its workspace re-clones from the bare
  * cache on activation), so its credentials must survive. Only genuinely-gone
@@ -382,7 +382,7 @@ async function sweepOrphanCredentialDirs(
   }
 
   const tracked = new Set(sessionManager.allIds());
-  // SHI-179: key off USER-archive state, not `disk_tier = 'evicted'`. A
+  // planning#181: key off USER-archive state, not `disk_tier = 'evicted'`. A
   // disk-evicted but non-user-archived session is live and must keep its
   // credentials; only an explicit user-archive (or a deleted/untracked row)
   // makes them reclaimable.
@@ -422,7 +422,7 @@ async function sweepOrphanCredentialDirs(
  *
  * Preserved: dirs for live, non-user-archived sessions (still in `allIds()` and
  * NOT user-archived), and pinned sessions — mirrors the credential-dir sweep so
- * warm / disk-evicted sessions keep their logs for resume. SHI-179: a
+ * warm / disk-evicted sessions keep their logs for resume. planning#181: a
  * disk-evicted (`listArchived()`) but non-user-archived session is live, so it
  * is NOT eligible for reaping.
  *
@@ -441,7 +441,7 @@ async function sweepOrphanSessionLogs(
   }
 
   const tracked = new Set(sessionManager.allIds());
-  // SHI-179 — key off USER-archive state, not disk eviction (see the
+  // planning#181 — key off USER-archive state, not disk eviction (see the
   // credential-dir sweep): a disk-evicted but non-user-archived session is live.
   const userArchived = new Set(
     sessionManager.listAll().filter((s) => s.userArchived).map((s) => s.id),
@@ -650,7 +650,7 @@ async function sweepOrphanSessionNetworks(
  * preserved — `unarchiveSession` re-clones from the bare cache when the
  * user restores the session.
  *
- * SHI-179: `listArchived()` returns `disk_tier = 'evicted'` sessions, which
+ * planning#181: `listArchived()` returns `disk_tier = 'evicted'` sessions, which
  * also covers non-user-archived sessions reclaimed by the docs/161 disk ladder.
  * Those remain live (re-cloned on activation), so the loop skips any session
  * the user did not explicitly archive — the workspace lifecycle is tied to
@@ -681,7 +681,7 @@ async function sweepArchivedWorkspaces(
   let removed = 0;
   for (const session of archived) {
     if (!session.workspaceDir) continue;
-    // SHI-179 — `listArchived()` is `disk_tier = 'evicted'`, which includes
+    // planning#181 — `listArchived()` is `disk_tier = 'evicted'`, which includes
     // non-user-archived sessions reclaimed by the docs/161 disk ladder. Those
     // are LIVE state the user can return to (workspace re-clones from the bare
     // cache on activation), so this safety-net sweep must never reclaim them.
@@ -699,7 +699,7 @@ async function sweepArchivedWorkspaces(
     if (!session.remoteUrl) continue;
     const lastUsedMs = Date.parse(session.lastUsedAt);
     if (!Number.isFinite(lastUsedMs) || lastUsedMs >= cutoffMs) continue;
-    // SHI-192 — reclaim the checkout AND the regenerable overlay/ sibling,
+    // planning#194 — reclaim the checkout AND the regenerable overlay/ sibling,
     // preserving durable siblings (uploads/). The legacy code rm'd only the
     // checkout and orphaned the overlay upper, leaking ~60 GB on prod. Because
     // each target is stat-checked independently, this also catches sessions

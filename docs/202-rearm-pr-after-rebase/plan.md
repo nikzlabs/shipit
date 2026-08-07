@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-134
+issue: planning#136
 title: Re-arm a merged session for a new PR after rebase
 description: When a merged branch is rebased onto its base and gains new work, drop the stale merged PR state and treat the session as ready for a fresh PR.
 ---
@@ -82,7 +82,7 @@ Why this is squash-safe with no squash-specific code:
 The comparison itself is **local git only — no GitHub API** — it keys directly
 off the user's own action (the rebase).
 
-### The base ref must be current (fix, SHI-238)
+### The base ref must be current (fix, planning#240)
 
 Both clauses read `origin/<base>` **from the session's own clone**, and that
 remote-tracking ref moves only when *that clone* fetches. Nothing on the merge
@@ -560,7 +560,7 @@ _None — see "Re-armed card presentation"._
   `store`/`erase` calls to the broker are absorbed; the orchestrator still
   authenticates via its own global inline helper.
 
-- **Detection must fetch before comparing (bug fix, SHI-238).** The detection is
+- **Detection must fetch before comparing (bug fix, planning#240).** The detection is
   base-relative, and `origin/<base>` in a session clone only moves when that clone
   fetches — nothing on the merge path does. Deciding off a stale ref inverted the
   answer (a branch's merge-base with its own fork point *is* the fork point), so

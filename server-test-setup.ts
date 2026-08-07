@@ -27,7 +27,7 @@ for (const key of keysToClear) {
 }
 
 /**
- * docs/172 (SHI-90) — agent egress containment is now ON by default
+ * docs/172 (planning#92) — agent egress containment is now ON by default
  * (`egressEnforceEnabled()` returns true unless `SESSION_EGRESS_ENFORCE=0`).
  * In production that's correct; in the server test suite it's an artifact: the
  * container-lifecycle / standby / warm-pool integration tests create sessions
@@ -43,7 +43,7 @@ if (process.env.SESSION_EGRESS_ENFORCE === undefined) {
 }
 
 /**
- * SHI-311 — `SHIPIT_WORKER_TOKEN` is injected into EVERY session container
+ * planning#313 — `SHIPIT_WORKER_TOKEN` is injected into EVERY session container
  * unconditionally (`container-lifecycle.ts:createContainer`, no sandbox/ops
  * branch) and is set on nothing else: CI runners and developer boxes never have
  * it. `registerWorkerAuthGuard` resolves its token as
@@ -61,7 +61,7 @@ if (process.env.SESSION_EGRESS_ENFORCE === undefined) {
  * literal is spelled out (this file has no imports by design) and is pinned to
  * `WORKER_TOKEN_ENV` by an assertion in `shared/worker-auth.test.ts`.
  *
- * SHI-239 made this line LOAD-BEARING, not just a tidy-up — do not narrow it to
+ * planning#241 made this line LOAD-BEARING, not just a tidy-up — do not narrow it to
  * the guard's own tests. Lifecycle routes (`/agent/start`, `/agent/kill`, …) now
  * require the token even from loopback, so a token-configured worker refuses
  * them. Roughly ten integration fixtures build an in-process `SessionWorker`

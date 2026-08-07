@@ -5,7 +5,7 @@
 Human inputs, kept verbatim so the boundary between stated intent and design
 inference stays checkable.
 
-**SHI-56** (user-authored issue):
+**planning#58** (user-authored issue):
 
 > Multiple provider subscriptions and quota failover
 >

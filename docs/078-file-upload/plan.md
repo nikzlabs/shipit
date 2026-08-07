@@ -1,6 +1,6 @@
 
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-146
+issue: planning#148
 ---
 
 # File Upload — Browser-to-Container File Transfer

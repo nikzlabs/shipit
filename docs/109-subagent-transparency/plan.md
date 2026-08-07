@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-276
+issue: planning#278
 title: Subagent transparency
 description: Render a subagent's prompt, work timeline, and final report inline instead of an opaque tool call.
 ---
@@ -39,7 +39,7 @@ Two fields we already see on the wire and can capture:
 - `tool_use.input.prompt` — the prompt sent to the subagent.
 - `tool_result.content` — the subagent's final report (markdown).
 
-> **The report is not always a markdown string** (SHI-287). The CLI delivers it
+> **The report is not always a markdown string** (planning#289). The CLI delivers it
 > as a **JSON-encoded block array** whenever the reply has more than one block —
 > which is the normal case, because the CLI appends its own
 > `agentId` / `subagent_tokens` / `tool_uses` / `duration_ms` footer after the
@@ -145,7 +145,7 @@ back — a click and a fetch is exactly what removes that premise. So:
   which is a *separate* slice for a load-bearing reason: a report's normal
   encoding is a `JSON.stringify`'d block array, i.e. **one line**, so the
   generic line cap never fires and the byte backstop cuts mid-array — leaving
-  JSON the client cannot parse and renders verbatim, which is SHI-287 arriving
+  JSON the client cannot parse and renders verbatim, which is planning#289 arriving
   by a second route. The report slice clamps the *text inside* the blocks and
   rebuilds the structure, keeping the footer whole because the chips it feeds
   are visible without a click.
@@ -266,7 +266,7 @@ Component tests for `SubagentCall` covering each disclosure level.
 | `src/server/orchestrator/ws-handlers/agent-listeners.ts` | Forward nested events |
 | `src/server/orchestrator/chat-history.ts` | Persist parent ids |
 | `src/client/components/ToolCall/SubagentCall.tsx` | New component |
-| `src/client/utils/group-events-by-parent.ts` | New util. `parseSubagentReport` (SHI-287) moved to `server/shared/subagent-report.ts` and is re-exported here |
+| `src/client/utils/group-events-by-parent.ts` | New util. `parseSubagentReport` (planning#289) moved to `server/shared/subagent-report.ts` and is re-exported here |
 | `src/client/components/MessageList/MessageToolUse.tsx` | Route subagent tools to `SubagentCall` |
 | `src/client/components/SubagentReport.tsx` | The report itself: background-launch row, panel, chips, clamp, modal, lazy fetch |
 | `src/server/shared/subagent-report.ts` | Isomorphic report code — `parseSubagentReport` (structural parse: `startsWith("[")` → `JSON.parse` → inspect block types, matching `parseContentForImages`; the footer has no structural marker, so it is recognized narrowly — last block only, every line a `key: value` with a known key — because a false positive would eat someone's report), `parseReportMeta`, `isBackgroundLaunchAck`, `sliceSubagentReport` |

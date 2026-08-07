@@ -1,7 +1,7 @@
 ---
 title: Inline tracker Issues tab
 description: A top-level, read-only, priority-sorted Issues tab inside ShipIt with one sub-tab per tracker (Linear, GitHub) and a start-session action per row — the inline "what's next" surface that replaces what docs left behind when priority moved to the tracker.
-issue: https://linear.app/shipit-ai/issue/SHI-67
+issue: planning#69
 ---
 
 # Inline tracker Issues tab
@@ -224,7 +224,7 @@ The server-side `seedFromIssueRef()` / `createHeadlessSession({ issueRef })`
 seeding primitive is retained for the **push** trigger (docs/156) — only the
 in-app **pull** path stopped calling it.
 
-**The issue still reaches the server, just later (SHI-320).** Prefilled text is
+**The issue still reaches the server, just later (planning#322).** Prefilled text is
 not enough: two server behaviors are owed to a session *started from an issue*
 regardless of what the user types — the branch must come from the issue's
 pointer and never its title (docs/248 req 22), and the issue must move to
@@ -267,7 +267,7 @@ rather than a flat text table:
 
 - **Labels under the title.** `issue.labels` (already populated on the list path
   by both adapters — Linear's `labels { nodes { name } }`, GitHub's REST labels,
-  SHI-92) render as a chip row inside the title cell, under the description. Each
+  planning#94) render as a chip row inside the title cell, under the description. Each
   chip is a token-driven pill with a small **deterministic colored dot** — neither
   tracker hands us a label color on the list path, so `issue-label-color.ts`
   folds the label name to a stable hue (`labelDotColor`). The dot carries the

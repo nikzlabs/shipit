@@ -1,6 +1,6 @@
 /**
  * Per-tool policy for tool **inputs** on the docs/244 wire projection
- * (SHI-296, reqs 1 and 5).
+ * (planning#298, reqs 1 and 5).
  *
  * The result side answers one question — "does anything draw this result's
  * content without a click?" (`rendersResultContentInline`). Inputs cannot be

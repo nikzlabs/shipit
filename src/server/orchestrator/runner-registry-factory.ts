@@ -105,7 +105,7 @@ export interface RunnerRegistryDeps {
   /**
    * docs/183 — orchestrator-private root for per-service compose env files,
    * outside the agent's workspace mount. Forwarded into `setupServiceManager`
-   * → `ServiceManager`, both of which require it (SHI-290). See
+   * → `ServiceManager`, both of which require it (planning#292). See
    * `ServiceManagerOptions.serviceEnvDir`.
    */
   serviceEnvDir: string;
@@ -169,7 +169,7 @@ export interface RunnerRegistryDeps {
    */
   getAutoConflictResolveManager?: () => AutoConflictResolveManager | undefined;
   /**
-   * SHI-264 — re-acquire the completion settlement for a server-side DELIVERY
+   * planning#266 — re-acquire the completion settlement for a server-side DELIVERY
    * whose turn outlived an orchestrator restart, keyed by the delivery id the
    * worker reports. Threaded into every runner's `SystemTurnDeps` so turn
    * adoption can settle the ORIGINAL watch from the adopted turn instead of a
@@ -389,7 +389,7 @@ export function createRunnerRegistry(
         },
         // docs/179 — token healer for the runtime-401 auto-retry on system turns.
         ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
-        // SHI-264 — lets turn adoption re-settle a delivery that survived a restart.
+        // planning#266 — lets turn adoption re-settle a delivery that survived a restart.
         ...(rebindDelivery ? { rebindDelivery } : {}),
         autoCommit: async (sessionDir, summary) => {
           const git = createGitManager(sessionDir);

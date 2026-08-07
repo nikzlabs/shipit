@@ -425,7 +425,7 @@ function renderEnvFile(entries: { key: string; value: string }[]): string {
  * the agent-readable workspace while preserving the env-var semantics inside the
  * service container; the generated compose override references the returned
  * absolute paths via `env_file:`. The in-workspace `.shipit/.env.<service>`
- * writer this replaced is gone (SHI-290) — it survived docs/183 as a fallback
+ * writer this replaced is gone (planning#292) — it survived docs/183 as a fallback
  * for callers that configured no root, which production never was, and it was
  * the last thing in the codebase that put a ShipIt-generated file inside a
  * user's git clone (docs/246 req 7).
@@ -709,7 +709,7 @@ const SECRETS_ENTRYPOINT_SUBDIR = "_entrypoint";
 const SECRETS_ENTRYPOINT_FILE = "secrets-entrypoint.sh";
 
 /**
- * SHI-285 — stage the Docker-secrets entrypoint wrapper where the Docker
+ * planning#287 — stage the Docker-secrets entrypoint wrapper where the Docker
  * **daemon** can bind-mount it into service containers, and return the path to
  * reference from the compose override.
  *
@@ -785,7 +785,7 @@ export function writeAgentEnvFile(opts: {
   /**
    * The session's clone. Resolves the session state dir the file is written to
    * (orchestrator-side, outside the clone) — there is no in-clone placement any
-   * more (SHI-286).
+   * more (planning#288).
    */
   workspaceDir: string;
   body: string;

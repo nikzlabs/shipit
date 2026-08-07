@@ -1,6 +1,6 @@
 /**
  * Egress reload — apply a newly-added allowlist host to a RUNNING session
- * without a container restart (docs/172 Gap 1, SHI-90).
+ * without a container restart (docs/172 Gap 1, planning#92).
  *
  * "Add to allowlist" persists durably (EgressAllowlistStore), but a contained
  * session that is already running was launched with the OLD resolver config +

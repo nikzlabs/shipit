@@ -178,7 +178,7 @@ export function createWarmPool(
         await materializeLfsWithWarning(workspaceDir, repoUrl, (message) =>
           sseBroadcast("error", { message }),
         );
-        // docs/150 §7 addendum (SHI-145): hand the workspace back to the worker
+        // docs/150 §7 addendum (planning#147): hand the workspace back to the worker
         // uid after the root orchestrator's fetch + `checkout -b` + ref
         // realignment. `checkout -b <resetTarget>` re-materializes the WORKTREE
         // (not just `.git`), so hand back both — otherwise the warm session's

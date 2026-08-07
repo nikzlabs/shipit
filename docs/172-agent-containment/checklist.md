@@ -18,13 +18,13 @@ tracker as separate issues. None implemented yet.
       credentials, that github.com still resolves via the global helper (push/pull
       unaffected), and that no plaintext token lands in `.git/config`; host scoping is
       covered by `services/github-credential.test.ts` and `agent-shim/git-credential.test.ts`.
-      (SHI-72)
-- **Gap 2-R — credential broker is caller-blind (residual after SHI-72). [SHI-79]** Verified
+      (planning#74)
+- **Gap 2-R — credential broker is caller-blind (residual after planning#74). [planning#81]** Verified
       live 2026-06-03: `git credential fill` for `github.com` (or invoking
       `/usr/local/bin/shipit-git-credential get` directly) still returns the full `ghp_…`
       PAT to any code running in the session. The broker authorizes by host, not by caller,
-      and the agent is indistinguishable from `git`. SHI-72 closed plaintext-at-rest and
-      host-blindness but not on-demand extraction. Fix is defense-in-depth (SHI-79):
+      and the agent is indistinguishable from `git`. planning#74 closed plaintext-at-rest and
+      host-blindness but not on-demand extraction. Fix is defense-in-depth (planning#81):
   - [x] **Short-lived, repo-scoped-token *mechanism* (highest leverage).** `GitHubAppTokenMinter`
         (`github-app-token.ts`) mints single-repo-scoped GitHub App installation tokens
         (`contents:write`, `pull_requests:write`, `metadata:read`; cached with a 5-min refresh
@@ -42,12 +42,12 @@ tracker as separate issues. None implemented yet.
   - [ ] **Remove the PAT broker path** once a GitHub App is mandatory.
   - [ ] **Out-of-process git** — push/pull/fetch from the orchestrator host so the token
         never enters the container (the other listed mitigation; larger, separate).
-- **Gap 1 — outbound egress control (SHI-90).** Full design in
+- **Gap 1 — outbound egress control (planning#92).** Full design in
   [egress-control.md](./egress-control.md). Enforcement is a network-layer gateway
   middlebox (the `HTTP_PROXY` env-var proxy is not a real control — a raw socket bypasses
   it). Delivered as **one PR, sequential commits A→B→C, each independently green**.
 
-  **Merged (SHI-90 PR #1301):**
+  **Merged (planning#92 PR #1301):**
   - [x] Allowlist matcher (`egress-allowlist.ts` + test) — base + `SESSION_EGRESS_ALLOWLIST`
         + live MCP hosts; suffix matching rejects look-alikes. Reused by Tier C.
   - [x] The interim explicit `HTTP_PROXY` proxy was reverted before merge (non-enforcing;
@@ -56,7 +56,7 @@ tracker as separate issues. None implemented yet.
   **Architecture resolved (egress-control.md):** enforcement is installed **inside the
   agent's own netns** by privileged orchestrator-launched sidecars
   (`--network container:<agent> --cap-add NET_ADMIN`) — no separate network / gateway /
-  routing. SHI-31's non-root agent makes the Tier C owner-match exemption unambiguous.
+  routing. planning#33's non-root agent makes the Tier C owner-match exemption unambiguous.
 
   **To build (the actual control):**
   - **Tier A** — iptables default-deny (`OUTPUT DROP`) + `ipset` allow-set installed in the
@@ -222,7 +222,7 @@ tracker as separate issues. None implemented yet.
         so a brand-new host resolves (DNS + dnsmasq `ipset=` auto-pin) and is SNI-permitted
         without a container restart. Browser-only routes (`api-routes-egress.ts`:
         `GET/PUT /api/egress/settings`, `POST/DELETE /api/egress/hosts`,
-        `GET/PUT /api/egress/session/:id`) carry NO `containerAccessible` flag, so SHI-129's
+        `GET/PUT /api/egress/session/:id`) carry NO `containerAccessible` flag, so planning#131's
         default-deny protects them (golden route-table unchanged — no new container route).
         Client: `egress-store.ts` (Zustand) + `SettingsEgress.tsx` (Advanced tab) +
         `egress_settings` SSE sync. Tests: store, routes, reload seam, WS write-through,
@@ -260,7 +260,7 @@ tracker as separate issues. None implemented yet.
           network** (`SHIPIT_SESSION_NETWORK` is set in the agent env but never read back to
           connect; the only `connectToNetwork`/`NetworkingConfig`/`network.connect` calls
           target the full-id **compose** network). Keeping children off the agent/orchestrator
-          network is the deliberate SHI-135 isolation property — the agent drives children via
+          network is the deliberate planning#137 isolation property — the agent drives children via
           the Docker API proxy (`DOCKER_HOST`), not by IP — so the agent is never multi-homed
           onto that subnet and there is nothing to re-open. `allowEgressToSubnets` /
           `extractNetworkSubnets` stay scoped to the compose-network join (the only real hole).
@@ -312,7 +312,7 @@ tracker as separate issues. None implemented yet.
           `deployment/vps/docker-compose.yml` (→ `shipit-egress-sidecar:prod`), and wired it into
           both `docker/local/dev.sh` and `deployment/vps/deploy.sh` build commands, so every dev
           boot / prod deploy rebuilds the sidecar in lockstep with `main`.
-    - [x] **Default-on flip (SHI-90, fail-closed for ALL instances).** Enforcement is now ON
+    - [x] **Default-on flip (planning#92, fail-closed for ALL instances).** Enforcement is now ON
           by default: `egressEnforceEnabled()` returns true unless `SESSION_EGRESS_ENFORCE=0`
           (Tiers B/C likewise default on, gated `!== "0"`, preserving C ⊃ B ⊃ A). All three
           compose files set `SESSION_EGRESS_SIDECAR_IMAGE` (dev → `:dev`, vps/local-prod →
@@ -367,26 +367,26 @@ tracker as separate issues. None implemented yet.
 
 ## P2
 
-- **Gap 6 — read-only mounts (SHI-45).** Downgrade mounted data to `:ro` where the agent
+- **Gap 6 — read-only mounts (planning#47).** Downgrade mounted data to `:ro` where the agent
       has no legitimate write need.
-  - [x] **`/uploads` → `:ro` (SHI-45, shipped).** `buildMounts` mounts `/uploads`
+  - [x] **`/uploads` → `:ro` (planning#47, shipped).** `buildMounts` mounts `/uploads`
         read-only in both modes (`:ro` bind / `ReadOnly: true` volume). Safe because the
         agent only *reads* uploads — they're written orchestrator-side on the host
         (`services/files.ts`), so a prompt-injected agent can no longer delete/tamper with
         them. Tests in `container-lifecycle.test.ts`; agent docs updated
         (`shipit-docs/environment.md`). (`container-lifecycle.ts` `buildMounts`)
-  - [ ] **`/credentials` → `:ro` — blocked on SHI-164.** The agent CLI refreshes its OAuth
+  - [ ] **`/credentials` → `:ro` — blocked on planning#166.** The agent CLI refreshes its OAuth
         token **in place inside the mount** (docs/142), so `:ro` would break auth. Prereq
-        scoped in plan.md Gap 6 and tracked as **SHI-164** (relocate the CLI's writable
+        scoped in plan.md Gap 6 and tracked as **planning#166** (relocate the CLI's writable
         token file out of the `/credentials` mount, re-point the host-side copy-back, then
-        flip `:ro`). Do NOT flip until SHI-164 lands.
-  - [x] **Cross-platform validation (SHI-45).** The `:ro` mount is a standard Docker API
+        flip `:ro`). Do NOT flip until planning#166 lands.
+  - [x] **Cross-platform validation (planning#47).** The `:ro` mount is a standard Docker API
         field (Binds `:ro` / `ReadOnly: true`), portable by construction across Docker
         Engine (Linux), Docker Desktop (macOS), and WSL2; unit-tested here. Live
         in-container enforcement check (`touch /uploads/x` → EROFS) deferred to a real
         Docker host (no DinD in this session), folded into the 067 live matrix. See plan.md
         Gap 6 "Cross-platform validation".
-- [x] **Gap 5 — kernel-tier hardening (SHI-97, shipped default-OFF).** Three env-gated
+- [x] **Gap 5 — kernel-tier hardening (planning#99, shipped default-OFF).** Three env-gated
       controls in `container-hardening.ts`, applied in `container-lifecycle.ts`:
       - [x] **gVisor (`runsc`)** — decision **adopt as operator opt-in, default `runc`**
             (host must register the runtime; real cost on the npm/file-watch workload, so
@@ -398,10 +398,10 @@ tracker as separate issues. None implemented yet.
             otherwise — never `unconfined`); fail-closed on a bad profile. Allowed set
             documented in plan.md + the profile header.
       - [x] **ReadonlyRootfs** — `SESSION_READONLY_ROOTFS=1` → `ReadonlyRootfs: true` + tmpfs
-            for `/tmp` (exec), `/run`, `/home/shipit` (exec). Reuses SHI-31's writable-path
+            for `/tmp` (exec), `/run`, `/home/shipit` (exec). Reuses planning#33's writable-path
             enumeration; the persistent mounts (/workspace, /credentials, /uploads,
             /dep-cache) stay writable. Entrypoint re-creates credential symlinks into the
-            tmpfs HOME (`SHIPIT_READONLY_HOME=1`). Distinct from SHI-45's `:ro` bind mounts.
+            tmpfs HOME (`SHIPIT_READONLY_HOME=1`). Distinct from planning#47's `:ro` bind mounts.
       - [x] Unit tests (`container-hardening.test.ts` + HostConfig wiring in
             `session-container.test.ts`); regression-guards CapDrop/CapAdd/no-new-privileges.
       - [x] **Live-host verification (2026-06-16, dogfood container-mode orchestrator) —
@@ -465,9 +465,9 @@ tracker as separate issues. None implemented yet.
 - [x] **Gap 4 — untrusted-input lens.** Treat uploaded files, cloned-repo content, web
       fetches, MCP tool returns, **and issue-tracker text** as untrusted; fold into the
       egress/trust work and apply to future input surfaces. General mechanism shipped in
-      SHI-98 — a reusable provenance envelope (`shared/untrusted-input.ts`) applied to
+      planning#100 — a reusable provenance envelope (`shared/untrusted-input.ts`) applied to
       brokered file/upload content plus a system-prompt rule covering all surfaces. The
-      **issue-text slice is now enrolled (SHI-85, `docs/176`)**: the `shipit issue` shim
+      **issue-text slice is now enrolled (planning#87, `docs/176`)**: the `shipit issue` shim
       wraps fetched title/body/comments with the same envelope (`source: "issue"`),
       comments framed as lower trust than the body. Full designs:
       `docs/201-untrusted-input-lens`, `docs/176-issue-content-injection-hardening`.

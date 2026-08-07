@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-211
+issue: planning#213
 description: Read-only turn diff panel — with side-by-side image diffs and a rendered/source toggle for SVGs.
 ---
 

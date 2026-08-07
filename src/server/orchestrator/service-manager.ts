@@ -106,7 +106,7 @@ export interface ManagedService {
    *
    * This is the address the agent's own tooling — `curl` and the in-container
    * Playwright browser — should hit to reach the live preview. docs/172 Gap 1
-   * (SHI-90) opens the agent's egress to its session subnet so this IP is
+   * (planning#92) opens the agent's egress to its session subnet so this IP is
    * routable from the agent's netns. It is deliberately NOT the user's
    * Preview-tab origin, which is the orchestrator's `{sessionId}--{port}.<host>`
    * subdomain proxy and does not resolve from inside the agent container. See
@@ -262,7 +262,7 @@ export interface ServiceManagerOptions {
    *     for orchestrator-on-host setups.
    *   - `entrypointSourcePath`: orchestrator path to the
    *     `secrets-entrypoint.sh` baked into the image. Staged into the
-   *     Docker-secrets root at compose-start (SHI-285) so service containers
+   *     Docker-secrets root at compose-start (planning#287) so service containers
    *     can bind-mount it by absolute path.
    *
    * When omitted, the manager falls back to the env-file mode (Phase 1
@@ -276,7 +276,7 @@ export interface ServiceManagerOptions {
    * references those absolute paths, keeping service-only secrets out of the
    * agent-readable workspace.
    *
-   * **Required** (SHI-290) — see `ServiceSecretsResolverOptions.serviceEnvDir`
+   * **Required** (planning#292) — see `ServiceSecretsResolverOptions.serviceEnvDir`
    * for why the optional form had to go. The root must resolve outside
    * `workspaceDir` or the write throws.
    */
@@ -424,7 +424,7 @@ export class ServiceManager extends EventEmitter {
    * Services with a `docker compose up` currently in flight, reference-counted
    * by overlapping calls (a user-initiated start can race a retry attempt for
    * the same service). Read by the poller's missing-container reconciliation
-   * (SHI-314): a service being brought up legitimately has no container yet —
+   * (planning#316): a service being brought up legitimately has no container yet —
    * for minutes, if an image is building — and must not be reconciled to
    * `stopped` in that window. Always mutated via {@link withUpInFlight} so the
    * count is released even when compose throws.
@@ -457,7 +457,7 @@ export class ServiceManager extends EventEmitter {
     // clone, so the post-turn `git add -A` can never stage it into the user's
     // repository. Derived from the clone path via the one contract every side
     // of the feature shares; a clone that isn't `<sessionDir>/workspace` throws
-    // rather than falling back into the clone (SHI-286).
+    // rather than falling back into the clone (planning#288).
     this.overrideDir = sessionStateDirForWorkspace(opts.workspaceDir);
     this.compose = new ComposeCli({
       sessionId: opts.sessionId,
@@ -1368,7 +1368,7 @@ export class ServiceManager extends EventEmitter {
 
   /**
    * Mark `names` as having a `compose up` in flight for the duration of `fn`
-   * (SHI-314). Every `compose up`/`up <service>` call goes through this so the
+   * (planning#316). Every `compose up`/`up <service>` call goes through this so the
    * poller can tell "this service has no container because it is still coming
    * up" from "this service's container disappeared".
    */

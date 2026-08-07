@@ -39,7 +39,7 @@ export interface ComposeCliOptions {
   /**
    * docs/246 — absolute path to the generated compose override, which lives in
    * the session's state dir, never in `<clone>/.shipit/`. Required: there is no
-   * safe default, and the in-clone one this replaced (SHI-286) put a generated
+   * safe default, and the in-clone one this replaced (planning#288) put a generated
    * file where the post-turn `git add -A` stages it into the user's repository.
    *
    * Passing an absolute path is safe: compose anchors the **project directory**
@@ -137,14 +137,14 @@ export class ComposeCli {
     );
     let ids = stdout.split("\n").map(s => s.trim()).filter(Boolean);
     if (ids.length === 0) return;
-    // The Tier B resolver and Tier C SNI proxy (docs/172, SHI-90) share the agent's
+    // The Tier B resolver and Tier C SNI proxy (docs/172, planning#92) share the agent's
     // netns and are LONG-LIVED sidecars, not stale compose containers — they carry
     // shipit-parent-session only so destroy-time cleanup reaps them. Exclude them
     // from this pre-start sweep, or we'd SIGKILL them ~1s after the agent launches
     // and leave the session with no resolver / no HTTPS. Docker `--filter` has no
     // label negation, so subtract a query per keep-label and union the results.
     //
-    // SHI-222: the keep-list must be INCARNATION-aware. Both labels are keyed on
+    // planning#224: the keep-list must be INCARNATION-aware. Both labels are keyed on
     // the session id, which is stable across container recreations — so a naive
     // label match also spares the sidecars of a PREVIOUS, dead agent container
     // (the session OOM'd and was recreated). Those share a torn-down namespace
@@ -182,7 +182,7 @@ export class ComposeCli {
   /**
    * Is `id`'s netns parent (`HostConfig.NetworkMode: container:<parentId>`) still
    * a running container? — the incarnation test for {@link killStaleContainers}'s
-   * egress-sidecar keep-list (SHI-222).
+   * egress-sidecar keep-list (planning#224).
    *
    * The agent container carries no `RestartPolicy`, so it never legitimately goes
    * running → stopped → running underneath a live sidecar: "parent not running"

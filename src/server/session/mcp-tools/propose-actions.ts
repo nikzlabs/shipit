@@ -1,5 +1,5 @@
 /**
- * propose_actions tool — action checklist cards (docs/207 / SHI-153).
+ * propose_actions tool — action checklist cards (docs/207 / planning#155).
  *
  * Pure transport: POSTs the proposed actions to the worker's
  * `/agent-ops/propose-actions` broker, which relays to the orchestrator. The

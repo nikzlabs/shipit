@@ -1,5 +1,5 @@
 /**
- * Egress allow-once policy — Tier C decision state (docs/172 Gap 1, SHI-90).
+ * Egress allow-once policy — Tier C decision state (docs/172 Gap 1, planning#92).
  *
  * The policy decision point for the Tier C SNI proxy's allow-once flow. The
  * proxy queries the orchestrator for a host not in its static allowlist; this

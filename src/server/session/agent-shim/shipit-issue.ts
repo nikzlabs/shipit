@@ -4,7 +4,7 @@
  *
  * `shipit issue` is the ONE issue interface, identical across every backend.
  * Read = view/list; write = create/comment/comment edit/edit/status/assign.
- * `comment edit` (SHI-86) rewrites a comment ShipIt itself posted — someone
+ * `comment edit` (planning#88) rewrites a comment ShipIt itself posted — someone
  * else's is refused server-side, and there is no `comment delete`. Creation is
  * do-then-surface (docs/187) — the issue is created immediately and a provenance
  * card with Undo (which cancels it) is posted. The `shipit issue` dispatch + the
@@ -272,7 +272,7 @@ async function readIssueBody(
 const VALID_PRIORITIES = new Set(["urgent", "high", "medium", "low", "none"]);
 
 /**
- * Validate `--priority` against the tracker (SHI-92). GitHub has no native
+ * Validate `--priority` against the tracker (planning#94). GitHub has no native
  * priority field, so `--priority` is rejected there with a pointer at the label
  * convention rather than silently dropped. On Linear we accept the normalized
  * levels (the server also accepts native names, but the shim keeps the surface
@@ -305,11 +305,11 @@ function validatePriority(
 const PARENT_DETACH = new Set(["none", "null", "detach"]);
 
 /**
- * Validate + normalize `--parent` against the tracker (SHI-206). Sub-issue
+ * Validate + normalize `--parent` against the tracker (planning#208). Sub-issue
  * nesting is **Linear-only** — GitHub issues are flat — so `--parent` is rejected
  * on GitHub with a pointer at the limitation, mirroring how `--priority` is
  * rejected. On Linear, `none`/`null`/`detach` clears the parent; otherwise the
- * value is resolved as a tracker-neutral pointer (`SHI-204` or a Linear URL) to
+ * value is resolved as a tracker-neutral pointer (`planning#206` or a Linear URL) to
  * the parent's issue key. Returns:
  *   - `undefined` → the flag wasn't passed (leave the parent untouched),
  *   - `null`      → detach (clear the parent),
@@ -382,7 +382,7 @@ export async function handleIssueView(args: string[], deps: RunDeps): Promise<vo
     fail(deps.io, `Issue not found: ${identifier}`, 1);
   }
 
-  // `--comments` pulls the thread over a second brokered read (SHI-137). The
+  // `--comments` pulls the thread over a second brokered read (planning#139). The
   // `view` leg already emitted the jump-to-issue card; this read adds none.
   let comments: Record<string, unknown>[] | undefined;
   if (parsed.booleans.has("comments")) {
@@ -430,7 +430,7 @@ export async function handleIssueList(args: string[], deps: RunDeps): Promise<vo
 
   const issues = (res.body.issues as Record<string, unknown>[] | undefined) ?? [];
   if (parsed.booleans.has("json")) {
-    // Token economy (SHI-199): a `--json` list is almost always a "which issue do
+    // Token economy (planning#201): a `--json` list is almost always a "which issue do
     // I pick?" scan needing only identifier/title/status/priority/assignee — never
     // every issue's full markdown body. Both adapters populate `description` on
     // every row, so a default list could ship tens of thousands of tokens of body
@@ -451,7 +451,7 @@ export async function handleIssueList(args: string[], deps: RunDeps): Promise<vo
     success(deps.io, `No issues for ${tracker}.`);
     return;
   }
-  // Issue titles are reporter-authored free-text too (SHI-85 / docs/176), so the
+  // Issue titles are reporter-authored free-text too (planning#87 / docs/176), so the
   // list is wrapped in the same untrusted-input envelope — no issue field reaches
   // the agent as unframed prose. The leading `identifier`/`priority` columns are
   // tracker-derived, but they ride inside the block since the row is one line.
@@ -472,7 +472,7 @@ export async function handleIssueList(args: string[], deps: RunDeps): Promise<vo
 
 /**
  * Project a list row down to the lean default for `shipit issue list --json`
- * (SHI-199) — strip the heavy `description` (full markdown body) that both
+ * (planning#201) — strip the heavy `description` (full markdown body) that both
  * adapters populate per row. The body belongs on `view`, not on a pick-an-issue
  * scan; `--full` skips this projection. A shallow copy, so the source object is
  * untouched.
@@ -484,7 +484,7 @@ function leanListRow(issue: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
- * `shipit issue labels` — list the tracker's pickable labels (SHI-199). The
+ * `shipit issue labels` — list the tracker's pickable labels (planning#201). The
  * discovery surface that lets the agent see valid `--label` values for
  * create/edit without guessing and tripping the rejection error. Read-only;
  * label names are workspace/repo-configured metadata (not reporter free-text),
@@ -524,7 +524,7 @@ export async function handleIssueLabels(args: string[], deps: RunDeps): Promise<
 }
 
 /**
- * `shipit issue statuses` — list the tracker's assignable statuses (SHI-199).
+ * `shipit issue statuses` — list the tracker's assignable statuses (planning#201).
  * Lets the agent pick a valid `shipit issue status <pointer> <state>` target
  * without first `view`-ing an issue (which only carries `availableStatuses`
  * per-issue). Read-only; status names are tracker-config metadata, printed plain
@@ -571,7 +571,7 @@ export async function handleIssueStatuses(args: string[], deps: RunDeps): Promis
 }
 
 /**
- * Caps on the untrusted free-text the shim emits (SHI-85 / docs/176 §4). A giant
+ * Caps on the untrusted free-text the shim emits (planning#87 / docs/176 §4). A giant
  * issue body or comment thread would flood the agent's context (and is a cheap
  * context-stuffing vector), so we clamp the enveloped free-text and mark the
  * envelope `(truncated)`. The metadata lines (identifier/status/url) are tiny and
@@ -584,14 +584,14 @@ const MAX_ISSUE_COMMENTS_CHARS = 24_000;
 /**
  * Render a single `TrackerIssue` as a stable human-readable block.
  *
- * SHI-85 (docs/176): the reporter-authored free-text — the **title and body** —
+ * planning#87 (docs/176): the reporter-authored free-text — the **title and body** —
  * is attacker-influenceable on a public tracker (anyone with an account can file
- * an issue), so it is wrapped in the SHI-98 untrusted-input provenance envelope
+ * an issue), so it is wrapped in the planning#100 untrusted-input provenance envelope
  * (`shared/untrusted-input.ts`, `source: "issue"`) and treated as DATA, not
  * instructions. This is the agent's single text-ingestion point for issue
  * content; `--json` returns the same fields structurally instead. The framing is
  * defense-in-depth, never the barrier — the load-bearing controls are the
- * environment layer (egress allowlist SHI-90, scoped tokens SHI-79).
+ * environment layer (egress allowlist planning#92, scoped tokens planning#81).
  *
  * The metadata lines (identifier, status, priority, assignee, url, available
  * statuses) are ShipIt/tracker-derived structured values, not reporter prose, so
@@ -629,13 +629,13 @@ function renderIssue(issue: Record<string, unknown>, tracker: string): string {
 }
 
 /**
- * Render an issue's comment thread for `shipit issue view --comments` (SHI-137).
+ * Render an issue's comment thread for `shipit issue view --comments` (planning#139).
  * Oldest-first (the order the orchestrator returns), one block per comment with
  * an author · timestamp header.
  *
  * Comment bodies are attacker-controllable data, same as the issue body — and
  * **strictly lower trust** (docs/176 §3: anyone can comment, no maintainer
- * gate), so the whole thread is wrapped in the SHI-98 untrusted-input envelope
+ * gate), so the whole thread is wrapped in the planning#100 untrusted-input envelope
  * with a provenance note that says so. Printed verbatim, never interpreted.
  */
 function renderComments(
@@ -684,7 +684,7 @@ const LABEL_COLOR_RE = /^#?[0-9a-fA-F]{6}$/;
 
 /**
  * `shipit issue label create` — mint a tracker label so `--label` can apply it
- * (SHI-230). Do-then-surface like the other writes: created immediately, with a
+ * (planning#232). Do-then-surface like the other writes: created immediately, with a
  * provenance card whose Undo deletes the label if it's still unused. It mutates a
  * tracker's CONFIG, so docs/248 req 13's rule applies as it does to
  * `issue create`: `--tracker <name>` is required, there is no default.
@@ -776,7 +776,7 @@ export async function handleIssueCreate(args: string[], deps: RunDeps): Promise<
   // A new issue has no prior parent to clear, so only forward a parent to SET
   // (a truthy key); `none`/detach (null) is a no-op on create.
   if (parent) payload.parent = parent;
-  // Opt-in (SHI-230): unknown --label names are created before being applied.
+  // Opt-in (planning#232): unknown --label names are created before being applied.
   // Without the flag they keep failing with the label-create hint.
   if (parsed.booleans.has("createMissingLabels")) payload.createMissingLabels = true;
   const res = await deps.call("POST", "/agent-ops/issue/create", payload, deps.env);
@@ -788,7 +788,7 @@ export async function handleIssueCreate(args: string[], deps: RunDeps): Promise<
 
 export async function handleIssueComment(args: string[], deps: RunDeps): Promise<void> {
   // `comment` is a small verb group: bare `comment <ref>` posts, `comment edit`
-  // rewrites (SHI-86) — the same shape `label create` uses. No pointer form is
+  // rewrites (planning#88) — the same shape `label create` uses. No pointer form is
   // the bare word `edit`, so the two can't be confused. (`shipit issue edit`
   // remains the ISSUE editor; this one edits a comment on it.)
   if (args[0] === "edit") {
@@ -833,7 +833,7 @@ export async function handleIssueComment(args: string[], deps: RunDeps): Promise
 
 /**
  * `shipit issue comment edit <ref> --comment <id> -b BODY` — rewrite a comment
- * the agent posted (SHI-86).
+ * the agent posted (planning#88).
  *
  * The issue pointer is required alongside `--comment` rather than derived from
  * the comment id: a comment id is backend-global, so the issue is what names the
@@ -932,7 +932,7 @@ export async function handleIssueEdit(args: string[], deps: RunDeps): Promise<vo
   if (priority !== undefined) payload.priority = priority;
   // `parent` may be a key (set) or null (detach); forward both, omit undefined.
   if (parent !== undefined) payload.parent = parent;
-  // Opt-in (SHI-230), mirroring create.
+  // Opt-in (planning#232), mirroring create.
   if (parsed.booleans.has("createMissingLabels")) payload.createMissingLabels = true;
   const res = await deps.call("POST", "/agent-ops/issue/edit", payload, deps.env);
   if (res.status < 200 || res.status >= 300) {

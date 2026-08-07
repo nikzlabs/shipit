@@ -40,7 +40,7 @@ export interface CompactionCard {
  * terminal status, not just success (a cancelled/timed-out/failed consult is
  * still a fact the transcript should keep).
  *
- * SHI-278 — the card is now created in a `pending` state at SPAWN time and
+ * planning#280 — the card is now created in a `pending` state at SPAWN time and
  * patched to its terminal status on completion, so an in-flight consult has a
  * DURABLE surface. The transient `sub_agent_spawn` chip is live activity only
  * and dies on the first session switch; since docs/236 tells agents to
@@ -61,14 +61,14 @@ export interface SubAgentConsultCard {
    */
   status: "pending" | "success" | "error" | "timeout" | "cancelled";
   /**
-   * SHI-307 — a SHIPIT-authored one-line explanation of a terminal status, for
+   * planning#309 — a SHIPIT-authored one-line explanation of a terminal status, for
    * the cases where the status alone is misleading. Currently set only by the
    * boot reconcile, which cancels consults stranded `pending` by an orchestrator
    * restart: without it "Cancelled Codex" is indistinguishable from a consult
    * the user cancelled.
    *
    * Deliberately NOT `outputMarkdown`. That field is the sub-agent's verbatim
-   * words — it is what `shipit agent result` prints on stdout and what SHI-245
+   * words — it is what `shipit agent result` prints on stdout and what planning#247
    * guarantees is the same artifact the user reads — so putting ShipIt's own
    * prose there would hand a caller our apology in the consultant's voice. This
    * field renders as ShipIt's commentary on both surfaces (the card face, and
@@ -89,7 +89,7 @@ export interface SubAgentConsultCard {
    */
   outputMarkdown?: string;
   /**
-   * docs/244 / SHI-297 — set on the SERVE path only: `outputMarkdown` carries
+   * docs/244 / planning#299 — set on the SERVE path only: `outputMarkdown` carries
    * just the one-line preview the card face draws, and the full text is fetched
    * from `/api/sessions/:id/sub-agent-consults/:cardId` when the viewer opens.
    * Never persisted — the stored card always holds the whole output, which is
@@ -100,7 +100,7 @@ export interface SubAgentConsultCard {
 }
 
 /**
- * docs/207 / SHI-153 — one optional action the agent proposes via the
+ * docs/207 / planning#155 — one optional action the agent proposes via the
  * `propose_actions` tool. The card renders these as a button (one action) or a
  * checklist (2+); ticking declares intent and the agent does the work, so no
  * field here ever executes anything directly.
@@ -124,7 +124,7 @@ export interface ActionChecklistItem {
 }
 
 /**
- * docs/207 / SHI-153 — a persisted "action checklist" transcript card. The agent
+ * docs/207 / planning#155 — a persisted "action checklist" transcript card. The agent
  * proposes one or more INDEPENDENT optional follow-ups; the user resolves the
  * subset they want with a SINGLE batched submit (one message → one turn, never N
  * racing clicks). The card is an immutable, reusable message composer: it has no
@@ -179,7 +179,7 @@ export interface BranchAutoResetCard {
   /** Emit time — doubles as the provenance stamp. */
   createdAt: string;
   /**
-   * SHI-277 — this reset ran under `shipit branch reset-to-base --force`, which
+   * planning#279 — this reset ran under `shipit branch reset-to-base --force`, which
    * bypasses the "this branch is exactly what merged" safety clause. The forced
    * path is trust-based rather than gated, so the transcript record IS the
    * accountability: absent these two fields the card describes a reset that

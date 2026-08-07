@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-117
+issue: planning#119
 description: ShipIt-managed auto-merge fallback (merges via REST when GitHub native auto-merge is unavailable), and the fix that keeps a CI-green managed merge silent until the PR is observed merged.
 ---
 

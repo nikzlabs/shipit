@@ -50,7 +50,7 @@ export const SUBAGENT_REPORT_TOOL_NAMES = new Set(["Task", "Agent"]);
  *     (`resolvedAnswer={result?.content}`), and the Ask branch of
  *     `MessageToolUse` **returns before the output modal**, so there is no
  *     click, no modal and no fetch. A >16 KB free-form answer used to lose its
- *     tail permanently (SHI-291): recorded as a requirement-4 shortfall, but it
+ *     tail permanently (planning#293): recorded as a requirement-4 shortfall, but it
  *     also broke requirement 2 (nothing displays or fetches the rest) and
  *     requirement 8 (the Ask card *is* the transcript). Bounding an answer, if
  *     ever wanted, belongs at the input — not at the projection, which is the

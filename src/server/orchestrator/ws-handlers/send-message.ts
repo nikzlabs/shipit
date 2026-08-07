@@ -102,7 +102,7 @@ export async function handleSendMessage(
     // race). Without this check, the new message would be queued forever
     // and the user sees: "agent starts briefly, nothing happens".
     const actuallyRunning = await runnerForQueue.verifyRunningState();
-    // SHI-280 — the recovery inside `verifyRunningState` may have released a
+    // planning#282 — the recovery inside `verifyRunningState` may have released a
     // queue entry the phantom turn was blocking, which claims the runner
     // synchronously. Re-read `running` rather than trusting the return value, or
     // this message falls through and spawns a second agent against the one the
@@ -300,7 +300,7 @@ export async function handleSendMessage(
           }
           // Broadcast message_steered so all viewers (including other tabs) see it.
           //
-          // docs/244 / SHI-297 — the echo goes out projected: base64 payloads are
+          // docs/244 / planning#299 — the echo goes out projected: base64 payloads are
           // replaced by the same `/images/:hash` URLs `projectMessagesForWire`
           // builds, so a steered screenshot doesn't cross the wire twice (once
           // here, once on every later history load). Safe by ordering rather than
@@ -332,7 +332,7 @@ export async function handleSendMessage(
       runnerForQueue.dispatch(prepareDispatch({
         text: msg.text,
         agentInterface: undefined,
-        // SHI-255 — a user-typed message: when this queues behind the running
+        // planning#257 — a user-typed message: when this queues behind the running
         // turn, the drain must reproduce an INTERACTIVE turn (the client already
         // rendered an optimistic bubble, so the dispatched executor's
         // `system_user_message` echo would double it).
@@ -445,7 +445,7 @@ export async function handleSendMessage(
     // not inline setWarm / track / setBranchRenamed / scheduleSessionNaming /
     // repoStore.touch / sseBroadcast("session_list") here.
     if (session?.warm) {
-      // SHI-320 — this message is the first one of a session the Issues tab
+      // planning#322 — this message is the first one of a session the Issues tab
       // started from an issue, so the issue reaches ShipIt here rather than at
       // creation. Pin the branch to the pointer (docs/248 req 22) BEFORE
       // graduating: the pins are what stop AI naming from deriving a branch
@@ -479,7 +479,7 @@ export async function handleSendMessage(
         },
       );
 
-      // SHI-320 / docs/194 — seed path → started. The headless route fires this
+      // planning#322 / docs/194 — seed path → started. The headless route fires this
       // at creation from the same pointer; the in-app path's "creation" is this
       // first message, so it fires here. Fire-and-forget and fully best-effort:
       // a tracker that isn't connected must never delay or fail the turn.

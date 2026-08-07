@@ -132,7 +132,7 @@ export async function materializeRunner(
 /**
  * Re-materialize an evicted checkout, then create the runner.
  *
- * docs/161 / SHI-179 — a non-archived session whose workspace is missing
+ * docs/161 / planning#181 — a non-archived session whose workspace is missing
  * (disk-evicted, or lost to a real fs failure) must be restored from the bare
  * cache BEFORE a container boots, or the workspace bind-mount source 404s and
  * the connect → create → 404 → dispose cycle loops forever. This preserves the

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Intra-session subnet allow — docs/172-agent-containment Gap 1 (SHI-90).
+# Intra-session subnet allow — docs/172-agent-containment Gap 1 (planning#92).
 #
 # Companion to init-firewall.sh. Runs in a SHORT-LIVED PRIVILEGED SIDECAR that
 # shares the agent container's network namespace:
@@ -31,7 +31,7 @@
 # NOT fail-close on a non-zero exit here: failing to open the preview subnet only
 # degrades the agent's own browser reachability, it never weakens containment.
 #
-# Verified on a live Docker host (the SHI-90 checklist), not in unit tests — the
+# Verified on a live Docker host (the planning#92 checklist), not in unit tests — the
 # orchestrator-side wiring that feeds it is unit-tested in egress-firewall-install.test.ts.
 
 set -euo pipefail

@@ -188,7 +188,7 @@ export function persistTurnInProgress(
     { inProgress: true },
   );
   chatHistoryManager.replaceInProgress(sessionId, messages);
-  // docs/244 / SHI-297 — these bodies are now on disk, so the reconnect snapshot
+  // docs/244 / planning#299 — these bodies are now on disk, so the reconnect snapshot
   // may strip them. Recorded from the list actually written, never from the live
   // groups: a group keeps accumulating after it is persisted, so "what we just
   // wrote" and "what the group holds now" diverge within the same turn.

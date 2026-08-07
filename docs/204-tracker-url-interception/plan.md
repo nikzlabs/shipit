@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-138
+issue: planning#140
 title: Intercept tracker issue URLs in markdown → open the in-app issue viewer
 description: Linear/GitHub issue links in rendered markdown open ShipIt's inline Issues viewer instead of navigating out, gated on the tracker being connected.
 ---
@@ -7,7 +7,7 @@ description: Linear/GitHub issue links in rendered markdown open ShipIt's inline
 # Intercept tracker issue URLs in markdown
 
 When a Linear or GitHub **issue URL** appears as a link in rendered markdown —
-`https://linear.app/shipit-ai/issue/SHI-137`,
+`planning#139`,
 `https://github.com/owner/repo/issues/42`, or the GitHub short form
 `owner/repo#42` — clicking it opens ShipIt's **in-app Issues viewer** (the
 master-detail panel, docs/189) instead of bouncing the browser out to

@@ -1,4 +1,4 @@
-# Checklist — container ↔ browser trust boundary (SHI-129)
+# Checklist — container ↔ browser trust boundary (planning#131)
 
 ## Guard
 - [x] Add `api-container-guard.ts`: `registerContainerOriginGuard(app, { containerManager })` wiring an `onRequest` hook — normalize source IP (strip `::ffff:`, ignore `X-Forwarded-For`) → `getSessionByContainerIp` → hard-deny backstop → per-route `containerAccessible` check → own-session scope. Plus pure `isHardDeniedGlobal(pathname)`.
@@ -22,5 +22,5 @@
 - [x] Update `SECURITY-MODEL.md` (container-vs-browser boundary + revise "No orchestrator-level user auth" note).
 - [x] Cross-reference from `docs/172-agent-containment/`.
 - [x] `npm run lint:dev` + `npm run typecheck` clean.
-- [x] Comment on SHI-129 summarizing the doc.
-- [x] Open PR with `Closes SHI-129`.
+- [x] Comment on planning#131 summarizing the doc.
+- [x] Open PR with `Closes planning#131`.

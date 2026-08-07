@@ -43,7 +43,7 @@ interface ExplicitResetPresentationDeps {
   sessionId: string;
   prStatus: PrStatusSummary | null | undefined;
   /**
-   * SHI-277 — durable PR identity for the card when the live snapshot is gone.
+   * planning#279 — durable PR identity for the card when the live snapshot is gone.
    * `PrStatusPoller.reArm` nulls `prStatus` on any merged session that gained
    * new work, which is the ordinary state of a session needing a forced reset —
    * and without a fallback the destructive move would leave NO transcript
@@ -158,7 +158,7 @@ export async function registerGitRoutes(
       if (!dir) return;
       const sessionId = request.params.id;
       const prStatus = sessionManager.getPrStatus(sessionId);
-      // SHI-277 — the break-glass. A force with no stated reason is not a
+      // planning#279 — the break-glass. A force with no stated reason is not a
       // break-glass, it is a silent bypass: the reason IS what replaces the gate
       // this mode removes, so it is validated here rather than trusted from the
       // shim (the HTTP route is container-reachable in its own right).

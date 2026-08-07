@@ -33,7 +33,7 @@ The `dev` service's credentials are **user-supplied secrets**, set once in the o
 - They rank as a **metered fallback below** connected subscription accounts.
 - A spawn with **no session route** — `generateText`, used for PR descriptions — is **not** scrubbed. So a key set "just in case" would silently bill for those calls while every real turn ran on the subscription.
 
-`local-agent-credentials.ts` maintains that unscoped fallback home (SHI-282) and is not on the per-turn path.
+`local-agent-credentials.ts` maintains that unscoped fallback home (planning#284) and is not on the per-turn path.
 
 ## Seeding
 

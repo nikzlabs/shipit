@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-169
+issue: planning#171
 title: Secret-scan guard — requirements
 description: What the commit-time credential guard must do, in the human's terms.
 ---

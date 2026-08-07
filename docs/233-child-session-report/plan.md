@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-241
+issue: planning#243
 title: Child → parent (and sibling) session reports
 description: A spawned session pushes a finding to its parent and cohort with `shipit session report`, landing as a persisted card plus a queued wake-turn instead of waiting to be pulled from a PR.
 ---
@@ -41,7 +41,7 @@ produces information that must travel **upward or sideways**:
   should expect from it;
 - findings that invalidate or endanger a **sibling's** work.
 
-The motivating case (SHI-241): three siblings authoring one spell catalog each
+The motivating case (planning#243): three siblings authoring one spell catalog each
 against a shared plan. The elementalist child found that a shared regeneration
 command silently deletes **all three** catalogs, not just its own. It had no way
 to tell the parent and no way to warn the siblings — the ones actually at risk.

@@ -354,7 +354,7 @@ export interface AgentCompactedEvent {
 }
 
 /**
- * SHI-112 / docs/193 — an agent backend is asking the user to approve a gated
+ * planning#114 / docs/193 — an agent backend is asking the user to approve a gated
  * action (a sensitive-file edit, an escalated command, …) that the backend
  * cannot auto-approve in ShipIt's headless model. This is the agent-agnostic
  * canonical shape: the worker's `PermissionBroker` broadcasts it (wrapped in an
@@ -574,7 +574,7 @@ export interface AgentRunParams {
    */
   sandbox?: boolean;
   /**
-   * SHI-265 — when true, the Claude adapter sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1
+   * planning#267 — when true, the Claude adapter sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1
    * in the CLI environment, which arms the managed-settings.json PreToolUse
    * hook's destructive-git rule (`git reset --hard`, `git checkout -f`,
    * force-push). Set only when the session is merged with a recorded
@@ -604,7 +604,7 @@ export interface AgentRunParams {
 
 /**
  * Resolved launch paths for the consolidated internal MCP bridge
- * (SHI-128 / docs/199). The worker resolves this ONCE (`resolveBridge`,
+ * (planning#130 / docs/199). The worker resolves this ONCE (`resolveBridge`,
  * preferring the precompiled bundle over tsx-on-source) and hands it to the
  * adapter, which writes a single `shipit` MCP server entry. The set of tools
  * that server exposes is selected per agent via the `SHIPIT_MCP_TOOLS` env, not
@@ -636,7 +636,7 @@ export interface AgentMcpWriteContext {
    */
   servers: McpServerConfig[];
   /**
-   * The consolidated internal MCP bridge (SHI-128 / docs/199), or `null` when
+   * The consolidated internal MCP bridge (planning#130 / docs/199), or `null` when
    * the worker can't locate the bridge files (stripped-down test image). Each
    * adapter writes a single `shipit` MCP server entry pointing at it and selects
    * the tools to expose via the `SHIPIT_MCP_TOOLS` env (Claude:
@@ -697,7 +697,7 @@ export interface AgentProcessEvents {
    */
   mcp_status: [McpServerStatus[]];
   /**
-   * SHI-316 — this process no longer owns its runner's agent slot: a NEWER
+   * planning#318 — this process no longer owns its runner's agent slot: a NEWER
    * spawn took the slot while this one had not reached a terminal event.
    *
    * Emitted by the RUNNER (not by the adapter) at the moment of displacement,
@@ -792,7 +792,7 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
    */
   setPermissionRequester?(requester: PermissionRequester): void;
   /**
-   * SHI-264 — stamp this turn's durable DELIVERY id onto the next spawn, so the
+   * planning#266 — stamp this turn's durable DELIVERY id onto the next spawn, so the
    * worker can report it back from `/agent/status` and an orchestrator that
    * restarted mid-turn can tell WHICH server-originated delivery the surviving
    * turn belongs to (see `turn-adoption.ts`).
@@ -870,7 +870,7 @@ export interface WorkerAgentStatus {
   /** The spawning proxy's run token, so a re-created proxy can keep the epoch. */
   runToken?: string;
   /**
-   * SHI-264 — the durable DELIVERY id of the turn in flight, when it was
+   * planning#266 — the durable DELIVERY id of the turn in flight, when it was
    * dispatched on behalf of a server-side delivery (a notify-on-merge wake,
    * either `kind`). Ground truth for "is this delivery still live?": a
    * restarted orchestrator reads it here, rebinds the delivery's completion

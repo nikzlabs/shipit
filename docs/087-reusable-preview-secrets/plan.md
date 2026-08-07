@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-281
+issue: planning#283
 description: Resolve x-shipit-secrets from a repo's compose file against the user's saved secrets and inject them into services, the agent container, and the Settings panel.
 ---
 
@@ -357,7 +357,7 @@ Use Docker Compose's native `secrets:` feature. Secrets are mounted as read-only
 
 ```sh
 #!/bin/sh
-# secrets-entrypoint.sh (baked into the orchestrator image; SHI-285 stages a copy
+# secrets-entrypoint.sh (baked into the orchestrator image; planning#287 stages a copy
 # at <SHIPIT_SECRETS_INTERNAL_DIR>/_entrypoint/ and bind-mounts it into each
 # service container from there. It used to be copied into <clone>/.shipit/, where
 # the post-turn `git add -A` committed it into the user's repo — docs/246 req 1.)

@@ -58,7 +58,7 @@
       notifies; one that outlives it still does, announcing the reason it
       settled on
 
-## Split out as [SHI-247](https://linear.app/shipit-ai/issue/SHI-247) — now done
+## Split out as planning#249 — now done
 
 - [x] Re-arm the post-turn flow for a self-woken turn so its file changes are
       committed / pushed / surfaced on the PR card. `turn-executor`'s first-wins

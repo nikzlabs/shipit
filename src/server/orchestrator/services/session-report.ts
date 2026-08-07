@@ -1,5 +1,5 @@
 /**
- * Upward + lateral session reports (docs/233, SHI-241).
+ * Upward + lateral session reports (docs/233, planning#243).
  *
  * Session coordination used to be strictly one-directional: a parent could
  * `view` / `message` / `wait` on / `notify-on-merge` its children, but a child

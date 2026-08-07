@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-118
+issue: planning#120
 title: Async notify-on-merge watch for spawned child sessions
 description: A parent session arms a watch and is woken by a queued system turn when a spawned child's PR merges (or closes), without blocking a turn on human-review latency.
 ---
@@ -79,7 +79,7 @@ armed ──merge observed──▶ merge-observed ──wake-turn RAN──▶ 
   was enqueued so the parent doesn't proceed as if the work shipped. Terminal.
 - **`delivery-failed`** — delivery threw `MAX_DELIVERY_ATTEMPTS` times; the watch
   gives up, surfaces a failure card into the parent, and stops holding the poll
-  loop open (SHI-258). Terminal.
+  loop open (planning#260). Terminal.
 
 The `delivered` / `closed-unmerged` / `delivery-failed` terminal states are the
 fire-once guard: a re-poll or a restart re-observation is a no-op. Re-arming a
@@ -99,10 +99,10 @@ runs ("notification visually there, agent didn't start"). The fix advances to
 `delivered` **only from the wake-turn's `onTurnComplete`** (the same
 turn-completion signal the CI auto-fix loop awaits in `app-lifecycle.ts`).
 
-> **Updated by docs/240 (SHI-261).** That signal is now a *settlement* carrying a
+> **Updated by docs/240 (planning#263).** That signal is now a *settlement* carrying a
 > `TurnOutcome`, and `delivered` is stamped **only** when the outcome is a clean
 > `completed`. A wake-turn that errored, exited without ever producing a result
-> (SHI-260), or was dropped when the parent's queue was cleared records a failed
+> (planning#262), or was dropped when the parent's queue was cleared records a failed
 > attempt instead — and its delivery stops reading as in-flight the moment the
 > turn settles — so the retry supervisor re-attempts it rather than the watch
 > looking healthy while stranded.
@@ -134,14 +134,14 @@ of duplicate "Child PR merged" wake-turns on each restart/reconnect. Carrying
 `delivered` once the turn drains, so reconcile re-fires **only** the genuine
 "restart lost the still-queued turn" case.
 
-### How a queued wake-turn survives the drain (SHI-254 / SHI-255)
+### How a queued wake-turn survives the drain (planning#256 / planning#257)
 
 Carrying `onTurnComplete` on the queue is necessary but wasn't sufficient: two
 defects in the shared dispatch path meant a wake-turn arriving at a *genuinely*
 busy parent still lost it. Both are fixed; the mechanism now honors
 "`delivered` means the turn ran" instead of quietly breaking it.
 
-- **The wake-turn is never live-steered (SHI-254).** `dispatch` consults
+- **The wake-turn is never live-steered (planning#256).** `dispatch` consults
   `trySteerDispatch` before enqueueing, and `shouldSteerMessage` only asks
   whether the **currently running** turn is a system turn — nothing about the
   incoming one. With live steering on, a wake-turn arriving during an ordinary
@@ -153,7 +153,7 @@ busy parent still lost it. Both are fixed; the mechanism now honors
   (`dispatch-steering.ts`) now refuses to steer any dispatch carrying
   `systemTurn` **or** a completion callback, so such a turn always enqueues and
   always runs as its own turn.
-- **Both queue drains preserve the full option set (SHI-255).** A session has one
+- **Both queue drains preserve the full option set (planning#257).** A session has one
   queue but two drains: the dispatched turn's (`dispatched-turn.ts`) and the
   interactive WS turn's (`ws-handlers/agent-execution.ts`). Only the first
   restored `systemTurn` / `onTurnComplete`; the interactive one re-entered
@@ -170,7 +170,7 @@ busy parent still lost it. Both are fixed; the mechanism now honors
   added later cannot re-narrow an entry without deliberately bypassing that
   module.
 
-  > **Falsified, then fixed properly (SHI-259 → docs/240).** That last sentence
+  > **Falsified, then fixed properly (planning#261 → docs/240).** That last sentence
   > was wrong: turn adoption added a *fourth* hand-rolled drain days later, by an
   > author reasonably following the surrounding code. The rule is no longer a
   > convention — `dispatch` / `runDispatchedTurn` / `toQueuedMessage` accept only
@@ -182,7 +182,7 @@ busy parent still lost it. Both are fixed; the mechanism now honors
   flag from `input.systemTurn` as well (and clears it on teardown), so a
   wake-turn suppresses live steering for its whole duration however it started.
 
-### Retrying a delivery that failed (SHI-258)
+### Retrying a delivery that failed (planning#260)
 
 The three fixes above make a *dispatched* wake-turn reliably reach `delivered`.
 They say nothing about a delivery that never dispatched at all.
@@ -222,7 +222,7 @@ watch *before* running it, and eligibility is decided on two independent axes:
    becomes retryable — a stranding case the pre-SHI-258 code could only recover
    by restarting.
 
-   > **SHI-264 superseded the original form of this axis.** It used to be an
+   > **planning#266 superseded the original form of this axis.** It used to be an
    > in-memory `inFlight` set — *tracked* state beside the thing it described,
    > which desynchronized from a disposed runner, a second runner for the same
    > session, and above all a turn ADOPTED after an orchestrator restart (the
@@ -274,7 +274,7 @@ delivery-failure card instead of vanishing into a server log.
   never calls `agent.kill()` / `dispose()` — same invariant as the rest of the
   poller-driven automations. "Enqueues when mid-turn" is unconditional: a
   `systemTurn` dispatch is never live-steered into the running turn, whatever the
-  steering settings say (SHI-254, above).
+  steering settings say (planning#256, above).
 - **Survives an orchestrator restart.** The watch is persisted; on startup
   `MergeWatchManager.reconcilePending()` re-derives "child PR terminal + watch
   un-delivered → fire" from the persisted PR snapshot (`loadPersisted` seeds it),
@@ -366,7 +366,7 @@ PR poller detects terminal PR state (verifyMissingPr)
 ## Key files
 
 - `src/server/orchestrator/merge-watch.ts` — `MergeWatchManager`: fire / card /
-  wake-turn delivery / startup reconcile / register-time check, plus the SHI-258
+  wake-turn delivery / startup reconcile / register-time check, plus the planning#260
   retry supervisor (`attemptDelivery`, `retryStalledDeliveries`,
   `isDeliveryInFlight`, `failWatch`, `MAX_DELIVERY_ATTEMPTS`).
 - `src/server/orchestrator/startup-monitors.ts` — stops the retry supervisor in
@@ -387,9 +387,9 @@ PR poller detects terminal PR state (verifyMissingPr)
   the `QueuedMessage.execution` tag and `runner.runDispatchedTurn` drain re-entry.
 - `src/server/orchestrator/queue-drain.ts` — `startQueuedMessage`: the single
   router both drains use, so a queued entry always runs on the executor it was
-  tagged for (SHI-255).
+  tagged for (planning#257).
 - `src/server/orchestrator/dispatch-steering.ts` — `isSteerableDispatch`: a
-  `systemTurn` / completion-callback dispatch is never steered (SHI-254).
+  `systemTurn` / completion-callback dispatch is never steered (planning#256).
 - `src/server/orchestrator/ws-handlers/agent-execution.ts` — the interactive
   drain routes through `startQueuedMessage`; `runQueuedInteractiveMessage` is
   reached only by `"interactive"` entries.
@@ -405,7 +405,7 @@ PR poller detects terminal PR state (verifyMissingPr)
   `src/client/hooks/message-handlers/child-merged.ts`,
   `src/client/components/visual-elements.ts`,
   `src/client/components/MessageList.tsx` — client render + live handler. The
-  card's optional `deliveryFailure` block is the SHI-258 failure variant; it
+  card's optional `deliveryFailure` block is the planning#260 failure variant; it
   rides the existing `child_merged` column (no new migration) and the existing
   `TRANSCRIPT_SCOPED_MESSAGES` / `CARD_MESSAGE_FIELDS` registrations.
 - `src/server/shipit-docs/sessions.md` — agent-facing reference.
@@ -419,7 +419,7 @@ PR poller detects terminal PR state (verifyMissingPr)
   `delivered` once it **drains in-process** (no restart needed), and a delivered
   watch is never re-fired across repeated restarts (the duplicate-notification
   regression); a busy watch lost to a restart *before* it drains is re-delivered
-  by reconcile without a second card. SHI-258 (`failed-delivery retry`): a
+  by reconcile without a second card. planning#260 (`failed-delivery retry`): a
   delivery that throws records the attempt and resolves rather than rejecting; it
   is retried in-process to `delivered` with no restart, both by an explicit pass
   and by the supervisor's own timer (fake timers); the backoff suppresses an
@@ -444,9 +444,9 @@ PR poller detects terminal PR state (verifyMissingPr)
   `delivered` only after the real turn completes → fire-once → closed-unmerged,
   plus a restart-before-the-turn-runs case recovered by `reconcilePending`
   (no second card), through a fully-wired `buildApp`. Includes the busy-parent
-  case against a **real interactive turn** (SHI-255): the wake-turn queues behind
+  case against a **real interactive turn** (planning#257): the wake-turn queues behind
   it, drains, runs as a system turn, and reaches `delivered` in-process. Plus the
-  SHI-258 pair: a delivery that throws (the parent's runner can't be created) is
+  planning#260 pair: a delivery that throws (the parent's runner can't be created) is
   retried in-process to a real completed wake-turn with still one card, and a
   permanently-failing one reaches `delivery-failed`, empties the pending list, and
   serves its failure card back over `GET /history` — proving the card is
@@ -454,9 +454,9 @@ PR poller detects terminal PR state (verifyMissingPr)
 - `integration_tests/system-turn-queue.test.ts` — the two dispatch-path
   regressions against a real turn (the fake busy runner in `merge-watch.test.ts`
   cannot reproduce either): with live steering on a `systemTurn` dispatch queues
-  instead of being steered and its `onTurnComplete` still fires (SHI-254); a
+  instead of being steered and its `onTurnComplete` still fires (planning#256); a
   wake-turn queued behind a real interactive turn runs as a system turn and fires
-  its callback (SHI-255); and an ordinary user message queued behind a running
+  its callback (planning#257); and an ordinary user message queued behind a running
   turn still drains on the interactive path (no duplicate echo bubble).
 - `queue-drain.test.ts` — the drain router: a `"dispatched"` entry never reaches
   the interactive re-entry, an `"interactive"` one always does, the deps-less

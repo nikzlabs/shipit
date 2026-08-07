@@ -205,7 +205,7 @@ export interface ClaudeContentBlockToolUse {
   /**
    * Original character length of each shortened or removed *string* key, for the
    * labels the transcript draws from a length it no longer holds — today just
-   * `SubagentCall`'s `Prompt (N chars)` toggle (SHI-296).
+   * `SubagentCall`'s `Prompt (N chars)` toggle (planning#298).
    */
   inputChars?: Record<string, number>;
 }

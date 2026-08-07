@@ -27,7 +27,7 @@ RUN --mount=type=cache,target=/root/.npm npm prune --omit=dev && npm install tsx
 # ---- Production image ----
 FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
 
-# SHI-194 — bake the pinned base-image digest into the runtime env. The overlay
+# planning#196 — bake the pinned base-image digest into the runtime env. The overlay
 # dep store keys its rolling base scope on THIS (the native-addon ABI surface),
 # not the full worker-image id, so an app-code-only rebuild no longer rotates the
 # scope (no per-deploy ~500 MB base churn, post-deploy installs stay warm).

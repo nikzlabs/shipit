@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-132
+issue: planning#134
 description: Make grandchild (and deeper) spawned sessions visible in the sidebar by tracking a root-ancestor id, so a brood spawned across multiple levels still groups under one top-level session.
 ---
 
@@ -385,7 +385,7 @@ immediate children — unchanged by this fix. Depth-independent grouping does
 remove the visual ceiling that made deep fan-out self-evident (a brood can grow
 16 × 16 × … while every individual parent stays under quota), but coupling a
 quota change to a visibility fix conflates two concerns and risks regressing
-existing spawn flows. The follow-up, tracked on SHI-132, is a **root-wide active
+existing spawn flows. The follow-up, tracked on planning#134, is a **root-wide active
 cap** counted over the whole brood (`findBrood(rootId).length`) — cheap once
 `rootSessionId` exists — gated on telemetry showing broods growing past ~one
 screen. A spawn-*depth* cap is the weaker alternative (it bounds chain length,

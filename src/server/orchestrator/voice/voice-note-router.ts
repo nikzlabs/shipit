@@ -40,7 +40,7 @@ import { getErrorMessage } from "../../shared/utils.js";
  * orchestrator matches this to deliver an authored note's native card the
  * instant it OBSERVES the call — without waiting for the slower bridge → worker
  * → orchestrator HTTP relay (see `agent-listeners.ts`). Keep in sync with the
- * consolidated `mcp-shipit-bridge` (`name: "shipit"`, tool `"voice_note"`; SHI-128).
+ * consolidated `mcp-shipit-bridge` (`name: "shipit"`, tool `"voice_note"`; planning#130).
  */
 export const VOICE_NOTE_TOOL_NAME = "mcp__shipit__voice_note";
 

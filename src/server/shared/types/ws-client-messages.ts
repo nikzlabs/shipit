@@ -27,7 +27,7 @@ export interface WsSendMessage {
    */
   resetMergedBranch?: boolean;
   /**
-   * SHI-320 — the tracker issue this session was started from, carried on the
+   * planning#322 — the tracker issue this session was started from, carried on the
    * FIRST message only (the Issues tab's "Start session" prefills the composer
    * rather than dispatching, so creation and the first message are two separate
    * user actions). Acted on solely by warm graduation, which pins the branch to
@@ -208,7 +208,7 @@ export interface WsUndoIssueWrite {
 
 /**
  * Client → Server: answer a sensitive-action permission request (docs/193 /
- * SHI-112). Sent when the user clicks Approve / Deny on the inline
+ * planning#114). Sent when the user clicks Approve / Deny on the inline
  * `PermissionRequestCard`. The server forwards the decision to the worker's
  * broker (keyed by `requestId`), which unblocks the held bridge/RPC call.
  * `remember` (approve only) adds the file path to the session allow-set so the
@@ -222,7 +222,7 @@ export interface WsResolvePermission {
 }
 
 /**
- * Client → Server: resolve an egress allow-once card (docs/172 / SHI-90). Sent
+ * Client → Server: resolve an egress allow-once card (docs/172 / planning#92). Sent
  * when the user clicks Allow once / Add to allowlist / Deny on the inline
  * `EgressPromptCard`. The server updates the per-session egress policy (keyed by
  * `host`) so the agent's retried connection is allowed, and patches the card to

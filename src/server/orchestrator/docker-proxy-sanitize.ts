@@ -72,7 +72,7 @@ export async function sanitizeContainerCreate(
   // belong to this session. Without this, a child container could be created
   // directly on the orchestrator's own network: its IP is not a known
   // session-container IP, so the orchestrator API guard treats it as a trusted
-  // browser origin and skips containment (SHI-135). This mirrors the ownership
+  // browser origin and skips containment (planning#137). This mirrors the ownership
   // check the POST /networks/{id}/connect route already enforces — the create
   // path must not be the weaker sibling. Built-in modes (default/bridge/none) are
   // handled below or are inherently safe.

@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-319
+issue: planning#321
 title: Custom models
 description: Separate harness from service so a user can run any configured service's models on any compatible harness.
 ---

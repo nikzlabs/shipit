@@ -118,7 +118,7 @@ export interface ContainerConfig {
   /** Host path to the git repo directory, mounted as /workspace in the container:
    *  /workspace/sessions/{uuid}/workspace. Always a `workspace/` child of the
    *  session dir — the pre-`workspace/` flat layout, where the clone WAS the
-   *  session dir, was removed in SHI-286. */
+   *  session dir, was removed in planning#288. */
   workspaceDir: string;
   /** Host path: /workspace/dep-cache/{hash} (shared dependency cache) */
   depCacheDir?: string;
@@ -149,7 +149,7 @@ export interface ContainerConfig {
    * their repository. Another sibling of `workspace/`, like `scratch/`.
    *
    * Always present: `buildContainerConfig` derives it from the clone path and
-   * refuses a session whose clone isn't `<sessionDir>/workspace` (SHI-286), so
+   * refuses a session whose clone isn't `<sessionDir>/workspace` (planning#288), so
    * neither the mount nor the worker's `SHIPIT_SESSION_STATE_DIR` has a
    * "no state dir" case to fall back from.
    */
@@ -204,7 +204,7 @@ export interface SessionContainer {
   /** Worker IPC URL (e.g. http://172.18.0.3:9100). */
   workerUrl: string;
   /**
-   * SHI-311 — the per-session token this container's worker requires on
+   * planning#313 — the per-session token this container's worker requires on
    * orchestrator→worker calls (injected as `SHIPIT_WORKER_TOKEN` at create,
    * re-read from the container env on adoption). Absent for a container created
    * before the mechanism existed, in which case its worker gates only the
@@ -367,7 +367,7 @@ export interface SessionContainerManagerOpts {
   /** Docker API proxy port. Required for Docker-enabled sessions. */
   dockerProxyPort?: number;
   /**
-   * docs/172 (SHI-90) — resolve a session's egress containment + composed
+   * docs/172 (planning#92) — resolve a session's egress containment + composed
    * extra-host allowlist at container start. Built in `app-di` where the durable
    * `EgressAllowlistStore` + the live MCP `CredentialStore` are in scope, and
    * passed straight through to `LifecycleDeps.resolveEgressConfig`. Omitted in
@@ -430,7 +430,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    */
   private workerImageId?: string;
   /**
-   * SHI-194 — cached `BASE_IMAGE_DIGEST` baked into the session-worker image, the
+   * planning#196 — cached `BASE_IMAGE_DIGEST` baked into the session-worker image, the
    * ABI fingerprint the overlay scope now keys on instead of `workerImageId`.
    * Resolved once via `resolveWorkerBaseDigest`; a failed inspect / pre-SHI-194
    * image (no baked digest) is cached as `""` (a miss) so there is no per-session
@@ -484,7 +484,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   /**
    * The manager's configured Docker client (honours the `socketPath` option),
    * exposed so boot-time sweeps that live OUTSIDE the manager — the disk
-   * janitor's orphan egress-sidecar reap (SHI-222) — talk to the same daemon
+   * janitor's orphan egress-sidecar reap (planning#224) — talk to the same daemon
    * rather than constructing a default-socket client of their own.
    */
   get dockerClient(): Docker {
@@ -492,7 +492,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   /**
-   * docs/172 (SHI-90) — apply a newly-added durable allowlist host to a RUNNING,
+   * docs/172 (planning#92) — apply a newly-added durable allowlist host to a RUNNING,
    * contained session by relaunching the Tier B resolver + Tier C proxy with the
    * regenerated config, so the host resolves (DNS + ipset auto-pin) and its SNI
    * is permitted without waiting for the next container start. Best-effort and
@@ -568,7 +568,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       dockerImageName: this.dockerImageName,
       dockerProxyHost: this.dockerProxyHost,
       dockerProxyPort: this.dockerProxyPort,
-      // docs/172 Gap 1 (SHI-90) Tier A — egress enforcement, default-off via
+      // docs/172 Gap 1 (planning#92) Tier A — egress enforcement, default-off via
       // SESSION_EGRESS_ENFORCE; the installer sidecar image via env.
       egressEnforce: egressEnforceEnabled(),
       egressSidecarImage: process.env.SESSION_EGRESS_SIDECAR_IMAGE,
@@ -579,7 +579,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       // at the end of the Tier-A install so a future firewall rebuild can't strand
       // them (no-op on first boot; nothing is joined until compose-up runs later).
       reopenJoinedEgress: (sessionId: string) => this.reopenJoinedSessionEgress(sessionId),
-      // docs/172 Gap 5 (SHI-97) — kernel-tier hardening, env-gated default-OFF.
+      // docs/172 Gap 5 (planning#99) — kernel-tier hardening, env-gated default-OFF.
       // gVisor via SESSION_RUNTIME; seccomp via SESSION_SECCOMP(_PROFILE);
       // read-only rootfs via SESSION_READONLY_ROOTFS. resolveSeccompSecurityOpt
       // reads + validates the profile (throws fail-closed if enabled but bad).
@@ -678,7 +678,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     // stranded by a flush.
     (sc.joinedSessionNetworks ??= new Set()).add(networkName);
 
-    // docs/172 Gap 1 (SHI-90) — the agent is now multi-homed: it has an interface
+    // docs/172 Gap 1 (planning#92) — the agent is now multi-homed: it has an interface
     // on this session/compose network in addition to the orchestrator bridge. The
     // Tier A egress firewall (installed at container creation) default-denies
     // OUTPUT and only allowed the *default-gateway* subnet, so traffic to preview
@@ -764,7 +764,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
 
   /**
    * Best-effort: open the agent's default-deny egress to the IPAM subnet(s) of a
-   * session/compose network it just joined (docs/172 Gap 1, SHI-90). No-op unless
+   * session/compose network it just joined (docs/172 Gap 1, planning#92). No-op unless
    * the session is contained, enforcement is enabled, and the sidecar image is
    * configured — i.e. only when there is a firewall to punch a hole in. Swallows
    * all errors (logs a warning): preview reachability is a convenience, not a
@@ -932,7 +932,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   /**
-   * SHI-194 — resolve the `BASE_IMAGE_DIGEST` baked into the worker image, the
+   * planning#196 — resolve the `BASE_IMAGE_DIGEST` baked into the worker image, the
    * pinned-base ABI fingerprint the overlay scope keys on. Mirrors
    * {@link resolveWorkerImageId}'s caching (incl. caching a miss as `""`) so it
    * adds no per-session Docker call. Returns `undefined` when the image can't be

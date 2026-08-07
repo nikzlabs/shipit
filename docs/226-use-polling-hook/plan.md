@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-213
+issue: planning#215
 title: usePolling shared hook
 description: A shared usePolling<T> hook that collapses the repeated interval-poll-into-state boilerplate, designed so the four call sites' divergence is props, not forks.
 ---
@@ -11,7 +11,7 @@ into React state, with cleanup" pattern. Several client surfaces hand-roll the
 same `[data/error/loading]` + `setInterval` + stale-guard + cleanup scaffolding.
 
 This refactor was catalogued in **`docs/225-component-dedup-refactors`** (Linear
-**SHI-212**) under **"Explicitly not doing"**:
+**planning#214**) under **"Explicitly not doing"**:
 
 > **`usePolling` hook.** Real (`HostPanel`, `SessionDiagnosticsPanel`,
 > `useContainerHealthPoll`, `usePreviewHealthPoller` all repeat
@@ -302,7 +302,7 @@ snapshot poll — it is a **converge-once-then-stop** bounded retry loop:
   a documented ownership/cancellation invariant that has nothing to do with
   interval polling.
 
-Collapsing it in would re-introduce exactly the "awkward API" SHI-212 flagged.
+Collapsing it in would re-introduce exactly the "awkward API" planning#214 flagged.
 It stays as a bespoke hook.
 
 ## Prototype (this PR)
@@ -327,4 +327,4 @@ container — see CLAUDE.md; the co-located file runs green under `vitest run`).
   `src/client/components/SessionDiagnosticsPanel.tsx`,
   `src/client/components/SessionHealthStrip/hooks/useContainerHealthPoll.ts`.
 - Excluded: `src/client/hooks/usePreviewHealthPoller.ts`.
-- Originating catalog: `docs/225-component-dedup-refactors/plan.md` (SHI-212).
+- Originating catalog: `docs/225-component-dedup-refactors/plan.md` (planning#214).

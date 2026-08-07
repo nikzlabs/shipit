@@ -34,7 +34,7 @@ function sessionRepoUrl(sessionId?: string): string | null {
 }
 
 /**
- * SHI-325 — re-scope the Issues tab to the repository we're moving to. Issue
+ * planning#327 — re-scope the Issues tab to the repository we're moving to. Issue
  * trackers are declared per repository (`shipit.yaml`, docs/248), so an open
  * issue and the loaded lists belong to the repository they were opened from;
  * carrying them into a repository that doesn't declare that tracker leaves an
@@ -98,7 +98,7 @@ export function resumeSessionInternal(sessionId: string) {
   useLogStore.getState().reset();
   useUiStore.getState().reset();
   usePresentStore.getState().reset();
-  // Repo-scoped, not session-scoped (SHI-325): clears only when the incoming
+  // Repo-scoped, not session-scoped (planning#327): clears only when the incoming
   // session belongs to a different repository than the outgoing one.
   scopeIssuesToSession(sessionId);
 

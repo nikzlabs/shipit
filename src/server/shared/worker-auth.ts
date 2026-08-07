@@ -1,5 +1,5 @@
 /**
- * SHI-311 — the session worker's HTTP trust boundary.
+ * planning#313 — the session worker's HTTP trust boundary.
  *
  * A session worker binds `0.0.0.0:9100` and every agent container sits on the
  * SAME orchestrator bridge network, so until this module existed session A
@@ -26,10 +26,10 @@
  *
  * Hence {@link LOOPBACK_ONLY_PREFIXES}: route groups that only the container's
  * own agent ever calls are pinned to loopback and are NOT reachable with a
- * token — so the SHI-311 fix does not depend on the token plumbing being right.
+ * token — so the planning#313 fix does not depend on the token plumbing being right.
  * Everything else is orchestrator-facing and gated on the token.
  *
- * SHI-239 adds the mirror-image group, {@link LIFECYCLE_PATHS}: routes only the
+ * planning#241 adds the mirror-image group, {@link LIFECYCLE_PATHS}: routes only the
  * ORCHESTRATOR ever calls, where loopback is explicitly NOT sufficient. Loopback
  * is an identity signal ("something in this container"), not an authorization
  * one, and `/agent/*` is the one place where the difference has teeth — see
@@ -56,7 +56,7 @@ export const WORKER_TOKEN_ENV = "SHIPIT_WORKER_TOKEN";
  *
  *  - `/agent-ops/*` — the agent's broker to the orchestrator. Every route here
  *    is relayed with the worker's own trusted `SESSION_ID` injected, which is
- *    exactly what made cross-container access a privilege escalation (SHI-311):
+ *    exactly what made cross-container access a privilege escalation (planning#313):
  *    `branch/reset-to-base`, `session/rename`, `voice/note`, `bug/report`, …
  *  - `/present-files/*` — artifact bytes rendered for the agent's in-container
  *    Playwright browser. `present-view.ts` already documents these as
@@ -71,7 +71,7 @@ export const LOOPBACK_ONLY_PREFIXES: readonly string[] = [
 ];
 
 /**
- * SHI-239 — lifecycle-mutating routes, which a loopback caller may NOT reach
+ * planning#241 — lifecycle-mutating routes, which a loopback caller may NOT reach
  * without the token. The inverse of {@link LOOPBACK_ONLY_PREFIXES}: only the
  * orchestrator has any business starting, killing or steering the resident
  * agent, so "came from inside this container" buys nothing here.
@@ -310,9 +310,9 @@ export interface WorkerAuthDecision {
  * Order matters:
  *  1. `/health` — always open.
  *  2. Loopback-only groups — loopback or 403, regardless of any token. This is
- *     the SHI-311 fix proper and is enforced unconditionally.
+ *     the planning#313 fix proper and is enforced unconditionally.
  *  3. Lifecycle routes on a token-configured worker — the token decides, and
- *     loopback does NOT substitute for it (SHI-239). Sits ahead of step 4
+ *     loopback does NOT substitute for it (planning#241). Sits ahead of step 4
  *     precisely because that step would otherwise wave the caller through.
  *  4. Loopback — the container's own agent; allowed on everything that is left.
  *  5. A matching token — the orchestrator.
@@ -357,7 +357,7 @@ export function decideWorkerRequest(origin: WorkerRequestOrigin): WorkerAuthDeci
       : { allow: false, reason: "loopback-only" };
   }
 
-  // SHI-239 — ahead of the blanket loopback allow below, so a caller inside this
+  // planning#241 — ahead of the blanket loopback allow below, so a caller inside this
   // container cannot start/kill the resident agent just by being inside it.
   if (origin.configuredToken !== undefined && isLifecyclePath(pathname)) {
     return tokensMatch(origin.configuredToken, origin.presentedToken)

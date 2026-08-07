@@ -1,6 +1,6 @@
 /**
  * Steady-state disk reclaim — the disk sweeps that grow with the CLOCK, not with
- * a crashed teardown. Split out of `startup-janitor.ts` (SHI-196) and run on the
+ * a crashed teardown. Split out of `startup-janitor.ts` (planning#198) and run on the
  * periodic disk-tier escalation pass (`escalateDiskTiers`, fired at startup, after
  * each session activation, and on the hourly timer) rather than boot-only.
  *
@@ -12,7 +12,7 @@
  *   - **Orphan `repo-memory/<hash>` directories** (docs/155) — shared per-repo
  *     Claude memory keyed by the same repo hash. Same liveness rule as the caches;
  *     lives under `credentialsDir`, so it only runs when that dep is wired.
- *   - **Obsolete `overlay-base/<scope-hash>` dirs** (docs/183 Phase 2/3, SHI-193)
+ *   - **Obsolete `overlay-base/<scope-hash>` dirs** (docs/183 Phase 2/3, planning#195)
  *     reclaimed by a **deterministic live-mount check, not an age cutoff**. A base
  *     scope keys on `overlayRuntimeKey` (base-image digest + arch), so a worker-image
  *     rebuild rotates every scope hash — an old-image scope goes obsolete the instant
@@ -105,7 +105,7 @@ export interface SteadyStateReclaimDeps {
    */
   runDocker?: (args: string[]) => Promise<string>;
   /**
-   * docs/183 Phase 2/3, SHI-193 — overlay rolling-base GC, resumable-session half of
+   * docs/183 Phase 2/3, planning#195 — overlay rolling-base GC, resumable-session half of
    * the liveness union. Returns the set of overlay-base scope-hashes that every
    * resumable session would re-pin for the CURRENT runtime on activation. The sweep
    * unions this with the generations a RUNNING container pins right now (resolved
@@ -174,7 +174,7 @@ export async function runSteadyStateReclaim(
     console.warn("[disk-janitor] cache sweep failed:", getMessage(err));
   }
 
-  // docs/183 Phase 2/3, SHI-193 — sweep obsolete overlay bases via a deterministic
+  // docs/183 Phase 2/3, planning#195 — sweep obsolete overlay bases via a deterministic
   // live-mount check (not an age cutoff). Gated on a live-scope-hash source: removing
   // a base dir that still backs a live overlay `lowerdir` is undefined behavior, so
   // without a way to confirm which bases are in use we don't touch the subtree at all.
@@ -482,7 +482,7 @@ async function sweepOrphanedCaches(
 const OVERLAY_TMP_GRACE_MS = 60 * 60 * 1000; // 1 hour
 
 /**
- * docs/183 Phase 2/3, SHI-193 — reclaim obsolete overlay bases under
+ * docs/183 Phase 2/3, planning#195 — reclaim obsolete overlay bases under
  * `<stateDir>/overlay-base/<scope-hash>/` via a **deterministic live-mount check**,
  * not an age cutoff.
  *
@@ -577,7 +577,7 @@ async function sweepOrphanedOverlayBases(
 
 /**
  * Reap superseded generations inside one LIVE scope dir, via the live-mount check
- * (SHI-193). A `g<N>` child is removed UNLESS it is one of:
+ * (planning#195). A `g<N>` child is removed UNLESS it is one of:
  *   - `g0` — the empty cold-start lowerdir; cold mounts pin it and it costs nothing.
  *   - the pointer's current generation — the base a fresh/resuming session mounts.
  *   - a generation in `liveGenKeys` — pinned as a `lowerdir` by a running container
@@ -637,7 +637,7 @@ async function sweepStaleBaseGenerations(
 }
 
 /**
- * SHI-193 — enumerate the overlay base generations currently pinned as a
+ * planning#195 — enumerate the overlay base generations currently pinned as a
  * `lowerdir` by a RUNNING session-worker container. This is the deterministic
  * "is this base live?" signal that replaces the old 30-day age proxy.
  *

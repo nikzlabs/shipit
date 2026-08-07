@@ -110,7 +110,7 @@ mechanism cannot be the answer to requirement 2 without a refresh path.
   keep-alive of any kind (`agent-shim/shipit.ts` HELP).
 - **Disposal is guarded twice.** `runner.dispose()` refuses on `_isRunning` or
   a live sub-agent spawn unless forced (`container-session-runner.ts:2521`,
-  `:2531`), and since SHI-296 the idle enforcer destroys the container only
+  `:2531`), and since planning#298 the idle enforcer destroys the container only
   after the runner accepted disposal. Any new protection expressed as runner
   state inherits both.
 - **`keepalive.ts` is unrelated** — a WebSocket ping for Cloudflare's 100s

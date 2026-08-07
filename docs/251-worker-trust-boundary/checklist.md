@@ -1,4 +1,4 @@
-# Checklist — session-worker trust boundary (SHI-311)
+# Checklist — session-worker trust boundary (planning#313)
 
 ## Policy
 - [x] `shared/worker-auth.ts`: header/env constants, `isLoopbackAddress`, `isLoopbackOnlyPath`, `tokensMatch` (constant-time), `generateWorkerToken`, and the pure `decideWorkerRequest`.
@@ -18,7 +18,7 @@
 - [x] `SessionContainer.workerToken`.
 
 ## Tests
-- [x] `shared/worker-auth.test.ts` — policy table incl. the SHI-311 regression (peer container + valid token → denied on `/agent-ops`).
+- [x] `shared/worker-auth.test.ts` — policy table incl. the planning#313 regression (peer container + valid token → denied on `/agent-ops`).
 - [x] `session/worker-auth-guard.test.ts` — `app.inject({ remoteAddress })` for peer / loopback / orchestrator, plus the real `SessionWorker` app.
 - [x] `orchestrator/worker-auth.test.ts` — registry lifetime, trailing-slash key, env read-back.
 - [x] `npm test` full suite green.
@@ -27,5 +27,5 @@
 ## Docs + close-out
 - [x] `SECURITY-MODEL.md` — correct the "sessions cannot reach each other's containers" claim and describe the worker boundary.
 - [x] Cross-reference from `docs/201-container-api-trust-boundary/`.
-- [x] Comment on SHI-311.
-- [x] PR with `Closes SHI-311`.
+- [x] Comment on planning#313.
+- [x] PR with `Closes planning#313`.

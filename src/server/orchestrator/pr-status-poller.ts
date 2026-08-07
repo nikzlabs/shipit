@@ -400,7 +400,7 @@ export class PrStatusPoller {
    * `pollRepo` is that we don't inherit its `canonicalApiTarget` retarget, so we
    * resolve the canonical owner ourselves (below) before the REST probe — else,
    * on a transferred/renamed repo, `findPullRequestAnyState` filters
-   * `head=<old-owner>:<branch>` and matches nothing (SHI-159).
+   * `head=<old-owner>:<branch>` and matches nothing (planning#161).
    */
   async forceVerifySessionPrState(sessionId: string): Promise<void> {
     const repoKey = this.tracker.sessionRepos.get(sessionId);
