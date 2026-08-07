@@ -35,6 +35,7 @@ import {
   saveSortPrefs,
 } from "../utils/local-storage.js";
 import { useSessionStore } from "./session-store.js";
+import { useUiStore } from "./ui-store.js";
 import type { TrackerDestination } from "../../server/shared/declared-tracker.js";
 import {
   resolveIssueRef,
@@ -179,6 +180,13 @@ interface IssuesState {
    * {@link IssuesState.setRepoScope}.
    */
   repoScope: string | null;
+  /**
+   * The last fetch could not read the session's declarations at all — its
+   * checkout isn't on disk yet (a disk-evicted session being re-cloned by
+   * activation). `trackers: []` then means "not yet", not "declares nothing",
+   * and {@link IssuesState.warmTrackers} keeps asking until it means the latter.
+   */
+  declarationsPending: boolean;
   activeTracker: TrackerId;
   issuesByTracker: Record<string, TrackerIssue[]>;
   /** Per-tracker info refreshed alongside the list (configured + binding). */
@@ -295,6 +303,19 @@ interface IssuesState {
    * dropped (planning#327).
    */
   fetchTrackers: () => Promise<boolean>;
+  /**
+   * `fetchTrackers`, plus a bounded background retry for as long as the server
+   * reports the declarations aren't readable yet
+   * ({@link IssuesState.declarationsPending}). Resolves on the first answer, so
+   * it substitutes for `fetchTrackers` at every call site without adding a wait.
+   *
+   * This is what the session-change warm-up calls instead of a bare
+   * `fetchTrackers`: one shot lands in the window where a disk-evicted session
+   * is still being re-cloned, and the empty answer it gets is then cached until
+   * the user opens the Issues tab. Only a *pending* answer retries — a
+   * repository that genuinely declares nothing answers once and never loops.
+   */
+  warmTrackers: () => Promise<void>;
   fetchIssues: (trackerId?: TrackerId) => Promise<void>;
   /**
    * Fetch + cache the tracker's full available-label set (name + color). Lazy:
@@ -403,6 +424,9 @@ function closedDetail() {
  */
 function clearedRepoState() {
   return {
+    // Whether the *previous* repository's declarations were readable says
+    // nothing about the incoming one's; the next fetch answers it.
+    declarationsPending: false,
     issuesByTracker: {},
     statusesByTracker: {},
     labelsByTracker: {},
@@ -463,9 +487,57 @@ function pruneFilters(filters: IssueFilters, issues: TrackerIssue[]): IssueFilte
   };
 }
 
+/**
+ * Backoff between `warmTrackers` retries, in ms — one retry per entry, so the
+ * budget is ~60s over 8 requests. Sized against what it waits for: a re-clone of
+ * an evicted checkout from the bare cache, which is seconds for a small repo and
+ * tens of seconds for a large one. Each request is a local `shipit.yaml` read
+ * server-side with no tracker-API round-trip, so the cost of over-asking is
+ * negligible; the cost of under-waiting is the bug this exists for.
+ */
+const WARM_RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 8000, 15000, 30000];
+
+/**
+ * Which warm-up owns the store. A later `warmTrackers` supersedes the one in
+ * flight rather than letting two backoff loops interleave writes.
+ */
+let warmGeneration = 0;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * The background half of {@link IssuesState.warmTrackers}: re-ask until the
+ * session's checkout is readable, then stop. Bails the moment a newer warm-up
+ * owns the store, or the session changes under it — a fetch issued for the
+ * session we started on would otherwise write another repository's declarations
+ * over the current one's.
+ *
+ * When the declarations finally land *and* differ from what the store was
+ * showing, the issue list is refreshed on the same condition `files-changed`
+ * uses for a `shipit.yaml` edit: the list is a real tracker-API round-trip, so
+ * only refetch it when the declared set actually changed and the tab is showing.
+ */
+async function retryUntilReadable(get: () => IssuesState, generation: number): Promise<void> {
+  const startedFor = useSessionStore.getState().sessionId;
+  let changed = false;
+  for (const delayMs of WARM_RETRY_DELAYS_MS) {
+    await sleep(delayMs);
+    if (generation !== warmGeneration) return;
+    if (useSessionStore.getState().sessionId !== startedFor) return;
+    changed = await get().fetchTrackers();
+    if (!get().declarationsPending) break;
+  }
+  if (changed && useUiStore.getState().rightTab === "issues") {
+    await get().fetchIssues();
+  }
+}
+
 export const useIssuesStore = create<IssuesState>((set, get) => ({
   trackers: [],
   repoScope: null,
+  declarationsPending: false,
   // docs/248 — no built-in tracker, so there is no meaningful default until
   // `fetchTrackers` lands. The session's own repository is the one destination
   // that always exists when there is a repo at all, so it is the safe seed.
@@ -528,8 +600,12 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
         headers: { Accept: "application/json" },
       });
       if (!res.ok) return false;
-      const data = (await res.json()) as { trackers?: TrackerInfo[] };
+      const data = (await res.json()) as {
+        trackers?: TrackerInfo[];
+        declarationsPending?: boolean;
+      };
       const trackers = data.trackers ?? [];
+      const declarationsPending = data.declarationsPending === true;
       const changed = declarationSignature(get().trackers) !== declarationSignature(trackers);
       set((state) => {
         // docs/248 req 11 (planning#327) — what the store holds for a tracker id
@@ -557,6 +633,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
           : (trackers[0]?.id ?? "github");
         return {
           trackers,
+          declarationsPending,
           infoByTracker,
           activeTracker,
           // Only the unreachable entries go: a tracker that still names the
@@ -574,6 +651,16 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       console.error("[issues-store] fetchTrackers failed:", err);
       return false;
     }
+  },
+
+  warmTrackers: async () => {
+    const generation = ++warmGeneration;
+    await get().fetchTrackers();
+    // Resolve on the first answer and retry in the background: callers sequence
+    // an issue-list fetch after this, and the session's own repository is
+    // listable whether or not the declarations have been read yet — blocking
+    // that on a re-clone would trade one stale panel for a slower one.
+    if (get().declarationsPending) void retryUntilReadable(get, generation);
   },
 
   fetchIssues: async (trackerId) => {

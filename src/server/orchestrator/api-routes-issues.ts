@@ -13,6 +13,7 @@
  */
 
 import { randomUUID, createHash } from "node:crypto";
+import fs from "node:fs";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import {
@@ -116,6 +117,34 @@ function readDeclaredTrackers(
 }
 
 /**
+ * Whether the answer to "what does this repository declare?" is *not yet
+ * knowable* for this session — as opposed to "it declares nothing".
+ *
+ * `readDeclaredTrackers` degrades a missing checkout to zero declarations, and
+ * the two are indistinguishable in the response. They are not the same thing: a
+ * disk-evicted session (docs/161) keeps its `workspaceDir` in the session row
+ * while the directory itself is gone, and activation re-clones it from the bare
+ * cache *asynchronously* (`finishRestore`). The browser's tracker fetch races
+ * that re-clone and reliably wins, so a session switch to an evicted session
+ * cached "declares nothing" — and since the client refetches only on the next
+ * session change or Issues-tab open, every inline `planning#147` badge in the
+ * transcript stayed plain text until the user opened the tab.
+ *
+ * Saying so lets the client retry instead of caching the empty answer. Pending
+ * means specifically: this session has a workspace path that isn't on disk right
+ * now. A session with no workspace at all (standalone/sandbox) declares nothing,
+ * permanently, and is not pending; neither is an unknown session id.
+ */
+function areDeclarationsPending(
+  sessionManager: SessionManager,
+  sessionId: string | undefined,
+): boolean {
+  const workspaceDir = sessionId ? sessionManager.get(sessionId)?.workspaceDir : undefined;
+  if (!workspaceDir) return false;
+  return !fs.existsSync(workspaceDir);
+}
+
+/**
  * Whether a `TrackerIssue.status.type` represents a finished issue. Both GitHub
  * (closed → "completed") and Linear ("completed"/"canceled") normalize onto the
  * same vocabulary, so a `--state closed` filter is tracker-neutral.
@@ -183,10 +212,18 @@ export async function registerIssueRoutes(
     );
   }
 
-  // GET /api/trackers — configured-tracker metadata (drives the sub-tabs).
+  // GET /api/trackers — configured-tracker metadata (drives the sub-tabs) plus,
+  // when the session's checkout isn't on disk yet, the flag that says the empty
+  // declaration set is a "not yet" rather than an answer (see
+  // `areDeclarationsPending`). Omitted when false so the response shape is
+  // unchanged for every session whose workspace is present.
   app.get<{ Querystring: { sessionId?: string } }>("/api/trackers", async (request) => {
     const github = resolveGitHubContext(request.query.sessionId);
-    return { trackers: listTrackers(credentialStore, trackerFetchImpl, github) };
+    const pending = areDeclarationsPending(sessionManager, request.query.sessionId);
+    return {
+      trackers: listTrackers(credentialStore, trackerFetchImpl, github),
+      ...(pending ? { declarationsPending: true } : {}),
+    };
   });
 
   // GET /api/issues?tracker=linear[&includeDone=true][&sessionId=...] —

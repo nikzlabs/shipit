@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useIssuesStore, issueLookupId } from "./issues-store.js";
+import { useSessionStore } from "./session-store.js";
 import type { TrackerInfo, TrackerIssue } from "../../server/shared/types.js";
 
 /**
@@ -383,6 +384,107 @@ describe("issues-store fetchTrackers change reporting (planning#323)", () => {
     await expect(useIssuesStore.getState().fetchTrackers()).resolves.toBe(false);
     // A failed refresh leaves the previous view in place rather than blanking it.
     expect(useIssuesStore.getState().trackers).toEqual([gh]);
+  });
+});
+
+/**
+ * `warmTrackers` — the retry that distinguishes "this repository declares
+ * nothing" from "we can't read its declarations yet".
+ *
+ * A switch to a session on a *different* repository clears the declared set
+ * (`setRepoScope`), and the single refill that follows can land while the
+ * incoming session's checkout is still being re-cloned by activation. That
+ * answer is empty, and nothing refetched until the user opened the Issues tab —
+ * so every inline `planning#147` badge in the transcript rendered as plain text
+ * in the meantime.
+ */
+describe("issues-store warmTrackers retries while declarations are unreadable", () => {
+  const originalFetchLocal = globalThis.fetch;
+  const gh: TrackerInfo = { id: "github", label: "GitHub", configured: true, kind: "github" };
+  const planning: TrackerInfo = {
+    id: "github:acme/planning",
+    label: "planning",
+    configured: true,
+    kind: "github",
+    name: "planning",
+    binding: { key: "acme/planning", name: "acme/planning" },
+  };
+
+  /** Answers `pending` for the first `pendingResponses` calls, then declares. */
+  function stubPendingThenDeclared(pendingResponses: number): ReturnType<typeof vi.fn> {
+    let call = 0;
+    const impl = vi.fn(async () => {
+      const pending = call++ < pendingResponses;
+      return new Response(
+        JSON.stringify(pending ? { trackers: [gh], declarationsPending: true } : { trackers: [gh, planning] }),
+        { status: 200 },
+      );
+    });
+    globalThis.fetch = impl as unknown as typeof fetch;
+    return impl;
+  }
+
+  beforeEach(() => {
+    useIssuesStore.setState({ trackers: [], infoByTracker: {}, declarationsPending: false });
+    useSessionStore.setState({ sessionId: "sess-a" });
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    globalThis.fetch = originalFetchLocal;
+    vi.restoreAllMocks();
+  });
+
+  it("keeps asking until the checkout is readable, then stops", async () => {
+    const fetchMock = stubPendingThenDeclared(2);
+    await useIssuesStore.getState().warmTrackers();
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(useIssuesStore.getState().trackers.map((t) => t.id)).toEqual(["github", "github:acme/planning"]);
+    expect(useIssuesStore.getState().declarationsPending).toBe(false);
+  });
+
+  it("resolves on the first answer rather than blocking on the retries", async () => {
+    const fetchMock = stubPendingThenDeclared(Number.MAX_SAFE_INTEGER);
+    await useIssuesStore.getState().warmTrackers();
+    // The caller is already free to fetch the issue list; only one request has
+    // gone out so far.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks exactly once when the answer is available immediately", async () => {
+    const fetchMock = stubPendingThenDeclared(0);
+    await useIssuesStore.getState().warmTrackers();
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives up rather than retrying forever", async () => {
+    const fetchMock = stubPendingThenDeclared(Number.MAX_SAFE_INTEGER);
+    await useIssuesStore.getState().warmTrackers();
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    // The first answer plus one per backoff step — bounded, and the store is
+    // left honest about why it has nothing.
+    expect(fetchMock).toHaveBeenCalledTimes(8);
+    expect(useIssuesStore.getState().declarationsPending).toBe(true);
+  });
+
+  it("stops when the session changes under it, instead of writing another repository's declarations", async () => {
+    const fetchMock = stubPendingThenDeclared(Number.MAX_SAFE_INTEGER);
+    await useIssuesStore.getState().warmTrackers();
+    useSessionStore.setState({ sessionId: "sess-b" });
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a newer warm-up supersedes the one in flight", async () => {
+    const fetchMock = stubPendingThenDeclared(Number.MAX_SAFE_INTEGER);
+    await useIssuesStore.getState().warmTrackers();
+    await useIssuesStore.getState().warmTrackers();
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    // Two first-answer fetches + only the surviving loop's 7 retries.
+    expect(fetchMock).toHaveBeenCalledTimes(9);
   });
 });
 

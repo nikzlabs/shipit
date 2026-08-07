@@ -1043,7 +1043,7 @@ export default function App() {
   useEffect(() => {
     if (rightTab !== "issues") return;
     void (async () => {
-      await useIssuesStore.getState().fetchTrackers();
+      await useIssuesStore.getState().warmTrackers();
       await useIssuesStore.getState().fetchIssues();
     })();
   }, [rightTab]);
@@ -1055,10 +1055,18 @@ export default function App() {
   // click would wrongly link out. Keyed on `sessionId` because the GitHub
   // tracker's `configured` state resolves against the active session's repo
   // binding; Linear ignores it. `fetchTrackers` is idempotent and cheap.
+  //
+  // `warmTrackers`, not `fetchTrackers`: a switch to a *different repository*
+  // clears the declared set (`setRepoScope`), and if the single refill lands
+  // while the incoming session's checkout is still being re-cloned it caches
+  // "declares nothing" — leaving every inline `planning#147` badge in the
+  // transcript as plain text until the user opened the Issues tab, which was
+  // the only other refetch. It retries only while the server says the answer
+  // isn't readable yet, so the ordinary case is still one request.
   // eslint-disable-next-line no-restricted-syntax -- external system sync: warm tracker config for inline issue-link interception
   useEffect(() => {
     void (async () => {
-      await useIssuesStore.getState().fetchTrackers();
+      await useIssuesStore.getState().warmTrackers();
       // planning#327 — the list is repo-scoped too: the GitHub tracker resolves
       // against the session's repo binding, so the same tracker id yields
       // different issues per session. Refetch whenever the tab is showing one

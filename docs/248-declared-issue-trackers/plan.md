@@ -302,6 +302,31 @@ effect in `App` now refetches it when the tab is open; keyed on `rightTab`, the
 fetch-on-open effect never re-ran for a switch that left the tab open, and the
 GitHub tab kept the previous repository's issues.
 
+*Client follow-up — "declares nothing" and "can't read it yet" are different
+answers.* Dropping the declarations on a repo change makes the refill
+load-bearing, and the refill was a single request that could not fail safely. A
+**disk-evicted** session (docs/161: 2 days after a merged PR, 14 for unmerged WIP,
+sooner under disk pressure) keeps its `workspaceDir` in the session row while the
+directory itself is gone, and activation re-clones it from the bare cache
+*asynchronously* (`finishRestore`). `readDeclaredTrackers` degrades a missing
+checkout to zero declarations, so the browser's fetch — which reliably wins that
+race, being a local read against a multi-second clone — cached "this repository
+declares nothing" and never asked again: the session-change effect had already
+fired, and opening the Issues tab was the only other trigger. Every inline
+`planning#147` badge in the transcript rendered as plain text until the user did
+so. It reproduces only across a *repo* change because a same-repo switch no-ops
+`setRepoScope` and the previous (identical) declarations survive the gap.
+
+`GET /api/trackers` now says which of the two it means: `declarationsPending:
+true` when the session has a workspace path that isn't on disk right now
+(`areDeclarationsPending`), omitted otherwise — a workspace that exists and has no
+`shipit.yaml` is a final answer, and so is a session with no workspace at all.
+`warmTrackers` (`issues-store.ts`) is `fetchTrackers` plus a bounded background
+retry on that flag: it resolves on the first answer, so it substitutes at both
+`App` call sites without adding a wait, and retries over ~60s of backoff only
+while the answer is "not yet". A newer warm-up or a session change under it stops
+the loop rather than letting it write another repository's declarations.
+
 *Divergence from the design:* this was expected to need a database migration. It
 does not. `IssueWriteCard` is persisted as a JSON blob in the existing
 `issue_write` column (`chat-history.ts` `toRow`/`fromRow`), so a new optional

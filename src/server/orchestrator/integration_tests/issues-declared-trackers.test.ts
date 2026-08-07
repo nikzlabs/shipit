@@ -239,6 +239,54 @@ describe("Integration: declared issue trackers (docs/248)", () => {
     expect((await trackers()).map((t) => t.id)).toEqual(["github"]);
   });
 
+  // -- "Declares nothing" vs "not readable yet" -------------------------------
+  //
+  // A disk-evicted session (docs/161) keeps its `workspaceDir` in the session
+  // row while the directory is gone, and activation re-clones it asynchronously.
+  // The browser's tracker fetch wins that race, and without a flag saying so it
+  // cached the empty answer — every inline issue badge in the transcript stayed
+  // plain text until something else refetched.
+
+  const trackersResponse = async (): Promise<{
+    trackers: TrackerInfo[];
+    declarationsPending?: boolean;
+  }> => {
+    const res = await app.inject({ method: "GET", url: "/api/trackers?sessionId=sess" });
+    expect(res.statusCode).toBe(200);
+    return res.json() as { trackers: TrackerInfo[]; declarationsPending?: boolean };
+  };
+
+  it("reports declarations as pending while the session's checkout is missing", async () => {
+    writeConfig(DECLARE_PLANNING);
+    expect((await trackersResponse()).declarationsPending).toBeUndefined();
+
+    // Evicted: the row still points at the workspace, the directory is gone.
+    fs.rmSync(workspaceDir, { recursive: true, force: true });
+    const evicted = await trackersResponse();
+    expect(evicted.declarationsPending).toBe(true);
+    expect(evicted.trackers.map((t) => t.id)).toEqual(["github"]);
+
+    // Restored: the same request now answers, and stops saying "not yet".
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    writeConfig(DECLARE_PLANNING);
+    const restored = await trackersResponse();
+    expect(restored.declarationsPending).toBeUndefined();
+    expect(restored.trackers.map((t) => t.id)).toContain("github:planning-owner/planning");
+  });
+
+  it("does not report pending for a repository that simply declares nothing", async () => {
+    // The workspace is there and has no shipit.yaml — a real, final answer.
+    expect((await trackersResponse()).declarationsPending).toBeUndefined();
+  });
+
+  it("does not report pending with no session, or for an unknown session", async () => {
+    for (const url of ["/api/trackers", "/api/trackers?sessionId=nope"]) {
+      const res = await app.inject({ method: "GET", url });
+      expect(res.statusCode).toBe(200);
+      expect((res.json() as { declarationsPending?: boolean }).declarationsPending).toBeUndefined();
+    }
+  });
+
   // -- Declaration warnings reach the agent (req 8) --------------------------
 
   it("surfaces declaration warnings on the destinations route the shim reads", async () => {
