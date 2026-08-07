@@ -450,6 +450,47 @@ findings:
   links die with the workspace either way; nothing can be done about that, and the
   export is the archive.
 
+## The sweep is not a blanket rewrite
+
+Classifying all 2,797 `SHI-N` mentions before writing the sweep changed its shape.
+Most are **citations** — a key named in prose, a code comment, a test name — and
+those rewrite mechanically:
+
+| Category | Count | Rewrite |
+|---|---|---|
+| Code comments (`* SHI-239 made this line LOAD-BEARING`) | 867 | mechanical |
+| Markdown prose, incl. `CLAUDE.md` | 627 | mechanical |
+| Dockerfiles, seccomp JSON, other non-code | 100 | mechanical |
+| Test/fixture files | 837 | **mixed — see below** |
+| Doc `issue:` frontmatter pointers | 186 | mechanical |
+| Non-comment code | 8 | **inspect each** |
+
+The rest are **data**, and rewriting them breaks or silently changes what a test
+asserts. `src/client/stores/issues-store.test.ts` uses `SHI-1`, `SHI-9`, `SHI-28`
+as Linear identifiers under test; `trackers/linear/adapter.test.ts` builds fixture
+issues with `identifier: "SHI-1"`. Those are not pointers at anything — they are
+the *shape of a Linear key*, which is what the code under test parses. Roughly
+**330 such lines across 12 files**, led by:
+
+```
+46  src/server/session/agent-shim/shipit.test.ts
+45  src/server/orchestrator/trackers/linear/adapter.test.ts
+18  src/client/stores/issues-store.test.ts
+16  src/client/components/message-markdown.test.tsx
+```
+
+The same applies to reference-syntax **examples in user-facing strings** —
+`issue-ref-resolution.ts:160` names `roadmap#SHI-304` and `SHI-304` in an error
+message that teaches the three reference forms. Those stay valid only while a
+Linear tracker is declared, so they belong with step 11, not step 10.
+
+The distinction is not expressible as a regex: `it("… (SHI-278)")` is a citation
+and `identifier: "SHI-1"` is data, and both are `SHI-\d+` inside a string literal
+in a test file. So the sweep rewrites the mechanical categories, **excludes the 12
+data files wholesale**, and gate 3 reviews those by hand. That is what the gate's
+"watch for `SHI-N`-shaped text that isn't a pointer" turned out to mean in
+practice.
+
 ## Where a human has to look
 
 Four points in this migration need a person, not a passing test. They are marked
