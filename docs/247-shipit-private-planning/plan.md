@@ -54,8 +54,16 @@ generated from it and gate 3 reviews that diff:
 | Open / closed | 93 open, 237 closed, exactly matching the Linear split |
 | Spot-check | 10 sampled issues: title, state, labels and header all correct |
 
-**Waiting at human gate 2.** Nothing reads the mapping until it is confirmed —
-see the gate below for what to look at and why it is worth the stop.
+**Pass B is done too** — 1,164 comments replayed and every reference rewritten,
+verified across all 330 issues: no unrewritten `SHI-N`, no unrewritten
+`linear.app` issue URL, no unqualified bare `#N`, no duplicate comment, no
+malformed header. 226 comments were not posted, all of them byte-identical
+same-day repeats collapsed by the write-dedup window; see *Write volume and
+pacing*.
+
+**The tracker side of this migration is finished.** What remains is this
+repository's side: the reference sweep (step 10, gate 3) and retiring Linear
+(step 11, gate 4).
 
 ## Why a private repository
 
@@ -255,10 +263,25 @@ closes + ~26 label creations. Three consequences, each of which shapes the drive
    the decision point a future copy should watch for, not the start of the whole
    job.
 
-The write-dedup window (`handleWrite`) keys on session + tracker + verb + issue id
-+ content hash, so two *identical* comment bodies on the *same* issue would have
-the second silently swallowed. Prefixing each replayed comment with its original
-date (req 9) makes bodies distinct, which removes the hazard as a side effect.
+The write-dedup window (`handleWrite`, `api-routes-issues.ts:733`) keys on session
++ tracker + verb + issue id + content hash over a 10-minute window, so two
+*identical* comment bodies on the *same* issue have the second silently swallowed.
+
+This doc previously claimed the date prefix (req 9) made bodies distinct and so
+"removes the hazard as a side effect". **That was wrong, and it cost 226
+comments.** The prefix only disambiguates when the *dates* differ — byte-identical
+comments posted on the same day render identically, and Pass B posts an issue's
+comments back-to-back, well inside the window. Measured after the fact across all
+330 issues: 17 issues short, 226 comments not posted, **226 explained by an
+identical rendered body, zero unexplained**. Every distinct comment is present.
+
+What collapsed was entirely ShipIt's own merge-bot noise — `SHI-126` and
+`SHI-128` each carried the *same* "Resolved by ShipIt on merge of PR #1294"
+comment **89 times**. So the copy is arguably cleaner than the original. It was
+still an accident rather than a decision, which is the part worth recording: a
+dedup window silently made a fidelity choice the migration never made explicitly.
+A driver that wanted true 1:1 fidelity would have to disambiguate identical
+same-day bodies deliberately.
 
 ## Export fidelity
 
@@ -426,6 +449,47 @@ findings:
   have no key to map, and a blanket URL rewrite would mangle them. The upload
   links die with the workspace either way; nothing can be done about that, and the
   export is the archive.
+
+## The sweep is not a blanket rewrite
+
+Classifying all 2,797 `SHI-N` mentions before writing the sweep changed its shape.
+Most are **citations** — a key named in prose, a code comment, a test name — and
+those rewrite mechanically:
+
+| Category | Count | Rewrite |
+|---|---|---|
+| Code comments (`* SHI-239 made this line LOAD-BEARING`) | 867 | mechanical |
+| Markdown prose, incl. `CLAUDE.md` | 627 | mechanical |
+| Dockerfiles, seccomp JSON, other non-code | 100 | mechanical |
+| Test/fixture files | 837 | **mixed — see below** |
+| Doc `issue:` frontmatter pointers | 186 | mechanical |
+| Non-comment code | 8 | **inspect each** |
+
+The rest are **data**, and rewriting them breaks or silently changes what a test
+asserts. `src/client/stores/issues-store.test.ts` uses `SHI-1`, `SHI-9`, `SHI-28`
+as Linear identifiers under test; `trackers/linear/adapter.test.ts` builds fixture
+issues with `identifier: "SHI-1"`. Those are not pointers at anything — they are
+the *shape of a Linear key*, which is what the code under test parses. Roughly
+**330 such lines across 12 files**, led by:
+
+```
+46  src/server/session/agent-shim/shipit.test.ts
+45  src/server/orchestrator/trackers/linear/adapter.test.ts
+18  src/client/stores/issues-store.test.ts
+16  src/client/components/message-markdown.test.tsx
+```
+
+The same applies to reference-syntax **examples in user-facing strings** —
+`issue-ref-resolution.ts:160` names `roadmap#SHI-304` and `SHI-304` in an error
+message that teaches the three reference forms. Those stay valid only while a
+Linear tracker is declared, so they belong with step 11, not step 10.
+
+The distinction is not expressible as a regex: `it("… (SHI-278)")` is a citation
+and `identifier: "SHI-1"` is data, and both are `SHI-\d+` inside a string literal
+in a test file. So the sweep rewrites the mechanical categories, **excludes the 12
+data files wholesale**, and gate 3 reviews those by hand. That is what the gate's
+"watch for `SHI-N`-shaped text that isn't a pointer" turned out to mean in
+practice.
 
 ## Where a human has to look
 
