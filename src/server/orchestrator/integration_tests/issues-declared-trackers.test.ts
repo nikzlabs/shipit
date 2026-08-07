@@ -274,6 +274,42 @@ describe("Integration: declared issue trackers (docs/248)", () => {
     expect(restored.trackers.map((t) => t.id)).toContain("github:planning-owner/planning");
   });
 
+  it("keeps reporting pending mid-restore, when the directory exists but the checkout doesn't", async () => {
+    // The window the existence check alone misses: `restoreSessionWorkspace`
+    // rm's the remnant and clones into the same path, and `git clone` creates
+    // the directory well before the checkout lands. A client that stopped
+    // retrying here would cache the empty answer — the original bug, restored.
+    sessionManager.setDiskTier("sess", "evicted");
+    fs.rmSync(workspaceDir, { recursive: true, force: true });
+    expect((await trackersResponse()).declarationsPending).toBe(true);
+
+    // Clone in progress: the directory is back, `shipit.yaml` is not.
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    const midClone = await trackersResponse();
+    expect(midClone.declarationsPending).toBe(true);
+    expect(midClone.trackers.map((t) => t.id)).toEqual(["github"]);
+
+    // Cloned but not yet checked out onto the session's branch: a `shipit.yaml`
+    // is readable, and it is the wrong one.
+    writeConfig("issues:\n  trackers: []\n");
+    expect((await trackersResponse()).declarationsPending).toBe(true);
+
+    // Restore complete — the tier flip is the last thing it does.
+    writeConfig(DECLARE_PLANNING);
+    sessionManager.setDiskTier("sess", "hot");
+    const done = await trackersResponse();
+    expect(done.declarationsPending).toBeUndefined();
+    expect(done.trackers.map((t) => t.id)).toContain("github:planning-owner/planning");
+  });
+
+  it("does not report pending for a `light` session, which kept its checkout", async () => {
+    writeConfig(DECLARE_PLANNING);
+    sessionManager.setDiskTier("sess", "light");
+    const res = await trackersResponse();
+    expect(res.declarationsPending).toBeUndefined();
+    expect(res.trackers.map((t) => t.id)).toContain("github:planning-owner/planning");
+  });
+
   it("does not report pending for a repository that simply declares nothing", async () => {
     // The workspace is there and has no shipit.yaml — a real, final answer.
     expect((await trackersResponse()).declarationsPending).toBeUndefined();

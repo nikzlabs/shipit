@@ -318,14 +318,34 @@ so. It reproduces only across a *repo* change because a same-repo switch no-ops
 `setRepoScope` and the previous (identical) declarations survive the gap.
 
 `GET /api/trackers` now says which of the two it means: `declarationsPending:
-true` when the session has a workspace path that isn't on disk right now
-(`areDeclarationsPending`), omitted otherwise — a workspace that exists and has no
-`shipit.yaml` is a final answer, and so is a session with no workspace at all.
+true` when a restore is still owed (`areDeclarationsPending`), omitted otherwise —
+a workspace that exists and has no `shipit.yaml` is a final answer, and so is a
+session with no workspace at all. **The directory existing is deliberately not the
+test.** `restoreSessionWorkspace` deletes the remnant and clones into the same
+path, and `git clone` creates the target directory long before the checkout lands,
+so `existsSync` goes true within milliseconds while `shipit.yaml` is still absent
+(mid-clone) or on the wrong branch (cloned, not yet checked out) — a client
+retrying on *that* signal would stop on its first retry and cache the empty answer
+anyway. The authoritative signal is the **disk tier**: eviction sets `evicted`
+(`tier-escalation.ts`) and only the last line of a successful restore sets it back
+to `hot`, after the branch checkout and the LFS materialization. Readiness is also
+sampled *before* the declarations are read, so a restore finishing between the two
+reads can only err towards "pending", which costs a retry.
+
 `warmTrackers` (`issues-store.ts`) is `fetchTrackers` plus a bounded background
 retry on that flag: it resolves on the first answer, so it substitutes at both
 `App` call sites without adding a wait, and retries over ~60s of backoff only
 while the answer is "not yet". A newer warm-up or a session change under it stops
 the loop rather than letting it write another repository's declarations.
+
+*And a response that outlives its subject has to be dropped.* Independently of
+eviction, `fetchTrackers` committed its response unconditionally, so two
+overlapping requests across a session switch — a warm-up, a `shipit.yaml` refresh,
+a tab-open fetch — could land out of order and paint the previous repository's
+declarations over the current one's: the same symptom, reachable with nothing more
+than a slow response. It now captures the session id and repo scope before the
+request and drops the write if either moved (`declarationScope`). Dropping is safe
+because whatever changed the scope issues its own fetch.
 
 *Divergence from the design:* this was expected to need a database migration. It
 does not. `IssueWriteCard` is persisted as a JSON blob in the existing

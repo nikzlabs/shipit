@@ -508,6 +508,16 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * What a tracker response is *about*: the session it was requested for (the
+ * server resolves the GitHub binding from it) and the repository the store is
+ * currently scoped to. Compared across the fetch await so a response that
+ * outlived its subject is dropped rather than written.
+ */
+function declarationScope(get: () => IssuesState): string {
+  return `${useSessionStore.getState().sessionId ?? ""} ${get().repoScope ?? ""}`;
+}
+
+/**
  * The background half of {@link IssuesState.warmTrackers}: re-ask until the
  * session's checkout is readable, then stop. Bails the moment a newer warm-up
  * owns the store, or the session changes under it — a fetch issued for the
@@ -595,6 +605,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
 
   fetchTrackers: async () => {
     try {
+      const requestedFor = declarationScope(get);
       const params = sessionIdParam();
       const res = await fetch(`/api/trackers${params ? `?${params}` : ""}`, {
         headers: { Accept: "application/json" },
@@ -604,6 +615,14 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
         trackers?: TrackerInfo[];
         declarationsPending?: boolean;
       };
+      // The answer describes the session/repository that was current when the
+      // request went out. If either moved across the await this response is
+      // about somewhere else, and writing it would paint one repository's
+      // declarations over another's — the resolution context every inline issue
+      // badge renders against, so a `planning#147` in the transcript would go
+      // plain the moment a slow response from the previous session landed last.
+      // Dropping is safe: whatever changed the scope issues its own fetch.
+      if (declarationScope(get) !== requestedFor) return false;
       const trackers = data.trackers ?? [];
       const declarationsPending = data.declarationsPending === true;
       const changed = declarationSignature(get().trackers) !== declarationSignature(trackers);

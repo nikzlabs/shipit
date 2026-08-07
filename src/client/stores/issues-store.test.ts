@@ -388,6 +388,97 @@ describe("issues-store fetchTrackers change reporting (planning#323)", () => {
 });
 
 /**
+ * A tracker response describes the session/repository that was current when it
+ * was requested. One that outlives its subject must be dropped, not written:
+ * `trackers` IS `trackerDestinations()`, the context every inline issue badge
+ * resolves against, so a slow response from the previous session landing last
+ * turns the new session's `planning#147` back into plain text. This needs no
+ * disk eviction — just two overlapping requests across a switch.
+ */
+describe("issues-store fetchTrackers drops responses that outlived their scope", () => {
+  const originalFetchLocal = globalThis.fetch;
+  const ownRepo: TrackerInfo = { id: "github", label: "GitHub", configured: true, kind: "github" };
+  const planning: TrackerInfo = {
+    id: "github:acme/planning",
+    label: "planning",
+    configured: true,
+    kind: "github",
+    name: "planning",
+    binding: { key: "acme/planning", name: "acme/planning" },
+  };
+
+  /**
+   * A fetch whose responses the test resolves by request index, in whatever
+   * order it likes — request 0 is the first `fetchTrackers` call, and so on.
+   */
+  function deferredFetch(): (index: number, trackers: TrackerInfo[]) => void {
+    const pending: ((body: TrackerInfo[]) => void)[] = [];
+    globalThis.fetch = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          pending.push((trackers) =>
+            resolve(new Response(JSON.stringify({ trackers }), { status: 200 })),
+          );
+        }),
+    ) as unknown as typeof fetch;
+    return (index, trackers) => pending[index](trackers);
+  }
+
+  beforeEach(() => {
+    useIssuesStore.setState({ trackers: [], infoByTracker: {}, declarationsPending: false, repoScope: "repo-a" });
+    useSessionStore.setState({ sessionId: "sess-a" });
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetchLocal;
+    vi.restoreAllMocks();
+  });
+
+  it("keeps the current repository's declarations when the previous one's response lands last", async () => {
+    const respond = deferredFetch();
+    const forRepoA = useIssuesStore.getState().fetchTrackers();
+
+    // The switch: scope moves to repo B and its own fetch goes out.
+    useSessionStore.setState({ sessionId: "sess-b" });
+    useIssuesStore.getState().setRepoScope("repo-b");
+    const forRepoB = useIssuesStore.getState().fetchTrackers();
+
+    respond(1, [ownRepo, planning]); // B answers first…
+    await forRepoB;
+    respond(0, [ownRepo]); // …A answers last, describing a repository we left.
+    await expect(forRepoA).resolves.toBe(false);
+
+    expect(useIssuesStore.getState().trackers.map((t) => t.id)).toEqual([
+      "github",
+      "github:acme/planning",
+    ]);
+  });
+
+  it("drops a response whose session changed under it, even within one repository", async () => {
+    const respond = deferredFetch();
+    const inFlight = useIssuesStore.getState().fetchTrackers();
+    // Same repo, different session: `setRepoScope` no-ops here, so the session
+    // is the only thing distinguishing the two — and the GitHub tracker's
+    // binding resolves from it server-side.
+    useSessionStore.setState({ sessionId: "sess-b" });
+    respond(0, [ownRepo, planning]);
+    await expect(inFlight).resolves.toBe(false);
+    expect(useIssuesStore.getState().trackers).toEqual([]);
+  });
+
+  it("writes the response when nothing moved under it", async () => {
+    const respond = deferredFetch();
+    const inFlight = useIssuesStore.getState().fetchTrackers();
+    respond(0, [ownRepo, planning]);
+    await expect(inFlight).resolves.toBe(true);
+    expect(useIssuesStore.getState().trackers.map((t) => t.id)).toEqual([
+      "github",
+      "github:acme/planning",
+    ]);
+  });
+});
+
+/**
  * `warmTrackers` — the retry that distinguishes "this repository declares
  * nothing" from "we can't read its declarations yet".
  *
@@ -470,7 +561,10 @@ describe("issues-store warmTrackers retries while declarations are unreadable", 
     expect(useIssuesStore.getState().declarationsPending).toBe(true);
   });
 
-  it("stops when the session changes under it, instead of writing another repository's declarations", async () => {
+  // Scoped to what the loop itself controls — whether it keeps *asking*. A
+  // response already in flight when the session changes is dropped by
+  // `fetchTrackers`' own scope guard, covered above.
+  it("stops issuing retries once the session changes under it", async () => {
     const fetchMock = stubPendingThenDeclared(Number.MAX_SAFE_INTEGER);
     await useIssuesStore.getState().warmTrackers();
     useSessionStore.setState({ sessionId: "sess-b" });
@@ -478,7 +572,7 @@ describe("issues-store warmTrackers retries while declarations are unreadable", 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("a newer warm-up supersedes the one in flight", async () => {
+  it("a newer warm-up supersedes the older loop's retries", async () => {
     const fetchMock = stubPendingThenDeclared(Number.MAX_SAFE_INTEGER);
     await useIssuesStore.getState().warmTrackers();
     await useIssuesStore.getState().warmTrackers();

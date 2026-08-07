@@ -130,18 +130,32 @@ function readDeclaredTrackers(
  * session change or Issues-tab open, every inline `planning#147` badge in the
  * transcript stayed plain text until the user opened the tab.
  *
- * Saying so lets the client retry instead of caching the empty answer. Pending
- * means specifically: this session has a workspace path that isn't on disk right
- * now. A session with no workspace at all (standalone/sandbox) declares nothing,
- * permanently, and is not pending; neither is an unknown session id.
+ * Saying so lets the client retry instead of caching the empty answer.
+ *
+ * **The directory existing is not the test.** `restoreSessionWorkspace` deletes
+ * the remnant and clones into the same path (`services/session.ts`), and
+ * `git clone` creates the target directory long before the checkout lands — so
+ * `existsSync` goes true within milliseconds while `shipit.yaml` is still absent
+ * (mid-clone) or on the wrong branch (cloned, not yet checked out). A client
+ * retrying on that signal would stop on the first retry and cache the empty
+ * answer anyway, which is the bug it was added to fix. The authoritative signal
+ * is the **disk tier**: eviction sets `evicted` (`tier-escalation.ts`) and only
+ * the very end of a successful restore sets it back to `hot`, after the branch
+ * checkout and the LFS materialization.
+ *
+ * So pending means: this session has a workspace path, and either the tier says
+ * a restore is still owed or the path isn't on disk at all (a genuine fs loss,
+ * or the instant before the re-clone starts). `light` keeps its checkout and is
+ * not pending. A session with no workspace at all (standalone/sandbox) declares
+ * nothing, permanently; neither it nor an unknown session id is pending.
  */
 function areDeclarationsPending(
   sessionManager: SessionManager,
   sessionId: string | undefined,
 ): boolean {
-  const workspaceDir = sessionId ? sessionManager.get(sessionId)?.workspaceDir : undefined;
-  if (!workspaceDir) return false;
-  return !fs.existsSync(workspaceDir);
+  const session = sessionId ? sessionManager.get(sessionId) : undefined;
+  if (!session?.workspaceDir) return false;
+  return session.diskTier === "evicted" || !fs.existsSync(session.workspaceDir);
 }
 
 /**
@@ -218,8 +232,12 @@ export async function registerIssueRoutes(
   // `areDeclarationsPending`). Omitted when false so the response shape is
   // unchanged for every session whose workspace is present.
   app.get<{ Querystring: { sessionId?: string } }>("/api/trackers", async (request) => {
-    const github = resolveGitHubContext(request.query.sessionId);
+    // Readiness is sampled BEFORE the declarations are read, never after: a
+    // restore that completes between the two reads would otherwise pair an empty
+    // read with a ready verdict — the one combination the client caches forever.
+    // Sampling first can only err towards "pending", which costs a retry.
     const pending = areDeclarationsPending(sessionManager, request.query.sessionId);
+    const github = resolveGitHubContext(request.query.sessionId);
     return {
       trackers: listTrackers(credentialStore, trackerFetchImpl, github),
       ...(pending ? { declarationsPending: true } : {}),
