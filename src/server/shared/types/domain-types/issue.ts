@@ -161,6 +161,9 @@ export interface TrackerComment {
  * identifier and no issue id. `comment-edit` records a comment REWRITE
  * (`shipit issue comment edit`, planning#88) — distinct from `comment` because the
  * card reads differently and undo restores a body rather than deleting one.
+ * `label-edit` is the same split for labels (planning#88): a label that already
+ * exists with the wrong color or casing is corrected in place, and its undo
+ * restores the prior values rather than deleting anything.
  */
 export type IssueWriteVerb =
   | "comment"
@@ -169,7 +172,8 @@ export type IssueWriteVerb =
   | "status"
   | "assignee"
   | "create"
-  | "label";
+  | "label"
+  | "label-edit";
 
 /**
  * docs/189 — the human-readable "what changed" values the redesigned write card
@@ -195,8 +199,16 @@ export interface IssueWriteContent {
    * edit → a faint one-liner for label/priority changes (e.g.
    * "priority → High · labels: security, bug"), so a labels/priority-only edit
    * still shows what changed rather than rendering an empty second line.
+   * label-edit → the same one-liner for a recolor / description change
+   * ("color → #d73a4a · description updated").
    */
   attrs?: string;
+  /**
+   * label-edit → the label's name transition, present only when the edit renamed
+   * it (planning#88). Line 1 already shows the name the label has NOW, so the card
+   * needs the prior one to make a rename legible; a recolor sets only `attrs`.
+   */
+  label?: { before: string; after: string };
   /** status → the native status names of the transition. */
   status?: { from: string; to: string };
   /** assignee → the new assignee's display name, or null when unassigned. */
@@ -245,7 +257,21 @@ export type IssueWriteUndo =
   // already carry it the delete refuses with an explanation (shown on the card).
   // `labelId` is the tracker-internal delete target (Linear UUID; for GitHub the
   // label name IS the id), `labelName` the display name for messaging.
-  | { kind: "label"; labelId: string; labelName: string };
+  | { kind: "label"; labelId: string; labelName: string }
+  // planning#88 — a label EDIT (recolor / rename / description). Undo restores the
+  // prior values of exactly the fields the edit touched, which is a symmetric
+  // reverse write: both backends rename a label IN PLACE, so every issue keeps
+  // carrying it and nothing is re-labeled in either direction. Only the touched
+  // fields are snapshotted, so an undo can't silently revert a value the edit
+  // never set. `labelId` is the address to write back through and is the id AFTER
+  // the edit (on GitHub the name IS the id, so a rename changes it).
+  | {
+      kind: "label-edit";
+      labelId: string;
+      previousName?: string;
+      previousColor?: string;
+      previousDescription?: string;
+    };
 
 /** Undo lifecycle of a write provenance card. */
 export type IssueWriteUndoState = "available" | "undoing" | "undone" | "failed";

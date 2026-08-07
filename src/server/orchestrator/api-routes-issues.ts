@@ -29,6 +29,7 @@ import {
   userSetIssueLabels,
   createIssueForTracker,
   createLabelForTracker,
+  updateLabelForTracker,
   commentOnIssueForTracker,
   editCommentForTracker,
   updateIssueForTracker,
@@ -40,7 +41,7 @@ import {
   listTrackerDestinations,
   ServiceError,
   type IssueWriteOutcome,
-  type LabelCreation,
+  type LabelWrite,
 } from "./services/index.js";
 import type { GitHubTrackerContext } from "./trackers/index.js";
 import type { GitHubAuthManager } from "./github-auth.js";
@@ -807,11 +808,12 @@ export async function registerIssueRoutes(
    * issue, so `issueId`/`title` stay empty and the client renders it non-
    * navigable. Undo deletes the label if it's still unused.
    */
-  function emitLabelCreationCard(
+  function emitLabelCard(
     runner: NonNullable<ReturnType<typeof deps.runnerRegistry.get>>,
     sessionId: string,
     trackerId: string,
-    creation: LabelCreation,
+    verb: "label" | "label-edit",
+    write: LabelWrite,
     trackerName?: string,
   ): IssueWriteCard {
     const card: IssueWriteCard = {
@@ -819,12 +821,15 @@ export async function registerIssueRoutes(
       tracker: trackerId as TrackerId,
       ...(trackerName ? { trackerName } : {}),
       issueId: "",
-      identifier: creation.label.name,
+      // The label's name as it now stands — for an edit that is the NEW name,
+      // and the card's second line carries the one it replaced.
+      identifier: write.label.name,
       title: "",
-      verb: "label",
-      summary: creation.summary,
+      verb,
+      summary: write.summary,
+      ...("content" in write && write.content ? { content: write.content } : {}),
       attribution: isGitHubTracker(trackerId) ? "user" : "workspace",
-      undo: creation.undo,
+      undo: write.undo,
       undoState: "available",
       createdAt: new Date().toISOString(),
     };
@@ -835,6 +840,81 @@ export async function registerIssueRoutes(
       { chatHistoryManager: deps.chatHistoryManager, sessionId },
     );
     return card;
+  }
+
+  /**
+   * Shared handler for the two label writes (`label create`, `label edit`) —
+   * the same brokered-write-then-surface-a-card flow `handleWrite` runs, minus
+   * the issue: a label write targets tracker CONFIG, so there is no
+   * `TrackerIssue` to stamp onto the card and no issue id for the dedup key's
+   * `issueId` slot.
+   *
+   * That slot instead names **the label being written**: empty for a create (the
+   * label does not exist yet, so the name lives in the hashed content alongside
+   * the color and description) and the target's name for an edit (the object
+   * being mutated, exactly as the slot holds the issue for every issue verb).
+   * Keying an edit on the name is what keeps two edits to *different* labels
+   * from collapsing into one — the same trap `comment edit` avoided by riding
+   * the comment id in its hashed content (planning#88) — while a replay of the same
+   * edit stays absorbed (planning#114).
+   */
+  async function handleLabelWrite(
+    sessionId: string,
+    trackerId: string,
+    trackerName: string | undefined,
+    verb: "label" | "label-edit",
+    dedup: { verb: string; target: string; content: string },
+    reply: FastifyReply,
+    fallback: string,
+    run: (github: GitHubTrackerContext) => Promise<LabelWrite>,
+  ): Promise<unknown> {
+    // Same name/destination coherence check `handleWrite` applies — these routes
+    // mint their own card (with its own Undo) without going through it.
+    const mismatch = rejectMismatchedTrackerName(sessionId, trackerId, trackerName);
+    if (mismatch) {
+      reply.code(400).send({ error: mismatch });
+      return;
+    }
+    // Writing a tracker's label set mutates its configuration, so req 13's
+    // name-your-destination rule applies as it does to `issue create` — same
+    // backstop, same reasoning.
+    const unnamed = rejectUnnamedCreateDestination(trackerId);
+    if (unnamed) {
+      reply.code(400).send({ error: unnamed });
+      return;
+    }
+    const runner = deps.runnerRegistry.get(sessionId);
+    if (!runner) {
+      reply.code(409).send({ error: "Session is not active — open it to record the write." });
+      return;
+    }
+    const now = Date.now();
+    pruneWrites(now);
+    const dedupKey = `${sessionId}::${trackerId}::${dedup.verb}::${dedup.target}::${createHash("sha256")
+      .update(dedup.content)
+      .digest("hex")}`;
+    const cached = recentWrites.get(dedupKey);
+    if (cached && now - cached.at <= WRITE_DEDUP_WINDOW_MS) {
+      cached.at = now;
+      return cached.result;
+    }
+    const github = resolveGitHubContext(sessionId);
+    let write: LabelWrite;
+    try {
+      write = await run(github);
+    } catch (err) {
+      sendServiceError(reply, err, fallback);
+      return;
+    }
+    const card = emitLabelCard(runner, sessionId, trackerId, verb, write, trackerName);
+    const result = {
+      ok: true,
+      cardId: card.cardId,
+      summary: write.summary,
+      label: write.label,
+    };
+    recentWrites.set(dedupKey, { at: now, result });
+    return result;
   }
 
   /**
@@ -894,7 +974,7 @@ export async function registerIssueRoutes(
     // Labels minted by --create-missing-labels each get their own card, BEFORE
     // the main write card — the creation happened first (planning#232).
     for (const creation of outcome.labelCreations ?? []) {
-      emitLabelCreationCard(runner, sessionId, trackerId, creation, trackerName);
+      emitLabelCard(runner, sessionId, trackerId, "label", creation, trackerName);
     }
     // For a create the issue id isn't known until the tracker assigns it, so
     // fall back to the created issue's id (the undo target).
@@ -1000,60 +1080,77 @@ export async function registerIssueRoutes(
         reply.code(400).send({ error: "tracker and name are required" });
         return;
       }
-      // Same name/destination coherence check `handleWrite` applies — this route
-      // mints its own card (with its own Undo) without going through it.
-      const labelMismatch = rejectMismatchedTrackerName(request.params.sessionId, tracker, trackerName);
-      if (labelMismatch) {
-        reply.code(400).send({ error: labelMismatch });
-        return;
-      }
-      // Creating a label mutates a tracker's configuration, so req 13's rule
-      // applies to it too — same backstop, same reasoning.
-      const unnamedLabel = rejectUnnamedCreateDestination(tracker);
-      if (unnamedLabel) {
-        reply.code(400).send({ error: unnamedLabel });
-        return;
-      }
-      const sessionId = request.params.sessionId;
-      const runner = deps.runnerRegistry.get(sessionId);
-      if (!runner) {
-        reply.code(409).send({ error: "Session is not active — open it to record the write." });
-        return;
-      }
-      const now = Date.now();
-      pruneWrites(now);
-      const dedupKey = `${sessionId}::${tracker}::label-create::::${createHash("sha256")
-        .update(JSON.stringify({ name, color: color ?? null, description: description ?? null }))
-        .digest("hex")}`;
-      const cached = recentWrites.get(dedupKey);
-      if (cached && now - cached.at <= WRITE_DEDUP_WINDOW_MS) {
-        cached.at = now;
-        return cached.result;
-      }
-      const github = resolveGitHubContext(sessionId);
-      let creation: LabelCreation;
-      try {
-        creation = await createLabelForTracker(
-          credentialStore,
-          tracker,
-          name,
-          { ...(color ? { color } : {}), ...(description ? { description } : {}) },
-          trackerFetchImpl,
-          github,
-        );
-      } catch (err) {
-        sendServiceError(reply, err, "Failed to create label");
-        return;
-      }
-      const card = emitLabelCreationCard(runner, sessionId, tracker, creation, trackerName);
-      const result = {
-        ok: true,
-        cardId: card.cardId,
-        summary: creation.summary,
-        label: creation.label,
+      const dedup = {
+        verb: "label-create",
+        target: "",
+        content: JSON.stringify({ name, color: color ?? null, description: description ?? null }),
       };
-      recentWrites.set(dedupKey, { at: now, result });
-      return result;
+      return handleLabelWrite(
+        request.params.sessionId,
+        tracker,
+        trackerName,
+        "label",
+        dedup,
+        reply,
+        "Failed to create label",
+        (github) =>
+          createLabelForTracker(
+            credentialStore,
+            tracker,
+            name,
+            { ...(color ? { color } : {}), ...(description ? { description } : {}) },
+            trackerFetchImpl,
+            github,
+          ),
+      );
+    },
+  );
+
+  // POST /api/sessions/:sessionId/issue/label/edit
+  //   { tracker, name, newName?, color?, description? } (planning#88) — correct a label
+  //   that already exists with the wrong color, casing or description. The
+  //   counterpart to `label/create`, which refuses an existing name: without an
+  //   edit verb a wrongly-minted label was permanently wrong through ShipIt.
+  //   Undo restores the prior values of exactly the fields this write changed.
+  app.post<{
+    Params: { sessionId: string };
+    Body: { tracker?: string; trackerName?: string; name?: string; newName?: string; color?: string; description?: string };
+  }>(
+    "/api/sessions/:sessionId/issue/label/edit",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const { tracker, trackerName, name, newName, color, description } = request.body ?? {};
+      if (!tracker || !name?.trim()) {
+        reply.code(400).send({ error: "tracker and name are required" });
+        return;
+      }
+      if (newName === undefined && color === undefined && description === undefined) {
+        reply.code(400).send({ error: "at least one of newName/color/description is required" });
+        return;
+      }
+      const patch = {
+        ...(newName !== undefined ? { name: newName } : {}),
+        ...(color !== undefined ? { color } : {}),
+        // `description: ""` is meaningful (clear it), so forward on presence.
+        ...(description !== undefined ? { description } : {}),
+      };
+      const dedup = {
+        verb: "label-edit",
+        // The label being edited occupies the issueId slot: it is the object
+        // this write mutates, so two edits to different labels stay distinct.
+        target: name.trim(),
+        content: JSON.stringify(patch),
+      };
+      return handleLabelWrite(
+        request.params.sessionId,
+        tracker,
+        trackerName,
+        "label-edit",
+        dedup,
+        reply,
+        "Failed to edit label",
+        (github) => updateLabelForTracker(credentialStore, tracker, name, patch, trackerFetchImpl, github),
+      );
     },
   );
 

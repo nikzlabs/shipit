@@ -896,6 +896,41 @@ describe("ChatHistoryManager", () => {
       expect(card).toEqual(msg.issueWrite);
     });
 
+    it("round-trips a label-edit card's prior-values undo snapshot (planning#88)", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      const msg: PersistedMessage = {
+        role: "assistant",
+        text: "",
+        issueWrite: {
+          cardId: "iw-label-edit",
+          tracker: "github:acme/planning",
+          trackerName: "planning",
+          // A label write targets tracker CONFIG, so there is no issue: the
+          // identifier is the label's name AS IT NOW STANDS.
+          issueId: "",
+          identifier: "Bug",
+          title: "",
+          verb: "label-edit",
+          summary: 'edited label renamed "bug" → "Bug", color → #d73a4a',
+          content: { label: { before: "bug", after: "Bug" }, attrs: "color → #d73a4a" },
+          attribution: "user",
+          undo: {
+            kind: "label-edit",
+            labelId: "Bug",
+            previousName: "bug",
+            previousColor: "#ededed",
+          },
+          undoState: "available",
+          createdAt: "2026-06-05T00:00:00.000Z",
+        },
+      };
+      mgr.append("sess-1", msg);
+      const card = new ChatHistoryManager(dbManager).load("sess-1")[0].issueWrite;
+      // Without the snapshot surviving a reload the Undo button would render
+      // with nothing to restore — the label would stay wrong the other way.
+      expect(card).toEqual(msg.issueWrite);
+    });
+
     it("round-trips the docs/189 line-2 content (comment preview, status delta)", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("sess-1", writeCard("iw-comment"));

@@ -2727,12 +2727,97 @@ describe("shipit issue", () => {
     expect(badColor.calls).toHaveLength(0);
   });
 
-  it("label rejects verbs other than create", async () => {
+  it("label rejects verbs other than create/edit", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "label", "archive", "t3code"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("only `label create` and `label edit` are supported");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  // ---- label edit (planning#88) ------------------------------------------------
+
+  it("label edit posts the patch and reports the summary", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["issue", "label", "edit", "--tracker", "roadmap", "--name", "bug", "--new-name", "Bug", "--color", "#d73a4a"],
+      {
+        "POST /agent-ops/issue/label/edit": {
+          status: 200,
+          body: { ok: true, summary: 'edited label renamed "bug" → "Bug"', label: { name: "Bug", color: "#d73a4a" } },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/agent-ops/issue/label/edit",
+      body: { tracker: "linear:SHI", name: "bug", newName: "Bug", color: "#d73a4a" },
+    });
+    expect(out.stdout).toContain('renamed "bug" → "Bug"');
+  });
+
+  it("label edit --json prints the broker payload verbatim", async () => {
+    const { run } = makeRunner();
+    const body = { ok: true, summary: "edited label color → #8b5cf6", label: { name: "Feature", color: "#8b5cf6" } };
+    const out = await run(
+      ["issue", "label", "edit", "--tracker", "roadmap", "--name", "Feature", "--color", "#8b5cf6", "--json"],
+      { "POST /agent-ops/issue/label/edit": { status: 200, body } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(JSON.parse(out.stdout)).toEqual(body);
+  });
+
+  it("label edit requires --name, --tracker and something to change", async () => {
+    const { run } = makeRunner();
+    const noName = await run(["issue", "label", "edit", "--tracker", "roadmap", "--color", "#000000"]);
+    expect(noName.exitCode).not.toBe(0);
+    expect(noName.stderr).toContain("--name is required");
+
+    // --name only says WHICH label; an edit that changes nothing is a mistake.
+    const noChange = await run(["issue", "label", "edit", "--tracker", "roadmap", "--name", "bug"]);
+    expect(noChange.exitCode).not.toBe(0);
+    expect(noChange.stderr).toContain("at least one of --new-name, --color or --description");
+
+    const noTracker = await run(["issue", "label", "edit", "--name", "bug", "--color", "#000000"]);
+    expect(noTracker.exitCode).not.toBe(0);
+    expect(noTracker.stderr).toContain("--tracker <name> is required");
+
+    const badColor = await run(["issue", "label", "edit", "--tracker", "roadmap", "--name", "bug", "--color", "blue"]);
+    expect(badColor.exitCode).not.toBe(0);
+    expect(badColor.stderr).toContain("--color must be a 6-digit hex");
+
+    expect(noName.calls.length + noChange.calls.length + noTracker.calls.length + badColor.calls.length).toBe(0);
+  });
+
+  it("label create rejects --new-name (it names the label with --name)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "label", "create", "--tracker", "roadmap", "--name", "x", "--new-name", "y"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--new-name applies to `label edit`");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("label delete is refused with the reason and the edit alternative", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "label", "delete", "t3code"]);
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("only `label create` is supported");
+    // The refusal has to say WHY, or it reads as an oversight to route around.
+    expect(out.stderr).toContain("no issue carries");
+    expect(out.stderr).toContain("shipit issue label edit");
     expect(out.calls).toHaveLength(0);
+  });
+
+  it("label edit surfaces a 409 merge refusal as exit 1", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "label", "edit", "--tracker", "roadmap", "--name", "defect", "--new-name", "bug"], {
+      "POST /agent-ops/issue/label/edit": {
+        status: 409,
+        body: { error: 'Label "bug" already exists on Linear — ShipIt does not merge labels.' },
+      },
+    });
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("does not merge labels");
   });
 
   it("label create surfaces a duplicate (409) as exit 1", async () => {

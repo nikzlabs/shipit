@@ -149,6 +149,7 @@ Issues (tracker-neutral; docs/175 + docs/177 + docs/187 + docs/248):
   shipit issue status    <ref> <state> [--tracker NAME] [--json]
   shipit issue assign    <ref> <user|me | --none> [--tracker NAME] [--json]
   shipit issue label create --tracker NAME --name NAME [--color '#rrggbb'] [--description TEXT] [--json]
+  shipit issue label edit   --tracker NAME --name NAME [--new-name NAME] [--color '#rrggbb'] [--description TEXT] [--json]
 
   Every tracker this repository uses is declared in its shipit.yaml with a NAME;
   there is no built-in tracker and no implicit fallback. Three reference forms
@@ -158,9 +159,9 @@ Issues (tracker-neutral; docs/175 + docs/177 + docs/187 + docs/248):
   re-pointed. A reference naming no declared tracker fails with the declared
   names listed; fix the reference or the declaration, never retry elsewhere.
 
-  Naming nothing means this session's own repository — except on 'create' and
-  'label create', which ALWAYS need --tracker NAME so a forgotten flag can't file
-  into a possibly-public repo. Writes are do-then-surface: the change is made
+  Naming nothing means this session's own repository — except on 'create' and the
+  'label' verbs, which ALWAYS need --tracker NAME so a forgotten flag can't file
+  into (or repaint the labels of) a possibly-public repo. Writes are do-then-surface: the change is made
   immediately and an inline provenance card with an Undo button is posted in the
   chat; Undo cancels a newly created issue.
 
@@ -177,6 +178,13 @@ Issues (tracker-neutral; docs/175 + docs/177 + docs/187 + docs/248):
   fly (each gets its own Undo card). On 'edit' labels are added to the issue's
   existing set. --priority is urgent|high|medium|low|none on Linear; GitHub has
   no priority field, so use a label there instead.
+
+  'label edit' fixes a label that already exists with the wrong color, casing or
+  description — 'create' still refuses a name that exists in any casing, so a
+  typo can never repaint a live label. A rename happens in place: every issue
+  carrying the label keeps it and just shows the new name. Undo restores the
+  previous values. There is no 'label delete' (undo would mint a fresh label no
+  issue carries) — delete in the tracker's own UI if one truly must go.
 
   'labels'/'statuses' list the tracker's valid label names and status targets so
   you can pick one before a create/edit/status write instead of guessing. 'list

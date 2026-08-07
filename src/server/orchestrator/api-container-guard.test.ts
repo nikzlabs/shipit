@@ -301,6 +301,10 @@ const GOLDEN_CONTAINER_ROUTES = [
   // issue writes above (own-session scoped, do-then-surface card with undo,
   // tracker token stays orchestrator-side).
   "POST /api/sessions/:sessionId/issue/label/create",
+  // planning#88 — `shipit issue label edit`, the same posture as `label create`: it
+  // corrects a label that already exists (rename in place, so nothing is
+  // re-labeled) and its Undo restores the prior values.
+  "POST /api/sessions/:sessionId/issue/label/edit",
   // source — shipit source (ops sessions)
   "GET /api/sessions/:id/source/status",
   "GET /api/sessions/:id/source/tree",

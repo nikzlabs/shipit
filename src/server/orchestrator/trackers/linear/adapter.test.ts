@@ -677,6 +677,78 @@ describe("LinearTracker writes (docs/177)", () => {
     await expect(tracker.createLabel({ name: "x" })).rejects.toThrow(/missing declared team/);
   });
 
+  it("finds a label by name case-insensitively, preferring the declared team (planning#88)", async () => {
+    const fetchImpl = routerFetch([
+      {
+        match: "FindIssueLabels",
+        data: {
+          issueLabels: {
+            nodes: [
+              { id: "lbl-other", name: "Bug", color: "#111111", team: { key: "OPS" } },
+              { id: "lbl-ours", name: "bug", color: "#d73a4a", description: "Broken", team: { key: "SHI" } },
+            ],
+          },
+        },
+      },
+    ]);
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    // `issueLabels` is workspace-wide, so a same-named label can live in another
+    // team; this tracker's own team wins rather than whichever came back first.
+    expect(await tracker.findLabel("BUG")).toEqual({
+      id: "lbl-ours",
+      name: "bug",
+      color: "#d73a4a",
+      description: "Broken",
+    });
+  });
+
+  it("returns null for a label the workspace doesn't have (planning#88)", async () => {
+    const fetchImpl = routerFetch([{ match: "FindIssueLabels", data: { issueLabels: { nodes: [] } } }]);
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    expect(await tracker.findLabel("nope")).toBeNull();
+  });
+
+  it("updates a label's name/color via issueLabelUpdate (planning#88)", async () => {
+    const fetchImpl = routerFetch([
+      { match: "LabelOwner", data: { issueLabel: { team: { key: "SHI" } } } },
+      {
+        match: "issueLabelUpdate",
+        data: { issueLabelUpdate: { success: true, issueLabel: { id: "lbl-1", name: "Bug", color: "#d73a4a" } } },
+      },
+    ]);
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    expect(await tracker.updateLabel("lbl-1", { name: "Bug", color: "d73a4a" })).toEqual({
+      id: "lbl-1",
+      name: "Bug",
+      color: "#d73a4a",
+    });
+    // A bare hex is normalized to Linear's `#rrggbb`, as on create.
+    expect(inputFor(fetchImpl, "LabelUpdate")).toEqual({ name: "Bug", color: "#d73a4a" });
+  });
+
+  it("refuses to edit a label belonging to another team (planning#88)", async () => {
+    const fetchImpl = routerFetch([{ match: "LabelOwner", data: { issueLabel: { team: { key: "OPS" } } } }]);
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    // A label id is workspace-global, so the guard is enforced here rather than
+    // trusting the caller — a direct relay POST reaches this same path.
+    await expect(tracker.updateLabel("lbl-other", { color: "#000000" })).rejects.toThrow(/not to `SHI`/);
+    for (const call of fetchImpl.mock.calls) {
+      expect(JSON.parse(call[1]?.body as string).query).not.toContain("issueLabelUpdate");
+    }
+  });
+
+  it("edits a workspace-level label (no team) without refusing (planning#88)", async () => {
+    const fetchImpl = routerFetch([
+      { match: "LabelOwner", data: { issueLabel: { team: null } } },
+      {
+        match: "issueLabelUpdate",
+        data: { issueLabelUpdate: { success: true, issueLabel: { id: "lbl-w", name: "Feature", color: "#8b5cf6" } } },
+      },
+    ]);
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    await expect(tracker.updateLabel("lbl-w", { color: "#8b5cf6" })).resolves.toMatchObject({ name: "Feature" });
+  });
+
   it("deletes an unused label on undo (planning#232)", async () => {
     const fetchImpl = routerFetch([
       { match: "LabelUsage", data: { issueLabel: { issues: { nodes: [] } } } },
