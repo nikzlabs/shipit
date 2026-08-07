@@ -47,6 +47,7 @@ import { exitAfterFlush, shimWrite } from "./shim-exit.js";
 import {
   handleSessionArchive,
   handleSessionCreate,
+  handleSessionFind,
   handleSessionList,
   handleSessionMessage,
   handleSessionNotifyOnMerge,
@@ -271,6 +272,34 @@ Ops-only (read-only ShipIt source, docs/162):
   shipit source blame    PATH [--json]
   shipit source show     COMMIT [PATH] [--json]
 
+Ops-only (host session inventory, docs/255):
+  shipit session find    --branch NAME | --pr NUMBER | --container NAME | --id ID
+                          [--include-archived] [--include-warm]
+                          [--limit N] [--offset N] [--json]
+                          Resolve a branch, PR, or container name back to the
+                          session that produced it — the one-step answer to
+                          "what session created this PR?". --container takes a
+                          name straight from 'docker ps' or the host journal
+                          ('agent-83292266-744', 'shipit-83292266-744-web-1').
+                          A service container with an explicit container_name
+                          carries no session id — the error tells you to read
+                          its 'shipit-parent-session' label instead. --pr
+                          matches the session's current PR AND a previous one it
+                          shipped from the same branch.
+  shipit session list --all [--include-archived] [--include-warm]
+                          [--limit N] [--offset N] [--json]
+                          The whole host inventory. (Without --all, 'list' is
+                          unchanged: only the children THIS session spawned.)
+
+  Results are capped; when there are more, the output names the exact
+  '--offset N' to pass for the next page. Warm pool sessions and sessions the
+  user archived are excluded by default — add --include-warm /
+  --include-archived to see them.
+
+  Both return METADATA ONLY — id, title, kind, branch, repo, parent, agent,
+  timestamps, container name, and the PR number/url/state. Never another
+  session's conversation, prompts, secrets, or workspace contents.
+
 The shim brokers session operations through the ShipIt orchestrator. The
 parent session is always the session this container belongs to — the agent
 cannot spawn sessions under a different parent, or view/manage sessions it
@@ -332,6 +361,14 @@ runs this host, then \`shipit session create --shipit-source --title "..."\` to
 spawn a repo-backed fix session branched from the exact inspected commit.
 With \`--shipit-source\` the diagnosis is wrapped in an incident packet and
 can't name the session, so the \`--title\` describes what the fix is for.
+
+Also in an Ops session, \`shipit session find\` turns a branch / PR / container
+name into the session that owns it. Reach for it BEFORE correlating journal
+timestamps against container names — the orchestrator already knows the answer:
+
+  shipit session find --branch shipit/kmwodw
+  shipit session find --pr 1744
+  shipit session find --container agent-83292266-744
 
 See /shipit-docs/sessions.md for the full reference, including allowed
 flags and the list of intentionally-rejected operations
@@ -428,6 +465,9 @@ const SESSION_HANDLERS: Record<
 > = {
   create: handleSessionCreate,
   list: handleSessionList,
+  // docs/255 — Ops-only host inventory: resolve a branch / PR / container name
+  // back to the session that produced it. Read-only, metadata only.
+  find: handleSessionFind,
   view: handleSessionView,
   message: handleSessionMessage,
   wait: handleSessionWait,

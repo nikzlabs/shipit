@@ -555,6 +555,211 @@ describe("shipit session list", () => {
 });
 
 // ---------------------------------------------------------------------------
+// shipit session find / list --all (docs/255 — Ops host inventory)
+// ---------------------------------------------------------------------------
+
+/** One inventory record as the orchestrator returns it. */
+const INVENTORY_HIT = {
+  id: "83292266-7445-4a1b-9c2d-000000000000",
+  title: "Fix integration-suite self-kill",
+  branch: "shipit/kmwodw",
+  remoteUrl: "https://github.com/nikzlabs/shipit",
+  parentSessionId: "84ac5cf7-701f-4ae7-b02f-50c6d5bca1a6",
+  containerName: "agent-83292266-744",
+  composeProject: "shipit-83292266-744",
+  createdAt: "2026-07-25T10:00:00.000Z",
+  lastUsedAt: "2026-07-25T12:00:00.000Z",
+  diskTier: "evicted",
+  pr: {
+    number: 1744,
+    url: "https://github.com/nikzlabs/shipit/pull/1744",
+    state: "merged",
+    baseBranch: "main",
+    headBranch: "shipit/kmwodw",
+  },
+  previousPr: { number: 1741, url: "https://github.com/nikzlabs/shipit/pull/1741" },
+};
+
+const INVENTORY_ROUTE = "GET /agent-ops/session/host-sessions";
+
+describe("shipit session find (docs/255)", () => {
+  it("answers the motivating question: branch → the owning session", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "find", "--branch", "shipit/kmwodw"], {
+      [INVENTORY_ROUTE]: { status: 200, body: { sessions: [INVENTORY_HIT], total: 1, truncated: false } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toContain("branch=shipit%2Fkmwodw");
+    expect(out.stdout).toContain("83292266-7445-4a1b-9c2d-000000000000");
+    expect(out.stdout).toContain("84ac5cf7-701f-4ae7-b02f-50c6d5bca1a6");
+    expect(out.stdout).toContain("#1744");
+    expect(out.stdout).toContain("#1741");
+    expect(out.stdout).toContain("agent-83292266-744");
+  });
+
+  it("forwards --pr, --container and --id", async () => {
+    for (const [args, expected] of [
+      [["--pr", "1744"], "pr=1744"],
+      [["--container", "agent-83292266-744"], "container=agent-83292266-744"],
+      [["--id", "83292266"], "id=83292266"],
+    ] as const) {
+      const { run } = makeRunner();
+      const out = await run(["session", "find", ...args], {
+        [INVENTORY_ROUTE]: { status: 200, body: { sessions: [], total: 0, truncated: false } },
+      });
+      expect(decodeURIComponent(out.calls[0].path)).toContain(expected);
+    }
+  });
+
+  it("accepts --pr as '#1744' or a PR URL in any of its real forms", async () => {
+    // `…/files` and `…?x=1` are ordinary things to paste out of a browser. A
+    // plain trailing-digits match rejects the first and reads the second as
+    // PR 1 — silently looking up the WRONG PR, which is the dangerous one.
+    for (const value of [
+      "1744",
+      "#1744",
+      "https://github.com/nikzlabs/shipit/pull/1744",
+      "https://github.com/nikzlabs/shipit/pull/1744/files",
+      "https://github.com/nikzlabs/shipit/pull/1744?diff=split",
+      "https://github.com/nikzlabs/shipit/pull/1744#discussion_r1",
+    ]) {
+      const { run } = makeRunner();
+      const out = await run(["session", "find", "--pr", value], {
+        [INVENTORY_ROUTE]: { status: 200, body: { sessions: [], total: 0, truncated: false } },
+      });
+      expect(out.calls[0].path, `--pr ${value}`).toContain("pr=1744");
+    }
+  });
+
+  it("rejects a --pr value with no number in it", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "find", "--pr", "latest"]);
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain("could not read a PR number");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("requires a filter and points at `list --all` for the whole inventory", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "find"]);
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain("--branch, --pr, --container or --id is required");
+    expect(out.stderr).toContain("shipit session list --all");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("points at --include-archived when nothing matched", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "find", "--branch", "shipit/gone"], {
+      [INVENTORY_ROUTE]: { status: 200, body: { sessions: [], total: 0, truncated: false } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("No matching session");
+    expect(out.stdout).toContain("--include-archived");
+  });
+
+  it("forwards --include-archived, --include-warm, --limit and --offset", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      [
+        "session", "find", "--branch", "b",
+        "--include-archived", "--include-warm", "--limit", "5", "--offset", "10",
+      ],
+      { [INVENTORY_ROUTE]: { status: 200, body: { sessions: [], total: 0, truncated: false } } },
+    );
+    expect(out.calls[0].path).toContain("includeArchived=true");
+    expect(out.calls[0].path).toContain("includeWarm=true");
+    expect(out.calls[0].path).toContain("limit=5");
+    expect(out.calls[0].path).toContain("offset=10");
+  });
+
+  it("names the exact next page rather than telling the agent to widen --limit", async () => {
+    // `limit` is server-capped, so "pass --limit to widen" would loop the agent
+    // against a ceiling it cannot raise. `--offset` is the only way past it.
+    const { run } = makeRunner();
+    const out = await run(["session", "find", "--branch", "b"], {
+      [INVENTORY_ROUTE]: {
+        status: 200,
+        body: { sessions: [INVENTORY_HIT], total: 900, truncated: true, nextOffset: 500 },
+      },
+    });
+    expect(out.stdout).toContain("900 matches in total");
+    expect(out.stdout).toContain("--offset 500");
+  });
+
+  it("surfaces the orchestrator's ops-only refusal verbatim", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "find", "--branch", "b"], {
+      [INVENTORY_ROUTE]: {
+        status: 403,
+        body: { error: "Host session inventory is only available in Ops sessions." },
+      },
+    });
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("only available in Ops sessions");
+  });
+
+  it("--json prints the raw array", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "find", "--pr", "1744", "--json"], {
+      [INVENTORY_ROUTE]: { status: 200, body: { sessions: [INVENTORY_HIT], total: 1, truncated: false } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(JSON.parse(out.stdout)).toEqual([INVENTORY_HIT]);
+  });
+
+  it("rejects an unsupported flag", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "find", "--everything"]);
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain("--everything");
+  });
+});
+
+describe("shipit session list --all (docs/255)", () => {
+  it("switches to the host inventory route", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "list", "--all"], {
+      [INVENTORY_ROUTE]: { status: 200, body: { sessions: [INVENTORY_HIT], total: 1, truncated: false } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toContain("/agent-ops/session/host-sessions");
+    expect(out.stdout).toContain("83292266-7445-4a1b-9c2d-000000000000");
+    expect(out.stdout).toContain("#1744");
+  });
+
+  it("refuses host-only flags without --all rather than silently ignoring them", async () => {
+    // Without this, `shipit session list --include-warm` quietly returns the
+    // CHILDREN list — which reads as a successful answer to a question it never
+    // actually asked.
+    for (const flag of [["--include-warm"], ["--include-archived"], ["--offset", "5"]]) {
+      const { run } = makeRunner();
+      const out = await run(["session", "list", ...flag]);
+      expect(out.exitCode, flag[0]).toBe(2);
+      expect(out.stderr).toContain("only applies to the host inventory");
+      expect(out.calls).toHaveLength(0);
+    }
+  });
+
+  it("leaves the bare `list` on the children route (unchanged behaviour)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "list"], {
+      "GET /agent-ops/session/list": { status: 200, body: { children: [] } },
+    });
+    expect(out.calls[0].path).toContain("/agent-ops/session/list");
+    expect(out.calls[0].path).not.toContain("host-sessions");
+  });
+
+  it("reports the true total when the result set was capped", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "list", "--all", "--limit", "1"], {
+      [INVENTORY_ROUTE]: { status: 200, body: { sessions: [INVENTORY_HIT], total: 42, truncated: true } },
+    });
+    expect(out.stdout).toContain("42 sessions");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // shipit session view
 // ---------------------------------------------------------------------------
 

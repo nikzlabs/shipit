@@ -36,6 +36,7 @@ export * from "./recovery.js";
 export * from "./diagnostics.js";
 export * from "./host.js";
 export * from "./shipit-source.js";
+export * from "./host-sessions.js";
 export * from "./pr-lifecycle.js";
 export * from "./release-branch-adopt.js";
 export * from "./post-interrupt-commit.js";

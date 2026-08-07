@@ -582,6 +582,40 @@ export function registerAgentOpsRoutes(
     },
   );
 
+  // GET /agent-ops/session/host-sessions[?branch=&pr=&container=&id=
+  //                                       &includeArchived=&limit=]
+  //
+  // docs/255 — host session inventory, Ops sessions only. Backs
+  // `shipit session find` and `shipit session list --all`. The worker injects
+  // the trusted SESSION_ID; the orchestrator gates the route on
+  // `session.kind === "ops"` and returns metadata only (never another session's
+  // conversation, prompts, secrets, or workspace contents).
+  app.get<{
+    Querystring: {
+      branch?: string;
+      pr?: string;
+      container?: string;
+      id?: string;
+      includeArchived?: string;
+      includeWarm?: string;
+      limit?: string;
+      offset?: string;
+    };
+  }>(
+    "/agent-ops/session/host-sessions",
+    async (request, reply) => {
+      const params = new URLSearchParams();
+      for (const key of [
+        "branch", "pr", "container", "id", "includeArchived", "includeWarm", "limit", "offset",
+      ] as const) {
+        const value = request.query[key];
+        if (value) params.set(key, value);
+      }
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      return relay("GET", `/host-sessions${qs}`, undefined, reply);
+    },
+  );
+
   // GET /agent-ops/session/view/:childId — view a single child session
   app.get<{ Params: { childId: string } }>(
     "/agent-ops/session/view/:childId",
