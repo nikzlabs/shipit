@@ -1,5 +1,5 @@
 ---
-issue: roadmap#SHI-304
+issue: planning#306
 title: ShipIt private planning
 description: Track ShipIt's own planning in a private GitHub repository, and migrate off Linear by copying every issue and rewriting every reference.
 ---
@@ -12,58 +12,35 @@ this doc is only about ShipIt's own use of it and the one-time migration.
 
 ## Status
 
-**Ready to execute.** Both gates are cleared, and each was probed rather than
-assumed:
+**Done.** ShipIt's planning lives in `nikzlabs/shipit-planning`, declared as
+`planning`, and the Linear tracker is no longer declared.
 
-- **248 is deployed, not merely merged.** The `shipit` shim in a session
-  container comes from the deployed orchestrator, and it addresses trackers by
-  name (`--tracker NAME`), requires one on `create`, and fails closed on an
-  undeclared name with the declared set listed.
-- **`nikzlabs/shipit-planning` exists and the deployment's credential reaches
-  it** (req 5). Declared as `planning`, it lists, enumerates labels and statuses,
-  and accepts writes — a create, a comment and a close all round-tripped live.
-
-The declaration landed on `main` in its own PR, so the tab is live. What remains
-is the copy, the reference rewrite, and retiring Linear.
-
-The last open gate — the merge-is-not-a-deploy one — is now closed. The two shim
-and adapter fixes the export depends on (`9b031908`) have reached the **deployed**
-shim, confirmed from a session container on 2026-08-07: `SHI-56` and `SHI-90`,
-the two issues that previously came back at exactly 65,536 bytes through a pipe,
-now return 119,606 and 87,179; and `createdAt` is present on the issue and on
-every comment.
-
-**Steps 4 through 8 have run** (2026-08-07). The corpus is exported to
-`/persist/linear-export/` — 330 issues, 0 misses — the labels exist, the pilot
-was copied as `planning#2` and signed off at gate 1, and **Pass A has created all
-330 issues**. `shipit issue comment edit` also shipped and deployed in between,
-which removes the one irreversible step this plan was built around; the
-consequences are folded into gate 1 below.
-
-Pass A ran in 33 minutes with no failures. The mapping is
-[`mapping.tsv`](./mapping.tsv), committed here because step 10's sweep is
-generated from it and gate 3 reviews that diff:
-
-| Check | Result |
+| Step | Result |
 |---|---|
-| Entries | 330, one per exported key, none missing or extra |
-| Duplicates | none, by key or by number |
-| Order | keys ascending, numbers monotonic (req 12) |
-| Range | `planning#3` – `planning#332` |
-| Offset | uniformly `+2` — the predicted `SHI-N → planning#(N+2)` held for all 330 |
-| Open / closed | 93 open, 237 closed, exactly matching the Linear split |
-| Spot-check | 10 sampled issues: title, state, labels and header all correct |
+| Export | 330 issues, 0 misses, `/persist/linear-export/` |
+| Labels | 20 Linear labels + 4 `priority: …`; three keep a wrong colour, fixable any time |
+| Pilot | `SHI-145` → `planning#2`, signed off at gate 1 |
+| Pass A | 330 issues → `planning#3`–`#332`, 33 min, offset uniformly `+2` |
+| Pass B | 1,164 comments replayed, every reference rewritten |
+| Sweep | 2,188 lines across 684 files, verified structurally + two adversarial reviews |
+| Retire | `roadmap` declaration dropped; `CLAUDE.md` tracker-neutral |
 
-**Pass B is done too** — 1,164 comments replayed and every reference rewritten,
-verified across all 330 issues: no unrewritten `SHI-N`, no unrewritten
-`linear.app` issue URL, no unqualified bare `#N`, no duplicate comment, no
-malformed header. 226 comments were not posted, all of them byte-identical
-same-day repeats collapsed by the write-dedup window; see *Write volume and
-pacing*.
+**Reversible.** Re-adding the `kind: linear` block to `shipit.yaml` restores read
+access to the originals. Nothing in the repository depends on it: the only
+surviving `roadmap#` strings are parser fixtures and syntax examples using a
+made-up tracker name, and `src/server/shipit-docs/design-docs.md`'s
+`roadmap#TRACKER-28`, which is a generic placeholder shipped to every repo rather
+than a pointer at this one.
 
-**The tracker side of this migration is finished.** What remains is this
-repository's side: the reference sweep (step 10, gate 3) and retiring Linear
-(step 11, gate 4).
+**What the migration cannot give back**: workflow state beyond open/closed
+(req 8), the 226 byte-identical duplicate comments the write-dedup window
+collapsed, and Linear's own attachment URLs, which die with the workspace. The
+export in `/persist` is the archive of record for all three.
+
+Two artifacts remain in the planning repo because ShipIt has no `issue delete` —
+`planning#1` (the reachability probe) and `planning#2` (the pilot, superseded by
+`planning#147`). Both are closed and retitled to say so; deleting them needs
+GitHub directly.
 
 ## Why a private repository
 
@@ -282,6 +259,14 @@ still an accident rather than a decision, which is the part worth recording: a
 dedup window silently made a fidelity choice the migration never made explicitly.
 A driver that wanted true 1:1 fidelity would have to disambiguate identical
 same-day bodies deliberately.
+
+**Those duplicates were history, not a live defect** — and the raw count hid that.
+Every one in the corpus was created between 2026-06-11 and 2026-06-13, none after;
+`runMergeEffect` landed on 2026-06-13 in `4ee77aa5` ("Fix duplicate issue-status
+cards on PR merge"). An issue tracker is an append-only record, so a bug fixed
+months ago still reads as 89 live symptoms at the bottom of a closed issue. **Date
+a finding from a migrated corpus before acting on it**: this one was briefed to a
+child session as an open bug before anyone checked when it happened.
 
 ## Export fidelity
 
