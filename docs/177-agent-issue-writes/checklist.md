@@ -80,6 +80,22 @@ now shows the shape a guard would take, but the undo asymmetry is undecided.
 - [ ] `comment delete` — adapters already have `deleteComment`, reachable today only via a card's Undo. Needs an authorship guard: the id is backend-global, so an unguarded command could delete human discussion the agent never wrote.
 - [ ] Decide how a delete's card presents undo, given that re-posting mints a new id, author and timestamp rather than restoring the original.
 
+## Proposed — label edit
+`label create` is the only label verb, and it refuses a name that already exists
+in any casing. So a label that exists with the wrong color or casing is
+permanently wrong through ShipIt — there is no edit and no delete, and Undo
+reaches only the most recent write.
+
+docs/247 hit this for real while preparing the migration: `Feature` and
+`priority: high` had been minted grey by an earlier reachability probe, and
+Linear's `Bug` collided with GitHub's default lowercase `bug`. Together those are
+the corpus's two most-used labels, on 147 issues. The consequences were cosmetic,
+but nothing in the product could fix them.
+
+- [ ] `label edit --name NAME [--color …] [--description …]` — rename is the open question: it silently re-labels every issue carrying it, which is a much larger blast radius than a recolor and may deserve to stay out.
+- [ ] Decide whether `label create` on an existing name should keep failing, or update-if-different. Failing is the safer default (a typo can't repaint a live label), so probably keep it and let `edit` be explicit.
+- [ ] `label delete` — same shape as `comment delete`: destructive, un-undoable in any honest sense (recreating mints a fresh label that no issue carries), so it needs its own decision rather than riding along with edit.
+
 ## Deferred
 - [ ] Jira adapter (transitions-based status) when the tracker lands
 - [ ] Tracker-specific richness (projects/cycles/documents) — not via the interface

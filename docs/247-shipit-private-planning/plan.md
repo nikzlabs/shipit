@@ -31,7 +31,14 @@ and adapter fixes the export depends on (`9b031908`) have reached the **deployed
 shim, confirmed from a session container on 2026-08-07: `SHI-56` and `SHI-90`,
 the two issues that previously came back at exactly 65,536 bytes through a pipe,
 now return 119,606 and 87,179; and `createdAt` is present on the issue and on
-every comment. Nothing blocks the export.
+every comment.
+
+**Steps 4 and 5 have run** (2026-08-07): the corpus is exported to
+`/persist/linear-export/` — 330 issues, 0 misses — and the 20 Linear labels plus
+four `priority: …` labels exist on the planning repository. `shipit issue comment
+edit` also shipped and deployed in between, which removes the one irreversible
+step this plan was built around; the consequences are folded into gate 1 below.
+**No issue has been copied.** The next step is the pilot, which stops at a human.
 
 ## Why a private repository
 
@@ -120,9 +127,11 @@ requests; they cannot be chosen. `SHI-137` will not become `planning#137`. The
 
 That mapping is needed *before* the copy, not after — because issue bodies and
 comments cross-reference each other (1,174 mentions). Writing them first and
-fixing them later would mean a second edit pass over most of the corpus, and
-**comment bodies cannot be edited at all** through the shim, so a
-comment's cross-references would be permanently stale.
+fixing them later would mean a second edit pass over the whole corpus. That is now
+merely wasteful rather than impossible: `comment edit` shipped on 2026-08-07, so a
+stale cross-reference in a comment is repairable. Getting it right on the first
+write is still the design — 1,390 avoidable edits is not a plan — but it is no
+longer the difference between correct and permanently wrong.
 
 The way out is to **split the copy in two, so the mapping is observed rather than
 predicted**. Creating an issue is what fixes its number, and nothing about a
@@ -234,6 +243,28 @@ array. Posting as-returned would invert all 1,390 conversations while every date
 header still read correctly, which is exactly the kind of error a spot-check
 passes over.
 
+**Three labels are stuck with the wrong color, and the shim cannot fix them.**
+`label create` refuses a name that already exists in any casing, and there is no
+`label edit` or `label delete` — so a label that exists wrongly stays wrong:
+
+| Wanted | Actually there | Affects | How it got there |
+|---|---|---|---|
+| `Feature` `#BB87FC` | `Feature` `#ededed` | 81 issues | Minted by the reachability probe with no `--color` |
+| `Bug` `#EB5757` | `bug` `#d73a4a` | 66 issues | GitHub's default `bug` label — collides case-insensitively |
+| `priority: high` `#D93F0B` | `priority: high` `#ededed` | 31 issues | Same probe |
+
+All three are cosmetic: `--label` resolves case-insensitively, so `--label Bug`
+applies the existing `bug`, and `mapGitHubPriority` reads the name, never the
+color. The copy is unaffected. But the two most common labels in the corpus will
+render grey and off-red, which is worth a human deciding about at gate 1 rather
+than discovering across 330 issues. Recolouring them is a GitHub repo-settings
+edit; the durable fix is a `label edit` verb on the shim (docs/177).
+
+The lesson generalizes past the colors: a **probe writes into the same namespace
+the migration will use**, and its leftovers are not always removable. `planning#1`
+is on the checklist to delete; these three labels are the part of that probe that
+cannot be undone.
+
 **The sub-issue parent is in the export, under a name that doesn't look like it.**
 The adapter maps Linear's `parent` onto `parentIdentifier`, already in the docs/248
 name form (`roadmap#SHI-113`) — so a check for a `parent` key finds nothing and
@@ -275,19 +306,19 @@ and an assertion that needs a human is a missing assertion.
 **Why a human:** every one of these is "does this read well", which no test
 asserts.
 
-**Cost of getting it wrong:** depends on one capability that does not exist yet.
-Issue *bodies* can be edited later. **Comments cannot** — the shim has no
-comment-edit or comment-delete command, and deletion exists only via a write
-card's Undo, which is gone once the copy session's cards age out. Credentials are
-brokered, so there is no direct-API fallback. As things stand, a comment format
-settled here is settled for good.
+**Cost of getting it wrong: no longer permanent.** This gate was written when a
+comment, once posted, could not be changed — the shim had no comment-edit, and
+deletion existed only through a write card's Undo, which is gone once the copy
+session's cards age out. `shipit issue comment edit` shipped on 2026-08-07
+(docs/177) and is **live in the deployed shim**, verified by editing a comment on
+`planning#1` end to end. A wrong comment format is now a second pass over 1,390
+comments rather than a permanent defect, and wall-clock is not a constraint here,
+so that is a real remedy rather than a theoretical one.
 
-If `comment edit` ships first (docs/177 → *Proposed — editing and deleting a
-comment*), that changes: a wrong format becomes a second pass over 1,390
-comments rather than a permanent defect. Wall-clock is not a constraint on this
-migration, so "another full pass" is a real remedy rather than a theoretical one.
-This gate stays either way — it is far cheaper to read one issue than to
-re-drive 1,390 writes — but it stops being a one-way door.
+The gate stays, for a smaller reason than before: it is far cheaper to read one
+issue than to re-drive 1,390 writes. But it is no longer a one-way door, and it
+should not be treated as one — the remaining irreversible act in this migration
+is creating the issues themselves, since a number, once assigned, is never reused.
 
 ### Gate 2 — after Pass A, before the reference sweep
 
@@ -351,9 +382,11 @@ the tracker is used day to day, not about what the code does.
    archive.~~ Done 2026-08-07 — `/persist/linear-export/`, 330 files, 0 misses,
    44 seconds. `/persist` is per-session, so a different session re-runs
    `fetch.sh` rather than inheriting the output.
-5. **Create the labels** the corpus uses — the 20 from Linear with their colors,
+5. ~~**Create the labels** the corpus uses — the 20 from Linear with their colors,
    plus the four `priority: …` labels that carry priority across. Workflow state
-   contributes none (req 8).
+   contributes none (req 8).~~ Done 2026-08-07 — 21 created, all 24 now resolve.
+   Three arrived with the wrong color and **cannot be corrected through the
+   shim**; see below.
 6. **Pilot: copy exactly one issue and stop. — Human gate 1.** Pick one that exercises the awkward
    parts — a long body, several comments, at least one internal `SHI-N`
    cross-reference, a label and a priority — and copy it end to end. Then look at
