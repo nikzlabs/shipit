@@ -32,8 +32,44 @@ The preview pane shows a live iframe of the user's app. Supports Vite (managed) 
 The iframe is cross-origin (preview subdomain), so the toolbar cannot touch its
 `history` or `location` directly. It posts `{source: "shipit-toolbar", type}`
 messages that the script injected by `preview-proxy.ts` (`HMR_WS_PATCH`) acts on
-inside the page: `back` → `history.back()`, `forward` → `history.forward()`,
+inside the page: `back` / `forward` → `navigation.back()` / `navigation.forward()`,
 `reload` → `location.reload()`.
+
+**Back/forward go through the Navigation API, never `history.back()`.** A frame's
+history entries are nested inside the top-level page's, and `history.back()`
+traverses that *joint* session history — so a preview with no entry of its own
+walks the **ShipIt tab** back, dropping the user out of their session. There is no
+guard available on the legacy API: an iframe's `history.length` reports the joint
+length (measured in Chromium: one own entry, `length` 9), so it can't distinguish
+"the preview has somewhere to go" from "the app does". `navigation.entries()` is
+scoped to the frame, so `canGoBack` answers the right question and
+`navigation.back()` cannot move anything but the preview. The script checks
+`canGoBack` first and swallows both result promises, since the call still rejects
+with `InvalidStateError` if the entry list moves in between.
+
+**There is deliberately no `history.back()` fallback.** A browser without the
+Navigation API offers no way to ask whether *this frame* can go back, so falling
+back to `history.back()` would just reinstate the bug for those users. The script
+instead refuses to traverse and reports `canGoBack: false`, so the button is
+visibly disabled rather than silently inert. All three engines ship the API
+(Chrome 102, Safari 18.2, Firefox 147), so this costs a button essentially nobody
+has.
+
+The script reports `canGoBack` on every `path` message, and `PreviewFrame` keeps
+it per slot — the pool leaves other sessions' iframes mounted and reporting, so a
+single shared value would let a background preview at its own base grey out Back
+for the preview on screen. The value is untrusted page-authored input like the
+path beside it: a non-boolean is ignored, leaving the slot "unknown" and Back
+enabled. Unknown is the right default there, because it is also the state of a
+**non-proxied local preview** whose page never ran our script at all — clicking
+Back posts a message nobody receives, which is inert but not a leak.
+
+`rp` fires on `pushState` / `replaceState` (wrapped), `popstate`, `hashchange`,
+**and `navigation`'s `currententrychange`**. That last one is not redundant: an
+app that drives the Navigation API directly (`navigation.navigate()`, or a router
+in navigation-API mode) changes the current entry without touching the History
+methods we wrapped, so both the path display and `canGoBack` would otherwise
+freeze at their load-time values.
 
 **Refresh reloads the page the preview is currently on, not the slot's entry
 URL.** Re-assigning the iframe's `src` — the obvious implementation, and what

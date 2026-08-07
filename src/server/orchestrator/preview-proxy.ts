@@ -76,13 +76,37 @@ const HMR_WS_PATCH = `<script>(function(){` +
   // auth-blocked iframes when behind a reverse proxy like Cloudflare Zero Trust)
   `if(window.parent!==window){` +
     `window.parent.postMessage({source:"shipit-preview",type:"loaded"},"*");` +
+    // Back/forward must stay inside the iframe. `history.back()` traverses the
+    // *joint* session history — this frame's entries nested inside the ShipIt
+    // tab's — so a preview with no entry of its own walks the TOP-LEVEL page
+    // back and drops the user out of their session. `history.length` can't
+    // guard it either: in a frame it reports the joint length (verified in
+    // Chromium: 1 own entry, length 9). The Navigation API's entry list is
+    // scoped to this frame, so `canGoBack` answers the right question and
+    // `back()` cannot move anything but us.
+    // No `history.back()` fallback: there is no way to ask the legacy API
+    // whether *this frame* can go back (its `history.length` is the joint
+    // length), so on a browser without the Navigation API we refuse to
+    // traverse and report `canGoBack:false`, which greys the button out. All
+    // three engines ship the API (Chrome 102, Safari 18.2, Firefox 147), so
+    // this costs a button nobody has rather than keeping the bug alive.
+    `var nav=window.navigation;` +
+    `var travel=function(dir){` +
+      `if(!nav)return;` +
+      `if(dir==="back"?!nav.canGoBack:!nav.canGoForward)return;` +
+      // Rejects with InvalidStateError if the entry list moved under us
+      // between the check and the call. Swallow both promises rather than
+      // spilling an unhandled rejection into the previewed app's console.
+      `var swallow=function(){};var r=nav[dir]();` +
+      `r.committed.catch(swallow);r.finished.catch(swallow)` +
+    `};` +
     // Let the preview toolbar drive the embedded browser's session history.
     // The iframe is cross-origin (preview subdomain / a different port), so the
     // parent can't touch `contentWindow.history` directly — it asks us to here.
     `window.addEventListener("message",function(e){` +
       `var d=e.data;if(!d||d.source!=="shipit-toolbar")return;` +
-      `if(d.type==="back")history.back();` +
-      `else if(d.type==="forward")history.forward();` +
+      `if(d.type==="back")travel("back");` +
+      `else if(d.type==="forward")travel("forward");` +
       // Refresh must reload whatever page the preview is currently on. The
       // parent can only re-assign the iframe's `src`, which is the slot's
       // original entry URL — that would throw away any client-side route the
@@ -91,9 +115,12 @@ const HMR_WS_PATCH = `<script>(function(){` +
     `});` +
     // Report the current path (never the host) so the toolbar can show where
     // the preview is. The parent cannot read this itself — the iframe is
-    // cross-origin — so the page has to push it out.
+    // cross-origin — so the page has to push it out. `canGoBack` rides along
+    // so the toolbar can disable Back when there is nothing behind us — false
+    // without the Navigation API, matching `travel`'s refusal to traverse.
     `var rp=function(){try{window.parent.postMessage({source:"shipit-preview",` +
-      `type:"path",path:location.pathname+location.search+location.hash},"*")}catch(e){}};` +
+      `type:"path",path:location.pathname+location.search+location.hash,` +
+      `canGoBack:nav?nav.canGoBack:false},"*")}catch(e){}};` +
     `rp();` +
     // A load-time read alone goes stale the instant a client-side router moves
     // without a navigation, so wrap the two History methods that do it. We patch
@@ -103,7 +130,14 @@ const HMR_WS_PATCH = `<script>(function(){` +
       `history[n]=function(){var r=o.apply(this,arguments);rp();return r}};` +
     `wrap("pushState");wrap("replaceState");` +
     `window.addEventListener("popstate",rp);` +
-    `window.addEventListener("hashchange",rp)` +
+    `window.addEventListener("hashchange",rp);` +
+    // An app that drives the Navigation API directly (`navigation.navigate()`,
+    // or a router in navigation-API mode) changes the current entry without
+    // touching the History methods we wrapped, so neither the path nor
+    // `canGoBack` would ever update. `currententrychange` fires after any
+    // same-document entry change and is the one signal that covers all of
+    // them; duplicate reports are free, since the parent compares values.
+    `if(nav)nav.addEventListener("currententrychange",rp)` +
   `}` +
   `})()</script>`;
 

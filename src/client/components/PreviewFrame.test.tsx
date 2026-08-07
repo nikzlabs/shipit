@@ -315,6 +315,93 @@ describe("PreviewFrame", () => {
     );
   });
 
+  it("disables Back while the preview has no history entry of its own", async () => {
+    // Regression: a preview with nothing behind it used to run `history.back()`
+    // against the JOINT session history, walking the ShipIt tab itself back and
+    // dropping the user out of their session.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+
+    const report = (canGoBack: unknown) => window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "path", path: "/", canGoBack },
+      source: iframe.contentWindow,
+    }));
+
+    report(false);
+    expect(await screen.findByTitle("Nothing to go back to in the preview")).toBeDisabled();
+
+    // Navigating inside the preview creates one, and Back comes back to life.
+    report(true);
+    expect(await screen.findByTitle("Back")).toBeEnabled();
+  });
+
+  it("leaves Back enabled when the preview does not report canGoBack", async () => {
+    // No Navigation API in this browser: we can't know, so we don't disable the
+    // button — the injected script decides.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+
+    for (const canGoBack of [undefined, "false", 0]) {
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { source: "shipit-preview", type: "path", path: "/", canGoBack },
+        source: iframe.contentWindow,
+      }));
+      expect(await screen.findByTitle("Back")).toBeEnabled();
+    }
+  });
+
+  it("keeps the last reported canGoBack when a later message omits it", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const report = (data: Record<string, unknown>) => window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "path", path: "/", ...data },
+      source: iframe.contentWindow,
+    }));
+
+    report({ canGoBack: false });
+    expect(await screen.findByTitle("Nothing to go back to in the preview")).toBeDisabled();
+
+    report({ canGoBack: "yes-please" });
+    expect(await screen.findByTitle("Nothing to go back to in the preview")).toBeDisabled();
+  });
+
+  it("tracks canGoBack per slot, so a background preview cannot disable Back", async () => {
+    // The pool keeps other sessions' iframes mounted and they keep reporting.
+    // A single shared value would let a background preview at *its* base grey
+    // out Back for the preview the user is actually looking at.
+    const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const previewB: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "vite" };
+    const { rerender } = render(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
+    await screen.findByTitle("Live Preview");
+
+    rerender(<PreviewFrame preview={previewB} sessionId="session-b" {...defaultProps} />);
+    const foreground = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const background = screen.getByTitle("Background Preview") as HTMLIFrameElement;
+    expect(background).toHaveAttribute("src", "http://localhost:5173");
+
+    const report = (iframe: HTMLIFrameElement, canGoBack: boolean) => window.dispatchEvent(
+      new MessageEvent("message", {
+        data: { source: "shipit-preview", type: "path", path: "/", canGoBack },
+        source: iframe.contentWindow,
+      }),
+    );
+
+    report(foreground, true);
+    expect(await screen.findByTitle("Back")).toBeEnabled();
+
+    report(background, false);
+    expect(await screen.findByTitle("Back")).toBeEnabled();
+
+    // ...and the background report was *recorded* against its own slot rather
+    // than dropped — switching back to it shows the disabled state. Without
+    // this the test would also pass if the message had been ignored entirely.
+    rerender(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
+    expect(await screen.findByTitle("Nothing to go back to in the preview")).toBeDisabled();
+  });
+
   it("replies to the SDK ready handshake with authoritative visibility", async () => {
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
