@@ -166,6 +166,60 @@ describe("LinearTracker", () => {
     await expect(tracker.listIssues()).rejects.toThrow(/rejected the API token/);
   });
 
+  /**
+   * docs/247 — Linear does NOT share GitHub's 403-means-either blind spot: no
+   * throttle shape it produces can reach the "re-connect Linear" message. What
+   * it did produce was a bare `Linear API returned <status>`, which gave the
+   * caller nothing to act on. Linear reports a throttle in the GraphQL error
+   * body (`extensions.code === "RATELIMITED"`, on a 400) as well as by status,
+   * so both shapes are covered — along with the regression that 401/403 still
+   * sends the user to the credential.
+   */
+  it("reports a RATELIMITED GraphQL error body as rate limiting, not a bare 400", async () => {
+    const rateLimited = { errors: [{ message: "Rate limit exceeded", extensions: { code: "RATELIMITED" } }] };
+    // The 400 form, which would otherwise stop at the generic status branch.
+    const on400 = new LinearTracker({
+      token: "t",
+      teamKey: "SHI",
+      fetchImpl: vi.fn(async () => jsonResponse(rateLimited, 400)),
+    });
+    await expect(on400.listIssues()).rejects.toThrow(/rate-limiting requests/);
+    await expect(on400.listIssues()).rejects.toThrow(/not an auth or access failure/);
+
+    // …and the same code riding on a 200, which GraphQL is free to do.
+    const on200 = new LinearTracker({
+      token: "t",
+      teamKey: "SHI",
+      fetchImpl: vi.fn(async () => jsonResponse(rateLimited, 200)),
+    });
+    await expect(on200.listIssues()).rejects.toThrow(/rate-limiting requests/);
+  });
+
+  it("leaves an ordinary GraphQL error and an ordinary 400 alone", async () => {
+    const plain400 = new LinearTracker({
+      token: "t",
+      teamKey: "SHI",
+      fetchImpl: vi.fn(async () => jsonResponse({ errors: [{ message: "Bad query" }] }, 400)),
+    });
+    await expect(plain400.listIssues()).rejects.toThrow(/Linear API returned 400/);
+  });
+
+  it("reports a 429 as rate limiting, not as a rejected token", async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({}), { status: 429, headers: { "Retry-After": "120" } }),
+    );
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    let message = "resolved";
+    try {
+      await tracker.listIssues();
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toMatch(/rate-limiting requests/);
+    expect(message).toMatch(/2 minutes/);
+    expect(message).not.toMatch(/Re-connect Linear/);
+  });
+
   it("surfaces GraphQL errors", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ errors: [{ message: "boom" }] }));
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });

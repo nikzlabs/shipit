@@ -567,3 +567,206 @@ describe("GitHubTracker writes (docs/177)", () => {
     await expect(tracker.setAssignee("42", "stranger")).rejects.toThrow(/not a collaborator/);
   });
 });
+
+/**
+ * docs/247 — a rate limit is not an access failure. The migration replayed ~1,390
+ * comments through this adapter; at ~870 writes in 15 minutes GitHub applied a
+ * secondary rate limit, and every write after that was reported as "the
+ * repository either does not exist or the connected GitHub credential cannot
+ * access it". Nothing about that was true, and it named the two fixes that could
+ * not possibly help. Both directions are pinned here: a throttle 403 must say
+ * throttle, and a plain access 403 must keep its existing message.
+ */
+describe("GitHubTracker rate limits (docs/247)", () => {
+  function errorResponse(body: unknown, status: number, headers: Record<string, string> = {}): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json", ...headers },
+    });
+  }
+
+  /** The message of the rejection, failing the test if the call resolves. */
+  async function rejection(call: Promise<unknown>): Promise<string> {
+    try {
+      await call;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+    throw new Error("expected the call to reject, but it resolved");
+  }
+
+  const SECONDARY_BODY = {
+    message: "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+    documentation_url: "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api",
+  };
+
+  function trackerReturning(res: () => Response): GitHubTracker {
+    return new GitHubTracker({ token: "t", repo: REPO, fetchImpl: vi.fn(async () => res()) });
+  }
+
+  it("names a secondary rate limit as a throttle, with how long to wait", async () => {
+    const tracker = trackerReturning(() =>
+      errorResponse(SECONDARY_BODY, 403, { "Retry-After": "60", "x-ratelimit-remaining": "4287" }),
+    );
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/secondary rate limit/);
+    expect(message).toMatch(/60 seconds/);
+    // The point of the fix: it must NOT send you to check the slug or the grant.
+    expect(message).not.toMatch(/does not exist/);
+  });
+
+  it("classifies a throttle on the write path too — the one the migration hit", async () => {
+    const tracker = trackerReturning(() => errorResponse(SECONDARY_BODY, 403, { "Retry-After": "900" }));
+    const message = await rejection(tracker.addComment("42", "hi"));
+    expect(message).toMatch(/secondary rate limit/);
+    expect(message).toMatch(/15 minutes/);
+    expect(message).not.toMatch(/does not exist/);
+  });
+
+  it("treats a Retry-After on an otherwise unrecognized 403 as a throttle", async () => {
+    // GitHub does not send Retry-After on an authorization failure, so the
+    // header alone is enough even when the body says nothing we match.
+    const tracker = trackerReturning(() => errorResponse({ message: "Forbidden" }, 403, { "Retry-After": "30" }));
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/throttling requests/);
+    expect(message).toMatch(/30 seconds/);
+  });
+
+  it("reports a spent primary quota as a quota, with the reset time", async () => {
+    const reset = String(Math.floor(Date.now() / 1000) + 600);
+    const tracker = trackerReturning(() =>
+      errorResponse({ message: "API rate limit exceeded for user ID 1." }, 403, {
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": reset,
+      }),
+    );
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/quota for the connected credential is exhausted/);
+    expect(message).toMatch(/resets in 10 minutes/);
+    expect(message).not.toMatch(/does not exist/);
+  });
+
+  it("treats a bare 429 as a throttle even with no corroborating signal", async () => {
+    const tracker = trackerReturning(() => errorResponse({ message: "Too Many Requests" }, 429));
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/throttling requests/);
+    expect(message).toMatch(/a few minutes/);
+  });
+
+  it("REGRESSION: a plain access 403 keeps the repository-missing-or-inaccessible message", async () => {
+    // No Retry-After, a non-zero remaining, and a body about permissions — the
+    // shape of a real access failure. Mislabelling this as a throttle would tell
+    // the user to wait for something that never clears.
+    const accessDenied = () =>
+      errorResponse(
+        {
+          message: "Resource not accessible by integration",
+          documentation_url: "https://docs.github.com/rest/issues/issues#create-an-issue",
+        },
+        403,
+        { "x-ratelimit-remaining": "4999", "x-ratelimit-reset": "9999999999" },
+      );
+    const read = await rejection(trackerReturning(accessDenied).listIssues());
+    expect(read).toMatch(/either does not exist or/);
+    expect(read).not.toMatch(/rate limit/);
+    // Same on the write path.
+    expect(await rejection(trackerReturning(accessDenied).addComment("42", "hi"))).toMatch(
+      /either does not exist or/,
+    );
+  });
+
+  it("REGRESSION: 401 and 404 are untouched by the throttle classification", async () => {
+    expect(await rejection(trackerReturning(() => errorResponse({}, 401)).listIssues())).toMatch(
+      /rejected the token/,
+    );
+    expect(await rejection(trackerReturning(() => errorResponse({}, 404)).listIssues())).toMatch(
+      /either does not exist or/,
+    );
+  });
+
+  it("leaves a non-throttle failed write on GitHub's own message", async () => {
+    // A 422 never enters the throttle path at all — pinned so the classification
+    // added above cannot start swallowing GitHub's own validation messages.
+    const tracker = trackerReturning(() => errorResponse({ message: "Validation Failed: bad label" }, 422));
+    expect(await rejection(tracker.addComment("42", "hi"))).toMatch(/Validation Failed: bad label/);
+  });
+
+  it("classifies on the body alone, with no rate-limit headers at all", async () => {
+    const tracker = trackerReturning(() => errorResponse(SECONDARY_BODY, 403));
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/secondary rate limit/);
+    expect(message).toMatch(/a few minutes/);
+    expect(message).not.toMatch(/does not exist/);
+  });
+
+  it("classifies on the headers alone, with no message it recognizes", async () => {
+    const reset = String(Math.floor(Date.now() / 1000) + 1800);
+    const tracker = trackerReturning(() =>
+      errorResponse({ message: "Forbidden" }, 403, {
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": reset,
+      }),
+    );
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/quota for the connected credential is exhausted/);
+    expect(message).toMatch(/resets in 30 minutes/);
+  });
+
+  it("reads a non-JSON body rather than giving up on it", async () => {
+    const tracker = trackerReturning(
+      () =>
+        new Response("You have exceeded a secondary rate limit. Please wait a few minutes.", {
+          status: 403,
+          headers: { "Content-Type": "text/plain" },
+        }),
+    );
+    expect(await rejection(tracker.listIssues())).toMatch(/secondary rate limit/);
+  });
+
+  it("reports the LONGER wait when Retry-After and a spent quota disagree", async () => {
+    // A secondary limit hit while the hourly quota is also spent: retrying after
+    // the 60s Retry-After would just hit the quota, so the wait must satisfy both.
+    const reset = String(Math.floor(Date.now() / 1000) + 1200);
+    const tracker = trackerReturning(() =>
+      errorResponse(SECONDARY_BODY, 403, {
+        "Retry-After": "60",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": reset,
+      }),
+    );
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/secondary rate limit/); // the body still names the kind
+    expect(message).toMatch(/20 minutes/);
+    expect(message).not.toMatch(/60 seconds/);
+  });
+
+  it("does not read x-ratelimit-reset while the quota still has requests left", async () => {
+    // `reset` is the end of the current window and rides on every response —
+    // treating it as a wait would inflate a 60-second throttle to 40 minutes.
+    const reset = String(Math.floor(Date.now() / 1000) + 2400);
+    const tracker = trackerReturning(() =>
+      errorResponse(SECONDARY_BODY, 403, {
+        "Retry-After": "60",
+        "x-ratelimit-remaining": "4287",
+        "x-ratelimit-reset": reset,
+      }),
+    );
+    expect(await rejection(tracker.listIssues())).toMatch(/60 seconds/);
+  });
+
+  it("does not claim access is healthy when a spent quota accompanies a permission body", async () => {
+    // A spent quota proves the credential is out of requests and NOTHING about
+    // whether it may touch the repository — the two can coincide. The message
+    // must say retry-then-check, not "the credential is fine".
+    const tracker = trackerReturning(() =>
+      errorResponse({ message: "Resource not accessible by integration" }, 403, {
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 300),
+      }),
+    );
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/quota for the connected credential is exhausted/);
+    expect(message).toMatch(/only if it still fails check that the credential can access/);
+    expect(message).not.toMatch(/credential are fine|nothing to fix/);
+  });
+});
