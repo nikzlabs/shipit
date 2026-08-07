@@ -6,8 +6,7 @@ description: A session that still has work running must not have its container d
 # 256 — In-flight work survives reclamation
 
 Human-owned requirements. Numbered statements are what the feature must do,
-in plain language and at the UX level. Mechanism lives in `plan.md`, which is
-not written until every `## Open questions` bullet is resolved.
+in plain language and at the UX level. Mechanism lives in [`plan.md`](plan.md).
 
 Current behavior this is measured against is recorded separately in
 [`investigation.md`](investigation.md) — verified at the source, not assumed.
@@ -35,46 +34,60 @@ Current behavior this is measured against is recorded separately in
    stops part-way, and nothing anywhere records that ShipIt was the one that
    stopped it.
 
-5. **A protection the user has already been offered means what it appears to
-   mean.** A session the user has marked as protected is protected from every
-   automatic reclamation path, not from one and eligible for another. Today a
-   pinned session and a keep-preview session are each immune to a different
-   half of the machinery, and neither user could describe which half.
+5. **Every protection ShipIt offers covers a coherent, stated scope, and no
+   surface implies more than it delivers.** A user should never be protected
+   from one form of automatic cleanup and eligible for another without being
+   able to say which. Where the product currently suggests a protection it
+   does not provide, the wording changes.
+
+6. **Protection is something the agent declares.** When the agent starts work
+   that is meant to outlive the turn, it says so explicitly. ShipIt does not
+   guess by watching the container, and the user does not have to be present
+   to flip a switch.
+
+7. **A declared protection lapses unless it keeps being re-asserted.** Work
+   that has finished, crashed, or was never really running must not keep a
+   container alive indefinitely.
+
+8. **Host memory pressure does not override a declared protection.** If the
+   host genuinely runs out of memory, the OOM backstop is the correct failure
+   — not quietly killing work that was declared and is still running.
+
+9. **Pinning a session remains sidebar-and-disk persistence only.** It is not
+   a claim about the container, and container protection is not folded into
+   it.
 
 ## Open questions
 
-Blocking. No implementation of the numbered requirements above while any of
-these is open. (The reaper-asymmetry bug fix landed with this doc is a
-self-contained defect, not an implementation of these requirements — see
-`checklist.md`.)
-
-- **How is protection established?** Declared by the agent (it takes a
-  keep-alive when it starts long work and releases it when done), inferred by
-  the orchestrator (it notices the container is running work of its own),
-  controlled by the user (extend the existing always-on toggle, or make a pin
-  mean this too), or covered automatically for the subset of jobs ShipIt can
-  already see.
-
-- **What bounds a protection so a container cannot become permanent?** A
-  heartbeat the holder must renew, a fixed expiry, a hard maximum duration, or
-  nothing but an explicit release. A protection that outlives its owner is a
-  container that never dies, and requirement 1 gives no guidance on where that
-  stops.
-
-- **Can host memory pressure override the protection?** Today pressure
-  overrides the disconnect grace period but does not override an always-on
-  preview reservation (`idle-enforcer.ts:113`, ahead of the pressure branch)
-  — so there is precedent for "never," and it is a deliberate one from
-  docs/241. Whether that precedent should extend to this is Nik's call.
-
-- **Does a pin mean the container stays alive?** Nik assumed a pinned session
-  was already exempt. It is not: `pinnedAt` is documented and implemented as
-  sidebar-and-disk persistence only (`session.ts:152-162`,
-  `tier-escalation.ts:137`). Requirement 5 is satisfiable either by widening
-  what a pin means or by leaving pins alone and putting the protection
-  somewhere else — that is a product decision about what the pin icon
-  promises, not a bug.
+_None._
 
 ## Resolved questions
 
-_None yet._
+- **2026-08-07 — What establishes that a session has work in flight?**
+  Nik: **the agent declares a lease** — it takes a keep-alive when it starts
+  long work and releases it when done. Rejected: inferring it from the
+  container's process table (can't distinguish real work from a leaked stray,
+  so containers would stay up for reasons nobody chose); a user-only toggle
+  (the work dies exactly when the user isn't there, which is the reported
+  bug); auto-covering only the jobs ShipIt can already see (leaves a detached
+  `nohup` — the case as actually written — uncovered). → requirement 6.
+
+- **2026-08-07 — What stops a protection from making a container permanent?**
+  Nik: **a heartbeat the holder must renew.** Explicitly chosen over a hard
+  maximum duration and over an unbounded explicit-release-only lease, so a
+  long job is never killed for being long, and a lease whose owner is gone
+  lapses on its own. Fails toward reclaimable, matching the direction the
+  existing background-task decay already chose. → requirement 7.
+
+- **2026-08-07 — Can host memory pressure override the protection?**
+  Nik: **no — protection wins.** Consistent with the two precedents this repo
+  already set: docs/241 made an always-on preview immune to pressure eviction,
+  and docs/235 refused to let pressure override `agentBusy`. → requirement 8.
+
+- **2026-08-07 — Should a pin keep the container alive, as assumed?**
+  Nik: **no — put the protection elsewhere.** Pins are unlimited and free
+  while a container reservation consumes RAM continuously, so making pins
+  runtime would let a user pin the host to death. The consistency concern in
+  requirement 5 is met by the new mechanism plus correcting any wording that
+  overstates what a pin does. → requirement 9, and requirement 5 reworded from
+  "protected from every path" to "a coherent, stated scope".
