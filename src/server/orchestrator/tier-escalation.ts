@@ -135,6 +135,18 @@ function canAutoDescend(s: SessionInfo, runnerRegistry: SessionRunnerRegistry): 
   // its workspace is never dropped or wiped. (Explicit user archive still evicts,
   // but archive clears the pin first — see SessionManager.archive.)
   if (s.pinnedAt) return false;
+  // docs/241 / docs/256 — an always-on preview reservation is a user-facing
+  // guarantee that the container and its `x-shipit-preview: auto` services stay
+  // up "across viewer disconnects, idle cleanup, memory-pressure eviction, and
+  // orchestrator restarts". `idle-enforcer.ts` honors it; this ladder did not,
+  // so a reserved preview nobody happened to view for 24h was demoted by the
+  // `hot → light` rung — which disposes the runner and destroys the container,
+  // exactly what the reservation promises won't happen. It also thrashed: the
+  // container exit reaches the keep-preview restart supervisor
+  // (`startup-monitors.ts`), which recreates what this pass just tore down.
+  // The reservation is capacity-capped on admission (default 1), so honoring it
+  // here cannot strand more than the deployment already agreed to hold.
+  if (s.keepPreviewRunning) return false;
   const runner = runnerRegistry.get(s.id);
   // docs/235 — `agentBusy` covers both an orchestrator-started turn and a
   // self-woken one (background task finished → the CLI started its own turn),
