@@ -17,8 +17,8 @@ this doc is only about ShipIt's own use of it and the one-time migration.
 
 | Step | Result |
 |---|---|
-| Export | 330 issues, 0 misses, `/persist/linear-export/` |
-| Labels | 20 Linear labels + 4 `priority: …`; three keep a wrong colour, fixable any time |
+| Export | 330 issues, 0 misses — a working artifact, not an archive (req 13) |
+| Labels | 20 Linear labels + 4 `priority: …`; three keep a wrong colour until `label edit` deploys |
 | Pilot | `SHI-145` → `planning#2`, signed off at gate 1 |
 | Pass A | 330 issues → `planning#3`–`#332`, 33 min, offset uniformly `+2` |
 | Pass B | 1,164 comments replayed, every reference rewritten |
@@ -34,8 +34,15 @@ than a pointer at this one.
 
 **What the migration cannot give back**: workflow state beyond open/closed
 (req 8), the 226 byte-identical duplicate comments the write-dedup window
-collapsed, and Linear's own attachment URLs, which die with the workspace. The
-export in `/persist` is the archive of record for all three.
+collapsed, and Linear's own attachment URLs.
+
+**The Linear workspace is the archive for all three, by decision — req 13.** It is
+untouched, since this migration only ever copied out of it, and it is kept rather
+than deleted. The export in `/persist/linear-export/` is a *working artifact* of
+the migration, not a deliverable: `/persist` is per-session, so it disappears with
+this session's container, and that is expected. Anything the copy could not carry
+is recoverable from Linear itself and nowhere else — which is precisely why the
+workspace stays.
 
 Two artifacts remain in the planning repo because ShipIt has no `issue delete` —
 `planning#1` (the reachability probe) and `planning#2` (the pilot, superseded by
@@ -293,9 +300,11 @@ array. Posting as-returned would invert all 1,390 conversations while every date
 header still read correctly, which is exactly the kind of error a spot-check
 passes over.
 
-**Three labels are stuck with the wrong color, and the shim cannot fix them.**
-`label create` refuses a name that already exists in any casing, and there is no
-`label edit` or `label delete` — so a label that exists wrongly stays wrong:
+**Three labels arrived with the wrong color, and at the time nothing could fix
+them.** `label create` refuses a name that already exists in any casing, and there
+was no `label edit` or `label delete` — so a label that existed wrongly stayed
+wrong. `shipit issue label edit` landed afterwards (`e3e57269`), prompted by this;
+once deployed it corrects all three in one command each.
 
 | Wanted | Actually there | Affects | How it got there |
 |---|---|---|---|
@@ -314,7 +323,8 @@ not values stamped onto each issue when the label is applied. So recoloring
 `Bug` carries across every issue already holding it. Deferring costs nothing and
 requires no re-copy. Two paths, whenever it is wanted: the planning repo's label
 settings by hand (a repo-settings page — one of the narrow legitimate link-outs),
-or a `label edit` verb on the shim, which is the durable fix (docs/177).
+or `shipit issue label edit`, which is the durable fix and has since shipped
+(docs/177).
 
 What is *not* recoverable is a label that was never applied — which is why step 5
 had to happen before Pass A and the colors did not. Mention it at gate 1 only so
