@@ -2,7 +2,8 @@
 
 The design that implements these requirements is in [`plan.md`](./plan.md).
 
-No open questions remain.
+**One open question** — see [below](#open-questions). Requirements and design work continue;
+implementation does not start while it is open.
 
 ## Requirements
 
@@ -135,7 +136,36 @@ No open questions remain.
 
 ## Open questions
 
-_None._
+- **Gateway support — is it catalogue *content*, or a capability the catalogue does not
+  have?** Raised as "gateway support — at least openrouter/vercel/1st party providers".
+
+  Most of what that asks for is already what reqs 5–8 describe, and was settled by the
+  2026-08-05 receipt that dropped "should we support gateways?" as the wrong axis: a
+  gateway is a service like any other. It has a key (req 5), it speaks one or more API
+  styles (req 6), ShipIt carries a curated subset of its models rather than all 400
+  (req 6), and it bills you rather than the upstream vendor, which req 10 and req 11
+  already report as "via OpenRouter, API key". Even the awkward case is designed for:
+  the same model reachable both first-party and through a gateway is two rows at two
+  prices, which is why a model is identified by the pair and not by an id.
+
+  Two things are genuinely unsettled underneath it:
+
+  1. **Nothing says what the shipped catalogue must contain.** Req 7 says the catalogue
+     is ShipIt's; no requirement names a single service that has to be in it. So
+     "ShipIt supports gateways" is true in principle and unverifiable in practice —
+     an install could ship zero gateways and violate nothing. If the ask is that
+     OpenRouter and Vercel AI Gateway are present at launch alongside the first-party
+     providers, that is a requirement and should be stated as one.
+  2. **Whether "gateway" means one ShipIt catalogues, or one the user points at.** A
+     gateway's selling point is that *any* upstream is reachable through one key and one
+     base URL, which invites "let me supply the base URL myself". That is a
+     **user-defined service**, which reqs 5 and 7 have already rejected twice, on the
+     grounds that a service ShipIt does not know about needs a ShipIt change. If the ask
+     includes it, it reopens those; if it does not, nothing here changes and only (1)
+     is left.
+
+  Not answered by the agent, because the two readings differ by whether a settled
+  decision is reopened.
 
 ## Resolved questions
 

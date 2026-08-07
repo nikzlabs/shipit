@@ -6,7 +6,10 @@ description: Separate harness from service so a user can run any configured serv
 
 # 252 — Custom models
 
-Implements [`requirements.md`](./requirements.md), which has no open questions.
+Implements [`requirements.md`](./requirements.md), which has **one open question** (gateway
+support: catalogue content, or a capability the catalogue does not have). Phase 1 depends on
+its answer — whether a service can be user-supplied changes what the catalogue is — so
+implementation is blocked until it is resolved.
 
 **Visual reference — the picker:** [`mockup-picker.html`](./mockup-picker.html) — an
 **interactive** prototype of the two-selector composer (harness, then model). Change the
