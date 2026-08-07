@@ -423,15 +423,29 @@ describe("Integration: agent issue access (docs/175)", () => {
     const { stderr, exitCode } = await runIssueShim([
       "issue", "label", "create", "--name", "t3code", "--tracker", "planning",
     ]);
-    expect(stderr).not.toContain("only `label create` is supported");
+    expect(stderr).not.toContain("are supported");
     expect(exitCode).not.toBe(0);
     expect(stderr).toContain("Session is not active");
   });
 
-  it("rejects `issue label delete` at the shim (planning#232 — create only)", async () => {
+  it("accepts `issue label edit` and brokers it to the label-edit route (planning#88)", async () => {
+    // Same reach-the-route proof: the shim parsed the verb, required nothing it
+    // shouldn't, and relayed POST /agent-ops/issue/label/edit.
+    const { stderr, exitCode } = await runIssueShim([
+      "issue", "label", "edit", "--name", "bug", "--new-name", "Bug", "--tracker", "planning",
+    ]);
+    expect(stderr).not.toContain("are supported");
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Session is not active");
+  });
+
+  it("rejects `issue label delete` at the shim, pointing at edit (planning#88)", async () => {
     const { stderr, exitCode } = await runIssueShim(["issue", "label", "delete", "t3code"]);
     expect(exitCode).not.toBe(0);
-    expect(stderr).toContain("only `label create` is supported");
+    // The refusal states WHY (an undo would mint a label no issue carries) and
+    // names the alternative, so it doesn't read as an oversight to route around.
+    expect(stderr).toContain("no issue carries");
+    expect(stderr).toContain("shipit issue label edit");
   });
 
   // -- docs/248: naming the destination ---------------------------------------
