@@ -478,10 +478,22 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
     }
   }
 
+  // A projected screenshot arrives as an emptied text block plus a URL-backed
+  // image, so `hasImages` carries it past both status branches above and the
+  // text half of it can fail silently: the picture renders and the body that
+  // never loaded leaves no trace. The image is still the useful part, so this
+  // reports the miss beside it rather than replacing it.
+  const imageBodyFailed = hasImages && !hasContent && !!lazy?.error;
+
   return (
     <div>
       {textResult}
       {hasImages && <ToolResultImages images={images} />}
+      {imageBodyFailed && (
+        <div className="mt-1 text-xs text-(--color-error)" role="status">
+          Couldn&apos;t load this output.
+        </div>
+      )}
     </div>
   );
 }

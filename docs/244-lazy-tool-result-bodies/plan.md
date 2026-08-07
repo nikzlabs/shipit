@@ -180,6 +180,28 @@ capping, serving, or previewing. Guard tests: `lazy-transcript-bodies.test.ts` �
 base64*; `ToolResult.test.tsx` → *draws the unwrapped text, not the raw block
 array, once an image result's body arrives*.
 
+Cross-backend review of that fix surfaced three more, two of them in code the
+fix newly depended on:
+
+* **`projectBlockArray`'s `keep` mode was collapsing text blocks.** It changes no
+  text, so it had no business changing the array's shape either — but it emitted
+  one text block regardless of mode. `parseSubagentReport` recognizes the CLI's
+  accounting footer *only* as a separate final text block, so an image-bearing
+  subagent report came back from the endpoint with its footer glued onto the
+  prose: metadata rendered to the reader, header chips gone. Latent on the serve
+  path before this (the report branch already called `substituteResultImages`);
+  routing the fetch through the same function is what would have made it visible.
+  `keep` now passes text blocks through untouched.
+* **A failed body fetch on an image result was silent.** A projected screenshot is
+  an emptied text block plus a URL-backed image, so `hasImages` carries it past
+  both the loading and the error branch: the picture rendered and the body that
+  never loaded left no trace. The miss is now reported beside the image rather
+  than in place of it.
+* **`capContentBlocks` measured `totalLines` in the wrong units** — over the
+  serialized array rather than the text inside it. A stringified block array is
+  one physical line, so a capped result advertised *"Show all 1 lines"* for a body
+  of thousands. Same mismatch as the two above, one layer down.
+
 ## The planning#268 dependency is not real
 
 planning#269 was sequenced after planning#268 "because it depends on `rowId` being on the

@@ -418,8 +418,11 @@ describe("ToolResult — lazy body fetch (planning#269 req 1)", () => {
   it("draws the unwrapped text, not the raw block array, once an image result's body arrives", async () => {
     useSessionStore.setState({ sessionId: "s1" });
     const BASE64 = `iVBORw0KGgoAAAANSUhEUg${"A".repeat(200)}`;
+    // Over RESULT_STRIP_FLOOR_BYTES, or the server would have shipped this text
+    // inline and there would be nothing to fetch.
+    const TEXT = `### Result\nScreenshot of viewport\n${"await page.screenshot({ scale: 'css' });\n".repeat(8)}`;
     const raw = JSON.stringify([
-      { type: "text", text: "### Result\nScreenshot of viewport" },
+      { type: "text", text: TEXT },
       { type: "image", source: { type: "base64", media_type: "image/png", data: BASE64 } },
     ]);
     // What the serve-path projection ships: text emptied, image behind a URL.
@@ -432,7 +435,7 @@ describe("ToolResult — lazy body fetch (planning#269 req 1)", () => {
     const { container } = render(
       <ToolResult
         tool="mcp__playwright__browser_take_screenshot"
-        result={{ toolUseId: "toolu_shot", content: onWire, truncated: true, totalLines: 2 }}
+        result={{ toolUseId: "toolu_shot", content: onWire, truncated: true, totalLines: 10 }}
       />,
     );
 
@@ -440,6 +443,28 @@ describe("ToolResult — lazy body fetch (planning#269 req 1)", () => {
     expect(container.textContent).not.toContain(BASE64);
     expect(container.textContent).not.toContain('"type":"image"');
     // The image still renders — the point is the text panel, not the picture.
+    expect(screen.getByTestId("tool-result-images")).toBeInTheDocument();
+  });
+
+  it("reports a failed body fetch beside the image instead of failing silently", async () => {
+    useSessionStore.setState({ sessionId: "s1" });
+    // The projected screenshot shape: emptied text, URL-backed image. `hasImages`
+    // carries it past the "(no output)" / error branches, so a failed text fetch
+    // used to leave no trace at all.
+    const onWire = JSON.stringify([
+      { type: "text", text: "" },
+      { type: "image", source: { type: "base64", media_type: "image/png", shipit_url: "/api/sessions/s1/images/abc" } },
+    ]);
+    stubFetch(() => Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) }));
+
+    render(
+      <ToolResult
+        tool="mcp__playwright__browser_take_screenshot"
+        result={{ toolUseId: "toolu_shot2", content: onWire, truncated: true, totalLines: 10 }}
+      />,
+    );
+
+    expect(await screen.findByText("Couldn't load this output.")).toBeInTheDocument();
     expect(screen.getByTestId("tool-result-images")).toBeInTheDocument();
   });
 });
