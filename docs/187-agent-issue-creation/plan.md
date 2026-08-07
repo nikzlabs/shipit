@@ -190,9 +190,9 @@ actor end-to-end within one turn.
   github` files on the session's repo instead. An unconfigured tracker fails with a
   "connect it in Settings" message rather than silently filing elsewhere.
 - **The returned Linear URL is slug-free, enforced server-side.** Linear's API
-  appends a title-derived slug to issue URLs (`…/issue/planning#30/redesign-the-auth-flow`).
+  appends a title-derived slug to issue URLs (`…/issue/SHI-28/redesign-the-auth-flow`).
   The adapter's `stripLinearUrlSlug` normalizes every `TrackerIssue.url` to the
-  canonical `…/issue/planning#30` form, so the URL the agent receives (and writes into a
+  canonical `…/issue/SHI-28` form, so the URL the agent receives (and writes into a
   doc's `issue:` frontmatter, per step 3 of the cross-link flow) never leaks the
   issue title and matches the pointer shape `parseIssueRef` treats as canonical.
   This is a single chokepoint in `toTrackerIssue`, so it also covers `view`/`edit`/

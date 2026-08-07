@@ -18,7 +18,7 @@ function okFetch(input: Record<string, unknown>) {
 }
 
 /**
- * docs/244 / SHI-296 — the shared fetch behind the three views that display an
+ * docs/244 / planning#298 — the shared fetch behind the three views that display an
  * input key the serve-path projection removed: the diff modal, the tool-call
  * modal, and the subagent prompt disclosure. The component tests prove each
  * view uses it; these pin the behavior none of them can observe on its own.

@@ -56,7 +56,7 @@ describe("getGitCredential (docs/088 finding #5)", () => {
   });
 });
 
-describe("getRepoScopedGitCredential (docs/172 Gap 2-R / SHI-79)", () => {
+describe("getRepoScopedGitCredential (docs/172 Gap 2-R / planning#81)", () => {
   it("prefers a minted, repo-scoped installation token when App tokens are enabled", async () => {
     const seen: { owner: string; repo: string }[] = [];
     const auth = stubAppAuth({

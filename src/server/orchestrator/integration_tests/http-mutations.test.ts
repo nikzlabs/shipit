@@ -922,7 +922,7 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     // (or reports auth_required if nothing is connected). Only the mid-turn
     // case is unrecoverable, which is why that is the only thing guarded.
     //
-    // SHI-283 — but it does have to actually *lose* the account. The row is not
+    // planning#285 — but it does have to actually *lose* the account. The row is not
     // where the token lives: the session holds its own copy, that copy is what
     // the CLI in its container reads, and nothing else ever deletes it (first-
     // turn provisioning is guarded on `agentPinned`, and only a switch to

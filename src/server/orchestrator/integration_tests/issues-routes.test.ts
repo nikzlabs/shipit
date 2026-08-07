@@ -240,7 +240,7 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     const res = await app.inject({ method: "GET", url: "/api/trackers" });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { trackers: TrackerInfo[] };
-    // GitHub is registered alongside Linear (SHI-80); both unconfigured with no
+    // GitHub is registered alongside Linear (planning#82); both unconfigured with no
     // token and no active-session repo binding.
     // docs/248 req 1 — with no session (so no declarations) the only destination
     // is the session's own repository, which is itself unconfigured here. Linear
@@ -441,7 +441,7 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     expect(body.availableStatuses?.map((s) => s.name)).toEqual(["Todo", "In Progress", "Done"]);
   });
 
-  it("GET /api/issue/labels returns the tracker's labels with colors (SHI-92 foundation)", async () => {
+  it("GET /api/issue/labels returns the tracker's labels with colors (planning#94 foundation)", async () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
 
     // The next tracker fetch is the `IssueLabels` query (`listLabels`).

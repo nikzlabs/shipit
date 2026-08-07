@@ -50,9 +50,9 @@ const OWNER_REPO_RE = /^([^/\s#]+)\/([^/\s#]+)$/;
 
 /**
  * A Linear team key — the short uppercase prefix its issue keys carry (`SHI` in
- * `planning#306`). Linear restricts keys to letters and digits; we accept the same
+ * `SHI-304`). Linear restricts keys to letters and digits; we accept the same
  * shape case-insensitively and normalize to upper case, so a declaration written
- * `team: shi` still matches a `planning#306` reference.
+ * `team: shi` still matches a `SHI-304` reference.
  */
 const LINEAR_TEAM_KEY_RE = /^[A-Za-z][A-Za-z0-9]*$/;
 

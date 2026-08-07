@@ -1,5 +1,5 @@
 /**
- * SHI-316 — a turn that RAN and was then cut short must settle, and must settle
+ * planning#318 — a turn that RAN and was then cut short must settle, and must settle
  * as `interrupted` rather than `no-result`.
  *
  * The production incident: a self-merge wake turn was delivered, the user
@@ -52,7 +52,7 @@ function makeRunnerWithDeps(): {
   return { runner, agents, deps, autoCommit: deps.autoCommit };
 }
 
-describe("a superseded turn settles (SHI-316)", () => {
+describe("a superseded turn settles (planning#318)", () => {
   afterEach(() => { vi.restoreAllMocks(); });
 
   it("settles as `interrupted` when a newer turn takes the agent slot", async () => {

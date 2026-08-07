@@ -1,5 +1,5 @@
 /**
- * SHI-298 — local-mode MCP at the spawn.
+ * planning#300 — local-mode MCP at the spawn.
  *
  * The bug this covers is a code path that never ran, so the assertions are
  * about *sequencing and visibility*: the MCP env has to be live in `process.env`

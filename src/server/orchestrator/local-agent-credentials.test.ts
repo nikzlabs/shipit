@@ -11,7 +11,7 @@ import { resolveRuntimeMode } from "./app-di.js";
 import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 
 /**
- * SHI-282 — local mode (`RUNTIME_MODE=local`, the dogfood `dev` service) could
+ * planning#284 — local mode (`RUNTIME_MODE=local`, the dogfood `dev` service) could
  * never authenticate an agent, because every credential-provisioning branch in
  * `session-agent-env.ts` is gated on `runner instanceof ContainerSessionRunner`
  * and local mode has no container. These pin the local-mode replacement.

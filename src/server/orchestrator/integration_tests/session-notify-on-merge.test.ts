@@ -230,7 +230,7 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
   });
 
-  it("merged: a wake-turn queued behind a REAL interactive parent turn reaches delivered in-process (SHI-255)", { timeout: 20_000 }, async () => {
+  it("merged: a wake-turn queued behind a REAL interactive parent turn reaches delivered in-process (planning#257)", { timeout: 20_000 }, async () => {
     const parentId = await createParent();
     const childId = await spawnChild(parentId);
     await armWatch(parentId, childId);
@@ -374,7 +374,7 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
   });
 
-  it("merged: a delivery that THROWS is retried in-process and recovers (SHI-258)", { timeout: 20_000 }, async () => {
+  it("merged: a delivery that THROWS is retried in-process and recovers (planning#260)", { timeout: 20_000 }, async () => {
     const parentId = await createParent();
     const childId = await spawnChild(parentId);
     await armWatch(parentId, childId);
@@ -431,7 +431,7 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
   });
 
-  it("merged: a permanently-failing delivery gives up and persists a failure card (SHI-258)", { timeout: 20_000 }, async () => {
+  it("merged: a permanently-failing delivery gives up and persists a failure card (planning#260)", { timeout: 20_000 }, async () => {
     const parentId = await createParent();
     const childId = await spawnChild(parentId);
     await armWatch(parentId, childId);

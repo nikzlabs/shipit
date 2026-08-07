@@ -126,7 +126,7 @@ describe("IssuesPanel repo picker (docs/236)", () => {
 
     expect(onStartSession).toHaveBeenCalledTimes(1);
     expect(onStartSession.mock.calls[0]![0]).toMatchObject({ identifier: "SHI-1" });
-    // SHI-320 — the tracker rides along so App can build a resolvable IssueRef.
+    // planning#322 — the tracker rides along so App can build a resolvable IssueRef.
     expect(onStartSession.mock.calls[0]![1]).toBe("linear");
     expect(onStartSession.mock.calls[0]![2]).toBe(website.url);
   });
@@ -161,11 +161,11 @@ describe("IssuesPanel repo picker (docs/236)", () => {
 });
 
 /**
- * SHI-325 — an issue opened in the tab must not stay on screen after switching
+ * planning#327 — an issue opened in the tab must not stay on screen after switching
  * to a repository that doesn't declare its tracker (docs/248 req 11). Panel-level
  * because the observable behaviour is "the detail is gone and the list is back".
  */
-describe("IssuesPanel repo switch (SHI-325)", () => {
+describe("IssuesPanel repo switch (planning#327)", () => {
   const roadmap: TrackerInfo = {
     id: "linear:SHI",
     kind: "linear",

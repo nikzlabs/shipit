@@ -1,5 +1,5 @@
 /**
- * SHI-290 — the GLOBAL system prompt lives under the ORCHESTRATOR's workspace
+ * planning#292 — the GLOBAL system prompt lives under the ORCHESTRATOR's workspace
  * root, not a session clone. Four call sites used to compose that path by hand
  * with a variable called `workspaceDir`, which is also the name of a session's
  * clone everywhere else in the codebase; these tests pin the contract now that

@@ -551,21 +551,21 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].path).toBe("/issue/list?tracker=linear&state=all");
   });
 
-  it("GET /agent-ops/issue/labels forwards the tracker (SHI-199)", async () => {
+  it("GET /agent-ops/issue/labels forwards the tracker (planning#201)", async () => {
     client.setResponse("GET", "/issue/labels", { ok: true, status: 200, body: { labels: [{ name: "bug" }] } });
     const res = await app.inject({ method: "GET", url: "/agent-ops/issue/labels?tracker=github" });
     expect(res.statusCode).toBe(200);
     expect(client.calls[0].path).toBe("/issue/labels?tracker=github");
   });
 
-  it("GET /agent-ops/issue/statuses forwards the tracker (SHI-199)", async () => {
+  it("GET /agent-ops/issue/statuses forwards the tracker (planning#201)", async () => {
     client.setResponse("GET", "/issue/statuses", { ok: true, status: 200, body: { statuses: [{ name: "Open" }] } });
     const res = await app.inject({ method: "GET", url: "/agent-ops/issue/statuses?tracker=linear" });
     expect(res.statusCode).toBe(200);
     expect(client.calls[0].path).toBe("/issue/statuses?tracker=linear");
   });
 
-  it("POST /agent-ops/issue/comment/edit relays the issue + comment id (SHI-86)", async () => {
+  it("POST /agent-ops/issue/comment/edit relays the issue + comment id (planning#88)", async () => {
     client.setResponse("POST", "/issue/comment/edit", {
       ok: true, status: 200, body: { ok: true, summary: "edited a comment on SHI-1" },
     });
@@ -579,7 +579,7 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].body).toMatchObject({ id: "SHI-1", commentId: "c1", body: "corrected" });
   });
 
-  it("POST /agent-ops/issue/comment/edit surfaces a 403 refusal verbatim (SHI-86)", async () => {
+  it("POST /agent-ops/issue/comment/edit surfaces a 403 refusal verbatim (planning#88)", async () => {
     client.setResponse("POST", "/issue/comment/edit", {
       ok: false, status: 403, body: { error: "was written by someone else" },
     });
@@ -698,7 +698,7 @@ describe("agent-ops routes", () => {
     expect(res.json().error).toContain("rate limit reached");
   });
 
-  it("GET /agent-ops/agent/result forwards the run id as ?spawnId (SHI-245)", async () => {
+  it("GET /agent-ops/agent/result forwards the run id as ?spawnId (planning#247)", async () => {
     client.setResponse("GET", "/agent/result", {
       ok: true, status: 200,
       body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "success", outputMarkdown: "findings" },

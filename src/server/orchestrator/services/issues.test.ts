@@ -305,7 +305,7 @@ describe("listIssuesForTracker availableStatuses (docs/191)", () => {
   });
 });
 
-describe("listLabelsForTracker (SHI-92 foundation)", () => {
+describe("listLabelsForTracker (planning#94 foundation)", () => {
   it("returns the GitHub repo's labels with normalized colors", async () => {
     const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
       expect((url as string)).toContain("/repos/octocat/hello-world/labels");
@@ -346,7 +346,7 @@ describe("listLabelsForTracker (SHI-92 foundation)", () => {
   });
 });
 
-describe("listStatusesForTracker (SHI-199)", () => {
+describe("listStatusesForTracker (planning#201)", () => {
   it("returns GitHub's fixed Open/Closed pair without a network call", async () => {
     // GitHub has no workflow states — the discovery list is the static pair, so
     // no fetch should fire.
@@ -591,7 +591,7 @@ function ghFetch(over: Partial<{ issue: Record<string, unknown> }> = {}) {
 }
 
 /**
- * A GitHub stub that also serves the repo `GET /labels` endpoint (SHI-92), so
+ * A GitHub stub that also serves the repo `GET /labels` endpoint (planning#94), so
  * label resolution can validate names. `existing` is the repo's label set.
  */
 function ghFetchWithLabels(existing: string[], over: Partial<{ issue: Record<string, unknown> }> = {}) {
@@ -675,7 +675,7 @@ describe("issue write services (docs/177)", () => {
     ).rejects.toMatchObject({ statusCode: 409 });
   });
 
-  it("create: forwards labels to the GitHub adapter (resolved against repo labels) (SHI-92)", async () => {
+  it("create: forwards labels to the GitHub adapter (resolved against repo labels) (planning#94)", async () => {
     const fetchImpl = ghFetchWithLabels(["security", "backend"]);
     const out = await createIssueForTracker(store, "github", "New", "", { labels: ["security"] }, fetchImpl, GH);
     // The POST /issues carried the resolved label.
@@ -684,13 +684,13 @@ describe("issue write services (docs/177)", () => {
     expect(out.summary).toContain("labels: security");
   });
 
-  it("create: rejects --priority on GitHub with a 422 (SHI-92)", async () => {
+  it("create: rejects --priority on GitHub with a 422 (planning#94)", async () => {
     await expect(
       createIssueForTracker(store, "github", "New", "", { priority: "high" }, ghFetch(), GH),
     ).rejects.toMatchObject({ statusCode: 422 });
   });
 
-  it("create: an unknown GitHub label is rejected with the candidate list (SHI-92)", async () => {
+  it("create: an unknown GitHub label is rejected with the candidate list (planning#94)", async () => {
     const fetchImpl = ghFetchWithLabels(["security", "backend"]);
     await expect(
       createIssueForTracker(store, "github", "New", "", { labels: ["nope"] }, fetchImpl, GH),
@@ -841,7 +841,7 @@ describe("issue write services (docs/177)", () => {
     expect(preview.length).toBeLessThanOrEqual(281); // 280 + ellipsis
   });
 
-  // ---- comment edit (SHI-86) ----------------------------------------------
+  // ---- comment edit (planning#88) ----------------------------------------------
 
   /**
    * `ghFetch` plus the two calls a comment edit adds: the by-id comment read
@@ -935,7 +935,7 @@ describe("issue write services (docs/177)", () => {
     expect(out.content).toEqual({ descriptionChanged: true });
   });
 
-  it("edit: labels are additive (merged with existing) and snapshot the prior set (SHI-92)", async () => {
+  it("edit: labels are additive (merged with existing) and snapshot the prior set (planning#94)", async () => {
     const fetchImpl = ghFetchWithLabels(["existing", "added"], { issue: { labels: [{ name: "existing" }] } });
     const out = await updateIssueForTracker(store, "github", "42", { labels: ["added"] }, fetchImpl, GH);
     // PATCH carried the merged set (existing kept + added), not just "added".
@@ -947,7 +947,7 @@ describe("issue write services (docs/177)", () => {
     expect(out.content?.attrs).toContain("labels:");
   });
 
-  it("undo: edit → restores the prior label set by replacing (SHI-92)", async () => {
+  it("undo: edit → restores the prior label set by replacing (planning#94)", async () => {
     const fetchImpl = ghFetchWithLabels(["existing"], { issue: { labels: [{ name: "added" }] } });
     await undoIssueWrite(
       store,
@@ -959,7 +959,7 @@ describe("issue write services (docs/177)", () => {
     expect(JSON.parse(patch[1]?.body as string).labels).toEqual(["existing"]);
   });
 
-  it("undo: edit → restores the prior parent on Linear (SHI-206)", async () => {
+  it("undo: edit → restores the prior parent on Linear (planning#208)", async () => {
     store.setLinearToken("lin_x");
         const node = {
       id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
@@ -983,7 +983,7 @@ describe("issue write services (docs/177)", () => {
     expect(JSON.parse(update[1]?.body as string).variables.input).toEqual({ parentId: "uuid-prior" });
   });
 
-  it("edit: snapshots the prior priority level for undo on Linear (SHI-92)", async () => {
+  it("edit: snapshots the prior priority level for undo on Linear (planning#94)", async () => {
     store.setLinearToken("lin_x");
         const node = {
       id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
@@ -1009,7 +1009,7 @@ describe("issue write services (docs/177)", () => {
     expect(out.undo).toMatchObject({ kind: "edit", previousPriority: "low" });
   });
 
-  it("edit: reparents on Linear, resolves the parentId, and snapshots the prior parent (SHI-206)", async () => {
+  it("edit: reparents on Linear, resolves the parentId, and snapshots the prior parent (planning#208)", async () => {
     store.setLinearToken("lin_x");
         const node = {
       id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
@@ -1019,7 +1019,7 @@ describe("issue write services (docs/177)", () => {
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
       if (query.includes("query Issue")) {
-        // Prior issue already nests under SHI-100 → its internal id is snapshotted.
+        // Prior issue already nests under planning#102 → its internal id is snapshotted.
         return jsonResponse({ data: { issue: { ...node, parent: { id: "uuid-old", identifier: "SHI-100" } } } });
       }
       if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI" } } } });
@@ -1040,7 +1040,7 @@ describe("issue write services (docs/177)", () => {
     expect(out.content?.attrs).toContain("parent → roadmap#SHI-204");
   });
 
-  it("edit: detaching on Linear snapshots previousParentId null and sends parentId null (SHI-206)", async () => {
+  it("edit: detaching on Linear snapshots previousParentId null and sends parentId null (planning#208)", async () => {
     store.setLinearToken("lin_x");
         const node = {
       id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
@@ -1129,7 +1129,7 @@ describe("issue write services (docs/177)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Label creation (SHI-230): `shipit issue label create` + --create-missing-labels
+// Label creation (planning#232): `shipit issue label create` + --create-missing-labels
 // ---------------------------------------------------------------------------
 
 /**
@@ -1175,7 +1175,7 @@ function ghLabelStoreFetch(existing: string[], used: string[] = []) {
   });
 }
 
-describe("label creation (SHI-230)", () => {
+describe("label creation (planning#232)", () => {
   let store: CredentialStore;
   beforeEach(() => {
     store = tmpStore();

@@ -36,7 +36,7 @@ import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import type { SessionInfo } from "../shared/types.js";
 
 const ON = { OVERLAY_DEP_STORE: "1" } as NodeJS.ProcessEnv;
-// Default-on (SHI-127): an unset env var is ON; the kill switch is the explicit
+// Default-on (planning#129): an unset env var is ON; the kill switch is the explicit
 // `OVERLAY_DEP_STORE=0`/`false`.
 const OFF = { OVERLAY_DEP_STORE: "0" } as NodeJS.ProcessEnv;
 
@@ -52,7 +52,7 @@ function session(over: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 describe("overlay feature gate + eligibility", () => {
-  it("is on by default; only OVERLAY_DEP_STORE=0/false kills it (SHI-127)", () => {
+  it("is on by default; only OVERLAY_DEP_STORE=0/false kills it (planning#129)", () => {
     // Default-on: an unset flag enables the store.
     expect(isOverlayEnabled({} as NodeJS.ProcessEnv)).toBe(true);
     expect(isOverlayEnabled({ OVERLAY_DEP_STORE: "1" } as NodeJS.ProcessEnv)).toBe(true);
@@ -82,7 +82,7 @@ describe("overlay feature gate + eligibility", () => {
   });
 });
 
-describe("overlayRuntimeKey (SHI-194 — pinned base digest, not the full image id)", () => {
+describe("overlayRuntimeKey (planning#196 — pinned base digest, not the full image id)", () => {
   it("uses base digest + arch", () => {
     expect(overlayRuntimeKey({ BASE_IMAGE_DIGEST: "sha256:base" } as NodeJS.ProcessEnv))
       .toBe(`sha256:base|${process.arch}`);
@@ -431,7 +431,7 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
   /**
    * A real session layout — the clone at `<sessionDir>/workspace`. docs/246 puts
    * the install marker in the `state/` sibling, resolved from the clone path, and
-   * SHI-286 made a clone that isn't `workspace/` an error rather than a fallback
+   * planning#288 made a clone that isn't `workspace/` an error rather than a fallback
    * into `<clone>/.shipit/`.
    */
   async function gitWorkspace(installCmd = "npm install"): Promise<{ dir: string; head: string }> {

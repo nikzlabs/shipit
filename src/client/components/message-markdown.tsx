@@ -331,7 +331,7 @@ export const markdownComponents: Components = {
 // autolinked URLs as `link` nodes (which they skip) and only touch remaining
 // plain text. The first turns bare `dir/file.ext` references into in-app
 // file-preview links; the second turns bare issue references (`SHI-43`,
-// `planning#45`, `planning#57`) into in-app issue badges (gated at render by
+// `roadmap#SHI-43`, `planning#57`) into in-app issue badges (gated at render by
 // the declared-destination resolver — see `IssueBadge`).
 const remarkPlugins = [remarkGfm, remarkBreaks, remarkLinkifyPaths, remarkLinkifyIssues];
 

@@ -153,7 +153,7 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
  * The verbatim-output viewer. docs/244 / planning#299 — opening it IS the click
  * requirement 8 licenses a loading state for: the transcript payload carries
  * only the preview line, and the full markdown is fetched here. A card that
- * arrived whole (short output, or a pre-SHI-297 row) renders immediately and
+ * arrived whole (short output, or a pre-planning#299 row) renders immediately and
  * issues no request at all.
  */
 function ConsultOutputDialog({ card, title, preview, onClose }: {

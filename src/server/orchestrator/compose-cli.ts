@@ -205,7 +205,7 @@ export class ComposeCli {
       parentId = mode.slice("container:".length).trim();
       if (!parentId) return true;
     } catch {
-      return true; // can't tell → keep (preserves the pre-SHI-222 behavior)
+      return true; // can't tell → keep (preserves the pre-planning#224 behavior)
     }
     try {
       // `ps --filter` rather than `inspect`, deliberately. `docker inspect` exits

@@ -190,7 +190,7 @@ export async function setupContainerManager(
       // Resolve it from the worker image's baked env and publish into the channel
       // both `overlayRuntimeKey()` (orchestrator scope) and `buildEnv` (forwarded
       // to the worker's install-runtime marker) read. Same gating as above: flag
-      // on, operator-set value always wins. A pre-SHI-194 image (no baked digest)
+      // on, operator-set value always wins. A pre-planning#196 image (no baked digest)
       // resolves to nothing → the `SESSION_WORKER_IMAGE_ID` fallback stands.
       if (isOverlayEnabled() && !process.env.BASE_IMAGE_DIGEST) {
         const baseDigest = await containerManager.resolveWorkerBaseDigest();
@@ -334,7 +334,7 @@ export interface RunnerFactoryDeps {
    * planning#300 — local mode only. Source of the MCP env a local spawn carries
    * (`applyLocalMcp`), standing in for the worker `PUT /secrets` push that
    * `prepareSessionAgentEnvironment` skips outside container mode. Absent ⇒ the
-   * local runner spawns with no MCP at all, which is the pre-SHI-298 behavior.
+   * local runner spawns with no MCP at all, which is the pre-planning#300 behavior.
    */
   credentialStore?: LocalAgentMcpDeps["credentialStore"];
 }

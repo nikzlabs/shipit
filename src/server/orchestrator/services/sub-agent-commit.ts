@@ -71,7 +71,7 @@ export interface SubAgentCommitDeps {
   /**
    * Optional so the extreme-minimal test setups that exercise the spawn gates
    * (and any runtime without a git-backed workspace) keep working. Absent ⇒ the
-   * commit is skipped, which is exactly the pre-SHI-299 behavior.
+   * commit is skipped, which is exactly the pre-planning#301 behavior.
    */
   createGitManager?: (dir: string) => GitManager;
   /** Only `append` is used — the post-turn notice path. */

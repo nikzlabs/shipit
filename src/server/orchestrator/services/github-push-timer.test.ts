@@ -4,7 +4,7 @@ import type { GitManager, AutoCommitResult } from "../../shared/git.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 
-// SHI-198 — the debounced auto-push is only safe to drop once a *synchronous*
+// planning#200 — the debounced auto-push is only safe to drop once a *synchronous*
 // push has actually replaced it. `flushPendingTurnCommit` must NOT cancel the
 // timer (it can early-return before any push), and `agentCreatePr` must cancel
 // it only AFTER its synchronous push lands — otherwise a short-circuiting flush

@@ -1,6 +1,6 @@
 /**
  * Integration tests for the upward / lateral session-report channel
- * (docs/233, SHI-241).
+ * (docs/233, planning#243).
  *
  * Exercises the orchestrator end of the chain end-to-end through `buildApp`:
  *

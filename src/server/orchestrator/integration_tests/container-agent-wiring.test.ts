@@ -93,7 +93,7 @@ async function waitFor(
 }
 
 /**
- * SHI-280 — a runner that can start dispatched turns but never actually runs
+ * planning#282 — a runner that can start dispatched turns but never actually runs
  * one: `runDispatchedTurn` is replaced by a recorder that hangs, which is
  * exactly the field condition (a turn whose every event was dropped, so it never
  * reaches the executor's settling teardown). `dispatchOnRunner` still runs for
@@ -941,7 +941,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose({ force: true });
   });
 
-  // SHI-288 (prod incident 2026-08-03, three sessions, every agent event
+  // planning#290 (prod incident 2026-08-03, three sessions, every agent event
   // dropped `(no _agent)` for a whole turn): the retirement blocks in
   // `dispatched-turn.ts` — the system-turn one (docs/179 §4) and the
   // account-failover one (docs/150) — retire a resident process with the
@@ -1026,7 +1026,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose({ force: true });
   });
 
-  // SHI-288 defect 2. With the slot correctly held by the incoming proxy, the
+  // planning#290 defect 2. With the slot correctly held by the incoming proxy, the
   // RETIRED process's late events are no longer dropped — they are routed into
   // whatever proxy occupies the slot, because `agent_event` (unlike
   // `agent_done` / `agent_error` / `agent_auth_required`) carried no `runToken`
@@ -1176,7 +1176,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       runner.dispose();
     });
 
-    // ---- SHI-280 ----
+    // ---- planning#282 ----
     //
     // The reset above is only half a recovery. In the field a session sat wedged
     // for 40+ minutes with a `Child PR #… merged` wake-turn frozen in its queue:

@@ -219,7 +219,7 @@ watch *before* running it, and eligibility is decided on two independent axes:
    `runner.hasDelivery(id)`: true while the wake-turn runs, and for the whole
    time it waits in the parent's queue. Such a watch is **never** re-fired. A
    parent runner that has since been **disposed** answers nothing, so the watch
-   becomes retryable — a stranding case the pre-SHI-258 code could only recover
+   becomes retryable — a stranding case the pre-planning#260 code could only recover
    by restarting.
 
    > **planning#266 superseded the original form of this axis.** It used to be an

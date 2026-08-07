@@ -943,7 +943,7 @@ describe("PrStatusPoller", () => {
     });
 
     it("uses the canonical owner for the post-merge fast-path verify (forceVerifySessionPrState)", async () => {
-      // SHI-159: the post-merge fast path bypasses pollRepo (it must, to avoid
+      // planning#161: the post-merge fast path bypasses pollRepo (it must, to avoid
       // the lagging OPEN bulk view), so it has to resolve the canonical owner
       // itself. Without that, findPullRequestAnyState filters on the OLD owner
       // and the just-merged PR is missed until the next regular poll.

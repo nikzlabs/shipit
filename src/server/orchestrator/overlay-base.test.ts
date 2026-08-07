@@ -114,7 +114,7 @@ describe("overlay-base: rolling-base publish CAS", () => {
     expect(fs.existsSync(path.join(res.pointer!.baseDir, "node_modules.marker"))).toBe(true);
   });
 
-  // SHI-145 — the materialized base is handed to the worker uid so overlayfs
+  // planning#147 — the materialized base is handed to the worker uid so overlayfs
   // copy-up of an existing base dep stays writable for the non-root agent. The
   // chown itself needs privileges, so we inject a spy and assert it fires on the
   // freshly-materialized generation (and only after a real materialize).

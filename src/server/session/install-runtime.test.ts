@@ -4,8 +4,8 @@ import { runtimeKey, detectLibc, tuneNpmInstall } from "./install-runtime.js";
 // `runtimeKey` mixes env-driven inputs (the base digest / image-id fallback) with
 // live process inputs (`process.arch`, `detectLibc()`, `process.versions.modules`).
 // The live inputs are constant within a test run, so comparing two `runtimeKey`
-// calls isolates the env-driven part — exactly the SHI-194 safety property.
-describe("runtimeKey (SHI-194 — pinned base digest, not the full image id)", () => {
+// calls isolates the env-driven part — exactly the planning#196 safety property.
+describe("runtimeKey (planning#196 — pinned base digest, not the full image id)", () => {
   it("composes base digest, arch, libc, and Node ABI", () => {
     const key = runtimeKey({ BASE_IMAGE_DIGEST: "sha256:base" } as NodeJS.ProcessEnv);
     expect(key).toBe(`sha256:base|${process.arch}|${detectLibc()}|abi${process.versions.modules}`);

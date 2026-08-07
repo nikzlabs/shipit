@@ -60,7 +60,7 @@ off Linear — is a separate feature
 
     | Form | Example |
     |---|---|
-    | tracker name + backend id | `planning#306`, `planning#123` |
+    | tracker name + backend id | `roadmap#SHI-304`, `planning#123` |
     | tracker name + number | `roadmap#304` |
     | the backend's canonical issue address | `SHI-304`, `owner/repo#42` |
 
@@ -105,7 +105,7 @@ off Linear — is a separate feature
     recorded ones included — both the cards that record a write and the cards a
     lookup leaves in the transcript — and the UI shows what it now resolves to.
 
-    In a name form that also carries a backend id (`planning#306`), **the name
+    In a name form that also carries a backend id (`roadmap#SHI-304`), **the name
     is authoritative and the embedded id is advisory**: after a re-point, the
     reference resolves through the name's current destination rather than failing
     on the now-mismatched id. This is what makes requirement 15's emitted form
@@ -286,7 +286,7 @@ remains in git.
   a well-formed address that identifies no declared tracker still fails closed,
   since requirement 1 leaves no destination outside the declarations.
 - 2026-08-05 — Asked what a Linear reference looks like, the user chose to
-  **recognize all three forms** — `planning#306`, `roadmap#304`, and the bare
+  **recognize all three forms** — `roadmap#SHI-304`, `roadmap#304`, and the bare
   `planning#306` — rather than pick one (req 10), noting that the UI highlight and other
   surfaces need to match any of them and that the agent can simply be instructed
   which form to write (req 15). The user also moved the **Linear team binding out

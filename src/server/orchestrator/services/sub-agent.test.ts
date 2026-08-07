@@ -65,7 +65,7 @@ function makeDeps(opts: {
   }));
   const recordAgentRateLimits = vi.fn();
   const replaceInProgress = vi.fn();
-  // SHI-278 — the pending → terminal transition patches the finalized DB row
+  // planning#280 — the pending → terminal transition patches the finalized DB row
   // whenever the originating turn is no longer holding the card.
   const updateSubAgentConsultCard = vi.fn(() => true);
   const append = vi.fn();
@@ -192,7 +192,7 @@ describe("runSubAgent — happy path", () => {
       subAgentId: "codex",
       contextTokens: 1200,
     });
-    // transient running spinner, the DURABLE pending card (SHI-278), the live
+    // transient running spinner, the DURABLE pending card (planning#280), the live
     // bill refresh, then the terminal consult card.
     const msgs = emitMessage.mock.calls.map((c) => c[0] as { type: string });
     // The spinner carries the OWNING session id so the client can drop it when
@@ -226,7 +226,7 @@ describe("runSubAgent — happy path", () => {
     expect((msgs[3] as unknown as { card: { spawnId: string } }).card.spawnId).toBe(
       (msgs[0] as unknown as { spawnId: string }).spawnId,
     );
-    // SHI-278 — the pending and terminal deliveries are ONE card, patched in
+    // planning#280 — the pending and terminal deliveries are ONE card, patched in
     // place. Two ids would render two rows for one consult.
     expect((msgs[3] as unknown as { card: { cardId: string } }).card.cardId).toBe(
       (msgs[1] as unknown as { card: { cardId: string } }).card.cardId,
@@ -235,7 +235,7 @@ describe("runSubAgent — happy path", () => {
     expect(replaceInProgress).toHaveBeenCalled();
   });
 
-  it("returns the caller the SAME text it puts on the card, under one run id (SHI-245)", async () => {
+  it("returns the caller the SAME text it puts on the card, under one run id (planning#247)", async () => {
     const { deps, emitMessage } = makeDeps({
       spawnResult: {
         status: "success",
@@ -255,16 +255,16 @@ describe("runSubAgent — happy path", () => {
       .filter((m) => m.type === "sub_agent_consult_card")
       .at(-1)?.card;
     // What the agent acts on and what the user reads are one document, named by
-    // one id — divergence here is the SHI-245 failure, silent and undetectable.
+    // one id — divergence here is the planning#247 failure, silent and undetectable.
     expect(card?.outputMarkdown).toBe(res.text);
     expect(res.spawnId).toBe(card?.spawnId);
   });
 
-  it("emits a long consult as its preview line while persisting the whole output (docs/244, SHI-297)", async () => {
+  it("emits a long consult as its preview line while persisting the whole output (docs/244, planning#299)", async () => {
     // The card face draws one 140-character line and the viewer is a click away,
     // so under requirement 1 the rest doesn't belong on the wire. What must NOT
     // change is the stored copy: it is what the fetch endpoint serves and what
-    // `shipit agent result` reads back, so SHI-245's "one artifact, two
+    // `shipit agent result` reads back, so planning#247's "one artifact, two
     // surfaces" still holds — the preview is a transport detail, not a second
     // extraction.
     const review = Array.from({ length: 300 }, (_, i) => `finding ${i}`).join("\n");
@@ -477,7 +477,7 @@ describe("runSubAgent — happy path", () => {
       .map((c) => c[0] as { type: string; card?: { cardId?: string } })
       .filter((m) => m.type === "sub_agent_consult_card")
       .map((m) => m.card?.cardId);
-    // SHI-278 — two runs × (pending + terminal) = 4 emissions, but only TWO
+    // planning#280 — two runs × (pending + terminal) = 4 emissions, but only TWO
     // distinct cards: each run's pending row is patched, not duplicated.
     expect(cardIds).toHaveLength(4);
     expect(new Set(cardIds).size).toBe(2);
@@ -537,7 +537,7 @@ describe("runSubAgent — happy path", () => {
 });
 
 /**
- * SHI-278 — the in-flight consult card's lifecycle. The incident: a
+ * planning#280 — the in-flight consult card's lifecycle. The incident: a
  * backgrounded Codex consult ran for 15 minutes, the user switched sessions
  * (wiping the transient spinner), then hit Restart agent. Nothing survived — no
  * in-flight surface, no terminal card, and `shipit agent result` was empty.
@@ -647,7 +647,7 @@ describe("runSubAgent — durable in-flight consult card", () => {
   });
 });
 
-describe("getSubAgentResult (SHI-245)", () => {
+describe("getSubAgentResult (planning#247)", () => {
   const card = (spawnId: string, outputMarkdown: string) => ({
     cardId: `c-${spawnId}`,
     spawnId,
@@ -821,7 +821,7 @@ describe("waitForSubAgentResult (docs/248)", () => {
  * `vi.fn()` stub cannot express. They assert the guarantee (the output is still
  * there) rather than which persistence path produced it.
  */
-describe("a backgrounded consult that finishes AFTER its launching turn (SHI-245)", () => {
+describe("a backgrounded consult that finishes AFTER its launching turn (planning#247)", () => {
   const OUTPUT = "## Findings\n\n- `foo.ts:42` — a real bug\n";
   const TURN_ONE_TEXT = "Launching a Codex review in the background…";
 
@@ -944,13 +944,13 @@ describe("a backgrounded consult that finishes AFTER its launching turn (SHI-245
 });
 
 /**
- * SHI-299 — the wiring test for `commitSubAgentWork`. The gating/lock/notice
+ * planning#301 — the wiring test for `commitSubAgentWork`. The gating/lock/notice
  * behaviour is pinned in `sub-agent-commit.test.ts`; what matters here is that
  * `runSubAgent` actually reaches it on the terminal path, so a consult that
  * outlives its turn no longer leaves its work uncommitted (the 100-minute Codex
  * run whose edits missed the merged PR).
  */
-describe("runSubAgent — committing work a consult left after its turn ended (SHI-299)", () => {
+describe("runSubAgent — committing work a consult left after its turn ended (planning#301)", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
   let git: GitManager;

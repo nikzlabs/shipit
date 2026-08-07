@@ -128,7 +128,7 @@ describe("placeholder worker URL is never dialed", () => {
 });
 
 /**
- * SHI-278 — the abort channel that lets `ContainerSessionRunner.dispose` cancel
+ * planning#280 — the abort channel that lets `ContainerSessionRunner.dispose` cancel
  * a long-lived `/agent/spawn` whose container is about to be destroyed. Without
  * it a torn-down consult leaves the caller pending on a socket nobody answers.
  */

@@ -397,7 +397,7 @@ describe("ChatHistoryManager", () => {
     });
   });
 
-  describe("listSubAgentConsultCards (SHI-245)", () => {
+  describe("listSubAgentConsultCards (planning#247)", () => {
     const consult = (spawnId: string, outputMarkdown: string): PersistedMessage => ({
       role: "assistant",
       text: "",
@@ -432,7 +432,7 @@ describe("ChatHistoryManager", () => {
     });
   });
 
-  describe("updateSubAgentConsultCard (SHI-278)", () => {
+  describe("updateSubAgentConsultCard (planning#280)", () => {
     const pending = (spawnId: string): PersistedMessage => ({
       role: "assistant",
       text: "",
@@ -490,7 +490,7 @@ describe("ChatHistoryManager", () => {
       expect(mgr.listSubAgentConsultCards("sess-1")[0].status).toBe("pending");
     });
 
-    // SHI-307 — the boot reconcile's write. `finalize` clears in_progress so the
+    // planning#309 — the boot reconcile's write. `finalize` clears in_progress so the
     // reconciled card cannot be deleted by a docs/240-adopted turn's
     // `replaceInProgress`, which drops every in_progress=1 row in the session.
     it("finalize clears in_progress, so an adopted turn's replaceInProgress can't delete the card", () => {
@@ -527,7 +527,7 @@ describe("ChatHistoryManager", () => {
     });
   });
 
-  describe("listPendingSubAgentConsultCards (SHI-307)", () => {
+  describe("listPendingSubAgentConsultCards (planning#309)", () => {
     const consultWith = (spawnId: string, status: SubAgentConsultCard["status"]): PersistedMessage => ({
       role: "assistant",
       text: "",
@@ -715,7 +715,7 @@ describe("ChatHistoryManager", () => {
     });
   });
 
-  describe("egress allow-once card lifecycle (docs/172, SHI-90)", () => {
+  describe("egress allow-once card lifecycle (docs/172, planning#92)", () => {
     const pendingEgress = (cardId: string): PersistedMessage => ({
       role: "assistant",
       text: "",
@@ -844,7 +844,7 @@ describe("ChatHistoryManager", () => {
       expect(loaded[0].issueWrite).toEqual(msg.issueWrite);
     });
 
-    it("round-trips an edit card's label/priority undo snapshot (SHI-92)", () => {
+    it("round-trips an edit card's label/priority undo snapshot (planning#94)", () => {
       const mgr = new ChatHistoryManager(dbManager);
       const msg: PersistedMessage = {
         role: "assistant",
@@ -868,7 +868,7 @@ describe("ChatHistoryManager", () => {
       expect(card?.undo).toEqual({ kind: "edit", previousLabels: ["backend"], previousPriority: "low" });
     });
 
-    it("round-trips a comment-edit card's previous-body undo snapshot (SHI-86)", () => {
+    it("round-trips a comment-edit card's previous-body undo snapshot (planning#88)", () => {
       const mgr = new ChatHistoryManager(dbManager);
       const msg: PersistedMessage = {
         role: "assistant",

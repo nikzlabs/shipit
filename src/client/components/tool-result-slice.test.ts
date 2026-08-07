@@ -131,7 +131,7 @@ describe("rendersResultContentInline matches what the transcript actually reads"
 });
 
 /**
- * SHI-291 — the set every size bound in this feature has to agree on.
+ * planning#293 — the set every size bound in this feature has to agree on.
  *
  * `rendersResultContentInline` answers "does anything draw this without a
  * click"; this one answers the sharper question "and if we cut it, can the user

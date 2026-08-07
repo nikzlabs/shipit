@@ -60,7 +60,7 @@ function makeNode(oid: string): GraphQLPrNode {
  * `headRefOid` defaults to `oid` (the steady state — the rollup commit IS the
  * branch tip). Pass a distinct value to model the post-retrigger-push window
  * where `commits(last: 1)` (the failing rollup commit) lags behind the ref's
- * already-advanced tip (defect A — SHI-62).
+ * already-advanced tip (defect A — planning#64).
  */
 function makeNodeWithChecks(oid: string, checkIds: number[], headRefOid = oid): GraphQLPrNode {
   return {
@@ -409,7 +409,7 @@ describe("AutoFixManager", () => {
     expect(fx.cb.lastIds()).toEqual([102]);
   });
 
-  it("does NOT fire a failure on a superseded run once the ref tip advances (defect A — SHI-62)", async () => {
+  it("does NOT fire a failure on a superseded run once the ref tip advances (defect A — planning#64)", async () => {
     // The current PR head has already advanced (headRefOid = sha2, e.g. an empty
     // retrigger commit whose run is queued/passing), but GitHub's commits(last:1)
     // still lags on the OLD failing commit (rollup oid = sha1) with its failed

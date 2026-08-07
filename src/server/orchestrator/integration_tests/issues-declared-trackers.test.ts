@@ -1,5 +1,5 @@
 /**
- * Integration tests for declared additional issue trackers (docs/248, SHI-304).
+ * Integration tests for declared additional issue trackers (docs/248, planning#306).
  *
  * Exercises the end-to-end path a `shipit.yaml` declaration takes: the config
  * parser → `resolveGitHubTrackerContext` → the tracker registry → the routes the

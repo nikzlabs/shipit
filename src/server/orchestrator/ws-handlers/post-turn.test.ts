@@ -218,7 +218,7 @@ describe("postTurnCommit — agent self-commit (moved HEAD) secret guard", () =>
 });
 
 /**
- * SHI-295 — a merged session's post-turn auto-push RECREATES the branch GitHub
+ * planning#297 — a merged session's post-turn auto-push RECREATES the branch GitHub
  * deleted at merge, stranding the commit as an orphan that belongs to no pull
  * request. The commit still happens (work is never lost); only the silent push is
  * refused, and the refusal always leaves a persisted notice — the silence is what
@@ -328,7 +328,7 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
 });
 
 /**
- * SHI-315 — the refusal has to reach BOTH actors from the real post-turn path,
+ * planning#317 — the refusal has to reach BOTH actors from the real post-turn path,
  * not just the transcript. These pin the wiring; `services/secret-block.test.ts`
  * pins the state machine itself.
  */

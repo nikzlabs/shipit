@@ -1,5 +1,5 @@
 /**
- * Integration test for tracker label creation (SHI-230).
+ * Integration test for tracker label creation (planning#232).
  *
  * Drives the real orchestrator (`buildApp()`) with a live WS viewer (which puts
  * a runner in the registry) and a faked GitHub REST layer whose repo label set
@@ -8,7 +8,7 @@
  *  - `POST /issue/label/create` (the `shipit issue label create` broker target)
  *    mints the label, emits + persists one `verb: "label"` provenance card with
  *    a delete-if-unused undo snapshot, and is idempotent across a verbatim
- *    replay (same dedup contract as the other writes, SHI-112);
+ *    replay (same dedup contract as the other writes, planning#114);
  *  - `POST /issue/create` with `createMissingLabels` mints unknown labels first
  *    (one extra card per minted label, before the main create card) and reports
  *    them as `createdLabels`; WITHOUT the flag an unknown label still fails,
@@ -48,7 +48,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 /** The declared destination these tests address (docs/248 req 13). */
 const DECLARED_TRACKER = "github:octocat/hello-world";
 
-describe("Integration: issue label creation (SHI-230)", () => {
+describe("Integration: issue label creation (planning#232)", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
@@ -174,7 +174,7 @@ describe("Integration: issue label creation (SHI-230)", () => {
     expect(body.summary).toBe('created label "t3code"');
     expect(body.label.name).toBe("t3code");
 
-    // A verbatim replay (crash/retry, SHI-112 contract) neither re-creates the
+    // A verbatim replay (crash/retry, planning#114 contract) neither re-creates the
     // label nor mints a second card.
     const replay = await post();
     expect(replay.statusCode).toBe(200);

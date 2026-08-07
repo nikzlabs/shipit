@@ -1,5 +1,5 @@
 /**
- * docs/172 Gap 5 (SHI-97) — unit tests for kernel-tier hardening resolvers and
+ * docs/172 Gap 5 (planning#99) — unit tests for kernel-tier hardening resolvers and
  * the committed seccomp profile's structural invariants.
  *
  * These assert env-gating (default-OFF), fail-closed seccomp resolution, and

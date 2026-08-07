@@ -364,7 +364,7 @@ describe("buildVisualElements", () => {
     const presentNames = [
       "present",
       "mcp__shipit__present",
-      "mcp__shipit-present__present", // legacy per-tool server (pre-SHI-128)
+      "mcp__shipit-present__present", // legacy per-tool server (pre-planning#130)
     ];
 
     for (const name of presentNames) {

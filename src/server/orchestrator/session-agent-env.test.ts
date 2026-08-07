@@ -1374,7 +1374,7 @@ describe("credential topology under a resident agent (nikzlabs/shipit#1874)", ()
 void vi;
 
 /**
- * docs/118 (SHI-59) — local-mode workspace trust.
+ * docs/118 (planning#61) — local-mode workspace trust.
  *
  * The Claude CLI silently drops a workspace's own `.claude/settings.json`
  * `permissions.allow` entries until that exact directory is trusted. A
@@ -1388,7 +1388,7 @@ void vi;
  * repository. So both directions are pinned: local mode writes the key, and
  * containerized mode is byte-for-byte what it was.
  */
-describe("local-mode workspace trust (docs/118, SHI-59)", () => {
+describe("local-mode workspace trust (docs/118, planning#61)", () => {
   let tmpDir: string;
   let home: string;
   let runtimeModeBefore: string | undefined;

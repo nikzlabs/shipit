@@ -64,7 +64,7 @@ function makeDeps(remoteUrl: string | undefined) {
     composeWarnings: new Map<string, string>(),
     composeNotConfigured: new Set<string>(),
     containerManager: null,
-    // Sibling of the workspace — required (SHI-290) and must resolve outside it.
+    // Sibling of the workspace — required (planning#292) and must resolve outside it.
     serviceEnvDir: path.join(tmpDir, "..", "service-env"),
   };
 }
@@ -313,7 +313,7 @@ describe("applyShipitConfigChange — compose-removal is gated on a trustworthy 
 });
 
 /**
- * SHI-290 — `serviceEnvDir` is required, and the wiring hop that supplies it is
+ * planning#292 — `serviceEnvDir` is required, and the wiring hop that supplies it is
  * `ServiceSetupDeps → ServiceManagerOptions → ServiceSecretsResolver`.
  *
  * The `ServiceManager` tests construct a manager directly with an explicit root,
@@ -324,7 +324,7 @@ describe("applyShipitConfigChange — compose-removal is gated on a trustworthy 
  * whole stack at start. This test closes it by asserting the effect — where the
  * env file actually lands — through the real construction path.
  */
-describe("setupServiceManager threads serviceEnvDir to the secrets resolver (SHI-290)", () => {
+describe("setupServiceManager threads serviceEnvDir to the secrets resolver (planning#292)", () => {
   it("writes service env files under the deps' root, never into the clone", async () => {
     // A real session layout: the clone at `<sessionDir>/workspace`, which is what
     // `ServiceManager` resolves its state dir from.

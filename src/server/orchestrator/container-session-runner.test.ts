@@ -90,7 +90,7 @@ describe("ContainerSessionRunner — dependency-change reinstall throttle (#1622
 });
 
 /**
- * SHI-278 — an in-flight sub-agent spawn must not vanish with its container.
+ * planning#280 — an in-flight sub-agent spawn must not vanish with its container.
  *
  * The incident: a backgrounded Codex consult was running when the user hit
  * Restart agent. `restartAgent` kills the PRIMARY agent on the worker, then
@@ -104,7 +104,7 @@ describe("ContainerSessionRunner — dependency-change reinstall throttle (#1622
  * (Restart agent, Restart container, Rescue, archive, full reset), so cancelling
  * there covers all of them without patching each caller.
  */
-describe("ContainerSessionRunner — sub-agent spawn cancellation (SHI-278)", () => {
+describe("ContainerSessionRunner — sub-agent spawn cancellation (planning#280)", () => {
   it("aborts an in-flight spawn on dispose, rejecting the awaiting caller", async () => {
     const runner = makeRunner();
     // A silent worker: the request is accepted and never answered, which is

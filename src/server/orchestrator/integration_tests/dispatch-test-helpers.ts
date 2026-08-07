@@ -4,7 +4,7 @@
  * Production code must call `prepareDispatch` with a COMPLETE
  * `AgentDispatchInit` — that completeness is the whole point of Fix A, because a
  * producer that fills in defaults for the fields you didn't mention re-opens the
- * exact hole SHI-255 / SHI-259 fell through (a drain site quietly narrowing a
+ * exact hole planning#257 / planning#261 fell through (a drain site quietly narrowing a
  * queued entry). Tests, though, dispatch a bare `{ text }` dozens of times, and
  * spelling out nine `undefined`s at each call site buys nothing: a test isn't
  * *deriving* options from a queued entry, so there is nothing for it to drop.

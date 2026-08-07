@@ -139,7 +139,7 @@ describe("Integration: live steering (docs/140)", () => {
     client.close();
   });
 
-  it("echoes a steered image as a content-addressed URL, not base64 (docs/244, SHI-297)", async () => {
+  it("echoes a steered image as a content-addressed URL, not base64 (docs/244, planning#299)", async () => {
     // The `message_steered` echo is a browser-facing transcript path of its own:
     // it bypasses `projectMessagesForWire` entirely, so a pasted screenshot went
     // out in full even though every other delivery of the same row had been

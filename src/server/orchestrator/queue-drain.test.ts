@@ -15,7 +15,7 @@ function fakeRunner(opts: { canRunDispatchedTurn?: boolean } = {}) {
   return { runner, ran };
 }
 
-describe("queue drain routing (SHI-255)", () => {
+describe("queue drain routing (planning#257)", () => {
   it("routes a dispatched entry back through runDispatchedTurn — never the interactive re-entry", async () => {
     const { runner, ran } = fakeRunner();
     const runInteractive = vi.fn(async () => {});

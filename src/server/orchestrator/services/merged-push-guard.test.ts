@@ -1,5 +1,5 @@
 /**
- * SHI-295 — the merged-branch auto-push guard.
+ * planning#297 — the merged-branch auto-push guard.
  *
  * Reproduces the production shape: PR #1963 merged, GitHub deleted the head
  * branch, a later turn committed, and the debounced auto-push RECREATED the

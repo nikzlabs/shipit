@@ -131,7 +131,7 @@ export interface DiskJanitorDeps {
   /**
    * planning#199 — the single cold-artifact retention (days). In this module it
    * drives the crash-recovery archived-workspace backstop (sweep archived
-   * session workspaces older than this); post-SHI-196 the cold caches that once
+   * session workspaces older than this); post-planning#198 the cold caches that once
    * shared a knob with it live in `steady-state-reclaim.ts`, but both still read
    * the SAME value (the old `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` +
    * `DISK_JANITOR_CACHE_DAYS` coincidentally-30d pair collapsed into one). The

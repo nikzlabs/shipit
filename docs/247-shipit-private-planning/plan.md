@@ -501,16 +501,105 @@ both failures are the reason the rule is what it is:
    literal. Caught by `tsc`, but only because it happened to break syntax rather
    than meaning.
 
-So [`sweep.py`](./sweep.py) excludes **every test file wholesale**, plus 20 named
-source files that teach or parse the key shape, plus this doc folder — and skips
-individual **syntax-example lines** (a line carrying both a `SHI-N` and a marker
-like `owner/repo#` or `bare `), reporting each one for review. Both exclusions err
-toward skipping: a citation wrongly left alone is caught by the manual pass, while
-a wrongly-rewritten example is silent damage.
+So the sweep excluded **every test file wholesale**, plus 20 named source files
+that teach or parse the key shape, plus this doc folder — and skipped individual
+**syntax-example lines** (a line carrying both a `SHI-N` and a marker like
+`owner/repo#` or `bare `). Both exclusions were meant to err toward skipping, on
+the theory that a citation wrongly left alone is caught later while a
+wrongly-rewritten example is silent damage.
+
+**The theory was right and the markers were not.** `bare ` matched "the bare repo
+cache" and hid real citations; nothing matched "a Linear key (`SHI-304`)" at all.
+What the exclusions actually bought was a smaller blast radius, not correctness —
+see *Gate 3 needed a check AND two reviews* for what it took to find the rest.
 
 The mechanical half ran on 2026-08-07: **511 files, 1,778 rewrites**, typecheck
-clean, full suite green (699 files, 10,305 tests), lint clean. About 1,400
-mentions remain for the manual half, and that is gate 3's actual work.
+clean, full suite green (699 files, 10,305 tests), lint clean.
+
+The manual half then inverted the rule. Rather than "rewrite everything except
+known-bad lines", `sweep-tests.py` rewrites **only lines that
+are provably citations** — a comment, or a `describe`/`it` title that carries no
+data marker — and leaves the rest. 431 lines across 156 files, suite still green.
+
+Three classes escaped both scripts, and each is a different kind of blind spot:
+
+- **Two false positives from the `bare ` marker.** `git-lfs-store.ts:6` says
+  "via the bare repo cache (docs/232, SHI-236)" — an ordinary citation on a line
+  the syntax-example heuristic vetoed because of an unrelated English word.
+- **24 hyphen-prefixed prose citations** — `pre-SHI-194`, `post-SHI-192`. The
+  `(?<![\w-])` lookbehind skips a key preceded by a hyphen *by design*, so it
+  never matches inside a compound identifier; the cost is that it also misses
+  prose that hyphenates a reference.
+- **One heading**, `SHI-129-protected`, for the same reason from the other side.
+
+### Gate 3 needed a check AND two reviews, and the check was never the hard part
+
+684 files is not reviewable by eye, so [`verify-sweep.py`](./verify-sweep.py)
+asserts the structural property: for every changed line, blank the reference
+tokens from both sides and the remainders must be byte-identical, paired per file
+and per hunk, every substitution agreeing with `mapping.tsv`.
+
+**That check found almost nothing that mattered.** Two Codex reviews did. The
+division is worth stating because it is the reusable lesson:
+
+| Class | Caught by |
+|---|---|
+| Structural corruption (mangled URL, dropped character, unbalanced hunk) | the checker |
+| **A `SHI-N` inside text *teaching* what a reference looks like** | reviews only |
+| Citations the rewrite never reached | reviews only |
+| Holes in the checker itself | reviews only |
+
+The check **cannot tell a pointer from text describing the shape of a pointer**,
+because both sides tokenize identically. That is not a bug to fix; it is the
+boundary of what a lexical assertion can express. Twenty-four lines were corrupted
+this way and every one had to be judged individually:
+
+| Was | Became |
+|---|---|
+| `planning#SHI-3` | `planning#planning#5` |
+| `name#SHI-304` | `name#planning#306` |
+| `<name>#<SHI-304\|57>` | `<name>#<planning#306\|57>` |
+| `` `SHI-319` tail of `roadmap#SHI-319` `` | `` `planning#321` tail of `planning#321` `` |
+| "a Linear key (`SHI-304`)" | "a Linear key (`planning#306`)" |
+| `…/issue/SHI-28/redesign-the-auth-flow` | `…/issue/planning#30/…` |
+
+The second one is docs/248's own example of *a name form whose suffix doesn't fit
+the named backend* — the error case that feature exists to reject. The reviews
+also found **49 unrewritten test-title citations**, **4 stale citations** hidden
+by the unrelated English word "bare" or buried in an assertion message, and — in
+the first round — three structural holes in the checker (it failed open, skipped
+a binary-flagged file, and paired lines globally).
+
+Two things went wrong in my own handling, both worth recording:
+
+- **I cited the 12 lines an early run "caught" as evidence the checker worked.**
+  They were caught by accident: each happened to carry a pre-existing `planning#N`
+  that made the token counts asymmetric. The script never had the power to find
+  that class, and the broader claim I attached to it was the actual error.
+- **Fixing by heuristic kept missing.** Each round of "restore the lines matching
+  these markers" left more behind, because the markers were guesses about
+  language. What worked was enumerating every line containing `planning#N` in a
+  shape-teaching context — 18 candidates — and judging each one, keeping 4 that
+  were genuine citations of issue `SHI-323` rather than examples.
+
+**The rewrite scripts are deliberately not committed.** Re-running `sweep.py`
+today would rewrite 27 more references, 15 of them re-corrupting the very syntax
+examples this section is about; `sweep-tests.py` would re-corrupt 17. They were
+one-shot tools whose correctness depended on the state of the tree at the moment
+they ran, and leaving them beside the doc would invite exactly that mistake.
+`mapping.tsv` and `verify-sweep.py` remain, because both stay meaningful.
+
+Final state: 2,106 hunks, 2,188 changed lines, 2,259 substitutions, zero
+unbalanced hunks, zero differing outside a reference, zero disagreeing with the
+mapping — plus two adversarial reviews covering what that cannot express.
+
+**What deliberately remains is 517 mentions across 63 files, and none of them are
+pointers.** They are `SHI-N` as the *shape of a Linear key* — fixtures and parser
+tests for the Linear adapter, the shim's key parsing, the viewer rendering a
+Linear issue — plus reference-syntax examples that teach the three forms. Linear
+support stays in the product (248 req 3); ShipIt retires it for *itself* by not
+declaring it. So those stay `SHI-N` permanently. They are not a later pass's
+backlog, and reading them as one would break the tests that keep Linear working.
 
 ## Where a human has to look
 

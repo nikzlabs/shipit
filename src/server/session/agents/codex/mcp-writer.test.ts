@@ -6,7 +6,7 @@ import { CodexAdapter } from "./adapter.js";
 import type { AgentMcpBridge, McpServerConfig } from "../agent-process.js";
 
 /**
- * docs/125 / docs/155 hair 10 / SHI-128 — Codex registers its MCP servers via a
+ * docs/125 / docs/155 hair 10 / planning#130 — Codex registers its MCP servers via a
  * `[mcp_servers.*]` block in `~/.codex/config.toml`, not a per-run path like
  * Claude. These tests cover CodexAdapter.writeMcpConfig() in isolation:
  *  - it appends the ShipIt-managed block (one consolidated `shipit` bridge +
@@ -21,7 +21,7 @@ import type { AgentMcpBridge, McpServerConfig } from "../agent-process.js";
  * The test stubs `hasFileAuth` so the adapter constructor stays cheap (no
  * filesystem checks); writeMcpConfig() doesn't depend on the spawn path.
  */
-describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10, SHI-128)", () => {
+describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10, planning#130)", () => {
   let codexHome: string;
   let adapter: CodexAdapter;
   const prevHome = process.env.CODEX_HOME;
@@ -129,7 +129,7 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10, SHI-128)", ()
     expect(runtimeEnv?.SHIPIT_MCP_TOOLS).not.toContain("permission");
   });
 
-  // docs/207 / SHI-153: propose_actions (action-checklist cards) must be in the
+  // docs/207 / planning#155: propose_actions (action-checklist cards) must be in the
   // Codex tool subset. Codex runs approvalPolicy:"never" so it auto-approves with
   // no allowlist plumbing — this assertion guards against a silent regression
   // mirroring the Claude allowlist omission that broke the tool there.

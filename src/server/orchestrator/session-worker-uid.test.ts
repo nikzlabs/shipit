@@ -195,7 +195,7 @@ describe("session-worker-uid (docs/150 §7)", () => {
       expect(fs.lstatSync(idx).uid).toBe(before);
     });
 
-    // SHI-144: the worktree handoff chowns the files the agent edits, skipping
+    // planning#146: the worktree handoff chowns the files the agent edits, skipping
     // `.git` (handled by the object-aware helper) and the declared dep dirs.
     it("chownWorktreeToSessionWorker chowns the worktree but skips .git and dep dirs", () => {
       const myUid = process.getuid?.();
@@ -250,7 +250,7 @@ describe("session-worker-uid (docs/150 §7)", () => {
       expect(fs.lstatSync(f).uid).toBe(before);
     });
 
-    // SHI-145: the session-setup paths (warm-pool create, claim refresh/branch)
+    // planning#147: the session-setup paths (warm-pool create, claim refresh/branch)
     // used to hand back ONLY `.git`, leaving the root-cloned/reset worktree
     // owned root:root and uneditable by the non-root agent. The composite helper
     // hands back BOTH `.git` (object-aware) AND the worktree (minus dep dirs).

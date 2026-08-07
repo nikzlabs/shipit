@@ -1,5 +1,5 @@
 /**
- * Tests for the Tier C SNI proxy launch wiring (docs/172 Gap 1, SHI-90).
+ * Tests for the Tier C SNI proxy launch wiring (docs/172 Gap 1, planning#92).
  */
 
 import { describe, it, expect, vi } from "vitest";

@@ -97,7 +97,7 @@ describe("consult card survival (docs/144, docs/220)", () => {
     expect(cardVisible()).toBe(true);
   });
 
-  it("patches the pending card in place on completion — one row, not two (SHI-278)", () => {
+  it("patches the pending card in place on completion — one row, not two (planning#280)", () => {
     handleSubAgentSpawn(ctx, spawnEvent);
     // At spawn the card lands `pending`; the transient chip stays up alongside
     // it only until the durable row exists.

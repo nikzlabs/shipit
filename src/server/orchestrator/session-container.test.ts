@@ -46,7 +46,7 @@ function createMockDocker() {
   // docs/183 — control the worker image inspect for resolveWorkerImageId.
   // `undefined` Id models an inspect that throws (image absent).
   let imageId: string | undefined = "sha256:workerimageabc";
-  // SHI-194 — the BASE_IMAGE_DIGEST baked into the worker image's Config.Env, read
+  // planning#196 — the BASE_IMAGE_DIGEST baked into the worker image's Config.Env, read
   // by resolveWorkerBaseDigest. `undefined` models an image without the baked env.
   let imageBaseDigest: string | undefined = "sha256:baseimagexyz";
   let imageInspectCalls = 0;
@@ -199,7 +199,7 @@ function createMockDocker() {
  * `state/` sibling.
  *
  * These have to be REAL paths, not the `/workspace/...` literals they used to
- * be: `createContainer` mkdirs the state dir, and since SHI-286 it does so
+ * be: `createContainer` mkdirs the state dir, and since planning#288 it does so
  * unconditionally (there is no "session without a state dir" left to skip for),
  * so a non-writable literal is an EACCES rather than a no-op.
  */
@@ -291,7 +291,7 @@ describe("SessionContainerManager", () => {
     });
   });
 
-  // --- resolveWorkerBaseDigest (SHI-194 — pinned-base overlay scope) ---
+  // --- resolveWorkerBaseDigest (planning#196 — pinned-base overlay scope) ---
 
   describe("resolveWorkerBaseDigest", () => {
     it("reads BASE_IMAGE_DIGEST out of the worker image's Config.Env", async () => {
@@ -306,7 +306,7 @@ describe("SessionContainerManager", () => {
       expect(mockDocker._imageInspectCalls()).toBe(1);
     });
 
-    it("returns undefined for a pre-SHI-194 image with no baked digest", async () => {
+    it("returns undefined for a pre-planning#196 image with no baked digest", async () => {
       mockDocker._setImageBaseDigest(undefined); // env carries no BASE_IMAGE_DIGEST
       expect(await manager.resolveWorkerBaseDigest()).toBeUndefined();
     });
@@ -441,7 +441,7 @@ describe("SessionContainerManager", () => {
     });
   });
 
-  // --- docs/172 Gap 5 (SHI-97) — kernel-tier hardening (env-gated, default-OFF) ---
+  // --- docs/172 Gap 5 (planning#99) — kernel-tier hardening (env-gated, default-OFF) ---
 
   describe("kernel-tier hardening", () => {
     // These hardening flags are read from process.env at create time. Snapshot
@@ -503,7 +503,7 @@ describe("SessionContainerManager", () => {
     });
   });
 
-  // --- docs/172 Gap 1 (SHI-90) — egress containment fail-closed at create ---
+  // --- docs/172 Gap 1 (planning#92) — egress containment fail-closed at create ---
 
   describe("egress fail-closed", () => {
     // Enforcement is ON by default; the server test setup opts out globally so
@@ -664,7 +664,7 @@ describe("SessionContainerManager", () => {
 
     /**
      * A real session layout — the clone at `<sessionDir>/workspace`, which is
-     * what the state dir is resolved from (docs/246 / SHI-286). Returns the clone.
+     * what the state dir is resolved from (docs/246 / planning#288). Returns the clone.
      */
     async function ws(opts: { gitignore?: string; shipitYaml?: string; dirs?: string[] } = {}): Promise<string> {
       const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "prep-overlay-"));

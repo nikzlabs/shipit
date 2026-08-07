@@ -87,7 +87,7 @@ agent:
     orchestrator scope (`overlayRuntimeKey`) AND `buildEnv`'s forwarded copy (feeding the worker's
     `install-runtime.ts:runtimeKey()`) now read it, so the scope rolls **only** on a deliberate base
     bump. `SESSION_WORKER_IMAGE_ID`/`IMAGE_DIGEST` (still resolved + forwarded) remain the fallback for
-    a pre-SHI-194 image; no Docker → `"unknown"` (no rotation), unchanged from before.
+    a pre-planning#196 image; no Docker → `"unknown"` (no rotation), unchanged from before.
   - **Safety: narrowing biases toward reuse, so the worker marker is the corruption gate.** A stale
     scope can at worst reuse a base whose ABI no longer fits — but the worker-side install marker
     (`install-marker.ts:markerMatches`, comparing `install-runtime.ts:runtimeKey()` = base digest +

@@ -231,7 +231,7 @@ describe("IssueDetail comments (docs/189 follow-up)", () => {
   });
 });
 
-describe("IssueDetail comment anchoring (SHI-103)", () => {
+describe("IssueDetail comment anchoring (planning#105)", () => {
   const THREAD: TrackerComment[] = [
     { id: "c-1", body: "First reply.", author: { name: "A" } },
     { id: "c-2", body: "Second reply, the target.", author: { name: "B" } },

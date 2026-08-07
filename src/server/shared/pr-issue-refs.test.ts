@@ -65,7 +65,7 @@ describe("parsePrBodyIssueRefs", () => {
 
   it("de-dupes a pointer named twice, and prefers closing over refs", () => {
     const { closes, refs } = parsePrBodyIssueRefs("Refs SHI-7\nCloses SHI-7");
-    // Closing pass runs first and claims SHI-7; the refs pass skips the dup.
+    // Closing pass runs first and claims planning#9; the refs pass skips the dup.
     expect(closes.map((r) => r.identifier)).toEqual(["SHI-7"]);
     expect(refs).toEqual([]);
   });

@@ -74,7 +74,7 @@ export interface ParsedIssueRef {
   /**
    * Tracker-native id for `Tracker.getIssue(id)`: the bare number for GitHub,
    * the key for Linear. For a name form this is the raw suffix as written
-   * (`304` or `SHI-304`) — the resolver normalizes it once it knows the kind.
+   * (`304` or `planning#306`) — the resolver normalizes it once it knows the kind.
    * Absent for an unrecognized shape.
    */
   issueId?: string;
@@ -262,7 +262,7 @@ export function extractIssueRefsFromText(text: string | null | undefined): Parse
   // a URL's path (`…/issues/5` has no `#`, but `github.com/o/r#5` would).
   collect(/(?<![\w/])[^/\s#]+\/[^/\s#]+#\d+/g, 0);
   // Bare Linear keys, gated on an `issue` lead-in (the separator allows
-  // `issue SHI-9`, `issue: SHI-9`, `issue #SHI-9`).
+  // `issue planning#11`, `issue: planning#11`, `issue #planning#11`).
   collect(/\bissue\b[\s:#-]*([A-Za-z][A-Za-z0-9]*-\d+)/gi, 1);
   // docs/248 name refs, gated on the same lead-in (`issue planning#42`).
   collect(/\bissue\b[\s:]*([A-Za-z0-9][A-Za-z0-9._-]*#(?:[A-Za-z][A-Za-z0-9]*-\d+|\d+))/gi, 1);

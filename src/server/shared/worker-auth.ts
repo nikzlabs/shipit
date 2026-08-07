@@ -338,7 +338,7 @@ export interface WorkerAuthDecision {
  * Step 3 defers to that same fallback: an unconfigured worker keeps its old
  * behavior on lifecycle routes too. That is what keeps in-process tests (which
  * build a `SessionWorker` with no token and drive `/agent/start` over loopback)
- * working, and it means a mid-deploy skew degrades to the pre-SHI-239 surface
+ * working, and it means a mid-deploy skew degrades to the pre-planning#241 surface
  * rather than to a session that cannot start a turn.
  */
 export function decideWorkerRequest(origin: WorkerRequestOrigin): WorkerAuthDecision {

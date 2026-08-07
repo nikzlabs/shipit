@@ -1,5 +1,5 @@
 /**
- * SHI-299 — a sub-agent consult that finishes AFTER its parent turn ended must
+ * planning#301 — a sub-agent consult that finishes AFTER its parent turn ended must
  * still get its work committed (and pushed) to the session branch.
  *
  * The incident these pin: a backgrounded `shipit agent run` ran for 100 minutes

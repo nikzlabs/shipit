@@ -1,5 +1,5 @@
 /**
- * SHI-311 — policy tests for the worker trust boundary. These cover
+ * planning#313 — policy tests for the worker trust boundary. These cover
  * `decideWorkerRequest` and its helpers directly; the Fastify wiring is covered
  * in `session/worker-auth-guard.test.ts`.
  */
@@ -203,7 +203,7 @@ describe("generateWorkerToken", () => {
 });
 
 describe("decideWorkerRequest", () => {
-  it("SHI-311: a peer session container cannot reach /agent-ops even with a valid token", () => {
+  it("planning#313: a peer session container cannot reach /agent-ops even with a valid token", () => {
     // The regression proper. Session A learns B's container name, dials
     // agent-<b>:9100 and POSTs a broker route; B's worker would relay it with
     // B's own SESSION_ID injected.
@@ -214,7 +214,7 @@ describe("decideWorkerRequest", () => {
     }
   });
 
-  it("SHI-311: a peer session container cannot reach the orchestrator-facing routes either", () => {
+  it("planning#313: a peer session container cannot reach the orchestrator-facing routes either", () => {
     // Same class, different route group: /terminal/start + /terminal/input is
     // command execution in another session's container, and PUT /secrets
     // rewrites its agent env.
@@ -224,9 +224,9 @@ describe("decideWorkerRequest", () => {
       expect(denied.reason).toBe("bad-token");
     }
 
-    // The lifecycle routes are refused for the same peer, under SHI-239's rule
+    // The lifecycle routes are refused for the same peer, under planning#241's rule
     // rather than this one — a stricter reason for a strictly narrower group, so
-    // the SHI-311 guarantee is unchanged.
+    // the planning#313 guarantee is unchanged.
     for (const path of ["/agent/message", "/agent/kill"]) {
       const denied = decide({ url: path });
       expect(denied.allow, path).toBe(false);
@@ -275,7 +275,7 @@ describe("decideWorkerRequest", () => {
     expect(decide({ url: "/agent-ops/issue/view", remoteAddress: "127.0.0.1" }).allow).toBe(true);
   });
 
-  it("SHI-239: loopback is NOT enough for any lifecycle route", () => {
+  it("planning#241: loopback is NOT enough for any lifecycle route", () => {
     // The carve-out from the blanket loopback allow. Being inside the container
     // identifies the caller; it does not authorize it to touch the live agent.
     for (const path of LIFECYCLE_PATHS) {
@@ -285,7 +285,7 @@ describe("decideWorkerRequest", () => {
     }
   });
 
-  it("SHI-239: a fragment or absolute-form target cannot smuggle a lifecycle route past", () => {
+  it("planning#241: a fragment or absolute-form target cannot smuggle a lifecycle route past", () => {
     // Both reproduced against a real server on a real socket before the fix:
     // every one of these was served 200 by the /agent/kill handler.
     for (const url of [
@@ -301,7 +301,7 @@ describe("decideWorkerRequest", () => {
     }
   });
 
-  it("SHI-311: an absolute-form target cannot smuggle past the loopback-only rule", () => {
+  it("planning#313: an absolute-form target cannot smuggle past the loopback-only rule", () => {
     // A trailing fragment can't defeat prefix matching, but the absolute form
     // can: the whole URL fails `startsWith("/agent-ops/")`, so before the fix a
     // token-bearing peer fell through to the token check and was served — while
@@ -313,7 +313,7 @@ describe("decideWorkerRequest", () => {
     expect(denied).toEqual({ allow: false, reason: "loopback-only" });
   });
 
-  it("SHI-239: a loopback caller presenting the wrong token is refused too", () => {
+  it("planning#241: a loopback caller presenting the wrong token is refused too", () => {
     const denied = decide({
       url: "/agent/kill",
       remoteAddress: "127.0.0.1",
@@ -322,7 +322,7 @@ describe("decideWorkerRequest", () => {
     expect(denied).toEqual({ allow: false, reason: "lifecycle-needs-token" });
   });
 
-  it("SHI-239: the incident shape — a stray in-container /agent/start never reaches the 409", () => {
+  it("planning#241: the incident shape — a stray in-container /agent/start never reaches the 409", () => {
     // The 2026-07-25 self-kill: an integration-test fixture's
     // ContainerSessionRunner POSTed /agent/start at 127.0.0.1:9100, the live
     // worker answered 409 "Agent already running" twice, and the runner's
@@ -336,14 +336,14 @@ describe("decideWorkerRequest", () => {
     }
   });
 
-  it("SHI-239: the orchestrator's lifecycle calls still pass, from the bridge or loopback", () => {
+  it("planning#241: the orchestrator's lifecycle calls still pass, from the bridge or loopback", () => {
     for (const remoteAddress of [OTHER_SESSION_IP, "127.0.0.1"]) {
       const allowed = decide({ url: "/agent/start", remoteAddress, presentedToken: TOKEN });
       expect(allowed, remoteAddress).toEqual({ allow: true, reason: "token" });
     }
   });
 
-  it("SHI-239: leaves /agent/status and the rest of the loopback surface alone", () => {
+  it("planning#241: leaves /agent/status and the rest of the loopback surface alone", () => {
     // Over-broad prefix matching here would break the health/adoption probe and
     // the agent's own service + present routes.
     for (const path of ["/agent/status", "/services/list", "/agent-ops/issue/list", "/present-files/x"]) {
@@ -353,7 +353,7 @@ describe("decideWorkerRequest", () => {
     }
   });
 
-  it("SHI-239: an unconfigured worker keeps its old lifecycle behavior", () => {
+  it("planning#241: an unconfigured worker keeps its old lifecycle behavior", () => {
     // Same fallback as the orchestrator-facing routes: in-process tests build a
     // SessionWorker with no token and drive /agent/start over loopback, and a
     // mid-deploy skew must degrade rather than fail to start turns.

@@ -344,7 +344,7 @@ describe("parseContentForImages", () => {
  * This is the half the server tests can't reach: they prove the payload is
  * stripped, not that the UI then puts the body back on the screen.
  */
-describe("ToolResult — lazy body fetch (SHI-267 req 1)", () => {
+describe("ToolResult — lazy body fetch (planning#269 req 1)", () => {
   const BODY = "line one\nline two\nline three";
 
   function stripped(): ToolResultBlock {

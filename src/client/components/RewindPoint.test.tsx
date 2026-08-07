@@ -17,7 +17,7 @@ function renderPoint(props: Partial<React.ComponentProps<typeof RewindPoint>> = 
 }
 
 describe("RewindPoint", () => {
-  // SHI-182: a running turn must not block fork. Fork spins off a new session
+  // planning#184: a running turn must not block fork. Fork spins off a new session
   // from a committed SHA and doesn't mutate this one, so the affordance stays
   // live (and presents as fork-only) while the agent works.
   it("keeps the fork affordance enabled while a turn is running", () => {

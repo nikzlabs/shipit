@@ -251,7 +251,7 @@ function canonicalMatches(dest: TrackerDestination, id: TrackerId): boolean {
  * Turn a name form's raw suffix into the named backend's native issue id.
  *
  * GitHub wants a bare number. Linear wants a key, so `roadmap#304` is completed
- * from the declaration's team (`SHI-304`) — that completion is the whole reason
+ * from the declaration's team (`planning#306`) — that completion is the whole reason
  * requirement 5 puts the team key in the declaration.
  *
  * Where the suffix carries a team key of its OWN and it disagrees with the
@@ -293,7 +293,7 @@ function resolveNamedSuffix(
     }
     const keyed = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/.exec(suffix);
     // req 16 — in a name form the NAME is authoritative and an embedded backend
-    // id is advisory. `roadmap#SHI-304` written before `roadmap` was re-pointed
+    // id is advisory. `planning#306` written before `roadmap` was re-pointed
     // to team OPS resolves to `OPS-304` rather than failing on the stale key,
     // which is what lets requirement 15's emitted form survive a re-point.
     //

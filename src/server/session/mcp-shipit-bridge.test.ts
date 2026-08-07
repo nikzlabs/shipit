@@ -5,7 +5,7 @@ import { createShipitBridgeServer, selectTools, TOOL_REGISTRY } from "./mcp-ship
 import type { ToolDescriptor } from "./mcp-tools/types.js";
 
 /**
- * SHI-128 — the consolidated `shipit` bridge serves a configurable subset of all
+ * planning#130 — the consolidated `shipit` bridge serves a configurable subset of all
  * internal tools from ONE stdio process. These tests drive a real MCP `Client`
  * over an in-memory transport, with `globalThis.fetch` stubbed, so they exercise
  * the production ListTools/CallTool path: tool selection, per-tool dispatch and

@@ -14,7 +14,7 @@ import { overlayScopeHash } from "./overlay-volume.js";
 /**
  * Build a `runDocker` stub that simulates a RUNNING session-worker container
  * pinning each given `overlay-base/<hash>/g<N>` lowerdir as a live overlay mount
- * (SHI-193 live-mount check). Any docker call the overlay sweep makes
+ * (planning#195 live-mount check). Any docker call the overlay sweep makes
  * (`ps -q` → `container inspect` → `volume inspect`) is answered; everything else
  * returns empty.
  */
@@ -149,7 +149,7 @@ describe("runSteadyStateReclaim", () => {
   });
 
   it("overlay-base sweep reclaims obsolete bases immediately via the live-mount check (no age gate)", async () => {
-    // SHI-193: a scope is reclaimable the moment it has zero live mounts — age is
+    // planning#195: a scope is reclaimable the moment it has zero live mounts — age is
     // not a factor. "Live" = the resumable-session union OR a generation pinned by
     // a running container right now.
     setup();
@@ -266,7 +266,7 @@ describe("runSteadyStateReclaim", () => {
   });
 
   it("reaps superseded generations inside a LIVE scope via the live-mount check, keeping g0 + current + pinned", async () => {
-    // SHI-193: a live scope dir is never removed, but superseded `g<N>` children
+    // planning#195: a live scope dir is never removed, but superseded `g<N>` children
     // are reaped the moment nothing pins them — age is not a factor. Kept: `g0`
     // (cold-start lowerdir), the pointer's current generation, and any generation
     // a running container still mounts. A crash-orphaned `.tmp-*` gets a short
