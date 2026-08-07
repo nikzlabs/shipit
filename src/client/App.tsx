@@ -250,15 +250,6 @@ export default function App() {
         card.phase === "closed")
     );
   });
-  const prCardsBySession = usePrStore((s) => s.cardBySession);
-  const mergedPreviewSessionIds = useMemo(
-    () =>
-      Object.entries(prCardsBySession)
-        .filter(([, card]) => card.phase === "merged")
-        .map(([id]) => id),
-    [prCardsBySession],
-  );
-
   // Permission mode is keyed per-session (with a fallback to the pre-session
   // default). This subscription recomputes whenever wsSessionId or any
   // settings-store field changes, so toggling plan mode in one session never
@@ -1668,7 +1659,6 @@ export default function App() {
             <PreviewFrame
               preview={effectivePreviewStatus}
               sessionId={sessionId}
-              mergedSessionIds={mergedPreviewSessionIds}
               detectedPorts={detectedPorts}
               selectedPort={selectedPort}
               onSelectPort={(p) =>

@@ -257,6 +257,46 @@ describe("PreviewFrame", () => {
     expect(screen.getByText("/visible")).toBeInTheDocument();
   });
 
+  it("recreates a dropped slot at the path it was last on, not the front page", async () => {
+    // The pool can lose a slot for reasons the user didn't ask for: LRU
+    // eviction, this component unmounting (navigating home, a page reload), a
+    // container restart. Re-entering at the origin root dumped them back on the
+    // app's front page every time. The remembered path lives in the store, so
+    // it outlives the pool.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const { unmount } = render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "path", path: "/orders/8842?tab=open" },
+      source: iframe.contentWindow,
+    }));
+    await screen.findByText("/orders/8842");
+
+    unmount();
+
+    render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    expect(await screen.findByTitle("Live Preview")).toHaveAttribute(
+      "src",
+      "http://localhost:5173/orders/8842?tab=open",
+    );
+  });
+
+  it("does not restore one slot's path into another slot", async () => {
+    const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const previewB: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "vite" };
+    const { unmount } = render(<PreviewFrame preview={previewA} sessionId="s1" {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "path", path: "/deep/route" },
+      source: iframe.contentWindow,
+    }));
+    await screen.findByText("/deep/route");
+    unmount();
+
+    render(<PreviewFrame preview={previewB} sessionId="s2" {...defaultProps} />);
+    expect(await screen.findByTitle("Live Preview")).toHaveAttribute("src", "http://localhost:3000");
+  });
+
   it("posts a back-navigation message to the active iframe when Back is clicked", async () => {
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
@@ -844,37 +884,13 @@ describe("PreviewFrame", () => {
     expect(iframe).toHaveAttribute("src", "http://localhost:5173");
   });
 
-  it("removes a merged session iframe from the background pool after session switch", async () => {
-    const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
-    const previewB: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "vite" };
-    const { rerender } = render(
-      <PreviewFrame
-        preview={previewA}
-        sessionId="session-a"
-        mergedSessionIds={["session-a"]}
-        {...defaultProps}
-      />,
-    );
-    const iframeA = await screen.findByTitle("Live Preview");
-    expect(iframeA).toHaveAttribute("src", "http://localhost:5173");
-
-    // The merged session stays visible while it is active, then its iframe is
-    // unmounted once another session becomes active.
-    rerender(
-      <PreviewFrame
-        preview={previewB}
-        sessionId="session-b"
-        mergedSessionIds={["session-a"]}
-        {...defaultProps}
-      />,
-    );
-
-    await screen.findByTitle("Live Preview");
-    expect(screen.queryByTitle("Background Preview")).not.toBeInTheDocument();
-    expect(screen.getByTitle("Live Preview")).toHaveAttribute("src", "http://localhost:3000");
-  });
-
-  it("keeps a non-merged session iframe in the background pool after session switch", async () => {
+  it("keeps a session iframe in the background pool after session switch", async () => {
+    // No slot is dropped on a switch, whatever the session's PR phase. A merged
+    // PR used to prune its session's background slot, which meant returning to
+    // that session reloaded the preview onto the app's front page — for a
+    // saving of nothing, since a mounted iframe doesn't keep a container alive
+    // (idle reclamation is driven by viewers and agent turns). LRU eviction is
+    // now the only thing that drops a slot.
     const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     const previewB: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "vite" };
     const { rerender } = render(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);

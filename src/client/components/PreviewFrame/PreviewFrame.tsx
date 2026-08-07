@@ -35,12 +35,6 @@ export interface PreviewStatus {
 
 const READY_BUFFER_LIMIT = 8;
 const READY_BUFFER_TTL_MS = 2_000;
-/**
- * Cap on a reported preview path. The value is authored by the previewed page,
- * so it is untrusted input — a pathological one must not reach React or the
- * clipboard. Long enough that no real route is clipped.
- */
-const MAX_PATH_LENGTH = 2048;
 
 function previewOrigin(url: string): string | null {
   try {
@@ -54,8 +48,6 @@ interface PreviewFrameProps {
   preview: PreviewStatus | null;
   /** Current session ID — part of the iframe-pool slot key (`sessionId:port`). */
   sessionId?: string;
-  /** Sessions whose PR has merged; background iframes for these sessions are torn down. */
-  mergedSessionIds?: string[];
   /** All detected ports available for selection. */
   detectedPorts: number[];
   /** The currently selected port override, or null to use the default. */
@@ -78,7 +70,6 @@ interface PreviewFrameProps {
 export function PreviewFrame({
   preview,
   sessionId,
-  mergedSessionIds = [],
   detectedPorts,
   selectedPort,
   onSelectPort,
@@ -91,10 +82,12 @@ export function PreviewFrame({
 }: PreviewFrameProps) {
   const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
   const [refreshKey, setRefreshKey] = useState(0);
-  // Current path per slot, as reported by each page's injected script. State,
-  // not a ref — it drives the toolbar. Kept per slot so switching sessions
-  // shows that preview's own route rather than the last one seen anywhere.
-  const [slotPaths, setSlotPaths] = useState<Map<string, string>>(new Map());
+  // Current path per slot, as reported by each page's injected script. Kept per
+  // slot so switching sessions shows that preview's own route rather than the
+  // last one seen anywhere, and held in the store rather than in component
+  // state so it also survives this component unmounting — a slot recreated
+  // later re-enters at the same path instead of the front page.
+  const slotPaths = usePreviewStore((s) => s.previewPaths);
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
   const [portSelectorOpen, setPortSelectorOpen] = useState(false);
 
@@ -116,12 +109,10 @@ export function PreviewFrame({
   // Slots are keyed by "sessionId:port". Only the active slot is visible.
   // Background slots keep their iframes alive in the DOM. See `useIframePool`
   // for LRU eviction and `usePreviewHealthPoller` for slot creation.
-  const { slots, slotOrder, iframeRefs, createdSlotsRef, pollingRef, promoteSlot, setSlot, pruneSlots } = useIframePool();
+  const { slots, slotOrder, iframeRefs, createdSlotsRef, pollingRef, promoteSlot, setSlot } = useIframePool();
 
   const activeSlotKey = activePort ? `${sessionId ?? "_"}:${activePort}` : null;
   const activeSlot = activeSlotKey ? slots.get(activeSlotKey) ?? null : null;
-  const mergedSessionKey = mergedSessionIds.join("\0");
-  const mergedSessionIdSet = useMemo(() => new Set(mergedSessionIds), [mergedSessionKey]);
 
   // Container mode detection for the current preview
   const isContainerMode = !!(preview?.url?.startsWith("/preview/"));
@@ -147,36 +138,9 @@ export function PreviewFrame({
     setSlot,
   });
 
-  // Merged sessions are terminal: keep the active iframe mounted while the user
-  // is viewing that session, but tear down its background iframe as soon as the
-  // user switches away so completed PR previews do not keep running invisibly.
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    if (mergedSessionIdSet.size === 0) return;
-    for (const key of slotOrder) {
-      if (key === activeSlotKey) continue;
-      const [slotSessionId] = key.split(":");
-      if (mergedSessionIdSet.has(slotSessionId)) {
-        loadedSlotsRef.current.delete(key);
-        reloadableWindowsRef.current.delete(key);
-        setSlotPaths((prev) => {
-          if (!prev.has(key)) return prev;
-          const next = new Map(prev);
-          next.delete(key);
-          return next;
-        });
-      }
-    }
-    pruneSlots((key) => {
-      if (key === activeSlotKey) return false;
-      const [slotSessionId] = key.split(":");
-      return mergedSessionIdSet.has(slotSessionId);
-    });
-  }, [activeSlotKey, mergedSessionIdSet, pruneSlots, slotOrder]);
-
   // Derive active slot state for overlay/UI logic
   const activeSlotUrl = activeSlot?.url ?? null;
-  const activePath = activeSlotKey ? slotPaths.get(activeSlotKey) ?? null : null;
+  const activePath = activeSlotKey ? slotPaths[activeSlotKey] ?? null : null;
   // Resolve against the slot URL to recover the absolute URL for click-to-copy.
   // Safe despite `activePath` being untrusted: the message handler already
   // rejected anything that isn't a same-origin absolute path.
@@ -286,17 +250,13 @@ export function PreviewFrame({
       return;
     }
     if (data.type === "path" && event.source) {
-      const raw = (data as { path?: unknown }).path;
-      // Untrusted — authored by the previewed page. Require a same-document
-      // absolute path: anything else is not something we can render as "where
-      // you are", and a protocol-relative "//host/x" would resolve against the
-      // slot URL into a *different* origin, putting a foreign host in the
-      // tooltip and on the clipboard.
-      if (typeof raw !== "string" || !raw.startsWith("/") || raw.startsWith("//")) return;
-      const value = raw.slice(0, MAX_PATH_LENGTH);
+      // The payload is untrusted (authored by the previewed page); the store
+      // sanitizes it and drops anything that isn't a same-document absolute
+      // path. Which slot it came from is decided here by matching the source
+      // window, never by trusting the message.
       for (const [key, el] of iframeRefs.current.entries()) {
         if (!el?.contentWindow || el.contentWindow !== event.source) continue;
-        setSlotPaths((prev) => (prev.get(key) === value ? prev : new Map(prev).set(key, value)));
+        usePreviewStore.getState().setPreviewPath(key, (data as { path?: unknown }).path);
         return;
       }
       return;

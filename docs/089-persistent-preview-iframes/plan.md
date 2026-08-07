@@ -1,4 +1,10 @@
 
+---
+issue: roadmap#SHI-331
+title: Persistent Preview Iframes
+description: One iframe per (session, port) kept alive across switches, re-entering at the route it was last on.
+---
+
 # 089 — Persistent Preview Iframes
 
 ## Context
@@ -39,6 +45,35 @@ state:
   - New: create slot with `ready: false`, start polling, add to LRU
 - When `slotOrder.length > 20`: evict oldest, remove from `slots` (React unmounts iframe)
 - Manual refresh: re-poll only the active slot, re-assign `src` via ref
+
+**LRU eviction is the only thing that may drop a slot.** Dropping one is a
+reload the user experiences as their preview resetting, so no other rule gets to
+evict on its own judgement. A merged PR used to prune its session's background
+slot (docs/064 item 6); it saved nothing — a mounted iframe does not keep a
+container alive, since idle reclamation keys off attached viewers and agent turns
+— and reliably destroyed exactly the preview the user came back to. Removed.
+
+### Remembering where each preview was
+
+A slot still gets recreated: LRU eviction, `PreviewFrame` unmounting (navigating
+home, a page reload), a container restart. Recreating it at the origin root sends
+the user back to the app's front page, which is the same loss the pool exists to
+prevent — just less often.
+
+The injected preview script (`preview-proxy.ts`) already posts a `path` message
+on load and on every `pushState`/`replaceState`/`popstate`, so the current route
+is known even for a client-side router. That value is stored in
+`preview-store.previewPaths`, keyed by slot (`sessionId:port`) and mirrored to
+localStorage. It deliberately lives **outside** `SessionPreviewSnapshot` and
+outside component state: the key already carries the session, and the whole point
+is to outlive everything that can drop the iframe. `computePreviewUrl` resolves
+it against the slot's origin when creating the slot, so a recreated preview
+re-enters where it left off.
+
+The path is authored by the previewed page, so it is untrusted:
+`sanitizePreviewPath` requires a same-document absolute path (rejecting
+protocol-relative `//host/x`, which would resolve into a foreign origin) and caps
+its length, on both the message and the localStorage-load path.
 
 **Polling:** Only the active slot polls. Same health-check logic as today. When ready, set slot's `url`.
 
@@ -100,7 +135,9 @@ Multiple iframes emit `postMessage` errors. Extract sessionId from `event.origin
 | File | Change |
 |------|--------|
 | `src/client/components/PreviewFrame.tsx` | Iframe pool (main change) |
-| `src/client/stores/preview-store.ts` | Snapshot/restore per session |
+| `src/client/hooks/useIframePool.ts` | Slot map + LRU eviction |
+| `src/client/hooks/usePreviewHealthPoller.ts` | Slot creation; enters at the remembered path |
+| `src/client/stores/preview-store.ts` | Snapshot/restore per session; `previewPaths` |
 | `src/client/stores/actions/session-actions.ts` | Snapshot on switch instead of reset |
 | `src/client/hooks/usePreviewErrors.ts` | Origin-based session filtering |
 
