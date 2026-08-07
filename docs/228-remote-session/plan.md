@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-215
+issue: planning#217
 title: Remote session — operate a remote host over SSH from chat
 description: A session whose execution environment is a remote host reached over SSH. The agent operates the box from chat while the agent, model, and credentials stay contained in ShipIt — nothing is installed or credentialed on the host.
 ---

@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-95
+issue: planning#97
 description: Fold the standalone Services tab into a collapsible, resizable drawer at the bottom of the Preview tab.
 ---
 

@@ -52,20 +52,20 @@ export interface TierEscalationDeps {
    */
   createGitManager?: (dir: string) => GitManager;
   /**
-   * docs/161 / SHI-197 — the disk-idle ladder thresholds as one ordered config
+   * docs/161 / planning#199 — the disk-idle ladder thresholds as one ordered config
    * (`lightAfterMs ≤ evictMergedAfterMs ≤ evictUnmergedAfterMs`). Defaults to
    * `DEFAULT_DISK_LADDER`. The orchestrator validates the ordering once at
    * startup (`assertDiskLadderOrdering`) before passing it here.
    */
   ladder?: DiskLadderThresholds;
   /**
-   * SHI-294 — chat-history sink for the persisted warning emitted when an
+   * planning#296 — chat-history sink for the persisted warning emitted when an
    * eviction is blocked by uncommittable work. Omit in tests that don't assert
    * the notice; the block itself never depends on it.
    */
   chatHistory?: { append(sessionId: string, message: PersistedMessage): unknown };
   /**
-   * SHI-294 — session ids already warned about a blocked eviction. Owned by the
+   * planning#296 — session ids already warned about a blocked eviction. Owned by the
    * caller (one Set per orchestrator process) so the hourly pass warns once per
    * stuck session instead of appending a row to its transcript every hour. A
    * restart re-warns, which is the right trade: the notice is cheap and the
@@ -104,7 +104,7 @@ export interface TierEscalationResult {
   /** Eviction skipped because a dirty checkout's push failed (kept at light). */
   evictBlockedByPush: number;
   /**
-   * SHI-294 — eviction skipped because the pre-eviction auto-commit refused
+   * planning#296 — eviction skipped because the pre-eviction auto-commit refused
    * (secret finding / unresolved merge state), leaving uncommittable work in
    * the tree. Kept at light, with its regenerable overlay reclaimed.
    */
@@ -206,7 +206,7 @@ async function reclaimToLight(
 }
 
 /**
- * SHI-294 — attribute a refused auto-commit to one of `GitManager.autoCommit`'s
+ * planning#296 — attribute a refused auto-commit to one of `GitManager.autoCommit`'s
  * refusal branches, for the user-facing notice only. Nothing branches on the
  * result: the wipe is already gated on the tree being clean.
  */
@@ -223,7 +223,7 @@ function describeBlock(r: {
 }
 
 /**
- * SHI-294 — the blocked-eviction outcome: the checkout is the only copy of some
+ * planning#296 — the blocked-eviction outcome: the checkout is the only copy of some
  * work, so the session keeps it and stays at `light`. The ladder still does the
  * two things it safely can.
  *
@@ -300,7 +300,7 @@ async function blockedEvict<T extends "blocked-by-push" | "blocked-by-dirty">(
 }
 
 /**
- * SHI-294 — is the branch tip already recoverable from `origin`? "Tip present
+ * planning#296 — is the branch tip already recoverable from `origin`? "Tip present
  * in the bare cache" is the wrong question (a fresh push isn't in the cache
  * until its next fetch), and so is "the working tree is clean" (a committed but
  * unpushed tip is clean and still exists nowhere else). This asks the only
@@ -343,7 +343,7 @@ async function reclaimToEvicted(
 ): Promise<"evicted" | "blocked-by-push" | "blocked-by-dirty" | "skipped"> {
   const { sessionManager, createGitManager } = deps;
 
-  // SHI-294 — a checkout that is already gone has nothing to protect, and every
+  // planning#296 — a checkout that is already gone has nothing to protect, and every
   // git question below would throw on it and return "skipped" forever. That
   // left a `light` row whose workspace is missing pinned in a broken state:
   // activation's `light → hot` shortcut skips `restoreSessionWorkspace`
@@ -364,7 +364,7 @@ async function reclaimToEvicted(
     try {
       const git = createGitManager(session.workspaceDir);
 
-      // 1. Remediate a dirty tree, then re-check it. SHI-294 — `autoCommit`
+      // 1. Remediate a dirty tree, then re-check it. planning#296 — `autoCommit`
       //    returns a null hash from THREE paths and only one of them is safe to
       //    wipe: "nothing to commit". The other two — an unresolved merge/rebase
       //    state, and a secret-scanner refusal (docs/213) — are normal returns,
@@ -449,7 +449,7 @@ async function reclaimToEvicted(
     }
   }
 
-  // SHI-294 — the guards were evaluated before the pacing delay and the git /
+  // planning#296 — the guards were evaluated before the pacing delay and the git /
   // network work above, which take seconds. Re-read the row and re-run them
   // immediately before the destructive step so a session the user opened in the
   // meantime isn't wiped out from under them.
@@ -470,7 +470,7 @@ async function reclaimToEvicted(
   }
 
   if (session.workspaceDir) {
-    // SHI-192 — reclaim BOTH the checkout and the regenerable overlay/ upper
+    // planning#194 — reclaim BOTH the checkout and the regenerable overlay/ upper
     // sibling, preserving durable siblings (uploads/). Removing only the
     // checkout orphaned the overlay upper (the bulk of the disk).
     const { failed } = await reclaimRegenerableSessionDirs(session.workspaceDir);

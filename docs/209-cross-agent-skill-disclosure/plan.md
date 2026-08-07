@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-156
+issue: planning#158
 description: How each agent backend discovers and auto-discloses project skills — Claude and Codex both read .claude/skills/, the rule for trimming CLAUDE.md, and how to verify a new backend (Cursor CLI, etc.) before relying on it.
 ---
 

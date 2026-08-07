@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-236
+issue: planning#238
 title: Shared Git LFS object store
 description: Hardlink LFS objects out of the bare repo cache into each session clone, so an asset-heavy repo is downloaded once per host instead of once per session.
 ---
@@ -7,7 +7,7 @@ description: Hardlink LFS objects out of the bare repo cache into each session c
 # Shared Git LFS object store
 
 Follow-up to `docs/231-git-lfs-support` — the "No LFS object sharing via the bare
-cache" known gap, tracked as SHI-236.
+cache" known gap, tracked as planning#238.
 
 ## The problem
 

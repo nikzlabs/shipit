@@ -1,5 +1,5 @@
 /**
- * `shipit agent run` / `shipit agent result` handlers (docs/144, SHI-245).
+ * `shipit agent run` / `shipit agent result` handlers (docs/144, planning#247).
  *
  * `run` spawns ANOTHER registered agent for a one-shot sub-task and prints its
  * text on stdout. The prompt (the single context channel — task, diff, focus
@@ -9,7 +9,7 @@
  * Review is just a review-shaped prompt.
  *
  * `result` re-reads a finished run's persisted consult card — the SAME artifact
- * the UI renders. Two reasons it exists (SHI-245): the caller can confirm its
+ * the UI renders. Two reasons it exists (planning#247): the caller can confirm its
  * copy is the user's copy instead of assuming it, and a run whose `run` call was
  * killed mid-flight (a foreground tool timeout SIGTERMs the shim; the spawn
  * keeps going server-side) is still recoverable instead of being lost silently.
@@ -88,7 +88,7 @@ export async function handleAgentRun(args: string[], deps: RunDeps): Promise<voi
   const payload: Record<string, unknown> = { agentId, prompt, depth: inheritedAgentDepth() };
   if (parsed.values.model) payload.model = parsed.values.model;
 
-  // SHI-245 — a long consult routinely outlives the *caller's* patience: an
+  // planning#247 — a long consult routinely outlives the *caller's* patience: an
   // agent's foreground shell tool caps commands (10 min in Claude Code) and
   // SIGTERMs on expiry, while a review-sized spawn can run to the 30-minute cap.
   // Killing the shim does NOT stop the run — it finishes server-side and
@@ -135,7 +135,7 @@ export async function handleAgentRun(args: string[], deps: RunDeps): Promise<voi
   // the primary always sees whatever the sub-agent produced.
   if (text) deps.io.stdout(text.endsWith("\n") ? text : `${text}\n`);
 
-  // SHI-245 — name the run on stderr. This text and the "Consulted …" card in
+  // planning#247 — name the run on stderr. This text and the "Consulted …" card in
   // the UI are one artifact, and the id is what lets either side say *which*
   // run they are looking at when they seem to disagree (two consults in a turn
   // produce two cards, and it is otherwise impossible to tell them apart).
@@ -355,7 +355,7 @@ async function waitForResult(
 
 /**
  * `shipit agent result [<run-id>] [--wait [--timeout SECONDS]] [--json]`
- * (SHI-245, docs/248) — print a spawn's persisted output: the exact card the UI
+ * (planning#247, docs/248) — print a spawn's persisted output: the exact card the UI
  * shows. No id ⇒ the session's most recent run. A run-id prefix is accepted as
  * long as it is unambiguous.
  *
@@ -444,7 +444,7 @@ export async function handleAgentResult(args: string[], deps: RunDeps): Promise<
   }
 
   deps.io.stderr(`shipit agent result: run ${spawnId} · ${subAgentId} · ${status}\n`);
-  // SHI-307 — ShipIt's own explanation of a terminal status, when the status
+  // planning#309 — ShipIt's own explanation of a terminal status, when the status
   // alone would mislead (a consult cancelled by an orchestrator restart reads
   // exactly like one the user cancelled). On stderr, never stdout: stdout is the
   // sub-agent's verbatim output and must stay in the consultant's voice.

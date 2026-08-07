@@ -26,7 +26,7 @@
       sub-agent spawned by a background session no longer renders in whichever
       session happens to be active
 
-## Post-v0 — result delivery (SHI-245, docs/236)
+## Post-v0 — result delivery (planning#247, docs/236)
 
 - [x] Whole-answer capture in `runAgentToCompletion` (join every completed
       assistant message; dedupe an adapter's verbatim re-emit)
@@ -44,7 +44,7 @@
       everywhere (docs, shim help, code comments, the in-flight spinner) — the
       cap was raised 5 → 30 min because real consults overran it
 
-## Post-v0 — durable in-flight consult (SHI-278, plan.md §7a)
+## Post-v0 — durable in-flight consult (planning#280, plan.md §7a)
 
 The incident: a backgrounded Codex review ran ~15 min with no durable in-flight
 surface; a session switch wiped the transient chip, the user hit **Restart
@@ -78,7 +78,7 @@ agent**, and the consult vanished — no card, no `shipit agent result`, no logs
 - [x] Tests: post-turn-finalize persistence, dispose-while-in-flight →
       cancelled card, transport bound + abort wiring, pending → terminal patch
 
-## Post-v0 — commit work a consult left after its turn (SHI-299, plan.md §10)
+## Post-v0 — commit work a consult left after its turn (planning#301, plan.md §10)
 
 The incident: a backgrounded Codex consult ran 100 minutes past its parent
 turn's auto-commit. What it wrote entered git two minutes AFTER the PR merged,

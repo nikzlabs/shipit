@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-256
+issue: planning#258
 description: Exit 137 is SIGKILL, not proof of OOM — stop reporting our own re-install teardown as a service OOM kill.
 ---
 

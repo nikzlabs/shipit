@@ -1,5 +1,5 @@
 /**
- * Serve-path projection for heavy transcript bodies (docs/244, SHI-267).
+ * Serve-path projection for heavy transcript bodies (docs/244, planning#269).
  *
  * A transcript load used to transfer every byte the agent ever produced —
  * megabyte command outputs, whole file bodies behind a one-line `+40 -12`
@@ -34,7 +34,7 @@
  *      `message_steered` echo (`ws-handlers/send-message.ts`, which substitutes
  *      its image URLs directly via {@link imageUrl}) and the
  *      `sub_agent_consult_card` (`services/sub-agent.ts`, via
- *      {@link projectConsultCardForWire}). SHI-297.
+ *      {@link projectConsultCardForWire}). planning#299.
  *
  * ## What each path may strip
  *
@@ -197,7 +197,7 @@ function projectBlockArray(
  *
  *   - **`WHOLE_RESULT_TOOL_NAMES`** ship whole, because the transcript renders
  *     them in full with no expand affordance and no fetch path, so slicing cuts
- *     text with no way to get it back. `AskUserQuestion` only (SHI-291).
+ *     text with no way to get it back. `AskUserQuestion` only (planning#293).
  *   - **`SUBAGENT_REPORT_TOOL_NAMES`** get the report-shaped slice below.
  *   - **everything else** gets the generic slice, or no body at all when
  *     nothing draws its content without a click.
@@ -218,7 +218,7 @@ export function projectToolResult(
   // either branch below: its normal encoding is a `JSON.stringify`'d block
   // array, which is ONE line, so the generic line cap never fires and the byte
   // backstop would cut mid-array — leaving JSON `parseSubagentReport` can't
-  // parse and the card renders verbatim (the SHI-287 bug, reintroduced). The
+  // parse and the card renders verbatim (the planning#289 bug, reintroduced). The
   // report slice works on the text inside the blocks and rebuilds the
   // structure, keeping the accounting footer whole for the header chips.
   if (toolName && SUBAGENT_REPORT_TOOL_NAMES.has(toolName)) {
@@ -350,7 +350,7 @@ function diffStatsFor(tool: { name: string; input: Record<string, unknown> }): {
  * the tool-call modal alone displays.
  *
  * Which key is which is `inputKeyTreatment`'s job (`transcript-input-policy.ts`,
- * SHI-296); this function is only the mechanics. Edit/Write are no longer a
+ * planning#298); this function is only the mechanics. Edit/Write are no longer a
  * special case for *stripping* — their body keys are dropped by the ordinary
  * rule, and the special case that remains is the `+N -M` the summary needs,
  * which has to be computed before the body goes.
@@ -400,7 +400,7 @@ export function projectToolUse<T extends { name: string; input: Record<string, u
 }
 
 /**
- * Project a sub-agent consult card (SHI-297). The card face draws one collapsed
+ * Project a sub-agent consult card (planning#299). The card face draws one collapsed
  * preview line; the rest of the output is modal-only, so under requirement 1 it
  * does not belong on the wire — `SubAgentConsultCardRow` fetches it from
  * `/api/sessions/:id/sub-agent-consults/:cardId` when the viewer opens.
@@ -426,7 +426,7 @@ export function projectConsultCardForWire(card: SubAgentConsultCard): SubAgentCo
 }
 
 /**
- * The ids whose bodies are already on disk for the turn in flight (SHI-297).
+ * The ids whose bodies are already on disk for the turn in flight (planning#299).
  *
  * The reconnect snapshot is built from the runner's in-memory groups, part of
  * which a boundary has already committed and part of which it has not. Without a
@@ -519,7 +519,7 @@ function toolNamesFor(msg: PersistedMessage): Map<string, string> {
  * The last two are therefore stripped on the **history path**, where every row
  * is on disk by construction because the read came from the database — and, on
  * the reconnect snapshot, for whichever of them a boundary has already written
- * ({@link CommittedBodyIds}, SHI-297). On the live emit they stay inline: an
+ * ({@link CommittedBodyIds}, planning#299). On the live emit they stay inline: an
  * event being emitted right now is the one thing no boundary can have committed
  * yet.
  *
@@ -551,7 +551,7 @@ export interface WireProjectionOptions {
    */
   allRowsPersisted?: boolean;
   /**
-   * SHI-297 — the per-payload escape hatch from the blanket `false` above.
+   * planning#299 — the per-payload escape hatch from the blanket `false` above.
    *
    * An in-flight turn is not uniformly uncommitted: the boundaries it has
    * already passed wrote their groups to disk, and those bodies are as fetchable
@@ -715,7 +715,7 @@ export function projectAgentEventForWire(
  * that is false for both of those classes, and stripping them handed the client
  * a lazy affordance backed by no row.
  *
- * SHI-297 — `committed` narrows that blanket exemption to the part of the turn
+ * planning#299 — `committed` narrows that blanket exemption to the part of the turn
  * that genuinely is still in memory. An Edit from a group two boundaries back is
  * on disk, and now says so, so a mid-turn reconnect no longer re-sends it. Omit
  * the argument (tests, callers without a runner) and the conservative

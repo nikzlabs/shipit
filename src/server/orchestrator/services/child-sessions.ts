@@ -422,7 +422,7 @@ export async function spawnChildSession(
     } catch (err) {
       throw new ServiceError(400, `Failed to reset to base '${opts.base}': ${String(err)}`);
     }
-    // docs/150 §7 addendum (SHI-145): the `reset --hard` ran as the root
+    // docs/150 §7 addendum (planning#147): the `reset --hard` ran as the root
     // orchestrator. It re-materializes the WORKTREE (not just `.git/index`/refs)
     // as root:root, so hand the whole workspace back — `.git` alone would leave
     // the reset worktree files uneditable by the non-root agent.
@@ -903,7 +903,7 @@ export interface RegisterMergeWatchResult {
  * Idempotent: re-arming an already-armed (or mid-delivery) watch is a no-op that
  * reports the current state. Re-arming after a previous watch reached a terminal
  * state starts a fresh `armed` watch — useful if the child opens a new PR, and
- * the sanctioned recovery for a `delivery-failed` watch (SHI-258), which
+ * the sanctioned recovery for a `delivery-failed` watch (planning#260), which
  * deliberately never resurrects itself.
  */
 export function registerMergeWatch(

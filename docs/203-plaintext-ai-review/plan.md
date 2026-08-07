@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-136
+issue: planning#138
 title: Plain-text AI review + cross-agent reviewer
 description: Replace the structured submit_review_comments flow with a plain-text review rendered as one persisted card; route to a different agent when Multi-agent sessions is on.
 ---

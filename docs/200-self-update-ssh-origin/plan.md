@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-154
+issue: planning#156
 title: Self-update resilient to an SSH origin
 description: Orchestrator rewrites github.com SSH remotes to HTTPS so the update check keeps working when /opt/shipit is re-pointed at an SSH URL.
 ---

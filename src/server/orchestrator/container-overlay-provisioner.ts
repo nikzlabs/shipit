@@ -81,7 +81,7 @@ export async function resolveWorkerImageId(docker: Docker, imageName: string): P
 }
 
 /**
- * SHI-194 — resolve the **pinned base-image digest** baked into the session-worker
+ * planning#196 — resolve the **pinned base-image digest** baked into the session-worker
  * image's `BASE_IMAGE_DIGEST` env (set from the worker Dockerfile's digest-pinned
  * `FROM`). This is the ABI fingerprint the overlay scope now keys on instead of
  * the full worker-image id: it stays constant across app-code-only rebuilds and

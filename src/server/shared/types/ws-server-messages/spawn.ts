@@ -126,7 +126,7 @@ export interface WsChildMergedCard {
 
 /**
  * Server → Client: another session in this session's cohort pushed a report to
- * it via `shipit session report` (docs/233 / SHI-241).
+ * it via `shipit session report` (docs/233 / planning#243).
  *
  * Emitted on the *recipient's* runner via `runner.emitMessage(...)` when a
  * runner is attached, AND appended to the recipient's chat history — the report

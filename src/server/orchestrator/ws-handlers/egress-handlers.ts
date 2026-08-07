@@ -1,5 +1,5 @@
 /**
- * WS handler for the Tier C egress allow-once card (docs/172, SHI-90).
+ * WS handler for the Tier C egress allow-once card (docs/172, planning#92).
  *
  * Fires when the user clicks Allow once / Add to allowlist / Deny on the inline
  * `EgressPromptCard`. The card itself was emitted over HTTP (the SNI proxy's

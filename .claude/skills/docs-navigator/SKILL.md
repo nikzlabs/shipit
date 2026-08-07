@@ -61,7 +61,7 @@ All three fields are optional; a doc with no frontmatter still appears in the li
 
 ```yaml
 ---
-issue: roadmap#SHI-304
+issue: planning#306
 title: Optional display title
 description: One sentence, rendered under the title. No multi-line YAML scalars.
 ---
@@ -69,7 +69,7 @@ description: One sentence, rendered under the title. No multi-line YAML scalars.
 
 `issue:` resolves against the trackers declared in `shipit.yaml`. **Write the name form** (`roadmap#SHI-304`, `planning#42`) — it survives a declaration being re-pointed at another repo or team, and it's the form ShipIt itself emits. A backend address also resolves as long as it identifies a declared tracker: a full Linear URL **without** the title slug (a bare `TRACKER-28` is rejected), `owner/repo#123`, or a GitHub issue URL.
 
-A doc carries **exactly one** `issue:` self-pointer. Committed docs may name sibling issue IDs inline as stable identifiers ("blocked on SHI-79") but must not record their priority or status — that drifts, and lives in the tracker.
+A doc carries **exactly one** `issue:` self-pointer. Committed docs may name sibling issue IDs inline as stable identifiers ("blocked on planning#81") but must not record their priority or status — that drifts, and lives in the tracker.
 
 ## Committed prototypes
 

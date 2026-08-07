@@ -155,7 +155,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
 
   // Fork spins off a NEW session from an already-committed SHA — it does not
   // mutate the current workspace, so a running turn is no reason to block it
-  // (SHI-182). In-place rewind (chat/code/both) DOES mutate this session and
+  // (planning#184). In-place rewind (chat/code/both) DOES mutate this session and
   // conflicts with an agent that's editing the workspace, so keep it gated.
   const runner = resolveRunner(ctx, sessionId);
   if (runner?.running && action !== "fork") {
@@ -185,7 +185,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
     // Fork leaves the parent session intact (it only appends a breadcrumb), so
     // the parent's queued messages must survive — only in-place rewind, which
     // truncates this session, clears them. This matters now that fork can run
-    // mid-turn (SHI-182), the one time a queue actually exists.
+    // mid-turn (planning#184), the one time a queue actually exists.
     if (action !== "fork") clearQueuedMessages(ctx, sessionId);
 
     if (action === "chat") {
@@ -220,9 +220,9 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       // The base is a concrete committed SHA: HEAD for a current-state fork, or
       // the most recent commit before the gap for a past-point fork. A session
       // with no auto-commits has no per-message commit (findCommitBeforeGap →
-      // null), so fall back to HEAD rather than erroring (SHI-184). Resolving up
+      // null), so fall back to HEAD rather than erroring (planning#186). Resolving up
       // front pins the base so a concurrent end-of-turn auto-commit can't shift
-      // it under the clone (SHI-182). A null base (no HEAD at all) is tolerated
+      // it under the clone (planning#184). A null base (no HEAD at all) is tolerated
       // by forkSession, which then forks at the clone's HEAD.
       const forkBase = gapPosition === allMessages.length
         ? await ctx.getActiveGitManager().getHeadHash()

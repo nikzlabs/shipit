@@ -58,7 +58,7 @@ export type FetchImpl = typeof fetch;
 /**
  * The canonical, slug-free form of a Linear issue URL: `…/issue/<IDENTIFIER>`.
  * Linear's API returns the URL with a title-derived slug appended
- * (`…/issue/SHI-28/redesign-the-auth-flow`). We strip that slug everywhere a
+ * (`…/issue/planning#30/redesign-the-auth-flow`). We strip that slug everywhere a
  * `TrackerIssue.url` is produced, for two reasons:
  *
  *  - It can leak the issue title into URLs the agent writes back into committed
@@ -68,7 +68,7 @@ export type FetchImpl = typeof fetch;
  *    full URL without the title slug"), and the shape `parseIssueRef` already
  *    treats as canonical.
  *
- * The slug-free URL still resolves — Linear redirects `…/issue/SHI-28` to the
+ * The slug-free URL still resolves — Linear redirects `…/issue/planning#30` to the
  * full slug URL — so nothing downstream breaks. A URL that doesn't match the
  * expected Linear shape is returned unchanged.
  */
@@ -144,7 +144,7 @@ interface LinearIssueNode {
 
 /**
  * `formatRef` renders a Linear issue key in the destination's reference form
- * (docs/248 req 15): `roadmap#SHI-304` when the tracker was declared under a
+ * (docs/248 req 15): `planning#306` when the tracker was declared under a
  * name, the bare `SHI-304` otherwise. Threaded in rather than applied at the
  * call sites so every identifier this adapter produces — including a sub-issue's
  * `parentIdentifier` — goes through the one formatter.
@@ -348,7 +348,7 @@ export class LinearTracker implements Tracker {
    * Resolve the declared team **key** to Linear's internal team id.
    *
    * The declaration carries the key because that is what a human writes and what
-   * a `SHI-304` reference is matched against (req 5); Linear's own queries want
+   * a `planning#306` reference is matched against (req 5); Linear's own queries want
    * the UUID. A key the credential's workspace doesn't expose fails closed with
    * a message naming both possibilities, the same way GitHub's access error does
    * — the workspace comes from the credential (req 23), so "no such team" and
@@ -481,7 +481,7 @@ export class LinearTracker implements Tracker {
   // ---- Writes (docs/177) ----------------------------------------------------
 
   /**
-   * Resolve a key (`SHI-28`) or UUID to the issue's UUID — mutations want it.
+   * Resolve a key (`planning#30`) or UUID to the issue's UUID — mutations want it.
    *
    * docs/248 reqs 11/17 — Linear's `issue(id:)` lookup is **workspace-global**,
    * not team-scoped, so an id belonging to another team resolves happily. That
@@ -534,7 +534,7 @@ export class LinearTracker implements Tracker {
     };
     // Resolve label names → ids and the priority value → Linear's numeric field
     // BEFORE the mutation, so an unknown label/priority fails cleanly with the
-    // candidate list and never half-creates the issue (SHI-92).
+    // candidate list and never half-creates the issue (planning#94).
     if (input.labels && input.labels.length > 0) {
       createInput.labelIds = await this.resolveLabelIds(input.labels);
     }
@@ -542,7 +542,7 @@ export class LinearTracker implements Tracker {
       createInput.priority = resolveLinearPriority(input.priority);
     }
     // Resolve the parent pointer (key/UUID) → the parent's UUID, which Linear's
-    // `parentId` wants (SHI-206). A bad pointer throws before the create runs.
+    // `parentId` wants (planning#208). A bad pointer throws before the create runs.
     if (input.parent !== undefined) {
       createInput.parentId = await this.resolveUuid(input.parent);
     }
@@ -738,11 +738,11 @@ export class LinearTracker implements Tracker {
     if (patch.title !== undefined) input.title = patch.title;
     if (patch.description !== undefined) input.description = patch.description;
     // `labelIds` replaces Linear's label set wholesale — the service hands us the
-    // already-merged set (SHI-92). Resolve names → ids first so a bad name aborts
+    // already-merged set (planning#94). Resolve names → ids first so a bad name aborts
     // before the mutation runs.
     if (patch.labels !== undefined) input.labelIds = await this.resolveLabelIds(patch.labels);
     if (patch.priority !== undefined) input.priority = resolveLinearPriority(patch.priority);
-    // Reparent (SHI-206): `null` detaches into a top-level issue; a pointer/key
+    // Reparent (planning#208): `null` detaches into a top-level issue; a pointer/key
     // resolves to the parent's UUID. Resolve before the mutation so a bad pointer
     // aborts cleanly.
     if (patch.parent !== undefined) {
@@ -803,7 +803,7 @@ export class LinearTracker implements Tracker {
    * ambiguous name throws {@link TrackerResolutionError} (`kind: "label"`) with
    * the available label names, mirroring assignee resolution. We deliberately do
    * NOT create a missing label on demand — that would let a typo spawn a stray
-   * label (SHI-92).
+   * label (planning#94).
    */
   private async resolveLabelIds(names: string[]): Promise<string[]> {
     const data = await this.gql<{ issueLabels: { nodes: { id: string; name: string }[] } }>(
@@ -898,7 +898,7 @@ export function resolveLinearStateId(status: string, states: LinearStateNode[]):
 }
 
 /**
- * Resolve a `--priority` argument to Linear's numeric priority field (SHI-92).
+ * Resolve a `--priority` argument to Linear's numeric priority field (planning#94).
  * Accepts a normalized level (`urgent|high|medium|low|none`) OR a native Linear
  * priority name (`Urgent`/`High`/`Medium`/`Low`/`None`/`No priority`), both
  * case-insensitively. An unmatched value throws {@link TrackerResolutionError}

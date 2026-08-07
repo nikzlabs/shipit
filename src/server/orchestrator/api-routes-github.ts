@@ -495,7 +495,7 @@ export async function registerGitHubRoutes(
       }
       // Resolve the session's repo so the broker can prefer a short-lived,
       // single-repo-scoped GitHub App installation token (docs/172 Gap 2-R /
-      // SHI-79) over the long-lived PAT, shrinking the blast radius of an
+      // planning#81) over the long-lived PAT, shrinking the blast radius of an
       // extracted credential. Falls back to the PAT when no App is configured
       // or the repo can't be identified.
       const repo = session.remoteUrl ? parseGitHubRemote(session.remoteUrl) : null;

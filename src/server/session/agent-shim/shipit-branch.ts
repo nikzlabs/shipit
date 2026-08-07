@@ -55,7 +55,7 @@ export async function handleBranchResetToBase(args: string[], deps: RunDeps): Pr
     fail(deps.io, `shipit branch reset-to-base takes no arguments.\n${RESET_USAGE}`);
   }
 
-  // SHI-277 — the reason is what replaces the safety clause `--force` removes,
+  // planning#279 — the reason is what replaces the safety clause `--force` removes,
   // so it is required. Checked here for a good local error, and again
   // orchestrator-side because the HTTP route is reachable on its own.
   const force = parsed.booleans.has("force");

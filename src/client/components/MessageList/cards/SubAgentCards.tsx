@@ -1,4 +1,4 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: fetches the consult output the serve-path projection stripped (docs/244, SHI-297) when the viewer opens, with cancellation on close — an external-system read with cleanup.
+// eslint-disable-next-line no-restricted-imports -- useEffect: fetches the consult output the serve-path projection stripped (docs/244, planning#299) when the viewer opens, with cancellation on close — an external-system read with cleanup.
 import { useState, useEffect } from "react";
 import { ArrowsOutSimpleIcon, CircleNotchIcon } from "@phosphor-icons/react";
 import type { SubAgentConsultCard as SubAgentConsultCardData } from "../../../../server/shared/types.js";
@@ -32,7 +32,7 @@ export function SubAgentSpawnChipRow({ chip }: { chip: SubAgentSpawnChip }) {
 /**
  * Collapse the verbatim output into a single-line preview for the card face.
  *
- * docs/244 / SHI-297 — shared with the server, which now BUILDS this line: a
+ * docs/244 / planning#299 — shared with the server, which now BUILDS this line: a
  * consult's output is modal-only past the preview, so the wire copy carries the
  * preview and nothing else. Applying it again to the server's own preview is a
  * no-op, so this call site is correct for both a whole card and a projected one.
@@ -80,7 +80,7 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
 
   const output = card.outputMarkdown?.trim() ? card.outputMarkdown : null;
 
-  // SHI-278 — the durable in-flight row. Unlike the transient spinner chip this
+  // planning#280 — the durable in-flight row. Unlike the transient spinner chip this
   // is persisted, so it stays put across a session switch, a reload, and a
   // container restart, and it is anchored at the call site rather than pinned to
   // the bottom of the transcript.
@@ -99,7 +99,7 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
 
   // No output (e.g. a transport failure or empty result) — keep the compact,
   // non-interactive one-liner exactly as before, plus ShipIt's own explanation
-  // when there is one (SHI-307: a consult cancelled by an orchestrator restart
+  // when there is one (planning#309: a consult cancelled by an orchestrator restart
   // is otherwise indistinguishable from one the user cancelled).
   if (!output) {
     return (
@@ -150,7 +150,7 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
 }
 
 /**
- * The verbatim-output viewer. docs/244 / SHI-297 — opening it IS the click
+ * The verbatim-output viewer. docs/244 / planning#299 — opening it IS the click
  * requirement 8 licenses a loading state for: the transcript payload carries
  * only the preview line, and the full markdown is fetched here. A card that
  * arrived whole (short output, or a pre-SHI-297 row) renders immediately and

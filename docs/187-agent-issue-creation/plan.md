@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-99
+issue: planning#101
 description: Let the agent create tracker issues directly via `shipit issue create`, surfaced as a do-then-surface provenance card with undo — the same model docs/177 uses for every other issue write. Closes the design-doc cross-link loop in one turn.
 ---
 
@@ -97,8 +97,8 @@ card type. The minimal extension:
   to its `canceled` state (or archive); GitHub → close as `not_planned`. (We cancel
   rather than hard-delete: Linear's API archives, and GitHub issues can't be
   deleted via the REST API, so "cancel/close" is the portable, honest reverse —
-  the card says "Canceled SHI-28", not "Deleted".)
-- `summary` = `"created SHI-28"`; `attribution` = `"workspace"` for Linear (the
+  the card says "Canceled planning#30", not "Deleted".)
+- `summary` = `"created planning#30"`; `attribution` = `"workspace"` for Linear (the
   deployment PAT), `"user"` for GitHub (the acting user's token) — same caveat
   wording docs/177 already encodes.
 
@@ -178,7 +178,7 @@ actor end-to-end within one turn.
 ## Resolved decisions
 
 - **Undo cancels (not archive).** Linear → `canceled` state, GitHub → close as
-  `not_planned`. Visible, honest ("Canceled SHI-28"), and symmetric across
+  `not_planned`. Visible, honest ("Canceled planning#30"), and symmetric across
   trackers. Implemented via `tracker.setStatus(card.issueId, "canceled")` in the
   `create` undo branch. **Fallback:** a Linear team may have no `canceled`-type
   state, in which case `setStatus("canceled")` throws `TrackerResolutionError`;
@@ -190,9 +190,9 @@ actor end-to-end within one turn.
   github` files on the session's repo instead. An unconfigured tracker fails with a
   "connect it in Settings" message rather than silently filing elsewhere.
 - **The returned Linear URL is slug-free, enforced server-side.** Linear's API
-  appends a title-derived slug to issue URLs (`…/issue/SHI-28/redesign-the-auth-flow`).
+  appends a title-derived slug to issue URLs (`…/issue/planning#30/redesign-the-auth-flow`).
   The adapter's `stripLinearUrlSlug` normalizes every `TrackerIssue.url` to the
-  canonical `…/issue/SHI-28` form, so the URL the agent receives (and writes into a
+  canonical `…/issue/planning#30` form, so the URL the agent receives (and writes into a
   doc's `issue:` frontmatter, per step 3 of the cross-link flow) never leaks the
   issue title and matches the pointer shape `parseIssueRef` treats as canonical.
   This is a single chokepoint in `toTrackerIssue`, so it also covers `view`/`edit`/

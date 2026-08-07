@@ -234,7 +234,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     await materializeLfsWithWarning(sessionDir, repoLabel, (message) =>
       deps.sseBroadcast("error", { message }),
     );
-    // docs/150 §7 addendum (SHI-145): the fetch/rollback/branch-realign git ops
+    // docs/150 §7 addendum (planning#147): the fetch/rollback/branch-realign git ops
     // above run as the root orchestrator against the (already-booted) warm
     // clone. The `rollback` is a `git reset --hard`, which re-materializes the
     // WORKTREE — not just `.git` — as root:root. Hand BOTH back before the
@@ -435,7 +435,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         await materializeLfsWithWarning(workspaceDir, url, (message) =>
           deps.sseBroadcast("error", { message }),
         );
-        // docs/150 §7 addendum (SHI-145): hand the workspace back to the worker
+        // docs/150 §7 addendum (planning#147): hand the workspace back to the worker
         // uid after the root orchestrator's fetch + `checkout -b` + ref
         // realignment. `checkout -b <resetTarget>` re-materializes the WORKTREE,
         // so hand back both worktree AND `.git` — `.git` alone leaves the

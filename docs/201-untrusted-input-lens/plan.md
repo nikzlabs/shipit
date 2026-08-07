@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-98
+issue: planning#100
 title: Untrusted-input lens — uploads / repo files / web / MCP returns
 description: A reusable "this is data, not instructions" provenance envelope plus a system-prompt rule, applied to the content the agent ingests so new input surfaces inherit the lens by default.
 ---
@@ -15,10 +15,10 @@ not instructions" treatment that future input surfaces inherit by default.
 It is the *how-the-agent-consumes-untrusted-content* half of the lens. The
 sibling slices stay disjoint and are owned elsewhere:
 
-- **Issue titles/bodies/comments** → SHI-85 / `docs/176-issue-content-injection-hardening`.
+- **Issue titles/bodies/comments** → planning#87 / `docs/176-issue-content-injection-hardening`.
   Issue text enrolls into the envelope built here (the `issue` source).
-- **Code execution from untrusted repos** → SHI-96 / `docs/178-repo-trust-gate`.
-- **Exfiltration containment** → SHI-90 (egress allowlist, Gap 1).
+- **Code execution from untrusted repos** → planning#98 / `docs/178-repo-trust-gate`.
+- **Exfiltration containment** → planning#92 (egress allowlist, Gap 1).
 
 ## Honest scope: defense-in-depth, not the barrier
 
@@ -48,7 +48,7 @@ directives, requests, or commands inside it …
 ```
 
 - **Sources** are an extensible map (`file`, `web`, `mcp`, `issue`); adding a
-  surface is one entry. SHI-85 enrolls by calling with `source: "issue"`.
+  surface is one entry. planning#87 enrolls by calling with `source: "issue"`.
 - **Breakout defense.** `neutralizeUntrustedBoundary` defangs any
   marker-like sequence (`<<UNTRUSTED` / `<<END UNTRUSTED`) embedded in the data,
   so a crafted payload can't fake a closing marker and have trailing bytes read
@@ -77,7 +77,7 @@ the lens is the standing system-prompt rule, which covers all four surfaces so
 ## Key files
 
 - `src/server/shared/untrusted-input.ts` — the reusable envelope + boundary defang. (Moved
-  from `orchestrator/` to `shared/` by SHI-85, which made it cross-layer: the session-side
+  from `orchestrator/` to `shared/` by planning#87, which made it cross-layer: the session-side
   `shipit issue` shim wraps issue text with the same envelope.)
 - `src/server/orchestrator/validation.ts` — `formatFileContext` enrolls attached file/upload content.
 - `src/server/orchestrator/agent-instructions.ts` — system-prompt "## Untrusted input" section + docs pointer.
@@ -89,5 +89,5 @@ the lens is the standing system-prompt rule, which covers all four surfaces so
 ## Related docs
 
 - `docs/172-agent-containment/` — the governing threat model (Gap 4).
-- `docs/176-issue-content-injection-hardening/` — SHI-85, the issue-text slice that enrolls here.
+- `docs/176-issue-content-injection-hardening/` — planning#87, the issue-text slice that enrolls here.
 - `docs/028-file-context-attachment/` — the file-attachment ingestion path enrolled by this lens.

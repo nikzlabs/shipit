@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-178
+issue: planning#180
 title: Re-arm a merged session after a branch reset to a clean base
 description: When a merged session's branch is reset to a clean base (no commits ahead), drop the stale merged PR card so the session reflects its clean current state.
 ---

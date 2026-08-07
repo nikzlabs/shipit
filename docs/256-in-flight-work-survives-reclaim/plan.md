@@ -88,7 +88,7 @@ Expiry is **computed on read**, the way `BackgroundTaskTracker` decays — no
 timer to leak, and the only consumer that matters is a 30-second tick.
 
 `runner.dispose()` gets the same non-forced refusal it already has for
-`_subAgentAborts` (`container-session-runner.ts:2531`). Since SHI-296 the idle
+`_subAgentAborts` (`container-session-runner.ts:2531`). Since planning#298 the idle
 enforcer destroys the container only after the runner *accepts* disposal, so
 the runner-level guard and the enforcer can never disagree.
 

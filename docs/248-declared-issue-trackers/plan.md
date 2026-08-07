@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-318
+issue: planning#320
 title: Declared issue trackers
 description: Declare every issue tracker in shipit.yaml, address destinations by name, and resolve references through the declarations.
 ---
@@ -248,7 +248,7 @@ The exception is the **Undo target**, which is not a reference but a reverse-wri
 against a specific issue: `getRecorded(id)` uses the recorded destination, and
 `undoIssueWrite` refuses when the recorded name has since moved (req 11).
 
-*Client follow-up (SHI-321).* "At use" holds server-side because
+*Client follow-up (planning#323).* "At use" holds server-side because
 `readDeclaredTrackers` re-reads `shipit.yaml` on every request, but the browser's
 copy of that list is a cached fetch, so an edit made with the app open used to
 resolve against the previous declarations until a session switch or an
@@ -266,7 +266,7 @@ local`, the dogfood inner ShipIt) runs no file watcher at all, so there the olde
 session-switch/tab-activation refresh remains the only trigger — the same
 documented degradation as the file tree and terminal.
 
-*Client follow-up (SHI-325) — the browser's copy also has to be **dropped**, not
+*Client follow-up (planning#327) — the browser's copy also has to be **dropped**, not
 just refreshed.* An issue opened in the Issues tab survived a switch to a session
 on another repository, leaving a destination the new session cannot reach on
 screen (req 11 fails closed). Two halves, because neither is sufficient alone:
@@ -432,7 +432,7 @@ Current state; each is a rework site unless noted.
 - `src/server/orchestrator/services/headless-sessions.ts` — `seedFromIssueRef`
   builds the branch from the identifier alone (req 22). **Carries over.**
 - `src/server/orchestrator/services/issue-seeded-session.ts` — the same
-  derivation applied on the **in-app** path (SHI-320). The Issues tab prefills
+  derivation applied on the **in-app** path (planning#322). The Issues tab prefills
   the composer rather than creating the session (docs/236), so the issue reaches
   ShipIt on the first message; `handleSendMessage`'s warm graduation renames the
   claimed branch to `seedFromIssueRef`'s pointer slug and pins the title, which
@@ -514,7 +514,7 @@ together. The user settled all four; they are now requirements 6, 11 and 16.
   destinations from callers, not only from the parser — and is now exercised
   directly in `issue-ref-resolution.test.ts` rather than through a `shipit.yaml`
   fixture, which is what the integration test used to do.
-- **In a name form, the name wins.** `roadmap#SHI-304` re-targets after `roadmap`
+- **In a name form, the name wins.** `planning#306` re-targets after `roadmap`
   moves to team `OPS`, rather than failing on the stale key. This is the feature's
   one deliberate departure from fail-closed, and it is narrow on purpose: the name
   already identifies exactly one declared destination, so the rule *prefers one of
@@ -554,7 +554,7 @@ change below was a `shipit.yaml` edit with no restart.
 | The routing invariant, at the wire | Declared forms → `tracker=github:nicolasalt-shipit/template-nextjs`; a bare `#2` → `tracker=github` (todo-list) |
 | Req 13 — `create` must name its destination | Bare `create` refused with exit 2 and the declared names listed; `--tracker planning` filed into `template-nextjs` |
 | Req 15 — emitted references carry the name form | The create reported `planning#2`; a *canonical* address (`nicolasalt-shipit/template-nextjs#2`) also rendered back as `planning#2` |
-| Req 11 — fail-closed | An undeclared address, an unknown name, and a mismatched suffix (`planning#SHI-3`) each failed with the declared names, never a guess |
+| Req 11 — fail-closed | An undeclared address, an unknown name, and a mismatched suffix (`planning#planning#5`) each failed with the declared names, never a guess |
 | Req 11 — ambiguity | Declaring the same repository under two names made the canonical address fail naming both, while each name still resolved |
 | Req 12 — self-declaration | Declaring the session's own repository produced one tab under its name, not a duplicate |
 | Case-insensitive destination identity | A declaration written `nicolasalt-shipit/Template-NextJS` matched the lowercase address |
@@ -564,7 +564,7 @@ change below was a `shipit.yaml` edit with no restart.
 
 **The `shipit` shim could not be driven through the inner agent.** The dogfood
 image deliberately installs only the `gh` shim, and `local-agent-ops.ts`'s
-allowlist maps no `issue/*` paths — a documented limitation tracked as SHI-303,
+allowlist maps no `issue/*` paths — a documented limitation tracked as planning#305,
 not a defect of this branch. The runs above therefore invoked this branch's shim
 binary directly against this branch's orchestrator through a relay reproducing
 the worker's 1:1 `/agent-ops/issue/*` mapping. The one link not exercised is the
@@ -595,7 +595,7 @@ unconditionally, since the rule is not scoped to private trackers. The same root
 cause meant the session carried no `issueRef`, so the seed-time **→ started**
 transition never fired from the Issues tab either.
 
-Closed in SHI-320 by `issue-seeded-session.ts`, which keeps docs/236's prefill and
+Closed in planning#322 by `issue-seeded-session.ts`, which keeps docs/236's prefill and
 pins the branch and title at warm graduation instead. The lesson generalizes past
 this feature: an inherited guarantee is a claim until you read the code that would
 have to hold for it, and "carries over" is where that claim usually hides.
@@ -604,7 +604,7 @@ have to hold for it, and "carries over" is where that claim usually hides.
 
 Backend capability differences — status workflows beyond Open/Closed, priority
 conventions, parent/sub-issue mapping — are not part of this feature. Priority
-writes are tracked as [SHI-310](https://linear.app/shipit-ai/issue/SHI-310), as a
+writes are tracked as planning#312, as a
 property of the shared GitHub adapter rather than of any declaration.
 
 ## Non-goals

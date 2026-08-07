@@ -1,10 +1,10 @@
 ---
 description: Bake an explicit Claude CLI settings.json into agent containers declaring allowed and denied tool paths, replacing fragile implicit permission defaults.
-issue: https://linear.app/shipit-ai/issue/SHI-36
+issue: planning#38
 ---
 # 097 — Explicit Session-Agent Permissions
 
-## Status — implemented (SHI-36)
+## Status — implemented (planning#38)
 
 Shipped via **Option A**, reusing the *existing* baked-in settings file rather
 than introducing a new one. ShipIt already passes `--settings
@@ -32,7 +32,7 @@ A `permissions` block was added to that file:
     `~/.claude/settings.local.json`, `~/.claude.json` — listed under both the
     `/root/.claude/...` and `/credentials/.claude/...` spellings.
 
-**Why files, not trees — the memory carve-out (SHI-36 follow-up).** The first
+**Why files, not trees — the memory carve-out (planning#38 follow-up).** The first
 cut denied the whole `/root/.claude/**` and `/credentials/**` trees, mirroring
 the design doc's original list. But `/root/.claude` is a symlink to
 `/credentials/.claude` (see `docker/Dockerfile.session-worker.*`), and the CLI's

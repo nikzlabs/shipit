@@ -28,7 +28,7 @@
  * un-moved and the turn runs normally — the user falls back to today's manual
  * flow (still picked up by the docs/202 / docs/216 re-arm).
  *
- * SHI-295 — fail-safe is not the same as silent. A skip on a MERGED session
+ * planning#297 — fail-safe is not the same as silent. A skip on a MERGED session
  * leaves the branch on commits that are already shipped and whose pull request
  * is closed, so it now reports the clause that refused (log line + persisted
  * transcript notice + agent prompt prefix) instead of returning a bare
@@ -64,7 +64,7 @@ export interface ResetOutcome {
   /** The `[System] …` prefix to prepend to the turn's prompt (agent-facing). */
   agentPrefix?: string;
   /**
-   * SHI-295 — set when the session IS merged and the reset was nonetheless
+   * planning#297 — set when the session IS merged and the reset was nonetheless
    * skipped. Carries the clause that blocked it plus the ready-to-emit user
    * notice; the caller persists `notice` into the transcript and prepends
    * `agentPrefix` to the turn. Absent on a non-merged session (nothing to say)
@@ -134,7 +134,7 @@ export async function computeResetEligible(
 }
 
 /**
- * SHI-295 — {@link computeResetEligible}'s single implementation, returning
+ * planning#297 — {@link computeResetEligible}'s single implementation, returning
  * WHICH clause refused instead of a bare boolean. Null = eligible.
  *
  * The clause has to come out of the same evaluation that decides eligibility,
@@ -215,7 +215,7 @@ export async function computeResetBlocker(
  * Run the pre-turn auto-reset. Returns {@link NOT_MOVED} when the session isn't
  * merged or anything throws (fail-safe); on a merged session whose reset was
  * refused, returns the same `moved: false` plus a {@link ResetSkipInfo} the
- * caller surfaces (SHI-295). On a real move, returns the base + PR pointers +
+ * caller surfaces (planning#297). On a real move, returns the base + PR pointers +
  * before/after SHAs + the agent prompt prefix.
  *
  * The gate is evaluated TWICE — once before the fetch and once after — because
@@ -287,7 +287,7 @@ export async function autoResetMergedBranchOnContinue(
     const session = deps.getSession(sessionId);
     const prStatus = deps.getPrStatus(sessionId);
 
-    // SHI-295 — the merged check moves AHEAD of the setting / opt-out gates.
+    // planning#297 — the merged check moves AHEAD of the setting / opt-out gates.
     // Both lookups are in-memory, and every path below this point needs to know
     // whether this is a merged session: a skip on a merged session is a reportable
     // event (the branch stays on dead, already-shipped commits), while a skip on
@@ -397,7 +397,7 @@ export async function autoResetMergedBranchOnContinue(
 }
 
 /**
- * SHI-295 — build the outcome for a MERGED session whose reset was skipped, and
+ * planning#297 — build the outcome for a MERGED session whose reset was skipped, and
  * log the skip.
  *
  * Why this exists: every gate failure used to return a bare {@link NOT_MOVED}
@@ -445,7 +445,7 @@ function skipped(
  * The persisted user-facing notice. Says three things, in the order a user needs
  * them: that the branch was NOT updated, which clause refused, and what the
  * consequence is (commits made now sit on already-merged history and will not be
- * auto-pushed — the SHI-295 defect-1 gate). The recovery line is deliberately
+ * auto-pushed — the planning#297 defect-1 gate). The recovery line is deliberately
  * generic rather than per-clause: the reset is re-evaluated on every turn, so
  * "clear the reason and send again" is the honest instruction for all of them.
  *
@@ -559,14 +559,14 @@ export interface ExplicitResetOutcome {
   base?: string;
   fromSha?: string;
   toSha?: string;
-  /** SHI-277 — this reset ran under `--force`, bypassing the SHA clause. */
+  /** planning#279 — this reset ran under `--force`, bypassing the SHA clause. */
   forced?: boolean;
-  /** SHI-277 — the operator-supplied justification for a forced reset. */
+  /** planning#279 — the operator-supplied justification for a forced reset. */
   forceReason?: string;
 }
 
 /**
- * SHI-277 — the structural preconditions an explicit reset requires REGARDLESS
+ * planning#279 — the structural preconditions an explicit reset requires REGARDLESS
  * of `--force`. Two kinds, and neither is about trust:
  *
  *   - **The clean-tree check is the one unrecoverable case.** A committed but
@@ -616,7 +616,7 @@ async function checkResetPreconditions(
  * it was refused and being told, explicitly, not to route around it. Deleting or
  * softening this sentence re-opens the hole the gate closes.
  *
- * SHI-277 — it also has to name the way FORWARD, because a refusal that reads as
+ * planning#279 — it also has to name the way FORWARD, because a refusal that reads as
  * a dead end is exactly what makes an agent reach for the reset anyway. Once a
  * branch's work has shipped under a DIFFERENT commit — a cherry-pick recovery, or
  * the ordinary squash merge — the `HEAD === mergedHeadSha` clause can never hold
@@ -731,7 +731,7 @@ function resolveResetBase(session: SessionInfo, prStatus: PrStatusSummary | null
  * a late wake, or a wake landing behind uncommitted work refuse rather than
  * destroy.
  *
- * ## SHI-277 — the `force` break-glass
+ * ## planning#279 — the `force` break-glass
  *
  * `opts.force` bypasses exactly ONE clause: `HEAD === mergedHeadSha`. Everything
  * in {@link checkResetPreconditions} still applies, and is re-checked after the
@@ -807,7 +807,7 @@ export async function resetBranchToBaseExplicit(
     // fetch yields to the event loop, so a terminal edit could have moved the
     // branch since the checks above).
     //
-    // SHI-277 — `--force` swaps the gate for the preconditions alone. The
+    // planning#279 — `--force` swaps the gate for the preconditions alone. The
     // re-check is not optional on this path either: the fetch yielded, so the
     // tree could have been dirtied since the first one, and the clean-tree
     // clause is the case `--force` explicitly does NOT cover.

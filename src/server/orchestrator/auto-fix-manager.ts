@@ -81,7 +81,7 @@ interface CiSignal {
   /**
    * The PR branch ref's current tip (`headRefOid`). When this disagrees with
    * `rollupHeadSha`, the failure verdict is for a superseded commit and must not
-   * be surfaced (defect A — SHI-62). Undefined when GitHub didn't return the
+   * be surfaced (defect A — planning#64). Undefined when GitHub didn't return the
    * field, in which case the superseded guard is inert.
    */
   currentHeadSha?: string;
@@ -168,7 +168,7 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
 
   /**
    * Decide whether a "fire" signal is stale and must be skipped. Two distinct
-   * defects, both observed in production (SHI-62, PR #1690):
+   * defects, both observed in production (planning#64, PR #1690):
    *
    * (A) **Superseded run.** The failed `statusCheckRollup` belongs to a commit
    *     (`rollupHeadSha`) that is no longer the branch's current tip

@@ -157,7 +157,7 @@ export async function runDispatchedTurn(
         }))
       : undefined;
 
-  // SHI-255 — this drain runs EVERY entry (interactive or dispatched) on the
+  // planning#257 — this drain runs EVERY entry (interactive or dispatched) on the
   // dispatched executor via the shared `queuedMessageToDispatchOptions`, which
   // is the superset conversion: nothing can be narrowed away here. The WS drain
   // (`ws-handlers/agent-execution.ts`), whose re-entry is narrower, routes
@@ -175,7 +175,7 @@ export async function runDispatchedTurn(
   // its own fresh counter — each message is retried independently).
   let noResultRetries = 0;
 
-  // SHI-260 — ONE settlement for the whole logical turn, spanning every
+  // planning#262 — ONE settlement for the whole logical turn, spanning every
   // no-result attempt.
   //
   // The old code passed `onTurnComplete` only to attempt zero, reasoning that a
@@ -185,7 +185,7 @@ export async function runDispatchedTurn(
   // "handled" branch WITHOUT calling `finishTurn`, so neither the retry's
   // success nor its failure ever reached the caller. A notify-on-merge wake-turn
   // that no-result-retried therefore never settled its watch, and (worse, under
-  // SHI-258's supervisor) the runner stayed live so the `inFlight` marker looked
+  // planning#260's supervisor) the runner stayed live so the `inFlight` marker looked
   // healthy forever.
   //
   // Retries are attempts WITHIN one settlement instead. Every attempt is wired
@@ -305,11 +305,11 @@ export async function runDispatchedTurn(
       // docs/169 — post-turn policy + system-turn marker + completion signal.
       ...(opts.postTurn !== undefined ? { postTurn: opts.postTurn } : {}),
       ...(opts.systemTurn !== undefined ? { systemTurn: opts.systemTurn } : {}),
-      // SHI-264 — the durable delivery identity travels with every attempt: a
+      // planning#266 — the durable delivery identity travels with every attempt: a
       // no-result retry is the SAME delivery, so it publishes the same id and
       // the worker records it on the fresh spawn too.
       ...(opts.deliveryId !== undefined ? { deliveryId: opts.deliveryId } : {}),
-      // SHI-260 — EVERY attempt reports its terminal outcome; `settleAttempt`
+      // planning#262 — EVERY attempt reports its terminal outcome; `settleAttempt`
       // owns "exactly once" and discards superseded attempts. The old
       // "attempt zero only" guard is deleted, not corrected.
       onTurnComplete: (outcome) => settleAttempt(attempt, outcome),

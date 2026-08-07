@@ -104,7 +104,7 @@ services:
       # forces `user: <uid>:<uid>` onto every service without an explicit
       # `user:` — including this one. So the inner orch runs as uid 1000 against
       # HOME=/root and every credential write failed with
-      # `EACCES: permission denied, lstat '/root/.codex'` (SHI-282).
+      # `EACCES: permission denied, lstat '/root/.codex'` (planning#284).
       #
       # The state dir is the natural home: bind-mounted, owned by the same uid,
       # already gitignored, and it survives a service restart. Kept out of

@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-189
+issue: planning#191
 title: Auto-update a merged session's branch to latest base when work continues
 description: When a user resumes a merged session, offer (checked by default) to reset the branch to the latest base before the turn runs, tell the agent, and record the move with a transcript card.
 ---
@@ -282,7 +282,7 @@ This feature's net addition is the **pre-turn reset + the explicit control + the
 agent prefix + the persisted user card**. The PR-card lifecycle (docs/202/216) is
 treated as corroborating, not as the user-facing signal of record.
 
-**A false docs/202 re-arm used to disable this feature (SHI-238).** The composition
+**A false docs/202 re-arm used to disable this feature (planning#240).** The composition
 above runs in one direction, but there was a feedback edge in the other: docs/202's
 detection reads `origin/<base>` from the session clone, which nothing on the merge
 path fetches, and a stale base ref makes `advancedBeyondMergedBase` report progress
@@ -511,7 +511,7 @@ rather than throwing — the reset still stands and the turn runs). This reverse
 "never force-push at reset" decision (see the superseded note above). Tests in
 `pre-turn-reset.test.ts` (heal called on success; best-effort on failure).
 
-**SHI-295 — a skipped reset is no longer silent, and a merged session no longer
+**planning#297 — a skipped reset is no longer silent, and a merged session no longer
 silently auto-pushes.** Two halves of one user-facing failure ("my session's PR
 merged and nothing said so"), from a production incident where a turn ran two
 minutes after the merge, the reset did not fire, and the post-turn auto-push

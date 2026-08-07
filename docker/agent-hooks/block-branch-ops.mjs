@@ -15,7 +15,7 @@
  * branch, branch first") which the agent sometimes follows. This hook is the
  * structural enforcement layer that doesn't depend on prompt precedence.
  *
- * SHI-265 adds a SECOND, narrowly-scoped rule on top of the same mechanism:
+ * planning#267 adds a SECOND, narrowly-scoped rule on top of the same mechanism:
  * when `SHIPIT_GUARD_DESTRUCTIVE_GIT=1`, `git reset --hard`, `git checkout -f`
  * and force-pushes are blocked too. That env var is set only when the session
  * is merged with a recorded `mergedHeadSha` — i.e. exactly the state
@@ -162,7 +162,7 @@ function offends(seg) {
 }
 
 /**
- * SHI-265 — inspect one segment for hand-rolled destructive git. Only consulted
+ * planning#267 — inspect one segment for hand-rolled destructive git. Only consulted
  * when the session is in the merged state `shipit branch reset-to-base` guards
  * (see `guardDestructiveGit` below). Returns a reason string or null.
  *
@@ -197,7 +197,7 @@ function offendsDestructive(seg) {
   return null;
 }
 
-// SHI-265 — the destructive-git rule is scoped to the merged-with-recorded-head
+// planning#267 — the destructive-git rule is scoped to the merged-with-recorded-head
 // state; the orchestrator sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1 for exactly those
 // turns (server-derived from the session's `mergedHeadSha`, never anything the
 // agent can write). Outside it the rule is off, so an ordinary "throw away my
@@ -233,7 +233,7 @@ for (const seg of segments(command)) {
         "carrying something a reset would destroy, and there is no reflog " +
         "entry for uncommitted edits. Report what it said and let the user " +
         "decide — do not reproduce the reset by hand.\n\n" +
-        "SHI-277: if the user tells you to go ahead anyway, the sanctioned " +
+        "planning#279: if the user tells you to go ahead anyway, the sanctioned " +
         "override is `shipit branch reset-to-base --force --reason \"<why>\"`, " +
         "not a manual reset. That path is brokered, so it still refuses over " +
         "an uncommitted tree (the one loss with no reflog entry) and it " +

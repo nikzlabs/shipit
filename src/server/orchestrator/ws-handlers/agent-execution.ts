@@ -79,7 +79,7 @@ function persistInterruptedTurn(
  * `running = false`. This helper sets `running = true` again when it shifts
  * a message off, and starts the new turn via `startQueuedMessage`.
  *
- * SHI-255 — the re-entry below (`runAgentWithMessage`) can only express an
+ * planning#257 — the re-entry below (`runAgentWithMessage`) can only express an
  * INTERACTIVE turn: text, attachments, permission mode. A server-dispatched
  * entry also carries `systemTurn`, `onTurnComplete`, `postTurn`, and `activity`,
  * which this path used to drop on the floor — a docs/196 wake-turn queued behind
@@ -358,7 +358,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // notice instead of compacting). The reset still runs on the user's next real
   // turn, where it belongs.
   //
-  // SHI-295 — a skip is no longer silent. When the session IS merged and the
+  // planning#297 — a skip is no longer silent. When the session IS merged and the
   // reset was refused, the helper returns the clause that refused it; we persist
   // that as a transcript notice (same anchor as the card below) and prepend the
   // agent-facing half to this turn's prompt. The user's report was "it silently
@@ -464,7 +464,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // `resetRunnerTurnState`) at its true transcript anchor. `emitChatCard` makes it
   // durable in the same call, so the destructive move always has a record.
   //
-  // SHI-295 — the skip notice rides the same hook and the same anchor. The two
+  // planning#297 — the skip notice rides the same hook and the same anchor. The two
   // are mutually exclusive (the branch either moved or it didn't), and both are
   // wrapped: this hook is called un-awaited and unguarded by the executor, so a
   // throw here would abort the turn setup. A missing notice is a regression; a

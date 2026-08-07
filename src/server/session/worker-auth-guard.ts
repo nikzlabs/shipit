@@ -1,5 +1,5 @@
 /**
- * SHI-311 — the worker's `onRequest` gate. Policy lives in
+ * planning#313 — the worker's `onRequest` gate. Policy lives in
  * `shared/worker-auth.ts` ({@link decideWorkerRequest}); this module is the
  * Fastify wiring plus the one-time startup log.
  *
@@ -30,7 +30,7 @@ export interface WorkerAuthGuardDeps {
    * to `undefined` (no container env) leaves remote callers ungated — see
    * {@link decideWorkerRequest} step 6 for why that is deliberate.
    *
-   * SHI-239 raises the stakes on the `env` dep below rather than changing this
+   * planning#241 raises the stakes on the `env` dep below rather than changing this
    * shape: the token now gates the lifecycle routes too, so a test-built worker
    * that picked the value out of the ambient environment would 403 its own
    * loopback `/agent/start`. The suite-wide strip in `server-test-setup.ts` is

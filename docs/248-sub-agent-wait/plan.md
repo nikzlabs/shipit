@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-306
+issue: planning#308
 title: Waiting on a sub-agent run
 description: Status-carrying exit codes plus a resilient segment-loop `--wait` for `shipit agent result`.
 ---
@@ -28,7 +28,7 @@ Two changes to `shipit agent result`, one small and one structural:
 `0`/`3` mirror docs/182's `WAIT_EXIT_IDLE` / `WAIT_EXIT_ERROR`. Pending is `4`,
 not docs/182's `1`, **deliberately** (see the resolved question in
 requirements.md). Both low codes were already taken by failures: this command
-has used `fail(…, 1)` for a lookup error since SHI-245, and `fail()`'s shim-wide
+has used `fail(…, 1)` for a lookup error since planning#247, and `fail()`'s shim-wide
 default is `2`. Reusing either would mean `until shipit agent result <id>; do …;
 done` retries forever against a mistyped id or a typo'd flag — a condition that
 can never clear. `4` is the only code that means "come back later", which is
@@ -54,7 +54,7 @@ no completion event: an orchestrator restart cannot strand a wait, because any
 fresh request recomputes the answer from the DB.
 
 The card is created `pending` at spawn and patched to its terminal status when
-the run finishes (docs/236, SHI-278). **Verified that both patch paths land in
+the run finishes (docs/236, planning#280). **Verified that both patch paths land in
 the DB**, since the wait reads only the DB:
 
 - `persistCardTransition` (`chat-card-persistence.ts:383`) patches the *recorded*
@@ -149,7 +149,7 @@ in-flight consult, and `--wait` correctly reported "still running" until its
 timeout, again and again.
 
 **Fixed by [docs/249](../249-consult-survives-orchestrator-restart/plan.md)
-(SHI-307).** A boot sweep marks every card left `pending` by a dead process
+(planning#309).** A boot sweep marks every card left `pending` by a dead process
 `cancelled`, carrying a `statusDetail` that says a restart lost the result. For
 a waiting caller that is a deliberate change of observed behavior: the poll that
 used to answer `4` ("still running") forever now answers `3` ("the run failed"),
@@ -157,7 +157,7 @@ so a retry loop terminates. What is *not* recovered is the sub-agent's output �
 that was scoped out on purpose (docs/249 requirements); re-running the consult is
 the answer.
 
-The limitation was pre-existing (docs/236 / SHI-278), not introduced here —
+The limitation was pre-existing (docs/236 / planning#280), not introduced here —
 `--wait` only made it easier to notice, because a caller sits on the symptom
 instead of glancing at a card.
 
@@ -167,4 +167,4 @@ instead of glancing at a card.
 a turn into the calling session when the run finishes, so nobody waits at all.
 Strictly better for long consults and strictly more mechanism (dispatch
 ordering against an in-flight turn, an idle or disposed caller, interaction with
-the SHI-262 drain). Waiting has to work regardless; that lands first.
+the planning#264 drain). Waiting has to work regardless; that lands first.

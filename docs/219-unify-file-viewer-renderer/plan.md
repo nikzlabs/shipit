@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-190
+issue: planning#192
 title: Unify the file dialog and the Present tab on one shared renderer
 description: Extract content rendering + review into a shared FileContentView so the file-viewer dialog and the Present tab behave identically — HTML/SVG render, frontmatter is stripped, and review comments work in both.
 ---

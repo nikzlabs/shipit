@@ -43,7 +43,7 @@ export interface PersistedBugReport {
 }
 
 /**
- * docs/172 / SHI-90 — the persisted state of an inline egress allow-once card.
+ * docs/172 / planning#92 — the persisted state of an inline egress allow-once card.
  * The Tier C SNI proxy denies a non-allowlisted host and the orchestrator's
  * decision endpoint emits this card off the agent-event stream, so it's recorded
  * in-band with the active turn and persisted here; the allow-once / add /
@@ -59,7 +59,7 @@ export interface PersistedEgressPrompt {
 }
 
 /**
- * docs/193 / SHI-112 — the persisted state of an inline permission-request card
+ * docs/193 / planning#114 — the persisted state of an inline permission-request card
  * (agent-agnostic: Claude's sensitive-file gate, Codex's escalation approval).
  * Recorded in-band with the turn that raised it (off the agent-event stream via
  * the broker's `agent_permission_request` broadcast), so it lands at its true
@@ -188,7 +188,7 @@ export interface PersistedMessage {
    */
   bugReport?: PersistedBugReport;
   /**
-   * docs/193 / SHI-112 — when set, this message renders an inline
+   * docs/193 / planning#114 — when set, this message renders an inline
    * `PermissionRequestCard` (approve/deny + remember). Like the bug-report card
    * it arrives off the agent-event stream (the broker's `agent_permission_request`
    * broadcast) so it's recorded in-band with the proposing turn and persisted
@@ -197,7 +197,7 @@ export interface PersistedMessage {
    */
   permissionPrompt?: PersistedPermissionRequest;
   /**
-   * docs/172 / SHI-90 — when set, this message renders an inline
+   * docs/172 / planning#92 — when set, this message renders an inline
    * `EgressPromptCard` (allow once / add to allowlist / deny). The Tier C SNI
    * proxy denies a non-allowlisted host and the orchestrator decision endpoint
    * emits it off the agent-event stream, so it's recorded in-band with the turn
@@ -207,7 +207,7 @@ export interface PersistedMessage {
   egressPrompt?: PersistedEgressPrompt;
   /**
    * docs/177 — when set, this message renders an inline issue-write provenance
-   * card ("agent commented on …", "set SHI-28 → In Review") with an Undo
+   * card ("agent commented on …", "set planning#30 → In Review") with an Undo
    * affordance. Like the bug-report card it arrives off the agent-event stream
    * (the `shipit issue` write relay) so it's recorded in-band with the
    * proposing turn and persisted here; the undo transition patches this record
@@ -217,7 +217,7 @@ export interface PersistedMessage {
   issueWrite?: IssueWriteCard;
   /**
    * docs/188 — when set, this message renders an inline issue **read**
-   * navigation card ("agent viewed SHI-28") with a jump-to-issue link. Arrives
+   * navigation card ("agent viewed planning#30") with a jump-to-issue link. Arrives
    * off the agent-event stream (the `shipit issue view` read relay) so
    * `buildTurnMessages` doesn't capture it; recorded in-band with the turn via
    * `emitChatCard` and persisted here so it survives a reload. Unlike the write
@@ -245,7 +245,7 @@ export interface PersistedMessage {
    */
   subAgentConsult?: SubAgentConsultCard;
   /**
-   * docs/207 / SHI-153 — when set, this message renders an inline
+   * docs/207 / planning#155 — when set, this message renders an inline
    * `ActionChecklistCard` (a button for one proposed action, a checklist for
    * 2+). The `propose_actions` tool fires an HTTP relay off the agent-event
    * stream, so `buildTurnMessages` doesn't capture it; the card is recorded
@@ -301,7 +301,7 @@ export interface PersistedMessage {
    */
   selfMergeWatch?: SelfMergeWatchCard;
   /**
-   * docs/233 (SHI-241) — when set, this message renders an inline "session
+   * docs/233 (planning#243) — when set, this message renders an inline "session
    * report" card: another session in this session's cohort (a child, or a
    * sibling on a cohort broadcast) pushed a report here via `shipit session
    * report`. Arrives over HTTP outside any of THIS session's turns, so it's
@@ -521,7 +521,7 @@ export class ChatHistoryManager {
       "SELECT * FROM messages WHERE session_id = ? AND tool_results IS NOT NULL "
       + "AND tool_use LIKE ? ESCAPE '\\' ORDER BY id",
     );
-    // SHI-307 — the boot reconcile's cross-session read. No `in_progress`
+    // planning#309 — the boot reconcile's cross-session read. No `in_progress`
     // filter, for the same reason as the per-session query above: a consult
     // stranded inside its own turn is `in_progress=1`, and it is precisely the
     // case that needs reconciling.
@@ -765,7 +765,7 @@ export class ChatHistoryManager {
   }
 
   /**
-   * docs/172 / SHI-90 — patch a persisted egress allow-once card's phase in
+   * docs/172 / planning#92 — patch a persisted egress allow-once card's phase in
    * place, keyed by `cardId`. Used by the `egress_decision` WS handler so an
    * allow-once / add / denied resolution survives a reload. This is the
    * finalized-row fallback inside `persistCardTransition` (the handler patches
@@ -858,7 +858,7 @@ export class ChatHistoryManager {
   }
 
   /**
-   * SHI-245 — the session's persisted sub-agent consult cards, oldest first.
+   * planning#247 — the session's persisted sub-agent consult cards, oldest first.
    * Backs `shipit agent result`: the card is the artifact the UI renders, so
    * re-reading it here is what makes "the caller can always fetch exactly what
    * the user sees" true by construction rather than by convention. The recovery
@@ -877,7 +877,7 @@ export class ChatHistoryManager {
   }
 
   /**
-   * SHI-307 — every `pending` consult card in the DB, across all sessions, with
+   * planning#309 — every `pending` consult card in the DB, across all sessions, with
    * the session that owns it. Backs the boot reconcile (`consult-card-reconcile.ts`),
    * which is a whole-database question rather than a per-session one: a restart
    * strands consults in whichever sessions happened to be running, and the
@@ -906,7 +906,7 @@ export class ChatHistoryManager {
   }
 
   /**
-   * SHI-278 — patch a persisted sub-agent consult card in place, keyed by
+   * planning#280 — patch a persisted sub-agent consult card in place, keyed by
    * `cardId`. The card is created `pending` at spawn time and patched to its
    * terminal status when the run finishes; because docs/236 tells agents to
    * background long consults, that finish is usually AFTER the originating turn
@@ -917,7 +917,7 @@ export class ChatHistoryManager {
    * own finalize can't clobber the transition. Returns true if a card matched.
    *
    * `opts.finalize` additionally clears the row's `in_progress` flag. Only the
-   * SHI-307 boot reconcile passes it, and it needs it: a consult spawned by a
+   * planning#309 boot reconcile passes it, and it needs it: a consult spawned by a
    * FOREGROUND `shipit agent run` is still inside its originating turn when the
    * orchestrator dies, so its row is `in_progress=1`. docs/240 then adopts that
    * turn in the new process, and the adopted turn's `agent_result` calls

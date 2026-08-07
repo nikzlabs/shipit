@@ -60,7 +60,7 @@ export class ProxyAgentProcess extends EventEmitter<{
   error: [Error];
   auth_required: [];
   log: [source: string, text: string];
-  /** SHI-316 — a newer spawn took this proxy's runner slot. See `AgentProcessEvents`. */
+  /** planning#318 — a newer spawn took this proxy's runner slot. See `AgentProcessEvents`. */
   superseded: [];
 }> implements AgentProcess {
   readonly agentId: AgentId;
@@ -106,7 +106,7 @@ export class ProxyAgentProcess extends EventEmitter<{
   };
 
   /**
-   * SHI-264 — the durable DELIVERY id of the turn this proxy is about to run (or
+   * planning#266 — the durable DELIVERY id of the turn this proxy is about to run (or
    * is adopting), when the turn was dispatched on behalf of a server-side
    * delivery. Sent to the worker on `/agent/start` beside {@link runToken} and
    * reported back from `/agent/status`, so an orchestrator that restarts
@@ -129,7 +129,7 @@ export class ProxyAgentProcess extends EventEmitter<{
     this.deliveryId = opts?.deliveryId;
   }
 
-  /** SHI-264 — stamp the delivery id onto the next spawn (see {@link deliveryId}). */
+  /** planning#266 — stamp the delivery id onto the next spawn (see {@link deliveryId}). */
   setDeliveryId(deliveryId: string): void {
     this.deliveryId = deliveryId;
   }

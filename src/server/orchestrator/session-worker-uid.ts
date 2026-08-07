@@ -77,7 +77,7 @@ export function chownTreeToSessionWorker(targetPath: string): void {
  * root orchestrator ran git operations in it (clone, fetch, branch, reset,
  * commit). No-op when `SHIPIT_SESSION_WORKER_UID` is unset.
  *
- * docs/150 §7 addendum (SHI-31 activation): the worktree files are written by
+ * docs/150 §7 addendum (planning#33 activation): the worktree files are written by
  * the agent *as the worker uid* inside the container, but git's own writes —
  * `.git/index`, the reflogs under `.git/logs/` (append-only, so the worker
  * can't even add to a root-owned one), refs — land `root:root` whenever the
@@ -111,7 +111,7 @@ export function chownWorkspaceGitToSessionWorker(workspaceDir: string): void {
  * uid after the root orchestrator rewrote them. No-op when
  * `SHIPIT_SESSION_WORKER_UID` is unset.
  *
- * docs/150 §7 addendum (SHI-144): {@link chownWorkspaceGitToSessionWorker} hands
+ * docs/150 §7 addendum (planning#146): {@link chownWorkspaceGitToSessionWorker} hands
  * back `.git` so the agent's in-container *git* works, but NOT the worktree. A
  * root orchestrator `git rebase` / `checkout` / `rebase --continue` / `--abort`
  * re-materializes worktree files as `root:root` — including the conflicted files
@@ -146,7 +146,7 @@ export function chownWorktreeToSessionWorker(workspaceDir: string, excludeRelDir
  * when the config can't be read). Handing back ONLY `.git` — which the
  * session-setup paths used to do — leaves the worktree the root git op
  * re-materialized owned `root:root`, so the non-root agent (uid 1000) can run
- * git but EACCESes on its first edit of a tracked file (docs/150 §7 / SHI-145).
+ * git but EACCESes on its first edit of a tracked file (docs/150 §7 / planning#147).
  *
  * Use this from every orchestrator-side path that mutates a per-session
  * workspace's worktree as root: session setup (warm-pool create, claim refresh,

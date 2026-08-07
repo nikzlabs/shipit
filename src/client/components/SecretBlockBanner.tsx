@@ -1,5 +1,5 @@
 /**
- * SecretBlockBanner — docs/213 / SHI-315.
+ * SecretBlockBanner — docs/213 / planning#317.
  *
  * Sits above the composer for as long as the session's auto-commit is refused
  * because a likely credential is in the working tree, and disappears the moment

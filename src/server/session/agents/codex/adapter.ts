@@ -543,7 +543,7 @@ export class CodexAdapter
       lines.push(`env_vars = ${tomlArray(["PLAYWRIGHT_BROWSERS_PATH"])}`);
     }
 
-    // SHI-128 / docs/199 — ONE consolidated stdio bridge serves all of ShipIt's
+    // planning#130 / docs/199 — ONE consolidated stdio bridge serves all of ShipIt's
     // internal tools under the single `shipit` server, instead of five separate
     // processes. The `SHIPIT_MCP_TOOLS` env selects which tools to expose; Codex
     // gets review (docs/125), present (docs/093), voice (docs/163), ask

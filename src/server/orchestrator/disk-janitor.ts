@@ -10,7 +10,7 @@
  *   - `steady-state-reclaim.ts`  — **steady-growth** sweeps that grow with the
  *     clock (`runSteadyStateReclaim`: repo/dep caches, `repo-memory/`, obsolete
  *     overlay bases, stale pnpm stores). Rides the periodic escalation pass, not
- *     boot (SHI-196).
+ *     boot (planning#198).
  *   - `tier-escalation.ts`       — steady-state disk-tier escalation state machine
  *     (`escalateDiskTiers`, hot → light → evicted; docs/161).
  *   - `disk-utils.ts`            — shared helpers (statfs free/total bytes, watermark

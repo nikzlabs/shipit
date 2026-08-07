@@ -486,10 +486,31 @@ Linear tracker is declared, so they belong with step 11, not step 10.
 
 The distinction is not expressible as a regex: `it("… (SHI-278)")` is a citation
 and `identifier: "SHI-1"` is data, and both are `SHI-\d+` inside a string literal
-in a test file. So the sweep rewrites the mechanical categories, **excludes the 12
-data files wholesale**, and gate 3 reviews those by hand. That is what the gate's
-"watch for `SHI-N`-shaped text that isn't a pointer" turned out to mean in
-practice.
+in a test file.
+
+**Two attempts at a clever exclusion failed before the blunt one worked**, and
+both failures are the reason the rule is what it is:
+
+1. A hand-built list of "data files" from a grep heuristic. It missed
+   `session-actions.test.ts`, where the sweep rewrote the *expectation*
+   (`toBe("SHI-1")` → `toBe("planning#3")`) while the fixture producing the value
+   sat in a file that was excluded. Green typecheck, red test — and had that
+   assertion been looser, a silent weakening.
+2. The URL pattern `[^\s)]*` for a Linear slug. It swallowed the closing quote of
+   `url: "https://linear.app/…/SHI-137"`, producing an unterminated string
+   literal. Caught by `tsc`, but only because it happened to break syntax rather
+   than meaning.
+
+So [`sweep.py`](./sweep.py) excludes **every test file wholesale**, plus 20 named
+source files that teach or parse the key shape, plus this doc folder — and skips
+individual **syntax-example lines** (a line carrying both a `SHI-N` and a marker
+like `owner/repo#` or `bare `), reporting each one for review. Both exclusions err
+toward skipping: a citation wrongly left alone is caught by the manual pass, while
+a wrongly-rewritten example is silent damage.
+
+The mechanical half ran on 2026-08-07: **511 files, 1,778 rewrites**, typecheck
+clean, full suite green (699 files, 10,305 tests), lint clean. About 1,400
+mentions remain for the manual half, and that is gate 3's actual work.
 
 ## Where a human has to look
 

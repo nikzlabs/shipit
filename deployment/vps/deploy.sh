@@ -113,7 +113,7 @@ if [ -n "$AVAIL_GB" ] && [ "$AVAIL_GB" -lt "$MIN_FREE_GB" ]; then
 fi
 
 # Build the images (session-worker + egress-sidecar are build-only profiles, must be
-# named explicitly). egress-sidecar (shipit-egress-sidecar:prod) is the SHI-90 egress
+# named explicitly). egress-sidecar (shipit-egress-sidecar:prod) is the planning#92 egress
 # firewall image — built every deploy so a docker/egress-sidecar/ change ships in lockstep
 # with main instead of lagging a stale manual build. It's independent of session-worker
 # (no FROM dependency), so it builds here alongside it. Egress containment is ON by default

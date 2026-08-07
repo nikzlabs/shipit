@@ -3,7 +3,7 @@ import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler } from "./types.js";
 
 /**
- * docs/213 / SHI-315 — sticky "auto-commit is blocked by a secret" state.
+ * docs/213 / planning#317 — sticky "auto-commit is blocked by a secret" state.
  *
  * Session-scoped state, not transcript content: the server sends it on attach
  * and on every transition, and `TRANSCRIPT_SCOPED_MESSAGES` drops it when it

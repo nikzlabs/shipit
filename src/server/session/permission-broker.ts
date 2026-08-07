@@ -1,6 +1,6 @@
 /**
  * PermissionBroker — the agent-agnostic core of ShipIt's sensitive-action
- * approval flow (SHI-112 / docs/193).
+ * approval flow (planning#114 / docs/193).
  *
  * ShipIt runs every agent CLI headless, where the backend's own permission gate
  * (Claude's "this is a sensitive file" prompt; Codex's escalated-command
@@ -70,7 +70,7 @@ const HANDLED_INTERRUPT_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
 
 /**
  * Best-effort resource path for a tool call. Covers the file-editing tools
- * whose sensitive-file gate is the whole point of SHI-112 (`file_path` for
+ * whose sensitive-file gate is the whole point of planning#114 (`file_path` for
  * Write/Edit, `notebook_path` for NotebookEdit) plus a generic `path`. Returns
  * undefined for path-less tools (e.g. Bash), where the card falls back to the
  * tool name + command summary.

@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-163
+issue: planning#165
 description: Keep the PR card's changed-docs strip current after every turn, and base it on the merge-base diff so it matches the diff stat and Docs panel.
 ---
 

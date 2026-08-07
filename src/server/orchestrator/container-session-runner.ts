@@ -237,7 +237,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   pendingCommitLink: { commitHash: string; parentCommitHash: string } | null = null;
   private _subAgentSpawnsThisTurn = 0;
   /**
-   * SHI-278 — in-flight sub-agent spawns brokered to the worker, keyed by
+   * planning#280 — in-flight sub-agent spawns brokered to the worker, keyed by
    * spawnId. The container runner's counterpart to `SessionRunner`'s
    * `_subAgentHandles`: a container spawn is an HTTP request, not a local
    * process handle, so cancelling it means aborting the request. Aborted on
@@ -391,7 +391,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   // process the answer is definitionally zero.
   get backgroundTaskCount(): number { return this._backgroundTasks.count(this._isStreamingActive); }
   get backgroundTaskDescriptions(): string[] { return this._backgroundTasks.descriptions(this._isStreamingActive); }
-  // SHI-296 — a live consult is a fact we own (the in-flight abort-controller
+  // planning#298 — a live consult is a fact we own (the in-flight abort-controller
   // set), not a reported hint, so it needs no `isStreamingActive` gate. This is
   // what keeps a backgrounded `shipit agent run` off the idle-eviction list.
   get subAgentSpawnsInFlight(): number { return this._subAgentAborts.size; }
@@ -426,7 +426,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   get recordedCards(): RecordedChatCard[] { return this.turn.recordedCards; }
   set recordedCards(m: RecordedChatCard[]) { this.turn.recordedCards = m; }
 
-  /** docs/244 / SHI-297 — stable reference, mutable contents. */
+  /** docs/244 / planning#299 — stable reference, mutable contents. */
   get committedBodyIds(): CommittedBodyIds { return this.turn.committedBodyIds; }
 
   get agentId(): AgentId { return this._agentId; }
@@ -443,7 +443,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * authoritative for the run itself; a primary-turn interrupt (which hits the
    * worker's `/agent/interrupt`) cancels it.
    *
-   * SHI-278 — two things the original `{ timeoutMs: 0 }` got wrong:
+   * planning#280 — two things the original `{ timeoutMs: 0 }` got wrong:
    *  - **Unbounded.** An interrupt is not the only way this request can be
    *    orphaned. Destroy the container under it (Restart agent, idle teardown)
    *    and the worker's timer dies with the worker, leaving this promise pending
@@ -494,7 +494,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   /**
-   * SHI-278 — abort every in-flight sub-agent spawn brokered by this runner.
+   * planning#280 — abort every in-flight sub-agent spawn brokered by this runner.
    * Called from {@link dispose} (the one chokepoint every force-teardown path
    * funnels through: Restart agent, Restart container, Rescue, archive, full
    * reset), so no caller has to remember to cancel spawns. `reason` reaches
@@ -511,7 +511,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   getAgent(): AgentProcess | null { return this._agent; }
 
   /**
-   * SHI-316 — tell the proxy that is being pushed out of the `_agent` slot by a
+   * planning#318 — tell the proxy that is being pushed out of the `_agent` slot by a
    * DIFFERENT, newer one that its turn has been superseded.
    *
    * This is the moment the displaced turn loses its ability to settle itself:
@@ -575,16 +575,16 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   clearQueue(): void { this.turn.clearQueue(); }
   getQueueSnapshot(): { text: string; position: number }[] { return this.turn.getQueueSnapshot(); }
 
-  /** SHI-264 — see `SessionRunnerInterface.activeDeliveryId`. */
+  /** planning#266 — see `SessionRunnerInterface.activeDeliveryId`. */
   activeDeliveryId: string | undefined;
-  /** SHI-264 — see `SessionRunnerInterface.hasDelivery`. */
+  /** planning#266 — see `SessionRunnerInterface.hasDelivery`. */
   hasDelivery(deliveryId: string): boolean {
     if (this.activeDeliveryId === deliveryId) return true;
     return this.turn.messageQueue.some((m) => m.deliveryId === deliveryId);
   }
 
   /**
-   * SHI-316 — see `SessionRunnerInterface.hasTurnInFlight`.
+   * planning#318 — see `SessionRunnerInterface.hasTurnInFlight`.
    *
    * Reads the worker's `turnActive`, NOT its `running`: `running` is
    * `agent !== null`, which stays true for a resident streaming process between
@@ -964,7 +964,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    */
   createAgent(agentId: AgentId, opts?: { runToken?: string; deliveryId?: string }): ProxyAgentProcess {
     const proxy = new ProxyAgentProcess(agentId, this, opts);
-    // SHI-316 — this is one of the two places a spawn can take the slot from a
+    // planning#318 — this is one of the two places a spawn can take the slot from a
     // proxy that never reached a terminal event; the displaced turn has to be
     // told, or it can never settle. See `supersedeDisplacedAgent`.
     this.supersedeDisplacedAgent(proxy);
@@ -1178,7 +1178,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._agentId = agentId;
     const proxy = this.createAgent(agentId, {
       ...(status.runToken !== undefined ? { runToken: status.runToken } : {}),
-      // SHI-264 — the adopted turn keeps the delivery identity the worker
+      // planning#266 — the adopted turn keeps the delivery identity the worker
       // reported, so a re-spawn on this proxy (auth retry) carries it too.
       ...(status.deliveryId !== undefined ? { deliveryId: status.deliveryId } : {}),
     });
@@ -1309,7 +1309,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   /**
    * Kill the agent running on the worker.
    *
-   * SHI-288 — the slot clear is IDENTITY-GUARDED against the proxy that was in
+   * planning#290 — the slot clear is IDENTITY-GUARDED against the proxy that was in
    * the slot when the kill was requested. `ProxyAgentProcess.kill()` is
    * fire-and-forget, so this POST is routinely still in flight while the caller
    * synchronously moves on. Both retirement blocks in `dispatched-turn.ts` do
@@ -1998,7 +1998,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private isStaleSpawnEvent(
     eventType: string,
     data: Record<string, unknown>,
-    // SHI-288 — `agent_event` may be routed to the tracked streaming proxy
+    // planning#290 — `agent_event` may be routed to the tracked streaming proxy
     // rather than the slot occupant (the docs/146 re-adopt branch), so the
     // comparison is against whichever proxy would actually receive it.
     target: ProxyAgentProcess | null = this._agent,
@@ -2042,7 +2042,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
             console.warn(`[sse-drop:${this.sessionId}] agent_event type=${eventType} dropped (no _agent)`);
             break;
           }
-          // SHI-288 — a retired spawn's late event must not be routed into the
+          // planning#290 — a retired spawn's late event must not be routed into the
           // turn that replaced it. Unstamped events (the permission broker's
           // frames, a legacy worker) fall through as before.
           if (this.isStaleSpawnEvent("agent_event", data, target)) break;
@@ -2399,12 +2399,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get canRunDispatchedTurn(): boolean { return this._systemTurnDeps !== null; }
 
-  /** SHI-299 — see `SessionRunnerInterface.schedulePostTurnPush`. */
+  /** planning#301 — see `SessionRunnerInterface.schedulePostTurnPush`. */
   schedulePostTurnPush(): void {
     this._systemTurnDeps?.scheduleAutoPush(this.sessionDir);
   }
 
-  /** SHI-255 — the queue-drain re-entry for `execution: "dispatched"` entries. */
+  /** planning#257 — the queue-drain re-entry for `execution: "dispatched"` entries. */
   async runDispatchedTurn(opts: PreparedDispatch): Promise<void> {
     await runDispatchedTurn(this, this._systemTurnDeps!, this._agentId, opts, (agentId) => {
       return this.createAgent(agentId);
@@ -2436,7 +2436,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * `session_status` message, settle the abandoned turn, release the queue, and
    * signal idle so the runner is reclaimable.
    *
-   * SHI-280 — the reset alone was not a recovery. It restored `running` and
+   * planning#282 — the reset alone was not a recovery. It restored `running` and
    * emitted `idle`, but the phantom turn had TWO other things hanging off it:
    *
    *  1. Anything QUEUED behind it. Every other drain in the system is reached
@@ -2451,7 +2451,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    *     `finally`, so `onTurnComplete` never fired and `activeDeliveryId` stayed
    *     published — which reads as "this delivery is still in flight" and
    *     suppresses every retry (`isDeliveryInFlight`). That is the stranding
-   *     class SHI-263 / SHI-264 / docs/240 closed, reached through the one path
+   *     class planning#265 / planning#266 / docs/240 closed, reached through the one path
    *     they did not cover.
    */
   async verifyRunningState(): Promise<boolean> {
@@ -2495,7 +2495,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // Release the queue before signalling idle. `releaseQueuedTurn` re-enters
     // the branded `dispatch` path, so a dispatched entry keeps its `systemTurn`
     // / `onTurnComplete` / `postTurn` fields instead of being re-narrowed into
-    // an interactive turn (the SHI-255 / SHI-259 rule — see `queue-drain.ts`).
+    // an interactive turn (the planning#257 / planning#261 rule — see `queue-drain.ts`).
     // When it starts a turn the runner is NOT idle, so the `idle` event that
     // drives auto-remediation and `waitForIdle` is deliberately not emitted;
     // that turn's own post-turn flow signals idle when it finishes.
@@ -2522,7 +2522,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       console.log(`[container-runner:${this.sessionId}] dispose() skipped — agent is running`);
       return;
     }
-    // SHI-278 — same protection for a BACKGROUNDED sub-agent consult. docs/236
+    // planning#280 — same protection for a BACKGROUNDED sub-agent consult. docs/236
     // tells agents to background long consults, so the primary turn routinely
     // finishes while the spawn keeps running — `_isRunning` is false and idle
     // cleanup would otherwise reap a live 30-minute review that nothing is
@@ -2536,7 +2536,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     }
     this._disposed = true;
 
-    // SHI-278 — cancel in-flight sub-agent spawns BEFORE the container goes
+    // planning#280 — cancel in-flight sub-agent spawns BEFORE the container goes
     // away. Their HTTP requests are the only handle we have on them; without
     // this abort the awaiting `runSubAgent` either hangs on a half-open socket
     // or rejects minutes later, and either way the consult vanishes from the

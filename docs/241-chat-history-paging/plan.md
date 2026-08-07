@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-266
+issue: planning#268
 title: Windowed chat-history loading
 description: Load the latest N turns of a session transcript and page older ones in on scroll-up, instead of shipping the whole history on every switch and reload.
 ---
@@ -54,9 +54,9 @@ The two costs that are actually worth paging for:
    (`useConnectionSync.ts:60-100`) — a *full* `/history` fetch. On mobile that
    recurs on every app switch. Windowing turns a recurring O(transcript) cost
    into a recurring O(window) one. **The complementary fix — making that refetch
-   conditional so an unchanged history returns 304 — is SHI-322**, filed
+   conditional so an unchanged history returns 304 — is planning#324**, filed
    separately because it helps today and is far smaller. This design bounds how
-   much a refetch costs; SHI-322 bounds how often the cost is paid at all.
+   much a refetch costs; planning#324 bounds how often the cost is paid at all.
 
 Also note base64 `images` compress poorly — already-compressed bytes in a text
 encoding — so the heaviest rows benefit least from edge compression.
@@ -78,7 +78,7 @@ With that framing, measured against the source:
   §0 must measure it.
 - **Rows are large at rest, but no longer on the wire.** `tool_results`,
   `tool_use` inputs, base64 `images` and `subagent_events` are all still stored
-  in full — but **SHI-267 has landed** (`docs/244-lazy-tool-result-bodies`) and a
+  in full — but **planning#269 has landed** (`docs/244-lazy-tool-result-bodies`) and a
   serve-path projection (`transcript-projection.ts`) now strips those bodies
   before they reach the client, substituting fetch-on-demand URLs. This removes
   the byte axis from the problem almost entirely, and is why the remaining case
@@ -106,8 +106,8 @@ building, instrument one real long session:
   multiplies everything.
 
 **The ordering question this gate existed to answer has been settled by events.**
-It read: if a handful of heavy rows dominate bytes, do SHI-267 first and
-resequence paging behind it. SHI-267 shipped first, so that branch is taken and
+It read: if a handful of heavy rows dominate bytes, do planning#269 first and
+resequence paging behind it. planning#269 shipped first, so that branch is taken and
 closed. What the measurement is now *for* is narrower: confirm that what remains
 after the projection is dominated by **row count** — React mount and markdown
 parse across several hundred bubbles, plus the refetch amplifier — rather than by
@@ -403,7 +403,7 @@ Req 9 is stated as an *observable outcome*, which leaves two ways to satisfy it,
 and the design should use both:
 
 1. **Don't refetch when nothing changed.** A conditional request returning `304`
-   (SHI-322) makes the common case — alt-tab away, alt-tab back, nothing
+   (planning#324) makes the common case — alt-tab away, alt-tab back, nothing
    happened — trivially satisfy req 9, because no state is replaced at all. This
    is the cheaper and more robust half.
 2. **When content genuinely did change, reconcile rather than replace.** Request
@@ -470,7 +470,7 @@ buttons that run commands the agent should run, which this is not.
   search, which fetches everything — reconstructs today's unbounded,
   non-virtualized transcript. Eviction or virtualization is a later step.
 - **Bytes are not bounded, only rows.** A window containing several near-1 MB tool
-  outputs is still heavy. That is SHI-267.
+  outputs is still heavy. That is planning#269.
 - **Write amplification is untouched.** Every tool-result boundary deletes and
   reinserts the running turn's rows (`replaceInProgress`), so a 40-tool-call turn
   rewrites its accumulated blobs ~40 times. Separate problem.
@@ -567,9 +567,9 @@ The hydration race is therefore **back in scope**: it was dismissed as
 pre-existing, but once window coordinates feed destructive actions it stops being
 cosmetic.
 
-## Composing with lazy bodies (SHI-267, landed)
+## Composing with lazy bodies (planning#269, landed)
 
-SHI-267 was filed as this design's follow-up and **shipped first**
+planning#269 was filed as this design's follow-up and **shipped first**
 (`docs/244-lazy-tool-result-bodies`, commit `f576ff81`). That changes what this
 design is for, and adds three obligations.
 
@@ -592,7 +592,7 @@ it was written.
 1. **Every page must go through the projection.** The landed work has *three*
    projection sites (history load, live turn, reconnect `turn_snapshot`); the
    messages-only page endpoint would be a fourth. An unprojected older page would
-   silently reintroduce full bodies — the exact regression SHI-267 removed.
+   silently reintroduce full bodies — the exact regression planning#269 removed.
 2. **Older pages may strip maximally.** The projection's governing rule is that a
    body may only leave the wire once its row is *committed* (the
    `allRowsPersisted` argument), because stripping replaces a body with a fetch

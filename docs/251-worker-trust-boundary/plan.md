@@ -1,10 +1,10 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-311
+issue: planning#313
 title: Session-worker trust boundary
 description: Authenticate the session worker's HTTP surface so one session's container cannot drive another session's worker.
 ---
 
-# Session-worker trust boundary (SHI-311)
+# Session-worker trust boundary (planning#313)
 
 Implements [requirements.md](./requirements.md).
 
@@ -115,7 +115,7 @@ per bridge IP) and is written at the three points where a
 
 `RUNTIME_MODE=local` (the dogfood `dev` service) has no session worker and no
 `/agent-ops` host at all — see `local-agent-mcp.ts:LOCAL_SHIPIT_BRIDGE` — so the
-confused-deputy path does not exist there. The related note on SHI-311, that
+confused-deputy path does not exist there. The related note on planning#313, that
 `api-container-guard.ts`'s runtime denial is inert without a container manager,
 is accurate and deliberately unchanged: a local agent runs in the orchestrator's
 own process and filesystem and can read/write the SQLite database directly, so an

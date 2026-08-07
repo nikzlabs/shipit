@@ -1,11 +1,11 @@
 /**
- * permission tool — `permission_prompt` (SHI-112 / docs/193). Registered as the
+ * permission tool — `permission_prompt` (planning#114 / docs/193). Registered as the
  * Claude CLI's `--permission-prompt-tool`: instead of auto-denying a gated
  * (sensitive-file) edit in headless mode, the CLI calls this tool, which
  * forwards the request to the worker's `PermissionBroker` and BLOCKS until the
  * user answers the approve/deny card.
  *
- * Resilient long poll (Thread B / SHI-112): it does NOT hold one fetch open for
+ * Resilient long poll (Thread B / planning#114): it does NOT hold one fetch open for
  * the whole wait (that trips undici's timeout when a user takes their time).
  * Instead it opens the request, then polls `/await` in short bounded holds.
  * Network blips are retried with exponential backoff; a real 4xx/5xx broker

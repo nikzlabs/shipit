@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Egress controlled-resolver — docs/172-agent-containment Gap 1 (SHI-90), Tier B.
+# Egress controlled-resolver — docs/172-agent-containment Gap 1 (planning#92), Tier B.
 #
 # Long-lived companion to the Tier A installer. Runs dnsmasq in the AGENT's
 # network namespace (sidecar started with `--network container:<agent>
@@ -17,7 +17,7 @@
 # :53 and write the ipset) then drops to the `user=` in the config — the uid the
 # Tier A firewall's owner-match allows for upstream DNS.
 #
-# Verified on a live host (the SHI-90 Tier B checklist), not in unit tests.
+# Verified on a live host (the planning#92 Tier B checklist), not in unit tests.
 
 set -euo pipefail
 

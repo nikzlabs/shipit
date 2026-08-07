@@ -121,7 +121,7 @@ export interface ContainerSetupDeps {
    */
   runtimeMode: RuntimeMode;
   /**
-   * docs/172 (SHI-90) — per-session egress containment + composed allowlist
+   * docs/172 (planning#92) — per-session egress containment + composed allowlist
    * resolver, passed straight into the production `SessionContainerManager`.
    * Optional: a custom-injected container manager (tests) supplies its own.
    */
@@ -184,7 +184,7 @@ export async function setupContainerManager(
           console.log(`[server] Overlay runtime scope pinned to worker image ${workerImageId}`);
         }
       }
-      // SHI-194 — the overlay scope keys on the worker's pinned base-image digest
+      // planning#196 — the overlay scope keys on the worker's pinned base-image digest
       // (`BASE_IMAGE_DIGEST`), not its full image id, so an app-code-only deploy
       // no longer rotates the scope (no churn, post-deploy installs stay warm).
       // Resolve it from the worker image's baked env and publish into the channel
@@ -331,7 +331,7 @@ export interface RunnerFactoryDeps {
   /** docs/150 — resolves a cross-provider sub-agent spawn's account. */
   providerAccountManager?: ProviderAccountManager;
   /**
-   * SHI-298 — local mode only. Source of the MCP env a local spawn carries
+   * planning#300 — local mode only. Source of the MCP env a local spawn carries
    * (`applyLocalMcp`), standing in for the worker `PUT /secrets` push that
    * `prepareSessionAgentEnvironment` skips outside container mode. Absent ⇒ the
    * local runner spawns with no MCP at all, which is the pre-SHI-298 behavior.
@@ -498,7 +498,7 @@ async function attemptContainerCreate(
   const { mgr, runner, sessionId } = opts;
   try {
     if (opts.destroyFirst) await mgr.destroy(sessionId);
-    // SHI-179 — fail fast with a clear, terminal message if the workspace clone
+    // planning#181 — fail fast with a clear, terminal message if the workspace clone
     // is missing. The activation path (route-registry `activateSession`)
     // re-materializes an evicted/missing workspace from the bare cache before
     // reaching here, so this only trips when recovery was impossible (no remote,
@@ -607,7 +607,7 @@ export function buildRunnerFactory(
           // failover repoints an already-pinned session under this same runner.
           const agent = localAgentFactory(agentId, () =>
             resolveLocalAgentHome(o.sessionId, agentId, homeDeps));
-          // SHI-298 — and the same reasoning carries MCP. The worker performs
+          // planning#300 — and the same reasoning carries MCP. The worker performs
           // two writes before a spawn (the adapter's `writeMcpConfig`, and the
           // agent-env push that its `$secret:` resolution and the MCP children
           // read); local mode runs neither, so the CLI spawned with no MCP at

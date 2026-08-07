@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-261
+issue: planning#263
 title: Unlosable turn dispatch — make a dispatched turn's semantics impossible to drop
 description: Brand dispatch options so hand-construction can't compile, and make turn completion a settlement object rather than an unowned callback.
 ---
@@ -14,17 +14,17 @@ completion."**
 
 | Issue | What was lost | How |
 |---|---|---|
-| SHI-254 | `onTurnComplete` | The steering path returned before any enqueue, so the callback went with it |
-| SHI-255 | `execution`, `systemTurn`, `onTurnComplete` | The interactive drain rebuilt `AgentDispatchOptions` by hand; a third drain in `bootstrap-managers.ts` did the same |
-| SHI-259 | `execution`, `systemTurn`, `onTurnComplete`, `postTurn` | Turn adoption added a **fourth** hand-rolled drain — *after* SHI-255 was fixed |
-| SHI-260 | `onTurnComplete` (fires zero times) | Passed only to attempt zero; a no-result retry re-enters and the guard against firing twice means it never fires at all |
+| planning#256 | `onTurnComplete` | The steering path returned before any enqueue, so the callback went with it |
+| planning#257 | `execution`, `systemTurn`, `onTurnComplete` | The interactive drain rebuilt `AgentDispatchOptions` by hand; a third drain in `bootstrap-managers.ts` did the same |
+| planning#261 | `execution`, `systemTurn`, `onTurnComplete`, `postTurn` | Turn adoption added a **fourth** hand-rolled drain — *after* planning#257 was fixed |
+| planning#262 | `onTurnComplete` (fires zero times) | Passed only to attempt zero; a no-result retry re-enters and the guard against firing twice means it never fires at all |
 
-SHI-258 belongs to the same story from the other end: a retry supervisor built
+planning#260 belongs to the same story from the other end: a retry supervisor built
 because deliveries strand, with an in-memory `inFlight` set to tell "pending" from
 "failed."
 
-The tell is SHI-259. It was introduced by unrelated work, by an author reasonably
-following the code around them, days after SHI-255's write-up claimed "a third drain
+The tell is planning#261. It was introduced by unrelated work, by an author reasonably
+following the code around them, days after planning#257's write-up claimed "a third drain
 added later cannot re-narrow an entry without deliberately bypassing that module."
 Nobody bypassed anything deliberately. **Convention is not holding, so the fix has to
 be something the compiler enforces.**
@@ -37,7 +37,7 @@ Conflating them is why each fix keeps missing the next instance.
 `AgentDispatchOptions` is a wide bag of optional fields. Every place that turns a
 queued entry into a running turn re-derives it field by field, and TypeScript cannot
 catch a *missing optional*: an object literal with four of nine fields is a perfectly
-valid `AgentDispatchOptions`. So each new drain silently narrows. SHI-255
+valid `AgentDispatchOptions`. So each new drain silently narrows. planning#257
 centralized two call sites; it did nothing to prevent a third from being written.
 
 **B — completion is an unowned callback on a fire-and-forget call.**
@@ -46,7 +46,7 @@ optional field. Nothing owns the invariant "this dispatch settles exactly once,"
 the callback can be dropped in transit (254, 255, 259), or guarded so carefully
 against firing twice that it fires zero times (260). Worse, the *consumer* cannot
 distinguish **pending** from **lost** — which is why every instance manifests as
-silent stranding rather than an error, and why SHI-258's supervisor was needed to
+silent stranding rather than an error, and why planning#260's supervisor was needed to
 paper over it.
 
 ## Fix A — brand the prepared options so hand-construction doesn't compile
@@ -98,7 +98,7 @@ lose the rest with the compiler's blessing. Tests use a test-only
 `testDispatch()` shim under `integration_tests/`, never importable in anger from
 production without it reading as exactly what it is.)
 
-SHI-255's round-trip test is kept: it guards a different surface (a field dropped
+planning#257's round-trip test is kept: it guards a different surface (a field dropped
 *inside* the converter) than the brand does (the converter bypassed entirely).
 
 ## Fix B — settlement as an object, not a callback
@@ -130,7 +130,7 @@ Where the settlement is resolved, and why it can't be skipped:
   settleTurn(…) }`. Every terminal branch already calls `finishTurn()` (which
   computes the real outcome), so the `finally` is a no-op on the healthy paths —
   it exists to catch the branches that `return` early, which is exactly how
-  SHI-260 fired zero times. A branch added later that forgets to finish the turn
+  planning#262 fired zero times. A branch added later that forgets to finish the turn
   still settles it. (The `finally` deliberately does *not* clear
   `systemTurnInProgress`: on the retry path the superseded attempt unwinds
   **after** the retry has re-armed that flag.)
@@ -140,12 +140,12 @@ Where the settlement is resolved, and why it can't be skipped:
 
 Consequences that fall out:
 
-- **SHI-260 dissolves.** The "fire only on attempt zero" guard is **deleted**;
+- **planning#262 dissolves.** The "fire only on attempt zero" guard is **deleted**;
   every attempt reports, and the double fire it was protecting against is no
   longer expressible.
 - **Dropping completion stops being silent.** A discarded queue entry settles as
   `dropped` instead of stranding its consumer at "pending forever".
-- **The consumer can tell pending from lost.** Which is what SHI-258's `inFlight`
+- **The consumer can tell pending from lost.** Which is what planning#260's `inFlight`
   set was approximating — `merge-watch` now releases the marker and re-attempts
   on any non-`completed` outcome.
 
@@ -168,12 +168,12 @@ never steerable, and the `dropped` case reaches `onTurnComplete` too.
 
 ## Why not just more tests
 
-Every one of these bugs shipped *with* tests, and SHI-255 even shipped a guard test
-for the exact field-carrying property that SHI-259 then broke. The tests were
+Every one of these bugs shipped *with* tests, and planning#257 even shipped a guard test
+for the exact field-carrying property that planning#261 then broke. The tests were
 correct; they covered the drains that existed. A test cannot fail for a call site
 nobody has written yet, which is precisely the failure mode. A type error can.
 
-## Fix C — durable `deliveryId` (SHI-264)
+## Fix C — durable `deliveryId` (planning#266)
 
 The third layer, deferred until docs/239 shipped and now built. Fix B made
 completion an **owned** signal; it is still an **in-memory** one, so it dies with
@@ -188,7 +188,7 @@ reconstructed **no completion settlement**. For a turn dispatched on behalf of a
 notify-on-merge watch (either `kind`), after a restart: the turn kept running,
 the watch stayed non-terminal because nothing could settle it, and
 `reconcilePending` queued a **second** wake behind the still-running first one.
-SHI-259's startup ordering (adopt before reconcile) stopped them colliding; it
+planning#261's startup ordering (adopt before reconcile) stopped them colliding; it
 never stopped the duplicate.
 
 For a self-merge wake (docs/239) the duplicate's first act is a branch reset,
@@ -219,7 +219,7 @@ runner.hasDelivery(id)   // running as the current turn, OR queued behind one
 - **Queued** — the id rides `QueuedMessage` exactly as `onTurnComplete` does, so
   a wake waiting behind a busy parent answers truthfully for the whole wait.
 
-Nothing here can drift the way SHI-258's `inFlight` set did: a disposed runner is
+Nothing here can drift the way planning#260's `inFlight` set did: a disposed runner is
 gone from the registry, a replacement runner has an empty queue, and after a
 restart the answer came from the worker itself. **No runner, no delivery.**
 
@@ -255,7 +255,7 @@ as in-flight would suppress that forever), guarded on identity so a settling tur
 can't clear a successor's, and on `!runner.running` so a no-result retry that has
 already re-armed the id isn't clobbered by its superseded predecessor.
 
-## SHI-259's second half — startup ordering
+## planning#261's second half — startup ordering
 
 Startup used to launch watch reconciliation and the turn-adoption sweep as two
 independent fire-and-forget calls, reconciliation **first**. So `reconcilePending`
@@ -291,7 +291,7 @@ failing doesn't skip the other.
   the retry supervisor re-attempts on a backoff instead of the watch looking
   healthy while stranded.
 
-## Fix D — the stuck-running recovery is a terminal path (SHI-280)
+## Fix D — the stuck-running recovery is a terminal path (planning#282)
 
 Production, 2026-08-04 ~06:28 UTC. A parent session sat wedged for 40+ minutes
 with one message frozen in its queue (`Child PR #1939 merged: …`) and no agent
@@ -316,7 +316,7 @@ were still hanging off the phantom turn:
 2. **The settlement.** The turn never reached the executor's settling `finally`,
    so `onTurnComplete` never fired and `activeDeliveryId` stayed published —
    which is exactly the "indefinitely in flight" reading that suppresses every
-   retry. Same stranding class as SHI-263 / SHI-264, reached through the one
+   retry. Same stranding class as planning#265 / planning#266, reached through the one
    path Fix B and Fix C did not cover: a turn that loses its ability to settle
    itself while its runner stays perfectly alive.
 
@@ -374,7 +374,7 @@ already had that guard.
 | Settlement wiring | `src/server/orchestrator/dispatched-turn.ts`, `turn-executor.ts` | One settlement per logical turn across retries; attempt-zero guard **deleted**; `done` handler settles from a `finally` |
 | Runner impls | `src/server/orchestrator/container-session-runner.ts`, `turn-accumulator.ts` | Same narrowed signatures; queue teardown settles what it discards |
 | Callers | `wake-session.ts`, `merge-watch.ts`, `app-lifecycle.ts` (CI auto-fix), `services/rebase-driver.ts`, `services/child-sessions.ts`, `services/github-ci-fix.ts`, `services/headless-sessions.ts`, `services/agent.ts`, `ws-handlers/send-message.ts` | Migrated to `prepareDispatch`; merge-watch consumes the OUTCOME instead of assuming delivery |
-| Ordering | `src/server/orchestrator/bootstrap-managers.ts` | The adoption sweep is awaited before watch reconciliation (SHI-259's second half); `mergeWatchManagerRef` forward-ref feeds `rebindDelivery` into every runner |
+| Ordering | `src/server/orchestrator/bootstrap-managers.ts` | The adoption sweep is awaited before watch reconciliation (planning#261's second half); `mergeWatchManagerRef` forward-ref feeds `rebindDelivery` into every runner |
 | **Fix C** — worker report | `src/server/session/agent-controller.ts` | `/agent/start` accepts `deliveryId`; `turnDeliveryId` is keyed to the TURN (cleared by `endTurn`) and published on `/agent/status` |
 | Fix C — wire | `src/server/orchestrator/proxy-agent-process.ts`, `container-session-runner.ts` | `ProxyAgentProcess.deliveryId` / `setDeliveryId`, forwarded on `/agent/start`; `adoptWorkerTurn` reads `status.deliveryId` |
 | Fix C — runner contract | `src/server/orchestrator/session-runner.ts` | `activeDeliveryId` + `hasDelivery()` on both runners; `deliveryId` on `AgentDispatchOptions` / `QueuedMessage`; `dispatch` publishes it synchronously and clears it on setup failure |
@@ -396,20 +396,20 @@ already had that guard.
   incomplete `prepareDispatch` init does not compile. Plus the converter's
   runtime field coverage and `withSettlement`'s settle-even-if-the-consumer-throws
   behavior.
-- `queue-drain.test.ts` — SHI-255's round-trip guard, kept: it covers a field
+- `queue-drain.test.ts` — planning#257's round-trip guard, kept: it covers a field
   dropped *inside* the converter, which the brand does not.
 - Exhaustiveness — adding a field to `AgentDispatchOptions` without updating
   `AgentDispatchInit` / `DISPATCH_FIELDS` fails to compile, naming the field.
 - `integration_tests/turn-settlement.test.ts` — driven through the real
   `dispatch → runDispatchedTurn → executeAgentTurn` path with a fake agent:
   a no-result retry that **succeeds** settles once with success; one whose
-  retries are **exhausted** settles once with failure (SHI-260); an **errored**
+  retries are **exhausted** settles once with failure (planning#262); an **errored**
   turn settles with the error outcome, not a success; a discarded queue entry
   settles as `dropped`; and a callback-bearing system turn queued behind an
-  **ADOPTED** turn runs as a system turn and settles (SHI-259).
-- The existing SHI-254 / SHI-255 / SHI-258 regressions pass unchanged — only the
+  **ADOPTED** turn runs as a system turn and settles (planning#261).
+- The existing planning#256 / planning#257 / planning#260 regressions pass unchanged — only the
   outcome literal in two assertions grew a `status` field.
-- `integration_tests/restart-delivery-identity.test.ts` (SHI-264) — the honest
+- `integration_tests/restart-delivery-identity.test.ts` (planning#266) — the honest
   harness: a REAL `SessionWorker` over HTTP + SSE, a REAL `ContainerSessionRunner`
   and a REAL `MergeWatchManager`, run in the bootstrap order (adopt, then
   reconcile), for **both** `kind: "child"` and `kind: "self"`. A restart during a
@@ -433,7 +433,7 @@ already had that guard.
 
 ## Resolved decisions
 
-- **Compiler enforcement over convention.** SHI-259 was introduced by unrelated work
+- **Compiler enforcement over convention.** planning#261 was introduced by unrelated work
   following surrounding patterns; a documented rule and a converter module were not
   enough.
 - **Brand the options rather than lint for object literals.** A lint rule is
@@ -442,7 +442,7 @@ already had that guard.
 - **Keep the converter round-trip test.** It guards a different surface (fields
   dropped *inside* the converter) than the brand does (converter bypassed entirely).
 - **Settlement resolved in `finally`, retries inside one settlement.** Deletes
-  SHI-260's guard rather than fixing it.
+  planning#262's guard rather than fixing it.
 - **Incremental migration via a callback adapter**, not a fifteen-caller rewrite.
 - **`deliveryId` keyed to the TURN on the worker, not the spawn.** A resident
   streaming process outlives its turn, so a delivery held on `residentSpawn`

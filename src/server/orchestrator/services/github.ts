@@ -229,7 +229,7 @@ export function getGitCredential(
 }
 
 /**
- * Repo-scoped variant of {@link getGitCredential} (docs/172 Gap 2-R / SHI-79).
+ * Repo-scoped variant of {@link getGitCredential} (docs/172 Gap 2-R / planning#81).
  *
  * When the orchestrator has a GitHub App configured, this prefers a short-lived,
  * single-repo-scoped installation token over the long-lived PAT — so the
@@ -649,7 +649,7 @@ async function removePrLabels(
  * lands — see `agentCreatePr`. Cancelling here (the previous behavior) dropped
  * the pending push whenever a caller short-circuited before its synchronous
  * push (e.g. `secretBlocked`), leaving the commit local with no retry and no
- * surfaced error (SHI-198).
+ * surfaced error (planning#200).
  *
  * Chat-history linkage is deferred via `runner.pendingCommitLink`: writing
  * `commitHash` onto any row that exists right now would either land on a
@@ -676,7 +676,7 @@ export async function flushPendingTurnCommit(
      * `append` is used) so non-`ChatHistoryManager` callers can pass a stub. */
     chatHistory?: { append(sessionId: string, message: PersistedMessage): unknown };
     /**
-     * SHI-299 — override the commit subject. The default (`runner.turnSummary`)
+     * planning#301 — override the commit subject. The default (`runner.turnSummary`)
      * is right for the mid-turn `gh pr create` flush, where the work being
      * committed IS the turn's work. It is wrong for a flush that happens outside
      * a turn — a sub-agent consult finishing after its parent turn already
@@ -807,7 +807,7 @@ export async function agentCreatePr(
   // Resolve the runner so we can cancel the debounced auto-push *after* a
   // synchronous push lands below. We deliberately do NOT cancel before pushing:
   // a pending debounced push is only safe to drop once a synchronous push has
-  // actually replaced it (SHI-198). On branches that don't push synchronously
+  // actually replaced it (planning#200). On branches that don't push synchronously
   // (e.g. a not-progressed merged PR returns without pushing), the debounce is
   // left armed so the commit still reaches the remote.
   const pushRunner = options.sessionId && options.runnerRegistry

@@ -98,7 +98,7 @@ export async function rediscoverContainers(
         // valid workspace dir, bind mount validation would be unsafe
         if (!resolved?.workspaceDir) continue;
         const dockerAccess = resolved.dockerAccess;
-        // SHI-311 — the container we're adopting was created by a previous
+        // planning#313 — the container we're adopting was created by a previous
         // orchestrator process, so its worker token exists only in its own env.
         // Read it back rather than persisting a key orchestrator-side; a
         // container from before the mechanism simply has none (its worker gates
@@ -178,7 +178,7 @@ export async function adoptRunningContainer(
         // the runner, same as the no-resolver path).
         if (!resolved?.workspaceDir) return false;
         const dockerAccess = resolved.dockerAccess;
-        // SHI-311 — see rediscoverContainers: the token lives in the adopted
+        // planning#313 — see rediscoverContainers: the token lives in the adopted
         // container's own env.
         const workerUrl = `http://${networkInfo.IPAddress}:${deps.workerPort}`;
         const workerToken = workerTokenFromContainerEnv(info.Config?.Env);

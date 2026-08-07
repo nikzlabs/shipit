@@ -80,7 +80,7 @@ export function MessageList({
     identifier: string;
     title?: string;
     url?: string;
-    /** Comment to scroll to + highlight once the thread lands (SHI-103). */
+    /** Comment to scroll to + highlight once the thread lands (planning#105). */
     anchorCommentId?: string;
   }) => void;
   /**
@@ -89,7 +89,7 @@ export function MessageList({
    * path as the sidebar — resetting per-session stores and updating the URL.
    * Without it the SpawnedSessionCard falls back to a bare `setSessionId`,
    * which leaves stale messages and a stale URL (the mobile open-card bug,
-   * SHI-78).
+   * planning#80).
    */
   onResumeSession?: (sessionId: string) => void;
   /** docs/171 — confirm a proposed release from its inline card. */
@@ -175,7 +175,7 @@ export function MessageList({
   // with no click and no fetch behind it — which is why docs/244's projection
   // has to exempt exactly these writes. `isPlanDocumentWrite` is the shared
   // predicate both ends use, so neither can quietly change what counts as a plan
-  // document (SHI-296).
+  // document (planning#298).
   const findPlanContent = useMemo(() => {
     return (exitPlanMsgIndex: number): string | undefined => {
       for (let i = exitPlanMsgIndex; i >= 0; i--) {
@@ -262,7 +262,7 @@ export function MessageList({
       ref={containerRef}
       className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-2 [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_5rem]"
     >
-      {/* SHI-10 — floating "Reply" button shown when the user highlights text
+      {/* planning#12 — floating "Reply" button shown when the user highlights text
           inside a message bubble; quotes the passage into the composer. Scoped
           to this scroll container via the ref so it never fires on the composer
           or other panels. */}
@@ -498,7 +498,7 @@ export function MessageList({
       )}
 
       {/*
-        SHI-278 — the durable pending consult card (inline, at the call site) is
+        planning#280 — the durable pending consult card (inline, at the call site) is
         now the primary in-flight surface. The transient chip is only shown for a
         spawn that has no card in the transcript yet, so the two can never render
         two spinners for the same consult.

@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-107
+issue: planning#109
 description: Surface expired GitHub tokens to the UI, and only clear a stored token on an explicit 401 — never on a transient GitHub outage.
 ---
 

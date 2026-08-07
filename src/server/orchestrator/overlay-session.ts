@@ -46,13 +46,13 @@ import { readNodePin, parseVersion, satisfies } from "../shared/node-pin.js";
 // ---------------------------------------------------------------------------
 
 /**
- * The overlay dep store is ON by default (SHI-127, canary-complete on the prod
+ * The overlay dep store is ON by default (planning#129, canary-complete on the prod
  * VPS — see docs/183 FINDINGS.md). `OVERLAY_DEP_STORE` is retained for one
  * release as an explicit **kill switch**: setting it to `0` (or `false`) forces
  * the plain `agent.install` path back, so a self-hoster or prod can disable the
  * overlay without a redeploy if a regression surfaces. Any other value (unset,
  * `1`, `true`, anything else) keeps the default-on behavior. The knob is slated
- * for removal once default-on has soaked (SHI-127 step 3).
+ * for removal once default-on has soaked (planning#129 step 3).
  */
 export function isOverlayEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const v = env.OVERLAY_DEP_STORE;
@@ -84,7 +84,7 @@ export function isOverlayEligible(
  * exists, because the base scope picks the overlay `lowerdir` at create time.
  *
  * Keyed on the **pinned base-image digest** (`BASE_IMAGE_DIGEST`), not the full
- * worker-image id (SHI-194). The worker is `FROM node:24-slim@sha256:…`, a
+ * worker-image id (planning#196). The worker is `FROM node:24-slim@sha256:…`, a
  * digest-pinned base, so the base digest captures the libc + Node ABI exactly
  * while staying constant across app-code-only rebuilds — the scope rolls only on
  * a deliberate base bump, instead of minting a fresh ~500 MB base every deploy.
@@ -200,7 +200,7 @@ export interface DepDirOverlaySpec extends OverlaySpec {
  * (the kernel forbids an upperdir inside its own lowerdir). Pure cache: the
  * upper holds install deltas that rebuild on the next install after unarchive,
  * so disk reclaim (eviction / archived sweep) deletes it alongside `workspace/`
- * while preserving durable siblings like `uploads/` (SHI-192).
+ * while preserving durable siblings like `uploads/` (planning#194).
  */
 export const OVERLAY_SESSION_SUBDIR = "overlay";
 

@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-84
+issue: planning#86
 description: Give the agent a tracker-neutral, read-only path to issues (GitHub and Linear alike) via `shipit issue view`/`list`, brokered through the existing tracker registry so tokens never enter the container.
 ---
 
@@ -222,16 +222,16 @@ Two things this doc *does* guarantee, which that doc builds on:
 - **Injection hardening** — designed separately in docs/176.
 - **Cross-repo GitHub reads** (`--repo`) — kept rejected for parity with the PR
   shim.
-- ~~**Issue comments / timeline**~~ — **implemented** in the SHI-137 follow-up
+- ~~**Issue comments / timeline**~~ — **implemented** in the planning#139 follow-up
   below. (Originally deferred: `view` returned only the issue body.)
 
-## Reading comments — `view --comments` (SHI-137)
+## Reading comments — `view --comments` (planning#139)
 
 The agent could read an issue *body* and *post* comments, but the comment thread
 itself was unreadable from a container — an asymmetry (write-but-not-read) that
 left the agent flying blind when asked to "address the review comment" or read
 its own prior notes. The browser-facing `GET /api/issue/comments` is correctly
-blocked for containers by the SHI-129 trust boundary, so the fix is a narrow,
+blocked for containers by the planning#131 trust boundary, so the fix is a narrow,
 brokered, read-only callback that mirrors the existing `view`/`list` reads:
 
 - **CLI:** `shipit issue view <pointer> --comments`. The flag triggers a second
@@ -245,7 +245,7 @@ brokered, read-only callback that mirrors the existing `view`/`list` reads:
   `listIssueCommentsForTracker`. It emits **no** transcript card: the `view` leg
   already surfaced the jump-to-issue card, so a second would just duplicate it.
 - **Boundary:** read-only and brokered — the tracker token never enters the
-  container, and the SHI-129 *mutation* boundary is untouched. Comment content is
+  container, and the planning#131 *mutation* boundary is untouched. Comment content is
   attacker-controllable (docs/176), same caveat as issue bodies — printed
   verbatim, never interpreted.
 
@@ -254,7 +254,7 @@ brokered, read-only callback that mirrors the existing `view`/`list` reads:
 - `src/server/session/agent-shim/shipit.ts` — the `shipit` shim; add `issue`.
 - `src/server/session/agent-ops-routes.ts` — worker relay (`/agent-ops/*`).
 - `src/server/orchestrator/api-routes-issues.ts` — issue routes + `resolveGitHubContext`.
-- `src/server/orchestrator/services/issues.ts` — `listIssuesForTracker`, `getIssueForTracker`, `listIssueCommentsForTracker` (reused for `--comments`, SHI-137).
+- `src/server/orchestrator/services/issues.ts` — `listIssuesForTracker`, `getIssueForTracker`, `listIssueCommentsForTracker` (reused for `--comments`, planning#139).
 - `src/server/orchestrator/trackers/` — `Tracker` interface, registry, GitHub + Linear adapters (**reused unchanged**).
 - `src/server/shared/issue-ref.ts` — shared pointer→tracker parser (moved from `client/utils/`).
 

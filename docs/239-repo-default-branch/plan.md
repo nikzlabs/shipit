@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-252
+issue: planning#254
 title: Repo default branch (stop hard-coding "main")
 description: Resolve each repo's real default branch (main / master / trunk) and use it everywhere the UI and server previously assumed "main".
 ---

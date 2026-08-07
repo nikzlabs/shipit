@@ -142,7 +142,7 @@ export async function registerAgentRoutes(
             chatHistoryManager: deps.chatHistoryManager,
             ...(deps.recordAgentRateLimits ? { recordAgentRateLimits: deps.recordAgentRateLimits } : {}),
             ...(deps.credentialsDir ? { credentialsDir: deps.credentialsDir } : {}),
-            // SHI-299 — lets the service commit work a backgrounded consult left
+            // planning#301 — lets the service commit work a backgrounded consult left
             // behind once its parent turn has already ended.
             createGitManager: deps.createGitManager,
           },
@@ -166,7 +166,7 @@ export async function registerAgentRoutes(
 
   // GET /api/sessions/:id/agent/result?spawnId=…[&wait=true&timeout=N&segment=S]
   //
-  // SHI-245. Re-read a completed spawn's persisted consult card (the artifact
+  // planning#247. Re-read a completed spawn's persisted consult card (the artifact
   // the UI renders) so the invoking agent can verify parity, or recover output
   // whose delivery was lost when its `shipit agent run` was killed mid-flight.
   // Reached via the worker's `/agent-ops/agent/result` broker, which injects the

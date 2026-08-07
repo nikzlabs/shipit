@@ -40,7 +40,7 @@ export const DEFAULT_SUB_AGENT_TIMEOUT_MS = parseTimeoutEnv(
 );
 
 /**
- * SHI-278 — backstop bound on the orchestrator→worker `/agent/spawn` leg.
+ * planning#280 — backstop bound on the orchestrator→worker `/agent/spawn` leg.
  *
  * That leg used to be sent with `{ timeoutMs: 0 }` on the theory that the
  * worker's own wall-clock cap ({@link DEFAULT_SUB_AGENT_TIMEOUT_MS}) always
@@ -179,7 +179,7 @@ export function runAgentToCompletion(
   // `isStreamCompletion`. Prefer the stream-completion texts; fall back to the
   // last full message.
   //
-  // SHI-245 — a delta-streaming run can complete MORE THAN ONE message in a
+  // planning#247 — a delta-streaming run can complete MORE THAN ONE message in a
   // single turn (Codex routinely emits a long report and then a shorter wrap-up,
   // and any preamble message is its own `agentMessage` item). Keeping only the
   // last one silently handed the caller the tail of the answer — an artifact

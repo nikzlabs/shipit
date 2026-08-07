@@ -181,7 +181,7 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
     useBugReportStore.getState().seedCards(persistedCards);
   }
 
-  // docs/193 / SHI-112 — rehydrate the permission store from persisted cards so
+  // docs/193 / planning#114 — rehydrate the permission store from persisted cards so
   // each `PermissionRequestCard` renders with its correct phase (an approved/
   // denied/expired card comes back resolved, not re-offering Approve/Deny). A
   // still-pending card comes back actionable — the worker holds the request, so
@@ -194,7 +194,7 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
     usePermissionStore.getState().seedCards(persistedPermissions);
   }
 
-  // docs/172 / SHI-90 — rehydrate the egress-prompt store from persisted cards so
+  // docs/172 / planning#92 — rehydrate the egress-prompt store from persisted cards so
   // each `EgressPromptCard` renders with its correct phase (a resolved card comes
   // back resolved, not re-offering the buttons). Authoritative seed wins over a
   // buffer replay.

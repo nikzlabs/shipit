@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-173
+issue: planning#175
 title: omp (Oh My Pi) as a third agent backend
 description: Scoping what it would take to add the omp terminal coding agent as a ShipIt agent backend alongside Claude Code and Codex.
 ---

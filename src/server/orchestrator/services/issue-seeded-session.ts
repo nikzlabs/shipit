@@ -1,5 +1,5 @@
 /**
- * Issue-seeded sessions on the **in-app** path (SHI-320).
+ * Issue-seeded sessions on the **in-app** path (planning#322).
  *
  * `createHeadlessSession` derives branch/title from an `IssueRef` before the
  * session exists, because it owns creation end to end. The Issues tab's "Start

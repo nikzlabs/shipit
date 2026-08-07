@@ -67,7 +67,7 @@ export interface DockerSecretsBuild {
   perService: Record<string, string[]>;
   filePathFor: (name: string) => string;
   /**
-   * SHI-285 — compose-side (daemon-visible) absolute path of the staged
+   * planning#287 — compose-side (daemon-visible) absolute path of the staged
    * entrypoint wrapper, or `undefined` when staging failed. The override
    * bind-mounts it into each secret-consuming service container; a service is
    * left without the wrapper (and therefore without its env vars) rather than
@@ -94,7 +94,7 @@ export interface ServiceSecretsResolverOptions {
    * are written to `<serviceEnvDir>/<sessionId>/.env.<svc>` and the compose
    * override references those absolute paths via `env_file:`.
    *
-   * **Required** (SHI-290). It used to be optional, and omitting it fell back to
+   * **Required** (planning#292). It used to be optional, and omitting it fell back to
    * writing `.shipit/.env.<svc>` into the agent-readable git clone — the last
    * in-clone writer in the codebase (docs/246 req 7). Production never took that
    * branch (`bootstrap-managers.ts` always computes a root, defaulting to
@@ -296,7 +296,7 @@ export class ServiceSecretsResolver {
 
     // Two delivery modes, both writing outside the session's git clone. There is
     // no third: the in-workspace `.shipit/.env.<svc>` fallback was deleted with
-    // SHI-290, and `serviceEnvDir` is required so there is nothing to fall back
+    // planning#292, and `serviceEnvDir` is required so there is nothing to fall back
     // from.
     if (this.dockerSecretsConfig) {
       // Phase 1 follow-up: Docker-secrets mode. Write per-secret files to
@@ -359,7 +359,7 @@ export class ServiceSecretsResolver {
    *   2. Write to `dockerSecretsConfig.internalDir/<sessionId>/<NAME>`.
    *   3. Build per-service references (each service only references the
    *      secrets it declared — scoping is preserved at the compose layer).
-   *   4. Stage the entrypoint wrapper beside those files (SHI-285), so compose
+   *   4. Stage the entrypoint wrapper beside those files (planning#287), so compose
    *      can bind-mount it into service containers by absolute path.
    */
   private applyDockerSecretsMode(resolution: ReturnType<typeof resolveSecrets>): void {
@@ -389,7 +389,7 @@ export class ServiceSecretsResolver {
       if (names.length > 0) perService[svcName] = names;
     }
 
-    // SHI-285 — stage the entrypoint wrapper in the Docker-secrets root, NOT in
+    // planning#287 — stage the entrypoint wrapper in the Docker-secrets root, NOT in
     // the session clone. The old placement (`<clone>/.shipit/`) was chosen so
     // the wrapper could ride the workspace volume that service containers
     // already mount, but it put a ShipIt-generated file where the post-turn

@@ -186,7 +186,7 @@ export async function mergeSession(
         }
       }
     } catch { /* ignore cleanup errors */ }
-    // docs/150 §7 addendum (SHI-144): the push/fetch/merge git ops above ran as
+    // docs/150 §7 addendum (planning#146): the push/fetch/merge git ops above ran as
     // the root orchestrator against the active session's (booted) clone,
     // re-rooting BOTH its `.git` and the worktree files the merge rewrote. Hand
     // both back to the worker uid — same gap/fix as the rebase driver and the

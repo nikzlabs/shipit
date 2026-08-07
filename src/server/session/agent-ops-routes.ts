@@ -113,7 +113,7 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/bug-report", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/propose-actions — action checklist card (docs/207 / SHI-153).
+  // POST /agent-ops/propose-actions — action checklist card (docs/207 / planning#155).
   // The consolidated `shipit` bridge forwards `propose_actions` here; the worker
   // relays to the orchestrator with the trusted SESSION_ID injected. The
   // orchestrator validates, stamps provenance, and posts a reusable
@@ -343,7 +343,7 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/issue/labels?tracker= — the tracker's pickable label set (read, SHI-199)
+  // GET /agent-ops/issue/labels?tracker= — the tracker's pickable label set (read, planning#201)
   app.get<{ Querystring: { tracker?: string } }>(
     "/agent-ops/issue/labels",
     async (request, reply) => {
@@ -352,7 +352,7 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/issue/statuses?tracker= — the tracker's assignable statuses (read, SHI-199)
+  // GET /agent-ops/issue/statuses?tracker= — the tracker's assignable statuses (read, planning#201)
   app.get<{ Querystring: { tracker?: string } }>(
     "/agent-ops/issue/statuses",
     async (request, reply) => {
@@ -361,7 +361,7 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/issue/comments?tracker=&id= — issue comment thread (read, SHI-137)
+  // GET /agent-ops/issue/comments?tracker=&id= — issue comment thread (read, planning#139)
   app.get<{ Querystring: { tracker?: string; id?: string } }>(
     "/agent-ops/issue/comments",
     async (request, reply) => {
@@ -373,13 +373,13 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // POST /agent-ops/issue/create { tracker, title, body, labels?, priority?, parent?, createMissingLabels? } (docs/187, SHI-92, SHI-206, SHI-230)
+  // POST /agent-ops/issue/create { tracker, title, body, labels?, priority?, parent?, createMissingLabels? } (docs/187, planning#94, planning#208, planning#232)
   app.post<{ Body: { tracker?: string; trackerName?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean } }>(
     "/agent-ops/issue/create",
     async (request, reply) => relay("POST", "/issue/create", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/issue/label/create { tracker, name, color?, description? } (SHI-230)
+  // POST /agent-ops/issue/label/create { tracker, name, color?, description? } (planning#232)
   app.post<{ Body: { tracker?: string; trackerName?: string; name?: string; color?: string; description?: string } }>(
     "/agent-ops/issue/label/create",
     async (request, reply) => relay("POST", "/issue/label/create", request.body ?? {}, reply),
@@ -391,13 +391,13 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/issue/comment", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/issue/comment/edit { tracker, id, commentId, body } (SHI-86)
+  // POST /agent-ops/issue/comment/edit { tracker, id, commentId, body } (planning#88)
   app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; commentId?: string; body?: string } }>(
     "/agent-ops/issue/comment/edit",
     async (request, reply) => relay("POST", "/issue/comment/edit", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/issue/edit { tracker, id, title?, body?, labels?, priority?, parent?, createMissingLabels? } (SHI-92, SHI-206, SHI-230)
+  // POST /agent-ops/issue/edit { tracker, id, title?, body?, labels?, priority?, parent?, createMissingLabels? } (planning#94, planning#208, planning#232)
   app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean } }>(
     "/agent-ops/issue/edit",
     async (request, reply) => relay("POST", "/issue/edit", request.body ?? {}, reply),
@@ -516,7 +516,7 @@ export function registerAgentOpsRoutes(
   );
 
   // GET /agent-ops/agent/result[?spawnId=…&wait=true&timeout=N&segment=S] —
-  // SHI-245. Re-read a completed spawn's persisted consult card: the same
+  // planning#247. Re-read a completed spawn's persisted consult card: the same
   // artifact the UI renders, so the agent can verify its copy or recover one
   // whose `shipit agent run` died before the text reached it. Cheap read; the
   // default timeout applies.
@@ -724,7 +724,7 @@ export function registerAgentOpsRoutes(
   // the self-merge wake turn runs first. Destructive-looking but gated: the
   // orchestrator refuses unless the branch provably carries nothing unmerged.
   //
-  // SHI-277 — `{ force, reason }` carries the break-glass through. Forwarded
+  // planning#279 — `{ force, reason }` carries the break-glass through. Forwarded
   // verbatim and validated ORCHESTRATOR-side: this relay is not a checkpoint,
   // it just moves the body across the container boundary.
   app.post<{ Body: { force?: boolean; reason?: string } }>(
@@ -733,7 +733,7 @@ export function registerAgentOpsRoutes(
   );
 
   // ---------------------------------------------------------------------------
-  // Upward / lateral session reports (docs/233, SHI-241)
+  // Upward / lateral session reports (docs/233, planning#243)
   //
   // Every route above is parent→child. These two are the reverse: they're called
   // with THIS container's own session id (injected by `OrchestratorClient`, as

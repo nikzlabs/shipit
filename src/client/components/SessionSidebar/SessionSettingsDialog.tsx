@@ -26,7 +26,7 @@ import { useApi, ApiError } from "../../hooks/useApi.js";
 import type { EgressAllowlistView, EgressSessionSettings } from "../../../server/shared/types.js";
 
 /**
- * Per-session settings dialog (docs/172 / SHI-90).
+ * Per-session settings dialog (docs/172 / planning#92).
  *
  * Holds the session-scoped half of egress configuration — the network
  * containment override (Inherit / Contained / Open). It used to live as a bare

@@ -78,7 +78,7 @@ export const CARD_MESSAGE_FIELDS = [
  * Two kinds qualify:
  *
  *   - a card carrier (any `CARD_MESSAGE_FIELDS` field), where the card field IS
- *     the content — SHI-112;
+ *     the content — planning#114;
  *   - a system notice (`notice: true`, docs/138), the muted full-width panel an
  *     `emitNoticeInTurn` call produces (account failover, guarded-mode warning,
  *     pre-turn-reset skip).

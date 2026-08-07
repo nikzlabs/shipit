@@ -48,7 +48,7 @@ It's a heuristic, not a shell parser: exotic quoting can slip a false
 negative through, which is acceptable. False positives are avoided by
 requiring `git` to be the command token of a segment.
 
-### Second rule — destructive git on a merged branch (SHI-265)
+### Second rule — destructive git on a merged branch (planning#267)
 
 The same hook carries a second, **conditional** rule. `shipit branch
 reset-to-base` (docs/239) fails closed on a safety gate — `HEAD ===
@@ -127,7 +127,7 @@ claude.ts → claude CLI
 
 | File | Role |
 |---|---|
-| `docker/agent-hooks/block-branch-ops.mjs` | New PreToolUse hook. Node, no deps. Blocks branch create/switch, and (SHI-265, armed by `SHIPIT_GUARD_DESTRUCTIVE_GIT=1`) destructive git. |
+| `docker/agent-hooks/block-branch-ops.mjs` | New PreToolUse hook. Node, no deps. Blocks branch create/switch, and (planning#267, armed by `SHIPIT_GUARD_DESTRUCTIVE_GIT=1`) destructive git. |
 | `docker/agent-hooks/managed-settings.json` | Adds the `PreToolUse` entry (matcher `Bash`) alongside the existing `Stop` entry. Also carries `"includeCoAuthoredBy": false` (always-on, ungated) so the Claude CLI drops the `Co-Authored-By: Claude` commit trailer and the `🤖 Generated with Claude Code` PR footer — ShipIt owns the commit/PR surface, so the upstream attribution is noise. Takes effect on the next session-worker image rebuild (the file is `COPY`'d in, not mounted). |
 | `docker/agent-hooks/stop-pr-check.sh` | Early-exits unless `SHIPIT_AUTO_CREATE_PR=1` — PR enforcement stays opt-in now that the settings file is always wired up. |
 | `docker/Dockerfile.session-worker.{prod,dev,dogfood}` | `COPY` + `chmod` the new hook into `/etc/shipit/agent-hooks/`. |
@@ -136,7 +136,7 @@ claude.ts → claude CLI
 | `src/server/session/agents/claude-adapter.ts` | Forwards `autoCreatePr` from `AgentRunParams` into `ClaudeRunOptions`. |
 | `src/server/orchestrator/ws-handlers/agent-execution.ts` | `settingsPath` is now unconditional for `claude`; passes `autoCreatePr: autoCreatePrActive`. |
 
-SHI-265 additions:
+planning#267 additions:
 
 | File | Role |
 |---|---|
@@ -152,10 +152,10 @@ SHI-265 additions:
 
 | Test | What it covers |
 |---|---|
-| `src/server/session/agent-shim/block-branch-ops.test.ts` | Runs the real hook with `node`: ~15 blocked forms (incl. compound commands, env prefixes, git global options), ~15 allowed forms, and fail-open cases. SHI-265 adds the destructive-git matrix: blocked-when-armed, untouched-when-not, sandbox-exempt, `shipit branch reset-to-base` allowed, and branch ops still getting the branch-op message. |
-| `src/server/orchestrator/session-agent-run-params.test.ts` | SHI-265: the guard arms iff the session row carries `mergedHeadSha` (off when unmerged, cleared, missing, or sandbox). |
-| `src/server/orchestrator/agent-run-params-prep.test.ts` | SHI-265: Claude's hook forwards `guardDestructiveGitActive` → `guardDestructiveGit`, defaulting false. |
-| `src/server/session/agents/claude/process.test.ts` | SHI-265: `SHIPIT_GUARD_DESTRUCTIVE_GIT=1` is set in the spawn env iff `guardDestructiveGit` is true. |
+| `src/server/session/agent-shim/block-branch-ops.test.ts` | Runs the real hook with `node`: ~15 blocked forms (incl. compound commands, env prefixes, git global options), ~15 allowed forms, and fail-open cases. planning#267 adds the destructive-git matrix: blocked-when-armed, untouched-when-not, sandbox-exempt, `shipit branch reset-to-base` allowed, and branch ops still getting the branch-op message. |
+| `src/server/orchestrator/session-agent-run-params.test.ts` | planning#267: the guard arms iff the session row carries `mergedHeadSha` (off when unmerged, cleared, missing, or sandbox). |
+| `src/server/orchestrator/agent-run-params-prep.test.ts` | planning#267: Claude's hook forwards `guardDestructiveGitActive` → `guardDestructiveGit`, defaulting false. |
+| `src/server/session/agents/claude/process.test.ts` | planning#267: `SHIPIT_GUARD_DESTRUCTIVE_GIT=1` is set in the spawn env iff `guardDestructiveGit` is true. |
 | `src/server/session/agent-shim/stop-pr-check.test.ts` | Updated: `runHook` now sets `SHIPIT_AUTO_CREATE_PR=1` by default; added a case proving the hook no-ops when the var is unset. |
 | `src/server/session/claude.test.ts` | Added: `SHIPIT_AUTO_CREATE_PR=1` is set in the spawn env iff `autoCreatePr` is true. |
 

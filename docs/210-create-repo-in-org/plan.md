@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-162
+issue: planning#164
 title: Create a repository in an organization
 description: Let users create a new GitHub repo under an organization they belong to, not just their personal account.
 ---

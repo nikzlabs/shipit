@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Egress firewall installer — docs/172-agent-containment Gap 1 (SHI-90), Tier A.
+# Egress firewall installer — docs/172-agent-containment Gap 1 (planning#92), Tier A.
 #
 # Runs in a SHORT-LIVED PRIVILEGED SIDECAR that shares the agent container's
 # network namespace:
@@ -10,7 +10,7 @@
 # It installs a default-deny `iptables OUTPUT` policy plus an `ipset` allow-set
 # INTO THE AGENT'S NETNS, then exits. The rules persist for the life of the
 # netns (i.e. the agent container); the agent itself has CapDrop:ALL / no
-# NET_ADMIN and runs non-root (SHI-31), so it cannot flush or alter them.
+# NET_ADMIN and runs non-root (planning#33), so it cannot flush or alter them.
 #
 # Inputs (env, space-separated):
 #   EGRESS_ALLOWED_HOSTS  FQDNs to resolve (in the agent's own DNS view) and allow
@@ -19,7 +19,7 @@
 # Ordering matters: we resolve names + add members BEFORE switching OUTPUT to
 # DROP (once default-deny is up we could no longer resolve anything).
 #
-# This script is verified on a live Docker host (the SHI-90 checklist), not in
+# This script is verified on a live Docker host (the planning#92 checklist), not in
 # unit tests — the orchestrator-side logic that feeds it is unit-tested in
 # egress-firewall.test.ts / egress-firewall-install.test.ts.
 
@@ -68,7 +68,7 @@ for cidr in ${EGRESS_ALLOWED_CIDRS:-}; do add_member "$cidr"; done
 # NOTE: this allows ONLY the agent's *default-gateway* subnet. A session's
 # compose/preview network is attached to the agent LATER (after `docker compose
 # up`), so its subnet is opened separately, at join time, by the companion
-# allow-subnet.sh sidecar (SHI-90, GH #1495) — that's how the agent's browser
+# allow-subnet.sh sidecar (planning#92, GH #1495) — that's how the agent's browser
 # reaches the live preview.
 default_gw="$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}')"
 local_subnet=""
@@ -199,7 +199,7 @@ fi
 # resolver may not be up yet). If it's reachable, the OUTPUT policy isn't taking
 # effect: exit non-zero so the orchestrator tears the container down rather than
 # run it with open egress. (Positive/allowed-host + DNS checks live in the
-# post-create SHI-90 verification, once the resolver is running.)
+# post-create planning#92 verification, once the resolver is running.)
 if curl -sS --max-time 5 https://192.0.2.1/ >/dev/null 2>&1; then
   log "SELF-TEST FAILED: 192.0.2.1 reachable — egress NOT contained"
   exit 1

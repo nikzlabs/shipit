@@ -47,9 +47,9 @@ Settled: gating = do-then-surface + undo card; v1 scope = comment + edit + statu
 - [x] Status mapping: normalized-type + native-name + ambiguous-error per tracker
 - [x] Assignee resolution: me / name / not-found-candidates / unassign
 - [x] Card persistence, undo, no-duplicate-on-replay (chat-history + service + client store + shim)
-- [x] Write idempotency across crash/retry (SHI-112): replayed identical write performs the tracker write + card exactly once; distinct write still gets its own (`agent-issue-write-idempotency.test.ts`)
+- [x] Write idempotency across crash/retry (planning#114): replayed identical write performs the tracker write + card exactly once; distinct write still gets its own (`agent-issue-write-idempotency.test.ts`)
 
-## Labels + priority on create/edit (SHI-92)
+## Labels + priority on create/edit (planning#94)
 - [x] `Tracker.createIssue`/`updateIssue` accept `labels?`/`priority?`; `TrackerResolutionError.kind` adds `label`/`priority`; `TrackerIssue.labels?`
 - [x] Linear: `resolveLabelIds` (via `issueLabels`) → `labelIds`; `resolveLinearPriority` (normalized/native → numeric); labels on the read fields
 - [x] GitHub: `resolveLabels` validates against `GET .../labels` (reject unknown + candidates); `--priority` rejected (no native field); labels on read
@@ -59,7 +59,7 @@ Settled: gating = do-then-surface + undo card; v1 scope = comment + edit + statu
 - [x] Docs: `shipit-docs/issues.md` Labels + Priority sections; per-tracker priority behavior documented
 - [x] Tests: adapter (label resolution, priority mapping, rejections), service (additive edit, undo, gh-priority 422), shim (flag parsing, gh-priority reject, --json), chat-history round-trip
 
-## comment edit (SHI-86)
+## comment edit (planning#88)
 See plan.md → *Extension — `comment edit`*. Wanted by docs/247's migration, which
 replays 1,344 comments — the one thing it writes that could not be corrected after.
 - [x] `Tracker.updateComment(issueId, commentId, body)` → `{ comment, previousBody }`; `TrackerPermissionError` (refusal ≠ resolution failure → 403)
@@ -99,4 +99,4 @@ but nothing in the product could fix them.
 ## Deferred
 - [ ] Jira adapter (transitions-based status) when the tracker lands
 - [ ] Tracker-specific richness (projects/cycles/documents) — not via the interface
-- [ ] GitHub `priority:<value>` label mapping (SHI-92 option b) — deferred; `--priority` rejects on GitHub for now
+- [ ] GitHub `priority:<value>` label mapping (planning#94 option b) — deferred; `--priority` rejects on GitHub for now

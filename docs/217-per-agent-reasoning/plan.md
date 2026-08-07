@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-186
+issue: planning#188
 title: Per-agent reasoning controls
 description: Two reasoning/effort controls — a global per-agent default (Settings, governs sub-agents) and a per-session composer control (governs the active session's turns).
 ---
@@ -146,7 +146,7 @@ seeds new sessions from localStorage.
    WS connect query param (mirroring `?model=`); the server applies it only for an unpinned session
    with no persisted value, after validating it against the resolved agent's options. Without this
    the composer would *display* the seed while a brand-new session's first turn ran with no flag.
-7. **Seed is for new sessions only — never a live display fallback (SHI-186).** Reasoning is
+7. **Seed is for new sessions only — never a live display fallback (planning#188).** Reasoning is
    per-session: switching to a previous session must restore *its* level, not bleed the level last
    picked elsewhere. The localStorage seed therefore drives only (a) new-session creation (via the
    `?reasoning=` connect param above) and (b) the **new-session composer preview** (`ReasoningSelector`

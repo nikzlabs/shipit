@@ -1,4 +1,4 @@
-# Checklist — issue-write card redesign (SHI-101)
+# Checklist — issue-write card redesign (planning#103)
 
 - [x] Add `IssueWriteContent` + `IssueWriteCard.content` to `domain-types.ts`; note `attribution` is retained-but-unrendered.
 - [x] Capture line-2 display values in `services/issues.ts` (comment preview, title delta, description-changed flag, label/priority `attrs`, status delta, assignee name/null).

@@ -213,7 +213,7 @@ export interface GraphQLPrNode {
    * to a new commit immediately on push, but `commits(last: 1)` (and its
    * `statusCheckRollup`) lag behind during the eventual-consistency window after
    * a retrigger push. The auto-fix loop compares the two to drop a failure verdict
-   * whose rollup commit is no longer the current head (a superseded run). SHI-62.
+   * whose rollup commit is no longer the current head (a superseded run). planning#64.
    */
   headRefOid?: string;
   baseRefName: string;
@@ -490,7 +490,7 @@ export function extractHeadSha(node: GraphQLPrNode): string | undefined {
  * Unlike {@link extractHeadSha} (the rollup commit, which lags), `headRefOid`
  * reflects the ref tip immediately on push. When the two disagree, the
  * `commits(last: 1)` rollup is for a superseded commit and any failure it
- * reports is stale (SHI-62). Undefined when the field wasn't selected.
+ * reports is stale (planning#64). Undefined when the field wasn't selected.
  */
 export function extractCurrentHeadOid(node: GraphQLPrNode): string | undefined {
   return node.headRefOid;

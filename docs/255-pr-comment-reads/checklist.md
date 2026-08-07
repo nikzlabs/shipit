@@ -15,7 +15,7 @@
 - [x] `/shipit-docs/untrusted-input.md` updated: PR review feedback listed as a brokered, enveloped surface
 - [x] `npm run lint:dev` + `npm run typecheck` clean
 - [x] Cross-backend review (Codex), findings addressed:
-  - [x] PR review text wrapped in the SHI-98 untrusted-input envelope (new `pr` source), size-capped
+  - [x] PR review text wrapped in the planning#100 untrusted-input envelope (new `pr` source), size-capped
   - [x] GraphQL `totalCount` carried through, so a windowed fetch can't look complete
   - [x] `originalLine` fallback, so an outdated thread still names its line
   - [x] An empty field name inside a `--json` list is an error, not silently dropped

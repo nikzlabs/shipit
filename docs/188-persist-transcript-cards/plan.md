@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-94
+issue: planning#96
 description: Make every at-rest chat card/notice survive reload and session switch — close the recurring emit-only persistence gap.
 ---
 

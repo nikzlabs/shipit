@@ -259,7 +259,7 @@ directions, so all three are closed together.
   a kill+restart. Reachable only with no turn in flight (`dispatchOnRunner`
   enqueues while `running`).
 
-  **Correction (SHI-288, prod incident 2026-08-03).** "Reachable only with no
+  **Correction (planning#290, prod incident 2026-08-03).** "Reachable only with no
   turn in flight" was read at the time as "nothing live is interrupted." It is
   not the same claim, and the difference caused an outage: `running === false`
   does not mean nothing is alive, because a resident streaming process outlives

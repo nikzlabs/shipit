@@ -1,6 +1,6 @@
 ---
 status: planned
-issue: https://linear.app/shipit-ai/issue/SHI-93
+issue: planning#95
 description: Share installed dependency directories across sessions via a rolling overlay base per (repo, runtime), scoped to the dirs declared in shipit.yaml agent.dep-dirs (default node_modules); each session installs its delta on top. (Whole-workspace overlay superseded.)
 ---
 
@@ -75,10 +75,10 @@ agent:
   fingerprint is the orchestrator-side `overlayRuntimeKey` (pinned base-image digest + arch — pins
   libc + Node ABI). The publish compare-and-swap, depth-cap flatten, force-push lineage reset, and the
   `.shipit/.install-done` stamped marker all carry over unchanged, scoped per dep dir.
-  - **Keyed on the pinned base-image digest, not the full worker-image id (SHI-194).** The worker-image
+  - **Keyed on the pinned base-image digest, not the full worker-image id (planning#196).** The worker-image
     id changed on *every* rebuild — app-code layers, npm tooling, cache busts — none of which move the
     native-addon ABI, so each deploy minted a fresh ~500 MB base and forced a cold reinstall (the root
-    of the `overlay-base` churn SHI-193 reclaims). The worker is `FROM node:24-slim@sha256:…`, a
+    of the `overlay-base` churn planning#195 reclaims). The worker is `FROM node:24-slim@sha256:…`, a
     digest-pinned base, so the base digest captures the libc + crypto/C++ ABI exactly while staying
     constant across app-code-only rebuilds. The worker Dockerfiles bake the `FROM` digest into
     `ENV BASE_IMAGE_DIGEST`; `SessionContainerManager.resolveWorkerBaseDigest()` reads it back out of
@@ -231,7 +231,7 @@ where it accrues:
 1. **Shared bases — `overlay-base/<scope-hash>/`** (now one per `(repo, runtime, dep-dir)`). Bounded
    by **scope count, not session count**; each holds one dep dir's tree (≈ "a few `node_modules` per
    repo" in aggregate). Reclaimed by the disk-janitor `sweepOrphanedOverlayBases` via a
-   **deterministic live-mount check** (SHI-193), *not* an age cutoff: keep a scope iff some running
+   **deterministic live-mount check** (planning#195), *not* an age cutoff: keep a scope iff some running
    container pins one of its generations as a `lowerdir` right now (`docker volume inspect` →
    `overlay-base/<hash>/g<N>`) OR some *resumable* session would re-pin its current-runtime base
    (`liveOverlayScopeHashes`); everything outside that union is reclaimed **immediately, no delay**.
@@ -280,7 +280,7 @@ Net: aggregate disk drops sharply (shared base vs. per-session copies), resource
 (N small volumes + per-dep-dir bases), per-session uppers become **safe to drop**, and the only surface
 needing careful GC is "don't reap a base that's a live lowerdir."
 
-**On-host upperdir reclaim — `sessions/<id>/overlay/` (SHI-192).** The upper/work **bytes** live on
+**On-host upperdir reclaim — `sessions/<id>/overlay/` (planning#194).** The upper/work **bytes** live on
 the host state volume at `sessions/<id>/overlay/<scopeHash>/{upper,work}` — a **sibling** of the
 `workspace/` checkout, never inside it (the kernel forbids an upperdir within its own lowerdir; see
 `buildOverlaySpecs` / `OVERLAY_SESSION_SUBDIR`). Removing the Docker overlay *volume* on teardown
@@ -291,11 +291,11 @@ checkout (`light → evicted` in `tier-escalation.ts`, the archived-workspace sw
 ~490 MB upper per worker-image digest each lived through). Fixed by routing all three through
 `reclaimRegenerableSessionDirs` (`disk-utils.ts`), which deletes the **allowlisted regenerable**
 siblings (`workspace/` + `overlay/`) and **never** blanket-`rm`s the session root — so durable,
-non-git siblings like `uploads/` (SHI-180/docs/217) survive for unarchive. The upper is pure cache:
+non-git siblings like `uploads/` (planning#182/docs/217) survive for unarchive. The upper is pure cache:
 it rebuilds on the next install after unarchive. Reclaiming uppers also unpins their bases, letting
 `sweepOrphanedOverlayBases` shrink `overlay-base/` to its true floor.
 
-### Non-root worker ownership (SHI-145 — interaction with docs/150)
+### Non-root worker ownership (planning#147 — interaction with docs/150)
 
 The overlay dep dirs are created by the **root** orchestrator, but the agent writes them as the
 non-root session worker (`SHIPIT_SESSION_WORKER_UID`, docs/150). Two ownership handoffs, symmetric to
@@ -427,7 +427,7 @@ base and always run the install on top of it:
 
 The base is scoped per **`(repo, runtime fingerprint)`** — not per lockfile. The runtime
 fingerprint must describe ABI compatibility, not just broad language families: pinned base-image
-digest (SHI-194 — not the full worker-image id),
+digest (planning#196 — not the full worker-image id),
 arch, libc, and each relevant runtime ABI/version (for example Node's native module ABI,
 Python implementation + major.minor / ABI tag, and equivalent compiled-extension boundaries
 for other runtimes). That prevents a base with compiled native addons/wheels from being reused
@@ -833,7 +833,7 @@ on top of the simplified install path.
 > for the **superseded whole-workspace** design; it is retained because Phases 0–2 (the daemon-overlay
 > mechanism) and the Phase-3 *decision logic* (the publish CAS) are **reused unchanged** by the
 > current dep-dir design. What's on the branch today, gated by the **`OVERLAY_DEP_STORE` flag (now
-> default ON; `=0`/`false` is the kill switch — SHI-127)**: `overlay-volume.ts`, `overlay-base.ts`
+> default ON; `=0`/`false` is the kill switch — planning#129)**: `overlay-volume.ts`, `overlay-base.ts`
 > (publish CAS), `install-marker.ts`, the `RepoGit`
 > ancestry oracle (`isAncestor` via an explicit git exit-code — simple-git's `raw` does NOT reject on
 > `--is-ancestor` exit-1, which would have silently broken the CAS), the worker
@@ -862,9 +862,9 @@ on top of the simplified install path.
 > standby is now built with `prepareOverlaySpecs` (`warm-pool-manager.ts`), so a warm-claimed session —
 > which reuses the standby container — carries the overlay mounts (it was the only creation path
 > bypassing `createContainerForRunner`'s overlay wiring). **The overlay dep store is complete and now
-> default ON (SHI-127, 2026-06-13);** `OVERLAY_DEP_STORE=0`/`false` is retained for one release as an
+> default ON (planning#129, 2026-06-13);** `OVERLAY_DEP_STORE=0`/`false` is retained for one release as an
 > explicit kill switch. The measurement + canary-soak that justified the flip are recorded in
-> FINDINGS.md; the remaining SHI-127 follow-ups are deleting the env var/flag-off paths and canary-host
+> FINDINGS.md; the remaining planning#129 follow-ups are deleting the env var/flag-off paths and canary-host
 > cleanup.
 >
 > **The two pieces previously listed as "remaining" — (A) source-sync re-sequencing and

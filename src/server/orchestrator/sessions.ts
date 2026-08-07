@@ -93,7 +93,7 @@ function safeParseCapabilities(json: string): unknown {
 }
 
 /**
- * docs/161 / SHI-197 — the disk-idle ladder thresholds as ONE ordered,
+ * docs/161 / planning#199 — the disk-idle ladder thresholds as ONE ordered,
  * unit-consistent config (all milliseconds), replacing three free-floating
  * `*_MS` constants. "Idle age" for the ladder is
  * `now - max(Date.parse(lastUsedAt), Date.parse(lastViewedAt))` — turn activity
@@ -118,7 +118,7 @@ export interface DiskLadderThresholds {
 }
 
 /**
- * docs/161 / SHI-197 — the default ladder.
+ * docs/161 / planning#199 — the default ladder.
  *   - 24h `hot → light`: non-destructive (deps reinstall in seconds) → act early.
  *   - 2d  merged `light → evicted`: a merge is a strong "done" signal and the
  *     checkout re-fetches fresh on reopen → reclaim finished work soon.
@@ -131,7 +131,7 @@ export const DEFAULT_DISK_LADDER: DiskLadderThresholds = {
 };
 
 /**
- * SHI-197 — fail-fast guard on the ladder ordering. The ladder is incoherent
+ * planning#199 — fail-fast guard on the ladder ordering. The ladder is incoherent
  * unless `lightAfterMs ≤ evictMergedAfterMs ≤ evictUnmergedAfterMs`; an env
  * override that inverts it (e.g. `DISK_IDLE_EVICT_MERGED_MS < DISK_IDLE_LIGHT_MS`)
  * would make a session jump straight to `evicted` before ever reaching `light`,
@@ -1107,7 +1107,7 @@ export class SessionManager {
   }
 
   /**
-   * docs/213 / SHI-315 — set (or clear, with `null`) the secret-scan commit
+   * docs/213 / planning#317 — set (or clear, with `null`) the secret-scan commit
    * block. Persisted so the banner survives the runner being disposed on idle:
    * the credential is in the working tree, which outlives the container, so the
    * warning must too.
@@ -1126,7 +1126,7 @@ export class SessionManager {
    * docs/196 — every session that carries a merge-watch in a non-terminal state
    * (`armed` or `merge-observed`). Used by the startup reconcile to re-fire any
    * watch whose child PR already reached a terminal state while the orchestrator
-   * was down, by the retry supervisor to find stalled deliveries (SHI-258), and
+   * was down, by the retry supervisor to find stalled deliveries (planning#260), and
    * by `PollingGlobalGate` to keep the PR poll loop alive for a viewerless child
    * awaiting a human merge. Includes archived rows (a merged child is archived
    * by the post-merge path, but its un-delivered watch must still fire).

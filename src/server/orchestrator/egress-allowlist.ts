@@ -2,7 +2,7 @@
  * Egress allowlist — the set of hostnames a session container is permitted to
  * reach through the orchestrator-controlled forward proxy (`egress-proxy.ts`).
  *
- * docs/172-agent-containment Gap 1 (SHI-90). Session containers hold real
+ * docs/172-agent-containment Gap 1 (planning#92). Session containers hold real
  * credentials (the pinned agent's OAuth/subscription token, MCP tokens, the
  * brokered GitHub PAT) and, by product design, run with minimal human-in-the-
  * loop friction. The load-bearing backstop against credential exfiltration via

@@ -1,5 +1,5 @@
 /**
- * Shared browser event-listener hooks (docs/227, SHI-214).
+ * Shared browser event-listener hooks (docs/227, planning#216).
  *
  * Centralizes the `target.addEventListener(type, fn)` /
  * `target.removeEventListener(type, fn)` pair that several client hooks

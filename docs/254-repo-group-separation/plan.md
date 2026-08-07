@@ -1,5 +1,5 @@
 ---
-issue: roadmap#SHI-326
+issue: planning#328
 title: Repo group separation in the session sidebar
 description: Each repo group carries a persistent, user-changeable colored edge spanning the whole group.
 ---

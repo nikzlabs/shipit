@@ -210,7 +210,7 @@ written by the `claude` / `codex` CLIs) are out of scope for this encryption.
 
 ## Security note: agent-container egress
 
-Agent containers are **network-contained by default** (SHI-90,
+Agent containers are **network-contained by default** (planning#92,
 `docs/172-agent-containment`): a default-deny egress allowlist + controlled DNS
 resolver + transparent SNI proxy restrict outbound traffic to known hosts (the
 agent API, your git host, package registries, your connected MCP servers). So a

@@ -1,5 +1,5 @@
 ---
-issue: roadmap#SHI-329
+issue: planning#331
 title: Ops session inventory lookup
 description: Ops sessions can resolve a branch, PR, or container name back to the session that produced it — metadata only.
 ---

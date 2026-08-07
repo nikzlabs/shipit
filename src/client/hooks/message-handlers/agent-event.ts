@@ -252,7 +252,7 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
         //     permanently, the very bodies that exemption exists to protect —
         //     so it is not capped at all. Deliberately unbounded: the
         //     alternative is silently destroying the tail of a long
-        //     `AskUserQuestion` answer (SHI-291).
+        //     `AskUserQuestion` answer (planning#293).
         //
         //     This used to test `SUBAGENT_TOOLS`, the *layout* set, which was
         //     wrong in both directions: it spared `Skill` (which renders no

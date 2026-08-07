@@ -1,6 +1,6 @@
 /**
  * Commit the work a sub-agent consult left in the workspace after its parent
- * turn had already ended (SHI-299, docs/144).
+ * turn had already ended (planning#301, docs/144).
  *
  * ## The hole this closes
  *

@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-253
+issue: planning#255
 title: Self-merge wake — continue a session automatically when its own PR merges
 description: A session opts in to being woken when its own PR merges; the agent resets its branch via an explicit command and continues, inside its own turn.
 ---
@@ -62,7 +62,7 @@ Separating what was decided from what was derived or proposed.
 | **Arming surfaces a cancellable card** | Chosen from options |
 | **Chaining, implemented at the agent level** | "Can we simply implement chaining on the agent level?… the agent would need to rearm manually" |
 | **A tested command rather than prompt instructions** | "the command sounds more robust" |
-| **SHI-262 fixed first, separately** | Chosen from options |
+| **planning#264 fixed first, separately** | Chosen from options |
 
 ### Derived — implementation constraints, not requirements
 
@@ -70,7 +70,7 @@ The reset safety gate; `merge-observed`, the retry supervisor and startup reconc
 (inherited from docs/196, not built); firing after `markMergedAndPruneExcess`; the live
 open-PR lookup; arming replacing an existing watch; explicit-mode bypass of docs/218's
 preference; `handWorkspaceBackToWorker`; the co-located prompt file and card persistence
-(repo-wide rules); SHI-262 as a prerequisite.
+(repo-wide rules); planning#264 as a prerequisite.
 
 ### Easily-misread boundaries
 
@@ -87,7 +87,7 @@ preference; `handWorkspaceBackToWorker`; the co-located prompt file and card per
 
 Extend `SessionMergeWatch` with an optional `{ kind: "self", watchId, prNumber }` and set
 `parentSessionId === sessionId`. No new column, no migration, no second list query, no
-parallel manager path — and `merge-observed`, the SHI-258 retry supervisor, the polling
+parallel manager path — and `merge-observed`, the planning#260 retry supervisor, the polling
 gate and `reconcilePending` all come by inheritance rather than reimplementation.
 
 **Accepted limitation:** a session cannot be simultaneously parent-watched and
@@ -147,7 +147,7 @@ wake turn settles, so without it an old settlement marks the new watch delivered
 Delivery, retry and restart recovery are docs/196's, unchanged; `reconcilePending`
 branches on `kind`.
 
-### One merge, one wake — even when the wake turn is cut short (SHI-316)
+### One merge, one wake — even when the wake turn is cut short (planning#318)
 
 In production a single merge produced **two** identical wake turns 7.5 minutes apart.
 The wake ran, the user interrupted it, and the session's next message spawned a fresh
@@ -155,7 +155,7 @@ agent that took the runner's `_agent` slot. The wake spawn's late `agent_done` t
 arrived with a stale `runToken` and was dropped by the docs/146 relay guard — right for
 the relay, since emitting it would run the dead turn's teardown against the live turn's
 slot — but nothing else told the wake turn it was over. Its settlement stayed pending,
-so the watch sat at `merge-observed`, which the SHI-258 supervisor cannot distinguish
+so the watch sat at `merge-observed`, which the planning#260 supervisor cannot distinguish
 from "the container never booted". Neither `settleAsDropped` net covered it: the runner
 was alive (no `disposed`) and the worker truthfully reported an agent running (no
 `turn_abandoned`).
@@ -241,7 +241,7 @@ Six things the mode must change or add:
 
 The safety gate is retained exactly: `HEAD === mergedHeadSha`, clean tree, on
 `session.branch`, no in-progress sequencer, re-checked after the fetch. It is what makes a
-duplicate wake, a late wake, or a wake behind SHI-262's uncommitted work refuse rather
+duplicate wake, a late wake, or a wake behind planning#264's uncommitted work refuse rather
 than destroy.
 
 **The gate is prompt-mediated.** A refused agent could still hand-roll `git reset --hard`.
@@ -280,7 +280,7 @@ watch silently; the user froze that transcript deliberately.
 
 ## Prerequisite — done
 
-**SHI-262** ✅ — the finished turn's local commit now completes before a queued turn
+**planning#264** ✅ — the finished turn's local commit now completes before a queued turn
 starts. Without it a wake queued behind a user turn would meet uncommitted work and
 refuse, making the happy path unreliable. The guarantee lives inside `tryDrain`, the
 funnel every drain site passes through, so it holds for all of them rather than for one
@@ -288,9 +288,9 @@ reordered call site.
 
 ## Known gaps (tracked separately)
 
-- **SHI-263** — a dispatch throwing during setup strands its settlement and blocks
-  SHI-258's retry.
-- ~~**SHI-264** — a restart mid-wake can queue a duplicate; the reset gate makes it refuse
+- **planning#265** — a dispatch throwing during setup strands its settlement and blocks
+  planning#260's retry.
+- ~~**planning#266** — a restart mid-wake can queue a duplicate; the reset gate makes it refuse
   rather than destroy.~~ Closed: every wake-turn now carries a durable delivery id the
   worker reports back, so adoption re-settles the surviving turn and reconcile
   redispatches only when nothing reports it. See docs/240 § Fix C.
@@ -301,9 +301,9 @@ reordered call site.
 |---|---|---|
 | Watch | `sessions.ts`, `shared/types/domain-types/session.ts` | `kind`/`watchId`/`prNumber` on `SessionMergeWatch` |
 | Arm / cancel | `agent-shim/shipit-session.ts`, `agent-ops-routes.ts`, session routes | `--self`; live open-PR lookup; cancel with `watchId` |
-| Delivery | `merge-watch.ts` | Self branch: anchor comparison, closed-note, `watchId` settlement check, `reconcilePending` branch; SHI-316 `interrupted` is terminal + the retry's `hasTurnInFlight` gate |
-| Settlement | `turn-settlement.ts`, `turn-executor.ts` | SHI-316 `interrupted` outcome; settle on the `superseded` event |
-| Slot displacement | `container-session-runner.ts`, `session-runner.ts`, `proxy-agent-process.ts` | SHI-316 emit `superseded` on a proxy pushed out by a newer spawn |
+| Delivery | `merge-watch.ts` | Self branch: anchor comparison, closed-note, `watchId` settlement check, `reconcilePending` branch; planning#318 `interrupted` is terminal + the retry's `hasTurnInFlight` gate |
+| Settlement | `turn-settlement.ts`, `turn-executor.ts` | planning#318 `interrupted` outcome; settle on the `superseded` event |
+| Slot displacement | `container-session-runner.ts`, `session-runner.ts`, `proxy-agent-process.ts` | planning#318 emit `superseded` on a proxy pushed out by a newer spawn |
 | Wake | `wake-session.ts` | Restore the checkout if missing |
 | Reset | `services/pre-turn-reset.ts` | Explicit mode: setting-blind, idempotent, strict push failure, ownership handback |
 | Prompt | `orchestrator/prompts/self-merge-wake.md` | Co-located template |

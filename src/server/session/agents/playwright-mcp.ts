@@ -37,7 +37,7 @@
  * with zero writes to the read-only store. We don't need a persistent profile:
  * the MCP server is per-session and the browser only drives the live preview, so
  * there is no cross-session cookie/login state worth keeping. This regressed
- * when SHI-145 moved the worker to uid 1000; before that the worker ran as root
+ * when planning#147 moved the worker to uid 1000; before that the worker ran as root
  * and the profile `mkdir` into the root-owned store silently succeeded.
  */
 

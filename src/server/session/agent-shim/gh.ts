@@ -558,7 +558,7 @@ function threadLocation(t: Record<string, unknown>): string {
  * Full `--comments` rendering: conversation comments, reviews, inline threads.
  *
  * Every byte here is authored by whoever can comment on the PR — on a public
- * repo, anyone — so the whole block goes through the SHI-98 untrusted-input
+ * repo, anyone — so the whole block goes through the planning#100 untrusted-input
  * envelope (`shared/untrusted-input.ts`, `source: "pr"`), exactly as the
  * `shipit issue` shim does with issue comments. It is data to read, never
  * instructions to follow.

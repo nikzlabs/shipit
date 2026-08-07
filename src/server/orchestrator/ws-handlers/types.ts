@@ -140,13 +140,13 @@ export interface AppCtx {
   warmSessionForRepo: (repoUrl: string) => Promise<void>;
 
   /**
-   * docs/172 (SHI-90) — durable egress allowlist + containment store. The Tier C
+   * docs/172 (planning#92) — durable egress allowlist + containment store. The Tier C
    * card's "Add to allowlist" writes through here so the grant outlives the
    * session. Optional — test / local contexts that don't exercise egress omit it.
    */
   egressAllowlistStore?: EgressAllowlistStore;
   /**
-   * docs/172 (SHI-90) — used to reload a running session's egress sidecars after
+   * docs/172 (planning#92) — used to reload a running session's egress sidecars after
    * an "Add to allowlist" so the new host takes effect without a restart.
    * Optional — null in local/test runtimes (the add still persists).
    */

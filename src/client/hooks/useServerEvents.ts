@@ -492,7 +492,7 @@ export function useServerEvents(): void {
       useSettingsStore.getState().setProviderAccounts(data.accounts);
     });
 
-    // docs/172 / SHI-90 — egress containment settings changed in another tab.
+    // docs/172 / planning#92 — egress containment settings changed in another tab.
     // Refresh the effective allowlist view so the Settings → Network egress
     // editor stays in sync. Only when already loaded (the panel was opened),
     // so a background tab that never opened Settings doesn't fetch.

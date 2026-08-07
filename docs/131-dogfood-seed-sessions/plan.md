@@ -1,6 +1,6 @@
 ---
 description: Seed script that adds a reproducible set of repos to the ShipIt-in-ShipIt dogfood loop at dev-service boot, plus the API the outer agent uses to drive the inner ShipIt.
-issue: https://linear.app/shipit-ai/issue/SHI-52
+issue: planning#54
 ---
 
 # Dogfood seed sessions (reproducible inner state for ShipIt-in-ShipIt)
@@ -234,7 +234,7 @@ So the work for reqs 8–10 is:
   the new behavior, and it belongs to the existing route rather than to a second
   one. Implemented by lifting the materialization out of `activateSession` into
   `services/materialize-runner.ts` and calling it from both sides, so the
-  archived guard and the SHI-179 workspace restore cannot drift between
+  archived guard and the planning#181 workspace restore cannot drift between
   transports. What still 404s: an id with no session row, an archived session,
   and a session with no workspace.
 - **Trust, at seed time.** The 403 trust gate (`session-runner.ts:336`) is the

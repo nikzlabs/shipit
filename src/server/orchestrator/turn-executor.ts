@@ -182,11 +182,11 @@ export interface TurnInput {
    * docs/240 — this is the settlement hook: `dispatch` chains the handle's
    * `settle` onto it, and the `done` handler fires it from a `finally` so a turn
    * cannot exit without signalling completion. `runDispatchedTurn` owns "exactly
-   * once across no-result retries" on top of it (SHI-260).
+   * once across no-result retries" on top of it (planning#262).
    */
   onTurnComplete?: (outcome: TurnOutcome) => void;
   /**
-   * SHI-264 — durable identity of the server-side DELIVERY this turn runs on
+   * planning#266 — durable identity of the server-side DELIVERY this turn runs on
    * behalf of. Published on the runner (`activeDeliveryId`) for the turn's
    * duration and stamped onto the spawn so the worker reports it back — the two
    * halves that let a supervisor derive "is this delivery live?" instead of
@@ -236,7 +236,7 @@ export async function executeAgentTurn(
   let agentErrored = false;
   let turnCompleteFired = false;
   /**
-   * SHI-316 — a newer spawn took this turn's agent slot (see the `superseded`
+   * planning#318 — a newer spawn took this turn's agent slot (see the `superseded`
    * event on `AgentProcessEvents`). Latched rather than settled inline so the
    * outcome is built by the one `finishTurn` chain below.
    */
@@ -244,7 +244,7 @@ export async function executeAgentTurn(
   const settleTurn = (outcome: TurnOutcome): void => {
     if (turnCompleteFired) return;
     turnCompleteFired = true;
-    // SHI-264 — the delivery stops being live the moment the turn settles, and
+    // planning#266 — the delivery stops being live the moment the turn settles, and
     // it must stop being live BEFORE the consumer is told: the consumer's first
     // act on a non-`completed` outcome is to ask whether a retry is warranted,
     // and a delivery still reading as in-flight would suppress it forever.
@@ -272,7 +272,7 @@ export async function executeAgentTurn(
     // CI auto-fix loop — are unaffected; `status` carries the finer distinction
     // for consumers that opt into it.
     //
-    // SHI-316 — a turn that RAN and was then cut short settles as `interrupted`,
+    // planning#318 — a turn that RAN and was then cut short settles as `interrupted`,
     // not `no-result`. The two look identical from here (no `agent_result` ever
     // arrived) but mean opposite things to a delivery supervisor: `no-result` is
     // "the work never reached anyone, try again", while `interrupted` is "the
@@ -302,14 +302,14 @@ export async function executeAgentTurn(
 
   if (runner) {
     runner.running = true;
-    // docs/169 + SHI-255 — a system turn suppresses live steering for its whole
+    // docs/169 + planning#257 — a system turn suppresses live steering for its whole
     // duration. `dispatch` sets the flag synchronously for a turn it starts from
     // idle; a system turn that was ENQUEUED and drains later never went through
     // that branch, so set it here too (idempotent) — otherwise a wake-turn
     // drained behind a user turn would run steerable, and a message arriving
     // mid-turn would be injected into it. `finishTurn` clears it.
     if (input.systemTurn) runner.systemTurnInProgress = true;
-    // SHI-264 — publish this turn's delivery for its whole duration. `dispatch`
+    // planning#266 — publish this turn's delivery for its whole duration. `dispatch`
     // already set it synchronously on the start-now path; adoption and the
     // queue-drain path reach it only here.
     //
@@ -588,7 +588,7 @@ export async function executeAgentTurn(
     // whose `agent_done` never arrives), so this is the turn's last chance to
     // get its partial edits into git. `tryDrain` only commits when a turn is
     // queued behind this one, so an errored turn with an empty queue committed
-    // nothing. Ordered after the drain for the SHI-262 reason: with a queue,
+    // nothing. Ordered after the drain for the planning#264 reason: with a queue,
     // `tryDrain` has already committed and this reuses that commit; with none,
     // `drainNext` starts nothing, so no later turn's edits can be swept into
     // this turn's commit.
@@ -620,7 +620,7 @@ export async function executeAgentTurn(
   let receivedResult = false;
 
   /**
-   * SHI-277 — run ONE step of a turn's terminal sequence so that its failure
+   * planning#279 — run ONE step of a turn's terminal sequence so that its failure
    * cannot skip the steps after it. Above all: it cannot skip the commit.
    *
    * `7f6aeb85` made `runCommitAndPr` REACHABLE from every terminal path. It did
@@ -651,7 +651,7 @@ export async function executeAgentTurn(
    *
    * So: no step of a terminal sequence may prevent a later one. A failure is
    * logged and the sequence continues. The ORDER is unchanged and still
-   * load-bearing (SHI-262 drain-after-commit, finished-SSE before the commit,
+   * load-bearing (planning#264 drain-after-commit, finished-SSE before the commit,
    * the runner "idle" signal after it) — this only removes the implicit
    * "…if everything before it succeeded".
    */
@@ -689,7 +689,7 @@ export async function executeAgentTurn(
   const stderrTail = createAgentStderrTail();
   agent.on("log", (source: string, text: string) => { stderrTail.record(source, text); });
 
-  // SHI-316 — a newer spawn took this turn's agent slot. SETTLE ONLY: the turn
+  // planning#318 — a newer spawn took this turn's agent slot. SETTLE ONLY: the turn
   // that displaced this one owns the runner, the `_agent` slot and the working
   // tree, so this one must not clear `running`, drain the queue, broadcast a
   // finished-SSE or run a post-turn commit — doing any of that alongside a live
@@ -722,7 +722,7 @@ export async function executeAgentTurn(
     // drains only after the rebase fully settles (the driver's own
     // `drainQueue` callback owns that).
     if (postTurn === "none") return;
-    // SHI-262 — the finished turn's edits MUST be in git before a queued turn
+    // planning#264 — the finished turn's edits MUST be in git before a queued turn
     // starts. A queued turn is free to begin by discarding working-tree state
     // (`git reset --hard`, `git checkout -f`, a branch reset); edits that never
     // entered git have no reflog entry and no way back, so draining first is a
@@ -767,7 +767,7 @@ export async function executeAgentTurn(
       // Fallback for minimal test setups that wire `autoCommit` but not
       // `commitTurn`. Both production paths (`agent-execution.ts` and
       // `runner-registry-factory.ts`) wire `commitTurn` → `postTurnCommit`, which
-      // is where the SHI-315 banner state + remediation turn live; this path
+      // is where the planning#317 banner state + remediation turn live; this path
       // keeps the notice only, and deliberately has no `sessionManager` to
       // persist block state into.
       const result = await deps.autoCommit(runner.sessionDir, summary);
@@ -822,7 +822,7 @@ export async function executeAgentTurn(
   };
 
   /**
-   * SHI-262 — run the local auto-commit at most once per turn, whichever path
+   * planning#264 — run the local auto-commit at most once per turn, whichever path
    * reaches it first. `tryDrain` calls this ahead of starting a queued turn;
    * `runCommitAndPr` calls it on the ordinary path. Memoizing the PROMISE (not
    * the resolved hash) means a second caller arriving while the commit is still
@@ -889,7 +889,7 @@ export async function executeAgentTurn(
   // Guarded by `running` so a back-to-back queued turn that `tryDrain` just
   // started suppresses a spurious finished→started flicker.
   //
-  // SHI-262 caveat: when a message IS queued, `tryDrain` commits before starting
+  // planning#264 caveat: when a message IS queued, `tryDrain` commits before starting
   // it, so this broadcast lands after that commit. That path is suppressed by
   // the `running` guard anyway (the drained turn is already running), so the
   // promptness property above is unaffected — it only ever mattered for the
@@ -922,13 +922,13 @@ export async function executeAgentTurn(
   // commit/PR/finished to `done` (the slow git work runs after the client has
   // cleared queued state).
   //
-  // SHI-262 — note that the non-streaming branch drains HERE, at `agent_result`,
+  // planning#264 — note that the non-streaming branch drains HERE, at `agent_result`,
   // while its commit runs later in `done`. Reordering the two statements in the
   // `done` handler would therefore have fixed nothing; the guarantee has to live
   // inside `tryDrain`, which is the one point every drain path goes through.
   let streamingPostTurnFired = false;
   /**
-   * SHI-247 — the streaming post-turn sequence currently in flight, assigned in
+   * planning#249 — the streaming post-turn sequence currently in flight, assigned in
    * the SAME synchronous block that sets `streamingPostTurnFired`. Anyone who
    * observes that flag as `true` therefore also observes this promise, which is
    * what lets `rearmForSelfWokenTurn` wait the finished turn's flow out before
@@ -937,7 +937,7 @@ export async function executeAgentTurn(
   let streamingPostTurn: Promise<void> | null = null;
 
   /**
-   * SHI-247 — hand the guards back to a turn the CLI started on its own.
+   * planning#249 — hand the guards back to a turn the CLI started on its own.
    *
    * A `Bash(run_in_background)` job finishing re-invokes the model, and for a
    * resident streaming process that self-woken turn runs through THIS closure —
@@ -1004,7 +1004,7 @@ export async function executeAgentTurn(
   };
 
   agent.on("event", async (event: AgentEvent) => {
-    // SHI-247 — the CLI is starting a turn nobody asked it for. `agent-listeners`
+    // planning#249 — the CLI is starting a turn nobody asked it for. `agent-listeners`
     // has already given it a clean accumulator and marked the runner running
     // (docs/235 §6); this gives it a post-turn flow to end on.
     if (event.type === "agent_self_wake") {
@@ -1042,13 +1042,13 @@ export async function executeAgentTurn(
     if (useStreaming) {
       if (streamingPostTurnFired) return;
       streamingPostTurnFired = true;
-      // SHI-277 — every step runs through `postTurnStep`, so a throw in the
+      // planning#279 — every step runs through `postTurnStep`, so a throw in the
       // token sync-back, the drain or the finished-SSE broadcast can no longer
       // abandon the rest of the sequence (and with it the commit). This is the
       // path the ordinary streaming turn ends on, so it is the one that
       // silently dropped a completed turn's work.
       //
-      // SHI-247 — published as `streamingPostTurn` in this same synchronous
+      // planning#249 — published as `streamingPostTurn` in this same synchronous
       // block so a self-wake landing mid-flow waits it out before re-arming
       // (see `rearmForSelfWokenTurn`). The sequence and its order are unchanged.
       streamingPostTurn = (async () => {
@@ -1086,7 +1086,7 @@ export async function executeAgentTurn(
     // docs/240 — everything below is wrapped so the turn SETTLES on every exit
     // path, including the early `return`s. The one that mattered is the
     // no-result hand-off near the bottom: it returns without calling
-    // `finishTurn`, which is exactly how SHI-260's callback ended up firing zero
+    // `finishTurn`, which is exactly how planning#262's callback ended up firing zero
     // times. Settling here is the structural version of that fix — a branch
     // added later that forgets to finish the turn still settles it, and
     // `runDispatchedTurn`'s attempt filter discards the settlement of an attempt
@@ -1110,7 +1110,7 @@ export async function executeAgentTurn(
       }
 
       // Non-streaming captures the token here too (fallback if agent_result was
-      // lost); streaming already synced in the agent_result block. SHI-277 —
+      // lost); streaming already synced in the agent_result block. planning#279 —
       // guarded: a credentials-tree failure here must not skip the commit far
       // below.
       if (!useStreaming) await postTurnStep("token-sync", trySyncToken);
@@ -1152,7 +1152,7 @@ export async function executeAgentTurn(
         // read as "exited with code 1". Redacted + bounded by the tail itself.
         const detail = stderrTail.describe();
         const message = detail ? `${base}: ${detail}` : base;
-        // SHI-277 — this writes a chat row; a SQLite failure here must not skip
+        // planning#279 — this writes a chat row; a SQLite failure here must not skip
         // the commit below (a dead turn's partial edits are the whole reason
         // this path commits at all).
         await postTurnStep("no-result-row", () => {
@@ -1181,7 +1181,7 @@ export async function executeAgentTurn(
       // already owns the visible row. WS-only: dispatch leaves `onInterruptedTurn`
       // unset and surfaces no-result exits via `onNoResultExit` instead.
       if (!receivedResult && !sawAuthRequired) {
-        // SHI-277 — guarded for the same reason as the row above: it rewrites
+        // planning#279 — guarded for the same reason as the row above: it rewrites
         // chat-history rows, and its failure must not cost the turn its commit.
         await postTurnStep("finalize-partial-turn", () => input.onInterruptedTurn?.());
       }
@@ -1203,7 +1203,7 @@ export async function executeAgentTurn(
         !sawAuthRequired &&
         !(runner?.wasInterrupted ?? false)
       ) {
-        // SHI-277 — a hook that THROWS has not claimed the turn, so fall
+        // planning#279 — a hook that THROWS has not claimed the turn, so fall
         // through to the normal teardown (which commits) rather than
         // abandoning the sequence. Only a clean `true` hands the turn over.
         let handled = false;
@@ -1224,7 +1224,7 @@ export async function executeAgentTurn(
         // drained and only fires here on the abnormal-exit path. The done handler
         // above already cleared the resident ref + `isStreamingActive`, so the
         // drained turn spawns a fresh agent rather than writing to dead stdin.
-        // SHI-262 — on that abnormal-exit path `tryDrain` also runs the local
+        // planning#264 — on that abnormal-exit path `tryDrain` also runs the local
         // auto-commit first when something is queued, so the crashed turn's
         // partial edits are in git before the queued turn (which may reset the
         // working tree) starts.
@@ -1259,7 +1259,7 @@ export async function executeAgentTurn(
       // commit/PR, then signal idle (remediation) last. All guarded so a prior
       // agent_result that already drained/synced makes these no-ops — including
       // `runCommitAndPr`, whose `commitOnce` returns the commit `tryDrain`
-      // already made when it had a queued turn to start (SHI-262).
+      // already made when it had a queued turn to start (planning#264).
       await postTurnStep("drain", tryDrain);
       await postTurnStep("finished-sse", broadcastFinishedIfIdle);
       await postTurnStep("commit", runCommitAndPr);
@@ -1316,7 +1316,7 @@ export async function executeAgentTurn(
       }
       agent.sendUserMessage(prompt);
     } else {
-      // SHI-264 — stamp the delivery onto the spawn BEFORE it starts, so the
+      // planning#266 — stamp the delivery onto the spawn BEFORE it starts, so the
       // worker records it with the turn and reports it from `/agent/status`.
       // That report is the only thing that can tell an orchestrator which
       // started AFTER this turn what delivery the surviving turn belongs to.

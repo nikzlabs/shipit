@@ -313,7 +313,7 @@ export async function registerRoutes(
     secretStore,
     reviewStore,
     egressAllowlistStore,
-    // docs/172 (SHI-90) — honest enforcement signal for the browser: policy vs
+    // docs/172 (planning#92) — honest enforcement signal for the browser: policy vs
     // actual enforcement. Fixed function of the process env.
     egressEnforcementActive: egressEnforcementActive(),
     presentStore,
@@ -584,7 +584,7 @@ export async function registerRoutes(
         });
       };
 
-      // SHI-315 — rehydrate the "commits are blocked by a secret" banner. This is
+      // planning#317 — rehydrate the "commits are blocked by a secret" banner. This is
       // the half that makes the warning genuinely sticky: the block lives in the
       // working tree, which outlives both the runner and the container, so a
       // reload or a session switch has to be able to re-derive it from the
@@ -647,7 +647,7 @@ export async function registerRoutes(
             // without this a mid-turn reconnect re-sent every heavy body the
             // history path had just stripped.
             //
-            // SHI-297 — `committedBodyIds` says which half of the in-flight turn
+            // planning#299 — `committedBodyIds` says which half of the in-flight turn
             // a boundary has already written, so the already-committed prefix is
             // stripped too and only the genuinely in-memory tail ships whole.
             messages: projectTurnSnapshotForWire(

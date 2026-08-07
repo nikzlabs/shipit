@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SHI-76 — git fetch overhead benchmark
+# planning#78 — git fetch overhead benchmark
 # Mirrors ShipIt's git topology: a bare cache (repo-cache/<hash>) kept fresh by
 # `git fetch --all --force --prune`, and per-session workspace clones cut from it
 # with `git clone --local`, which then `git fetch origin` against the real remote.

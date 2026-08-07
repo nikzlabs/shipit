@@ -81,7 +81,7 @@ export interface WakeTurnOptions {
    */
   onSettled?: (outcome: TurnOutcome) => void;
   /**
-   * SHI-264 — durable identity for this delivery, stamped onto the turn and
+   * planning#266 — durable identity for this delivery, stamped onto the turn and
    * carried all the way to the worker.
    *
    * `onSettled` is an in-memory callback: it dies with the orchestrator process,

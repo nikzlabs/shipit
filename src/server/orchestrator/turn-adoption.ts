@@ -50,7 +50,7 @@ export interface InFlightTurnInfo {
   /** The run token the worker recorded for this spawn (absent on a legacy worker). */
   runToken?: string;
   /**
-   * SHI-264 — the durable DELIVERY id the worker recorded for this turn, when it
+   * planning#266 — the durable DELIVERY id the worker recorded for this turn, when it
    * was dispatched on behalf of a server-side delivery (a notify-on-merge wake).
    * Absent for an ordinary user turn and on a legacy worker.
    */
@@ -81,11 +81,11 @@ export async function adoptInFlightTurn(
   // `tryDrain` has already cleared `running` by the time this fires, so it
   // starts a real turn.
   //
-  // SHI-259 — this used to rebuild `AgentDispatchOptions` by hand (text +
+  // planning#261 — this used to rebuild `AgentDispatchOptions` by hand (text +
   // activity + images + files + uploads + permissionMode), dropping `execution`,
   // `systemTurn`, `postTurn`, and `onTurnComplete`. A notify-on-merge wake-turn
   // queued behind an ADOPTED turn therefore ran as an ordinary turn and never
-  // signalled completion — the exact failure SHI-255 had just fixed for the
+  // signalled completion — the exact failure planning#257 had just fixed for the
   // other three drains, reachable again through this path. It now routes through
   // the shared `startQueuedMessage`, and (docs/240) `dispatch` /
   // `runDispatchedTurn` take a branded `PreparedDispatch`, so the hand-rolled
@@ -104,7 +104,7 @@ export async function adoptInFlightTurn(
     });
   };
 
-  // SHI-264 — re-acquire the completion settlement for the delivery this turn
+  // planning#266 — re-acquire the completion settlement for the delivery this turn
   // was dispatched on behalf of.
   //
   // Adoption rebuilds a live turn, but the settlement it started with died with

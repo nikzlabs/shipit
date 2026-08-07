@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-141
+issue: planning#143
 description: A --detached flag on `shipit session create` that spawns a completely separate, unlinked session for unrelated work — no parent link, no sidebar nesting, no coordination, no notification.
 ---
 

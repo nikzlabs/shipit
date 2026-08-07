@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-203
+issue: planning#205
 description: "Sync with <base>" now also fast-forwards the session clone's local base ref (e.g. main) and leaves a persisted "Synced with <base>" transcript card, like the docs/218 branch-updated card.
 ---
 

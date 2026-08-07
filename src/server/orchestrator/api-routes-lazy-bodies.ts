@@ -1,8 +1,8 @@
 /**
  * Fetch endpoints for the bodies the docs/244 projection strips from the
- * transcript payload (SHI-267). Each one is hit when the user opens the view
+ * transcript payload (planning#269). Each one is hit when the user opens the view
  * that actually shows the body — "Show all N lines", the diff modal, an image,
- * or a sub-agent consult's output viewer (SHI-297) — so the transcript itself
+ * or a sub-agent consult's output viewer (planning#299) — so the transcript itself
  * never carries them.
  *
  * These read `ChatHistoryManager.load()` directly rather than the projected
@@ -109,7 +109,7 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
   // GET /api/sessions/:id/tool-inputs/:toolUseId — the whole stored input.
   //
   // Returns the input verbatim rather than the three Edit/Write body fields it
-  // used to name (SHI-296): the projection now shortens or removes keys for
+  // used to name (planning#298): the projection now shortens or removes keys for
   // every tool, so what a caller needs back depends on the tool — a `Bash`
   // command, a `Task` prompt, an MCP argument object. The persisted row always
   // holds the whole thing, so the honest answer is all of it.
@@ -135,7 +135,7 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
 
   // GET /api/sessions/:id/sub-agent-consults/:cardId — the consult's full output.
   //
-  // SHI-297 — the card face draws a 140-character preview line and the rest is
+  // planning#299 — the card face draws a 140-character preview line and the rest is
   // modal-only, so the wire copy carries only the preview. Served from the
   // persisted card, which is always whole: `projectConsultCardForWire` runs on
   // the serve path, and `updateSubAgentConsultCard` (a read-modify-write updater

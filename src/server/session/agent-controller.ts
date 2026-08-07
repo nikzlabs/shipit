@@ -64,7 +64,7 @@ export class AgentController {
   private residentSpawn: { runToken?: string; streaming: boolean } | null = null;
 
   /**
-   * SHI-264 — the durable DELIVERY id of the turn currently in flight, when the
+   * planning#266 — the durable DELIVERY id of the turn currently in flight, when the
    * orchestrator dispatched it on behalf of a server-side delivery (a
    * notify-on-merge wake). Published via `/agent/status` so a restarted
    * orchestrator can re-identify the delivery and rebind its completion
@@ -144,7 +144,7 @@ export class AgentController {
         // orchestrator replays from exactly here, so the live turn's events are
         // re-delivered while the previous (already-persisted) turn's are not.
         this.beginTurn();
-        // SHI-264 — stamp the delivery AFTER `beginTurn` (which clears nothing,
+        // planning#266 — stamp the delivery AFTER `beginTurn` (which clears nothing,
         // but keeps the "turn identity is established first" reading) and
         // before anything can be emitted.
         this.turnDeliveryId = deliveryId;
@@ -233,7 +233,7 @@ export class AgentController {
           console.warn(`[sub-agent] worker rejected spawn=${spawnId}: unknown agent ${agentId}`);
           return reply.code(400).send({ error: `Unknown agent: ${agentId} (${getErrorMessage(err)})` });
         }
-        // SHI-278 — this whole path used to be silent, so a consult that never
+        // planning#280 — this whole path used to be silent, so a consult that never
         // produced an artifact left nothing in the worker logs either.
         console.log(
           `[sub-agent] worker spawn=${spawnId} agent=${agentId} depth=${depth ?? 0} `
@@ -412,7 +412,7 @@ export class AgentController {
   /** docs/240 — the turn ended (result, process exit, or kill). */
   private endTurn(): void {
     this.turnActive = false;
-    // SHI-264 — the delivery belongs to the turn that just ended; a later
+    // planning#266 — the delivery belongs to the turn that just ended; a later
     // `/agent/status` must not report it as still live.
     this.turnDeliveryId = undefined;
   }
@@ -465,7 +465,7 @@ export class AgentController {
    */
   private wireAgentEvents(agent: AgentProcess, runToken?: string): void {
     agent.on("event", (event: AgentEvent) => {
-      // SHI-288 — the event channel carries the spawn token too. It used to be
+      // planning#290 — the event channel carries the spawn token too. It used to be
       // the only channel that didn't, so a retired process's late `agent_result`
       // (the canonical turn-ended signal) was routed into whatever proxy held
       // the orchestrator's slot, settling a turn that had just started. The

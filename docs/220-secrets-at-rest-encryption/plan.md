@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-191
+issue: planning#193
 title: Secrets at-rest encryption
 description: Encrypt the per-repo secrets and account-wide credentials ShipIt persists, with a zero-config default key and a fail-closed bootstrap.
 ---

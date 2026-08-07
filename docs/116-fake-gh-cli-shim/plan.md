@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-207
+issue: planning#209
 description: Sandboxed gh shim for agent-driven PRs, plus gh run / gh workflow access (reads + own-branch re-run).
 ---
 

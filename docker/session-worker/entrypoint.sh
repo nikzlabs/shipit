@@ -74,7 +74,7 @@ for d in /workspace /uploads /persist /session-state /dep-cache /credentials /ho
   fi
 done
 
-# docs/172 Gap 5 (SHI-97) — read-only rootfs. The orchestrator mounts a tmpfs at
+# docs/172 Gap 5 (planning#99) — read-only rootfs. The orchestrator mounts a tmpfs at
 # /home/shipit (the HOME holds writable caches: ~/.npm, ~/.npm-global, ~/.cache,
 # ~/.claude.json), which SHADOWS the image-baked credential symlinks. Re-create
 # them into the tmpfs so the agent CLIs still resolve their creds from the

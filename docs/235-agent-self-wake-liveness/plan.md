@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-244
+issue: planning#246
 title: Agent self-wake liveness
 description: Teach the orchestrator that a self-woken agent turn (background task completion) is real work, so idle eviction and disk-tier escalation stop tearing the container down underneath it.
 ---
@@ -61,7 +61,7 @@ opposite, and the real defects are these two:
    `drainFired`, `tokenSyncFired`), so the wake turn's `agent_result` returns
    early. A self-woken turn that edits files therefore gets **no auto-commit, no
    push, and no PR card** until the next user turn. Split out of this doc's PR
-   and fixed under SHI-247 — see §6.
+   and fixed under planning#249 — see §6.
 
 `capturedSessionId` is *not* stale, which is why persistence still lands in the
 right session: it is the ShipIt session id, constant for the runner's lifetime.
@@ -414,7 +414,7 @@ turn's opening was gone from the DB for good — a reload or session switch show
 the turn missing its first half, permanently. Regression test:
 `integration_tests/self-wake-midturn.test.ts`.
 
-### 7. Give the self-woken turn its own post-turn flow (SHI-247)
+### 7. Give the self-woken turn its own post-turn flow (planning#249)
 
 Defect 2 in "The second, quieter bug" above — split out of this doc's PR because
 it touches auto-commit and PR creation, and landed separately. Production hit it

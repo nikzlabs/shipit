@@ -26,7 +26,7 @@ This first version is a way of working, not new machinery: ShipIt gives the agen
 
 ## Later versions
 
-- Enforcement by ShipIt itself, so that following the workflow does not depend on the agent choosing to (SHI-273). Deliberately deferred: this version is worth using on its own, and using it is how we learn what enforcement actually needs to prevent.
+- Enforcement by ShipIt itself, so that following the workflow does not depend on the agent choosing to (planning#275). Deliberately deferred: this version is worth using on its own, and using it is how we learn what enforcement actually needs to prevent.
 
 ## Resolved questions
 

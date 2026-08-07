@@ -413,7 +413,7 @@ export function wireAgentListeners(
         // ends. Fall back to the adapter-echoed text if there's no record.
         const requeueText = dropped?.text ?? event.text;
         // A rejected user steer — re-queued as the interactive turn it always
-        // was (SHI-255).
+        // was (planning#257).
         const queued: QueuedMessage = { text: requeueText, execution: "interactive" };
         if (dropped?.images && dropped.images.length > 0) queued.images = dropped.images;
         if (dropped?.files && dropped.files.length > 0) {
@@ -591,7 +591,7 @@ export function wireAgentListeners(
       return;
     }
 
-    // docs/193 / SHI-112 — an agent backend raised a gated action the user must
+    // docs/193 / planning#114 — an agent backend raised a gated action the user must
     // approve (sensitive-file edit, escalated command). This IS transcript
     // content: persist a pending card via `emitChatCard` so it survives a
     // reconnect / switch / reload, and the user can still answer it after a
@@ -1112,7 +1112,7 @@ export function wireAgentListeners(
           { inProgress: true },
         );
         deps.chatHistoryManager.replaceInProgress(usageSessionId, inProgressMessages);
-        // docs/244 / SHI-297 — this boundary is what puts the turn's Edit/Write
+        // docs/244 / planning#299 — this boundary is what puts the turn's Edit/Write
         // inputs and its nested subagent results on disk. Recording them lets a
         // mid-turn reconnect strip the committed prefix instead of re-sending
         // every body the history path had just removed.

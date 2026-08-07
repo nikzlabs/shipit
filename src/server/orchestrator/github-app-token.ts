@@ -1,12 +1,12 @@
 /**
- * GitHub App installation-token minter (docs/172 Gap 2-R / SHI-79).
+ * GitHub App installation-token minter (docs/172 Gap 2-R / planning#81).
  *
  * WHY THIS EXISTS
  * ---------------
  * The git credential broker (`shipit-git-credential` → worker →
  * `getGitCredential`) is *caller-blind*: anything that can run `git` inside a
  * session container can ask the broker for the credential and gets the full,
- * long-lived GitHub PAT back. SHI-72 closed plaintext-at-rest and host-blindness,
+ * long-lived GitHub PAT back. planning#74 closed plaintext-at-rest and host-blindness,
  * but the on-demand extraction path remains (an injected agent, a malicious
  * `agent.install`, or a compromised dependency can read the token and exfiltrate
  * it via some other channel — Gap 1 egress, still open).

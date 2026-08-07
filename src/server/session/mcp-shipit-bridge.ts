@@ -1,6 +1,6 @@
 /**
  * mcp-shipit-bridge — the single stdio MCP server that serves ALL of ShipIt's
- * internal tools (SHI-128 / docs/199).
+ * internal tools (planning#130 / docs/199).
  *
  * Previously each tool ran as its own stdio process (`shipit-review`,
  * `shipit-present`, `shipit-voice`, `shipit-bug`, `shipit-permission`,
@@ -8,7 +8,7 @@
  * This consolidates them into ONE server named `shipit` (so tool names are
  * `mcp__shipit__<tool>`), cutting process count 5→1 and memory to ~30 MB. The
  * precompile (docs/199) already fixed the 0.5-CPU connect-in-time failure
- * (SHI-126); this is the follow-up density win.
+ * (planning#128); this is the follow-up density win.
  *
  * Each tool is a {@link ToolDescriptor} in `mcp-tools/`. The enabled SUBSET is
  * selected per agent via the `SHIPIT_MCP_TOOLS` env (comma-separated tool ids),

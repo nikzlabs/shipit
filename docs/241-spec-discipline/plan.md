@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-268
+issue: planning#270
 description: A prompt-only requirements workflow — human-owned requirements docs per feature, agent-asked open questions, and no implementation while questions are open.
 ---
 

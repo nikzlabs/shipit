@@ -216,7 +216,7 @@ export interface ChatMessage {
     prUrl: string;
     prTitle?: string;
     mergeSha?: string;
-    /** SHI-258 — set on the "couldn't wake this session" follow-up card. */
+    /** planning#260 — set on the "couldn't wake this session" follow-up card. */
     deliveryFailure?: { attempts: number; error?: string };
     createdAt: string;
   };
@@ -229,7 +229,7 @@ export interface ChatMessage {
    */
   selfMergeWatch?: SelfMergeWatchCardData;
   /**
-   * docs/233 (SHI-241) — when set, this message renders a `SessionReportCard`
+   * docs/233 (planning#243) — when set, this message renders a `SessionReportCard`
    * inline: another session in this session's cohort (a child, or a sibling on a
    * `--to cohort` broadcast) pushed a report here with `shipit session report`.
    * Populated from `session_report_card` WS events and from persisted history
@@ -337,7 +337,7 @@ export interface ChatMessage {
     scopeError?: boolean;
   };
   /**
-   * docs/193 / SHI-112 — when set, this message renders a `PermissionRequestCard`
+   * docs/193 / planning#114 — when set, this message renders a `PermissionRequestCard`
    * inline (approve/deny + remember) for a gated agent action. The live
    * `permission_request_card` WS handler appends a `{ requestId }`-only marker;
    * a message rehydrated from persisted history additionally carries the full
@@ -357,7 +357,7 @@ export interface ChatMessage {
     remembered?: boolean;
   };
   /**
-   * docs/172 / SHI-90 — when set, this message renders an `EgressPromptCard`
+   * docs/172 / planning#92 — when set, this message renders an `EgressPromptCard`
    * inline (allow once / add to allowlist / deny) for a host the Tier C SNI
    * proxy blocked. The live `egress_prompt_card` WS handler appends a
    * `{ cardId }`-only marker; a message rehydrated from persisted history also
@@ -406,7 +406,7 @@ export interface ChatMessage {
    */
   subAgentConsult?: SubAgentConsultCardData;
   /**
-   * docs/207 / SHI-153 — when set, this message renders an `ActionChecklistCard`
+   * docs/207 / planning#155 — when set, this message renders an `ActionChecklistCard`
    * inline (a button for one proposed action, a checklist for 2+). The card has
    * no lifecycle and no store, so both the live `action_checklist_card` WS
    * handler and a history rehydration carry the full payload on the message; the

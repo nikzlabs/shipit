@@ -1,5 +1,5 @@
 /**
- * egress-prompt-store — inline egress allow-once card state (docs/172, SHI-90).
+ * egress-prompt-store — inline egress allow-once card state (docs/172, planning#92).
  *
  * Keyed by the stable `cardId` (per session+host) so an `egress_prompt_resolved`
  * update can swap a card to its terminal phase in place. The host + phase live

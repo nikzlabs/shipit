@@ -205,7 +205,7 @@ systemctl daemon-reload
 systemctl enable --now shipit-updater.path
 systemctl enable --now shipit-restarter.path
 
-# --- Agent egress containment preflight (docs/172, SHI-90) ---
+# --- Agent egress containment preflight (docs/172, planning#92) ---
 # Egress containment is ON by default for all ShipIt instances (fail-closed):
 # the orchestrator runs a privileged NET_ADMIN sidecar in each agent container's
 # network namespace to apply a default-deny egress allowlist. If this host can't

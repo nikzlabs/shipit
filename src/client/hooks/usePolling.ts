@@ -4,7 +4,7 @@
  * `[data/error/loading]` + `setInterval` + stale-guard + cleanup boilerplate
  * found across HostPanel, SessionDiagnosticsPanel, and useContainerHealthPoll.
  *
- * Design doc: docs/226-use-polling-hook/plan.md (originating catalog: SHI-212,
+ * Design doc: docs/226-use-polling-hook/plan.md (originating catalog: planning#214,
  * docs/225-component-dedup-refactors → "Explicitly not doing").
  *
  * What the hook owns (the mechanics every site repeats):

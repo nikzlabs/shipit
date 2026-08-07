@@ -11,4 +11,4 @@
 - [x] Prevention: guard tests (chat-history enumerates the list; visual-elements renders each)
 - [x] Fixed live regression: `issueRef` card was render-dropped (missing from `hasCardContent`)
 - [x] CLAUDE.md updated with the executable-contract steps
-- [x] Docs updated: 117, 138, 151 + this doc; tracker SHI-94 linked
+- [x] Docs updated: 117, 138, 151 + this doc; tracker planning#96 linked

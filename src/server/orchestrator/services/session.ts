@@ -277,7 +277,7 @@ export async function unarchiveSession(
 }
 
 /**
- * docs/161 / SHI-179 — re-materialize a LIVE (non-user-archived) session's
+ * docs/161 / planning#181 — re-materialize a LIVE (non-user-archived) session's
  * workspace that is missing on disk, so activating it boots a container against
  * a real bind-mount source instead of 404-looping.
  *
@@ -680,7 +680,7 @@ export async function archiveSession(
   // re-creates it from scratch on restore. Template sessions (no remoteUrl)
   // have no recovery path, so we preserve their workspace dir.
   if (session?.remoteUrl && session?.workspaceDir) {
-    // SHI-192 — reclaim the checkout AND the regenerable overlay/ upper sibling,
+    // planning#194 — reclaim the checkout AND the regenerable overlay/ upper sibling,
     // preserving durable siblings (uploads/, restored on unarchive). Removing
     // only the checkout orphaned the overlay upper — the bulk of the disk —
     // which the bare cache + unarchive flow rebuilds on the next install.

@@ -9,14 +9,14 @@
 - [x] Notice surfaced on dispatched/system-turn fallback + CI-fix path
 - [x] `secretFindings` threaded through `SystemTurnDeps.autoCommit` + test mocks
 - [x] `typecheck` + `lint:dev` clean, unit tests green
-- [x] Design doc + Linear issue (SHI-169) cross-linked
+- [x] Design doc + Linear issue (planning#171) cross-linked
 - [x] Review hardening: scan commit messages + file names; guard `commitPaths`; anchor the allowlist
 - [x] Guard agent self-commits (moved-HEAD scan before auto-push, ancestor-only to avoid rebase false-blocks)
 - [x] `agentCreatePr` aborts on a secret refusal (typed `secretBlocked` from `flushPendingTurnCommit`)
 - [x] Use GitHub native secret scanning + push protection as the backstop instead of a custom gitleaks CI job (dropped the workflow + `.gitleaks.toml`)
 - [ ] (Settings, not code) Enable Secret scanning + Push protection in the ShipIt repo's Settings → Code security & analysis
 
-## SHI-315 — make a block visible and actionable
+## planning#317 — make a block visible and actionable
 
 - [x] `requirements.md` written retroactively (reqs 5–8 from the rework)
 - [x] `SessionSecretBlock` type + `sessions.secret_block` column + migration

@@ -486,7 +486,7 @@ export function applyJq(value: unknown, expr: string): JqResult {
  * Normalize repeated `--label`/`-l` occurrences into a flat, de-duped string
  * array. Matches real gh semantics: `--label a --label b` and `--label a,b`
  * both yield `["a", "b"]`. Whitespace is trimmed and empty entries dropped.
- * Shared so the two shims handle `--label` the same way (SHI-92).
+ * Shared so the two shims handle `--label` the same way (planning#94).
  */
 export function normalizeLabels(raw: string[] | undefined): string[] {
   if (!raw || raw.length === 0) return [];
@@ -534,7 +534,7 @@ export function success(io: ShimIO, message: string): void {
 
 /**
  * Run `handler` if the shim is asked to terminate while a long call is in
- * flight, and return a release function to call once it isn't (SHI-245).
+ * flight, and return a release function to call once it isn't (planning#247).
  *
  * Node's default SIGTERM behavior is to die with no output, which is precisely
  * wrong for a command whose work continues on the server after the process is

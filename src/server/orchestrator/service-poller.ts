@@ -29,7 +29,7 @@ export interface PollerService {
 
 /**
  * How long a known service may be absent from `docker compose ps -a` before
- * the poller reconciles it to `stopped` (SHI-314). ~6 polls at the default 5s
+ * the poller reconciles it to `stopped` (planning#316). ~6 polls at the default 5s
  * interval.
  *
  * The window exists because "no row" is genuinely ambiguous for a short
@@ -64,13 +64,13 @@ export const COMPOSE_QUERY_TIMEOUT_MS = 30_000;
 /**
  * Container states that exist but tell us nothing usable about whether the
  * service is up, and are therefore fed into the missing-container
- * reconciliation pass rather than left to the forward pass (SHI-314).
+ * reconciliation pass rather than left to the forward pass (planning#316).
  *
  *  - `created` — the container exists but has never been started. Compose
  *    leaves one here when `up` created it and then failed to start it. It is
  *    not coming up on its own, and the forward pass has no branch for it, so
  *    before this the service stayed pinned at `starting` forever: exactly the
- *    SHI-314 failure (no preview URL, no `containerIp`), reached through a row
+ *    planning#316 failure (no preview URL, no `containerIp`), reached through a row
  *    that exists rather than a row that is missing.
  *  - `removing` — on its way out. The next poll will find no row at all.
  *
@@ -112,7 +112,7 @@ export interface ServicePollerOptions {
   getService: (name: string) => PollerService | undefined;
   /**
    * Every service the manager currently knows about. Drives the
-   * missing-container reconciliation pass (SHI-314) — the poll's forward pass
+   * missing-container reconciliation pass (planning#316) — the poll's forward pass
    * can only react to services `ps` mentions, so the reverse question ("which
    * services did `ps` NOT mention?") needs the full registry.
    */
@@ -340,7 +340,7 @@ export class ServicePoller {
     }
 
     // Reverse pass: services the registry knows about that `ps` never
-    // mentioned (SHI-314).
+    // mentioned (planning#316).
     this.reconcileMissingServices(seen);
 
     // Self-heal the agent's compose-network attachment on the poll heartbeat
@@ -358,7 +358,7 @@ export class ServicePoller {
 
   /**
    * Reconcile services the registry knows about but `docker compose ps -a`
-   * did not return a row for (SHI-314).
+   * did not return a row for (planning#316).
    *
    * The forward pass above can only ever react to rows `ps` produced, so a
    * service whose container was *removed* — as opposed to merely exited, which

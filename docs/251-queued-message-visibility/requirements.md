@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-313
+issue: planning#315
 title: Telling a queued message from a delivered one
 description: Whether the user can tell their message was queued, and — when it queued behind a turn ShipIt started rather than one they did — that the wait isn't their doing.
 ---

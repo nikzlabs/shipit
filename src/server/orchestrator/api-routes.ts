@@ -195,13 +195,13 @@ export interface ApiDeps {
   /** Secret store — per-repo env var secrets for preview containers. */
   secretStore?: SecretStore;
   /**
-   * docs/172 (SHI-90) — durable egress allowlist + containment toggle store.
+   * docs/172 (planning#92) — durable egress allowlist + containment toggle store.
    * Backs the browser-only egress Settings routes. Omitted in test setups that
    * don't exercise egress settings.
    */
   egressAllowlistStore?: EgressAllowlistStore;
   /**
-   * docs/172 (SHI-90) — whether this deployment can actually ENFORCE egress
+   * docs/172 (planning#92) — whether this deployment can actually ENFORCE egress
    * containment (enforcement enabled AND the sidecar image configured). Surfaced
    * to the browser so the Settings → Network egress panel distinguishes
    * containment *policy* from *enforcement*. Defaults to false when omitted (test
@@ -329,7 +329,7 @@ export async function registerApiRoutes(
     done();
   });
 
-  // ---- Container ↔ browser trust boundary (docs/201 / SHI-129) ----
+  // ---- Container ↔ browser trust boundary (docs/201 / planning#131) ----
   // Registered before the domain route modules so its `onRoute` hook observes
   // their `containerAccessible` opt-ins and its `onRequest` hook gates them.
   registerContainerOriginGuard(app, { containerManager: deps.containerManager });

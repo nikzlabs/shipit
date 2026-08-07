@@ -1,6 +1,6 @@
 /**
  * PermissionRequestCard — inline approve/deny card for a gated agent action
- * (docs/193 / SHI-112).
+ * (docs/193 / planning#114).
  *
  * Rendered where an agent backend gated an action it can't auto-approve
  * headlessly and asked the user to approve it. The classification is the

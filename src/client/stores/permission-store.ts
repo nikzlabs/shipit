@@ -1,5 +1,5 @@
 /**
- * permission-store — inline permission-request card state (docs/193 / SHI-112).
+ * permission-store — inline permission-request card state (docs/193 / planning#114).
  *
  * Keyed by the stable `requestId` (the worker broker's id) so a
  * `permission_resolved` update can swap a card to its terminal state in place.

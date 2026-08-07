@@ -73,7 +73,7 @@ const CHILD_NOT_FOUND = "Spawned session not found, or not a descendant of this 
 
 /**
  * docs/233 — the id form of `view`/`message`/`wait` is descendant-scoped, so
- * passing your OWN id 404s. That dead end is exactly what SHI-241 reported, so
+ * passing your OWN id 404s. That dead end is exactly what planning#243 reported, so
  * every such 404 points at the command that does resolve self.
  */
 const WHOAMI_HINT =
@@ -1020,7 +1020,7 @@ async function armSelfMergeWatch(json: boolean, deps: RunDeps): Promise<void> {
   );
 }
 
-// ---- Upward / lateral coordination (docs/233, SHI-241) ----
+// ---- Upward / lateral coordination (docs/233, planning#243) ----
 
 /** Valid `--severity` values, mirrored from the orchestrator's service. */
 const REPORT_SEVERITIES = ["fyi", "warn", "blocker"];

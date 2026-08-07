@@ -28,7 +28,7 @@ services:
       - NODE_ENV=production
       - PORT=4123
       - USE_CONTAINERS=true
-      # docs/150 (SHI-31) — activate the non-root session worker runtime.
+      # docs/150 (planning#33) — activate the non-root session worker runtime.
       # Gates BOTH the orchestrator's §7 chowns + safe.directory (git-config.ts)
       # AND the session image's gosu drop (entrypoint.sh), so image + flag move
       # together in one deploy. AGENT_HOME is the session containers' home;
@@ -54,17 +54,17 @@ services:
       - SHIPIT_ORCHESTRATOR_HOST=shipit
       - SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS=shipit
       # Disk janitor — see src/server/orchestrator/startup-janitor.ts. Runs
-      # once at orchestrator startup (no periodic timer). SHI-197 collapsed the
+      # once at orchestrator startup (no periodic timer). planning#199 collapsed the
       # two coincidental 30-day knobs (archived-workspace + cache) into one
       # cold-artifact retention. It governs BOTH the crash-recovery
       # archived-workspace backstop (archiveSession already drops the workspace
-      # synchronously at archive time per SHI-192, so this only catches a crashed
+      # synchronously at archive time per planning#194, so this only catches a crashed
       # cleanup; chat history / usage / metadata are always preserved, unarchive
       # re-clones from the bare cache) AND the cold shared caches (repo-cache /
       # dep-cache / pnpm-store / repo-memory). Matches the in-code default;
       # listed for visibility / easy per-host override.
       - DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS=30
-      # Disk-tier escalation (docs/161, SHI-197). The pressure valve escalates
+      # Disk-tier escalation (docs/161, planning#199). The pressure valve escalates
       # LRU sessions early when free disk runs low; the watermarks are fractions
       # of the host's total disk size, so the same config is correct on any disk.
       - DISK_FREE_LOW_PCT=0.10                 # escalate LRU when free disk < 10% of total
@@ -107,7 +107,7 @@ services:
       # SHIPIT_GIT_LFS_TIMEOUT_MS for repos whose pull legitimately exceeds it.
       - SHIPIT_GIT_LFS=${SHIPIT_GIT_LFS:-}
       - SHIPIT_GIT_LFS_TIMEOUT_MS=${SHIPIT_GIT_LFS_TIMEOUT_MS:-}
-      # docs/232 (SHI-236) — cross-session LFS object sharing: fetch LFS into the
+      # docs/232 (planning#238) — cross-session LFS object sharing: fetch LFS into the
       # bare cache and hardlink it into each session clone, so an asset-heavy repo
       # downloads once per host instead of once per session. **On by default** now
       # (empty = on, matching SHIPIT_GIT_LFS's polarity); set
@@ -119,7 +119,7 @@ services:
       - SHIPIT_GIT_LFS_SHARED_STORE=${SHIPIT_GIT_LFS_SHARED_STORE:-}
       - SHIPIT_GIT_LFS_CACHE_FETCH_TIMEOUT_MS=${SHIPIT_GIT_LFS_CACHE_FETCH_TIMEOUT_MS:-}
       - DISK_JANITOR_LFS_OBJECT_DAYS=${DISK_JANITOR_LFS_OBJECT_DAYS:-}
-      # docs/172 Gap 1 (SHI-90) — agent egress containment is ON by default for
+      # docs/172 Gap 1 (planning#92) — agent egress containment is ON by default for
       # all instances (fail-closed). The orchestrator runs the privileged
       # installer/resolver/proxy sidecars in the agent netns from this image;
       # deploy.sh builds the :prod tag every deploy. A contained session whose
@@ -145,7 +145,7 @@ services:
     profiles:
       - build-only
 
-  # Egress firewall sidecar (docs/172 Gap 1, SHI-90). One image, three roles
+  # Egress firewall sidecar (docs/172 Gap 1, planning#92). One image, three roles
   # (Tier A installer / Tier B resolver / Tier C SNI proxy) run by the orchestrator
   # in the agent netns. Build-only (like session-worker) — built by deploy.sh, never
   # started by `up`. Its Dockerfile COPYs `egress-sidecar/*` so the build context is

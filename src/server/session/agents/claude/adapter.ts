@@ -407,7 +407,7 @@ export class ClaudeAdapter
       autoCreatePr: params.autoCreatePr,
       // docs/211 — sets SHIPIT_SANDBOX=1 so the branch-block hook self-gates off.
       sandbox: params.sandbox,
-      // SHI-265 — sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1 so the same hook blocks
+      // planning#267 — sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1 so the same hook blocks
       // hand-rolled destructive git while the session sits on a merged branch.
       guardDestructiveGit: params.guardDestructiveGit,
       // docs/193 — set when writeMcpConfig registered the permission bridge.
@@ -528,7 +528,7 @@ export class ClaudeAdapter
       },
     };
 
-    // SHI-128 / docs/199 — ONE consolidated stdio bridge serves all of ShipIt's
+    // planning#130 / docs/199 — ONE consolidated stdio bridge serves all of ShipIt's
     // internal tools under the single `shipit` server, instead of five separate
     // processes. The bridge (`mcp-shipit-bridge`) is launched via
     // node/tsx-by-absolute-path (mirroring the `gh`/`shipit` shim install — bare

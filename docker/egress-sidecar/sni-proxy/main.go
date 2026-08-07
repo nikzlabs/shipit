@@ -1,4 +1,4 @@
-// Egress Tier C — transparent SNI-peek proxy (docs/172 Gap 1, SHI-90).
+// Egress Tier C — transparent SNI-peek proxy (docs/172 Gap 1, planning#92).
 //
 // Runs as a long-lived sidecar in the agent's network namespace
 // (`--network container:<agent> --cap-add NET_ADMIN`, like the Tier A/B
@@ -19,7 +19,7 @@
 // hand-rolled TLS parser — the bytes read during the peek are recorded and
 // replayed to the upstream so the spliced stream is byte-for-byte intact.
 //
-// Phase 2 (SHI-90) — SNI-scoped identity validation for multi-tenant hosts.
+// Phase 2 (planning#92) — SNI-scoped identity validation for multi-tenant hosts.
 //
 // An allowlisted MULTI-TENANT host (S3, GCS, Azure Blob, a shared registry…)
 // can still be abused for exfiltration: the host is approved, but the request
@@ -159,7 +159,7 @@ func handle(c net.Conn) {
 		return
 	}
 
-	// Phase-2 identity validation (docs/172, SHI-90). On a configured multi-tenant
+	// Phase-2 identity validation (docs/172, planning#92). On a configured multi-tenant
 	// host, permit only this session's approved tenant identity — extracted from
 	// the SNI itself (no decryption). Deny-fast before dialing, like any other
 	// deny: the attacker's bucket/account on an allowlisted host has nowhere to go.

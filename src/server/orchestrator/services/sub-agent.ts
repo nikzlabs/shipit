@@ -18,7 +18,7 @@
  * "get a second opinion from Codex on this diff" is just a review-shaped prompt
  * handed to `subAgentId: "codex"`.
  *
- * ## Observability (SHI-278)
+ * ## Observability (planning#280)
  *
  * Every line this module logs is prefixed `[sub-agent]`, matching the house
  * style of the paths around it (`[spawn-child]`, `[turn]`, `[steer-send]`,
@@ -68,7 +68,7 @@ import { ServiceError } from "./types.js";
 export const SUB_AGENT_PER_TURN_CAP = 3;
 
 /**
- * SHI-278 — the chat-history surface the consult card's lifecycle needs: the
+ * planning#280 — the chat-history surface the consult card's lifecycle needs: the
  * in-progress replace `emitChatCard` uses to persist the PENDING card, plus the
  * finalized-row patch that flips it to its terminal status once the run ends
  * (usually after the originating turn has finalized, since docs/236 tells agents
@@ -83,7 +83,7 @@ export interface ConsultCardPersister extends InProgressPersister {
 }
 
 /**
- * SHI-278 — log a rejected spawn and build the error the route maps to HTTP.
+ * planning#280 — log a rejected spawn and build the error the route maps to HTTP.
  * Every gate goes through here so no rejection can be silent; `reason` is a
  * stable grep token, distinct from the user-facing message.
  */
@@ -110,7 +110,7 @@ export interface RunSubAgentDeps {
   /**
    * Where the consult card is persisted (docs/144 §7). Required so the card can't
    * ship emit-only and vanish on a switch/reload — `emitChatCard` takes a persist
-   * context by construction (CLAUDE.md side-channel-card contract). SHI-278 also
+   * context by construction (CLAUDE.md side-channel-card contract). planning#280 also
    * needs the finalized-row patch for the pending → terminal transition.
    */
   chatHistoryManager: ConsultCardPersister;
@@ -134,7 +134,7 @@ export interface RunSubAgentDeps {
   /** Source-of-truth credentials root (`/credentials`). Omitted in local mode / tests. */
   credentialsDir?: string;
   /**
-   * SHI-299 — git access for the post-run commit of work a consult left behind
+   * planning#301 — git access for the post-run commit of work a consult left behind
    * after its parent turn ended (`services/sub-agent-commit.ts`). Optional so
    * minimal test setups keep working; absent ⇒ no commit is attempted.
    */
@@ -156,7 +156,7 @@ export interface RunSubAgentInput {
 export interface RunSubAgentResult extends SubAgentRunResult {
   subAgentId: AgentId;
   /**
-   * SHI-245 — the run's id, echoed back to the caller. The SAME id is on the
+   * planning#247 — the run's id, echoed back to the caller. The SAME id is on the
    * consult card the UI renders, so the text the invoking agent acted on and the
    * text the user read are provably one artifact, and either side can name the
    * run when they disagree. It is also the handle for `shipit agent result <id>`,
@@ -283,7 +283,7 @@ export async function runSubAgent(
   const startedAtMs = Date.now();
   // §7 — transient "Asking Codex…" spinner (live activity only) while in flight.
   // Kept for the live case (it renders pinned at the bottom of the transcript
-  // rather than inline), but SHI-278 it is no longer the ONLY in-flight signal —
+  // rather than inline), but planning#280 it is no longer the ONLY in-flight signal —
   // the pending card below is the durable one.
   runner.emitMessage({ type: "sub_agent_spawn", sessionId, spawnId, subAgentId });
 
@@ -300,7 +300,7 @@ export async function runSubAgent(
     + `spawnsThisTurn=${runner.subAgentSpawnsThisTurn}`,
   );
 
-  // §7 / SHI-278 — the DURABLE in-flight record. Emitted `pending` at spawn time
+  // §7 / planning#280 — the DURABLE in-flight record. Emitted `pending` at spawn time
   // via `emitChatCard` (CLAUDE.md side-channel-card contract: live WS + in-band
   // record anchored at the spawn's group index + immediate persist), then patched
   // to its terminal status when the run ends. Creating it here rather than at
@@ -340,7 +340,7 @@ export async function runSubAgent(
    */
   const finalizeConsultCard = (card: SubAgentConsultCard) => {
     const live = deps.runnerRegistry.get(sessionId) ?? runner;
-    // docs/244 / SHI-297 — persist BEFORE emitting, and emit the projected copy.
+    // docs/244 / planning#299 — persist BEFORE emitting, and emit the projected copy.
     // The card face draws one 140-character preview line and puts the rest of the
     // output behind a click, so the wire copy carries only that line plus
     // `outputTruncated`, and `SubAgentConsultCardRow` fetches the full markdown
@@ -503,7 +503,7 @@ export async function runSubAgent(
       // not just attested. Already capped upstream (`maxOutputChars`), which is
       // also what flags `truncated`. Omitted when empty.
       //
-      // SHI-245 — this is the SAME `result.text` returned below to the invoking
+      // planning#247 — this is the SAME `result.text` returned below to the invoking
       // agent, by construction: one string, written to both surfaces from one
       // place. Never re-derive the card's copy from anything else — a second
       // extraction is exactly how the two documents drift apart.
@@ -516,7 +516,7 @@ export async function runSubAgent(
     // from the error itself — otherwise the card stays pending forever. An
     // ABORT means someone tore the runner down under us (Restart agent, idle
     // dispose, full reset), which is a cancellation, not a fault; a transport
-    // TIMEOUT means the worker never answered at all (SHI-278's backstop).
+    // TIMEOUT means the worker never answered at all (planning#280's backstop).
     const status: SubAgentConsultCard["status"] =
       err instanceof WorkerAbortedError ? "cancelled"
       : err instanceof WorkerTimeoutError ? "timeout"
@@ -568,7 +568,7 @@ export async function runSubAgent(
       }
     }
 
-    // SHI-299 — the run has reached a terminal state (success, error, timeout or
+    // planning#301 — the run has reached a terminal state (success, error, timeout or
     // cancel; a cancelled or errored consult can have written files too). If its
     // parent turn is already over — the normal shape, since docs/236 tells agents
     // to background long consults — nothing else is scheduled to commit what it
@@ -606,7 +606,7 @@ export interface GetSubAgentResultDeps {
 }
 
 /**
- * SHI-245 — re-read a completed spawn's persisted consult card: the exact
+ * planning#247 — re-read a completed spawn's persisted consult card: the exact
  * artifact rendered in the UI, output text included.
  *
  * Backs `shipit agent result [<runId>]`. Two things make this worth a route of
@@ -622,7 +622,7 @@ export interface GetSubAgentResultDeps {
  *
  * Omit `spawnId` for the session's most recent run.
  *
- * SHI-278 — a card can now be `pending` (created at spawn time). That is
+ * planning#280 — a card can now be `pending` (created at spawn time). That is
  * returned as-is rather than skipped: "the consult you named is still running"
  * is the honest answer, and hiding it would resurrect the older, more confusing
  * failure where a live run looked like it had never existed.

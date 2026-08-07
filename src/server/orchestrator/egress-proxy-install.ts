@@ -1,5 +1,5 @@
 /**
- * Egress proxy install — Tier C transparent SNI proxy (docs/172 Gap 1, SHI-90).
+ * Egress proxy install — Tier C transparent SNI proxy (docs/172 Gap 1, planning#92).
  *
  * Launches the long-lived SNI-peek proxy sidecar (`docker/egress-sidecar/sni-proxy`)
  * into the agent's netns. The Tier A installer REDIRECTs the agent's outbound :443
@@ -87,7 +87,7 @@ export interface LaunchProxyOpts {
    */
   decisionUrl?: string;
   /**
-   * docs/172 Phase 2 (SHI-90) — SNI-scoped tenant identity rules as the proxy's
+   * docs/172 Phase 2 (planning#92) — SNI-scoped tenant identity rules as the proxy's
    * `EGRESS_PROXY_IDENTITY_RULES` JSON (from `composeEgressIdentityRules`). ""/
    * unset → no identity scoping; the static host allowlist still applies.
    */

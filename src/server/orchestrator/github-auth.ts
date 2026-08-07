@@ -146,7 +146,7 @@ export class GitHubAuthManager extends EventEmitter {
   private workspaceDir: string;
   /**
    * Mints short-lived, repo-scoped GitHub App installation tokens (docs/172
-   * Gap 2-R / SHI-79). Inert until an operator supplies App credentials, in
+   * Gap 2-R / planning#81). Inert until an operator supplies App credentials, in
    * which case {@link mintRepoScopedToken} becomes the broker's preferred
    * credential source over the long-lived PAT.
    */
@@ -301,7 +301,7 @@ export class GitHubAuthManager extends EventEmitter {
 
   /**
    * Whether short-lived, repo-scoped GitHub App installation tokens are
-   * available (docs/172 Gap 2-R / SHI-79). When true the credential broker
+   * available (docs/172 Gap 2-R / planning#81). When true the credential broker
    * prefers a minted installation token over the long-lived PAT, shrinking the
    * blast radius of an extracted credential to a single repo and a bounded TTL.
    * False on every deployment that hasn't configured a GitHub App — those fall
@@ -327,7 +327,7 @@ export class GitHubAuthManager extends EventEmitter {
    * `shipit-git-credential` helper so push/pull resolve the token at git-time
    * instead of embedding it.
    *
-   * SECURITY (docs/172 Gap 2 / SHI-72): this method used to write an inline
+   * SECURITY (docs/172 Gap 2 / planning#74): this method used to write an inline
    * shell helper — `!f() { echo "password=<PAT>"; … }; f` — into the local
    * config. That was wrong in two compounding ways:
    *   1. The literal `ghp_…` token landed in plaintext in `/workspace/.git/config`,

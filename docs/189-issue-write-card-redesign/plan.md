@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-101
+issue: planning#103
 title: Issue-write provenance card redesign — content-led, attribution dropped
 description: Redesign the agent issue-write card to lead with the issue and surface the actual change (comment body, title/status/assignee deltas), and remove the meaningless authorship line.
 ---
@@ -11,7 +11,7 @@ description: Redesign the agent issue-write card to lead with the issue and surf
 docs/177 shipped the do-then-surface provenance card for agent issue writes
 (`shipit issue comment`/`edit`/`status`/`assign`). In use it reads:
 
-> ✎ Agent commented on SHI-48 *by the ShipIt agent (workspace token)* ⧉ SHI-48 ↶ Undo
+> ✎ Agent commented on planning#50 *by the ShipIt agent (workspace token)* ⧉ planning#50 ↶ Undo
 
 It records **that** a write happened but not **what** — and spends its most
 prominent words on an authorship string that carries no actionable information.
@@ -26,10 +26,10 @@ four verbs plus the GitHub-identifier and undone-terminal states.
 1. **The actual content is missing.** For a comment, the body is the whole point
    — and it is never even *captured* on the card (`IssueWriteCard.undo` for a
    comment stores only `{ commentId }`). For an edit, the summary says
-   `edited title & description on SHI-48` but never the new values. The card
+   `edited title & description on planning#50` but never the new values. The card
    records the verb, not the change.
 2. **The issue is opaque.** The payload already carries `title`, but the card
-   never renders it, so `SHI-48` tells you nothing about which issue was touched.
+   never renders it, so `planning#50` tells you nothing about which issue was touched.
    The identifier also appears **twice** — once in the sentence, once as the link
    chip.
 3. **Attribution is noise.** `by the ShipIt agent (workspace token)` is the

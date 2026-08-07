@@ -43,7 +43,7 @@ import {
 
 /**
  * The GitHub tracker is per-repo, so its issues are scoped to the active
- * session's remote (docs/170, SHI-80). We pass the current session id on the
+ * session's remote (docs/170, planning#82). We pass the current session id on the
  * tracker/issue fetches; the server resolves it to a `{owner, repo}` binding.
  * Linear ignores it. Returns a `sessionId=…` pair, or "" when no session.
  */
@@ -67,7 +67,7 @@ export function trackerDestinations(): TrackerDestination[] {
 /**
  * The same projection, over a tracker list the caller already holds. Split out
  * for the one resolver that runs at **render** time rather than in a click
- * handler — the inline `IssueBadge` (docs/207, SHI-323), which subscribes to the
+ * handler — the inline `IssueBadge` (docs/207, planning#325), which subscribes to the
  * store's `trackers` array and must derive its destinations inside a `useMemo`.
  * Calling {@link trackerDestinations} from a zustand selector would mint a new
  * array on every store read and defeat the snapshot cache.
@@ -85,7 +85,7 @@ export function toTrackerDestinations(trackers: TrackerInfo[]): TrackerDestinati
  * Signature of the declared-tracker view — everything the sub-tabs and
  * {@link trackerDestinations} read out of a `TrackerInfo`. `fetchTrackers`
  * compares it across a refresh so a caller can tell a real declaration change
- * from a no-op refresh (SHI-321): a `shipit.yaml` edit that touched
+ * from a no-op refresh (planning#323): a `shipit.yaml` edit that touched
  * `agent.install` or the compose path re-reads the (cheap, local) tracker list
  * without also spending a tracker-API round-trip on the issue list.
  */
@@ -134,7 +134,7 @@ export interface IssueSelection {
   url?: string;
   /**
    * Tracker-native id of a comment to scroll to + highlight once the thread
-   * lands (SHI-103). Set when an opener has a specific comment to land on — e.g.
+   * lands (planning#105). Set when an opener has a specific comment to land on — e.g.
    * clicking the provenance card for a comment the agent just posted. The detail
    * view consumes it (clears it via `clearAnchorComment`) after anchoring, so a
    * later refresh doesn't re-scroll.
@@ -153,7 +153,7 @@ export interface OpenIssueRef {
   url?: string;
   /** Full issue to render instantly while the fresh fetch lands (list path). */
   seed?: TrackerIssue;
-  /** Comment to scroll to + highlight once the thread lands (SHI-103). */
+  /** Comment to scroll to + highlight once the thread lands (planning#105). */
   anchorCommentId?: string;
 }
 
@@ -173,7 +173,7 @@ interface IssuesState {
   /**
    * The repository whose declarations the store's contents belong to — the
    * active session's remote URL, or null when there is no repo context
-   * (SHI-325). Declarations live in a repository's `shipit.yaml`, so a switch
+   * (planning#327). Declarations live in a repository's `shipit.yaml`, so a switch
    * to a session on a *different* repository invalidates everything here
    * before `fetchTrackers` can say what the new repository declares. See
    * {@link IssuesState.setRepoScope}.
@@ -263,7 +263,7 @@ interface IssuesState {
 
   setActiveTracker: (id: TrackerId) => void;
   /**
-   * Point the store at the repository the active session belongs to (SHI-325).
+   * Point the store at the repository the active session belongs to (planning#327).
    * A no-op while the repository is unchanged — switching between two sessions
    * of the same repository keeps the open issue and the loaded lists, which are
    * still valid there. On a *change* it drops everything scoped to the previous
@@ -286,13 +286,13 @@ interface IssuesState {
    * Re-read the declared-tracker view from `GET /api/trackers` (a local
    * `shipit.yaml` read server-side — no tracker API round-trip). Resolves to
    * whether the declared set actually changed, so a caller refreshing on a
-   * `shipit.yaml` edit (SHI-321) can skip the far more expensive issue-list
+   * `shipit.yaml` edit (planning#323) can skip the far more expensive issue-list
    * fetch when the edit touched something else in the file.
    *
    * Also enforces docs/248 req 11 over what the store already holds: a
    * destination that is no longer declared is not reachable, so the open detail
    * closes back to the list and that tracker's cached list/statuses/labels are
-   * dropped (SHI-325).
+   * dropped (planning#327).
    */
   fetchTrackers: () => Promise<boolean>;
   fetchIssues: (trackerId?: TrackerId) => Promise<void>;
@@ -310,7 +310,7 @@ interface IssuesState {
   fetchComments: () => Promise<void>;
   /**
    * Clear the open selection's `anchorCommentId` after the detail view has
-   * scrolled to it (SHI-103), so a later refresh/refetch doesn't re-anchor.
+   * scrolled to it (planning#105), so a later refresh/refetch doesn't re-anchor.
    */
   clearAnchorComment: () => void;
   /**
@@ -532,7 +532,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       const trackers = data.trackers ?? [];
       const changed = declarationSignature(get().trackers) !== declarationSignature(trackers);
       set((state) => {
-        // docs/248 req 11 (SHI-325) — what the store holds for a tracker id
+        // docs/248 req 11 (planning#327) — what the store holds for a tracker id
         // survives only while that id still names the destination it was
         // fetched from. Presence of the id is NOT enough: the session's own
         // repository's GitHub Issues live under the bare `github` id (req 12),

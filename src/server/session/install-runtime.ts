@@ -28,7 +28,7 @@
  * spurious miss is one slow install) is the safe direction.
  *
  * The fingerprint is composed from the *actual* ABI inputs, NOT the full
- * worker-image id (SHI-194): the image digest changed on every rebuild —
+ * worker-image id (planning#196): the image digest changed on every rebuild —
  * app-code layers, npm tooling, cache busts — none of which move the
  * native-addon ABI, so each deploy minted a fresh ~500 MB overlay base and
  * forced a cold reinstall. The four axes below capture the ABI surface
