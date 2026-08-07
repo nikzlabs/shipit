@@ -33,16 +33,29 @@ the two issues that previously came back at exactly 65,536 bytes through a pipe,
 now return 119,606 and 87,179; and `createdAt` is present on the issue and on
 every comment.
 
-**Steps 4, 5 and 6 have run** (2026-08-07): the corpus is exported to
-`/persist/linear-export/` — 330 issues, 0 misses — the 20 Linear labels plus four
-`priority: …` labels exist, and `SHI-145` is copied to `planning#2` as the pilot.
-`shipit issue comment edit` also shipped and deployed in between, which removes
-the one irreversible step this plan was built around; the consequences are folded
-into gate 1 below.
+**Steps 4 through 8 have run** (2026-08-07). The corpus is exported to
+`/persist/linear-export/` — 330 issues, 0 misses — the labels exist, the pilot
+was copied as `planning#2` and signed off at gate 1, and **Pass A has created all
+330 issues**. `shipit issue comment edit` also shipped and deployed in between,
+which removes the one irreversible step this plan was built around; the
+consequences are folded into gate 1 below.
 
-**Waiting at human gate 1.** One issue is copied and nothing further will be
-written until the format is signed off. The format is written up under *The copy
-format, as piloted* — read that alongside `planning#2` itself.
+Pass A ran in 33 minutes with no failures. The mapping is
+[`mapping.tsv`](./mapping.tsv), committed here because step 10's sweep is
+generated from it and gate 3 reviews that diff:
+
+| Check | Result |
+|---|---|
+| Entries | 330, one per exported key, none missing or extra |
+| Duplicates | none, by key or by number |
+| Order | keys ascending, numbers monotonic (req 12) |
+| Range | `planning#3` – `planning#332` |
+| Offset | uniformly `+2` — the predicted `SHI-N → planning#(N+2)` held for all 330 |
+| Open / closed | 93 open, 237 closed, exactly matching the Linear split |
+| Spot-check | 10 sampled issues: title, state, labels and header all correct |
+
+**Waiting at human gate 2.** Nothing reads the mapping until it is confirmed —
+see the gate below for what to look at and why it is worth the stop.
 
 ## Why a private repository
 
@@ -364,6 +377,31 @@ Three things the pilot surfaced that the plan did not have:
   correction — verifying the result must not reverse a second time. The pilot's
   four comments read in the right order on both sides.
 
+Pass A itself is [`pass-a.py`](./pass-a.py), committed beside this doc so the
+format gate 1 signs off on is reviewable as code rather than as prose. It renders
+in ascending key order, runs strictly sequentially, halts on the first failure,
+appends to the mapping as each number comes back, and resumes from that mapping if
+interrupted. `--dry-run` renders and validates all 330 while writing nothing —
+every title non-empty, every label resolving against the repository's 32, every
+status type mapped, every header well-formed. Building it surfaced three more
+findings:
+
+- **`SHI-1` … `SHI-4` are Linear's own onboarding boilerplate**: "Get familiar
+  with Linear", "Set up your teams", "Connect your tools", "Import your data",
+  all Canceled on the workspace's creation day. Real work starts at `SHI-5`.
+  They are copied anyway. Skipping them would put a hole in the mapping and
+  strand any reference to them, for the sake of four closed issues nobody sees in
+  the default view; a faithful 1:1 copy is worth more than a tidier repository.
+- **27 issues have no description at all.** Rendering the header, a rule and then
+  nothing leaves a dangling divider, so the rule is emitted only when there is a
+  body under it.
+- **Only 89 of the ~118 `linear.app` URLs point at an issue.** The rest are
+  attachment uploads, Linear's own documentation, a Slack invite and design-review
+  links. Pass B must rewrite the issue links and **leave the others alone** — they
+  have no key to map, and a blanket URL rewrite would mangle them. The upload
+  links die with the workspace either way; nothing can be done about that, and the
+  export is the archive.
+
 ## Where a human has to look
 
 Four points in this migration need a person, not a passing test. They are marked
@@ -424,9 +462,10 @@ is creating the issues themselves, since a number, once assigned, is never reuse
   originals show the right title, labels and open/closed state?
 - Does the list read in a sensible order — lowest Linear key first (req 12)?
 - Does the mapping cover every key, with no duplicates?
-- **Inherited from gate 1:** pick a rewritten cross-reference and click it. Does
-  it land on the issue the `SHI-N` originally meant? One piloted issue had nothing
-  to point at, so this is the first moment resolution can be checked at all.
+Cross-reference *resolution* is still not checkable here, and moving it to this
+gate (as an earlier revision did) was wrong: Pass A deliberately leaves references
+in their `SHI-N` form, so nothing is rewritten until Pass B. The check belongs to
+the post-Pass-B round trip, which is the first moment a rewritten reference exists.
 
 **Why a human:** the agent asserts all of this, but the sweep that follows rewrites
 2,797 references in 686 files from this mapping. A wrong mapping propagates into
@@ -509,11 +548,20 @@ the tracker is used day to day, not about what the code does.
    export returns comments newest-first** — and rewrite references in the 330
    bodies, the 1,390 comments and the **5 titles** that carry one. Three rewrites,
    not one: internal `SHI-N` → `planning#M` from the mapping (1,174), `linear.app`
-   URLs → the same (122), and the **980 bare `#N`** PR references → the qualified
-   `nikzlabs/shipit#N`, since inside this repository a bare `#N` points here rather
-   than at the source repo. All tracker writes against the mapping Pass A produced;
-   **nothing in this repository changes**, so this step opens no PR and can run for
-   as long as the pacing requires.
+   URLs → the same (the **89** that point at an issue; the other ~29 are uploads,
+   Linear docs and a Slack invite, with no key to map), and the **980 bare `#N`**
+   PR references → the qualified `nikzlabs/shipit#N`, since inside this repository
+   a bare `#N` points here rather than at the source repo. All tracker writes
+   against the mapping Pass A produced; **nothing in this repository changes**, so
+   this step opens no PR and can run for as long as the pacing requires.
+
+   [`pass-b.py`](./pass-b.py) implements it, and
+   [`test-rewrite.py`](./test-rewrite.py) pins the rewrite rules against the traps
+   this migration found the hard way — the markdown link rewritten as a unit, the
+   non-issue URLs left alone, the header's own key surviving, and `#1354` inside
+   inline or fenced code not being a reference at all. That last one matters at
+   this volume: 980 bare-number rewrites across a corpus full of shell snippets
+   would otherwise corrupt code samples in a way no count would reveal.
 10. **Rewrite every reference in this repository** — **Human gate 3.** From that mapping, in one PR
     (req 10): doc `issue:` frontmatter, inline doc mentions, code comments,
     `CLAUDE.md`. 2,797 mentions across 686 files — it conflicts with every open
