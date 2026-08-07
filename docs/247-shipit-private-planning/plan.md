@@ -18,7 +18,7 @@ this doc is only about ShipIt's own use of it and the one-time migration.
 | Step | Result |
 |---|---|
 | Export | 330 issues, 0 misses — a working artifact, not an archive (req 13) |
-| Labels | 20 Linear labels + 4 `priority: …`; three keep a wrong colour until `label edit` deploys |
+| Labels | 20 Linear labels + 4 `priority: …`, all matching Linear name and colour |
 | Pilot | `SHI-145` → `planning#2`, signed off at gate 1 |
 | Pass A | 330 issues → `planning#3`–`#332`, 33 min, offset uniformly `+2` |
 | Pass B | 1,164 comments replayed, every reference rewritten |
@@ -301,10 +301,13 @@ header still read correctly, which is exactly the kind of error a spot-check
 passes over.
 
 **Three labels arrived with the wrong color, and at the time nothing could fix
-them.** `label create` refuses a name that already exists in any casing, and there
-was no `label edit` or `label delete` — so a label that existed wrongly stayed
-wrong. `shipit issue label edit` landed afterwards (`e3e57269`), prompted by this;
-once deployed it corrects all three in one command each.
+them — now fixed.** `label create` refuses a name that already exists in any
+casing, and there was no `label edit` or `label delete`, so a label that existed
+wrongly stayed wrong. `shipit issue label edit` landed afterwards (`e3e57269`),
+prompted by exactly this, and on 2026-08-07 corrected all three from inside
+ShipIt — one command each. **All 20 Linear labels now match name and color
+exactly**, and the `bug` → `Bug` rename carried across all 66 issues holding it
+without re-labelling anything by hand.
 
 | Wanted | Actually there | Affects | How it got there |
 |---|---|---|---|
@@ -327,8 +330,9 @@ or `shipit issue label edit`, which is the durable fix and has since shipped
 (docs/177).
 
 What is *not* recoverable is a label that was never applied — which is why step 5
-had to happen before Pass A and the colors did not. Mention it at gate 1 only so
-the grey swatch reads as known rather than as a copy defect.
+had to happen before Pass A and the colors did not. That asymmetry is what made
+deferring safe, and the eventual fix cheap: three commands, months later, with no
+re-copy.
 
 The lesson generalizes past the colors: a **probe writes into the same namespace
 the migration will use**, and its leftovers are not always removable through the
