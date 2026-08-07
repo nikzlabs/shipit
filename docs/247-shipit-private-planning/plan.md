@@ -364,6 +364,31 @@ Three things the pilot surfaced that the plan did not have:
   correction — verifying the result must not reverse a second time. The pilot's
   four comments read in the right order on both sides.
 
+Pass A itself is [`pass-a.py`](./pass-a.py), committed beside this doc so the
+format gate 1 signs off on is reviewable as code rather than as prose. It renders
+in ascending key order, runs strictly sequentially, halts on the first failure,
+appends to the mapping as each number comes back, and resumes from that mapping if
+interrupted. `--dry-run` renders and validates all 330 while writing nothing —
+every title non-empty, every label resolving against the repository's 32, every
+status type mapped, every header well-formed. Building it surfaced three more
+findings:
+
+- **`SHI-1` … `SHI-4` are Linear's own onboarding boilerplate**: "Get familiar
+  with Linear", "Set up your teams", "Connect your tools", "Import your data",
+  all Canceled on the workspace's creation day. Real work starts at `SHI-5`.
+  They are copied anyway. Skipping them would put a hole in the mapping and
+  strand any reference to them, for the sake of four closed issues nobody sees in
+  the default view; a faithful 1:1 copy is worth more than a tidier repository.
+- **27 issues have no description at all.** Rendering the header, a rule and then
+  nothing leaves a dangling divider, so the rule is emitted only when there is a
+  body under it.
+- **Only 89 of the ~118 `linear.app` URLs point at an issue.** The rest are
+  attachment uploads, Linear's own documentation, a Slack invite and design-review
+  links. Pass B must rewrite the issue links and **leave the others alone** — they
+  have no key to map, and a blanket URL rewrite would mangle them. The upload
+  links die with the workspace either way; nothing can be done about that, and the
+  export is the archive.
+
 ## Where a human has to look
 
 Four points in this migration need a person, not a passing test. They are marked
