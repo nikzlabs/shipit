@@ -99,10 +99,19 @@ const DIFF_EDITOR_OPTIONS = {
   fontSize: 12,
   lineNumbers: "on" as const,
   folding: false,
-  wordWrap: "off" as const,
+  // Long lines wrap instead of scrolling sideways: a horizontal scrollbar per
+  // file section makes a stacked diff unreadable (you scroll one file at a time
+  // to see the ends of its lines), and side-by-side halves the width available.
+  // `diffWordWrap` is the diff-specific override and must agree, or the
+  // original/modified panes wrap differently and stop lining up.
+  wordWrap: "on" as const,
   renderOverviewRuler: false,
-  diffWordWrap: "off" as const,
+  diffWordWrap: "on" as const,
   glyphMargin: true,
+  // Wrap points depend on the editor's width, so a stale width now means wrong
+  // wrapping (and a wrong auto-height), not just a clipped viewport as it did
+  // when lines scrolled. Monaco re-layouts off its own ResizeObserver.
+  automaticLayout: true,
   hideUnchangedRegions: { enabled: true },
   scrollbar: {
     verticalScrollbarSize: 8,
