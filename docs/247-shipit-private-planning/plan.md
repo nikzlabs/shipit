@@ -33,16 +33,29 @@ the two issues that previously came back at exactly 65,536 bytes through a pipe,
 now return 119,606 and 87,179; and `createdAt` is present on the issue and on
 every comment.
 
-**Steps 4, 5 and 6 have run** (2026-08-07): the corpus is exported to
-`/persist/linear-export/` — 330 issues, 0 misses — the 20 Linear labels plus four
-`priority: …` labels exist, and `SHI-145` is copied to `planning#2` as the pilot.
-`shipit issue comment edit` also shipped and deployed in between, which removes
-the one irreversible step this plan was built around; the consequences are folded
-into gate 1 below.
+**Steps 4 through 8 have run** (2026-08-07). The corpus is exported to
+`/persist/linear-export/` — 330 issues, 0 misses — the labels exist, the pilot
+was copied as `planning#2` and signed off at gate 1, and **Pass A has created all
+330 issues**. `shipit issue comment edit` also shipped and deployed in between,
+which removes the one irreversible step this plan was built around; the
+consequences are folded into gate 1 below.
 
-**Waiting at human gate 1.** One issue is copied and nothing further will be
-written until the format is signed off. The format is written up under *The copy
-format, as piloted* — read that alongside `planning#2` itself.
+Pass A ran in 33 minutes with no failures. The mapping is
+[`mapping.tsv`](./mapping.tsv), committed here because step 10's sweep is
+generated from it and gate 3 reviews that diff:
+
+| Check | Result |
+|---|---|
+| Entries | 330, one per exported key, none missing or extra |
+| Duplicates | none, by key or by number |
+| Order | keys ascending, numbers monotonic (req 12) |
+| Range | `planning#3` – `planning#332` |
+| Offset | uniformly `+2` — the predicted `SHI-N → planning#(N+2)` held for all 330 |
+| Open / closed | 93 open, 237 closed, exactly matching the Linear split |
+| Spot-check | 10 sampled issues: title, state, labels and header all correct |
+
+**Waiting at human gate 2.** Nothing reads the mapping until it is confirmed —
+see the gate below for what to look at and why it is worth the stop.
 
 ## Why a private repository
 
@@ -449,9 +462,10 @@ is creating the issues themselves, since a number, once assigned, is never reuse
   originals show the right title, labels and open/closed state?
 - Does the list read in a sensible order — lowest Linear key first (req 12)?
 - Does the mapping cover every key, with no duplicates?
-- **Inherited from gate 1:** pick a rewritten cross-reference and click it. Does
-  it land on the issue the `SHI-N` originally meant? One piloted issue had nothing
-  to point at, so this is the first moment resolution can be checked at all.
+Cross-reference *resolution* is still not checkable here, and moving it to this
+gate (as an earlier revision did) was wrong: Pass A deliberately leaves references
+in their `SHI-N` form, so nothing is rewritten until Pass B. The check belongs to
+the post-Pass-B round trip, which is the first moment a rewritten reference exists.
 
 **Why a human:** the agent asserts all of this, but the sweep that follows rewrites
 2,797 references in 686 files from this mapping. A wrong mapping propagates into
