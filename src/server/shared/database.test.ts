@@ -292,13 +292,17 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
     expect(colorsAfterMigration(["newer", "older"])).toEqual(spread(2));
   });
 
-  // 18 repos can't all hold a distinct color, so the re-spread bails and these
-  // are the backfill's own wrapped indices.
+  // 18 repos can't all hold a distinct color. The re-spread is a straight
+  // permutation, so the backfill's wrap survives it: r16 repeats r0's color
+  // before and after, just a different one.
   it("wraps past the palette size rather than writing an unrenderable index", () => {
     rewindPastColorMigration((db) => {
       for (let i = 0; i < 18; i++) seedRepo(db, `r${i}`, i);
     });
-    expect(colorsAfterMigration(["r15", "r16", "r17"])).toEqual([15, 0, 1]);
+    expect(colorsAfterMigration(["r15", "r16", "r17"])).toEqual([
+      REPO_COLOR_ASSIGNMENT_ORDER[15], REPO_COLOR_ASSIGNMENT_ORDER[0], REPO_COLOR_ASSIGNMENT_ORDER[1],
+    ]);
+    expect(colorsAfterMigration(["r0"])).toEqual([REPO_COLOR_ASSIGNMENT_ORDER[0]]);
   });
 
   it("is a no-op on an empty repos table", () => {
@@ -320,19 +324,27 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
   });
 
   /**
-   * The re-spread's guard. It runs over rows that ALREADY have colors — from
-   * the backfill, or assigned by a build that walked the palette in order — so
-   * it has to tell "nobody has touched these" from "someone used the picker",
-   * with nothing recording which. The proxy is the shape of the value set: the
-   * old scheme could only ever produce the contiguous prefix {0..N-1}, so
-   * anything else means a human chose it and the workspace is left alone.
+   * The re-spread's gate.
    *
-   * These rewind only the re-spread, seeding color_index by hand — that's the
-   * state the guard actually inspects, and it isn't reachable through the
-   * backfill.
+   * It rewrites colors, and a color is also something a user picks in Project
+   * Settings — so the only question that matters is whether the values it finds
+   * were machine-assigned or chosen. No property of the stored data answers
+   * that: a user who swaps two repos' colors leaves exactly the contiguous
+   * {0..N-1} set the backfill does, so a shape check would bless the swap and
+   * overwrite it. The migration therefore doesn't infer — it gates on
+   * `fromVersion`, rewriting only when the backfill ran in the SAME pass,
+   * microseconds earlier, with no window for anyone to have picked anything.
+   *
+   * The deliberate cost: a workspace already on a build that had the backfill
+   * keeps its adjacent hues. That case is the second test.
+   *
+   * These two also pin `COLOR_BACKFILL_MIGRATION` from both sides — set it too
+   * high and the already-migrated case would re-spread; too low and every
+   * upgrading case above would stop.
    */
-  describe("re-spread guard", () => {
-    function rewindPastRespread(colors: (number | null)[]): (number | null)[] {
+  describe("re-spread gate", () => {
+    /** Rewind ONLY the re-spread, leaving color_index populated as seeded. */
+    function rewindPastRespread(colors: number[]): (number | null)[] {
       const urls = colors.map((_, i) => `r${i}`);
       const m = new DatabaseManager(file);
       const version = m.db.pragma("user_version", { simple: true }) as number;
@@ -345,49 +357,33 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
       return colorsAfterMigration(urls);
     }
 
-    it("re-spreads a workspace still on the sequential colors", () => {
-      expect(rewindPastRespread([0, 1, 2])).toEqual(spread(3));
+    // The whole point of the migration, restated at the gate: a database that
+    // has never had the column gets both migrations, so it lands spread.
+    it("re-spreads a workspace upgrading into the feature", () => {
+      rewindPastColorMigration((db) => {
+        seedRepo(db, "a", 0);
+        seedRepo(db, "b", 1);
+      });
+      expect(colorsAfterMigration(["a", "b"])).toEqual(spread(2));
     });
 
-    // The guard reads the value SET, not each row's position, so a workspace
-    // whose url→color mapping no longer matches display order is still
-    // re-spread. Both a sidebar reorder and a manual swap of two repos' colors
-    // produce this state and the stored data cannot tell them apart — see the
-    // note on the migration itself.
-    it("re-spreads a workspace whose colors no longer match display order", () => {
-      expect(rewindPastRespread([2, 0, 1])).toEqual([
-        REPO_COLOR_ASSIGNMENT_ORDER[2], REPO_COLOR_ASSIGNMENT_ORDER[0], REPO_COLOR_ASSIGNMENT_ORDER[1],
-      ]);
+    // …and a database that already ran the backfill on some earlier boot is
+    // left exactly as it is, because by now any of those values could be a
+    // deliberate pick. Sequential colors here are the SAME state the test above
+    // re-spreads — only the version the pass started from differs.
+    it("leaves a workspace that already had colors alone", () => {
+      expect(rewindPastRespread([0, 1, 2])).toEqual([0, 1, 2]);
     });
 
-    // A picked color outranks a tidy palette — leave the WHOLE workspace alone
-    // rather than re-spreading around the one row we can't move.
-    it("leaves a workspace alone once someone has used the picker", () => {
+    it("leaves a manually picked color alone", () => {
       expect(rewindPastRespread([0, 1, 11])).toEqual([0, 1, 11]);
     });
 
-    it("leaves duplicates alone — the old scheme never produced them", () => {
-      expect(rewindPastRespread([0, 0, 1])).toEqual([0, 0, 1]);
-    });
-
-    it("leaves a workspace larger than the palette alone", () => {
-      const many = Array.from({ length: 17 }, (_, i) => i % 16);
-      expect(rewindPastRespread(many)).toEqual(many);
-    });
-
-    it("skips a row that never got a color rather than writing undefined", () => {
-      expect(rewindPastRespread([0, null])).toEqual([0, null]);
-    });
-
-    it("is a no-op on an empty repos table", () => {
-      expect(rewindPastRespread([])).toEqual([]);
-    });
-
-    // It runs once, but re-opening the file must not walk the permutation again
-    // — that would keep shuffling colors on every boot.
-    it("does not re-apply on re-open", () => {
-      expect(rewindPastRespread([0, 1, 2])).toEqual(spread(3));
-      expect(colorsAfterMigration(["r0", "r1", "r2"])).toEqual(spread(3));
+    // The case a shape check could not have distinguished: swapping two repos'
+    // colors leaves the contiguous set intact, and is now safe purely because
+    // the gate never looks at the values.
+    it("leaves a swapped pair alone", () => {
+      expect(rewindPastRespread([1, 0, 2])).toEqual([1, 0, 2]);
     });
   });
 });

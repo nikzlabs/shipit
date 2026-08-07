@@ -135,19 +135,41 @@ all. The backfill walks rows in the sidebar's own display order and hands out
 distinct low indices, matching what `pickRepoColorIndex` produced at the time.
 
 Those low indices are the adjacent hues described under *Assignment*, so a
-**second migration re-spreads them** onto the assignment order. It is guarded,
-because by then a color can also be a deliberate choice and nothing records
-which: it runs only when the workspace still holds the exact contiguous prefix
-`{0..N-1}` the old scheme could produce, and bails on anything else. That
-compares the value **set**, not each row's position, so it survives a sidebar
-reorder (which moves rows while the colors stay put) but not a single visit to
-the picker — at which point the whole workspace is left alone. A repo wearing the
-color its owner picked outranks an optimal spread.
+**second migration re-spreads them** onto the assignment order — as a straight
+permutation, so a workspace past 16 repos keeps the backfill's wrap structure
+exactly while its hues spread.
+
+**It runs only when the backfill ran in the same pass.** A repo color is also
+something the user picks in Project Settings, and a rewrite that hits a chosen
+color is worse than leaving a tidy palette alone. Nothing records which colors
+were chosen, and — the load-bearing part — *no property of the stored values can
+recover it*: a user who swaps two repos' colors leaves exactly the contiguous
+`{0..N-1}` set the backfill produces, so a shape check blesses the swap and
+overwrites it. (An earlier draft did precisely that, and a Codex review caught
+it.) The tempting middle ground of "the color still matches the position the
+backfill gave it" doesn't exist either — `display_order` is NULL until the user
+drags, and the fallback sort key `last_used_at` updates on every use, so the
+historical rank isn't reconstructible.
+
+So the migration doesn't infer. `Migration` now takes a second argument,
+`fromVersion` — the schema version the pass started at — and the re-spread
+returns early unless `fromVersion <= COLOR_BACKFILL_MIGRATION`. In that window
+the values were machine-assigned microseconds earlier and no window existed for
+anyone to pick anything, which makes the rewrite provably safe rather than
+probably safe.
+
+The deliberate cost, **decided by Nik**: a workspace already running a build that
+had the backfill keeps its adjacent hues, and re-spreading it means re-picking by
+hand. The alternative reached more workspaces but bet a user's explicit choice on
+an inference, and that trade was refused.
 
 The first migration stays exactly as it shipped: a migration must keep
 reproducing the same result forever, which is also why both **inline** their
-palette data (`16`, and the order itself) rather than importing it. Following a
-constant would let a later retune retroactively recolor old repos.
+palette data (`16`, and the order itself), and why `COLOR_BACKFILL_MIGRATION` is
+a frozen literal. Migrations are append-only — `user_version` counts them, so
+inserting one renumbers every database in existence — which is what makes a
+literal index safe. Two tests pin it from both sides: raise it and the
+already-migrated case starts re-spreading, lower it and the upgrading case stops.
 
 ## Changing a color
 

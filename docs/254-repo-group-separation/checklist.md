@@ -25,5 +25,6 @@
 - [x] Band-weight guard across all fourteen themes, verified to fail both too-heavy and too-faint
 - [x] Independent review of the band retune (Codex, 2026-08-06) — two test overclaims fixed, no production defect
 - [x] Colors handed out in a farthest-point order — palette order gave the first repos three adjacent ochres
-- [x] Guarded migration re-spreading existing workspaces, bailing once anyone has used the picker
+- [x] Re-spread migration gated on `fromVersion`, so it only ever rewrites colors the backfill just assigned
+- [x] Independent review of the assignment change (Codex, 2026-08-07) — caught a value-shape guard that would have overwritten a manual colour swap; replaced with the version gate at Nik's call
 - [x] Guard test stating the property as the user meets it: distance to the nearest color already in use
