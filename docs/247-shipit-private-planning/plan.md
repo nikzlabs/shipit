@@ -255,15 +255,25 @@ passes over.
 
 All three are cosmetic: `--label` resolves case-insensitively, so `--label Bug`
 applies the existing `bug`, and `mapGitHubPriority` reads the name, never the
-color. The copy is unaffected. But the two most common labels in the corpus will
-render grey and off-red, which is worth a human deciding about at gate 1 rather
-than discovering across 330 issues. Recolouring them is a GitHub repo-settings
-edit; the durable fix is a `label edit` verb on the shim (docs/177).
+color. The copy is unaffected.
+
+**Nothing here has to be settled before the migration.** A GitHub label is an
+object that issues reference; its name and color are properties of that object,
+not values stamped onto each issue when the label is applied. So recoloring
+`Feature` fixes all 81 issues at once whenever it happens, and renaming `bug` to
+`Bug` carries across every issue already holding it. Deferring costs nothing and
+requires no re-copy. Two paths, whenever it is wanted: the planning repo's label
+settings by hand (a repo-settings page — one of the narrow legitimate link-outs),
+or a `label edit` verb on the shim, which is the durable fix (docs/177).
+
+What is *not* recoverable is a label that was never applied — which is why step 5
+had to happen before Pass A and the colors did not. Mention it at gate 1 only so
+the grey swatch reads as known rather than as a copy defect.
 
 The lesson generalizes past the colors: a **probe writes into the same namespace
-the migration will use**, and its leftovers are not always removable. `planning#1`
-is on the checklist to delete; these three labels are the part of that probe that
-cannot be undone.
+the migration will use**, and its leftovers are not always removable through the
+product. `planning#1` is on the checklist to delete; these three labels are the
+part of that probe ShipIt itself cannot clean up.
 
 **The sub-issue parent is in the export, under a name that doesn't look like it.**
 The adapter maps Linear's `parent` onto `parentIdentifier`, already in the docs/248
