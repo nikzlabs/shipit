@@ -315,6 +315,77 @@ describe("PreviewFrame", () => {
     );
   });
 
+  it("disables Back while the preview has no history entry of its own", async () => {
+    // Regression: a preview with nothing behind it used to run `history.back()`
+    // against the JOINT session history, walking the ShipIt tab itself back and
+    // dropping the user out of their session.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+
+    const report = (canGoBack: unknown) => window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "path", path: "/", canGoBack },
+      source: iframe.contentWindow,
+    }));
+
+    report(false);
+    expect(await screen.findByTitle("Nothing to go back to in the preview")).toBeDisabled();
+
+    // Navigating inside the preview creates one, and Back comes back to life.
+    report(true);
+    expect(await screen.findByTitle("Back")).toBeEnabled();
+  });
+
+  it("leaves Back enabled when the preview does not report canGoBack", async () => {
+    // No Navigation API in this browser: we can't know, so we don't disable the
+    // button — the injected script decides.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+
+    for (const canGoBack of [undefined, "false", 0]) {
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { source: "shipit-preview", type: "path", path: "/", canGoBack },
+        source: iframe.contentWindow,
+      }));
+      expect(await screen.findByTitle("Back")).toBeEnabled();
+    }
+  });
+
+  it("keeps the last reported canGoBack when a later message omits it", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const report = (data: Record<string, unknown>) => window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "path", path: "/", ...data },
+      source: iframe.contentWindow,
+    }));
+
+    report({ canGoBack: false });
+    expect(await screen.findByTitle("Nothing to go back to in the preview")).toBeDisabled();
+
+    report({ canGoBack: "yes-please" });
+    expect(await screen.findByTitle("Nothing to go back to in the preview")).toBeDisabled();
+  });
+
+  it("tracks canGoBack per slot, so a background preview cannot disable Back", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "path", path: "/here", canGoBack: true },
+      source: iframe.contentWindow,
+    }));
+
+    // A window that owns no slot is dropped entirely.
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "path", path: "/elsewhere", canGoBack: false },
+      source: window,
+    }));
+
+    expect(await screen.findByTitle("Back")).toBeEnabled();
+  });
+
   it("replies to the SDK ready handshake with authoritative visibility", async () => {
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);

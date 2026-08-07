@@ -57,6 +57,12 @@ interface PreviewToolbarProps {
   onRefresh: () => void;
   /** Navigate the embedded preview back one step in its session history. */
   onBack: () => void;
+  /**
+   * Whether the preview has a history entry of its own to go back to.
+   * `undefined` means the page hasn't told us (no Navigation API) — the button
+   * stays enabled and the injected script decides.
+   */
+  canGoBack?: boolean;
   /** URL of the active iframe slot, or null when none is mounted. */
   activeSlotUrl: string | null;
   /** Path + query of the page the preview is on, or null when unknown. */
@@ -93,6 +99,7 @@ export function PreviewToolbar({
   setErrorPanelOpen,
   onRefresh,
   onBack,
+  canGoBack,
   activeSlotUrl,
   previewPath,
   previewFullUrl,
@@ -217,8 +224,8 @@ export function PreviewToolbar({
           variant="ghost"
           size="sm"
           onClick={onBack}
-          title="Back"
-          disabled={!activeSlotUrl}
+          title={canGoBack === false ? "Nothing to go back to in the preview" : "Back"}
+          disabled={!activeSlotUrl || canGoBack === false}
           className="h-7 w-7 p-0"
         >
           <ArrowLeftIcon size={ICON_SIZE.SM} />

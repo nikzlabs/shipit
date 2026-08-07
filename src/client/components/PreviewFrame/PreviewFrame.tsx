@@ -88,6 +88,14 @@ export function PreviewFrame({
   // state so it also survives this component unmounting — a slot recreated
   // later re-enters at the same path instead of the front page.
   const slotPaths = usePreviewStore((s) => s.previewPaths);
+  // Whether each slot's preview has a history entry of its own, as reported by
+  // the injected script. Deliberately component state and NOT in the store
+  // beside `previewPaths`: a path is a destination worth restoring, but this
+  // describes the live frame's history. A remount recreates the iframe with no
+  // history at all, so a persisted `true` would enable a Back button that has
+  // nowhere to go. Starting empty ("unknown") is the honest state, and the
+  // first report from the page corrects it.
+  const [slotCanGoBack, setSlotCanGoBack] = useState<Map<string, boolean>>(new Map());
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
   const [portSelectorOpen, setPortSelectorOpen] = useState(false);
 
@@ -141,6 +149,7 @@ export function PreviewFrame({
   // Derive active slot state for overlay/UI logic
   const activeSlotUrl = activeSlot?.url ?? null;
   const activePath = activeSlotKey ? slotPaths[activeSlotKey] ?? null : null;
+  const activeCanGoBack = activeSlotKey ? slotCanGoBack.get(activeSlotKey) : undefined;
   // Resolve against the slot URL to recover the absolute URL for click-to-copy.
   // `activePath` is untrusted and `sanitizePreviewPath` has already rejected
   // everything that could escape the origin — but this value goes to the user's
@@ -215,6 +224,18 @@ export function PreviewFrame({
   const MAX_AUTH_RETRIES = 2;
   const authBlocked = !!activeSlotKey && authBlockedSlots.has(activeSlotKey);
 
+  /**
+   * Which pool slot a postMessage came from. We can't trust the message
+   * contents for this — the injected script doesn't know the slot key — so
+   * match `event.source` against each iframe's contentWindow.
+   */
+  const slotKeyForWindow = (source: MessageEventSource): string | null => {
+    for (const [key, el] of iframeRefs.current.entries()) {
+      if (el?.contentWindow && el.contentWindow === source) return key;
+    }
+    return null;
+  };
+
   const replyToVisibilityReady = (
     source: MessageEventSource,
     origin: string,
@@ -273,13 +294,22 @@ export function PreviewFrame({
     }
     if (data.type === "path" && event.source) {
       // The payload is untrusted (authored by the previewed page); the store
-      // sanitizes it and drops anything that isn't a same-document absolute
-      // path. Which slot it came from is decided here by matching the source
-      // window, never by trusting the message.
-      for (const [key, el] of iframeRefs.current.entries()) {
-        if (!el?.contentWindow || el.contentWindow !== event.source) continue;
-        usePreviewStore.getState().setPreviewPath(key, (data as { path?: unknown }).path);
-        return;
+      // sanitizes the path and drops anything that isn't a same-document
+      // absolute path. Which slot it came from is decided here by matching the
+      // source window, never by trusting the message.
+      const key = slotKeyForWindow(event.source);
+      if (!key) return;
+      usePreviewStore.getState().setPreviewPath(key, (data as { path?: unknown }).path);
+      // Equally untrusted, and absent when the page never ran our injected
+      // script at all (a non-proxied local preview). Anything that isn't a
+      // boolean is ignored, leaving the slot "unknown" and Back enabled — so a
+      // page can't clear a value it already reported by following up with a
+      // malformed one.
+      const rawCanGoBack = (data as { canGoBack?: unknown }).canGoBack;
+      if (typeof rawCanGoBack === "boolean") {
+        setSlotCanGoBack((prev) => (
+          prev.get(key) === rawCanGoBack ? prev : new Map(prev).set(key, rawCanGoBack)
+        ));
       }
       return;
     }
@@ -585,9 +615,12 @@ export function PreviewFrame({
         errorPanelOpen={errorPanelOpen}
         setErrorPanelOpen={setErrorPanelOpen}
         onRefresh={() => setRefreshKey((k) => k + 1)}
+        canGoBack={activeCanGoBack}
         onBack={() => {
           // The iframe is cross-origin, so we can't call `history.back()` on it
           // directly — ask the injected preview script (preview-proxy.ts) to.
+          // It navigates the frame's own entry list, never the joint session
+          // history, so a preview with nothing behind it can't walk ShipIt back.
           if (!activeSlotKey) return;
           iframeRefs.current
             .get(activeSlotKey)

@@ -95,19 +95,34 @@ describe("injectPreviewBootstrap", () => {
  * client-side router moves, and the History wrapper that fixes that sits on the
  * hot path of every SPA navigation in every preview.
  */
-interface PostedMessage { source?: string; type?: string; path?: string }
+interface PostedMessage { source?: string; type?: string; path?: string; canGoBack?: boolean }
 
-function runInjectedScript(initial = { pathname: "/", search: "", hash: "" }) {
+/** Minimal stand-in for the Navigation API's back()/forward() result. */
+function navResult(rejection?: string) {
+  const p = rejection ? Promise.reject(new Error(rejection)) : Promise.resolve();
+  // Attach a no-op catch to the source promise so an *unhandled* rejection in
+  // the test itself can't be confused with the script failing to swallow one.
+  return { committed: p.catch(() => { throw new Error(rejection); }), finished: p.catch(() => { throw new Error(rejection); }) };
+}
+
+function runInjectedScript(
+  initial = { pathname: "/", search: "", hash: "" },
+  navigation?: { canGoBack: boolean; canGoForward: boolean; back: () => unknown; forward: () => unknown },
+) {
   const posted: PostedMessage[] = [];
   const listeners = new Map<string, ((e?: unknown) => void)[]>();
   const pushed: unknown[][] = [];
+  const traversed: string[] = [];
   const history = {
     pushState: (...args: unknown[]) => { pushed.push(args); return "original-return"; },
     replaceState: (...args: unknown[]) => { pushed.push(args); },
+    back: () => { traversed.push("history.back"); },
+    forward: () => { traversed.push("history.forward"); },
   };
-  const location = { ...initial, port: "3001", hostname: "preview.localhost" };
+  const location = { ...initial, port: "3001", hostname: "preview.localhost", reload: () => { traversed.push("reload"); } };
   const window = {
     WebSocket: function FakeWebSocket() {},
+    navigation,
     parent: { postMessage: (m: PostedMessage) => posted.push(m) },
     addEventListener: (type: string, fn: (e?: unknown) => void) => {
       const existing = listeners.get(type) ?? [];
@@ -117,9 +132,26 @@ function runInjectedScript(initial = { pathname: "/", search: "", hash: "" }) {
   const html = injectPreviewBootstrap("<html><head></head></html>");
   const body = html.slice(html.indexOf("<script>") + "<script>".length, html.indexOf("</script>"));
   vm.runInContext(body, vm.createContext({
-    window, history, location, URL, WebSocket: window.WebSocket,
+    window, history, location, URL, WebSocket: window.WebSocket, Promise,
   }));
-  return { posted, listeners, history, location, pushed };
+  const toolbar = (type: string) => {
+    for (const fn of listeners.get("message") ?? []) fn({ data: { source: "shipit-toolbar", type } });
+  };
+  return { posted, listeners, history, location, pushed, traversed, toolbar };
+}
+
+/** A Navigation API stub that records which traversals were attempted. */
+function fakeNavigation(opts: { canGoBack?: boolean; canGoForward?: boolean; rejectWith?: string } = {}) {
+  const calls: string[] = [];
+  return {
+    calls,
+    nav: {
+      canGoBack: opts.canGoBack ?? true,
+      canGoForward: opts.canGoForward ?? true,
+      back: () => { calls.push("back"); return navResult(opts.rejectWith); },
+      forward: () => { calls.push("forward"); return navResult(opts.rejectWith); },
+    },
+  };
 }
 
 describe("injected preview script — path reporting", () => {
@@ -166,6 +198,93 @@ describe("injected preview script — path reporting", () => {
     const returned = history.pushState({ a: 1 }, "", "/x");
     expect(pushed).toEqual([[{ a: 1 }, "", "/x"]]);
     expect(returned).toBe("original-return");
+  });
+});
+
+describe("injected preview script — toolbar history navigation", () => {
+  // `history.back()` in a frame traverses the JOINT session history, so a
+  // preview with no entry of its own walks the ShipIt tab back instead — the
+  // user gets kicked out of their session by the preview's Back button.
+  // Everything here exists to keep the traversal inside the frame.
+  it("does not traverse at all when the preview has no history of its own", () => {
+    const { calls, nav } = fakeNavigation({ canGoBack: false });
+    const { toolbar, traversed } = runInjectedScript(undefined, nav);
+
+    toolbar("back");
+
+    expect(calls).toEqual([]);
+    // Crucially not a fallback to `history.back()` — that is the leak.
+    expect(traversed).toEqual([]);
+  });
+
+  it("goes back through the Navigation API, which is scoped to this frame", () => {
+    const { calls, nav } = fakeNavigation({ canGoBack: true });
+    const { toolbar, traversed } = runInjectedScript(undefined, nav);
+
+    toolbar("back");
+
+    expect(calls).toEqual(["back"]);
+    expect(traversed).toEqual([]);
+  });
+
+  it("applies the same guard to forward", () => {
+    const blocked = fakeNavigation({ canGoForward: false });
+    runInjectedScript(undefined, blocked.nav).toolbar("forward");
+    expect(blocked.calls).toEqual([]);
+
+    const allowed = fakeNavigation({ canGoForward: true });
+    runInjectedScript(undefined, allowed.nav).toolbar("forward");
+    expect(allowed.calls).toEqual(["forward"]);
+  });
+
+  it("swallows a rejection when the entry list moves between check and call", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const { nav } = fakeNavigation({ canGoBack: true, rejectWith: "InvalidStateError" });
+      runInjectedScript(undefined, nav).toolbar("back");
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+    // An unhandled rejection here would surface in the previewed app's console.
+    expect(rejections).toEqual([]);
+  });
+
+  it("falls back to history.back() where the Navigation API is missing", () => {
+    // Older browsers keep today's behavior rather than losing the button.
+    const { toolbar, traversed } = runInjectedScript(undefined, undefined);
+    toolbar("back");
+    toolbar("forward");
+    expect(traversed).toEqual(["history.back", "history.forward"]);
+  });
+
+  it("reload is unaffected by the traversal guard", () => {
+    const { nav } = fakeNavigation({ canGoBack: false });
+    const { toolbar, traversed } = runInjectedScript(undefined, nav);
+    toolbar("reload");
+    expect(traversed).toEqual(["reload"]);
+  });
+
+  it("reports canGoBack alongside the path so the toolbar can disable Back", () => {
+    const { nav } = fakeNavigation({ canGoBack: false });
+    const { posted } = runInjectedScript(undefined, nav);
+    expect(posted).toContainEqual({ source: "shipit-preview", type: "path", path: "/", canGoBack: false });
+  });
+
+  it("re-reports canGoBack after a client-side navigation creates an entry", () => {
+    const { nav } = fakeNavigation({ canGoBack: false });
+    const { posted, history } = runInjectedScript(undefined, nav);
+    nav.canGoBack = true;
+    history.pushState({}, "", "/next");
+    expect(posted.filter((m) => m.type === "path").map((m) => m.canGoBack)).toEqual([false, true]);
+  });
+
+  it("omits canGoBack where the Navigation API is missing, leaving Back enabled", () => {
+    const { posted } = runInjectedScript(undefined, undefined);
+    const path = posted.find((m) => m.type === "path");
+    expect(path?.canGoBack).toBeUndefined();
   });
 });
 

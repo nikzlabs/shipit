@@ -32,8 +32,27 @@ The preview pane shows a live iframe of the user's app. Supports Vite (managed) 
 The iframe is cross-origin (preview subdomain), so the toolbar cannot touch its
 `history` or `location` directly. It posts `{source: "shipit-toolbar", type}`
 messages that the script injected by `preview-proxy.ts` (`HMR_WS_PATCH`) acts on
-inside the page: `back` → `history.back()`, `forward` → `history.forward()`,
+inside the page: `back` / `forward` → `navigation.back()` / `navigation.forward()`,
 `reload` → `location.reload()`.
+
+**Back/forward go through the Navigation API, never `history.back()`.** A frame's
+history entries are nested inside the top-level page's, and `history.back()`
+traverses that *joint* session history — so a preview with no entry of its own
+walks the **ShipIt tab** back, dropping the user out of their session. There is no
+guard available on the legacy API: an iframe's `history.length` reports the joint
+length (measured in Chromium: one own entry, `length` 9), so it can't distinguish
+"the preview has somewhere to go" from "the app does". `navigation.entries()` is
+scoped to the frame, so `canGoBack` answers the right question and
+`navigation.back()` cannot move anything but the preview. The script checks
+`canGoBack` first and swallows both result promises, since the call still rejects
+with `InvalidStateError` if the entry list moves in between.
+
+The script reports `canGoBack` on every `path` message, and `PreviewFrame` keeps
+it per slot so the toolbar can disable Back when there is nothing behind — the
+button greys out instead of silently doing nothing. It is only ever a boolean or
+absent; absent means a browser with no Navigation API, where the slot stays
+"unknown", Back stays enabled, and the injected script falls back to
+`history.back()` rather than losing the button entirely.
 
 **Refresh reloads the page the preview is currently on, not the slot's entry
 URL.** Re-assigning the iframe's `src` — the obvious implementation, and what
