@@ -275,19 +275,23 @@ describe("ToolResult", () => {
       expect(screen.getByText("plain text output")).toBeInTheDocument();
     });
 
-    it("draws the image at natural height, bounded only by width", () => {
-      // A height cap here has nothing behind it: `ToolResult` renders only in
-      // the scrollable tool-call modal and these images have no click-to-full-
-      // size view, so clipping to 256px lost the screenshot with no way back.
+    it("draws the image at natural size and scrolls rather than scaling it", () => {
+      // Neither bound has anything behind it: `ToolResult` renders only in the
+      // scrollable tool-call modal and these images have no click-to-full-size
+      // view. A height cap lost the screenshot outright; fitting the width was
+      // quieter and worse — a downscaled shot is indistinguishable from a
+      // faithful one, so the reader can't tell whose blur they're looking at.
       const imageOnly = JSON.stringify([
         { type: "image", source: { data: "abc123", media_type: "image/png" } },
       ]);
       render(<ToolResult tool="mcp__playwright__browser_take_screenshot" result={result(imageOnly)} />);
 
       const img = screen.getByAltText("Tool output image 1");
-      expect(img.className).toContain("max-w-full");
-      expect(img.className).toContain("h-auto");
-      expect(img.className).not.toMatch(/\bmax-h-/);
+      // `max-w-none` beats Tailwind preflight's `img { max-width: 100% }`, which
+      // would re-fit the image and leave a scrollbar that never scrolls.
+      expect(img.className).toContain("max-w-none");
+      expect(img.className).not.toMatch(/\bmax-[wh]-(?!none)/);
+      expect(img.parentElement?.className).toContain("overflow-x-auto");
     });
   });
 });

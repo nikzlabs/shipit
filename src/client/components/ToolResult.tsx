@@ -278,16 +278,26 @@ function GenericResult({ content, isError, maxLines, lazy }: { content: string; 
 /**
  * Render images from tool result content (e.g. Playwright screenshots).
  *
- * Drawn at natural size, with width the only bound. `ToolResult` renders solely
- * inside the tool-call modal — a click, and a scrollable one — so there is no
- * transcript to keep tidy here and nothing gained by shrinking. The old 256px
- * height cap turned a 1280×720 screenshot into a strip you could not read, and
- * unlike a user-attached image there is no click-to-full-size view behind it to
- * recover the detail from. `max-w-full` still fits a screenshot wider than the
- * modal, scaling it down proportionally rather than clipping it.
+ * Drawn at **natural size, never scaled** — a screenshot wider than the modal
+ * scrolls sideways instead of shrinking to fit. Fitting is the tempting default
+ * and it is the wrong one here: a downscaled screenshot looks like a faithful
+ * one, so the reader has no way to tell whether the blur they are squinting at
+ * is in the page or in the render. A scrollbar says which.
  *
- * Stacked rather than wrapped for the same reason: a result with two images
- * gives each the full width instead of squeezing both onto one row.
+ * That leaves `ToolResult` with no size bound at all, which is fine because it
+ * renders solely inside the tool-call modal — a click, already scrollable in
+ * both axes, with no transcript around it to keep tidy. Two earlier bounds are
+ * gone for the same reason: a 256px height cap that reduced a 1280×720 shot to
+ * an unreadable strip, and the `max-w-full` that replaced it. Neither had a
+ * click-to-full-size view behind it to recover the detail from.
+ *
+ * `max-w-none` is load-bearing — Tailwind's preflight sets `img { max-width:
+ * 100% }`, which would silently re-fit the image inside the scroller and leave
+ * a scrollbar that never scrolls. The frame sits on the scroll container, not
+ * the image, so the border stays put while the picture moves under it.
+ *
+ * Stacked rather than wrapped: a result with two images gives each the full
+ * width instead of squeezing both onto one row.
  */
 function ToolResultImages({ images }: { images: ToolResultImage[] }) {
   return (
@@ -295,13 +305,17 @@ function ToolResultImages({ images }: { images: ToolResultImage[] }) {
       {images.map((img, i) => {
         const src = img.src ?? `data:${img.mediaType};base64,${img.data}`;
         return (
-          <img
+          <div
             key={i}
-            src={src}
-            alt={`Tool output image ${i + 1}`}
-            loading="lazy"
-            className="max-w-full h-auto self-start rounded-md border border-(--color-border-secondary)/50"
-          />
+            className="overflow-x-auto rounded-md border border-(--color-border-secondary)/50"
+          >
+            <img
+              src={src}
+              alt={`Tool output image ${i + 1}`}
+              loading="lazy"
+              className="block max-w-none h-auto"
+            />
+          </div>
         );
       })}
     </div>

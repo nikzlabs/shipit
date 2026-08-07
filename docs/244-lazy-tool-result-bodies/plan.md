@@ -94,11 +94,19 @@ below. What remains on a subagent row is per-step text, which is small.
   exists in the type today.
 
   Tool-result images used to carry a 256px height cap (`max-h-64`) on top of
-  that. It has since been removed: `ToolResult` renders only inside the
-  scrollable tool-call modal, so there was no transcript to keep tidy, and the
-  cap reduced a 1280×720 screenshot to an unreadable strip with nothing behind
-  it to recover the detail from. Width is now the only bound (`max-w-full`), so
-  a screenshot wider than the modal scales down proportionally.
+  that. **They now carry no size bound at all** — natural size, scrolling
+  sideways when wider than the modal. `ToolResult` renders only inside the
+  tool-call modal, which is a click and already scrollable in both axes, so
+  there was never a transcript to keep tidy; the cap simply reduced a 1280×720
+  screenshot to an unreadable strip.
+
+  Fitting the width (`max-w-full`) was the intermediate step and is also wrong,
+  for a subtler reason worth keeping: **a downscaled screenshot is
+  indistinguishable from a faithful one**, so a reader squinting at a blurry
+  control cannot tell whether the blur is in the page or in the render. A
+  scrollbar answers that; a silent resample does not. `max-w-none` on the image
+  is load-bearing — Tailwind preflight's `img { max-width: 100% }` would
+  otherwise re-fit it and leave a scrollbar that never scrolls.
 
 ### One thing that must never be truncated
 
