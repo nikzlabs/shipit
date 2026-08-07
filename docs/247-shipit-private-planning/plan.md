@@ -31,7 +31,14 @@ and adapter fixes the export depends on (`9b031908`) have reached the **deployed
 shim, confirmed from a session container on 2026-08-07: `SHI-56` and `SHI-90`,
 the two issues that previously came back at exactly 65,536 bytes through a pipe,
 now return 119,606 and 87,179; and `createdAt` is present on the issue and on
-every comment. Nothing blocks the export.
+every comment.
+
+**Steps 4 and 5 have run** (2026-08-07): the corpus is exported to
+`/persist/linear-export/` — 330 issues, 0 misses — and the 20 Linear labels plus
+four `priority: …` labels exist on the planning repository. `shipit issue comment
+edit` also shipped and deployed in between, which removes the one irreversible
+step this plan was built around; the consequences are folded into gate 1 below.
+**No issue has been copied.** The next step is the pilot, which stops at a human.
 
 ## Why a private repository
 
@@ -54,38 +61,44 @@ wrong summary of this change.
 
 ## Scale — measured, not estimated
 
-A full read-only export ran against Linear (322 keys, `SHI-1…SHI-322`; no gaps,
-`SHI-323` and above do not exist). The corpus:
+A full read-only export ran against Linear (330 keys, `SHI-1…SHI-330`; no gaps,
+`SHI-331` and above do not exist). The corpus, as of **2026-08-07**:
 
 | Surface | Count |
 |---|---|
-| Linear issues | 322 |
-| Comments | 1,344 (across 232 issues; 90 have none) |
-| Issue body text | 515 KB |
-| Comment text | 1.19 MB |
+| Linear issues | 330 |
+| Comments | 1,390 (across 240 issues; 90 have none) |
+| Issue body text | 516 KB |
+| Comment text | 1.17 MB |
 | Distinct labels | 20 |
 | Issues with a parent (sub-issue) | 15 |
 | Issues with an assignee | 75 — all one person |
-| Comment authors | 1 (`nicolas.zherebtsov`, all 1,344) |
+| Comment authors | 1 (`nicolas.zherebtsov`, all 1,390) |
 
-Status spread: Done 219, Backlog 78, Canceled 10, In Progress 7, Todo 7,
-Duplicate 1. Priority spread: none 214, Medium 42, High 31, Low 27, Urgent 8.
+Status spread: Done 226, Backlog 79, Canceled 10, In Progress 7, Todo 7,
+Duplicate 1. Priority spread: none 222, Medium 42, High 31, Low 27, Urgent 8.
 
 The reference surface in this repository:
 
 | Surface | Count |
 |---|---|
-| Distinct `SHI-N` keys referenced | 259 |
-| Total mentions | 2,623 across 667 files |
-| — in `src/` | 1,677 across 391 files |
-| — in `docs/` | 869 across 249 files |
-| Docs with an `issue:` frontmatter pointer | 186 |
-| Files containing a `linear.app` URL | 221 |
+| Distinct `SHI-N` keys referenced | 268 |
+| Total mentions | 2,797 across 686 files |
+| — in `src/` | 1,809 across 398 files |
+| — in `docs/` | 907 across 259 files |
+| Docs with an `issue:` frontmatter pointer | 196 |
+| Files containing a `linear.app` URL | 224 |
 
 And — the surface the earlier estimate missed entirely — **the corpus references
-itself**: 1,146 `SHI-N` mentions and 120 `linear.app` URLs live *inside* issue
+itself**: 1,174 `SHI-N` mentions and 122 `linear.app` URLs live *inside* issue
 bodies and comments. Those have to be rewritten too, or the migrated tracker is
 full of pointers back to the system being retired.
+
+**Every number here is a measurement with a date on it, and the corpus is live.**
+The first export, one day earlier, found 322 issues and 1,344 comments; eight
+issues and 46 comments arrived in between. So these figures size the work — they
+are not a checksum. Pass A's completeness check must come from the export it
+actually ran against, never from a count written down here.
 
 ## What GitHub cannot hold
 
@@ -113,19 +126,21 @@ requests; they cannot be chosen. `SHI-137` will not become `planning#137`. The
 `SHI-N → planning#M` mapping is the only authority.
 
 That mapping is needed *before* the copy, not after — because issue bodies and
-comments cross-reference each other (1,146 mentions). Writing them first and
-fixing them later would mean a second edit pass over most of the corpus, and
-**comment bodies cannot be edited at all** through the shim, so a
-comment's cross-references would be permanently stale.
+comments cross-reference each other (1,174 mentions). Writing them first and
+fixing them later would mean a second edit pass over the whole corpus. That is now
+merely wasteful rather than impossible: `comment edit` shipped on 2026-08-07, so a
+stale cross-reference in a comment is repairable. Getting it right on the first
+write is still the design — 1,390 avoidable edits is not a plan — but it is no
+longer the difference between correct and permanently wrong.
 
 The way out is to **split the copy in two, so the mapping is observed rather than
 predicted**. Creating an issue is what fixes its number, and nothing about a
 comment or a cross-reference influences it. So:
 
-- **Pass A** creates all 322 issues — title, body header, labels, and the body
+- **Pass A** creates all 330 issues — title, body header, labels, and the body
   text with its cross-references still in their original `SHI-N` form. Every
   number is now assigned and recorded.
-- **Pass B** replays the 1,344 comments and edits the 322 bodies, rewriting
+- **Pass B** replays the 1,390 comments and edits the 330 bodies, rewriting
   cross-references from the mapping Pass A produced.
 
 The split is what makes the mapping observed rather than guessed. It also draws
@@ -172,7 +187,7 @@ expected regardless (`planning#1` is the write probe, and the pilot consumes one
 
 ## Write volume and pacing
 
-The copy is roughly **2,000 brokered writes**: 322 creates + 1,344 comments + ~230
+The copy is roughly **2,000 brokered writes**: 330 creates + 1,390 comments + ~230
 closes + ~26 label creations. Three consequences, each of which shapes the driver:
 
 1. **No retry or backoff exists.** `trackers/github/adapter.ts` has no handling
@@ -210,7 +225,7 @@ Two defects found while probing this migration are **fixed on `main`**
 
 - `shipit issue view --comments --json` silently truncated at 65,536 bytes when
   stdout was a pipe — the shim exited without draining, so anything past the pipe
-  buffer was lost and the JSON ended mid-string. Two of the 322 issues (`SHI-56`,
+  buffer was lost and the JSON ended mid-string. Two of the 330 issues (`SHI-56`,
   `SHI-90`) hit it. `shim-exit.ts` now flushes before exiting.
 - The Linear adapter's `ISSUE_FIELDS` did not select `createdAt`, so an issue's
   original creation date was unreadable. Req 9 needs it, and it is now selected.
@@ -224,9 +239,36 @@ than pipe, which is a sound habit regardless of the fix.
 **Comments come back newest-first.** `view --comments --json` returns them in
 strictly descending `createdAt` order — SHI-56's 77 run from `2026-08-07` down to
 `2026-06-17`. Pass B posts them in conversation order, so it must reverse the
-array. Posting as-returned would invert all 1,344 conversations while every date
+array. Posting as-returned would invert all 1,390 conversations while every date
 header still read correctly, which is exactly the kind of error a spot-check
 passes over.
+
+**Three labels are stuck with the wrong color, and the shim cannot fix them.**
+`label create` refuses a name that already exists in any casing, and there is no
+`label edit` or `label delete` — so a label that exists wrongly stays wrong:
+
+| Wanted | Actually there | Affects | How it got there |
+|---|---|---|---|
+| `Feature` `#BB87FC` | `Feature` `#ededed` | 81 issues | Minted by the reachability probe with no `--color` |
+| `Bug` `#EB5757` | `bug` `#d73a4a` | 66 issues | GitHub's default `bug` label — collides case-insensitively |
+| `priority: high` `#D93F0B` | `priority: high` `#ededed` | 31 issues | Same probe |
+
+All three are cosmetic: `--label` resolves case-insensitively, so `--label Bug`
+applies the existing `bug`, and `mapGitHubPriority` reads the name, never the
+color. The copy is unaffected. But the two most common labels in the corpus will
+render grey and off-red, which is worth a human deciding about at gate 1 rather
+than discovering across 330 issues. Recolouring them is a GitHub repo-settings
+edit; the durable fix is a `label edit` verb on the shim (docs/177).
+
+The lesson generalizes past the colors: a **probe writes into the same namespace
+the migration will use**, and its leftovers are not always removable. `planning#1`
+is on the checklist to delete; these three labels are the part of that probe that
+cannot be undone.
+
+**The sub-issue parent is in the export, under a name that doesn't look like it.**
+The adapter maps Linear's `parent` onto `parentIdentifier`, already in the docs/248
+name form (`roadmap#SHI-113`) — so a check for a `parent` key finds nothing and
+concludes the data is missing. All 15 sub-issues carry it.
 
 Two smaller traps in the same family: `src/client/hooks/useLazyToolInput.ts`
 contains a byte that makes `grep` treat it as binary, so the reference sweep needs
@@ -247,12 +289,12 @@ mapping's completeness, that ordering is monotonic (req 12), that every create
 returned the expected number, that lint and typecheck pass. Those are assertions,
 and an assertion that needs a human is a missing assertion.
 
-### Gate 1 — the pilot, before the format is repeated 322 times
+### Gate 1 — the pilot, before the format is repeated 330 times
 
 **Look at:** the one copied issue, in the Issues tab. Specifically —
 
 - Does the body header read well? It carries the `SHI-N` origin and the original
-  creation date, and it will sit at the top of all 322.
+  creation date, and it will sit at the top of all 330.
 - Do the replayed comments read as a conversation? Each is prefixed with its
   original date, and the prefix format is what makes a two-year-old discussion
   legible or noisy.
@@ -264,33 +306,33 @@ and an assertion that needs a human is a missing assertion.
 **Why a human:** every one of these is "does this read well", which no test
 asserts.
 
-**Cost of getting it wrong:** depends on one capability that does not exist yet.
-Issue *bodies* can be edited later. **Comments cannot** — the shim has no
-comment-edit or comment-delete command, and deletion exists only via a write
-card's Undo, which is gone once the copy session's cards age out. Credentials are
-brokered, so there is no direct-API fallback. As things stand, a comment format
-settled here is settled for good.
+**Cost of getting it wrong: no longer permanent.** This gate was written when a
+comment, once posted, could not be changed — the shim had no comment-edit, and
+deletion existed only through a write card's Undo, which is gone once the copy
+session's cards age out. `shipit issue comment edit` shipped on 2026-08-07
+(docs/177) and is **live in the deployed shim**, verified by editing a comment on
+`planning#1` end to end. A wrong comment format is now a second pass over 1,390
+comments rather than a permanent defect, and wall-clock is not a constraint here,
+so that is a real remedy rather than a theoretical one.
 
-If `comment edit` ships first (docs/177 → *Proposed — editing and deleting a
-comment*), that changes: a wrong format becomes a second pass over 1,344
-comments rather than a permanent defect. Wall-clock is not a constraint on this
-migration, so "another full pass" is a real remedy rather than a theoretical one.
-This gate stays either way — it is far cheaper to read one issue than to
-re-drive 1,344 writes — but it stops being a one-way door.
+The gate stays, for a smaller reason than before: it is far cheaper to read one
+issue than to re-drive 1,390 writes. But it is no longer a one-way door, and it
+should not be treated as one — the remaining irreversible act in this migration
+is creating the issues themselves, since a number, once assigned, is never reused.
 
 ### Gate 2 — after Pass A, before the reference sweep
 
 **Look at:** the tracker list, and the mapping artifact. Specifically —
 
-- Are there 322 issues, and does spot-checking a handful against their Linear
+- Are there 330 issues, and does spot-checking a handful against their Linear
   originals show the right title, labels and open/closed state?
 - Does the list read in a sensible order — lowest Linear key first (req 12)?
 - Does the mapping cover every key, with no duplicates?
 
 **Why a human:** the agent asserts all of this, but the sweep that follows rewrites
-2,623 references in 667 files from this mapping. A wrong mapping propagates into
-every file in the repository, and the mistake is far cheaper to catch as 322 rows
-than as a 667-file diff.
+2,797 references in 686 files from this mapping. A wrong mapping propagates into
+every file in the repository, and the mistake is far cheaper to catch as 330 rows
+than as a 686-file diff.
 
 **Cost of getting it wrong:** a bad mapping means a bad sweep, and the sweep is
 the migration's only diff.
@@ -335,39 +377,43 @@ the tracker is used day to day, not about what the code does.
 3. ~~Add `createdAt` to the Linear adapter, and stop the shim truncating piped
    output, then confirm both have reached the **deployed** shim.~~ Done —
    `9b031908` is live, verified from a session container on 2026-08-07.
-4. **Export Linear** — 322 keys, `view --comments --json` redirected to a file per
-   key, resumable, outside the workspace. Read-only, and it doubles as the
-   archive. Already run once; the copy session re-runs it for itself.
-5. **Create the labels** the corpus uses — the 20 from Linear with their colors,
+4. ~~**Export Linear** — 330 keys, `view --comments --json` redirected to a file
+   per key, resumable, outside the workspace. Read-only, and it doubles as the
+   archive.~~ Done 2026-08-07 — `/persist/linear-export/`, 330 files, 0 misses,
+   44 seconds. `/persist` is per-session, so a different session re-runs
+   `fetch.sh` rather than inheriting the output.
+5. ~~**Create the labels** the corpus uses — the 20 from Linear with their colors,
    plus the four `priority: …` labels that carry priority across. Workflow state
-   contributes none (req 8).
+   contributes none (req 8).~~ Done 2026-08-07 — 21 created, all 24 now resolve.
+   Three arrived with the wrong color and **cannot be corrected through the
+   shim**; see below.
 6. **Pilot: copy exactly one issue and stop. — Human gate 1.** Pick one that exercises the awkward
    parts — a long body, several comments, at least one internal `SHI-N`
    cross-reference, a label and a priority — and copy it end to end. Then look at
    it in the Issues tab and decide whether the body header, the dated comments and
    the rewritten cross-references read the way they should. Everything downstream
-   repeats this 322 times, so the format is far cheaper to change here than after.
+   repeats this 330 times, so the format is far cheaper to change here than after.
    The pilot's issue number is consumed either way, so Pass A's consistency check
    accounts for it rather than assuming an untouched repository.
 7. **Sync to the latest `main`.** Everything after this point is measured against
    the working tree — the mapping is applied to it, and the sweep rewrites it — so
    the copy starts from a current base rather than a stale one.
-8. **Pass A — create all 322 issues** in ascending key order (req 12): title,
+8. **Pass A — create all 330 issues** in ascending key order (req 12): title,
    labels, and a body carrying its `SHI-N` origin, its original creation date
    and, for the 15 sub-issues, its parent. Cross-references stay in their original
    `SHI-N` form for now. Closed issues are closed after creation. Every assigned
    number is appended to the `SHI-N → planning#M` mapping as it comes back, which
    makes the mapping complete and *observed* at the end of this pass.
    **Human gate 2 at the end of this step**, before anything reads the mapping.
-9. **Pass B — finish the tracker side.** Replay the 1,344 comments with their
+9. **Pass B — finish the tracker side.** Replay the 1,390 comments with their
    original dates (req 9) — **reversing each issue's array, since the export
-   returns comments newest-first** — and edit the 322 bodies so their internal
+   returns comments newest-first** — and edit the 330 bodies so their internal
    cross-references point at `planning#M`. Both are tracker writes against the
    mapping Pass A produced; **nothing in this repository changes**, so this step
    opens no PR and can run for as long as the pacing requires.
 10. **Rewrite every reference in this repository** — **Human gate 3.** From that mapping, in one PR
     (req 10): doc `issue:` frontmatter, inline doc mentions, code comments,
-    `CLAUDE.md`. 2,623 mentions across 667 files — it conflicts with every open
+    `CLAUDE.md`. 2,797 mentions across 686 files — it conflicts with every open
     branch, so it lands when nothing else is in flight. This is the only step of
     the migration that produces a diff.
 11. **Retire Linear** for ShipIt's own planning — **Human gate 4.** (req 11): drop the `roadmap`
