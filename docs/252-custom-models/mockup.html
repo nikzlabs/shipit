@@ -460,7 +460,8 @@
       <h2 class="pane-title">Harnesses</h2>
       <p class="pane-desc">
         A harness is the agent CLI ShipIt spawns. Each speaks one API style, which decides
-        the services it can drive. Harnesses ship with ShipIt — there is nothing to add here.
+        the services it can drive. This deployment installed these two; the set is chosen when
+        ShipIt is installed and changing it means redeploying, so there is nothing to add here.
       </p>
 
       <div class="card">
@@ -515,11 +516,14 @@
           <div class="svc-body">
             <div class="svc-top">
               <span class="svc-name" style="font-weight:500">Runs on</span>
-              <span class="chip">Anthropic &middot; haiku-4.5</span>
+              <span class="chip">Automatic &mdash; first available</span>
+              <span style="color:var(--text-tertiary);font-size:12px">currently</span>
+              <span class="chip">Anthropic &middot; opus-5</span>
               <button class="btn ghost">Change</button>
             </div>
             <div class="svc-meta">
-              ShipIt&rsquo;s default. Chosen independently of whatever a session is using.
+              Default. Follows whatever this install can run; pin one to stop it moving.
+              Chosen independently of whatever a session is using.
             </div>
           </div>
         </div>
@@ -543,15 +547,30 @@
       model not declared for that style is simply absent rather than listed-and-broken.
     </div>
     <div class="note">
+      <span class="req">req 14</span><b>Two rows because this deployment installed two.</b>
+      Harnesses are not user-editable and the set is a property of the deployment, chosen at
+      install from what ShipIt supports, Claude Code and Codex by default. A harness that was
+      not installed is <i>absent</i> from this table and from the picker — not listed and empty.
+      <div class="callout">
+        <i>Installed</i> and <i>credentialed</i> are separate gates: no install, no models
+        whatever your keys; installed, and you still only get the services you have a key for.
+      </div>
+    </div>
+    <div class="note">
       <span class="req">req 2</span><b>Claude Code is listed while driving DeepSeek.</b>
       Using a harness never requires an account with that harness&rsquo;s own vendor — remove the
       Anthropic row from Services and this one still works.
     </div>
     <div class="note">
       <span class="req">req 9</span><b>Background work names a service and a model,</b> visible
-      as its own setting with a ShipIt-supplied default. A default is fine; a hidden dependency
-      is not — the failure this comes from was a lapsed subscription silently breaking session
-      naming.
+      as its own setting. A default is fine; a hidden dependency is not — the failure this comes
+      from was a lapsed subscription silently breaking session naming.
+      <div class="callout">
+        Which is why the default is <b>a rule, not a model</b>: unset resolves to the first
+        model this install can actually run. A named default would be broken from day one on
+        an install whose only credential is a DeepSeek key — the install this feature exists
+        to make possible.
+      </div>
     </div>
   </div>
 </div>

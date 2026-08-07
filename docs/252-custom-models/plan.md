@@ -103,8 +103,8 @@ the design.
 |---|---|---|---|
 | 1 | Catalogue and identities | 5, 6, 7 | The data model. No user-visible change. |
 | 2 | Credentials and Settings | 5, 7 | You can save a service key. It does nothing yet. |
-| 3 | Spawn shaping and eligibility | 1, 2, 8 | **A session runs on a custom service.** |
-| 4 | In-session switching | 3, 4 | Switching models, including across services. |
+| 3 | Spawn shaping and eligibility | 1, 2, 3, 8 | **A session runs on a custom service.** |
+| 4 | In-session switching | 4 | Switching models, including across services. |
 | 5 | Credential-failure policy | 12 | Correct behaviour when a credential dies. |
 | 6 | Usage and attribution | 10, 11 | You can see what you are running and what it costs you. |
 | 7 | Non-turn work | 9 | Naming and PR descriptions get their own model. |
@@ -138,6 +138,10 @@ credential from the selected model's service, after the scrub. Eligibility moves
 `hasAnyAuthForProvider(provider)` to the per-model credential question, which is what stops
 `claude-*` models being offered on an install whose only credential is a DeepSeek key.
 
+It is also where req 3 becomes observable: the moment a custom model is offered, it is
+offered in the one picker alongside everything else, with no separate surface for a
+vendor's own models.
+
 **This is the phase where the feature exists.** A fresh session on DeepSeek V4 Flash under
 the Claude Code harness takes a turn, with no Anthropic credential anywhere. The spike
 already established this works (Appendix B); this is the version that follows the
@@ -162,7 +166,8 @@ Settings → Harnesses screen lands here too, since it is the same join rendered
 different question.
 
 **Phase 7 — Non-turn work.** Session naming and PR descriptions get their own explicitly
-chosen `(service, model)`, visible as a setting with a ShipIt-supplied default. Includes
+chosen `(service, model)`, visible as a setting whose unset state resolves to the first
+eligible model rather than to a named one. Includes
 normalizing a blank PR generation into the generic fallback — today's code returns the
 empty string in containerized production — and the durable, dismissible failure notice.
 
@@ -339,9 +344,23 @@ scrub, from the *selected model's* service rather than from a model-id prefix.
 **Non-turn work** (req 9) — session naming and PR descriptions run on a model the user
 chooses **for that purpose**, resolved independently of whatever the session is using.
 It is a `(service, model)` selection like any other, not a service alone: a service does
-not identify something callable. It surfaces as its own setting, and ShipIt ships a
-default so the feature works unconfigured — the setting being *visible* is what stops
-that default from re-creating the hidden dependency this requirement exists to remove.
+not identify something callable. It surfaces as its own setting, and it has a default so
+the feature works unconfigured — the setting being *visible* is what stops that default
+from re-creating the hidden dependency this requirement exists to remove.
+
+**The default is a rule, not a stored value** (req 9): unset means *the first eligible
+model in the picker's own ordering* — first service, first model — resolved at the point
+non-turn work runs, not frozen at install. Eligible is the same conjunction the picker
+uses: an installed harness (req 14) whose service has a credential (req 8). So the setting
+has two states, and they are not the same thing: **unset** follows the install, and **set**
+is a pin the user chose and ShipIt does not move. Only the second can go stale, and it is
+the one req 9's notice reports on.
+
+A consequence worth accepting rather than designing around: the picker orders by
+capability, so the derived default is likely to be a *large* model doing work — session
+titles, PR descriptions — that a small one does fine. Nothing here says otherwise, and
+cheapness is not a requirement. If it turns out to matter, the fix is the catalogue's
+ordering, not a new "suitable for background work" concept.
 
 The two halves are not symmetric, and an earlier draft wrongly said both merely preserve
 today's behavior:

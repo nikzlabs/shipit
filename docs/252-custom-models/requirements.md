@@ -65,11 +65,14 @@ No open questions remain.
    model a session is using. It is a model like any other, chosen the same way (req 3),
    so it names both a service and a model rather than a service alone.
 
-   That choice is **visible in the UI as its own setting**, and ShipIt supplies a
-   reasonable default so nobody has to configure it before ShipIt works. A default is
-   acceptable where a hidden dependency is not: the user can see what non-turn work
-   runs on and change it. It must not silently depend on a credential the user has
-   stopped having.
+   That choice is **visible in the UI as its own setting**, and it has a default so
+   nobody has to configure it before ShipIt works. The default is **derived, not a named
+   model**: it is the first model the install can actually run — the first model of the
+   first service — so it is never a model whose service has no credential (req 8) or
+   whose harness was not installed (req 14). A default is acceptable where a hidden
+   dependency is not: the user can see what non-turn work runs on and change it, and
+   until they do it follows whatever the install has rather than pointing at a vendor
+   they may never have used or have stopped paying for.
 
    When that service fails, the surrounding operation still completes with a fallback
    — a session keeps its placeholder title, and a pull request gets a generic
@@ -135,6 +138,18 @@ No open questions remain.
 _None._
 
 ## Resolved questions
+
+- 2026-08-07 — What *is* ShipIt's default for non-turn work? **Chosen: derive it — the
+  first model of the first service.** Re-reading found the default was the one part of
+  req 9 that a fixed value could not satisfy: any named model (the mockup showed
+  `Anthropic · haiku-4.5`) names a service that the very install this feature exists to
+  create — a user whose only credential is a DeepSeek key — has no credential for, so
+  every session title and pull-request description would fail from the first day and fire
+  req 9's own notice. Req 14 sharpened it: an install that did not select the Claude Code
+  harness has no way to run that default at all. A derived default removes the failure
+  by construction rather than reporting it, and it also self-heals the original incident
+  — when a subscription lapses, an unset default moves to whatever the install still has
+  instead of continuing to point at the vendor that went away. Requirement 9.
 
 - 2026-08-06 — Can the installed harness set change after install, without reinstalling?
   **Chosen: no — redeploy.** The harness set is an input to the session-image build, so
@@ -396,6 +411,10 @@ human, but most of the mechanism did not. What the human actually said, in order
   Claude being selected by default" → req 14, both halves. The human also identified the
   prior unimplemented sketch (`docs/154-cursor-agent-adapter`) that req 14 now supersedes.
 - "Redeploy" → req 14's closing paragraph: the harness set is a property of the deployment.
+- "the default would be 'first model on the first service', something like this" → req 9's
+  derived default, replacing the fixed model an earlier draft assumed. The mechanism is the
+  human's sketch and is stated in `plan.md`; the requirement states only the property it
+  has to have — a default the install can actually run.
 
 Reqs 5, 7 and 9 were corrected on 2026-08-05 after review found they still described
 the *superseded* model in which users authored declarations and added services outright,
