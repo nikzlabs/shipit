@@ -615,11 +615,15 @@ export interface RepoInfo {
    * that spans the repo's whole sidebar group.
    *
    * An INDEX rather than a color: each theme maps it to its own light/dark
-   * value, so one stored choice looks right everywhere. Assigned at add time to
-   * the least-used index and never reassigned implicitly — the color is stable
-   * across adds, removals, reorders and hide/unhide — and changeable by the user
-   * from Project Settings. `undefined` only for a row written by an older build
-   * before the backfill migration ran; the UI falls back to no edge.
+   * value, so one stored choice looks right everywhere. Assigned at add time
+   * from `REPO_COLOR_ASSIGNMENT_ORDER` (which is NOT palette order — see that
+   * constant) and stable thereafter across adds, removals, reorders and
+   * hide/unhide, plus changeable by the user from Project Settings.
+   *
+   * The one exception is a migration: `database.ts` re-spread the colors the
+   * original backfill assigned, since those walked the palette in index order
+   * and came out as adjacent hues. `undefined` only for a row written by an
+   * older build before that backfill ran; the UI falls back to no edge.
    */
   colorIndex?: number;
 }

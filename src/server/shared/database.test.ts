@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseManager } from "./database.js";
+import { REPO_COLOR_ASSIGNMENT_ORDER } from "./repo-colors.js";
 
 /**
  * Migration 21 (docs/151) — the agent-reviews tables ship alongside a
@@ -227,18 +228,27 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
   });
 
   /**
-   * Open the db, undo the color_index migration, seed rows as they would have
-   * existed before it, and hand back the version to re-run from.
+   * Open the db, undo BOTH color_index migrations (the backfill and the
+   * re-spread that follows it), seed rows as they would have existed before
+   * them, and hand back the version to re-run from.
+   *
+   * Both, because they are one upgrade from the user's side: a workspace that
+   * has never seen either arrives at the colors a fresh one would have.
    */
   function rewindPastColorMigration(seed: (db: DatabaseManager["db"]) => void): number {
     const m = new DatabaseManager(file);
     const version = m.db.pragma("user_version", { simple: true }) as number;
     m.db.exec("ALTER TABLE repos DROP COLUMN color_index");
     seed(m.db);
-    m.db.pragma(`user_version = ${version - 1}`);
+    m.db.pragma(`user_version = ${version - COLOR_MIGRATIONS}`);
     m.close();
     return version;
   }
+
+  /** Backfill + re-spread. */
+  const COLOR_MIGRATIONS = 2;
+  /** What the pair produces for the first N repos in display order. */
+  const spread = (n: number) => REPO_COLOR_ASSIGNMENT_ORDER.slice(0, n);
 
   const seedRepo = (db: DatabaseManager["db"], url: string, displayOrder: number | null, lastUsedAt = "2026-01-01") =>
     db.prepare(
@@ -260,7 +270,7 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
       seedRepo(db, "b", 1);
       seedRepo(db, "c", 2);
     });
-    expect(colorsAfterMigration(["a", "b", "c"])).toEqual([0, 1, 2]);
+    expect(colorsAfterMigration(["a", "b", "c"])).toEqual(spread(3));
   });
 
   // Walks the sidebar's own display order, so the colors a user sees top-to-bottom
@@ -271,7 +281,7 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
       seedRepo(db, "first", 0);
       seedRepo(db, "middle", 1);
     });
-    expect(colorsAfterMigration(["first", "middle", "last"])).toEqual([0, 1, 2]);
+    expect(colorsAfterMigration(["first", "middle", "last"])).toEqual(spread(3));
   });
 
   it("falls back to last-used order for never-reordered repos", () => {
@@ -279,14 +289,20 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
       seedRepo(db, "older", null, "2026-01-01");
       seedRepo(db, "newer", null, "2026-06-01");
     });
-    expect(colorsAfterMigration(["newer", "older"])).toEqual([0, 1]);
+    expect(colorsAfterMigration(["newer", "older"])).toEqual(spread(2));
   });
 
+  // 18 repos can't all hold a distinct color. The re-spread is a straight
+  // permutation, so the backfill's wrap survives it: r16 repeats r0's color
+  // before and after, just a different one.
   it("wraps past the palette size rather than writing an unrenderable index", () => {
     rewindPastColorMigration((db) => {
       for (let i = 0; i < 18; i++) seedRepo(db, `r${i}`, i);
     });
-    expect(colorsAfterMigration(["r15", "r16", "r17"])).toEqual([15, 0, 1]);
+    expect(colorsAfterMigration(["r15", "r16", "r17"])).toEqual([
+      REPO_COLOR_ASSIGNMENT_ORDER[15], REPO_COLOR_ASSIGNMENT_ORDER[0], REPO_COLOR_ASSIGNMENT_ORDER[1],
+    ]);
+    expect(colorsAfterMigration(["r0"])).toEqual([REPO_COLOR_ASSIGNMENT_ORDER[0]]);
   });
 
   it("is a no-op on an empty repos table", () => {
@@ -303,7 +319,71 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
       seedRepo(db, "a", 0);
       seedRepo(db, "b", 1);
     });
-    expect(colorsAfterMigration(["a", "b"])).toEqual([0, 1]);
-    expect(colorsAfterMigration(["a", "b"])).toEqual([0, 1]);
+    expect(colorsAfterMigration(["a", "b"])).toEqual(spread(2));
+    expect(colorsAfterMigration(["a", "b"])).toEqual(spread(2));
+  });
+
+  /**
+   * The re-spread's gate.
+   *
+   * It rewrites colors, and a color is also something a user picks in Project
+   * Settings — so the only question that matters is whether the values it finds
+   * were machine-assigned or chosen. No property of the stored data answers
+   * that: a user who swaps two repos' colors leaves exactly the contiguous
+   * {0..N-1} set the backfill does, so a shape check would bless the swap and
+   * overwrite it. The migration therefore doesn't infer — it gates on
+   * `fromVersion`, rewriting only when the backfill ran in the SAME pass,
+   * microseconds earlier, with no window for anyone to have picked anything.
+   *
+   * The deliberate cost: a workspace already on a build that had the backfill
+   * keeps its adjacent hues. That case is the second test.
+   *
+   * These two also pin `COLOR_BACKFILL_MIGRATION` from both sides — set it too
+   * high and the already-migrated case would re-spread; too low and every
+   * upgrading case above would stop.
+   */
+  describe("re-spread gate", () => {
+    /** Rewind ONLY the re-spread, leaving color_index populated as seeded. */
+    function rewindPastRespread(colors: number[]): (number | null)[] {
+      const urls = colors.map((_, i) => `r${i}`);
+      const m = new DatabaseManager(file);
+      const version = m.db.pragma("user_version", { simple: true }) as number;
+      colors.forEach((c, i) => {
+        seedRepo(m.db, urls[i], i);
+        m.db.prepare("UPDATE repos SET color_index = ? WHERE url = ?").run(c, urls[i]);
+      });
+      m.db.pragma(`user_version = ${version - 1}`);
+      m.close();
+      return colorsAfterMigration(urls);
+    }
+
+    // The whole point of the migration, restated at the gate: a database that
+    // has never had the column gets both migrations, so it lands spread.
+    it("re-spreads a workspace upgrading into the feature", () => {
+      rewindPastColorMigration((db) => {
+        seedRepo(db, "a", 0);
+        seedRepo(db, "b", 1);
+      });
+      expect(colorsAfterMigration(["a", "b"])).toEqual(spread(2));
+    });
+
+    // …and a database that already ran the backfill on some earlier boot is
+    // left exactly as it is, because by now any of those values could be a
+    // deliberate pick. Sequential colors here are the SAME state the test above
+    // re-spreads — only the version the pass started from differs.
+    it("leaves a workspace that already had colors alone", () => {
+      expect(rewindPastRespread([0, 1, 2])).toEqual([0, 1, 2]);
+    });
+
+    it("leaves a manually picked color alone", () => {
+      expect(rewindPastRespread([0, 1, 11])).toEqual([0, 1, 11]);
+    });
+
+    // The case a shape check could not have distinguished: swapping two repos'
+    // colors leaves the contiguous set intact, and is now safe purely because
+    // the gate never looks at the values.
+    it("leaves a swapped pair alone", () => {
+      expect(rewindPastRespread([1, 0, 2])).toEqual([1, 0, 2]);
+    });
   });
 });

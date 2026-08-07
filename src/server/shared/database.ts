@@ -7,8 +7,15 @@ export type DatabaseInstance = BetterSqlite3.Database;
  * Schema migration: a function that receives the database and applies changes.
  * Migrations are run in order by index (0-based). Each migration runs inside
  * a transaction managed by DatabaseManager.
+ *
+ * `fromVersion` is the schema version the database was at when this pass
+ * started, so a migration can tell which of its predecessors ran *alongside* it
+ * versus in some earlier boot. Almost nothing needs it — it exists for the one
+ * case where "did the previous migration just write this data, or did a user
+ * touch it in between?" is the difference between a safe rewrite and clobbering
+ * a deliberate choice (see the color re-spread at the end of the list).
  */
-export type Migration = (db: DatabaseInstance) => void;
+export type Migration = (db: DatabaseInstance, fromVersion: number) => void;
 
 const MIGRATIONS: Migration[] = [
   // Migration 0: initial schema — all tables
@@ -847,9 +854,12 @@ const MIGRATIONS: Migration[] = [
   // Existing rows are backfilled here rather than left NULL: the edge is the
   // whole feature, so a workspace that upgrades into it with every repo
   // uncolored would see nothing at all. Backfill walks rows in the sidebar's own
-  // display order and hands out distinct low indices, which is exactly what
-  // `pickRepoColorIndex` would have produced had the repos been added under this
-  // build — so an upgraded workspace and a fresh one agree.
+  // display order and hands out distinct low indices, matching what
+  // `pickRepoColorIndex` produced at the time.
+  //
+  // Those low indices are adjacent hues, which read as nearly the same color —
+  // the migration below re-spreads them. This one stays as it shipped: a
+  // migration must keep reproducing the same result forever.
   (db) => {
     db.exec("ALTER TABLE repos ADD COLUMN color_index INTEGER");
     const rows = db
@@ -867,7 +877,52 @@ const MIGRATIONS: Migration[] = [
     // later changes — a bigger palette must not retroactively recolor old repos.
     rows.forEach((row, i) => update.run(i % 16, row.url));
   },
+  // docs/254 — re-spread the repo colors the migration above just assigned.
+  //
+  // The palette is a hue wheel and assignment used to walk it in index order, so
+  // the backfill's low indices came out as 0, 1, 2 — three adjacent warm ochres
+  // that read as the same color in the sidebar, which is precisely what the
+  // per-repo edge exists to prevent. Assignment now walks a farthest-point order
+  // (`REPO_COLOR_ASSIGNMENT_ORDER`), and this maps the backfill's output onto
+  // it, so a workspace upgrading into the feature lands where a fresh one would.
+  //
+  // ONLY the backfill's output. A repo color is also something the user can pick
+  // in Project Settings, nothing records which colors were chosen, and no
+  // property of the stored values can tell them apart: a user who swaps two
+  // repos' colors leaves the same contiguous {0..N-1} set the backfill does.
+  // So rather than infer, this runs exclusively when the backfill ran in THIS
+  // pass — `fromVersion <= COLOR_BACKFILL_MIGRATION` — where the values are
+  // provably machine-assigned microseconds earlier and there was no window for
+  // anyone to pick anything.
+  //
+  // The cost is deliberate and was the user's call: a workspace already on a
+  // build that had the backfill keeps its adjacent hues, and re-spreading it
+  // means picking colors by hand. Overwriting a chosen color is worse.
+  (db, fromVersion) => {
+    if (fromVersion > COLOR_BACKFILL_MIGRATION) return;
+    // Inlined for the same reason as above: frozen input, frozen output.
+    const ORDER = [6, 12, 3, 9, 1, 4, 10, 5, 15, 8, 11, 2, 14, 0, 13, 7];
+    const rows = db.prepare("SELECT url, color_index FROM repos").all() as {
+      url: string;
+      color_index: number;
+    }[];
+    const update = db.prepare("UPDATE repos SET color_index = ? WHERE url = ?");
+    // A straight permutation, so it holds for a workspace past 16 repos too:
+    // the backfill wrapped and handed out duplicates there, and remapping every
+    // value preserves that structure exactly while spreading the hues.
+    for (const row of rows) update.run(ORDER[row.color_index], row.url);
+  },
 ];
+
+/**
+ * 0-based index of the repo-color backfill in `MIGRATIONS`, so the re-spread
+ * immediately after it can tell whether it ran in the same pass.
+ *
+ * Frozen, like the palette data those two migrations inline. Migrations are
+ * append-only — `user_version` counts them, so inserting one renumbers every
+ * database in existence — which is what makes a literal index safe here.
+ */
+const COLOR_BACKFILL_MIGRATION = 66;
 
 export class DatabaseManager {
   readonly db: DatabaseInstance;
@@ -889,7 +944,7 @@ export class DatabaseManager {
 
     const migrate = this.db.transaction(() => {
       for (let i = currentVersion; i < MIGRATIONS.length; i++) {
-        MIGRATIONS[i](this.db);
+        MIGRATIONS[i](this.db, currentVersion);
       }
       this.db.pragma(`user_version = ${MIGRATIONS.length}`);
     });

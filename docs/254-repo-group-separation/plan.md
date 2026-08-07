@@ -64,15 +64,39 @@ violates one will look correct in a static screenshot and break in use.
 
 ### Assignment
 
-`pickRepoColorIndex` takes the **lowest-numbered free** color, not the next one
-round-robin, so the early colors stay stable as repos come and go: removing repo
-#2 and adding another gives the new repo #2's old slot rather than shifting
-everyone along (req 5, req 6). Hidden repos are counted as holders, so unhiding
-one can never collide with a color handed out while it was out of sight. Past 16
-repos it wraps to the least-used index — the first repeat req 5 allows.
+`pickRepoColorIndex` takes the **first free** color in
+`REPO_COLOR_ASSIGNMENT_ORDER`, not the next one round-robin, so the early colors
+stay stable as repos come and go: removing the second repo and adding another
+gives the new repo that freed slot rather than shifting everyone along (req 5,
+req 6). Hidden repos are counted as holders, so unhiding one can never collide
+with a color handed out while it was out of sight. Past 16 repos it wraps to the
+least-used index — the first repeat req 5 allows — breaking ties by assignment
+order so the repeats spread out too.
 
 A re-add (which is also how *unhide* works, since `add()` clears `hidden`) never
 reassigns; it only fills a hole left by an older build.
+
+**Assignment order is not palette order**, and the gap between them is the whole
+point. The palette is laid out as a hue wheel because that is what the picker
+grid wants; assignment originally walked it by index, so a workspace's first
+three repos got Clay, Ochre and Mustard — three adjacent warm ochres that read as
+one color in the rail. Every pair passed the mutual-distinguishability test (all
+16 entries are ≥44 apart), which is exactly the lesson: *"no two entries are
+identical"* does not give you *"the ones actually in use look different"*, and
+only the second is visible to a user with three repos.
+
+So `REPO_COLOR_ASSIGNMENT_ORDER` is a farthest-point traversal of the palette —
+each entry is the one whose closest approach to any already-assigned color is
+largest, scored as the worse of its light and dark values, since a pair can
+separate on one surface and not the other. Distance to the nearest color already
+on screen goes 268 → 161 → 121 → 95 for repos two through five, against
+68 → 53 → 58 → 82 walking the palette in order.
+
+`repo-palette.test.ts` guards the property as the user meets it — *as each repo
+arrives, how far is its color from the nearest one already in use* — with a
+strict floor over the first handful and a relative check that spread must beat
+sequential at 3, 5 and 8 repos. That last one is stated as a comparison so it
+keeps its meaning if the palette is ever retuned.
 
 ### Suppression
 
@@ -108,13 +132,44 @@ described "the amber ops group" while the wrench rendered `text-secondary`.
 Existing repos are backfilled rather than left NULL — the edge *is* the feature,
 so a workspace upgrading into it with every repo uncolored would see nothing at
 all. The backfill walks rows in the sidebar's own display order and hands out
-distinct low indices, which is what `pickRepoColorIndex` would have produced had
-those repos been added under this build, so an upgraded workspace and a fresh one
-agree.
+distinct low indices, matching what `pickRepoColorIndex` produced at the time.
 
-The palette size is **inlined as `16`** in the migration rather than imported. A
-migration must keep reproducing the same result forever; following a constant
-would let a later, larger palette retroactively recolor old repos.
+Those low indices are the adjacent hues described under *Assignment*, so a
+**second migration re-spreads them** onto the assignment order — as a straight
+permutation, so a workspace past 16 repos keeps the backfill's wrap structure
+exactly while its hues spread.
+
+**It runs only when the backfill ran in the same pass.** A repo color is also
+something the user picks in Project Settings, and a rewrite that hits a chosen
+color is worse than leaving a tidy palette alone. Nothing records which colors
+were chosen, and — the load-bearing part — *no property of the stored values can
+recover it*: a user who swaps two repos' colors leaves exactly the contiguous
+`{0..N-1}` set the backfill produces, so a shape check blesses the swap and
+overwrites it. (An earlier draft did precisely that, and a Codex review caught
+it.) The tempting middle ground of "the color still matches the position the
+backfill gave it" doesn't exist either — `display_order` is NULL until the user
+drags, and the fallback sort key `last_used_at` updates on every use, so the
+historical rank isn't reconstructible.
+
+So the migration doesn't infer. `Migration` now takes a second argument,
+`fromVersion` — the schema version the pass started at — and the re-spread
+returns early unless `fromVersion <= COLOR_BACKFILL_MIGRATION`. In that window
+the values were machine-assigned microseconds earlier and no window existed for
+anyone to pick anything, which makes the rewrite provably safe rather than
+probably safe.
+
+The deliberate cost, **decided by Nik**: a workspace already running a build that
+had the backfill keeps its adjacent hues, and re-spreading it means re-picking by
+hand. The alternative reached more workspaces but bet a user's explicit choice on
+an inference, and that trade was refused.
+
+The first migration stays exactly as it shipped: a migration must keep
+reproducing the same result forever, which is also why both **inline** their
+palette data (`16`, and the order itself), and why `COLOR_BACKFILL_MIGRATION` is
+a frozen literal. Migrations are append-only — `user_version` counts them, so
+inserting one renumbers every database in existence — which is what makes a
+literal index safe. Two tests pin it from both sides: raise it and the
+already-migrated case starts re-spreading, lower it and the upgrading case stops.
 
 ## Changing a color
 

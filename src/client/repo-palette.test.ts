@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { REPO_COLOR_COUNT } from "../server/shared/repo-colors.js";
+import { REPO_COLOR_ASSIGNMENT_ORDER, REPO_COLOR_COUNT } from "../server/shared/repo-colors.js";
 import { groupBandFill } from "./components/SessionSidebar/SessionGroup.js";
 
 /**
@@ -172,6 +172,73 @@ describe("docs/254 — repo palette vs status colors", () => {
       });
     });
   }
+});
+
+/**
+ * docs/254 — colors are handed out SPREAD, not in palette order.
+ *
+ * The palette is laid out as a hue wheel because that is what the picker grid
+ * wants, and `pickRepoColorIndex` originally walked it in index order — so a
+ * workspace's first three repos got Clay, Ochre and Mustard, three adjacent
+ * warm ochres. Every entry passed the mutual-distinguishability test above (all
+ * 16 are ≥44 apart), which is the point: "no two entries are identical" does
+ * not give you "the ones actually in use look different", and only the second
+ * one is visible to a user with three repos.
+ *
+ * So the property under test is about the ORDER, and it is stated the way the
+ * user experiences it: as each repo is added, how far is its color from the
+ * closest color already on screen? Walking the palette in order that bottoms
+ * out at 53 by the third repo; the assignment order holds 95+ through the
+ * fourth and degrades gracefully after.
+ *
+ * Thresholds are deliberately well under what the current order achieves — this
+ * guards against a regression to sequential assignment, not against a retune.
+ */
+describe("docs/254 — assignment order spreads the palette", () => {
+  const palette = readPalette();
+  /** Worst case across both surfaces: a pair can separate in dark and not light. */
+  const gap = (i: number, j: number) =>
+    Math.min(
+      difference(parseHex(palette.light[i]), parseHex(palette.light[j])),
+      difference(parseHex(palette.dark[i]), parseHex(palette.dark[j])),
+    );
+
+  /** For each repo in turn, its distance to the nearest color already assigned. */
+  const nearestOnArrival = (order: readonly number[]): number[] =>
+    order.slice(1).map((idx, k) => Math.min(...order.slice(0, k + 1).map((prev) => gap(idx, prev))));
+
+  // The first handful is what nearly every workspace ever sees, so it carries
+  // the strict floor; the tail only has to stay above the palette's own bound.
+  const MIN_EARLY = 80; // repos 2-5
+  const MIN_ANY = MIN_MUTUAL;
+
+  it("keeps the first repos far apart as they arrive", () => {
+    const gaps = nearestOnArrival(REPO_COLOR_ASSIGNMENT_ORDER);
+    for (const [k, d] of gaps.slice(0, 4).entries()) {
+      expect(d, `repo #${k + 2} lands only ${d.toFixed(0)} from a color already in use`)
+        .toBeGreaterThanOrEqual(MIN_EARLY);
+    }
+  });
+
+  it("never lands a new repo on top of an existing one", () => {
+    for (const [k, d] of nearestOnArrival(REPO_COLOR_ASSIGNMENT_ORDER).entries()) {
+      expect(d, `repo #${k + 2} lands only ${d.toFixed(0)} from a color already in use`)
+        .toBeGreaterThanOrEqual(MIN_ANY);
+    }
+  });
+
+  // The regression this exists to catch: reverting to lowest-free assignment.
+  // Stated as a comparison rather than an absolute so it keeps meaning if the
+  // palette is retuned — whatever the hues become, spread must beat sequential.
+  it("beats walking the palette in index order", () => {
+    const sequential = nearestOnArrival(Array.from({ length: REPO_COLOR_COUNT }, (_, i) => i));
+    const spread = nearestOnArrival(REPO_COLOR_ASSIGNMENT_ORDER);
+    for (const n of [3, 5, 8]) {
+      const worst = (g: number[]) => Math.min(...g.slice(0, n - 1));
+      expect(worst(spread), `with ${n} repos, the assignment order is no better than palette order`)
+        .toBeGreaterThan(worst(sequential));
+    }
+  });
 });
 
 /**

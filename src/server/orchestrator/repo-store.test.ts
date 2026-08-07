@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DatabaseManager } from "../shared/database.js";
 import { RepoStore } from "./repo-store.js";
+import { REPO_COLOR_ASSIGNMENT_ORDER } from "../shared/repo-colors.js";
 
 let dbManager: DatabaseManager;
 let store: RepoStore;
@@ -307,7 +308,7 @@ describe("RepoStore", () => {
     const b = "https://github.com/owner/b.git";
 
     it("assigns a color on add", () => {
-      expect(store.add(a).colorIndex).toBe(0);
+      expect(store.add(a).colorIndex).toBe(REPO_COLOR_ASSIGNMENT_ORDER[0]);
     });
 
     // req 5 — no two repos share a color while unused colors remain.
@@ -329,9 +330,9 @@ describe("RepoStore", () => {
     it("does not hand a second repo the colour a hidden repo is holding", () => {
       store.add(a);
       store.setHidden(a, true);
-      // `a` holds 0 while hidden; `b` must not collide with it, or unhiding
-      // `a` would produce two identical edges.
-      expect(store.add(b).colorIndex).toBe(1);
+      // `a` still holds its color while hidden; `b` must not collide with it, or
+      // unhiding `a` would produce two identical edges.
+      expect(store.add(b).colorIndex).toBe(REPO_COLOR_ASSIGNMENT_ORDER[1]);
     });
 
     it("sets and persists an explicit color", () => {
@@ -345,10 +346,10 @@ describe("RepoStore", () => {
     });
 
     it("reuses a freed color after a removal", () => {
-      store.add(a);            // 0
-      store.add(b);            // 1
+      store.add(a);            // assignment order [0]
+      store.add(b);            // assignment order [1]
       store.remove(a);
-      expect(store.add("https://github.com/owner/c.git").colorIndex).toBe(0);
+      expect(store.add("https://github.com/owner/c.git").colorIndex).toBe(REPO_COLOR_ASSIGNMENT_ORDER[0]);
     });
   });
 });
