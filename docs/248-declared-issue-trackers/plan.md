@@ -554,7 +554,7 @@ change below was a `shipit.yaml` edit with no restart.
 | The routing invariant, at the wire | Declared forms → `tracker=github:nicolasalt-shipit/template-nextjs`; a bare `#2` → `tracker=github` (todo-list) |
 | Req 13 — `create` must name its destination | Bare `create` refused with exit 2 and the declared names listed; `--tracker planning` filed into `template-nextjs` |
 | Req 15 — emitted references carry the name form | The create reported `planning#2`; a *canonical* address (`nicolasalt-shipit/template-nextjs#2`) also rendered back as `planning#2` |
-| Req 11 — fail-closed | An undeclared address, an unknown name, and a mismatched suffix (`planning#planning#5`) each failed with the declared names, never a guess |
+| Req 11 — fail-closed | An undeclared address, an unknown name, and a mismatched suffix (`planning#SHI-3`) each failed with the declared names, never a guess |
 | Req 11 — ambiguity | Declaring the same repository under two names made the canonical address fail naming both, while each name still resolved |
 | Req 12 — self-declaration | Declaring the session's own repository produced one tab under its name, not a duplicate |
 | Case-insensitive destination identity | A declaration written `nicolasalt-shipit/Template-NextJS` matched the lowercase address |

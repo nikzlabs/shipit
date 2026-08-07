@@ -43,7 +43,7 @@ function newRunner(): SessionRunner {
 }
 
 describe("PreparedDispatch brand (docs/240 Fix A)", () => {
-  it("SHI-259: a hand-built AgentDispatchOptions cannot be dispatched (type-level)", () => {
+  it("planning#261: a hand-built AgentDispatchOptions cannot be dispatched (type-level)", () => {
     const runner = newRunner();
 
     // THE regression guard. planning#261's turn-adoption drain built exactly this

@@ -58,7 +58,7 @@ export type FetchImpl = typeof fetch;
 /**
  * The canonical, slug-free form of a Linear issue URL: `…/issue/<IDENTIFIER>`.
  * Linear's API returns the URL with a title-derived slug appended
- * (`…/issue/planning#30/redesign-the-auth-flow`). We strip that slug everywhere a
+ * (`…/issue/SHI-28/redesign-the-auth-flow`). We strip that slug everywhere a
  * `TrackerIssue.url` is produced, for two reasons:
  *
  *  - It can leak the issue title into URLs the agent writes back into committed
@@ -68,7 +68,7 @@ export type FetchImpl = typeof fetch;
  *    full URL without the title slug"), and the shape `parseIssueRef` already
  *    treats as canonical.
  *
- * The slug-free URL still resolves — Linear redirects `…/issue/planning#30` to the
+ * The slug-free URL still resolves — Linear redirects `…/issue/SHI-28` to the
  * full slug URL — so nothing downstream breaks. A URL that doesn't match the
  * expected Linear shape is returned unchanged.
  */

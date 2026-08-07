@@ -703,7 +703,7 @@ describe("rebase-driver: runRebaseFlow", () => {
   // `postTurn: "none"` (which elides the usual post-turn handoff). Handing only
   // `.git` back restores git operability but leaves the conflicted files the
   // agent must EDIT root-owned, so the resolution turn still fails EACCES.
-  it("SHI-144: hands .git AND worktree back to the worker uid on the up-to-date path", async () => {
+  it("planning#146: hands .git AND worktree back to the worker uid on the up-to-date path", async () => {
     const { workDir, git } = setupRepoWithRemote(tmpDir);
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
 
@@ -722,7 +722,7 @@ describe("rebase-driver: runRebaseFlow", () => {
     expect(handWorkspaceBackToWorker).toHaveBeenCalledWith(workDir);
   });
 
-  it("SHI-144: hands .git AND worktree back to the worker uid after a clean rebase", async () => {
+  it("planning#146: hands .git AND worktree back to the worker uid after a clean rebase", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createCleanDivergence(bareDir, workDir);
     execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
@@ -743,7 +743,7 @@ describe("rebase-driver: runRebaseFlow", () => {
     expect(handWorkspaceBackToWorker).toHaveBeenCalledWith(workDir);
   });
 
-  it("SHI-144: hands the worktree back BEFORE each resolution turn so the agent can edit conflicted files", async () => {
+  it("planning#146: hands the worktree back BEFORE each resolution turn so the agent can edit conflicted files", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createConflictingDivergence(bareDir, workDir);
     execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
@@ -776,7 +776,7 @@ describe("rebase-driver: runRebaseFlow", () => {
     expect(vi.mocked(handWorkspaceBackToWorker).mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("SHI-144: hands .git AND worktree back even when the flow throws (unresolvable base)", async () => {
+  it("planning#146: hands .git AND worktree back even when the flow throws (unresolvable base)", async () => {
     const { workDir, git } = setupRepoWithRemote(tmpDir);
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
 

@@ -38,7 +38,7 @@ describe("prepareClaudeRunParams", () => {
     expect(prepareClaudeRunParams(baseParams, { autoCreatePrActive: false }).sandbox).toBe(false);
   });
 
-  it("SHI-265 — forwards guardDestructiveGit from guardDestructiveGitActive (defaulting false)", () => {
+  it("planning#267 — forwards guardDestructiveGit from guardDestructiveGitActive (defaulting false)", () => {
     expect(
       prepareClaudeRunParams(baseParams, {
         autoCreatePrActive: false,

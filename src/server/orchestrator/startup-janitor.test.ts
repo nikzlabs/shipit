@@ -382,7 +382,7 @@ describe("runDiskJanitor", () => {
     expect(fs.existsSync(recentDir)).toBe(true);
   });
 
-  it("SHI-192: archive sweep reclaims overlay/ sibling but preserves uploads/", async () => {
+  it("planning#194: archive sweep reclaims overlay/ sibling but preserves uploads/", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -419,7 +419,7 @@ describe("runDiskJanitor", () => {
     expect(fs.existsSync(path.join(uploadsDir, "photo.png"))).toBe(true);
   });
 
-  it("SHI-192: archive sweep reclaims an orphaned overlay/ even when workspace/ is already gone", async () => {
+  it("planning#194: archive sweep reclaims an orphaned overlay/ even when workspace/ is already gone", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);

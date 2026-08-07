@@ -42,7 +42,7 @@ function newRunner(): SessionRunner {
 describe("dispatched-turn settlement (docs/240 Fix B)", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("SHI-260: a no-result retry that SUCCEEDS settles exactly once, with success", async () => {
+  it("planning#262: a no-result retry that SUCCEEDS settles exactly once, with success", async () => {
     const runner = newRunner();
     const agents: FakeAgent[] = [];
     const { deps } = makeDispatchTurnDeps(agents, []);
@@ -85,7 +85,7 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     runner.dispose({ force: true });
   });
 
-  it("SHI-260: a turn whose no-result retries are EXHAUSTED settles exactly once, with failure", async () => {
+  it("planning#262: a turn whose no-result retries are EXHAUSTED settles exactly once, with failure", async () => {
     const runner = newRunner();
     const agents: FakeAgent[] = [];
     const { deps } = makeDispatchTurnDeps(agents, []);
@@ -158,7 +158,7 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     runner.dispose({ force: true });
   });
 
-  it("SHI-259: a callback-bearing system turn queued behind an ADOPTED turn runs as a system turn and settles", async () => {
+  it("planning#261: a callback-bearing system turn queued behind an ADOPTED turn runs as a system turn and settles", async () => {
     const runner = newRunner();
     const agents: FakeAgent[] = [];
     const { deps } = makeDispatchTurnDeps(agents, []);

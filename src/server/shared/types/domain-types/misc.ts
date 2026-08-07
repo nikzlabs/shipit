@@ -30,7 +30,7 @@ export interface DocEntry {
    * verbatim from the frontmatter `issue:` field. Work tracking lives in the
    * tracker, not the doc, so this is the doc's only link to its scheduling.
    * A Linear pointer is always a full URL
-   * (`planning#30`); a GitHub pointer is
+   * (`https://linear.app/<workspace>/issue/SHI-28/...`); a GitHub pointer is
    * `owner/repo#123` or a full issue URL. Absent on pure reference docs. The
    * tracker is inferred from the pointer's shape by the client.
    */

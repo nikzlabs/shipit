@@ -486,7 +486,7 @@ describe("escalateDiskTiers", () => {
   // two halves never appear adjacent.
   const FIXTURE_AWS_KEY = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
 
-  it("SHI-294: a secret-refused auto-commit blocks the wipe (keeps the checkout)", async () => {
+  it("planning#296: a secret-refused auto-commit blocks the wipe (keeps the checkout)", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const sessionRoot = path.join(tmpDir, "sess-secret");
@@ -544,7 +544,7 @@ describe("escalateDiskTiers", () => {
     expect(appended[0]!.text).not.toContain(FIXTURE_AWS_KEY);
   });
 
-  it("SHI-294: an unresolved merge state blocks the wipe (keeps the checkout)", async () => {
+  it("planning#296: an unresolved merge state blocks the wipe (keeps the checkout)", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const wsDir = path.join(tmpDir, "ws-conflict");
@@ -584,7 +584,7 @@ describe("escalateDiskTiers", () => {
     expect(appended[0]!.text).toContain("unresolved merge state");
   });
 
-  it("SHI-294: still evicts when the null hash meant 'nothing to commit'", async () => {
+  it("planning#296: still evicts when the null hash meant 'nothing to commit'", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const wsDir = path.join(tmpDir, "ws-race");
@@ -635,7 +635,7 @@ describe("escalateDiskTiers", () => {
   // made but could not push leaves the tree CLEAN, so the next pass sailed
   // straight through the remediation block and wiped a commit that exists
   // nowhere else. Two passes is the whole point of this test.
-  it("SHI-294: a commit that failed to push is not wiped by the NEXT pass", async () => {
+  it("planning#296: a commit that failed to push is not wiped by the NEXT pass", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const wsDir = path.join(tmpDir, "ws-unpushed");
@@ -668,7 +668,7 @@ describe("escalateDiskTiers", () => {
   // `edit`/`exec` step has nothing uncommitted, so `autoCommit` is never even
   // called and its conflict branch never fires — but the in-flight commits and
   // recovery state live only in `.git`.
-  it("SHI-294: a CLEAN checkout with a rebase in progress blocks the wipe", async () => {
+  it("planning#296: a CLEAN checkout with a rebase in progress blocks the wipe", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const wsDir = path.join(tmpDir, "ws-rebasing");
@@ -702,7 +702,7 @@ describe("escalateDiskTiers", () => {
   // A repo-less session's checkout is the only copy there will ever be —
   // `restoreSessionWorkspace` returns a terminal 410 for it. `archiveSession`
   // already refuses to reclaim one; the automatic ladder now matches.
-  it("SHI-294: never evicts a session whose work has no remote to live on", async () => {
+  it("planning#296: never evicts a session whose work has no remote to live on", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const wsDir = path.join(tmpDir, "ws-standalone");
@@ -730,7 +730,7 @@ describe("escalateDiskTiers", () => {
   // HEAD, pushing `session.branch` succeeds with "Everything up-to-date" while
   // HEAD's commits stay local — a green push that proves nothing, followed by
   // a wipe.
-  it("SHI-294: a detached HEAD is never evicted (its commits belong to no branch)", async () => {
+  it("planning#296: a detached HEAD is never evicted (its commits belong to no branch)", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const wsDir = path.join(tmpDir, "ws-detached");
@@ -762,7 +762,7 @@ describe("escalateDiskTiers", () => {
 
   // The descend guards run before the pacing delay and seconds of git/network
   // work. A session the user opened in that window must not be wiped.
-  it("SHI-294: does not wipe a session that became active during remediation", async () => {
+  it("planning#296: does not wipe a session that became active during remediation", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const wsDir = path.join(tmpDir, "ws-activated");
@@ -799,7 +799,7 @@ describe("escalateDiskTiers", () => {
   // failed" → skipped), and activation's `light → hot` shortcut skips
   // `restoreSessionWorkspace` — so the container bind-mount 404s in a loop.
   // Recording the truth routes the next activation through restore.
-  it("SHI-294: records an already-missing workspace as evicted (restorable), not stuck at light", async () => {
+  it("planning#296: records an already-missing workspace as evicted (restorable), not stuck at light", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const wsDir = path.join(tmpDir, "ws-vanished", "workspace");
@@ -821,7 +821,7 @@ describe("escalateDiskTiers", () => {
     expect(sm.get("vanished-light")?.diskTier).toBe("evicted");
   });
 
-  it("SHI-294: warns once per session, not once per escalation pass", async () => {
+  it("planning#296: warns once per session, not once per escalation pass", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const wsDir = path.join(tmpDir, "ws-secret-repeat");

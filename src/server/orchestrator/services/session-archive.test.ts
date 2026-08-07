@@ -104,7 +104,7 @@ describe("archiveSession container teardown", () => {
     expect(fs.existsSync(workspaceDir)).toBe(false);
   });
 
-  it("SHI-192: reclaims the regenerable overlay/ sibling but preserves uploads/", async () => {
+  it("planning#194: reclaims the regenerable overlay/ sibling but preserves uploads/", async () => {
     const sessionRoot = path.join(tmpDir, "sess-archive");
     const workspaceDir = path.join(sessionRoot, "workspace");
     fs.mkdirSync(workspaceDir, { recursive: true });

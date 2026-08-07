@@ -468,14 +468,14 @@ describe("buildEnv", () => {
   // startup into BASE_IMAGE_DIGEST; buildEnv forwards it so the worker's
   // install-runtime runtimeKey() (the install-marker ABI gate) keys on the same
   // base digest the orchestrator's overlayRuntimeKey() scope uses.
-  it("SHI-194: forwards BASE_IMAGE_DIGEST into the container env", () => {
+  it("planning#196: forwards BASE_IMAGE_DIGEST into the container env", () => {
     const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {
       BASE_IMAGE_DIGEST: "sha256:base",
     } as NodeJS.ProcessEnv);
     expect(env).toContain("BASE_IMAGE_DIGEST=sha256:base");
   });
 
-  it("SHI-194: forwards no BASE_IMAGE_DIGEST when it is unset (dev/local, flag off)", () => {
+  it("planning#196: forwards no BASE_IMAGE_DIGEST when it is unset (dev/local, flag off)", () => {
     const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {} as NodeJS.ProcessEnv);
     expect(env.some((e) => e.startsWith("BASE_IMAGE_DIGEST="))).toBe(false);
   });

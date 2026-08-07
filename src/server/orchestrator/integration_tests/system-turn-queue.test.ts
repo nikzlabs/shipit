@@ -115,7 +115,7 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     return (app as any).runnerRegistry.get(sessionId) as SessionRunnerInterface;
   }
 
-  it("SHI-254: live steering on + a real streaming user turn — a systemTurn dispatch is QUEUED, not steered, and its onTurnComplete survives to fire", async () => {
+  it("planning#256: live steering on + a real streaming user turn — a systemTurn dispatch is QUEUED, not steered, and its onTurnComplete survives to fire", async () => {
     credentialStore.setLiveSteering(true);
 
     const client = await TestClient.connect(port);
@@ -164,7 +164,7 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     client.close();
   });
 
-  it("SHI-255: a wake-turn queued behind a real INTERACTIVE turn runs as a system turn and fires onTurnComplete (no restart)", async () => {
+  it("planning#257: a wake-turn queued behind a real INTERACTIVE turn runs as a system turn and fires onTurnComplete (no restart)", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 

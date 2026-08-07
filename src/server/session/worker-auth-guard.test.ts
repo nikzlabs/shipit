@@ -220,7 +220,7 @@ describe("worker auth guard", () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it("SHI-239: refuses the container's own agent on the lifecycle routes", async () => {
+  it("planning#241: refuses the container's own agent on the lifecycle routes", async () => {
     // The self-kill shape at the HTTP layer: a stray in-container caller POSTs
     // /agent/start, gets 403 instead of the 409 that arms the orchestrator's
     // persistent-409 recovery, and /agent/kill is out of reach entirely.
@@ -236,7 +236,7 @@ describe("worker auth guard", () => {
     expect(status.statusCode).toBe(200);
   });
 
-  it("SHI-239: a fragment or absolute-form target cannot reach a lifecycle handler", async () => {
+  it("planning#241: a fragment or absolute-form target cannot reach a lifecycle handler", async () => {
     // MUST use a real socket. `app.inject` normalizes both spellings away, so an
     // inject-based version of this test passes against the broken guard — that
     // is precisely how both vectors survived the first review round.
@@ -261,7 +261,7 @@ describe("worker auth guard", () => {
     }
   });
 
-  it("SHI-239: a percent-encoded lifecycle path cannot slip past the guard", async () => {
+  it("planning#241: a percent-encoded lifecycle path cannot slip past the guard", async () => {
     // Fastify's router decodes before matching, so `/agent/%6bill` reaches the
     // `/agent/kill` handler. A guard comparing the raw URL would see a path it
     // does not recognize and wave it through — the guard has to canonicalize
@@ -273,7 +273,7 @@ describe("worker auth guard", () => {
     }
   });
 
-  it("SHI-311: a percent-encoded /agent-ops path stays loopback-only too", async () => {
+  it("planning#313: a percent-encoded /agent-ops path stays loopback-only too", async () => {
     // Same defect class on the pre-existing prefix rule: `/%61gent-ops/…`
     // decodes to `/agent-ops/…` at the router.
     app = buildGuardedApp(TOKEN);
@@ -302,7 +302,7 @@ describe("worker auth guard", () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it("SHI-239: serves the orchestrator's lifecycle calls with the token", async () => {
+  it("planning#241: serves the orchestrator's lifecycle calls with the token", async () => {
     app = buildGuardedApp(TOKEN);
     const res = await app.inject({
       method: "POST",
@@ -315,7 +315,7 @@ describe("worker auth guard", () => {
     expect(res.json()).toEqual({ started: true });
   });
 
-  it("SHI-239: an unconfigured worker still serves lifecycle routes over loopback", async () => {
+  it("planning#241: an unconfigured worker still serves lifecycle routes over loopback", async () => {
     // The compatibility fallback reaches lifecycle routes too: in-process tests
     // build a SessionWorker with no token and drive /agent/start over loopback,
     // and a mid-deploy skew must degrade rather than fail to start turns.
@@ -367,7 +367,7 @@ describe("SessionWorker installs the guard", () => {
     await worker.stop();
   });
 
-  it("SHI-239: hands its token to the guard, so lifecycle routes are closed on the real app", async () => {
+  it("planning#241: hands its token to the guard, so lifecycle routes are closed on the real app", async () => {
     // The /agent-ops assertion above passes even with NO token configured
     // (loopback-only needs none), so on its own it does not prove the worker
     // forwards `workerToken` at all. This does: without that wiring the guard is
@@ -393,7 +393,7 @@ describe("SessionWorker installs the guard", () => {
     await worker.stop();
   });
 
-  it("SHI-239: every mutating /agent/* route the worker registers is in LIFECYCLE_PATHS", async () => {
+  it("planning#241: every mutating /agent/* route the worker registers is in LIFECYCLE_PATHS", async () => {
     // Derived from the REAL route table rather than a second hand-written list:
     // a new mutating route added to `AgentController` fails here by name instead
     // of shipping unguarded, which a duplicated literal list cannot catch.

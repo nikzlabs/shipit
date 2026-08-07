@@ -527,34 +527,53 @@ Three classes escaped both scripts, and each is a different kind of blind spot:
   prose that hyphenates a reference.
 - **One heading**, `SHI-129-protected`, for the same reason from the other side.
 
-### Gate 3 is a check, not a read
+### Gate 3 is a check plus a review, not a read — and not a check alone
 
-684 files and 2,230 substitutions is not reviewable by eye — scrolling a diff
-that size is not review, and treating it as such is how a bad rewrite ships. The
-gate's own principle applies: *an assertion that needs a human is a missing
-assertion.*
+684 files and 2,270 substitutions is not reviewable by eye, so
+[`verify-sweep.py`](./verify-sweep.py) asserts the structural property instead:
+for every changed line, blank the reference tokens from both sides and the
+remainders must be byte-identical, paired per file and per hunk, with every
+substitution agreeing with `mapping.tsv`.
 
-[`verify-sweep.py`](./verify-sweep.py) supplies the assertion. For every changed
-line it blanks out the reference tokens on both sides — the four source forms on
-the old side, `planning#M` on the new — and requires the remainders to be
-byte-identical, the token counts to match, and every substitution to agree with
-`mapping.tsv`. Anything else survives blanking: a reflow, a dropped character, a
-mangled URL, an unrelated edit riding along.
+**That was presented as sufficient, and it was not.** A Codex review found what
+it cannot see, and the gap is fundamental rather than a bug: **the check cannot
+tell a pointer from text that teaches what a pointer looks like.** Both sides
+tokenize identically, so it passes them. Ten lines were corrupted this way:
 
-**It found real damage on the first honest run**, in 12 lines the test suite and
-`tsc` were both happy with. They were the ones where `roadmap#SHI-304` was an
-*example of the name form*, printed beside `planning#57` to contrast a
-Linear-backed reference with a GitHub-backed one; rewriting it collapsed both
-examples into the same shape, and `docs/207` ended up reading "`planning#321` tail
-and left `roadmap#` outside the pill". The cause was `sweep-tests.py` not
-honouring `sweep.py`'s exclusions and carrying `"reference form"` but not
-`"name form"` among its markers. All 12 restored.
+| Was | Became |
+|---|---|
+| `…/issue/SHI-28/redesign-the-auth-flow` | `…/issue/planning#30/redesign-the-auth-flow` |
+| `planning#SHI-3` | `planning#planning#5` |
+| `https://linear.app/<workspace>/issue/SHI-28/...` | `planning#30` |
 
-Final state: **2,158 changed lines, 2,230 substitutions, zero differing outside a
-reference, zero disagreeing with the mapping** — a pure substitution, asserted
-rather than eyeballed.
+The second is docs/248's own example of *a name form whose suffix doesn't fit the
+named backend* — the error case that feature exists to reject, rewritten into
+gibberish. All ten are restored, and the residual-breakage grep
+(`planning#planning#`, `/issue/planning#`) is clean.
 
-**What deliberately remains is 544 mentions across 71 files, and none of them are
+The same review found **49 test-title citations never rewritten** — `sweep-tests.py`
+recognised `it("SHI-311: …")` as a title and then vetoed it, because its
+`DATA_MARKERS` list contains `"SHI-` and a title is a quoted string. Fixed.
+
+And it found three structural holes in the checker itself, all now closed: it
+**failed open** (a bad base printed a clean verdict and exited 0), it silently
+skipped `useLazyToolInput.ts` because git reports that file binary — the very
+NUL-byte file this plan already warned needed `grep -a` — and it zipped
+removed/added lines **globally** rather than per hunk, so an identical line moving
+between files would have passed.
+
+The durable lesson: **a mechanical check is worth exactly the property it
+encodes, and stating a broader claim for it is how the 12 lines an earlier run
+"caught" got mistaken for evidence it worked.** Those 12 were caught by accident —
+they happened to carry a pre-existing `planning#N` that made the token counts
+asymmetric. The script never had the power to find that class. `verify-sweep.py`
+now says so in its own docstring and prints the caveat on every run.
+
+Final state: 2,116 hunks, 2,198 changed lines, 2,270 substitutions, zero
+unbalanced hunks, zero differing outside a reference, zero disagreeing with the
+mapping — plus a second review to cover what that cannot express.
+
+**What deliberately remains is 517 mentions across 63 files, and none of them are
 pointers.** They are `SHI-N` as the *shape of a Linear key* — fixtures and parser
 tests for the Linear adapter, the shim's key parsing, the viewer rendering a
 Linear issue — plus reference-syntax examples that teach the three forms. Linear

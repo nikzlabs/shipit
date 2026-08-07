@@ -431,7 +431,7 @@ the `/credentials` mount.
 Out-of-process refresh (an orchestrator-owned central refresher) is the alternative, but
 docs/142 rated it fragile; relocating the write target is the lower-risk path that preserves
 the per-session copy model. Tracked as **planning#166**
-(<planning#166>); references docs/142.
+(<https://linear.app/shipit-ai/issue/SHI-164>); references docs/142.
 
 #### Cross-platform validation (planning#47)
 

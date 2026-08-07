@@ -134,7 +134,7 @@ describe("block-branch-ops.mjs", () => {
     });
   });
 
-  describe("SHI-265 — destructive git while the session sits on a merged branch", () => {
+  describe("planning#267 — destructive git while the session sits on a merged branch", () => {
     const guarded = { SHIPIT_GUARD_DESTRUCTIVE_GIT: "1" };
 
     const blocked = [

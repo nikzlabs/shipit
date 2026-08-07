@@ -61,7 +61,7 @@ export type IssueRefFailure =
   | "undeclared"
   /** Well-formed, but more than one declaration matches (req 11). */
   | "ambiguous"
-  /** A name form whose suffix doesn't fit the named backend (`planning#planning#5`). */
+  /** A name form whose suffix doesn't fit the named backend (`planning#SHI-3`). */
   | "mismatched";
 
 export type IssueRefResolution =
@@ -261,7 +261,7 @@ function canonicalMatches(dest: TrackerDestination, id: TrackerId): boolean {
  * lets a reference written before a re-point keep resolving.
  *
  * A suffix that doesn't fit the backend at all still fails closed —
- * `planning#planning#5` on a GitHub tracker names no issue number, so there is nothing
+ * `planning#SHI-3` on a GitHub tracker names no issue number, so there is nothing
  * to prefer the name *to*.
  */
 function resolveNamedSuffix(

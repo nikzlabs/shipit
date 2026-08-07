@@ -241,7 +241,7 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
-  it("SHI-254: a systemTurn dispatch is NEVER steered into a running user turn — it enqueues, keeping its onTurnComplete", () => {
+  it("planning#256: a systemTurn dispatch is NEVER steered into a running user turn — it enqueues, keeping its onTurnComplete", () => {
     const runner = new SessionRunner({
       sessionId: "s1",
       sessionDir: "/tmp/s1",
@@ -280,7 +280,7 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
-  it("SHI-254: a dispatch carrying only onTurnComplete is also unsteerable (the callback can't survive a steer)", () => {
+  it("planning#256: a dispatch carrying only onTurnComplete is also unsteerable (the callback can't survive a steer)", () => {
     const runner = new SessionRunner({
       sessionId: "s1",
       sessionDir: "/tmp/s1",

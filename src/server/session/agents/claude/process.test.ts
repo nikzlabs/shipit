@@ -548,7 +548,7 @@ describe("ClaudeProcess", () => {
       expect(spawnOpts.env.SHIPIT_AUTO_CREATE_PR).toBeUndefined();
     });
 
-    it("SHI-265 — sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1 when guardDestructiveGit is true", () => {
+    it("planning#267 — sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1 when guardDestructiveGit is true", () => {
       // Arms the managed-settings.json PreToolUse hook's destructive-git rule
       // for a session sitting on a merged branch. See docs/130.
       const mockProc = createMockPty();
@@ -561,7 +561,7 @@ describe("ClaudeProcess", () => {
       expect(spawnOpts.env.SHIPIT_GUARD_DESTRUCTIVE_GIT).toBe("1");
     });
 
-    it("SHI-265 — does not set SHIPIT_GUARD_DESTRUCTIVE_GIT when guardDestructiveGit is falsy", () => {
+    it("planning#267 — does not set SHIPIT_GUARD_DESTRUCTIVE_GIT when guardDestructiveGit is falsy", () => {
       const mockProc = createMockPty();
       mockPtySpawn.mockReturnValue(mockProc as any);
 
