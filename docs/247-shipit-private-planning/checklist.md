@@ -1,9 +1,9 @@
 # ShipIt private planning — checklist
 
-Steps 4 and 5 have run — the corpus is exported and the labels exist. **No issue
-has been copied yet.** The planning repository holds the reachability probe
-(`planning#1`, closed, now also carrying a `comment edit` deploy probe) and 32
-labels.
+Steps 4, 5 and 6 have run. **Waiting at human gate 1** — one issue is copied and
+nothing else will be written until the format is signed off. The planning
+repository holds the reachability probe (`planning#1`), the pilot (`planning#2`,
+the copy of `SHI-145`) and 32 labels.
 
 ## Cleared
 
@@ -19,17 +19,18 @@ labels.
 - [x] Confirm the two fixes on `main` (`9b031908`) have reached the **deployed** shim: a large issue piped to `wc -c` returns its full length rather than 65,536, and `shipit issue view … --json` includes `createdAt`. The export depends on both. *(2026-08-07: `SHI-56` and `SHI-90` pipe at 119,606 and 87,179 bytes; `createdAt` present on the issue and on every comment.)*
 - [x] Export all 330 Linear issues with comments, redirected to files, outside the git workspace. *(2026-08-07, 44s: `/persist/linear-export/raw/SHI-N.json` + `fetch.sh`. 330 files, 0 misses, every file valid JSON, none at 65,536 bytes, `createdAt` on every issue and comment. `/persist` is per-session — a different session re-runs `fetch.sh` rather than inheriting this.)*
 - [x] Create the corpus's 20 labels with their Linear colors, plus the four `priority: …` labels that carry priority across. *(2026-08-07: 21 created, 32 labels on the repo. Three pre-existing ones keep the wrong color and can't be fixed through the shim — `Feature` and `priority: high` grey from the probe, and Linear's `Bug` collides with GitHub's default lowercase `bug`. Cosmetic only, and fixable retroactively at any time — a label's color and name are properties of the label, not of each issue carrying it. See plan.md → Export fidelity.)*
-- [ ] **Pilot** — copy one issue with a long body, several comments, an internal cross-reference, a label and a priority, then stop. **Human gate 1** (plan.md → *Where a human has to look*): read the body header, the dated comments and the rewritten cross-references. No longer a one-way door now that `comment edit` has shipped, but far cheaper than re-driving 1,390 writes.
+- [x] **Pilot** — copy one issue with a long body, several comments, an internal cross-reference, a label and a priority, then stop. *(2026-08-07: `SHI-145` → `planning#2`. Labels, priority read-back, dated comments and close all round-tripped; format written up in plan.md → The copy format, as piloted.)*
+- [ ] **Human gate 1** — read `planning#2` in the Issues tab: body header, dated comments, labels and priority, and how the bare `#N` PR references render. Cross-reference *resolution* is not checkable here and moved to gate 2.
 - [ ] Sync to the latest `main` before the copy starts, so the mapping and the sweep apply to a current tree.
 - [ ] **Pass A** — create all 330 issues in **ascending key order** (req 12), strictly sequential and halting on a failure rather than skipping it, with titles, labels, and bodies carrying their `SHI-N` origin and original creation date (req 9). Cross-references stay unrewritten. Append each assigned number to the `SHI-N → planning#M` mapping as it comes back, so the mapping is complete and observed when the pass ends.
 - [ ] **Human gate 2** — after Pass A, before anything reads the mapping: 330 issues present, a spot-check against their Linear originals, the list in ascending key order, the mapping complete and duplicate-free. A wrong mapping propagates into 686 files.
-- [ ] **Pass B** — replay the 1,390 comments with their original dates, **reversing each issue's comment array** (the export returns them newest-first, so posting as-returned inverts every conversation while the date headers still read correctly), and edit the 330 bodies to rewrite their 1,174 internal `SHI-N` cross-references and 122 `linear.app` URLs. Get each comment's cross-references right on the first write — `comment edit` makes a mistake repairable, but 1,390 avoidable edits is not a plan. Tracker writes only — no diff, no PR.
+- [ ] **Pass B** — replay the 1,390 comments with their original dates, **reversing each issue's comment array** (the export returns them newest-first, so posting as-returned inverts every conversation while the date headers still read correctly), and rewrite references in the 330 bodies, the 1,390 comments and the 5 titles that carry one — 1,174 internal `SHI-N`, 122 `linear.app` URLs, and 980 bare `#N` PR references that must be qualified to `nikzlabs/shipit#N` or they will point at the planning repo. Rewrite a `[SHI-31](linear.app/…)` markdown link as a unit — the key appears in both the label and the URL — and skip the body header, whose own `SHI-N` is the origin marker req 9 requires. Get each comment's cross-references right on the first write — `comment edit` makes a mistake repairable, but 1,390 avoidable edits is not a plan. Tracker writes only — no diff, no PR.
 - [ ] Verify a full round trip in the UI: the tab, an issue with comments, a write, and Undo.
 - [x] Land `shipit issue comment edit` first (docs/177). *(Shipped 2026-08-07 in `1ed8cc08` and confirmed live in the **deployed** shim by editing a comment on `planning#1` end to end. Comments were the only thing the copy writes that could not be corrected afterwards; that is no longer true.)*
 - [ ] Teach `remarkLinkifyIssues` the name form ([SHI-323](https://linear.app/shipit-ai/issue/SHI-323)) before the sweep — `planning#57` matches nothing today, so inline badges in chat prose would break the moment references are rewritten.
 - [ ] Rewrite every reference in this repository from the mapping, in one PR, when nothing else is in flight (req 10). **Human gate 3** — review the diff by category (frontmatter, code comments, prose, fixtures), watching for `SHI-N`-shaped text that isn't a pointer: 2,797 mentions across 686 files, 196 doc `issue:` pointers, 224 files with `linear.app` URLs. Use `grep -a` — one source file is flagged binary and would otherwise be skipped. The migration's only diff.
 - [ ] Retire Linear for ShipIt's own planning. **Human gate 4** — confirm nothing still depends on it; recoverable by re-declaring. Drop the `roadmap` declaration, and rewrite all seven places `CLAUDE.md` names Linear as the destination — lines 306, 326, 328, 329, 333, 340, 342, spanning three sections, not just the tracker-sync one (req 11). Prefer tracker-neutral wording; name `planning` only where a destination must be named.
-- [ ] Delete `planning#1` and the pilot issue.
+- [ ] Delete `planning#1` and the pilot `planning#2`.
 
 ## Found here, fixed elsewhere
 
