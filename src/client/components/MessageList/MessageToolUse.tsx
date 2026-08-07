@@ -2,6 +2,7 @@ import { ToolCallGroup, ToolUseItem } from "../message-tools.js";
 import { SubagentCall } from "../SubagentCall.js";
 import { SUBAGENT_REPORT_TOOL_NAMES } from "../../../server/shared/transcript-slice-tools.js";
 import type { VisualElement } from "../visual-elements.js";
+import type { AnswerQuestionFn } from "../AskUserQuestion.js";
 import type { ChatMessage } from "./types.js";
 
 /**
@@ -23,7 +24,7 @@ export function MessageToolElement({
   messages: ChatMessage[];
   findPlanContent: (exitPlanMsgIndex: number) => string | undefined;
   /** Returns whether the answer actually reached the wire (see `sendUserMessage`). */
-  onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>, text: string) => boolean;
+  onAnswerQuestion?: AnswerQuestionFn;
   onSendFollowUp?: (text: string) => void;
 }) {
   // ── Tool-group: grouped tool calls from consecutive assistant messages ──

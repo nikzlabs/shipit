@@ -91,8 +91,18 @@ export interface ManagedService {
   containerIp?: string;
   /**
    * Direct, agent-reachable URL for this service's dev server
-   * (`http://<containerIp>:<port>/`). Populated by {@link getServices} only when
-   * the service is running and both its container IP and port are known.
+   * (`http://<containerIp>:<port>/`). Populated by {@link getServices} whenever
+   * the service has a live container address — its IP and port are both known
+   * and it has not been observed `stopped`/`error`.
+   *
+   * Deliberately NOT gated on `status === "running"` (#2044). The address is a
+   * fact about the container, and the readiness verdict is a separate question
+   * the poller answers a beat later — so gating on it meant a service that was
+   * demonstrably serving but still reported `starting` published no address at
+   * all, and the agent had no supported way to reach a service it had just
+   * started successfully. A `starting` service's URL may not answer yet; that
+   * is strictly better than no URL, because "connection refused, retry" is a
+   * recoverable state and "no address exists" is not.
    *
    * This is the address the agent's own tooling — `curl` and the in-container
    * Playwright browser — should hit to reach the live preview. docs/172 Gap 1
@@ -112,6 +122,74 @@ export interface ManagedService {
  */
 export const INSTALL_FAILED_GATE_MESSAGE =
   "agent.install failed — dependent service not started";
+
+/**
+ * How long {@link ServiceManager.joinSessionNetwork} may block before its
+ * callers give up and move on to resolving service status (#2044).
+ *
+ * Generous enough that a healthy join — a dockerode `network connect` plus the
+ * short-lived egress sidecar — always completes inside it, and short enough
+ * that a wedged one costs a service one poll interval of unknown status rather
+ * than the rest of the session.
+ */
+export const NETWORK_JOIN_TIMEOUT_MS = 30_000;
+
+/**
+ * How long a service may sit in `starting` — with nothing legitimately holding
+ * it there — before the manager gives up and reports it as an error (#2044).
+ *
+ * `starting` is written optimistically by `startService`/`restartService` and by
+ * the gate, and every mechanism that *clears* it runs downstream of a successful
+ * `docker compose ps`: the poller's forward pass and its missing-container
+ * reconciliation both need `ps` to answer. So anything that stops the poll loop
+ * — a `ps` that fails every time, a `reconcile()` whose `start()` never reached
+ * `poller.start()`, a wedged call sequenced ahead of `pollOnce()` — pinned the
+ * service at `starting` forever, with no address and no diagnostic anywhere the
+ * user or the agent could see. This is the backstop for that whole class: it is
+ * driven by its own timer, so it holds even when the poll loop does not.
+ *
+ * Two exemptions keep it from firing on a service that is legitimately still
+ * coming up, and they are the same two the poller's reconciliation uses: a
+ * `docker compose up` in flight (an image build has no bound) and the install
+ * gate (docs/137). Both re-arm the watchdog rather than cancelling it, so a
+ * service that is still stuck once they clear is still caught.
+ */
+export const STARTING_WATCHDOG_MS = 120_000;
+
+/**
+ * Reason recorded on a service the {@link STARTING_WATCHDOG_MS} watchdog gives
+ * up on. Written to `ManagedService.error`, so it reaches the services drawer,
+ * `shipit service list`, and `GET /api/sessions/:id/services`.
+ *
+ * Deliberately says the container may in fact be running: the watchdog fires on
+ * "readiness was never confirmed", not on "the service failed", and telling the
+ * user their service is dead when it is serving requests would send them
+ * debugging the wrong thing. It also has to be true for the other way in: a
+ * container looping in Docker's `restarting` state is reported as `starting`
+ * too, and there the probe is answering perfectly well.
+ */
+export const STARTING_TIMEOUT_MESSAGE =
+  `Stuck in "starting" for over ${Math.round(STARTING_WATCHDOG_MS / 1000)}s with no compose up ` +
+  "in flight — readiness was never confirmed. The service may in fact be running, or its " +
+  "container may be stuck in a restart loop: check `shipit service logs <name>`, then restart " +
+  "the service to re-probe.";
+
+/**
+ * Reject-after-`ms` wrapper. The underlying promise is NOT cancelled (nothing in
+ * the Docker paths this guards is cancellable) — the caller simply stops waiting
+ * on it, which is the whole point: a best-effort step must not hold up the work
+ * sequenced behind it.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
 
 export interface ServiceManagerOptions {
   /** Session ID. */
@@ -352,6 +430,14 @@ export class ServiceManager extends EventEmitter {
    * count is released even when compose throws.
    */
   private upInFlight = new Map<string, number>();
+
+  /**
+   * Per-service `starting` watchdog timers (#2044). Armed whenever a service
+   * enters `starting`, cancelled the moment it leaves. See
+   * {@link STARTING_WATCHDOG_MS} for why this exists and why it runs off its
+   * own timer rather than off the poll loop.
+   */
+  private readonly startingWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
 
   /**
    * In-flight `docker compose stop` for a mid-session re-install teardown, or
@@ -712,10 +798,12 @@ export class ServiceManager extends EventEmitter {
   /** Get all managed services. */
   getServices(): ManagedService[] {
     // Derive `url` on read (never stored) so it can't go stale: the agent-facing
-    // direct URL exists only while the service is running with a known IP+port.
-    // See GH #1509 and the `url` field doc on ManagedService.
+    // direct URL exists while the service has a live container address.
+    // `stopped`/`error` are excluded — there we have positive evidence the
+    // container is gone, so the last-known IP is a stale address rather than an
+    // unverified one. See GH #1509, #2044, and the `url` field doc.
     return [...this.services.values()].map((svc) =>
-      svc.status === "running" && svc.containerIp && svc.port
+      hasLiveAddress(svc)
         ? { ...svc, url: `http://${svc.containerIp}:${svc.port}/` }
         : { ...svc },
     );
@@ -931,9 +1019,6 @@ export class ServiceManager extends EventEmitter {
         this.streamLogs(svc.name);
       }
 
-      // 6. Begin periodic polling to detect crashes
-      this.poller.start();
-
       this.emit("stack_ready");
     } catch (err) {
       this._startupComplete = true;
@@ -946,6 +1031,18 @@ export class ServiceManager extends EventEmitter {
       }
       this.emit("stack_error", err);
       throw err;
+    } finally {
+      // 6. Begin periodic polling to detect crashes.
+      //
+      // In the `finally`, not at the end of the `try` (#2044). The poll loop is
+      // the ONLY thing that ever moves a service off `starting` or resolves its
+      // container IP, and `reconcile()` stops it before calling us — so a throw
+      // anywhere in steps 1-5 used to leave the session with no poller at all
+      // and every service frozen at whatever status it last had, permanently.
+      // The failure modes that get here (a compose `up` that failed, a listener
+      // that threw during the status flush) are exactly the ones after which we
+      // most want to keep watching Docker.
+      if (!this._disposed) this.poller.start();
     }
   }
 
@@ -1127,6 +1224,19 @@ export class ServiceManager extends EventEmitter {
     this.logProcesses.clear();
     this.poller.stop();
     this.retry.cancelAll();
+    // The services map is about to be rebuilt from scratch; a watchdog armed
+    // against the OLD entry would fire against a service object that no longer
+    // exists (or, worse, a same-named replacement it never watched).
+    this.cancelStartingWatchdogs();
+    // Same generation argument for the in-flight set, which is an exemption
+    // rather than a lock: a `compose up` from the previous definition that
+    // never returned would otherwise exempt the SAME-NAMED new service from
+    // both the poller's missing-container reconciliation and the `starting`
+    // watchdog, for the rest of the session. A stale call releasing later just
+    // deletes an absent key; if it races a new `up` for the same name it can
+    // drop that exemption early, which costs one grace window rather than the
+    // session.
+    this.upInFlight.clear();
 
     this.services.clear();
     this.logBuffers.clear();
@@ -1148,6 +1258,7 @@ export class ServiceManager extends EventEmitter {
     this._disposed = true;
     this.poller.stop();
     this.retry.cancelAll();
+    this.cancelStartingWatchdogs();
     this.postGateServices.clear();
     this._gatedTeardown = null;
 
@@ -1264,6 +1375,11 @@ export class ServiceManager extends EventEmitter {
   private async withUpInFlight<T>(names: string[], fn: () => Promise<T>): Promise<T> {
     for (const name of names) {
       this.upInFlight.set(name, (this.upInFlight.get(name) ?? 0) + 1);
+      // A new container is on its way, so the address we hold describes the
+      // OUTGOING one. Dropping it here is what keeps `getServices` from
+      // publishing a dead (or, worse, reassigned) IP during the window where
+      // the service is `starting` and the replacement doesn't exist yet.
+      this.clearContainerIp(name);
     }
     try {
       return await fn();
@@ -1272,6 +1388,17 @@ export class ServiceManager extends EventEmitter {
         const next = (this.upInFlight.get(name) ?? 1) - 1;
         if (next > 0) this.upInFlight.set(name, next);
         else this.upInFlight.delete(name);
+      }
+      // The watchdog's window is armed when `starting` is written — which for
+      // every caller here is BEFORE this `up`. An up that eats most of the
+      // window would otherwise leave only its remainder to cover the network
+      // join and the first poll, and a service that is coming up perfectly
+      // normally would be marked `error` seconds before the poll that would
+      // have cleared it. Releasing the exemption restarts the clock.
+      for (const name of names) {
+        if (!this.upInFlight.has(name) && this.services.get(name)?.status === "starting") {
+          this.armStartingWatchdog(name);
+        }
       }
     }
   }
@@ -1483,17 +1610,110 @@ export class ServiceManager extends EventEmitter {
    * be called again from there to actually attach the orchestrator. Without
    * the post-`composeUpService` call, the proxy would resolve a perfectly
    * correct container IP that the orchestrator has no route to → ETIMEDOUT.
+   *
+   * **Bounded** (#2044). Every caller sequences this *before* the `pollOnce()`
+   * that resolves the service's status and container IP, so for as long as this
+   * blocks, the service stays pinned at whatever it was — `starting`, with no
+   * address — even though its container is already up. And it can block for a
+   * long time: the join reaches Docker over dockerode (no client-side timeout),
+   * awaits the container's egress-firewall readiness promise, and then RUNS A
+   * SIDECAR CONTAINER to open egress to the new subnet. A best-effort side
+   * quest — its own failure is explicitly swallowed as non-fatal below — must
+   * not be able to wedge the authoritative status read behind it, so a join
+   * that overruns is treated exactly like a join that failed.
    */
   private async joinSessionNetwork(): Promise<void> {
     if (!this.networkJoinFn) return;
     const networkName = `shipit-session-${this.sessionId}`;
     try {
-      await this.networkJoinFn(networkName);
-    } catch {
+      await withTimeout(
+        this.networkJoinFn(networkName),
+        NETWORK_JOIN_TIMEOUT_MS,
+        `network join for ${networkName} did not complete within ${NETWORK_JOIN_TIMEOUT_MS}ms`,
+      );
+    } catch (err) {
       // Non-fatal — agent may not reach services by DNS but proxy still works.
       // The orchestrator-side join inside `networkJoinFn` has its own
       // try/catch with "already exists" handling (see app-lifecycle.ts).
+      //
+      // Logged rather than silently dropped: a join that keeps timing out is
+      // exactly the condition that leaves the agent unable to resolve a service
+      // by its compose name, and there was previously no record of it anywhere.
+      console.warn(
+        `[compose:${this.sessionId}] joinSessionNetwork failed:`,
+        (err as Error).message,
+      );
     }
+  }
+
+  /**
+   * (Re)arm the stuck-`starting` watchdog for one service (#2044).
+   *
+   * Always resets an existing timer: the window measures "how long since
+   * something last declared this service starting", so a fresh `startService`
+   * on an already-`starting` service legitimately buys another full window.
+   */
+  private armStartingWatchdog(name: string): void {
+    this.clearStartingWatchdog(name);
+    if (this._disposed) return;
+    const timer = setTimeout(() => {
+      this.startingWatchdogs.delete(name);
+      this.onStartingWatchdogFired(name);
+    }, STARTING_WATCHDOG_MS);
+    timer.unref?.();
+    this.startingWatchdogs.set(name, timer);
+  }
+
+  private clearStartingWatchdog(name: string): void {
+    const timer = this.startingWatchdogs.get(name);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.startingWatchdogs.delete(name);
+  }
+
+  /** Drop every armed `starting` watchdog — teardown and reconcile. */
+  private cancelStartingWatchdogs(): void {
+    for (const timer of this.startingWatchdogs.values()) clearTimeout(timer);
+    this.startingWatchdogs.clear();
+  }
+
+  /**
+   * The `starting` watchdog expired for `name` — decide whether the service is
+   * genuinely wedged or just legitimately slow.
+   *
+   * Both exemptions RE-ARM rather than cancel: a build that outruns the window
+   * or an install that takes ten minutes is fine, but the service still has to
+   * answer for itself once that reason goes away.
+   */
+  private onStartingWatchdogFired(name: string): void {
+    if (this._disposed) return;
+    const svc = this.services.get(name);
+    // Raced with a status change we haven't torn the timer down for yet.
+    if (svc?.status !== "starting") return;
+    if (this.upInFlight.has(name) || this.gatedServices.has(name)) {
+      this.armStartingWatchdog(name);
+      return;
+    }
+    console.warn(
+      `[compose:${this.sessionId}] service "${name}" has been starting for ` +
+      `${Math.round(STARTING_WATCHDOG_MS / 1000)}s with no compose up in flight — marking error`,
+    );
+    this.updateServiceStatus(name, "error", STARTING_TIMEOUT_MESSAGE);
+  }
+
+  /**
+   * Forget a service's resolved container address.
+   *
+   * Called wherever the container it described is gone or being replaced. The
+   * IP was previously kept indefinitely, which was harmless only because
+   * `getServices` published a URL for `running` services alone; now that a
+   * `starting` service publishes one too, a retained IP would resurface as an
+   * address the moment a stop→start cycle wrote `starting` — pointing at a dead
+   * container, or at whatever else Docker has since handed that IP to.
+   */
+  private clearContainerIp(name: string): void {
+    const svc = this.services.get(name);
+    if (svc) delete svc.containerIp;
   }
 
   private updateServiceStatus(name: string, status: ServiceStatus, error?: string): void {
@@ -1501,6 +1721,19 @@ export class ServiceManager extends EventEmitter {
     if (!svc) return;
     svc.status = status;
     svc.error = error;
+    // `stopped`/`error` are conclusions drawn from an observed exit (or from
+    // reconciliation finding no container at all) — the address we hold is now
+    // stale, not merely unverified. `starting` deliberately keeps it: the
+    // poller's `restarting` branch writes `starting` for a container it just
+    // resolved an IP for on the same pass.
+    if (status === "stopped" || status === "error") delete svc.containerIp;
+    // Arm/disarm the stuck-`starting` watchdog on the transition itself, so
+    // every writer of `starting` is covered without each one remembering to.
+    if (status === "starting") {
+      this.armStartingWatchdog(name);
+    } else {
+      this.clearStartingWatchdog(name);
+    }
     // During initial startup, updates are batched — events are flushed
     // once the full sequence (compose up → network join → IP resolution) completes.
     if (this._startupComplete) {
@@ -1513,6 +1746,23 @@ export class ServiceManager extends EventEmitter {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Whether a service currently has an address worth publishing — a container IP
+ * and port we resolved, and no positive evidence that the container is gone.
+ *
+ * `running` and `starting` both qualify: `starting` means "we have not confirmed
+ * readiness", not "there is no container". `stopped`/`error` do not: those are
+ * conclusions the poller drew from an actual `ps` row (or from reconciliation),
+ * so the retained IP describes a container that has exited.
+ */
+function hasLiveAddress(svc: ManagedService): svc is ManagedService & { containerIp: string; port: number } {
+  return (
+    !!svc.containerIp &&
+    !!svc.port &&
+    (svc.status === "running" || svc.status === "starting")
+  );
+}
 
 /**
  * User-facing message for a service that exited non-zero.

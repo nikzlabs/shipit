@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Variant 4 (header band) in the Claude themes</title>
+<style>
+/* ─────────────────────────────────────────────────────────────────────────
+   Tokens copied verbatim from src/client/themes/claude-light.css and
+   claude.css. Only these two themes — the point of this mock is that the
+   Claude palettes are unusually flat, so a fill-based band behaves very
+   differently here than it does in warm-light/dark.
+   ───────────────────────────────────────────────────────────────────────── */
+.claude-light {
+  --color-bg-primary: #faf5ef;
+  --color-bg-secondary: #f0e8de;
+  --color-bg-tertiary: #e6dcd0;
+  --color-bg-hover: rgba(180, 100, 60, 0.06);
+  --color-text-primary: #2a2018;
+  --color-text-secondary: #5c5040;
+  --color-text-tertiary: #9a8c78;
+  --color-border-primary: #e4d8c8;
+  --color-border-secondary: #d0c0ac;
+  --color-accent: #d97757;
+  --color-accent-subtle: rgba(217, 119, 87, 0.12);
+  --color-success: #3a8a50;
+  --color-pr: #8050a0;
+  --color-pr-subtle: rgba(128, 80, 160, 0.1);
+  --color-pr-border: rgba(128, 80, 160, 0.3);
+  --color-attention: #d97706;
+  --accent-alpha: 0.12;
+}
+.claude {
+  --color-bg-primary: #1a1410;
+  --color-bg-secondary: #231c16;
+  --color-bg-tertiary: #2e2519;
+  --color-bg-hover: rgba(217, 119, 87, 0.08);
+  --color-text-primary: #e8e0d8;
+  --color-text-secondary: #a89a8c;
+  --color-text-tertiary: #7a6e62;
+  --color-border-primary: #2e2519;   /* NOTE: identical to --color-bg-tertiary */
+  --color-border-secondary: #43382c;
+  --color-accent: #d97757;
+  --color-accent-subtle: rgba(217, 119, 87, 0.15);
+  --color-success: #5cb870;
+  --color-pr: #c4a0e0;
+  --color-pr-subtle: rgba(196, 160, 224, 0.15);
+  --color-pr-border: rgba(196, 160, 224, 0.3);
+  --color-attention: #f59e0b;
+  --accent-alpha: 0.15;
+}
+
+/* Per-repo hues, tuned against the terracotta-leaning Claude palettes. */
+.claude-light [data-accent="a0"] { --accent2: #a8683c; }
+.claude-light [data-accent="a1"] { --accent2: #2f6f6a; }
+.claude-light [data-accent="a2"] { --accent2: #7a4f9c; }
+.claude-light [data-accent="a3"] { --accent2: #c05a3c; }
+.claude [data-accent="a0"] { --accent2: #d0a468; }
+.claude [data-accent="a1"] { --accent2: #6cbdb2; }
+.claude [data-accent="a2"] { --accent2: #c4a0e0; }
+.claude [data-accent="a3"] { --accent2: #e08a62; }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: #171310; color: #e8e0d8;
+  font: 13px/1.45 ui-sans-serif, -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased; padding: 28px 28px 64px;
+}
+h1 { font-size: 20px; margin: 0 0 8px; letter-spacing: -.01em; }
+h2 { font-size: 15px; margin: 46px 0 6px; }
+.lede { max-width: 92ch; color: #a89a8c; margin: 0 0 6px; }
+.lede code { background: #231c16; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+.lede b { color: #e8e0d8; }
+.callout {
+  max-width: 92ch; margin: 16px 0 0; padding: 12px 15px; border-radius: 8px;
+  background: #1a1410; border: 1px solid #2e2519; border-left: 3px solid #d97757;
+  font-size: 12.5px; line-height: 1.6; color: #a89a8c;
+}
+.callout b { color: #e8e0d8; }
+
+/* Contrast table */
+.ctab { border-collapse: collapse; font-size: 12px; margin: 14px 0 0; background: #1a1410; border-radius: 8px; overflow: hidden; }
+.ctab th, .ctab td { padding: 6px 12px; text-align: left; border-bottom: 1px solid #2e2519; }
+.ctab th { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: #7a6e62; font-weight: 700; background: #231c16; }
+.ctab td.num { font-variant-numeric: tabular-nums; font-weight: 700; }
+.ctab .weak { color: #e05252; }
+.ctab .mid { color: #e0a040; }
+.ctab .ok { color: #5cb870; }
+.ctab tr:last-child td { border-bottom: 0; }
+.sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; border: 1px solid rgba(255,255,255,.14); vertical-align: -1px; margin-right: 6px; }
+
+/* Gallery */
+.gallery { display: flex; flex-wrap: wrap; gap: 40px 26px; align-items: flex-start; }
+.opt { flex: 0 0 auto; width: 760px; margin: 0; }
+.opt > figcaption { margin-bottom: 12px; min-height: 96px; }
+.vtag { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #7a6e62; margin-bottom: 3px; }
+.vname { font-size: 14.5px; font-weight: 650; margin: 0 0 4px; color: #e8e0d8; }
+.vwhy, .vcost { font-size: 11.5px; line-height: 1.55; margin: 0; max-width: 74ch; }
+.vwhy { color: #a89a8c; } .vwhy b { color: #e8e0d8; font-weight: 600; }
+.vcost { color: #7a6e62; margin-top: 4px; }
+.pill { font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 2px 6px; border-radius: 999px; margin-left: 7px; vertical-align: 2px; }
+.pill.good { background: #d97757; color: #1a1410; }
+.pill.bad { background: #2e2519; color: #a89a8c; }
+.pair { display: flex; gap: 12px; }
+.frame { flex: 0 0 auto; width: 368px; }
+.flabel { font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: #7a6e62; margin-bottom: 5px; }
+
+/* ── App context: real rail + real chat panel ──────────────────────────── */
+.app { display: flex; height: 560px; border-radius: 9px; overflow: hidden; border: 1px solid #2e2519; }
+.app .rail { width: 272px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--color-bg-primary); border-right: 1px solid var(--color-border-primary); }
+.app .railhead { height: 39px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--color-border-primary); font-size: 11.5px; color: var(--color-text-tertiary); background: var(--color-bg-primary); }
+.app .railhead .dot { width: 7px; height: 7px; border-radius: 999px; background: var(--color-success); }
+.app .scroll { flex: 1; overflow-y: auto; padding: 4px 0; scrollbar-width: thin; }
+.app .chat { flex: 1; min-width: 0; background: var(--color-bg-secondary); display: flex; flex-direction: column; }
+.app .chathead { height: 39px; flex: 0 0 auto; border-bottom: 1px solid var(--color-border-primary); display: flex; align-items: center; padding: 0 10px; font-size: 11px; color: var(--color-text-tertiary); white-space: nowrap; overflow: hidden; }
+.app .chatbody { flex: 1; padding: 12px 9px; display: flex; flex-direction: column; gap: 9px; }
+.bubble { border-radius: 8px; padding: 7px 9px; font-size: 10.5px; color: var(--color-text-secondary); background: var(--color-bg-primary); border: 1px solid var(--color-border-primary); }
+.bubble.me { background: var(--color-accent-subtle); border-color: transparent; color: var(--color-text-primary); align-self: flex-end; max-width: 90%; }
+.skel { height: 6px; border-radius: 999px; background: var(--color-border-primary); margin: 6px 0; }
+.skel.s2 { width: 70%; } .skel.s3 { width: 52%; }
+
+/* ── Sidebar skeleton — identical DOM in every option ──────────────────── */
+.grp { display: flex; flex-direction: column; position: relative; }
+/* Sticky, like the real thing (SessionGroup.tsx:336). Every band option below
+   inherits this, so the scrolled state is what you're actually looking at. */
+.ghead { display: flex; align-items: center; gap: 6px; padding: 6px 12px 6px 14px; position: sticky; top: 0; z-index: 5; background: var(--color-bg-primary); }
+.caret { width: 20px; height: 20px; display: grid; place-items: center; flex: 0 0 auto; color: var(--color-text-tertiary); }
+.glyph { display: grid; place-items: center; flex: 0 0 auto; color: var(--color-text-secondary); }
+.gname { font-size: 12px; font-weight: 650; letter-spacing: .02em; color: var(--color-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gcount { display: none; font-size: 10px; font-weight: 600; color: var(--color-text-tertiary); }
+.dots { margin-left: auto; color: var(--color-text-tertiary); display: grid; place-items: center; flex: 0 0 auto; }
+.gbody { display: flex; flex-direction: column; gap: 4px; padding-bottom: 8px; }
+.sublabel { display: flex; align-items: center; gap: 6px; padding: 8px 12px 2px; margin: 0 4px; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--color-text-tertiary); }
+.pindiv { height: 1px; background: var(--color-border-primary); margin: 6px 12px 2px; border: 0; }
+.row { display: flex; align-items: flex-start; gap: 6px; padding: 6px 8px; margin: 0 4px; border-radius: 6px; position: relative; }
+.row .badge { width: 22px; height: 22px; flex: 0 0 auto; border-radius: 6px; display: grid; place-items: center; background: var(--color-pr-subtle); border: 1px solid var(--color-pr-border); color: var(--color-pr); }
+.row.merged .badge { background: rgba(92,184,112,.13); border-color: rgba(92,184,112,.3); color: var(--color-success); }
+.row .txt { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.row .title { font-size: 12.5px; line-height: 1.3; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .meta { display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--color-text-tertiary); }
+.row .live { width: 6px; height: 6px; border-radius: 999px; background: var(--color-success); flex: 0 0 auto; }
+/* The collision the whole mock turns on: the current-session row is ALSO
+   --color-bg-secondary today (SessionGroup.tsx:431). */
+.row.current { background: var(--color-bg-secondary); }
+.row.current::after { content: ""; position: absolute; right: 0; top: 0; bottom: 0; width: 4px; background: var(--color-accent); border-radius: 0 6px 6px 0; }
+.row.child { padding-left: 22px; }
+.row.new { align-items: center; }
+.row.new .plus { width: 22px; height: 22px; display: grid; place-items: center; flex: 0 0 auto; opacity: .7; }
+.row.new .title { color: var(--color-text-secondary); }
+
+/* ── 4a · Secondary band, as originally specced ────────────────────────── */
+.b-secondary .ghead {
+  background: var(--color-bg-secondary);
+  border-top: 1px solid var(--color-border-primary);
+  border-bottom: 1px solid var(--color-border-primary);
+  padding-top: 7px; padding-bottom: 7px;
+}
+.b-secondary .grp:first-child .ghead { border-top: 0; }
+.b-secondary .gname { color: var(--color-text-primary); }
+.b-secondary .gbody { padding-top: 4px; }
+
+/* ── 4b · Tertiary band — the strongest plain fill available ───────────── */
+.b-tertiary .ghead {
+  background: var(--color-bg-tertiary);
+  border-top: 1px solid var(--color-border-primary);
+  border-bottom: 1px solid var(--color-border-primary);
+  padding-top: 7px; padding-bottom: 7px;
+}
+.b-tertiary .grp:first-child .ghead { border-top: 0; }
+.b-tertiary .gname { color: var(--color-text-primary); }
+.b-tertiary .gbody { padding-top: 4px; }
+
+/* ── 4c · Accent-tinted band ───────────────────────────────────────────── */
+/* --color-accent-subtle is rgba(), and this header is position:sticky — a
+   translucent sticky header lets the rows scroll THROUGH it. The tint has to be
+   composited over an opaque base. Double-gradient over bg-primary is the
+   token-preserving way to do that without hardcoding the resulting hex.
+   Option 4c-raw below keeps the naive version so the failure stays visible. */
+.b-accent .ghead {
+  background:
+    linear-gradient(var(--color-accent-subtle), var(--color-accent-subtle)),
+    var(--color-bg-primary);
+  border-bottom: 1px solid var(--color-accent-subtle);
+  padding-top: 7px; padding-bottom: 7px;
+}
+.b-accent-raw .ghead {
+  background: var(--color-accent-subtle);   /* the bug, on purpose */
+  border-bottom: 1px solid var(--color-accent-subtle);
+  padding-top: 7px; padding-bottom: 7px;
+}
+.b-accent-raw .gname { color: var(--color-text-primary); }
+.b-accent-raw .glyph { color: var(--color-accent); }
+.b-accent-raw .gbody { padding-top: 4px; }
+.b-accent .gname { color: var(--color-text-primary); }
+.b-accent .glyph { color: var(--color-accent); }
+.b-accent .gbody { padding-top: 4px; }
+
+/* ── 4d · Rules only — no fill at all ──────────────────────────────────── */
+.b-rules .ghead {
+  border-top: 1px solid var(--color-border-secondary);
+  border-bottom: 1px solid var(--color-border-secondary);
+  padding-top: 7px; padding-bottom: 7px;
+}
+.b-rules .grp:first-child .ghead { border-top: 0; }
+.b-rules .gname { color: var(--color-text-primary); }
+.b-rules .gbody { padding-top: 4px; }
+
+/* ── 4e · Tertiary band + per-repo accent edge ─────────────────────────── */
+.b-edge .ghead {
+  background: var(--color-bg-tertiary);
+  border-left: 3px solid var(--accent2);
+  padding: 7px 12px 7px 11px;
+}
+.b-edge .caret { width: 18px; }
+.b-edge .glyph { color: var(--accent2); }
+.b-edge .gname { color: var(--color-text-primary); }
+.b-edge .gcount { display: inline; }
+.b-edge .gbody { padding-top: 4px; border-left: 3px solid transparent; }
+
+/* ── 4f · Tertiary band + typographic lift (color carries it) ──────────── */
+.b-type .ghead {
+  background: var(--color-bg-tertiary);
+  padding-top: 8px; padding-bottom: 8px;
+}
+.b-type .glyph { display: none; }
+.b-type .gname { color: var(--color-text-primary); font-size: 13.5px; font-weight: 700; letter-spacing: -.005em; }
+.b-type .gcount { display: inline; }
+.b-type .sublabel { font-size: 9.5px; opacity: .8; }
+.b-type .gbody { padding-top: 4px; }
+
+/* Scroll-demo framing */
+.scrolldemo { display: flex; flex-wrap: wrap; gap: 26px; margin-top: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Variant 4 — the filled header band, in Claude Light and Claude Dark</h1>
+<p class="lede">
+  Variant 4 gives each repo header a full-bleed tinted band, so the rail reads like a table with section headers. It has
+  one property none of the other variants have: <b>the repo header is <code>position: sticky</code></b>
+  (<code>SessionGroup.tsx:336</code>), so whatever it looks like is what you stare at the entire time you scroll a long
+  group. Every frame below is <b>really scrollable and really sticky</b> — scroll one and watch the header behave.
+</p>
+<p class="lede">
+  The Claude palettes are the hard case for this variant, because they are <b>extremely flat</b>. Measured against the
+  sidebar rail (<code>--color-bg-primary</code>):
+</p>
+
+<table class="ctab">
+  <thead><tr><th>Theme</th><th>Band fill</th><th>Composited</th><th>Contrast vs rail</th><th></th></tr></thead>
+  <tbody>
+    <tr><td>Claude Light</td><td><span class="sw" style="background:#f0e8de"></span><code>--color-bg-secondary</code></td><td>#f0e8de</td><td class="num weak">1.12 : 1</td><td>as specced — near-invisible</td></tr>
+    <tr><td>Claude Light</td><td><span class="sw" style="background:#e6dcd0"></span><code>--color-bg-tertiary</code></td><td>#e6dcd0</td><td class="num mid">1.25 : 1</td><td>strongest plain fill available</td></tr>
+    <tr><td>Claude Light</td><td><span class="sw" style="background:#f6e6dd"></span><code>--color-accent-subtle</code></td><td>#f6e6dd</td><td class="num weak">1.12 : 1</td><td>same luminance, but shifts <em>hue</em></td></tr>
+    <tr><td>Claude Dark</td><td><span class="sw" style="background:#231c16"></span><code>--color-bg-secondary</code></td><td>#231c16</td><td class="num weak">1.09 : 1</td><td>as specced — the weakest of all</td></tr>
+    <tr><td>Claude Dark</td><td><span class="sw" style="background:#2e2519"></span><code>--color-bg-tertiary</code></td><td>#2e2519</td><td class="num mid">1.21 : 1</td><td>strongest plain fill available</td></tr>
+    <tr><td>Claude Dark</td><td><span class="sw" style="background:#37231b"></span><code>--color-accent-subtle</code></td><td>#37231b</td><td class="num mid">1.23 : 1</td><td>best fill in this theme</td></tr>
+  </tbody>
+</table>
+
+<div class="callout">
+  <b>Two findings that decide this, both checkable:</b><br>
+  1 · In Claude Dark, <code>--color-border-primary</code> is <b><code>#2e2519</code> — byte-identical to
+  <code>--color-bg-tertiary</code></b>. So a tertiary band with <code>border-primary</code> rules top and bottom has
+  <em>invisible</em> rules: the band and its own edges are one color. Not a bug — it means option 4b is a clean solid
+  block there and a block-with-edges in Claude Light, i.e. the two themes don't match. Rules have to come from
+  <code>--color-border-secondary</code> if you want them in both.<br>
+  2 · The current-session row already uses <code>--color-bg-secondary</code>
+  (<code>SessionGroup.tsx:431</code>). So the band as specced is <b>the exact same fill as the selected row</b> — at
+  1.09:1 against the rail, in a palette this flat, the header and the selection become the same object. Any band that
+  ships here has to sit at a different rank than the selection, not the same one.<br>
+  3 · <b>A translucent band on a sticky header is a bug, not a style choice.</b> Every <code>*-subtle</code> token is
+  <code>rgba()</code>, and this header is <code>position: sticky</code> — so session rows scroll <em>through</em> a
+  tinted band instead of under it. Option 4c composites the tint over <code>bg-primary</code> with a double
+  <code>linear-gradient</code>; <b>option 4c-raw below is the naive version, left in so you can see it smear.</b> This
+  bites any accent- or hue-tinted band, so it applies to variant 5's spine idea too if that ever moves onto the header.
+</div>
+
+<h2>Six ways to draw the band</h2>
+<p class="lede">Each shown in both themes, identical DOM, only the wrapper class differs. All frames scroll.</p>
+
+<div class="gallery" id="gallery"></div>
+
+<h2>Why the band is worth the trouble: the stuck state</h2>
+<p class="lede">
+  Scroll these two. Today's header is <code>bg-primary</code> — mechanically fine (nothing smears), but when it's stuck
+  it looks <b>exactly like the rows sliding underneath it</b>, so the answer to "which repo am I in?" is a font-weight
+  bump on a line that no longer looks pinned. A band makes the stuck header read as chrome instead of content. This is
+  the argument for variant 4 that none of the other variants can make.
+</p>
+<div class="scrolldemo" id="scrolldemo"></div>
+
+<script>
+const I = {
+  caretDown: '<svg width="12" height="12" viewBox="0 0 256 256" fill="currentColor"><path d="M213.7 101.7l-80 80a8 8 0 0 1-11.4 0l-80-80A8 8 0 0 1 48 88h160a8 8 0 0 1 5.7 13.7z"/></svg>',
+  github: '<svg width="12" height="12" viewBox="0 0 256 256" fill="currentColor"><path d="M208.3 75.7a80 80 0 0 0-6.5-63.4 8 8 0 0 0-6.9-4 79.9 79.9 0 0 0-62.3 30h-9.2a79.9 79.9 0 0 0-62.3-30 8 8 0 0 0-6.9 4 80 80 0 0 0-6.5 63.4A79.2 79.2 0 0 0 40 112v8a72.1 72.1 0 0 0 57.2 70.5A47.7 47.7 0 0 0 88 216v8H64a24 24 0 0 1-24-24 40 40 0 0 0-40-40 8 8 0 0 0 0 16 24 24 0 0 1 24 24 40 40 0 0 0 40 40h24v16a8 8 0 0 0 16 0v-40a32 32 0 0 1 64 0v40a8 8 0 0 0 16 0v-40a47.7 47.7 0 0 0-9.2-25.5A72.1 72.1 0 0 0 216 120v-8a79.2 79.2 0 0 0-7.7-36.3z"/></svg>',
+  branch: '<svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor"><path d="M232 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-64a31.8 31.8 0 0 0-16 4.3V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h64a32 32 0 0 0 32-32v-9a32.1 32.1 0 0 0 24-31z"/></svg>',
+  pr: '<svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor"><path d="M104 64a32 32 0 1 0-40 31v66a32 32 0 1 0 16 0V95a32.1 32.1 0 0 0 24-31zm88 97V88a40 40 0 0 0-40-40h-14l11-11a8 8 0 0 0-12-11l-24 24a8 8 0 0 0 0 12l24 24a8 8 0 0 0 12-11l-11-11h14a24 24 0 0 1 24 24v73a32 32 0 1 0 16 0z"/></svg>',
+  pin: '<svg width="10" height="10" viewBox="0 0 256 256" fill="currentColor"><path d="M180.7 84.7l-9.4-9.4 12.7-12.7a16 16 0 0 0 0-22.6l-23.3-23.3a16 16 0 0 0-22.6 0L125.4 29.4 116 20a16 16 0 0 0-22.6 22.6l4.7 4.7-46.4 27.9a16 16 0 0 0-2.8 25.2l40.2 40.2-42.7 42.7a8 8 0 0 0 11.4 11.4l42.7-42.7 40.2 40.2a16 16 0 0 0 25.2-2.8l27.9-46.4 4.7 4.7a16 16 0 0 0 22.6-22.6z"/></svg>',
+  merge: '<svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M104 64a32 32 0 1 0-40 31v66a32 32 0 1 0 16 0v-42a71.9 71.9 0 0 0 56 27h4a32 32 0 1 0 0-16h-4a56 56 0 0 1-56-56v-1a32.1 32.1 0 0 0 24-9z"/></svg>',
+  plus: '<svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M224 128a8 8 0 0 1-8 8h-80v80a8 8 0 0 1-16 0v-80H40a8 8 0 0 1 0-16h80V40a8 8 0 0 1 16 0v80h80a8 8 0 0 1 8 8z"/></svg>',
+  check: '<svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M128 24a104 104 0 1 0 104 104A104.1 104.1 0 0 0 128 24zm45.7 85.7l-56 56a8 8 0 0 1-11.4 0l-24-24a8 8 0 0 1 11.4-11.4l18.3 18.4 50.3-50.4a8 8 0 0 1 11.4 11.4z"/></svg>',
+  dots: '<svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><circle cx="128" cy="60" r="14"/><circle cx="128" cy="128" r="14"/><circle cx="128" cy="196" r="14"/></svg>',
+};
+
+/* Deliberately long groups — a band's whole job happens while you scroll. */
+const REPOS = [
+  { name: "personal", accent: "a0", sessions: [
+      { title: "Deploy bare metal server wit…", time: "40d ago", icon: "branch" },
+      { title: "Restore the Postgres snapshot", time: "44d ago", icon: "branch" },
+  ]},
+  { name: "branding", accent: "a1", resolved: true, pinned: [
+      { title: "Acquiring Initial Friendly User…", time: "19h ago", pin: true, icon: "branch" },
+  ], sessions: [
+      { title: "Logo lockup on dark surfaces", time: "3d ago", icon: "branch" },
+  ]},
+  { name: "shipit-website", accent: "a2", resolved: true, pinned: [
+      { title: "Get website indexed by searc…", time: "18h ago", pin: true, icon: "branch" },
+  ], sessions: [
+      { title: "Pricing page copy pass", time: "2d ago", icon: "branch" },
+  ]},
+  { name: "shipit", accent: "a3", pinned: [
+      { title: "DeepSeek Flash: best harnes…", time: "10m ago", pin: true, icon: "branch" },
+  ], sessions: [
+      { title: "Private GitHub issue tracker", time: "6m ago", pin: true, merged: true, icon: "pr", current: true, kids: [
+          { title: "Inline badges: support the …", time: "7m ago", live: true, icon: "pr" },
+      ]},
+      { title: "Fix shim stdout truncation …", time: "4h ago", icon: "branch" },
+      { title: "Declare the planning track…", time: "6h ago", icon: "branch" },
+      { title: "Custom models: separate ha…", time: "9h ago", icon: "branch" },
+  ]},
+];
+
+function row(s, extra = "") {
+  const cls = ["row", extra, s.current ? "current" : "", s.merged ? "merged" : ""].filter(Boolean).join(" ");
+  const meta = [
+    s.merged ? `<span style="color:var(--color-success);display:grid">${I.check}</span>` : "",
+    s.live ? '<span class="live"></span>' : "",
+    s.pin ? `<span style="color:var(--color-attention);display:grid">${I.pin}</span>` : "",
+    `<span>${s.time}</span>`,
+  ].join("");
+  return `<div class="${cls}"><span class="badge">${I[s.icon]}</span>
+    <span class="txt"><span class="title">${s.title}</span><span class="meta">${meta}</span></span></div>`;
+}
+function group(r) {
+  const pinned = r.pinned || [];
+  const count = pinned.length + (r.sessions || []).reduce((n, s) => n + 1 + (s.kids?.length || 0), 0);
+  const body = [
+    pinned.length ? `<div class="sublabel">${I.pin}<span>Pinned</span></div>` : "",
+    ...pinned.map((s) => row(s)),
+    pinned.length ? '<hr class="pindiv">' : "",
+    `<div class="row new"><span class="plus">${I.plus}</span><span class="txt"><span class="title">New session</span></span></div>`,
+    ...(r.sessions || []).flatMap((s) => [row(s), ...(s.kids || []).map((k) => row(k, "child"))]),
+    r.resolved ? `<div class="sublabel">${I.merge}<span>Recently resolved</span></div>` : "",
+  ].join("");
+  return `<section class="grp" data-accent="${r.accent}">
+    <header class="ghead"><span class="caret">${I.caretDown}</span><span class="glyph">${I.github}</span>
+      <span class="gname">${r.name}</span><span class="gcount">${count}</span><span class="dots">${I.dots}</span></header>
+    <div class="gbody">${body}</div></section>`;
+}
+function app(themeClass, bandClass, scrollTop) {
+  return `<div class="app ${themeClass} ${bandClass}">
+    <div class="rail">
+      <div class="railhead"><span class="dot"></span><span>Sessions</span></div>
+      <div class="scroll" data-scroll="${scrollTop || 0}">${REPOS.map(group).join("")}</div>
+    </div>
+    <div class="chat">
+      <div class="chathead">Private GitHub issue tracker</div>
+      <div class="chatbody">
+        <div class="bubble me">Let's explore variant four…</div>
+        <div class="bubble"><div class="skel"></div><div class="skel s2"></div><div class="skel s3"></div></div>
+        <div class="bubble"><div class="skel s2"></div><div class="skel s3"></div></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+const OPTS = [
+  { id: "b-secondary", n: "4a", name: "Secondary band", pill: ["bad", "as specced"],
+    why: "The band exactly as variant 4 described it: <code>--color-bg-secondary</code> with <code>border-primary</code> rules top and bottom.",
+    cost: "<b>1.12 : 1</b> in Claude Light and <b>1.09 : 1</b> in Claude Dark — the fill is doing almost nothing, and the rules are carrying the whole effect. It is also the identical fill to the current-session row, so header and selection read as the same rank." },
+  { id: "b-tertiary", n: "4b", name: "Tertiary band", pill: null,
+    why: "Same shape, one step heavier: <code>--color-bg-tertiary</code>. The <b>strongest plain fill these palettes contain</b> — 1.25 : 1 light, 1.21 : 1 dark — and it out-ranks the current-session row instead of tying with it.",
+    cost: "In Claude Dark the <code>border-primary</code> rules are the same color as the fill, so the band has visible edges in Light and none in Dark. Move the rules to <code>--color-border-secondary</code> to make the two themes agree." },
+  { id: "b-accent", n: "4c", name: "Accent-tinted band", pill: ["good", "best in dark"],
+    why: "<code>--color-accent-subtle</code> — terracotta at 12% / 15%. In Claude Dark this is the <b>highest-contrast fill available</b> (1.23 : 1) and unmistakably on-brand. Note the light row measures 1.12 : 1, the same number as 4a, yet reads far more clearly: contrast ratio is luminance-only, and this band separates by <b>hue</b>.",
+    cost: "Terracotta is the accent — it already marks the current session's right edge and the user's own chat bubbles. A tinted header risks reading as <em>selected repo</em> rather than <em>a repo</em>." },
+  { id: "b-accent-raw", n: "4c-raw", name: "Accent-tinted band, uncomposited", pill: ["bad", "shipped-bug demo"],
+    why: "Identical to 4c but with the naive <code>background: var(--color-accent-subtle)</code>. Look at the top of either frame: <b>a session row is visible straight through the pinned header.</b> Every <code>*-subtle</code> token is <code>rgba()</code>, and this header is <code>position: sticky</code>.",
+    cost: "This is what a tinted band looks like if nobody scrolls the sidebar before merging. Kept in the mock as the guard against re-introducing it." },
+  { id: "b-rules", n: "4d", name: "Rules only, no fill", pill: null,
+    why: "Drop the fill entirely and keep two <code>--color-border-secondary</code> hairlines. In a palette this flat, <b>a line beats a wash</b>: border-secondary is #d0c0ac / #43382c, far further from the rail than any surface token.",
+    cost: "Not really variant 4 any more — it's variant 2 with a second rule. Loses the stuck-header benefit below, which was the reason to want a band." },
+  { id: "b-edge", n: "4e", name: "Tertiary band + accent edge", pill: ["good", "recommended"],
+    why: "4b's fill for mass, plus a <b>3px per-repo hue on the band's left edge</b>. The fill says 'section header', the edge says 'which section'. Two channels, so neither has to carry the flat palette alone.",
+    cost: "Adds the per-repo hue system (name→hue hash) on top of the band. In Claude Light the hues must be darkened from the warm-light set or they wash out against #e6dcd0." },
+  { id: "b-type", n: "4f", name: "Band + typographic lift", pill: null,
+    why: "Tertiary band, no rules, and the repo name lifted to <b>13.5px/700 in <code>text-primary</code></b> with the GitHub glyph dropped. Text has enormous contrast headroom in these palettes (#2a2018 on #e6dcd0, #e8e0d8 on #2e2519) — so let type carry what the surface can't.",
+    cost: "Nothing signals repo <em>identity</em>, only repo <em>boundary</em>; and the taller band costs vertical space in a rail that's already dense." },
+];
+
+document.getElementById("gallery").innerHTML = OPTS.map((o) => `
+  <figure class="opt">
+    <figcaption>
+      <div class="vtag">Option ${o.n}</div>
+      <p class="vname">${o.name}${o.pill ? `<span class="pill ${o.pill[0]}">${o.pill[1]}</span>` : ""}</p>
+      <p class="vwhy">${o.why}</p>
+      <p class="vcost"><b>Cost:</b> ${o.cost}</p>
+    </figcaption>
+    <div class="pair">
+      <div class="frame"><div class="flabel">Claude Light</div>${app("claude-light", o.id, 150)}</div>
+      <div class="frame"><div class="flabel">Claude Dark</div>${app("claude", o.id, 150)}</div>
+    </div>
+  </figure>`).join("");
+
+document.getElementById("scrolldemo").innerHTML = [
+  { id: "", label: "Today — transparent-equivalent header (bg-primary)" },
+  { id: "b-edge", label: "Option 4e — banded header, stuck" },
+].flatMap((d) => [
+  `<figure class="opt" style="width:368px">
+     <figcaption style="min-height:auto"><p class="vname" style="font-size:12.5px">${d.label}</p></figcaption>
+     <div class="frame"><div class="flabel">Claude Dark · scrolled</div>${app("claude", d.id, 260)}</div>
+   </figure>`,
+]).join("");
+
+/* Pre-scroll every frame so the sticky header is already engaged on load. */
+document.querySelectorAll(".scroll").forEach((el) => { el.scrollTop = Number(el.dataset.scroll || 0); });
+</script>
+</body>
+</html>

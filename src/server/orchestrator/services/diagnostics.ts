@@ -22,6 +22,8 @@ import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-r
 import type { ServiceManager, ManagedService } from "../service-manager.js";
 import type { AgentId, LogRingEntry, ProviderRouteKind } from "../../shared/types.js";
 import { getContainerHealth, type ContainerHealth } from "./health.js";
+import { workerGet } from "../worker-http.js";
+import type { NodeRuntimeStatus } from "../../shared/types/node-runtime-types.js";
 import { ServiceError } from "./types.js";
 import {
   AGENT_DEFAULTS,
@@ -34,6 +36,8 @@ import type { SessionOomCircuitBreaker, OomBreakerState } from "../oom-circuit-b
 
 /** Tail of the per-service compose log buffer included in diagnostics. */
 const SERVICE_LOG_TAIL_LINES = 20;
+/** Budget for the worker's `/node-runtime` probe. It reads a cached value. */
+const NODE_RUNTIME_PROBE_TIMEOUT_MS = 2000;
 /** Tail of the per-session orchestrator log ring included in diagnostics. */
 const RECENT_LOG_LINES = 50;
 
@@ -200,6 +204,14 @@ export interface SessionDiagnostics {
    * the build has no session/account wiring (test mode).
    */
   providerRoute: ProviderRouteDiagnostic | null;
+  /**
+   * docs/248 — how the repo's Node version pin was resolved, straight from the
+   * worker. This is requirement 6's surface: when the pin can't be honored the
+   * discrepancy has to be *visible* rather than silently assumed correct, and
+   * this panel is the one place that already aggregates "what is this session
+   * actually running". `null` when there's no reachable container worker.
+   */
+  nodeRuntime: NodeRuntimeStatus | null;
 }
 
 export interface DiagnosticsDeps {
@@ -296,6 +308,8 @@ export async function getSessionDiagnostics(
       )
     : null;
 
+  const nodeRuntime = await probeNodeRuntime(containerManager, sessionId);
+
   return {
     sessionId,
     generatedAt: Date.now(),
@@ -307,7 +321,49 @@ export async function getSessionDiagnostics(
     parsedConfig,
     oomBreaker: oomBreaker ? oomBreaker.getState(sessionId) : null,
     providerRoute,
+    nodeRuntime,
   };
+}
+
+/**
+ * Ask the worker how it resolved the repo's Node pin (docs/248).
+ *
+ * Best-effort by construction: the endpoint is read-only, never awaits the
+ * provisioning download itself (it reports `pending` instead), and any failure
+ * degrades to `null`. Diagnostics must always render — a panel that 500s
+ * because one probe timed out is worse than one missing a row.
+ */
+async function probeNodeRuntime(
+  containerManager: SessionContainerManager | null,
+  sessionId: string,
+): Promise<NodeRuntimeStatus | null> {
+  const sc = containerManager?.get(sessionId);
+  if (sc?.status !== "running" || !sc.workerUrl) return null;
+  try {
+    const res = await workerGet(sc.workerUrl, "/node-runtime", {
+      timeoutMs: NODE_RUNTIME_PROBE_TIMEOUT_MS,
+    });
+    return isNodeRuntimeStatus(res) ? res : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Structural check on the worker's reply. The worker is a trusted peer, but a
+ * version-skewed one (a container that outlived a deploy — docs/113) may not
+ * have the endpoint at all, and the panel should show nothing rather than
+ * render `undefined`.
+ */
+function isNodeRuntimeStatus(value: unknown): value is NodeRuntimeStatus {
+  const v = value as Partial<NodeRuntimeStatus> | null;
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof v.state === "string" &&
+    typeof v.activeVersion === "string" &&
+    typeof v.mismatch === "boolean"
+  );
 }
 
 /**

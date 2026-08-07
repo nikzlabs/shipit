@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { isLinearTracker } from "../../server/shared/tracker-id.js";
 import { IssuesViewer } from "./IssuesViewer.js";
 import { IssueDetail } from "./IssueDetail.js";
 import {
@@ -54,7 +55,7 @@ export function IssuesPanel({
   onStartSession,
   onConnect,
 }: {
-  onStartSession: (issue: TrackerIssue, repoUrl?: string) => void;
+  onStartSession: (issue: TrackerIssue, tracker: TrackerId, repoUrl?: string) => void;
   onConnect: () => void;
 }) {
   const trackers = useIssuesStore((s) => s.trackers);
@@ -155,7 +156,10 @@ export function IssuesPanel({
   // startable, even before any repo has become "active".
   const handleStartSession = (issue: TrackerIssue, targetRepoUrl?: string) => {
     if (!targetRepoUrl && !effectiveRepoUrl) return;
-    onStartSession(issue, targetRepoUrl);
+    // SHI-320 — the tracker the issue was read from travels with it, so the new
+    // session can carry a resolvable `IssueRef` (branch pin + `→ started`).
+    // `selected` wins because the detail view can outlive a tab switch.
+    onStartSession(issue, selected?.tracker ?? activeTracker, targetRepoUrl);
   };
 
   // Master-detail (docs/189): a selected issue replaces the list with the
@@ -181,7 +185,7 @@ export function IssuesPanel({
         onAnchorConsumed={() => useIssuesStore.getState().clearAnchorComment()}
         availableStatuses={availableStatuses}
         availableLabels={availableLabels}
-        canEditPriority={detailTracker === "linear"}
+        canEditPriority={isLinearTracker(detailTracker)}
         canEditLabels
         onFetchLabels={() => void useIssuesStore.getState().fetchLabels(detailTracker)}
         onSetLabels={(names) => {
@@ -235,7 +239,7 @@ export function IssuesPanel({
       {...(effectiveRepoUrl ? { targetRepoUrl: effectiveRepoUrl } : {})}
       includeDone={includeDone}
       availableStatuses={availableStatuses}
-      canEditPriority={activeTracker === "linear"}
+      canEditPriority={isLinearTracker(activeTracker)}
       onSelectTracker={handleSelectTracker}
       onRefresh={() => void useIssuesStore.getState().fetchIssues()}
       onToggleIncludeDone={() => useIssuesStore.getState().toggleIncludeDone()}

@@ -43,9 +43,11 @@ import {
   type ShimEnv,
   type ShimIO,
 } from "./shim-common.js";
+import { exitAfterFlush, shimWrite } from "./shim-exit.js";
 import {
   handleSessionArchive,
   handleSessionCreate,
+  handleSessionFind,
   handleSessionList,
   handleSessionMessage,
   handleSessionNotifyOnMerge,
@@ -135,23 +137,38 @@ Branch (docs/239):
                           branch is ready; nonzero = STOP and report (never reset
                           by hand).
 
-Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/177 + docs/187):
-  shipit issue view      <pointer> [--tracker github|linear] [--comments] [--json]
-  shipit issue list      [--tracker github|linear] [--state open|closed|all] [--full] [--json]
-  shipit issue labels    [--tracker github|linear] [--json]
-  shipit issue statuses  [--tracker github|linear] [--json]
-  shipit issue create    --title T [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--tracker github|linear] [--json]
-  shipit issue comment   <pointer> -b BODY | --body-file FILE [--tracker T] [--json]
-  shipit issue edit      <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--tracker T] [--json]
-  shipit issue status    <pointer> <state> [--tracker T] [--json]
-  shipit issue assign    <pointer> <user|me | --none> [--tracker T] [--json]
-  shipit issue label create --name NAME [--color '#rrggbb'] [--description TEXT] [--tracker github|linear] [--json]
+Issues (tracker-neutral; docs/175 + docs/177 + docs/187 + docs/248):
+  shipit issue view      <ref> [--tracker NAME] [--comments] [--json]
+  shipit issue list      [--tracker NAME] [--state open|closed|all] [--full] [--json]
+  shipit issue labels    [--tracker NAME] [--json]
+  shipit issue statuses  [--tracker NAME] [--json]
+  shipit issue create    --tracker NAME --title T [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--json]
+  shipit issue comment   <ref> -b BODY | --body-file FILE [--tracker NAME] [--json]
+  shipit issue comment edit <ref> --comment ID -b BODY | --body-file FILE [--tracker NAME] [--json]
+  shipit issue edit      <ref> [--title T] [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--tracker NAME] [--json]
+  shipit issue status    <ref> <state> [--tracker NAME] [--json]
+  shipit issue assign    <ref> <user|me | --none> [--tracker NAME] [--json]
+  shipit issue label create --tracker NAME --name NAME [--color '#rrggbb'] [--description TEXT] [--json]
 
-  A <pointer> is whatever the user/doc gave you — SHI-28, owner/repo#42, or an
-  issue URL; the tracker is inferred from its shape. Writes are do-then-surface:
-  the change is made immediately and an inline provenance card with an Undo
-  button is posted in the chat. 'create' defaults to Linear (no pointer to infer
-  from); Undo cancels the new issue.
+  Every tracker this repository uses is declared in its shipit.yaml with a NAME;
+  there is no built-in tracker and no implicit fallback. Three reference forms
+  all work: 'planning#42' / 'roadmap#SHI-304' (name + backend id), 'roadmap#304'
+  (name + number), and the backend's own address ('SHI-304', 'owner/repo#42', an
+  issue URL). WRITE the name form yourself — it survives a declaration being
+  re-pointed. A reference naming no declared tracker fails with the declared
+  names listed; fix the reference or the declaration, never retry elsewhere.
+
+  Naming nothing means this session's own repository — except on 'create' and
+  'label create', which ALWAYS need --tracker NAME so a forgotten flag can't file
+  into a possibly-public repo. Writes are do-then-surface: the change is made
+  immediately and an inline provenance card with an Undo button is posted in the
+  chat; Undo cancels a newly created issue.
+
+  'comment edit' rewrites a comment you already posted — a wrong or stale comment
+  is fixable rather than needing a follow-up saying to ignore it. Get the id from
+  'issue view <ref> --comments --json'; Undo restores the previous body. You can
+  only edit comments ShipIt itself wrote: someone else's is refused, not rewritten.
+  There is no 'comment delete'.
 
   --label is repeatable (or comma-separated) and resolves against the tracker's
   existing labels — an unknown name is rejected with the valid options, not
@@ -255,6 +272,34 @@ Ops-only (read-only ShipIt source, docs/162):
   shipit source blame    PATH [--json]
   shipit source show     COMMIT [PATH] [--json]
 
+Ops-only (host session inventory, docs/255):
+  shipit session find    --branch NAME | --pr NUMBER | --container NAME | --id ID
+                          [--include-archived] [--include-warm]
+                          [--limit N] [--offset N] [--json]
+                          Resolve a branch, PR, or container name back to the
+                          session that produced it — the one-step answer to
+                          "what session created this PR?". --container takes a
+                          name straight from 'docker ps' or the host journal
+                          ('agent-83292266-744', 'shipit-83292266-744-web-1').
+                          A service container with an explicit container_name
+                          carries no session id — the error tells you to read
+                          its 'shipit-parent-session' label instead. --pr
+                          matches the session's current PR AND a previous one it
+                          shipped from the same branch.
+  shipit session list --all [--include-archived] [--include-warm]
+                          [--limit N] [--offset N] [--json]
+                          The whole host inventory. (Without --all, 'list' is
+                          unchanged: only the children THIS session spawned.)
+
+  Results are capped; when there are more, the output names the exact
+  '--offset N' to pass for the next page. Warm pool sessions and sessions the
+  user archived are excluded by default — add --include-warm /
+  --include-archived to see them.
+
+  Both return METADATA ONLY — id, title, kind, branch, repo, parent, agent,
+  timestamps, container name, and the PR number/url/state. Never another
+  session's conversation, prompts, secrets, or workspace contents.
+
 The shim brokers session operations through the ShipIt orchestrator. The
 parent session is always the session this container belongs to — the agent
 cannot spawn sessions under a different parent, or view/manage sessions it
@@ -316,6 +361,14 @@ runs this host, then \`shipit session create --shipit-source --title "..."\` to
 spawn a repo-backed fix session branched from the exact inspected commit.
 With \`--shipit-source\` the diagnosis is wrapped in an incident packet and
 can't name the session, so the \`--title\` describes what the fix is for.
+
+Also in an Ops session, \`shipit session find\` turns a branch / PR / container
+name into the session that owns it. Reach for it BEFORE correlating journal
+timestamps against container names — the orchestrator already knows the answer:
+
+  shipit session find --branch shipit/kmwodw
+  shipit session find --pr 1744
+  shipit session find --container agent-83292266-744
 
 See /shipit-docs/sessions.md for the full reference, including allowed
 flags and the list of intentionally-rejected operations
@@ -412,6 +465,9 @@ const SESSION_HANDLERS: Record<
 > = {
   create: handleSessionCreate,
   list: handleSessionList,
+  // docs/255 — Ops-only host inventory: resolve a branch / PR / container name
+  // back to the session that produced it. Read-only, metadata only.
+  find: handleSessionFind,
   view: handleSessionView,
   message: handleSessionMessage,
   wait: handleSessionWait,
@@ -803,7 +859,7 @@ function stripNodeArgs(argv: string[]): string[] {
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
   runShim(process.argv.slice(2)).catch((err: unknown) => {
     if (err instanceof Error && err.message === "__shim_exit__") return;
-    process.stderr.write(`shipit: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
+    shimWrite(process.stderr, `shipit: ${err instanceof Error ? err.message : String(err)}\n`);
+    exitAfterFlush(1);
   });
 }

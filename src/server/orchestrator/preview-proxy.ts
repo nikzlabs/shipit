@@ -82,8 +82,28 @@ const HMR_WS_PATCH = `<script>(function(){` +
     `window.addEventListener("message",function(e){` +
       `var d=e.data;if(!d||d.source!=="shipit-toolbar")return;` +
       `if(d.type==="back")history.back();` +
-      `else if(d.type==="forward")history.forward()` +
-    `})` +
+      `else if(d.type==="forward")history.forward();` +
+      // Refresh must reload whatever page the preview is currently on. The
+      // parent can only re-assign the iframe's `src`, which is the slot's
+      // original entry URL — that would throw away any client-side route the
+      // user navigated to and drop them back on the front page.
+      `else if(d.type==="reload")location.reload()` +
+    `});` +
+    // Report the current path (never the host) so the toolbar can show where
+    // the preview is. The parent cannot read this itself — the iframe is
+    // cross-origin — so the page has to push it out.
+    `var rp=function(){try{window.parent.postMessage({source:"shipit-preview",` +
+      `type:"path",path:location.pathname+location.search+location.hash},"*")}catch(e){}};` +
+    `rp();` +
+    // A load-time read alone goes stale the instant a client-side router moves
+    // without a navigation, so wrap the two History methods that do it. We patch
+    // before any app code runs (this script is first in <head>), so a framework
+    // that wraps history too ends up wrapping ours and `rp` still fires.
+    `var wrap=function(n){var o=history[n];if(typeof o!=="function")return;` +
+      `history[n]=function(){var r=o.apply(this,arguments);rp();return r}};` +
+    `wrap("pushState");wrap("replaceState");` +
+    `window.addEventListener("popstate",rp);` +
+    `window.addEventListener("hashchange",rp)` +
   `}` +
   `})()</script>`;
 

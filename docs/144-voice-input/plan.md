@@ -187,6 +187,56 @@ existing "press Send, see assistant typing" rhythm. The mic button
 shows a `transcribing → cleaning` substate so the user can see
 where time is going if it ever feels slow.
 
+### Telling the agent the message was dictated
+
+Cleanup (above) is the *first* line of defence against transcription
+artifacts, and it is not sufficient. It can only fix what it can
+recognise as wrong; it has no view of the repository, so a mis-heard
+identifier that happens to be a plausible English phrase ("the seed
+router" for `SseRouter`, "prawn" for `prod`) survives it intact. And
+the user's own review-before-send pass has the same blind spot the
+dictation had — they reread text that *sounds* like what they meant.
+
+So the message ships with a provenance flag, and the server folds a
+`<dictated_input>` block into the prompt (`DICTATION_CONTEXT` in
+`prompt-assembly.ts`) telling the agent the words came out of
+speech-to-text: expect mis-heard proper nouns and technical terms,
+homophones, absent punctuation and run-on phrasing; read for intent,
+silently correct the obvious ones, and **ask** about a garbled part
+that would change what it does rather than guessing.
+
+Four properties define the shape:
+
+- **The user's text is never touched.** The block is prompt context, in
+  exactly the sense `<attached_images>` is: the persisted chat bubble
+  stays the verbatim transcript, and nothing about it renders in the
+  transcript. Rewriting the user's own words on their behalf is the one
+  thing dictation must never do.
+- **Provenance is tracked per draft, not per keystroke.** The composer
+  flags a draft the moment a transcript is spliced into it and clears
+  the flag on send, when the draft is emptied, when a prefill replaces
+  it, and on a session switch (drafts persist their text, not their
+  provenance). A *partly* dictated message still counts — the artifacts
+  are in there either way.
+- **It rides every path a spoken message can take**, because "the agent
+  was told" can't depend on whether a turn happened to be running:
+  the direct turn, a live steer into a running turn, and the queue
+  (`AgentDispatchOptions.dictated` → `QueuedMessage` → the drain, so the
+  hint survives being enqueued). Also the two non-composer surfaces
+  where the same mic exists: quick-capture Mode B (`POST
+  /api/sessions/headless` → the first turn's prompt) and a dictated
+  `AskUserQuestion` "Other" answer, which *is* the next turn's prompt.
+- **Ordering follows the slash rule.** The block is prepended with the
+  other context blocks, except for a slash invocation, where it is
+  appended so a dictated `/review` keeps its `/` at index 0 and still
+  resolves as a command.
+
+Only a human-dictated prompt ever sets the flag. Nothing the
+orchestrator composes — wake turns, CI-fix turns, rebase resolution,
+issue seeds — has been through speech-to-text, and the complete-init
+contract in `prepared-dispatch.ts` forces each of those sites to say so
+explicitly rather than inherit it by omission.
+
 ## Playback: per-turn Play button
 
 Playback is a single, simple gesture: every completed assistant turn in
@@ -547,7 +597,7 @@ not edge cases.
 
 ### UX
 
-**Mic button** appears in **three places** (same component, same hook
+**Mic button** appears in **four places** (same component, same hook
 state), only rendered when voice input is enabled in settings:
 
 - Next to the send/stop buttons in **MessageInput** — Mode A entry point.
@@ -563,6 +613,17 @@ state), only rendered when voice input is enabled in settings:
   sub-component owns its own `useVoiceInput` instance and splices the
   transcript into the textarea via `spliceTranscript`, exactly like
   MessageInput. On mobile it also mounts `MobileRecordingOverlay`.
+- Inside the **doc-comment composer** (`CommentInput`, docs/049) — lets the
+  user select text in a design doc and dictate the comment instead of typing
+  it. The same component backs both a new selection comment and an in-place
+  edit of an existing one, so one wiring covers both. Button-only for the same
+  reason as the question card, and more acutely: a doc can have a pending
+  comment *and* an open edit mounted at once, so a global hotkey would drive
+  two recorders. Because this composer is a growing multi-line card rather
+  than a fixed-height field, the mic sits in the footer row opposite
+  Cancel/Add instead of floating over the textarea. Escape while recording
+  cancels the *recording* rather than the comment — a mistimed Escape
+  discarding half-written text is the worse failure.
 
 States (shared across both mic instances):
 
@@ -996,10 +1057,14 @@ Captured here so future readers know they were considered, not forgotten:
 - `src/client/components/QuickCaptureOverlay.tsx` (from doc 145) — embed MicButton, wire a Mode-B hook instance, route transcript to the overlay's own `setText`. Auto-start capture when opened via the Mode-B hotkey.
 - `src/client/hooks/useQuickCaptureHotkey.ts` (from doc 145) — add a sibling Mode-B variant that opens the overlay *and* signals the overlay to auto-start mic capture
 - `src/client/components/AskUserQuestion.tsx` — `OtherAnswerInput` sub-component embeds MicButton (button-only, no hotkey) in the "Other" free-text field, wires its own `useVoiceInput` instance, splices the transcript with `spliceTranscript`, and mounts `MobileRecordingOverlay` on mobile
+- `src/client/components/MarkdownSelectionComments/CommentInput.tsx` — the doc-comment composer (new comment + in-place edit) embeds MicButton in its footer row (button-only, no hotkey), wires its own `useVoiceInput` instance, splices the transcript with `spliceTranscript`, mounts `MobileRecordingOverlay` on mobile, and routes Escape-while-recording to `cancelRecording` instead of closing the input. Tests: `CommentInput.test.tsx`
 - `src/client/components/MessageList.tsx` (or the existing turn-footer component, exact name verified during build) — render `PlayTurnButton` for each completed assistant turn; pass the turn's id and extracted prose
 - `src/client/stores/settings-store.ts` — add input fields (`voiceInputEnabled`, `sttProvider`, `cleanupEnabled`, `voiceHotkeyModeA`, `voiceHotkeyModeB`, `voiceLanguage`) **and** playback fields (`voicePlaybackEnabled`, `ttsProvider`, `ttsVoice`, `ttsSpeed`) and setters (no API key — that's server-side)
 - `src/client/utils/local-storage.ts` — persisters for the new non-credential settings
 - `src/client/components/Settings.tsx` — new "Voice" section with input and playback subsections
+- `src/client/components/MessageInput/MessageInput.tsx` — tracks whether the current draft contains dictated text (`draftDictated`) and ships it as `SendPayload.dictated`
+- `src/client/App.tsx` — forwards `dictated` onto the `send_message` / `answer_question` WS frames
+- `src/client/stores/actions/session-actions.ts` — `createHeadlessSession` carries `dictated` for quick-capture Mode B
 
 ### Server (new)
 
@@ -1026,6 +1091,11 @@ Captured here so future readers know they were considered, not forgotten:
 - `src/server/orchestrator/api-routes.ts` — register the new routes module
 - `src/server/orchestrator/services/index.ts` — re-export voice service
 - `src/server/orchestrator/app-di.ts` — wire the voice provider factories and the TTS cache. `CredentialStore` is already in DI; no new manager needed.
+- `src/server/orchestrator/prompt-assembly.ts` — `DICTATION_CONTEXT` + the `dictated` arm of `assembleAgentPrompt` (slash-aware ordering)
+- `src/server/shared/types/ws-client-messages.ts` — `dictated?: boolean` on `WsSendMessage` and `WsAnswerQuestion`
+- `src/server/orchestrator/session-runner.ts` / `prepared-dispatch.ts` — `dictated` on `AgentDispatchOptions` + `QueuedMessage`, so the hint survives the queue drain
+- `src/server/orchestrator/ws-handlers/send-message.ts` / `ws-handlers/agent-execution.ts` / `dispatched-turn.ts` — thread `dictated` through the direct, steered, queued and dispatched turn paths
+- `src/server/orchestrator/services/headless-sessions.ts` / `api-routes-session-crud.ts` — accept `dictated` on `POST /api/sessions/headless` for quick-capture Mode B
 
 ### Android (modified)
 

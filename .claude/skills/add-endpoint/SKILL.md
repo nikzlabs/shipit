@@ -26,8 +26,7 @@ ShipIt uses HTTP for most operations and reserves WebSocket for a narrow set of 
 - If an operation triggers server-side effects that push WS events (e.g., `fork_session` triggers a `session_list` broadcast), that's fine — the trigger is HTTP, the notification is WS. Don't put the trigger on WS just because it has side effects.
 - If you're unsure, start with HTTP. It's simpler to test (`app.inject()`), easier to debug (curl), and doesn't couple the operation to connection lifecycle. You can always add a WS broadcast for notifications on top.
 
-**Current WS message types** (18 client -> server):
-`send_message`, `answer_question`, `home_send_with_repo`, `new_session`, `activate_session`, `set_agent`, `interrupt_claude`, `fork_thread`, `switch_thread`, `initiate_deploy`, `cancel_deploy`, `cancel_queued_message`, `init_preview_config`, `diff_comment`, `clear_logs`, `terminal_start`, `terminal_input`, `terminal_resize`
+**Current WS message types**: read the `WsClientMessage` union in `src/server/shared/types/ws-client-messages.ts` (~23 client → server at time of writing). Don't trust a copied list — it rots. The dispatch switch that narrows them lives in `route-registry.ts`, not `index.ts`.
 
 See `docs/001-websocket-protocol/plan.md` for the full endpoint and message reference.
 
@@ -51,8 +50,8 @@ See `docs/001-websocket-protocol/plan.md` for the full endpoint and message refe
 **Key conventions:**
 - Use `Extract<WsClientMessage, { type: "..." }>` to get the narrowed message type — don't import individual message interfaces.
 - Handler functions are `async` only if they `await` something; otherwise use `void` return.
-- Access per-connection state via `ctx` getters/setters (`ctx.getActiveAppSessionId()`, `ctx.setActiveSessionDir(...)`, etc.), not closure variables.
-- Access app-level managers directly from `ctx` (`ctx.sessionManager`, `ctx.deploymentStore`, etc.).
+- Read per-connection state via `ctx` getters (`ctx.getActiveAppSessionId()`, etc.), not closure variables. **There are no `ctx.setX` runner setters** — they were deleted for becoming silent no-ops after disconnect. To mutate runner state, resolve a runner via `resolveRunner(ctx)` and assign directly (`runner.running = false`). See `CLAUDE.md` → *WebSocket lifecycle MUST NOT affect server behavior*.
+- Access app-level managers directly from `ctx` (`ctx.sessionManager`, `ctx.chatHistoryManager`, etc.). There is no `ctx.deploymentStore` — `DeploymentStore` no longer exists.
 - Import `getErrorMessage` from `./validation.js` for consistent error formatting (within orchestrator).
 
 ### Server → client messages that render in the chat MUST be persisted
@@ -67,13 +66,9 @@ For a card that arrives off the agent-event stream (HTTP relay or post-turn WS):
 
 Transient signals (spinners, `preview_status`, queue counts) are correctly emit-only — only persist what belongs in the scrollback.
 
-## Adding a new deploy target
+## Deploy targets — there is no longer anything to add
 
-1. Create a new file in `src/server/orchestrator/deploy-targets/` implementing the `DeployTarget` interface
-2. Implement `info` (metadata + config fields) and `deploy(ctx)` method
-3. Optionally implement `prepare(ctx)` for pre-deploy setup
-4. Register the target in `index.ts` inside the `deploymentManager` initialization block
-5. The UI automatically renders config fields from `info.configFields` — no client changes needed
+ShipIt does not own a deploy pipeline. There is no `deploy-targets/` directory, no `DeployTarget` interface, and no `deploymentManager`. Deploys are triggered by the hosting platform's own Git integration on push, and ShipIt reads their status from the GitHub Deployments API to render it in the PR lifecycle card. See the `deployment-architecture` skill.
 
 ## Adding a new tool activity label
 

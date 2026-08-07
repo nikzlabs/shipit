@@ -27,11 +27,14 @@ import type {
 import {
   buildTrackerRegistry,
   listLinearTeams,
+  TrackerPermissionError,
   TrackerResolutionError,
   type Tracker,
+  type TrackerRegistry,
   type FetchImpl,
   type GitHubTrackerContext,
 } from "../trackers/index.js";
+import type { TrackerDestination } from "../../shared/declared-tracker.js";
 import { ServiceError } from "./types.js";
 
 /**
@@ -49,7 +52,43 @@ export function isDuplicateStatus(name?: string): boolean {
   return name?.trim().toLowerCase() === "duplicate";
 }
 
-/** All known trackers + their configured state — drives the sub-tab switcher. */
+/**
+ * docs/248 req 11/19 — the message a fail-closed destination lookup produces.
+ * Names the declared set so the agent can correct the reference instead of
+ * retrying blind, and states plainly that there is no fallback.
+ */
+function undeclaredTrackerMessage(trackerId: string, registry: TrackerRegistry): string {
+  const names = registry
+    .destinations()
+    .map((d) => d.name)
+    .filter((n): n is string => Boolean(n));
+  const declared =
+    names.length > 0
+      ? `Declared trackers: ${names.join(", ")}.`
+      : "This repository declares no issue trackers — add an `issues.trackers` entry to shipit.yaml.";
+  return `\`${trackerId}\` is not a tracker this repository declares, and ShipIt has no implicit tracker to fall back to. ${declared}`;
+}
+
+/**
+ * docs/248 — the destinations a session can reach, plus the warnings its
+ * `shipit.yaml` parse produced (req 8). This is the reference-resolution context
+ * the `shipit issue` shim needs: names are declared in the repository, and the
+ * shim resolves `planning#42` against exactly the set the orchestrator would.
+ * Returning the warnings on the same call is what puts declaration problems in
+ * CLI output where the agent can act on them.
+ */
+export function listTrackerDestinations(
+  credentialStore: CredentialStore,
+  fetchImpl?: FetchImpl,
+  github?: GitHubTrackerContext,
+): { destinations: TrackerDestination[]; warnings: string[] } {
+  return {
+    destinations: buildTrackerRegistry(credentialStore, fetchImpl, github).destinations(),
+    warnings: github?.warnings ?? [],
+  };
+}
+
+/** All declared trackers + their configured state — drives the sub-tab switcher. */
 export function listTrackers(
   credentialStore: CredentialStore,
   fetchImpl?: FetchImpl,
@@ -74,7 +113,7 @@ export async function listIssuesForTracker(
   const registry = buildTrackerRegistry(credentialStore, fetchImpl, github);
   const tracker = registry.get(trackerId as TrackerId);
   if (!tracker) {
-    throw new ServiceError(404, `Unknown tracker: ${trackerId}`);
+    throw new ServiceError(404, undeclaredTrackerMessage(trackerId, registry));
   }
   if (!tracker.isConfigured()) {
     return { tracker: tracker.info(), issues: [] };
@@ -122,7 +161,7 @@ export async function listLabelsForTracker(
   const registry = buildTrackerRegistry(credentialStore, fetchImpl, github);
   const tracker = registry.get(trackerId as TrackerId);
   if (!tracker) {
-    throw new ServiceError(404, `Unknown tracker: ${trackerId}`);
+    throw new ServiceError(404, undeclaredTrackerMessage(trackerId, registry));
   }
   if (!tracker.isConfigured()) {
     return { labels: [] };
@@ -152,7 +191,7 @@ export async function listStatusesForTracker(
   const registry = buildTrackerRegistry(credentialStore, fetchImpl, github);
   const tracker = registry.get(trackerId as TrackerId);
   if (!tracker) {
-    throw new ServiceError(404, `Unknown tracker: ${trackerId}`);
+    throw new ServiceError(404, undeclaredTrackerMessage(trackerId, registry));
   }
   if (!tracker.isConfigured()) {
     return { statuses: [] };
@@ -166,8 +205,12 @@ export async function listStatusesForTracker(
 
 /**
  * Resolve a configured tracker or throw a `ServiceError` the route maps to an
- * HTTP status: 404 for an unknown tracker, 409 for a known-but-unconnected one
- * (the agent should connect it, not retry). Used by the write services below.
+ * HTTP status: 404 for an undeclared tracker, 409 for a declared-but-unconnected
+ * one (the agent should connect it, not retry). Used by the write services below.
+ *
+ * docs/248 req 11 — the 404 is a **fail-closed**, not a lookup miss to route
+ * around: an id naming no declared destination has nowhere to go, and the
+ * message says so rather than leaving the agent to guess (req 19).
  */
 function resolveConfiguredTracker(
   credentialStore: CredentialStore,
@@ -175,8 +218,9 @@ function resolveConfiguredTracker(
   fetchImpl?: FetchImpl,
   github?: GitHubTrackerContext,
 ): Tracker {
-  const tracker = buildTrackerRegistry(credentialStore, fetchImpl, github).get(trackerId as TrackerId);
-  if (!tracker) throw new ServiceError(404, `Unknown tracker: ${trackerId}`);
+  const registry = buildTrackerRegistry(credentialStore, fetchImpl, github);
+  const tracker = registry.get(trackerId as TrackerId);
+  if (!tracker) throw new ServiceError(404, undeclaredTrackerMessage(trackerId, registry));
   if (!tracker.isConfigured()) {
     throw new ServiceError(409, `${tracker.label} is not connected. Connect it in Settings → Issues.`);
   }
@@ -207,7 +251,7 @@ export async function getIssueForTracker(
   const registry = buildTrackerRegistry(credentialStore, fetchImpl, github);
   const tracker = registry.get(trackerId as TrackerId);
   if (!tracker) {
-    throw new ServiceError(404, `Unknown tracker: ${trackerId}`);
+    throw new ServiceError(404, undeclaredTrackerMessage(trackerId, registry));
   }
   if (!tracker.isConfigured()) {
     throw new ServiceError(400, `${tracker.label} is not configured`);
@@ -244,7 +288,7 @@ export async function listIssueCommentsForTracker(
   const registry = buildTrackerRegistry(credentialStore, fetchImpl, github);
   const tracker = registry.get(trackerId as TrackerId);
   if (!tracker) {
-    throw new ServiceError(404, `Unknown tracker: ${trackerId}`);
+    throw new ServiceError(404, undeclaredTrackerMessage(trackerId, registry));
   }
   if (!tracker.isConfigured()) {
     throw new ServiceError(400, `${tracker.label} is not configured`);
@@ -427,6 +471,11 @@ function clipComment(body: string): string {
  * the dead end forced users to create labels by hand in the tracker UI.
  */
 function toResolutionServiceError(err: unknown, opts?: { labelHint?: boolean }): never {
+  // A refusal, not a resolution failure (SHI-86) — 403, and no options list,
+  // because there is no other value the agent could have passed that would work.
+  if (err instanceof TrackerPermissionError) {
+    throw new ServiceError(403, err.message);
+  }
   if (err instanceof TrackerResolutionError) {
     const list = err.options.length > 0 ? `\nValid ${err.kind} options: ${err.options.join(", ")}` : "";
     const hint =
@@ -613,6 +662,50 @@ export async function commentOnIssueForTracker(
 }
 
 /**
+ * Rewrite one of the issue's comments (SHI-86 — `shipit issue comment edit`);
+ * undo restores the body it replaced.
+ *
+ * A comment was write-once before this: an agent that posted a wrong or stale
+ * comment could only post another asking readers to ignore the first, and
+ * `CLAUDE.md` has agents commenting on every design-doc update, so the mistakes
+ * accumulated in the surface meant to be read. It also removes the one-way door
+ * in docs/247's migration, which replays 1,344 comments — issue bodies stay
+ * editable, comments did not.
+ *
+ * The issue is named alongside the comment (not derived from it) for the same
+ * reason every other verb names its destination: a comment id is backend-global,
+ * so the issue is what scopes it. The adapter enforces that pairing, plus
+ * authorship. `shipit issue view <ref> --comments --json` already returns both
+ * ids together, so requiring both costs the caller nothing.
+ */
+export async function editCommentForTracker(
+  credentialStore: CredentialStore,
+  trackerId: string,
+  id: string,
+  commentId: string,
+  body: string,
+  fetchImpl?: FetchImpl,
+  github?: GitHubTrackerContext,
+): Promise<IssueWriteOutcome> {
+  const tracker = resolveConfiguredTracker(credentialStore, trackerId, fetchImpl, github);
+  const issue = await loadIssueOr404(tracker, id);
+  let previousBody: string;
+  try {
+    ({ previousBody } = await tracker.updateComment(id, commentId, body));
+  } catch (err) {
+    toResolutionServiceError(err);
+  }
+  return {
+    issue,
+    verb: "comment-edit",
+    summary: `edited a comment on ${issue.identifier}`,
+    undo: { kind: "comment-edit", commentId, previousBody: previousBody! },
+    // The NEW body is the card's second line; the prior text is one Undo away.
+    content: { comment: clipComment(body) },
+  };
+}
+
+/**
  * Edit title, description, labels, and/or priority; snapshot the prior values
  * for undo. Labels are ADDITIVE (SHI-92): the requested names are merged into
  * the issue's existing labels rather than replacing them, so editing labels can
@@ -767,15 +860,51 @@ export async function setIssueAssigneeForTracker(
  */
 export async function undoIssueWrite(
   credentialStore: CredentialStore,
-  card: Pick<IssueWriteCard, "tracker" | "issueId" | "undo">,
+  card: Pick<IssueWriteCard, "tracker" | "trackerName" | "issueId" | "undo">,
   fetchImpl?: FetchImpl,
   github?: GitHubTrackerContext,
 ): Promise<void> {
-  const tracker = resolveConfiguredTracker(credentialStore, card.tracker, fetchImpl, github);
+  // docs/248 req 11's carve-out — an Undo acts on the destination recorded on
+  // the card, even when the repository no longer declares it. This is the one
+  // path that does NOT go through the narrowed `get()`; see
+  // `TrackerRegistry.getRecorded`.
+  const registry = buildTrackerRegistry(credentialStore, fetchImpl, github);
+
+  // req 16's exception. Undo is not re-targeted by a re-pointed name: the write
+  // happened to a specific issue, and the snapshot being restored is that
+  // issue's. Following the name would apply it to a different issue of the same
+  // number that never had it — on Linear the team guard would catch the attempt,
+  // but on GitHub nothing would, so the wrong repository's issue would silently
+  // be rewritten. Undo is for reversing something done minutes ago; once the
+  // declaration has moved under it, refusing is the honest answer.
+  if (card.trackerName) {
+    const now = registry.destinationForName(card.trackerName);
+    if (now && now.id !== card.tracker) {
+      throw new ServiceError(
+        409,
+        `\`${card.trackerName}\` now points at \`${now.id}\`, but this write was made against ` +
+          `\`${card.tracker}\`. ShipIt will not undo it against a different destination — the ` +
+          `snapshot belongs to the issue that was actually changed. Undo it before re-pointing ` +
+          `the declaration, or reverse the change by hand.`,
+      );
+    }
+  }
+
+  const tracker = registry.getRecorded(card.tracker);
+  if (!tracker) throw new ServiceError(404, undeclaredTrackerMessage(card.tracker, registry));
+  if (!tracker.isConfigured()) {
+    throw new ServiceError(409, `${tracker.label} is not connected. Connect it in Settings → Issues.`);
+  }
   try {
     switch (card.undo.kind) {
       case "comment":
         await tracker.deleteComment(card.undo.commentId);
+        return;
+      case "comment-edit":
+        // Restore the exact body the rewrite replaced. The adapter re-runs the
+        // same belonging + authorship guards the forward write passed, which
+        // still hold — ShipIt edited it once, so ShipIt authored it.
+        await tracker.updateComment(card.issueId, card.undo.commentId, card.undo.previousBody);
         return;
       case "edit":
         await tracker.updateIssue(card.issueId, {
@@ -828,8 +957,10 @@ export async function undoIssueWrite(
 
 /**
  * Store a Linear API token after validating it can reach the API. We validate
- * by listing teams (cheap, read-only); the returned teams are handed back so
- * the settings UI can immediately populate the team picker.
+ * by listing teams (cheap, read-only); the returned teams are handed back as a
+ * **lookup**, so the settings UI can show which team keys are available for a
+ * `kind: linear` declaration. docs/248 req 4 — picking one here no longer binds
+ * anything: the team lives in the repository's declaration.
  */
 export async function connectLinear(
   credentialStore: CredentialStore,
@@ -848,7 +979,11 @@ export async function connectLinear(
   return { teams };
 }
 
-/** List the workspace's Linear teams for the settings team picker. */
+/**
+ * List the workspace's Linear teams. docs/248 req 4 — a lookup for *writing* a
+ * declaration (which team keys does this credential reach?), not a picker that
+ * persists a binding.
+ */
 export async function getLinearTeams(
   credentialStore: CredentialStore,
   fetchImpl: FetchImpl = fetch,
@@ -862,22 +997,7 @@ export async function getLinearTeams(
   }
 }
 
-/** Bind the Issues tab to a specific Linear team. */
-export function setLinearTeam(
-  credentialStore: CredentialStore,
-  team: { id?: string; key?: string; name?: string } | undefined,
-): TrackerInfo {
-  if (!team?.id?.trim() || !team.key?.trim() || !team.name?.trim()) {
-    throw new ServiceError(400, "A Linear team (id, key, name) is required");
-  }
-  if (!credentialStore.getLinearToken()) {
-    throw new ServiceError(400, "Connect Linear first");
-  }
-  credentialStore.setLinearTeam({ id: team.id, key: team.key, name: team.name });
-  return buildTrackerRegistry(credentialStore).get("linear")!.info();
-}
-
-/** Disconnect Linear: clear token + team binding. */
+/** Disconnect Linear: clear the stored credential. */
 export function disconnectLinear(credentialStore: CredentialStore): void {
   credentialStore.clearLinear();
 }

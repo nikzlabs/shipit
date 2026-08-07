@@ -539,6 +539,10 @@ export function IssuesViewer({
 }: IssuesViewerProps) {
   const activeInfo = info ?? trackers.find((t) => t.id === activeTracker);
   const configured = activeInfo?.configured ?? false;
+  // SHI-325 — a repo switch drops the declarations until the tracker fetch that
+  // follows lands. Neither "not connected" nor the previous repo's trackers is
+  // true in that window, so the panel says only what it knows.
+  const declarationsPending = trackers.length === 0 && loading;
   const filterActive = anyFilterActive(filters);
   const showFilterBar = configured && issues.length > 0;
   // Rows sit on the primary surface; adapt status-dot colors to its luminance
@@ -572,22 +576,26 @@ export function IssuesViewer({
     <div className="flex flex-col h-full">
       {/* Single top bar: tracker sub-tabs · spacer · issue count · refresh */}
       <div className="flex items-stretch border-b border-(--color-border-secondary) bg-(--color-bg-secondary)">
-        {/* Sub-tab switcher — one per configured tracker (only Linear in v1). */}
+        {/* Sub-tab switcher — one per declared tracker, in declaration order.
+            The tab shows ONLY the label (the declared `title`, else the `name`).
+            It used to append `· <binding key>` — the `owner/repo` slug or Linear
+            team key — which made a two-tracker bar wider than the panel while
+            telling the reader something the tracker's own name already implies;
+            the binding survives as the hover title for the rare case it's
+            wanted. */}
         <div className="flex items-stretch">
           {trackers.map((t) => (
             <button
               key={t.id}
               onClick={() => onSelectTracker(t.id)}
-              className={`px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer border-b-2 ${
+              title={t.binding ? `${t.label} · ${t.binding.key}` : t.label}
+              className={`px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer border-b-2 whitespace-nowrap ${
                 activeTracker === t.id
                   ? "text-(--color-text-primary) border-(--color-accent)"
                   : "text-(--color-text-tertiary) border-transparent hover:text-(--color-text-secondary)"
               }`}
             >
               {t.label}
-              {t.binding && (
-                <span className="ml-1 text-(--color-text-tertiary)">· {t.binding.key}</span>
-              )}
             </button>
           ))}
         </div>
@@ -598,7 +606,9 @@ export function IssuesViewer({
         {/* Issue count + refresh */}
         <div className="flex items-center gap-2 px-3 text-xs text-(--color-text-secondary)">
           <span className="font-medium whitespace-nowrap" data-testid="issue-count">
-            {!configured ? (
+            {declarationsPending ? (
+              ""
+            ) : !configured ? (
               "Not connected"
             ) : filterActive ? (
               <>
@@ -693,7 +703,11 @@ export function IssuesViewer({
           </div>
         )}
 
-        {!configured ? (
+        {declarationsPending ? (
+          <div className="flex items-center justify-center h-full text-(--color-text-tertiary) text-sm">
+            Loading issues…
+          </div>
+        ) : !configured ? (
           isGitHubTracker(activeTracker) ? (
             // GitHub needs no connect step — it reuses ShipIt's GitHub auth and
             // scopes to the active session's repo. So "not configured" means

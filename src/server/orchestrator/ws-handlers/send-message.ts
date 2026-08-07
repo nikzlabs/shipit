@@ -3,10 +3,13 @@ import type { WsClientMessage, ImageAttachment, FileAttachment, FileContextRef, 
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { validateImages, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
 import { graduateSession } from "../services/graduate-session.js";
+import { pinIssueSeededSession } from "../services/issue-seeded-session.js";
+import { markIssueStartedFromSeed } from "../issue-lifecycle.js";
 import { recordSteeredMessage, persistTurnInProgress } from "./agent-listeners.js";
 import { runAgentWithMessage, saveImagesToUploadsDir, assembleAgentPrompt } from "./agent-execution.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { shouldSteerMessage } from "../dispatch-steering.js";
+import { resetSubAgentSpawnBudget } from "../session-runner.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { agentAuthenticationError, isAgentAuthenticated } from "../services/agent-auth-gate.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
@@ -218,6 +221,9 @@ export async function handleSendMessage(
             userText: msg.text,
             fileContext,
             imageContext,
+            // docs/144 — a dictated message steered into a running turn needs
+            // the transcription hint just as much as one that starts a turn.
+            dictated: msg.dictated,
           });
           // docs/138 + docs/140 — the streaming CLI keeps its spawn-time
           // `--permission-mode` for life, so a steered message inherits plan
@@ -236,6 +242,30 @@ export async function handleSendMessage(
             runnerForQueue.appliedPermissionMode = msg.permissionMode;
           }
           steeringAgent.sendUserMessage(steerPrompt);
+
+          // docs/144 — a steered message is a NEW human instruction, so it
+          // refills the sub-agent spawn budget the way starting a turn does.
+          //
+          // Without this the budget has no refill point on this path at all:
+          // steering deliberately does not start an orchestrator turn, so
+          // `resetRunnerTurnState` never runs, and every message the user types
+          // while the agent is mid-turn keeps drawing on the budget of whichever
+          // turn happened to be running. A session where the agent is usually
+          // busy — the ordinary shape once it backgrounds consults, which is
+          // exactly what ShipIt's guidance tells it to do — then exhausts the
+          // cap and refuses every later `shipit agent run` with "cap reached for
+          // this turn", on a turn the user experiences as brand new.
+          //
+          // Only the budget is refilled, never `resetRunnerTurnState`: clearing
+          // the accumulator mid-turn would destroy the running turn's chat
+          // history (docs/237).
+          //
+          // The trigger is deliberately a WS message from a browser client — a
+          // human keystroke, which no agent can emit — so this cannot weaken the
+          // forgery-resistant fan-out bound (docs/144 §5). Programmatic steers
+          // (`trySteerDispatch`: parent→child messages, agent-interface pages,
+          // CI) are agent-reachable and deliberately do NOT refill.
+          resetSubAgentSpawnBudget(runnerForQueue);
 
           // Shapes match PersistedMessage so the same payload feeds chat
           // history persistence and the message_steered broadcast.
@@ -316,6 +346,8 @@ export async function handleSendMessage(
         systemTurn: undefined,
         onTurnComplete: undefined,
         deliveryId: undefined,
+        // docs/144 — rides the queue so the hint survives the drain.
+        dictated: msg.dictated,
       }));
       return;
     }
@@ -413,6 +445,19 @@ export async function handleSendMessage(
     // not inline setWarm / track / setBranchRenamed / scheduleSessionNaming /
     // repoStore.touch / sseBroadcast("session_list") here.
     if (session?.warm) {
+      // SHI-320 — this message is the first one of a session the Issues tab
+      // started from an issue, so the issue reaches ShipIt here rather than at
+      // creation. Pin the branch to the pointer (docs/248 req 22) BEFORE
+      // graduating: the pins are what stop AI naming from deriving a branch
+      // slug from this very text, which opens with the issue's title.
+      const issuePins = msg.issueRef
+        ? await pinIssueSeededSession(
+          { sessionManager: ctx.sessionManager, createGitManager: ctx.createGitManager },
+          effectiveSessionId,
+          msg.issueRef,
+        )
+        : undefined;
+
       graduateSession(
         {
           sessionManager: ctx.sessionManager,
@@ -430,8 +475,30 @@ export async function handleSendMessage(
           sessionId: effectiveSessionId,
           userText,
           agentId: session.agentId ?? ctx.getActiveAgentId(),
+          ...(issuePins ? { explicitBranch: issuePins.branch, explicitTitle: issuePins.title } : {}),
         },
       );
+
+      // SHI-320 / docs/194 — seed path → started. The headless route fires this
+      // at creation from the same pointer; the in-app path's "creation" is this
+      // first message, so it fires here. Fire-and-forget and fully best-effort:
+      // a tracker that isn't connected must never delay or fail the turn.
+      if (msg.issueRef) {
+        void markIssueStartedFromSeed(
+          {
+            credentialStore: ctx.credentialStore,
+            ...(ctx.trackerFetchImpl ? { trackerFetchImpl: ctx.trackerFetchImpl } : {}),
+            githubAuthManager: ctx.githubAuthManager,
+            sessionManager: ctx.sessionManager,
+            chatHistoryManager: ctx.chatHistoryManager,
+            runnerRegistry: ctx.getRunnerRegistry(),
+          },
+          effectiveSessionId,
+          msg.issueRef,
+        ).catch((err: unknown) => {
+          console.warn("[send-message] seed 'started' failed:", err);
+        });
+      }
 
       // Warm-graduation is the only surface that doesn't reach graduation via
       // `claimSessionService.claim`, so the warm pool's single warm clone was
@@ -490,6 +557,7 @@ export async function handleSendMessage(
     uploadPaths,
     ...(msg.userReview ? { userReview: msg.userReview } : {}),
     ...(msg.resetMergedBranch !== undefined ? { resetMergedBranch: msg.resetMergedBranch } : {}),
+    ...(msg.dictated ? { dictated: true } : {}),
     compact: isCompactRequest,
   });
 }
@@ -619,6 +687,9 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     validatedFiles: [],
     ...(agentSessionId !== undefined ? { agentSessionId } : {}),
     ...(capturedPermissionMode !== undefined ? { permissionMode: capturedPermissionMode } : {}),
+    // docs/144 — an "Other" answer dictated into the question card is a
+    // transcript like any other; the answer IS the next turn's prompt.
+    ...(msg.dictated ? { dictated: true } : {}),
     isNewSession: false,
   });
 }

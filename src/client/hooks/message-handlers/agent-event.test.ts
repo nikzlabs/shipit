@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useSessionStore } from "../../stores/session-store.js";
 import { handleAgentEvent, CLIENT_CONTENT_CAP } from "./agent-event.js";
+import { parseContentForImages } from "../../components/ToolResult.js";
 import type { HandlerContext } from "./types.js";
 import type { WsAgentEvent } from "../../../server/shared/types.js";
 import type { ChatMessage } from "../../components/MessageList.js";
@@ -51,6 +52,68 @@ describe("handleAgentEvent — card carrier message is never a merge target (SHI
     // The replayed assistant content landed in its own message, not folded into
     // (and erasing) the card.
     expect(messages.some((m) => m.text === "running the command")).toBe(true);
+  });
+
+  // Same bug class, one class of message wider. A system notice (docs/138 —
+  // account failover, guarded-mode warning, pre-turn-reset skip) is a
+  // `notice: true` flag rather than a card payload, so it was outside CARD_MESSAGE_FIELDS
+  // and the guard above missed it. Every `emitNoticeInTurn` fires at turn start
+  // with zero assistant groups recorded, so a viewer attaching before the
+  // agent's first token gets a `turn_snapshot` whose only row is the notice,
+  // marked `streaming`. The next `agent_assistant` merged into it: the muted
+  // panel became plain assistant text with the agent's first paragraph
+  // concatenated straight onto it, no separating space
+  // ("…continuing on Claude1.I agree — …"). Persistence was fine, so a reload
+  // repaired it — live, it stayed broken for the rest of the turn.
+  it("does not fold agent text into a streaming notice row", () => {
+    const noticeMsg = {
+      role: "assistant",
+      text: "Claude2 reached your usage cutoff — continuing this session on Claude1.",
+      streaming: true,
+      notice: true,
+      noticeLevel: "warn",
+      noticeId: "failover-acct_c45d897b",
+    } as unknown as ChatMessage;
+    useSessionStore.setState({ messages: [noticeMsg] });
+
+    handleAgentEvent(ctx, assistantEvent("I agree — 5b is the right one."));
+
+    const { messages } = useSessionStore.getState();
+    // The regression signature is the two texts ending up in one `text` field.
+    expect(messages).toHaveLength(2);
+    expect(messages.some((m) => m.text.includes("Claude1.I agree"))).toBe(false);
+
+    const notice = messages[0];
+    expect(notice.notice).toBe(true);
+    expect(notice.noticeLevel).toBe("warn");
+    expect(notice.noticeId).toBe("failover-acct_c45d897b");
+    expect(notice.text).toBe("Claude2 reached your usage cutoff — continuing this session on Claude1.");
+    expect(notice.streaming).toBe(false);
+
+    expect(messages[1].text).toBe("I agree — 5b is the right one.");
+    expect(messages[1].notice).toBeUndefined();
+  });
+
+  // The `forceMerge` branch has its own copy of the terminal-entry condition, so
+  // a standalone tool arriving on the heels of a notice must not merge either.
+  it("does not fold a standalone tool call into a streaming notice row", () => {
+    useSessionStore.setState({
+      messages: [{
+        role: "assistant",
+        text: "Guarded mode is unavailable; running unguarded.",
+        streaming: true,
+        notice: true,
+        noticeLevel: "warn",
+      } as unknown as ChatMessage],
+    });
+
+    handleAgentEvent(ctx, assistantEvent("", [{ id: "tu-plan", name: "ExitPlanMode", input: {} }]));
+
+    const { messages } = useSessionStore.getState();
+    expect(messages).toHaveLength(2);
+    expect(messages[0].notice).toBe(true);
+    expect(messages[0].toolUse ?? []).toHaveLength(0);
+    expect(messages[1].toolUse?.[0].name).toBe("ExitPlanMode");
   });
 
   it("still merges consecutive streaming assistant text on a normal (non-card) bubble", () => {
@@ -244,6 +307,111 @@ describe("what the cap must NOT do (docs/244 round-3)", () => {
     expect(result.content.length).toBeLessThanOrEqual(CLIENT_CONTENT_CAP);
     expect(result.truncated).toBeUndefined();
     expect(result.totalLines).toBeUndefined();
+  });
+});
+
+describe("the cap never breaks an MCP content-block array (docs/244)", () => {
+  /**
+   * A Playwright screenshot arrives as a `JSON.stringify`'d array of
+   * `{type:"text"}` / `{type:"image"}` blocks, which `parseContentForImages`
+   * re-parses to draw the image. It is ONE line, so the raw cap used to cut it
+   * mid-array — the JSON stopped parsing, the parse returned null, and the
+   * tool-call modal drew the whole payload, base64 included, as a wall of raw
+   * JSON where the screenshot should be.
+   *
+   * The serve-path projection substitutes an `/images/:hash` URL and never has
+   * this problem; what reaches the cap is the class the projection deliberately
+   * leaves inline — a nested subagent's screenshot above all, since nothing
+   * strips it until its row is committed. So this is exercised at the nesting
+   * the bug was reported at, and asserted through the same function the modal
+   * calls.
+   */
+  const bigScreenshot = JSON.stringify([
+    { type: "text", text: "### Result\n- [Screenshot of viewport](../tmp/.playwright-mcp/page.png)" },
+    { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo".concat("A".repeat(CLIENT_CONTENT_CAP + 400_000)) } },
+  ]);
+
+  const nestedScreenshot = (): WsAgentEvent => ({
+    type: "agent_event",
+    event: {
+      type: "agent_tool_result",
+      parentToolUseId: "outer",
+      content: [{ type: "tool_result", tool_use_id: "shot", content: bigScreenshot }],
+    },
+  } as unknown as WsAgentEvent);
+
+  const findResult = (id: string) =>
+    useSessionStore.getState().messages
+      .flatMap((m) => [...(m.toolResults ?? []), ...(m.subagentEvents ?? []).flatMap((e) => e.kind === "tool_result" ? e.toolResults : [])])
+      .find((r) => r.toolUseId === id);
+
+  const seedSubagentScreenshot = () => {
+    handleAgentEvent(ctx, assistantEvent("", [{ id: "outer", name: "Task", input: { prompt: "check the UI" } }]));
+    handleAgentEvent(ctx, {
+      type: "agent_event",
+      event: {
+        type: "agent_assistant",
+        parentToolUseId: "outer",
+        content: [{ type: "tool_use", id: "shot", name: "mcp__playwright__browser_take_screenshot", input: { type: "png" } }],
+      },
+    } as unknown as WsAgentEvent);
+    handleAgentEvent(ctx, nestedScreenshot());
+  };
+
+  it("keeps an over-cap screenshot renderable as an image", () => {
+    expect(bigScreenshot.length).toBeGreaterThan(CLIENT_CONTENT_CAP);
+    seedSubagentScreenshot();
+
+    const parsed = parseContentForImages(findResult("shot")!.content);
+    expect(parsed).toBeTruthy();
+    expect(parsed!.images).toHaveLength(1);
+    // The image is kept WHOLE: there is no URL to substitute for a body whose
+    // row isn't committed, so a clipped payload would be an unrenderable image
+    // rather than a smaller one.
+    expect(parsed!.images[0].data).toContain("iVBORw0KGgo");
+  });
+
+  it("does not advertise a fetch when nothing was actually removed", () => {
+    seedSubagentScreenshot();
+    // Short text, image kept — the body is complete, so marking it truncated
+    // would send the modal after a body it already has (and, nested, would
+    // promise a row that isn't on disk).
+    expect(findResult("shot")!.truncated).toBeUndefined();
+  });
+
+  it("still bounds the TEXT inside a block array", () => {
+    const chatty = JSON.stringify([
+      { type: "text", text: "y".repeat(CLIENT_CONTENT_CAP + 5_000) },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo" } },
+    ]);
+    handleAgentEvent(ctx, assistantEvent("", [{ id: "shot2", name: "mcp__playwright__browser_take_screenshot", input: {} }]));
+    handleAgentEvent(ctx, {
+      type: "agent_event",
+      event: { type: "agent_tool_result", content: [{ type: "tool_result", tool_use_id: "shot2", content: chatty }] },
+    } as unknown as WsAgentEvent);
+
+    const result = findResult("shot2")!;
+    const parsed = parseContentForImages(result.content);
+    expect(parsed!.text.length).toBeLessThanOrEqual(CLIENT_CONTENT_CAP);
+    expect(parsed!.images).toHaveLength(1);
+    // Text WAS dropped and this one is top-level, so the modal is told to fetch.
+    expect(result.truncated).toBe(true);
+  });
+
+  it("leaves a non-content-block JSON array on the raw cap", () => {
+    // A tool returning an ordinary JSON array has no text/image blocks to
+    // shorten, so the structural path must decline and the byte bound stand.
+    const data = JSON.stringify(Array.from({ length: 40_000 }, (_, i) => ({ id: i, value: "z".repeat(40) })));
+    expect(data.length).toBeGreaterThan(CLIENT_CONTENT_CAP);
+    handleAgentEvent(ctx, assistantEvent("", [{ id: "tu-json", name: "Bash", input: { command: "cat data.json" } }]));
+    handleAgentEvent(ctx, {
+      type: "agent_event",
+      event: { type: "agent_tool_result", content: [{ type: "tool_result", tool_use_id: "tu-json", content: data }] },
+    } as unknown as WsAgentEvent);
+
+    const result = findResult("tu-json")!;
+    expect(result.content.length).toBeLessThanOrEqual(CLIENT_CONTENT_CAP);
+    expect(result.truncated).toBe(true);
   });
 });
 

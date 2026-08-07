@@ -829,6 +829,44 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN secret_block TEXT");
   },
+  // docs/221 — a one-shot `[System] …` line the session's next interactive agent
+  // turn prepends to its prompt, recorded by a workspace change that happened
+  // OUTSIDE any turn (the manual "Sync with <base>" rebase / merged-branch
+  // reset). Persisted rather than kept on the runner because the runner dies
+  // with the idle container, while the rewritten branch does not — and the agent
+  // resumes with a conversation that predates the rewrite. Read-and-cleared in
+  // one transaction, so it is delivered exactly once. NULL = nothing owed.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN pending_agent_notice TEXT");
+  },
+  // docs/254 — per-repo identity color for the sidebar's group edge. Stores the
+  // PALETTE INDEX, not a hex, so each theme maps it to its own light/dark value
+  // (`--repo-color-N` in client/index.css) instead of pinning one color that can
+  // only look right on half the themes.
+  //
+  // Existing rows are backfilled here rather than left NULL: the edge is the
+  // whole feature, so a workspace that upgrades into it with every repo
+  // uncolored would see nothing at all. Backfill walks rows in the sidebar's own
+  // display order and hands out distinct low indices, which is exactly what
+  // `pickRepoColorIndex` would have produced had the repos been added under this
+  // build — so an upgraded workspace and a fresh one agree.
+  (db) => {
+    db.exec("ALTER TABLE repos ADD COLUMN color_index INTEGER");
+    const rows = db
+      .prepare(
+        `SELECT url FROM repos
+         ORDER BY CASE WHEN display_order IS NULL THEN 1 ELSE 0 END,
+                  display_order ASC,
+                  last_used_at DESC,
+                  rowid DESC`,
+      )
+      .all() as { url: string }[];
+    const update = db.prepare("UPDATE repos SET color_index = ? WHERE url = ?");
+    // 16 = REPO_COLOR_COUNT. Inlined rather than imported: a migration must keep
+    // reproducing the same result forever, so it can't follow a constant that
+    // later changes — a bigger palette must not retroactively recolor old repos.
+    rows.forEach((row, i) => update.run(i % 16, row.url));
+  },
 ];
 
 export class DatabaseManager {

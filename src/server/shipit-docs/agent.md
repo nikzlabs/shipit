@@ -198,7 +198,10 @@ id or a bad flag, since neither condition can ever clear.
   Multi-agent sessions**. Otherwise the command returns a clear "disabled" error.
 - **No recursion.** A spawned sub-agent cannot itself spawn a sub-agent.
 - **At most 3 spawns per turn.** Enough for "review with both other models" or a
-  couple of delegations. A 4th returns an error without spawning.
+  couple of delegations. A 4th returns an error without spawning. The budget
+  refills whenever a new instruction from the user arrives — a new turn, or a
+  message they type while you are still working — so a long session never runs
+  out permanently. A background job finishing does not refill it.
 - **Bounded run.** Each spawn has a wall-clock cap (~30 min) and an output cap; an
   over-limit run is truncated and flagged.
 - **Cancel is symmetric.** If the user cancels your turn while a sub-agent is

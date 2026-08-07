@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Preview toolbar — current path display</title>
+<style>
+  :root {
+    --color-bg-primary: #030712;
+    --color-bg-secondary: #111827;
+    --color-bg-tertiary: #1f2937;
+    --color-bg-hover: rgba(255, 255, 255, 0.05);
+    --color-text-primary: #f3f4f6;
+    --color-text-secondary: #9ca3af;
+    --color-text-tertiary: #6b7280;
+    --color-border-secondary: #374151;
+    --color-accent: #3b82f6;
+    --color-success: #22c55e;
+    --color-autofix: #fb923c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 40px 32px 80px;
+    background: var(--color-bg-primary);
+    color: var(--color-text-primary);
+    font: 14px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .sub { color: var(--color-text-secondary); margin: 0 0 40px; font-size: 13px; max-width: 70ch; }
+  h2 {
+    font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--color-text-tertiary); margin: 44px 0 6px;
+    border-top: 1px solid var(--color-border-secondary); padding-top: 20px;
+  }
+  h2:first-of-type { border-top: 0; padding-top: 0; }
+  .note { color: var(--color-text-secondary); font-size: 13px; margin: 0 0 18px; max-width: 74ch; }
+  .caption {
+    font-size: 12px; color: var(--color-text-tertiary); margin: 0 0 7px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .caption b { color: var(--color-text-secondary); font-weight: 600; }
+  .pick {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--color-success); border: 1px solid var(--color-success);
+    border-radius: 999px; padding: 1px 7px;
+  }
+  .panel {
+    border: 1px solid var(--color-border-secondary); border-radius: 8px;
+    overflow: hidden; margin-bottom: 26px; background: var(--color-bg-primary);
+  }
+  .panel-body {
+    height: 54px; background: var(--color-bg-primary);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--color-text-tertiary); font-size: 11px; font-style: italic;
+  }
+
+  /* ---- the toolbar itself: mirrors PreviewToolbar.tsx ---- */
+  .bar {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 6px 12px;                      /* px-3 py-1.5 */
+    background: var(--color-bg-secondary);
+    border-bottom: 1px solid var(--color-border-secondary);
+    font-size: 12px;                        /* text-xs */
+    color: var(--color-text-secondary);
+    min-width: 0;
+  }
+  .grp { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .grp-left { flex: 0 1 auto; }
+  .grp-right { flex: none; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-success); flex: none; }
+  .port { display: flex; align-items: center; gap: 6px; color: var(--color-text-primary); white-space: nowrap; }
+  .sep { color: var(--color-border-secondary); flex: none; }
+  .device { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+  .btn {
+    width: 28px; height: 28px; flex: none; border-radius: 5px;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--color-text-secondary);
+  }
+  .btn.hov { background: var(--color-bg-hover); color: var(--color-text-primary); }
+  .toggle { display: flex; align-items: center; gap: 5px; white-space: nowrap; flex: none; }
+  .track { width: 28px; height: 16px; border-radius: 999px; background: var(--color-border-secondary); position: relative; flex: none; }
+  .knob { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; }
+
+  /* ---- the new bit: the path chip ----
+     `.path` is the region that claims the space; `.chip` is the thing you can
+     see. Keeping them separate matters: if the hover background sat on the
+     full-width region it would read as a giant empty input box. */
+  .path { display: flex; min-width: 0; align-items: center; gap: 4px; }
+  /* Its own flexible region — claims the slack between the two groups — but the
+     content is LEFT-aligned, so the path starts at a fixed, predictable x
+     position instead of drifting as its length changes. */
+  .path.center { flex: 1 1 auto; margin: 0 4px 0 0; justify-content: flex-start; }
+  .path.inline { flex: 0 1 auto; justify-content: flex-start; }
+  .chip {
+    display: flex; align-items: baseline; min-width: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px; letter-spacing: -0.01em;
+    padding: 2px 7px; border-radius: 5px;
+    border: 1px solid transparent;
+  }
+  /* query gives up space first, path keeps its ground */
+  .chip .p { color: var(--color-text-primary); flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip .q { color: var(--color-text-tertiary); flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip.hov { background: var(--color-bg-tertiary); border-color: var(--color-border-secondary); cursor: pointer; }
+  .chip.muted .p { color: var(--color-text-tertiary); }
+
+  /* naive alternative: one string, ellipsis at the tail */
+  .chip.naive {
+    display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: var(--color-text-primary); min-width: 0;
+  }
+
+  .copy { margin-left: 6px; color: var(--color-text-tertiary); flex: none; align-self: center; }
+
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 900px) { .row2 { grid-template-columns: 1fr; } }
+  .narrow { max-width: 430px; }
+  ul.legend { color: var(--color-text-secondary); font-size: 13px; margin: 0 0 18px; padding-left: 18px; max-width: 74ch; }
+  ul.legend li { margin-bottom: 5px; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+    background: var(--color-bg-tertiary); padding: 1px 5px; border-radius: 4px; color: var(--color-text-primary);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Preview toolbar — showing the current path</h1>
+  <p class="sub">
+    Path + query string only, no host or port. The host is noise: it's a generated
+    subdomain like <code>a3f9c2--5173.localhost</code> that tells the user nothing.
+    The route is the part that answers "where am I, and did the refresh keep me there?"
+  </p>
+
+  <h2>1 · Placement</h2>
+  <p class="note">
+    The toolbar is a <code>justify-between</code> row that's already carrying a port
+    selector, a device selector, an auto-fix toggle and three buttons.
+  </p>
+
+  <div class="caption"><b>Its own region, left-aligned</b> <span class="pick">Chosen</span></div>
+  <p class="note" style="margin-bottom:8px">
+    The path claims the slack between the two existing groups, so it truncates on its own
+    terms and never squeezes the port or device selectors. But the content is
+    <em>left</em>-aligned, not centred: the path starts at a fixed x position, so it stays
+    where your eye last found it instead of sliding around as the route changes length.
+  </p>
+  <div class="panel">
+    <div class="bar">
+      <div class="grp grp-left">
+        <span class="port"><span class="dot"></span>dev<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="sep">|</span>
+        <span class="device">Responsive<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </div>
+      <div class="path center"><span class="sep">|</span><span class="chip"><span class="p">/settings/secrets</span></span></div>
+      <div class="grp grp-right">
+        <span class="toggle"><span class="track"><span class="knob"></span></span>Auto-fix</span>
+        <span class="btn"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13 8H3.5M7 4L3 8l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="btn"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13.5 8a5.5 5.5 0 11-1.7-3.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M13.5 2.5V5H11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="btn"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M9.5 2.5H13V6M13 2.5L7.5 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 9.5V13H3V4h3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </div>
+    </div>
+    <div class="panel-body">preview iframe</div>
+  </div>
+
+  <div class="caption"><b>Considered — inline inside the left group</b></div>
+  <p class="note" style="margin-bottom:8px">
+    Looks nearly identical at rest, which is why it's worth naming the difference: here the
+    path is a member of the left group, so it fights the device selector for width and
+    starts truncating early. Above, it has its own region and only gives up space when the
+    panel genuinely runs out.
+  </p>
+  <div class="panel">
+    <div class="bar">
+      <div class="grp grp-left">
+        <span class="port"><span class="dot"></span>dev<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <div class="path inline"><span class="chip"><span class="p">/settings/secrets</span></span></div>
+        <span class="sep">|</span>
+        <span class="device">Responsive<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </div>
+      <div class="grp grp-right">
+        <span class="toggle"><span class="track"><span class="knob"></span></span>Auto-fix</span>
+        <span class="btn"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13 8H3.5M7 4L3 8l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="btn"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13.5 8a5.5 5.5 0 11-1.7-3.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M13.5 2.5V5H11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="btn"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M9.5 2.5H13V6M13 2.5L7.5 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 9.5V13H3V4h3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </div>
+    </div>
+    <div class="panel-body">preview iframe</div>
+  </div>
+
+  <h2>2 · Long paths — what gets sacrificed</h2>
+  <p class="note">
+    Query strings are long and the route is what you actually read. So the path holds its
+    ground and the <em>query</em> gives up space first, rendered dimmer as a second-class
+    citizen. Compare with the naive single-string ellipsis, which eats the route.
+  </p>
+
+  <div class="row2">
+    <div>
+      <div class="caption"><b>Query truncates first</b> <span class="pick">Recommended</span></div>
+      <div class="panel">
+        <div class="bar">
+          <div class="grp grp-left"><span class="port"><span class="dot"></span>dev</span></div>
+          <div class="path center"><span class="sep">|</span><span class="chip"><span class="p">/orders/8842/line-items</span><span class="q">?status=pending&amp;sort=created_at&amp;dir=desc</span></span></div>
+          <div class="grp grp-right">
+            <span class="btn"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13.5 8a5.5 5.5 0 11-1.7-3.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M13.5 2.5V5H11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          </div>
+        </div>
+        <div class="panel-body">route stays readable</div>
+      </div>
+    </div>
+    <div>
+      <div class="caption"><b>Naive tail ellipsis</b></div>
+      <div class="panel">
+        <div class="bar">
+          <div class="grp grp-left"><span class="port"><span class="dot"></span>dev</span></div>
+          <div class="path center"><span class="sep">|</span><span class="chip naive">/orders/8842/line-items?status=pending&amp;sort=created_at&amp;dir=desc</span></div>
+          <div class="grp grp-right">
+            <span class="btn"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13.5 8a5.5 5.5 0 11-1.7-3.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M13.5 2.5V5H11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          </div>
+        </div>
+        <div class="panel-body">fine here — dies when narrow</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note">Same two, in a narrow panel — this is where they diverge:</p>
+  <div class="row2">
+    <div>
+      <div class="caption"><b>Query truncates first</b></div>
+      <div class="panel narrow">
+        <div class="bar">
+          <div class="grp grp-left"><span class="port"><span class="dot"></span>dev</span></div>
+          <div class="path center"><span class="sep">|</span><span class="chip"><span class="p">/orders/8842/line-items</span><span class="q">?status=pend…</span></span></div>
+          <div class="grp grp-right">
+            <span class="btn"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13.5 8a5.5 5.5 0 11-1.7-3.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M13.5 2.5V5H11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          </div>
+        </div>
+        <div class="panel-body">still tells you where you are</div>
+      </div>
+    </div>
+    <div>
+      <div class="caption"><b>Naive tail ellipsis</b></div>
+      <div class="panel narrow">
+        <div class="bar">
+          <div class="grp grp-left"><span class="port"><span class="dot"></span>dev</span></div>
+          <div class="path center"><span class="sep">|</span><span class="chip naive">/orders/8842/line-i…</span></div>
+          <div class="grp grp-right">
+            <span class="btn"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13.5 8a5.5 5.5 0 11-1.7-3.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M13.5 2.5V5H11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          </div>
+        </div>
+        <div class="panel-body">query invisible, route cut</div>
+      </div>
+    </div>
+  </div>
+
+  <h2>3 · States</h2>
+  <ul class="legend">
+    <li><b>Root</b> — plain <code>/</code>, dimmed. Present but not shouting.</li>
+    <li><b>Unknown</b> — nothing rendered at all. A non-proxied local preview has no injected
+        script to report from, and an empty box would read as "the page has no URL".</li>
+    <li><b>Hover</b> — full URL <em>including</em> host in the tooltip, click copies it.
+        The host isn't gone, it's just not on screen by default.</li>
+  </ul>
+
+  <div class="caption"><b>Root path</b></div>
+  <div class="panel">
+    <div class="bar">
+      <div class="grp grp-left"><span class="port"><span class="dot"></span>dev</span><span class="sep">|</span><span class="device">Responsive</span></div>
+      <div class="path center"><span class="sep">|</span><span class="chip muted"><span class="p">/</span></span></div>
+      <div class="grp grp-right">
+        <span class="toggle"><span class="track"><span class="knob"></span></span>Auto-fix</span>
+        <span class="btn"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13.5 8a5.5 5.5 0 11-1.7-3.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M13.5 2.5V5H11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </div>
+    </div>
+    <div class="panel-body">preview iframe</div>
+  </div>
+
+  <div class="caption"><b>Path unknown — no chip, layout unchanged</b></div>
+  <div class="panel">
+    <div class="bar">
+      <div class="grp grp-left"><span class="port"><span class="dot"></span>dev</span><span class="sep">|</span><span class="device">Responsive</span></div>
+      <div class="path center"></div>
+      <div class="grp grp-right">
+        <span class="toggle"><span class="track"><span class="knob"></span></span>Auto-fix</span>
+        <span class="btn"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13.5 8a5.5 5.5 0 11-1.7-3.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M13.5 2.5V5H11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </div>
+    </div>
+    <div class="panel-body">preview iframe</div>
+  </div>
+
+  <div class="caption"><b>Hover — click to copy the full URL</b></div>
+  <div class="panel">
+    <div class="bar">
+      <div class="grp grp-left"><span class="port"><span class="dot"></span>dev</span><span class="sep">|</span><span class="device">Responsive</span></div>
+      <div class="path center"><span class="sep">|</span><span class="chip hov" title="http://a3f9c2--5173.localhost/settings/secrets?tab=env">
+        <span class="p">/settings/secrets</span><span class="q">?tab=env</span>
+        <span class="copy"><svg width="11" height="11" viewBox="0 0 16 16" fill="none"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M10.5 5.5V4A1.5 1.5 0 009 2.5H4A1.5 1.5 0 002.5 4v5A1.5 1.5 0 004 10.5h1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span>
+      </span></div>
+      <div class="grp grp-right">
+        <span class="toggle"><span class="track"><span class="knob"></span></span>Auto-fix</span>
+        <span class="btn hov"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13.5 8a5.5 5.5 0 11-1.7-3.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M13.5 2.5V5H11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </div>
+    </div>
+    <div class="panel-body">preview iframe</div>
+  </div>
+
+  <h2>4 · Where the value comes from</h2>
+  <p class="note">
+    The iframe is cross-origin, so the parent can't read its location — the path has to be
+    reported <em>out</em> of the page by the injected preview script, over the same
+    <code>shipit-preview</code> channel that already sends <code>loaded</code>.
+    A load-time read alone would go stale the moment the user clicks a link in an SPA, so
+    the script also has to patch <code>pushState</code>/<code>replaceState</code> and listen
+    for <code>popstate</code>. That's the one piece of real work here; the UI above is the easy half.
+  </p>
+
+</div>
+</body>
+</html>

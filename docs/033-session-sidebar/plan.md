@@ -192,3 +192,110 @@ Remove `SessionSelector.tsx` and `SessionSelector.test.tsx` after sidebar is ver
 2. `npm test` — all tests pass
 3. `npm run lint` — clean
 4. Manual: sidebar visible with grouped sessions, switch/create/rename/delete work, collapse/expand animates, mobile slide-over works
+
+## Visual reference — repo group separation (open)
+
+The rail now routinely holds 4+ repos, and the groups blend into each other: the
+repo header, `New session`, `PINNED`, `RECENTLY RESOLVED` and the session rows
+all sit on `--color-bg-primary`, separated only by a font-weight bump on the
+repo name. The strongest horizontal lines in the rail (the pinned divider, the
+sub-section labels) are *intra*-group, so they out-rank the *inter*-group
+boundary they're competing with.
+
+- [`mocks/repo-separation.html`](mocks/repo-separation.html) — ten treatments,
+  each rendered in app context. Toggles for warm-light/dark and 4-repo/8-repo.
+- [`mocks/repo-separation-cards.html`](mocks/repo-separation-cards.html) — six
+  ways to get card-style containment, since the obvious one doesn't exist here.
+- [`mocks/repo-separation-band.html`](mocks/repo-separation-band.html) — variant
+  4 (the filled header band) worked through in Claude Light and Claude Dark
+  specifically, with live sticky scrolling.
+- [`mocks/repo-separation-spine.html`](mocks/repo-separation-spine.html) — the
+  leading candidate (4e) extended so the per-repo accent edge spans the whole
+  group rather than just the header band. Seven options, both Claude themes,
+  live sticky scrolling, plus dense (8 repos) and collapsed toggles.
+
+### The constraint any variant has to satisfy
+
+**There is no third surface behind the repo groups.** The sidebar rail is
+`--color-bg-primary` (`SessionSidebar.tsx:394`) and the chat panel it butts
+against is `--color-bg-secondary` (`AppLayout.tsx:344`). That's the whole
+hierarchy. So:
+
+- In light themes the sidebar is the **lightest** surface in the app; a card
+  cannot be lighter still. In dark themes it's the **darkest**; a card cannot be
+  darker. Any *fill*-based containment therefore has to move in **opposite
+  directions per theme** — which is why the first draft of the mock looked good
+  in warm-light and inverted in dark.
+- Outline- and edge-based containment sidesteps this entirely: a border behaves
+  identically in both. That's why variants 3 and 10 are now outline-based.
+- Two fill options do exist and are mocked, with their costs:
+  **tinted well** (the *group* recesses to `bg-secondary`, which collides with
+  the current-session row's own tint and forces it up to `bg-tertiary`) and
+  **recessing the rail for real** (the sidebar becomes `bg-secondary`, which
+  makes it match the chat panel and collapses the app's main left/right split to
+  a 1px border).
+- **Elevation-only containment is a non-starter.** A shadow on a `#0a0a0a` rail
+  has nothing to darken, so the treatment vanishes in every dark theme.
+
+No variant is chosen yet; nothing here is implemented.
+
+### What the band variant turned up (Claude Light / Claude Dark)
+
+The Claude palettes are the hard case for any fill-based treatment. Measured
+against the rail (`--color-bg-primary`), the band fills available are:
+
+| Fill | Claude Light | Claude Dark |
+|---|---|---|
+| `--color-bg-secondary` (as specced) | 1.12 : 1 | 1.09 : 1 |
+| `--color-bg-tertiary` | 1.25 : 1 | 1.21 : 1 |
+| `--color-accent-subtle` composited | 1.12 : 1 | 1.23 : 1 |
+
+Three things fall out, all checkable:
+
+1. **In Claude Dark, `--color-border-primary` is `#2e2519` — byte-identical to
+   `--color-bg-tertiary`.** A tertiary band with `border-primary` rules has
+   invisible rules there and visible ones in Claude Light, so the two themes
+   don't match. Rules have to come from `--color-border-secondary`.
+2. **The band as specced is the same fill as the current-session row**
+   (`SessionGroup.tsx:431` also uses `--color-bg-secondary`). At 1.09 : 1 against
+   the rail, header and selection become the same object. A band has to sit at a
+   different rank than the selection.
+3. **A translucent band on a sticky header is a bug.** Every `*-subtle` token is
+   `rgba()`, and the repo header is `position: sticky` (`SessionGroup.tsx:336`),
+   so rows scroll *through* a tinted band rather than under it. Composite the
+   tint over an opaque base — `linear-gradient(tint, tint), var(--color-bg-primary)`
+   keeps the token rather than hardcoding the resulting hex. The mock keeps an
+   uncomposited copy (option 4c-raw) as the visible guard. This applies to any
+   hue-tinted band, including variant 5's spine if it ever moves onto the header.
+
+Contrast ratio is luminance-only, and that matters here: the accent-tinted band
+measures the same 1.12 : 1 as the as-specced one in Claude Light, yet reads far
+more clearly, because it separates by **hue** rather than by lightness. Don't
+pick the band fill off the numbers alone.
+
+### Carrying the accent edge down the whole group
+
+4e puts the per-repo hue on the header band's left border, so it labels the
+*header*. Running the edge the full height of the group makes it label the
+*group*: sessions, the `New session` row, and both sub-section labels all sit
+inside one continuous vertical claim. It also collapses variant 4's band and
+variant 5's spine into a single mechanism doing both jobs, which is a reason to
+prefer it over shipping the two separately.
+
+Implementation constraints found while mocking it:
+
+- **Draw the edge as `border-left` on the group element, not on the header.** The
+  repo header is `position: sticky`, so an edge on `.ghead` visibly breaks at the
+  seam the moment the header pins. On the group it paints behind the pinned band
+  and stays continuous. Variants that need rounding or a gradient can't use a
+  border, so they need an absolutely-positioned pseudo-element with a `z-index`
+  above the sticky header.
+- **A per-repo body wash should use `color-mix`, not `rgba`.**
+  `color-mix(in srgb, var(--accent) 6%, var(--color-bg-primary))` resolves to an
+  *opaque* color, which is what the sticky-header rule above demands, and it
+  derives the tint from the hue variable instead of needing a second pre-tinted
+  token per repo.
+- **Judge it at eight repos, not four.** A 3px colored line per group is the
+  densest ink of any option explored; the failure mode is the rail reading as a
+  barcode, and that only shows up at real repo counts. The mock's dense toggle
+  exists for this.

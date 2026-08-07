@@ -109,6 +109,36 @@ export async function resolveWorkerBaseDigest(docker: Docker, imageName: string)
   }
 }
 
+/**
+ * docs/248 — the Node version baked into the worker image, read from the same
+ * image env as {@link resolveWorkerBaseDigest}.
+ *
+ * The overlay base scope has to know this to decide whether a repo's Node pin
+ * actually changes the runtime. Without it the orchestrator would either share
+ * one base across two Node ABIs (the bug: a base whose native addons were built
+ * under Node 24, mounted into a Node-22 session, where a plain `npm install`
+ * will NOT rebuild an already-present addon) or split the scope for every repo
+ * that merely *has* an `engines.node` field, invalidating most of the fleet.
+ *
+ * The official `node:*` images set `NODE_VERSION`. Returns `""` on any miss;
+ * the caller then errs toward splitting the scope, which costs one cold install
+ * rather than risking an ABI mismatch.
+ */
+export async function resolveWorkerNodeVersion(docker: Docker, imageName: string): Promise<string> {
+  try {
+    const info = await docker.getImage(imageName).inspect();
+    const env = info.Config?.Env ?? [];
+    const entry = env.find((e) => e.startsWith("NODE_VERSION="));
+    return entry ? entry.slice("NODE_VERSION=".length) : "";
+  } catch (err) {
+    console.warn(
+      `[overlay] could not inspect worker image ${imageName} for its Node version:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return "";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Overlay spec resolution (docs/183)
 // ---------------------------------------------------------------------------
@@ -145,7 +175,7 @@ export async function prepareOverlaySpecs(
     requireProvisioned?: boolean;
   },
 ): Promise<DepDirOverlaySpec[]> {
-  const scope = resolveOverlayScope(opts.session);
+  const scope = resolveOverlayScope(opts.session, process.env, opts.workspaceDir);
   if (!scope) return [];
   if (!deps.workspaceVolume) return [];
   // docs/197 Part 2 — pnpm repos do NOT overlay `node_modules`: pnpm's

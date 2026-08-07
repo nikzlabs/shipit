@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHeadlessSession, handleSessionResume, resumeSessionInternal, startQuickSessionInBackground } from "./session-actions.js";
 import { useSessionStore } from "../session-store.js";
 import { useUiStore } from "../ui-store.js";
+import { useIssuesStore } from "../issues-store.js";
+import { useRepoStore } from "../repo-store.js";
 import type { SessionInfo } from "../../../server/shared/types.js";
 
 function session(id: string, title = id): SessionInfo {
@@ -165,6 +167,65 @@ describe("resumeSessionInternal", () => {
     resumeSessionInternal("session-b");
 
     expect(useUiStore.getState().mobilePanel).toBe("chat");
+  });
+
+  /**
+   * SHI-325 — the issues store is repo-scoped, not session-scoped: it's dropped
+   * when the incoming session belongs to another repository (whose `shipit.yaml`
+   * declares a different tracker set), and left alone within one repository.
+   */
+  describe("issues-tab repo scope", () => {
+    const openIssue: Partial<ReturnType<typeof useIssuesStore.getState>> = {
+      repoScope: "https://github.com/acme/app.git",
+      trackers: [{ id: "linear:SHI", kind: "linear", label: "roadmap", configured: true, name: "roadmap" }],
+      selected: { tracker: "linear:SHI", id: "SHI-1", identifier: "SHI-1" },
+    };
+
+    afterEach(() => {
+      useIssuesStore.setState({ repoScope: null, trackers: [] });
+      useIssuesStore.getState().reset();
+      useRepoStore.setState({ activeRepoUrl: undefined });
+    });
+
+    it("drops the open issue when the incoming session is on another repository", () => {
+      useSessionStore.setState({
+        sessionId: "session-a",
+        sessions: [session("session-a"), { ...session("session-b"), remoteUrl: "https://github.com/acme/site.git" }],
+      });
+      useIssuesStore.setState(openIssue);
+
+      resumeSessionInternal("session-b");
+
+      expect(useIssuesStore.getState().selected).toBeNull();
+      expect(useIssuesStore.getState().trackers).toEqual([]);
+      expect(useIssuesStore.getState().repoScope).toBe("https://github.com/acme/site.git");
+    });
+
+    it("keeps the open issue when both sessions are on the same repository", () => {
+      useSessionStore.setState({
+        sessionId: "session-a",
+        sessions: [session("session-a"), session("session-b")],
+      });
+      useIssuesStore.setState(openIssue);
+
+      resumeSessionInternal("session-b");
+
+      expect(useIssuesStore.getState().selected?.identifier).toBe("SHI-1");
+      expect(useIssuesStore.getState().trackers).toHaveLength(1);
+    });
+
+    // The sidebar's active repo is only a guess for a session the list doesn't
+    // know (it doesn't move on a URL-driven switch), so "unknown" fails closed
+    // instead of borrowing it — otherwise the issue survives a repo change.
+    it("drops the open issue when the incoming session isn't in the list yet", () => {
+      useSessionStore.setState({ sessionId: "session-a", sessions: [session("session-a")] });
+      useRepoStore.setState({ activeRepoUrl: "https://github.com/acme/app.git" });
+      useIssuesStore.setState(openIssue);
+
+      resumeSessionInternal("session-b");
+
+      expect(useIssuesStore.getState().selected).toBeNull();
+    });
   });
 });
 

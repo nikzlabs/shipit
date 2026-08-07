@@ -59,6 +59,27 @@ Settled: gating = do-then-surface + undo card; v1 scope = comment + edit + statu
 - [x] Docs: `shipit-docs/issues.md` Labels + Priority sections; per-tracker priority behavior documented
 - [x] Tests: adapter (label resolution, priority mapping, rejections), service (additive edit, undo, gh-priority 422), shim (flag parsing, gh-priority reject, --json), chat-history round-trip
 
+## comment edit (SHI-86)
+See plan.md → *Extension — `comment edit`*. Wanted by docs/247's migration, which
+replays 1,344 comments — the one thing it writes that could not be corrected after.
+- [x] `Tracker.updateComment(issueId, commentId, body)` → `{ comment, previousBody }`; `TrackerPermissionError` (refusal ≠ resolution failure → 403)
+- [x] GitHub: `GET issues/comments/:id` (author + `issue_url` + prior body) → `PATCH issues/comments/:id`; a 404 reads as "no such comment", not "unreachable repo"
+- [x] Linear: one `CommentOwner` query (`viewer` + comment + issue + team) → `commentUpdate`; team guard on the issue leg via `resolveUuid`
+- [x] Guards, all server-side so a direct relay POST can't bypass them: comment belongs to the named issue; author is the identity ShipIt writes as; Linear team ownership
+- [x] `editCommentForTracker` + `undoIssueWrite` `comment-edit` case (restores the previous body)
+- [x] `POST /api/sessions/:id/issue/comment/edit` + worker relay `/agent-ops/issue/comment/edit`
+- [x] Dedup key: the comment id rides in the HASHED CONTENT (`{commentId, body}`), not the `issueId` slot — two edits to different comments on one issue must not collapse
+- [x] Shim `shipit issue comment edit <ref> --comment <id> -b BODY`; `comment delete` rejected with a pointer at edit
+- [x] Card: new `comment-edit` verb + icon + line 2 (the NEW body); `anchorCommentId` threads through
+- [x] Docs: `shipit-docs/issues.md` (incl. the own-authorship rule and no-delete), plan.md, this checklist
+- [x] Tests: adapters (both kinds, all three guards), service (undo restores the body, 403 on someone else's), shim (flags, `--json`, refusal surfaced), relay, chat-history round-trip, replay + distinct-comment idempotency, client card
+
+## Proposed — comment delete
+Still out of scope; see plan.md → *Proposed — deleting a comment*. `comment edit`
+now shows the shape a guard would take, but the undo asymmetry is undecided.
+- [ ] `comment delete` — adapters already have `deleteComment`, reachable today only via a card's Undo. Needs an authorship guard: the id is backend-global, so an unguarded command could delete human discussion the agent never wrote.
+- [ ] Decide how a delete's card presents undo, given that re-posting mints a new id, author and timestamp rather than restoring the original.
+
 ## Deferred
 - [ ] Jira adapter (transitions-based status) when the tracker lands
 - [ ] Tracker-specific richness (projects/cycles/documents) — not via the interface

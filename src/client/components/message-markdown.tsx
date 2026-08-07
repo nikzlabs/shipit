@@ -15,7 +15,8 @@ import { remarkLinkifyPaths } from "../utils/linkify-paths.js";
 import { remarkLinkifyIssues, ISSUE_LINK_SCHEME } from "../utils/linkify-issues.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
-import { useIssuesStore } from "../stores/issues-store.js";
+import { toTrackerDestinations, trackerDestinations, useIssuesStore } from "../stores/issues-store.js";
+import { resolveIssueRef } from "../../server/shared/issue-ref-resolution.js";
 import { useUiStore } from "../stores/ui-store.js";
 
 /**
@@ -32,41 +33,73 @@ function openIssueInPanel(ref: OpenIssueRef): void {
 }
 
 /**
- * An inline Linear-issue badge for a bare key (`TRACKER-43`) the agent mentioned in
- * prose, produced by `remarkLinkifyIssues` (which wraps the key in a sentinel
- * `shipit-issue:KEY` link). Clicking opens the issue in the inline Issues viewer
- * via {@link openIssueInPanel}.
+ * An inline issue badge for a bare reference the agent mentioned in prose —
+ * a bare key (`SHI-43`) or a docs/248 name form (`roadmap#SHI-319`,
+ * `planning#57`) — produced by `remarkLinkifyIssues`, which wraps the whole
+ * token in a sentinel `shipit-issue:TOKEN` link. Clicking opens the issue in the
+ * inline Issues viewer via {@link openIssueInPanel}.
  *
- * The team-key gate lives here, not in the parse: a bare `[A-Z]+-\d+` token
- * collides with everyday strings (`GPT-4`, `UTF-8`), so we only paint a badge
- * when Linear is connected AND the token's team prefix matches the bound team
- * key (`binding.key`, e.g. `TRACKER`). Anything else renders as the raw text — no
- * badge, no dead click. This is the one render-time store read in this module
- * (the link branches read in their click handlers instead); it's a scoped leaf
- * subscription that only re-renders this badge when the tracker set changes, so
- * it doesn't defeat the `MarkdownContent` memo that guards streaming re-parses.
+ * **The gate lives here, not in the parse**, and it is the *shared* resolver
+ * (`resolveIssueRef`) over the repository's declared destinations — the same one
+ * the markdown-href branch, the doc `issue:` chips and the `shipit issue` shim
+ * use. A reference-shaped token collides with everyday prose (`GPT-4`, `UTF-8`,
+ * `PR#3`), so resolution is what decides an issue from noise, and routing it
+ * through the shared implementation is what keeps docs/248 req 11's two
+ * fail-closed rules in one place: a token naming **no** declared destination and
+ * a token matching **more than one** both render as their raw text — never as a
+ * badge pointing at a guess. (An earlier gate here compared the token's team
+ * prefix against the connected Linear workspace's bound team key. That test was
+ * Linear-specific — it had no answer at all for `planning#57` — and reproducing
+ * the ambiguity rule by hand is exactly how docs/248 shipped a bug where a key
+ * declared by two trackers opened the first match.)
+ *
+ * The tracker must also be **connected**: a badge has no external escape hatch
+ * (unlike the href branch, which falls back to a new tab), so a click on a
+ * declared-but-unconfigured tracker would open the panel onto an error. Not
+ * connected → plain text, same as undeclared.
+ *
+ * This is the one render-time store read in this module (the link branches read
+ * in their click handlers instead). It subscribes to the `trackers` array
+ * itself — identity-stable across reads — and derives destinations + resolution
+ * in a `useMemo`, so the badge only re-renders when the tracker set changes and
+ * the `MarkdownContent` memo guarding streaming re-parses is untouched.
  *
  * Styling keeps the badge within the surrounding line box — `text-[0.85em]`
  * with `leading-none` and only horizontal padding — so it reads as a pill
  * without growing the line height (an explicit requirement: badges must not
  * push prose lines apart).
  */
-function IssueBadge({ issueKey, children }: { issueKey: string; children?: React.ReactNode }) {
-  const linear = useIssuesStore((s) => s.trackers.find((t) => t.id === "linear"));
-  const boundKey = linear?.binding?.key?.toUpperCase();
-  const teamPrefix = issueKey.slice(0, issueKey.indexOf("-")).toUpperCase();
-  const isIssue = (linear?.configured ?? false) && !!boundKey && teamPrefix === boundKey;
+function IssueBadge({ token, children }: { token: string; children?: React.ReactNode }) {
+  const trackers = useIssuesStore((s) => s.trackers);
+  const target = useMemo(() => {
+    const resolution = resolveIssueRef(token, toTrackerDestinations(trackers));
+    if (!resolution.ok) return null;
+    const ref = resolution.ref;
+    if (!trackers.find((t) => t.id === ref.tracker)?.configured) return null;
+    return ref;
+  }, [token, trackers]);
 
-  if (!isIssue) return <>{children}</>;
+  // Unresolvable, ambiguous, or not connected — degrade to exactly the original
+  // text (`children` is the leaf the plugin split out, so an inline-code
+  // reference stays monospace and a prose one stays prose).
+  if (!target) return <>{children}</>;
 
   return (
     <button
       type="button"
-      title={`Open ${issueKey}`}
-      onClick={() => openIssueInPanel({ tracker: "linear", id: issueKey, identifier: issueKey })}
+      title={`Open ${target.identifier}`}
+      onClick={() =>
+        openIssueInPanel({
+          tracker: target.tracker,
+          id: target.issueId,
+          // req 15 — the destination's name form, whatever form was written.
+          identifier: target.identifier,
+          ...(target.url ? { url: target.url } : {}),
+        })
+      }
       className="inline-flex items-center align-middle rounded px-1 text-[0.85em] font-mono font-medium leading-none border border-(--color-accent)/30 bg-(--color-accent)/10 text-(--color-accent) hover:bg-(--color-accent)/20 transition-colors cursor-pointer"
     >
-      {issueKey}
+      {token}
     </button>
   );
 }
@@ -74,8 +107,9 @@ function IssueBadge({ issueKey, children }: { issueKey: string; children?: React
 /**
  * Renders a markdown link. Branches, in priority order:
  *
- *  1. **Bare Linear keys** (`shipit-issue:KEY`, minted by `remarkLinkifyIssues`)
- *     render as an inline {@link IssueBadge} that opens the in-app Issues viewer.
+ *  1. **Bare issue references** (`shipit-issue:TOKEN`, minted by
+ *     `remarkLinkifyIssues` — a bare key or a docs/248 name form) render as an
+ *     inline {@link IssueBadge} that opens the in-app Issues viewer.
  *  2. **Tracker issue URLs** (Linear/GitHub issue URLs, or the GitHub
  *     `owner/repo#N` short form) open the in-app Issues viewer when that tracker
  *     is connected — "inline beats link-out" (CLAUDE.md §1/§2). When the tracker
@@ -113,10 +147,13 @@ function MarkdownLink({
   children?: React.ReactNode;
 }) {
   if (href?.startsWith(ISSUE_LINK_SCHEME)) {
-    return <IssueBadge issueKey={href.slice(ISSUE_LINK_SCHEME.length)}>{children}</IssueBadge>;
+    return <IssueBadge token={href.slice(ISSUE_LINK_SCHEME.length)}>{children}</IssueBadge>;
   }
 
-  const issueLink = parseTrackerIssueLink(href);
+  // docs/248 — the destinations are read at render time from the tracker list
+  // the store already holds, so an href only becomes an in-app link when it
+  // resolves to something this session's repository actually declares (req 11).
+  const issueLink = parseTrackerIssueLink(href, trackerDestinations());
   if (issueLink) {
     const openIssueInApp = (e: React.MouseEvent) => {
       const connected =
@@ -293,12 +330,13 @@ export const markdownComponents: Components = {
 // `remarkLinkifyPaths` / `remarkLinkifyIssues` run last so they see GFM's
 // autolinked URLs as `link` nodes (which they skip) and only touch remaining
 // plain text. The first turns bare `dir/file.ext` references into in-app
-// file-preview links; the second turns bare Linear keys (`SHI-43`) into in-app
-// issue badges (gated to the connected team at render — see `IssueBadge`).
+// file-preview links; the second turns bare issue references (`SHI-43`,
+// `roadmap#SHI-43`, `planning#57`) into in-app issue badges (gated at render by
+// the declared-destination resolver — see `IssueBadge`).
 const remarkPlugins = [remarkGfm, remarkBreaks, remarkLinkifyPaths, remarkLinkifyIssues];
 
-// `remarkLinkifyIssues` mints `shipit-issue:KEY` hrefs; react-markdown's default
-// `urlTransform` would strip that unknown scheme to "" (losing the key), so we
+// `remarkLinkifyIssues` mints `shipit-issue:TOKEN` hrefs; react-markdown's default
+// `urlTransform` would strip that unknown scheme to "" (losing the token), so we
 // pass our scheme through and delegate everything else to the default sanitiser
 // (which still filters `javascript:`, `data:`, etc.).
 function urlTransform(url: string): string {

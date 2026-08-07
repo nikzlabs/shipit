@@ -47,6 +47,7 @@ import {
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { useIssueWriteStore } from "../stores/issue-write-store.js";
+import { useIssuesStore } from "../stores/issues-store.js";
 import type { TrackerId, IssueWriteVerb } from "../../server/shared/types.js";
 
 export interface IssueWriteCardProps {
@@ -66,6 +67,7 @@ export interface IssueWriteCardProps {
 /** The explicit verb word that leads line 1. `Set status of`, not `Moved`. */
 const VERB_LABEL: Record<IssueWriteVerb, string> = {
   comment: "Commented on",
+  "comment-edit": "Edited a comment on",
   edit: "Edited",
   status: "Set status of",
   assignee: "Assigned",
@@ -79,6 +81,9 @@ function VerbIcon({ verb }: { verb: IssueWriteVerb }) {
   switch (verb) {
     case "comment":
       return <ChatCircleIcon size={size} weight="fill" />;
+    // Outline, so a rewrite reads as the quieter sibling of a new comment.
+    case "comment-edit":
+      return <ChatCircleIcon size={size} />;
     case "edit":
       return <PencilSimpleIcon size={size} />;
     case "status":
@@ -119,7 +124,9 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
   // and on a labels/priority-only edit that only sets `attrs`.
   const changeLine = (() => {
     if (!content) return null;
-    if (card.verb === "comment" && content.comment) {
+    // A comment-edit shows the NEW body in the same blockquote — the prior text
+    // is one Undo click away, and two clamped quotes wouldn't fit the card.
+    if ((card.verb === "comment" || card.verb === "comment-edit") && content.comment) {
       return (
         <blockquote className="border-l-2 border-(--color-border-secondary) pl-2 text-(--color-text-secondary) line-clamp-2">
           {content.comment}
@@ -158,7 +165,8 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
 
   // For a comment write the undo snapshot carries the created comment's id —
   // thread it through so the detail view lands on that exact comment (SHI-103).
-  const anchorCommentId = card.undo.kind === "comment" ? card.undo.commentId : undefined;
+  const anchorCommentId =
+    card.undo.kind === "comment" || card.undo.kind === "comment-edit" ? card.undo.commentId : undefined;
 
   // A label-creation card records tracker CONFIG, not an issue — the identifier
   // is the label name, so there is nothing to open inline (SHI-230).
@@ -167,14 +175,25 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
   // The whole card opens the issue inline. Derive the lookup id from the
   // display identifier (uniform across trackers) rather than `card.issueId`,
   // which for GitHub is the undo target, not a valid `getIssue` key.
-  const openIssue = () =>
+  //
+  // docs/248 req 16 — "the UI shows what it now resolves to". A card written
+  // against a NAME must open wherever that name points today, not the
+  // destination frozen on the card, or the recorded reference would silently
+  // disagree with the Undo beside it (which does follow the name). When the name
+  // no longer resolves, the recorded destination is the fallback — the same
+  // carve-out req 11 grants Undo, for the same reason.
+  const openIssue = () => {
+    const repointed = card.trackerName
+      ? useIssuesStore.getState().trackers.find((t) => t.name === card.trackerName)
+      : undefined;
     onOpen?.({
-      tracker: card.tracker,
+      tracker: repointed?.id ?? card.tracker,
       identifier: card.identifier,
       ...(card.title ? { title: card.title } : {}),
       ...(card.url ? { url: card.url } : {}),
       ...(anchorCommentId ? { anchorCommentId } : {}),
     });
+  };
 
   return (
     <div

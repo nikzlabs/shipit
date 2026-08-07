@@ -502,6 +502,28 @@ export async function listPullRequests(
 }
 
 /**
+ * A pull request's details as `gh pr view` exposes them.
+ *
+ * `base`/`head` are ShipIt's original names and stay; `baseRefName`/
+ * `headRefName` are the real-`gh` spellings, carried as aliases so an agent's
+ * existing habits transfer (docs/255 req 7). The `author`/`labels`/timestamp
+ * fields exist for the same reason: `--json` field names are now validated
+ * strictly, so the error should fire on genuinely unsupported names rather than
+ * on ordinary ones.
+ */
+export interface PullRequestDetail {
+  url: string; number: number;
+  base: string; head: string;
+  baseRefName: string; headRefName: string;
+  title: string; body: string;
+  state: "open" | "closed"; isDraft: boolean; merged: boolean;
+  additions: number; deletions: number;
+  author: { login: string } | null;
+  labels: { name: string; color: string; description: string }[];
+  createdAt: string; updatedAt: string; mergedAt: string | null;
+}
+
+/**
  * Fetch a single pull request's details.
  */
 export async function viewPullRequest(
@@ -509,37 +531,318 @@ export async function viewPullRequest(
   owner: string,
   repo: string,
   pullNumber: number,
-): Promise<{
-  url: string; number: number; base: string; head: string;
-  title: string; body: string;
-  state: "open" | "closed"; isDraft: boolean; merged: boolean;
-  additions: number; deletions: number;
-} | null> {
+): Promise<PullRequestDetail | null> {
+  const result = await viewPullRequestResult(token, owner, repo, pullNumber);
+  return result.ok ? result.pr : null;
+}
+
+/**
+ * Same read as `viewPullRequest`, but distinguishing "GitHub says this PR does
+ * not exist" from "the request failed".
+ *
+ * `viewPullRequest` collapses both to `null`, so `gh pr view` reported a 403 on
+ * a private repo — or a GitHub 5xx — as "No pull request found for this
+ * branch". That is the same failure-looks-like-absence confusion docs/255
+ * exists to remove, one layer down. The collapsing wrapper is kept because its
+ * other callers (the merge path's title/body lookup, the release poller) treat
+ * a failed read as "no extra info" and must not start throwing.
+ */
+export async function viewPullRequestResult(
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+): Promise<{ ok: true; pr: PullRequestDetail | null } | { ok: false; error: string }> {
   const res = await fetchGitHub(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
     token,
   );
-  if (!res.ok) return null;
+  // 404 is the only status that genuinely means "no such PR". Anything else —
+  // 401/403 (no access), 5xx, rate limiting — is a failure to read, and the
+  // caller must be able to say so.
+  if (res.status === 404) return { ok: true, pr: null };
+  if (!res.ok) return { ok: false, error: await parseGitHubError(res) };
   const pr = (await res.json()) as {
     html_url: string; number: number;
     base: { ref: string }; head: { ref: string };
     title: string; body: string | null;
     state: "open" | "closed"; draft: boolean; merged: boolean;
     additions: number; deletions: number;
+    user?: { login?: string } | null;
+    labels?: { name?: string; color?: string; description?: string | null }[] | null;
+    created_at?: string; updated_at?: string; merged_at?: string | null;
   };
   return {
-    url: pr.html_url,
-    number: pr.number,
-    base: pr.base.ref,
-    head: pr.head.ref,
-    title: pr.title,
-    body: pr.body ?? "",
-    state: pr.state,
-    isDraft: pr.draft,
-    merged: pr.merged,
-    additions: pr.additions,
-    deletions: pr.deletions,
+    ok: true,
+    pr: {
+      url: pr.html_url,
+      number: pr.number,
+      base: pr.base.ref,
+      head: pr.head.ref,
+      baseRefName: pr.base.ref,
+      headRefName: pr.head.ref,
+      title: pr.title,
+      body: pr.body ?? "",
+      state: pr.state,
+      isDraft: pr.draft,
+      merged: pr.merged,
+      additions: pr.additions,
+      deletions: pr.deletions,
+      author: pr.user?.login ? { login: pr.user.login } : null,
+      labels: (pr.labels ?? []).map((l) => ({
+        name: l.name ?? "",
+        color: l.color ?? "",
+        description: l.description ?? "",
+      })),
+      createdAt: pr.created_at ?? "",
+      updatedAt: pr.updated_at ?? "",
+      mergedAt: pr.merged_at ?? null,
+    },
   };
+}
+
+// ---------------------------------------------------------------------------
+// PR conversation reads (docs/255)
+//
+// The agent could write PR comments (`gh pr comment`) but had no supported way
+// to READ them — `gh pr view --json comments` returned `{}`, indistinguishable
+// from a PR with no discussion, so review findings were invisible to the agent
+// that had to act on them. One GraphQL query covers all three concepts GitHub
+// splits review feedback across.
+// ---------------------------------------------------------------------------
+
+/** One issue-style conversation comment on a PR. */
+export interface PrConversationComment {
+  id: string;
+  author: { login: string } | null;
+  body: string;
+  createdAt: string;
+  url: string;
+}
+
+/** A review-level submission: its summary body and verdict. */
+export interface PrConversationReview {
+  id: string;
+  author: { login: string } | null;
+  body: string;
+  /** APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED. */
+  state: string;
+  submittedAt: string;
+  url: string;
+}
+
+/** An inline code-review thread anchored to a file and line. */
+export interface PrConversationThread {
+  id: string;
+  isResolved: boolean;
+  isOutdated: boolean;
+  path: string | null;
+  /** The thread's line in the CURRENT diff — null once the thread is outdated. */
+  line: number | null;
+  /**
+   * The line the thread was originally left on. GitHub keeps this after the
+   * code moves, so it is the only location an outdated thread has — and
+   * outdated threads are exactly the common case for a review you're reading
+   * after pushing a fix.
+   */
+  originalLine: number | null;
+  /** The diff context the thread was left on (from its first comment). */
+  diffHunk: string;
+  comments: PrConversationComment[];
+  /** Total comments on the thread; `comments.length` may be a window of it. */
+  commentsTotal: number;
+}
+
+export interface PrConversation {
+  comments: PrConversationComment[];
+  reviews: PrConversationReview[];
+  reviewThreads: PrConversationThread[];
+  /** APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | null (no review required). */
+  reviewDecision: string | null;
+  /**
+   * How many GitHub actually holds, which is NOT `array.length`: the query is
+   * bounded (see the limits below), so a very busy PR comes back windowed.
+   * Without these the shim would print the window size as the total and tell
+   * the agent it had read everything — the same "looks complete, isn't"
+   * failure this feature exists to remove.
+   */
+  commentsTotal: number;
+  reviewsTotal: number;
+  reviewThreadsTotal: number;
+}
+
+/**
+ * Bounds on the conversation query, mirroring the PR-status poller's caps
+ * (`pr-status-parser.ts`): recent-first for the timeline, generous but finite
+ * for threads. A conversation past these bounds is vanishingly rare, and the
+ * caps keep one `gh pr view --comments` from pulling an unbounded payload —
+ * the `*Total` fields above report what was left outside the window.
+ */
+const CONVERSATION_COMMENT_LIMIT = 50;
+const CONVERSATION_REVIEW_LIMIT = 30;
+const CONVERSATION_THREAD_LIMIT = 50;
+const CONVERSATION_THREAD_COMMENT_LIMIT = 50;
+
+const CONVERSATION_QUERY = `
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewDecision
+      comments(last: ${CONVERSATION_COMMENT_LIMIT}) {
+        totalCount
+        nodes { id body createdAt url author { login } }
+      }
+      reviews(last: ${CONVERSATION_REVIEW_LIMIT}) {
+        totalCount
+        nodes { id body state submittedAt url author { login } }
+      }
+      reviewThreads(first: ${CONVERSATION_THREAD_LIMIT}) {
+        totalCount
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          line
+          originalLine
+          comments(first: ${CONVERSATION_THREAD_COMMENT_LIMIT}) {
+            totalCount
+            nodes { id body createdAt url diffHunk author { login } }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+interface RawConversationComment {
+  id: string;
+  body: string | null;
+  createdAt: string | null;
+  url: string | null;
+  diffHunk?: string | null;
+  author: { login: string } | null;
+}
+
+/**
+ * GitHub's `totalCount` for a connection, floored at how many we actually
+ * received — a total below the list we return would be nonsense, and a missing
+ * one means "assume we have them all".
+ */
+function totalOrLength(total: number | undefined, length: number): number {
+  return typeof total === "number" && total > length ? total : length;
+}
+
+function mapComment(c: RawConversationComment): PrConversationComment {
+  return {
+    id: c.id,
+    author: c.author?.login ? { login: c.author.login } : null,
+    body: c.body ?? "",
+    createdAt: c.createdAt ?? "",
+    url: c.url ?? "",
+  };
+}
+
+/**
+ * Fetch a PR's conversation: issue comments, review submissions, and inline
+ * review threads.
+ *
+ * Returns a discriminated result rather than `null` so a *failed* read can
+ * never be rendered as "no comments" — the caller surfaces the error instead
+ * (docs/255 req 5). A review still in `PENDING` state (an unsubmitted draft
+ * review, visible only to its author) is dropped: it isn't feedback yet.
+ */
+export async function viewPullRequestConversation(
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+): Promise<{ ok: true; conversation: PrConversation } | { ok: false; error: string }> {
+  try {
+    const res = await fetchGitHubGraphQL(token, CONVERSATION_QUERY, {
+      owner, name: repo, number: pullNumber,
+    });
+    if (!res.ok) {
+      return { ok: false, error: await parseGitHubError(res) };
+    }
+    const payload = (await res.json()) as {
+      data?: {
+        repository?: {
+          pullRequest?: {
+            reviewDecision: string | null;
+            comments?: { totalCount?: number; nodes: RawConversationComment[] | null } | null;
+            reviews?: {
+              totalCount?: number;
+              nodes:
+                | (RawConversationComment & { state: string; submittedAt: string | null })[]
+                | null;
+            } | null;
+            reviewThreads?: {
+              totalCount?: number;
+              nodes:
+                | {
+                    id: string;
+                    isResolved: boolean;
+                    isOutdated: boolean;
+                    path: string | null;
+                    line: number | null;
+                    originalLine: number | null;
+                    comments?: { totalCount?: number; nodes: RawConversationComment[] | null } | null;
+                  }[]
+                | null;
+            } | null;
+          } | null;
+        } | null;
+      };
+      errors?: { message: string }[];
+    };
+    if (payload.errors?.length) {
+      return { ok: false, error: payload.errors.map((e) => e.message).join("; ") };
+    }
+    const pr = payload.data?.repository?.pullRequest;
+    if (!pr) return { ok: false, error: `Pull request #${pullNumber} not found` };
+
+    const comments = (pr.comments?.nodes ?? []).map(mapComment);
+    // PENDING reviews are filtered out but still counted by `totalCount`, so
+    // derive the review total from what we kept plus whatever fell outside the
+    // window — never a number smaller than the list we return.
+    const rawReviews = pr.reviews?.nodes ?? [];
+    const reviews = rawReviews
+      .filter((r) => r.state !== "PENDING")
+      .map((r) => ({ ...mapComment(r), state: r.state, submittedAt: r.submittedAt ?? "" }));
+    const threads = (pr.reviewThreads?.nodes ?? []).map((t) => {
+      const threadComments = (t.comments?.nodes ?? []).map(mapComment);
+      return {
+        id: t.id,
+        isResolved: t.isResolved,
+        isOutdated: t.isOutdated,
+        path: t.path,
+        line: t.line,
+        originalLine: t.originalLine ?? null,
+        diffHunk: t.comments?.nodes?.[0]?.diffHunk ?? "",
+        comments: threadComments,
+        commentsTotal: totalOrLength(t.comments?.totalCount, threadComments.length),
+      };
+    });
+
+    return {
+      ok: true,
+      conversation: {
+        reviewDecision: pr.reviewDecision ?? null,
+        comments,
+        reviews,
+        reviewThreads: threads,
+        commentsTotal: totalOrLength(pr.comments?.totalCount, comments.length),
+        reviewsTotal: Math.max(
+          reviews.length,
+          totalOrLength(pr.reviews?.totalCount, rawReviews.length) - (rawReviews.length - reviews.length),
+        ),
+        reviewThreadsTotal: totalOrLength(pr.reviewThreads?.totalCount, threads.length),
+      },
+    };
+  } catch (err) {
+    return { ok: false, error: getErrorMessage(err) };
+  }
 }
 
 /** Fetch the GraphQL node id for a pull request. */

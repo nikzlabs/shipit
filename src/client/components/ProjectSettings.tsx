@@ -2,13 +2,14 @@ import { useState } from "react";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs.js";
 import { SecretsTab } from "./SecretsTab.js";
+import { RepoColorPicker } from "./RepoColorPicker.js";
 import type { SecretsSavePayload } from "./SecretsTab.js";
 
 // On mobile the tab list collapses from a vertical sidebar into a horizontal
 // scrollable strip — mirrors Settings.tsx so the two dialogs read alike.
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
-type Tab = "deployments" | "secrets";
+type Tab = "deployments" | "secrets" | "appearance";
 
 export interface ProjectSettingsProps {
   /** Repo these settings apply to. Drives the per-repo secret store. */
@@ -74,6 +75,9 @@ export function ProjectSettings({
             <TabsTrigger value="deployments" data-testid="project-tab-deployments" className={mobileTabClass}>
               Deployments
             </TabsTrigger>
+            <TabsTrigger value="appearance" data-testid="project-tab-appearance" className={mobileTabClass}>
+              Appearance
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="deployments">
@@ -130,6 +134,15 @@ export function ProjectSettings({
                 onSecretsSave={onSecretsSave}
                 onSecretsLoad={onSecretsLoad}
               />
+            </div>
+          </TabsContent>
+
+          {/* docs/254 — per-repo appearance. Currently just the sidebar identity
+              color; it gets its own tab rather than riding along in Deployments
+              or Secrets because neither is about how the repo is displayed. */}
+          <TabsContent value="appearance">
+            <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full" data-testid="appearance-tab">
+              <RepoColorPicker repoUrl={repoUrl} />
             </div>
           </TabsContent>
         </Tabs>

@@ -87,7 +87,11 @@ export interface RebaseDriverDeps {
   drainQueue?: () => Promise<void> | void;
   /**
    * docs/221 — emit the persisted "Synced with <base>" transcript card when the
-   * sync actually changed something (branch rebased and/or local `<base>` moved).
+   * sync actually changed something (branch rebased and/or local `<base>` moved),
+   * and — when the branch itself moved — record the matching agent-facing notice
+   * for the next turn (`buildBranchSyncAgentNotice`). One flag covers both because
+   * they are the same question asked of two audiences: "did a human ask for this
+   * sync out of band, so does someone need telling?"
    * Set true ONLY by the manual "Sync with <base>" route — the automatic
    * conflict-resolve-on-idle path leaves it unset so it keeps its own
    * `auto_resolve_result` envelopes and doesn't gain a surprise card. The local
@@ -184,6 +188,62 @@ function emitSyncCard(
 }
 
 /**
+ * docs/221 — record the agent-facing notice for a manual sync that actually
+ * moved the branch. Best-effort: the sync itself succeeded and is already
+ * recorded for the user, so a failed DB write must not turn a completed rebase
+ * into a reported failure.
+ */
+function recordAgentNotice(
+  deps: RebaseDriverDeps,
+  opts: { baseBranch: string; headFrom: string | null; headTo: string | null; forcePushed: boolean; resolvedConflicts: boolean },
+): void {
+  try {
+    deps.sessionManager.setPendingAgentNotice(
+      deps.runner.sessionId,
+      buildBranchSyncAgentNotice(opts),
+    );
+  } catch (err) {
+    console.error("[rebase] recording the agent sync notice failed:", getErrorMessage(err));
+  }
+}
+
+/**
+ * docs/221 — the agent-facing counterpart of the "Synced with `<base>`" card.
+ *
+ * The card tells the USER what happened; nothing told the AGENT. A manual sync
+ * runs outside any turn (`runRebaseFlow` refuses while one is running), so
+ * there is no prompt to prepend to at the time — but the agent is resumed with
+ * a conversation that predates the rewrite, and every file it read earlier may
+ * now differ. Recorded as a pending notice and drained by the next interactive
+ * turn (`agent-execution.ts`), mirroring the docs/218 post-merge reset prefix.
+ *
+ * Only emitted when the branch actually moved. A sync that merely fast-forwards
+ * the local `<base>` ref leaves the agent's working tree byte-identical, so it
+ * has nothing to warn about.
+ */
+export function buildBranchSyncAgentNotice(opts: {
+  baseBranch: string;
+  headFrom: string | null;
+  headTo: string | null;
+  forcePushed: boolean;
+  resolvedConflicts: boolean;
+}): string {
+  const shas = opts.headFrom && opts.headTo
+    ? ` (was ${opts.headFrom.slice(0, 7)} → now ${opts.headTo.slice(0, 7)})`
+    : "";
+  const conflicts = opts.resolvedConflicts ? ", resolving conflicts along the way" : "";
+  const pushed = opts.forcePushed ? " and force-pushed" : "";
+  return (
+    `[System] While you were idle, this branch was rebased onto the latest `
+    + `origin/${opts.baseBranch}${shas}${conflicts}${pushed}. Your working tree was `
+    + `rewritten from outside the session: files you read earlier in this conversation `
+    + `may have changed, and commit SHAs you noted are stale. Re-read any file before `
+    + `editing it rather than relying on an earlier read, and do not try to undo the `
+    + `sync or re-apply anything it brought in.`
+  );
+}
+
+/**
  * A rebase rewrites the whole working tree from the ORCHESTRATOR, outside the
  * session container — so the newly-checked-out `shipit.yaml` / compose file can
  * declare services, an install step, or a compose path the running session
@@ -267,7 +327,9 @@ export async function runRebaseFlow(
       reevaluateSessionConfig(runner);
       const forcePushed = await tryForcePush(git, githubAuthManager, runner);
       if (recordSync) {
-        emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: await git.getHeadHash(), baseMove, forcePushed });
+        const headAfter = await git.getHeadHash();
+        emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headAfter, baseMove, forcePushed });
+        recordAgentNotice(deps, { baseBranch, headFrom: headBefore, headTo: headAfter, forcePushed, resolvedConflicts: false });
       }
       runner.emitMessage({ type: "rebase_complete", sessionId: runner.sessionId, forcePushed });
       return { status: "rebased", forcePushed };
@@ -321,7 +383,13 @@ export async function runRebaseFlow(
     reevaluateSessionConfig(runner);
     const forcePushed = await tryForcePush(git, githubAuthManager, runner);
     if (recordSync) {
-      emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: await git.getHeadHash(), baseMove, forcePushed });
+      const headAfter = await git.getHeadHash();
+      emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headAfter, baseMove, forcePushed });
+      // The conflict-resolution turns told the agent about the *conflicts*, not
+      // about the branch move that follows them — and those turns end before the
+      // continue/force-push. It still needs the same "your tree was rewritten"
+      // notice on its next turn.
+      recordAgentNotice(deps, { baseBranch, headFrom: headBefore, headTo: headAfter, forcePushed, resolvedConflicts: true });
     }
     runner.emitMessage({ type: "rebase_complete", sessionId: runner.sessionId, forcePushed });
     return { status: "conflicts_resolved", iterations: iter, forcePushed };
@@ -437,6 +505,7 @@ function runRebaseResolutionTurn(
       uploads: undefined,
       permissionMode: undefined,
       deliveryId: undefined,
+      dictated: undefined,
       onTurnComplete: ({ errored }) => {
         if (errored) {
           // The shared listener already wrote the error row + reset runner

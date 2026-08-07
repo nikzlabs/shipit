@@ -3,25 +3,27 @@ import { ICON_SIZE } from "../../design-tokens.js";
 import { Badge } from "../ui/badge.js";
 import type { ParsedFrontmatter } from "../../utils/markdown-frontmatter.js";
 import { parseIssueRef, type ParsedIssueRef } from "../../../server/shared/issue-ref.js";
+import type { ResolvedIssueRef } from "../../../server/shared/issue-ref-resolution.js";
 import { useFileStore } from "../../stores/file-store.js";
-import { useIssuesStore } from "../../stores/issues-store.js";
+import { resolveUiIssueRef, useIssuesStore } from "../../stores/issues-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 
 /**
- * Jump-to-issue chip for the doc's `issue:` pointer. A known tracker (Linear /
- * GitHub) opens ShipIt's inline issue detail view — inline beats link-out
- * (CLAUDE.md §1/§2), and the deep link to the upstream tracker lives inside
- * that view. Mirrors the docs-list chip (`DocsViewer.IssueChip`) and the
- * changed-docs strip; an unknown-shape pointer has no inline view to open, so
- * it keeps the external-link escape hatch (or a plain badge with no URL).
+ * Jump-to-issue chip for the doc's `issue:` pointer. A pointer that resolves to a
+ * **declared** destination (docs/248 req 11) opens ShipIt's inline issue detail
+ * view — inline beats link-out (CLAUDE.md §1/§2), and the deep link to the
+ * upstream tracker lives inside that view. Mirrors the docs-list chip
+ * (`DocsViewer.IssueChip`) and the changed-docs strip; an unresolvable pointer
+ * has no inline view to open, so it keeps the external-link escape hatch (or a
+ * plain badge with no URL) rather than becoming a broken in-app link.
  */
-function IssueChip({ issueRef }: { issueRef: ParsedIssueRef }) {
-  if (issueRef.tracker !== "unknown") {
-    const tracker = issueRef.tracker;
+function IssueChip({ issueRef, resolved }: { issueRef: ParsedIssueRef; resolved: ResolvedIssueRef | null }) {
+  if (resolved) {
+    const tracker = resolved.tracker;
     return (
       <button
         type="button"
-        title={`Open ${issueRef.identifier} in ShipIt`}
+        title={`Open ${resolved.identifier} in ShipIt`}
         onClick={() => {
           // The doc is often being read in the file-preview modal, which would
           // sit on top of the Issues tab — dismiss it so the issue is actually
@@ -33,15 +35,15 @@ function IssueChip({ issueRef }: { issueRef: ParsedIssueRef }) {
           useUiStore.getState().setMobilePanel("preview");
           void useIssuesStore.getState().openIssue({
             tracker,
-            identifier: issueRef.identifier,
-            ...(issueRef.issueId ? { id: issueRef.issueId } : {}),
-            ...(issueRef.url ? { url: issueRef.url } : {}),
+            identifier: resolved.identifier,
+            id: resolved.issueId,
+            ...(resolved.url ? { url: resolved.url } : {}),
           });
         }}
         className="inline-flex cursor-pointer"
       >
         <Badge variant="info" className="hover:brightness-110">
-          {issueRef.identifier}
+          {resolved.identifier}
         </Badge>
       </button>
     );
@@ -73,6 +75,8 @@ function IssueChip({ issueRef }: { issueRef: ParsedIssueRef }) {
  */
 export function FrontmatterHeader({ fm }: { fm: ParsedFrontmatter }) {
   const issueRef = fm.issue ? parseIssueRef(fm.issue) : null;
+  const resolution = fm.issue ? resolveUiIssueRef(fm.issue) : null;
+  const resolved = resolution?.ok ? resolution.ref : null;
   const hasContent = !!issueRef || !!fm.description || fm.extras.length > 0;
   if (!hasContent) return null;
 
@@ -80,7 +84,7 @@ export function FrontmatterHeader({ fm }: { fm: ParsedFrontmatter }) {
     <div className="mb-4 pb-4 border-b border-(--color-border-secondary) space-y-2">
       {issueRef && (
         <div className="flex flex-wrap items-center gap-2">
-          <IssueChip issueRef={issueRef} />
+          <IssueChip issueRef={issueRef} resolved={resolved} />
         </div>
       )}
       {fm.description && (

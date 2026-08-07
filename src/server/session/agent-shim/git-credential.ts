@@ -36,6 +36,8 @@
  * or anonymous access, exactly as with a normal helper that has no answer.
  */
 
+import { exitAfterFlush, shimWrite } from "./shim-exit.js";
+
 // ---------------------------------------------------------------------------
 // IO abstraction so tests can drive the helper without spawning a process
 // ---------------------------------------------------------------------------
@@ -64,9 +66,9 @@ const defaultIO: CredIO = {
       stdin.on("end", () => resolve(data));
       stdin.on("error", () => resolve(data));
     }),
-  stdout: (text) => process.stdout.write(text),
-  stderr: (text) => process.stderr.write(text),
-  exit: (code) => process.exit(code),
+  stdout: (text) => shimWrite(process.stdout, text),
+  stderr: (text) => shimWrite(process.stderr, text),
+  exit: (code) => exitAfterFlush(code),
 };
 
 export interface CredEnv {
@@ -178,10 +180,11 @@ export async function runGitCredential(argv: string[], deps: RunCredDeps = {}): 
 
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
   runGitCredential(process.argv.slice(2)).catch((err: unknown) => {
-    process.stderr.write(
+    shimWrite(
+      process.stderr,
       `shipit-git-credential: ${err instanceof Error ? err.message : String(err)}\n`,
     );
     // Exit 0 even on error: a failing credential helper must not block git.
-    process.exit(0);
+    exitAfterFlush(0);
   });
 }

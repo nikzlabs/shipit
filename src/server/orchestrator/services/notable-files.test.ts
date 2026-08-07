@@ -196,6 +196,55 @@ describe("computeNotableFiles — classification", () => {
     ]);
   });
 
+  it("classifies a committed HTML mockup as a doc", () => {
+    const result = computeNotableFiles([
+      { status: "A", path: "docs/205-pr-changed-docs/mockup.html" },
+      { status: "M", path: "docs/069-design-system/mocks/tokens.html" },
+    ]);
+    expect(result).toEqual([
+      {
+        path: "docs/205-pr-changed-docs/mockup.html",
+        label: "205/mockup.html",
+        kind: "doc",
+        status: "A",
+      },
+      {
+        path: "docs/069-design-system/mocks/tokens.html",
+        label: "mocks/tokens.html",
+        kind: "doc",
+        status: "M",
+      },
+    ]);
+  });
+
+  it("classifies HTML anywhere, not just under docs/ (blanket rule, deliberately)", () => {
+    // A location gate was rejected: no other tier here is path-dependent, and a
+    // change-set-dependent rule would make a mockup's chip appear or vanish
+    // based on what else the PR touched. An app's index.html getting a chip is
+    // the accepted cost of that determinism.
+    const result = computeNotableFiles([
+      { status: "M", path: "index.html" },
+      { status: "M", path: "src/templates/email.html" },
+    ]);
+    expect(result).toEqual([
+      { path: "index.html", label: "index.html", kind: "doc", status: "M" },
+      { path: "src/templates/email.html", label: "templates/email.html", kind: "doc", status: "M" },
+    ]);
+  });
+
+  it("matches .htm and mixed-case HTML extensions", () => {
+    const result = computeNotableFiles([
+      { status: "A", path: "docs/210-thing/legacy.htm" },
+      { status: "M", path: "docs/210-thing/Mockup.HTML" },
+      { status: "D", path: "docs/210-thing/old.HtM" },
+    ]);
+    expect(result.map((f) => [f.label, f.kind, f.status])).toEqual([
+      ["210/legacy.htm", "doc", "A"],
+      ["210/Mockup.HTML", "doc", "M"],
+      ["210/old.HtM", "doc", "D"],
+    ]);
+  });
+
   it("skips non-notable files (code, lockfiles)", () => {
     const result = computeNotableFiles([
       { status: "M", path: "src/client/App.tsx" },

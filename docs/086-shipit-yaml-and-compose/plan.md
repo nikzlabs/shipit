@@ -148,6 +148,13 @@ project goes public.
 
 Configures the agent container (runs Claude CLI).
 
+> **Superseded by docs/229-auto-resource-sizing.** The `memory`, `cpu`, and `pids`
+> fields described below (and in the examples above) were removed — session sizing is
+> now derived from host capacity, and the parser warns-and-ignores those keys. The only
+> override is the deployment env vars `DEFAULT_SESSION_MEMORY_MB` /
+> `MAX_SESSION_MEMORY_MB`. `install` is unaffected. The live schema reference is
+> `src/server/shipit-docs/shipit-yaml.md`.
+
 ```yaml
 agent:
   memory: 2048

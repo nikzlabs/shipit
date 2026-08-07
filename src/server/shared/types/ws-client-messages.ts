@@ -1,5 +1,6 @@
 import type { ImageAttachment, FileContextRef, PermissionMode, UploadRef } from "./attachment-types.js";
 import type { AgentId } from "../../session/agents/agent-process.js";
+import type { IssueRef } from "./domain-types/issue.js";
 import type { WsTerminalStart, WsTerminalInput, WsTerminalResize, WsSubscribeLogs, WsLogClear } from "./terminal-types.js";
 
 export interface WsSendMessage {
@@ -25,6 +26,26 @@ export interface WsSendMessage {
    * per-message choice, never persisted.
    */
   resetMergedBranch?: boolean;
+  /**
+   * SHI-320 — the tracker issue this session was started from, carried on the
+   * FIRST message only (the Issues tab's "Start session" prefills the composer
+   * rather than dispatching, so creation and the first message are two separate
+   * user actions). Acted on solely by warm graduation, which pins the branch to
+   * the reference-derived name (docs/248 req 22) and fires the one-shot
+   * `→ started` transition. A message to an already-graduated session ignores
+   * it — the ref describes how the session was *created*, not what this message
+   * is about.
+   */
+  issueRef?: IssueRef;
+  /**
+   * docs/144 — some or all of `text` was dictated by voice rather than typed.
+   * Set by the composer when a transcript was spliced into the draft that
+   * produced this message. Purely a hint to the agent (it adds a
+   * `<dictated_input>` context block to the prompt so mis-heard terms and
+   * missing punctuation read as transcription artifacts, not intent); it never
+   * changes the persisted bubble, which stays the user's verbatim text.
+   */
+  dictated?: boolean;
 }
 
 export interface WsAnswerQuestion {
@@ -52,6 +73,12 @@ export interface WsAnswerQuestion {
    * last-applied mode.
    */
   permissionMode?: PermissionMode;
+  /**
+   * docs/144 — an "Other" free-text answer was dictated. Same hint as
+   * `WsSendMessage.dictated`: the answer becomes the next turn's prompt, so it
+   * carries the same transcription artifacts a dictated chat message does.
+   */
+  dictated?: boolean;
 }
 
 // ---- Agent selection (per-connection state, must stay on WS) ----

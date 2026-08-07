@@ -1,23 +1,29 @@
 // ---- Issue tracker types (docs/170 — inline tracker Issues tab) ----
 
 /**
- * Identifier for a configured issue tracker. Drives the Issues tab's sub-tab
- * switcher and the `?tracker=` query.
+ * Identifier for an issue tracker **destination**. Drives the Issues tab's
+ * sub-tab switcher and the `?tracker=` query.
  *
- * Not a closed union (docs/247): `"github"` keeps its historical meaning — the
- * active session's own code repository — but a GitHub destination may also be
- * named explicitly as `` `github:${owner}/${repo}` ``. Those come from
- * `issues.trackers` declarations in a repository's `shipit.yaml` and from an
- * operation's `--repo owner/name`, neither of which is drawn from a fixed set,
- * so the id has to stay open-ended. The template-literal member keeps that open
- * end typed rather than degrading the whole union to `string`.
+ * Not a closed union (docs/248): a destination comes from an `issues.trackers`
+ * declaration in a repository's `shipit.yaml`, which is not drawn from a fixed
+ * set, so the id has to stay open-ended. The template-literal members keep that
+ * open end typed rather than degrading the whole union to `string`.
+ *
+ *  - `` `github:${owner}/${repo}` `` — a GitHub repository.
+ *  - `` `linear:${TEAM}` `` — a Linear team (req 5).
+ *  - `"github"` — the active session's own code repository, the single
+ *    destination requirement 12 lets an operation reach without naming it.
+ *  - `"linear"` — the retired deployment-wide Linear binding. Requirement 1
+ *    removed it, so nothing produces it any more; the member survives only so
+ *    persisted cards written before the rework still typecheck (they fail closed
+ *    on resolution, which is what requirement 20 permits).
  *
  * Build and inspect qualified ids with the helpers in `shared/tracker-id.ts`
- * (`githubTrackerId`, `parseGitHubTrackerId`, `isGitHubTracker`) — never by
- * comparing against the bare literal `"github"`, which silently drops the
- * repository and re-targets the session's code repo.
+ * (`githubTrackerId`, `linearTrackerId`, `parseGitHubTrackerId`,
+ * `isGitHubTracker`) — never by comparing against a bare literal, which silently
+ * drops the destination.
  */
-export type TrackerId = "linear" | "github" | `github:${string}`;
+export type TrackerId = "linear" | "github" | `github:${string}` | `linear:${string}`;
 
 /**
  * Normalized priority bucket, tracker-agnostic. Linear maps its 0–4 priority
@@ -80,6 +86,15 @@ export interface TrackerIssue {
    * adapter already orders its fetch by `updatedAt`, this just exposes the value.
    */
   updatedAt?: string;
+  /**
+   * ISO-8601 creation timestamp, when the tracker supplies one. Tracker-neutral:
+   * Linear's `createdAt` and GitHub's `created_at` both map here. Surfaced so an
+   * issue's original creation date is readable through `shipit issue view --json`
+   * — a migration that recreates issues on another backend has to record when
+   * each one was actually filed (docs/247 req 9), and the recreated issue's own
+   * `createdAt` is the migration date, not the original.
+   */
+  createdAt?: string;
   priority: IssuePriority;
   /**
    * The issue's labels, each carrying its display name and the tracker's own
@@ -143,9 +158,18 @@ export interface TrackerComment {
  * `label` records a label CREATION (`shipit issue label create`, or one minted
  * by `--create-missing-labels`) — the one write verb that targets tracker
  * config rather than an issue, so its card carries the label name as the
- * identifier and no issue id.
+ * identifier and no issue id. `comment-edit` records a comment REWRITE
+ * (`shipit issue comment edit`, SHI-86) — distinct from `comment` because the
+ * card reads differently and undo restores a body rather than deleting one.
  */
-export type IssueWriteVerb = "comment" | "edit" | "status" | "assignee" | "create" | "label";
+export type IssueWriteVerb =
+  | "comment"
+  | "comment-edit"
+  | "edit"
+  | "status"
+  | "assignee"
+  | "create"
+  | "label";
 
 /**
  * docs/189 — the human-readable "what changed" values the redesigned write card
@@ -156,7 +180,12 @@ export type IssueWriteVerb = "comment" | "edit" | "status" | "assignee" | "creat
  * cards, or a `create`, which has no "before").
  */
 export interface IssueWriteContent {
-  /** comment → a clipped preview of the posted comment body. */
+  /**
+   * comment → a clipped preview of the posted comment body. Also carries the
+   * NEW body for a `comment-edit` (SHI-86): the card is two-line clamped, so a
+   * second blockquote for the prior text would not fit — and the prior body is
+   * not lost, it rides on the undo snapshot and one click restores it.
+   */
   comment?: string;
   /** edit → the title transition, present only when the title was edited. */
   title?: { before: string; after: string };
@@ -183,6 +212,13 @@ export interface IssueWriteContent {
  */
 export type IssueWriteUndo =
   | { kind: "comment"; commentId: string }
+  // SHI-86 — a comment EDIT. Undo restores the exact body the comment had
+  // before the rewrite, which is the symmetric reverse-write the established
+  // `edit` snapshot pattern already uses for an issue's title/description. (A
+  // comment *delete* has no symmetric undo — re-posting mints a new id, author
+  // and timestamp — which is why it is deliberately not exposed; see
+  // docs/177 → "Proposed — editing and deleting a comment".)
+  | { kind: "comment-edit"; commentId: string; previousBody: string }
   // SHI-92 — an edit may also change labels/priority; the prior label set and
   // prior priority level are snapshotted so undo restores them (the prior labels
   // replace the post-edit set; the prior priority level is re-applied).
@@ -224,7 +260,26 @@ export type IssueWriteUndoState = "available" | "undoing" | "undone" | "failed";
 export interface IssueWriteCard {
   /** Stable id — used to patch the card in place across its undo lifecycle. */
   cardId: string;
+  /**
+   * The destination the write actually reached. Undo falls back to this when
+   * `trackerName` no longer resolves, which is req 11's one carve-out: reversing
+   * a write grants no access the write did not already have (the card could only
+   * exist if the destination was declared when it was written), so an Undo must
+   * survive the destination being un-declared rather than stranding behind a
+   * config edit.
+   */
   tracker: TrackerId;
+  /**
+   * docs/248 — the tracker **name** the write was addressed by, when it had one.
+   *
+   * NOT the undo target: `tracker` is. Undo reverses a change made to a specific
+   * issue, so following a re-pointed name would apply this card's snapshot to a
+   * different issue of the same number (req 11). `trackerName` is recorded so
+   * `undoIssueWrite` can DETECT that the name has moved and refuse, and so the
+   * card renders and links in the name form (req 15). A write addressed by a
+   * canonical address has no name and simply uses `tracker`.
+   */
+  trackerName?: string;
   /** Tracker-native id the undo reverse-write targets (number / key). */
   issueId: string;
   /** Display identifier, e.g. "SHI-28" or "owner/repo#42". */
@@ -276,6 +331,15 @@ export interface IssueRefCard {
   /** Stable id — dedupes the live append vs the reconnect/reload replay. */
   cardId: string;
   tracker: TrackerId;
+  /**
+   * The declared name this read was addressed through, when it had one (docs/248
+   * req 16). Recorded for the same reason `IssueWriteCard.trackerName` is: the
+   * card outlives the declaration it was written against, so clicking it must
+   * re-resolve through whatever the NAME points at today rather than the
+   * destination it happened to resolve to then. `tracker` stays as the fallback
+   * for a card written without a name.
+   */
+  trackerName?: string;
   /** Display identifier, e.g. "SHI-28" or "owner/repo#42". */
   identifier: string;
   /** Issue title at view time, for the card line. */
@@ -298,8 +362,20 @@ export interface TrackerInfo {
   id: TrackerId;
   label: string;
   configured: boolean;
-  /** Bound workspace/team context, when configured (Linear team key/name). */
+  /**
+   * docs/248 req 2 — the `name` this tracker was declared under, and how every
+   * reference and operation addresses it. Absent for the session's own code
+   * repository, the one destination that needs no declaration (req 12).
+   *
+   * The browser builds its reference-resolution context out of this list rather
+   * than fetching the declarations separately, so this field (plus `id` and
+   * `binding.key`) is what makes `planning#42` resolvable in a chip.
+   */
+  name?: string;
+  /** The backend's own identity: GitHub `owner/repo`, Linear team key. */
   binding?: { key: string; name: string };
+  /** docs/248 — which backend this destination is on. */
+  kind: "github" | "linear";
 }
 
 /** Response shape for `GET /api/issues?tracker=...`. */

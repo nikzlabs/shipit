@@ -48,7 +48,6 @@ import { DatabaseManager } from "../../shared/database.js";
 import { testDispatch } from "./dispatch-test-helpers.js";
 import { TURN_COMPLETED } from "../turn-settlement.js";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMsg = any;
 
 const WAKE_TEXT = "Child PR #42 merged: child (child-id).";
@@ -113,7 +112,6 @@ describe("Integration: a dispatched system turn behind a real turn (SHI-254/SHI-
   }
 
   function runnerFor(sessionId: string): SessionRunnerInterface {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return (app as any).runnerRegistry.get(sessionId) as SessionRunnerInterface;
   }
 

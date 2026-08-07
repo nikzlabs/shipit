@@ -173,6 +173,17 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].path).toContain("/pr/view?number=5");
   });
 
+  it("GET /agent-ops/pr/view forwards ?comments=true, and only when asked", async () => {
+    // docs/255 — the conversation is a second GitHub round-trip, so the relay
+    // must pass the shim's opt-in through and must not invent it.
+    client.setResponse("GET", "/pr/view", { ok: true, status: 200, body: { pr: { number: 5 } } });
+    await app.inject({ method: "GET", url: "/agent-ops/pr/view?number=5&comments=true" });
+    expect(client.calls[0].path).toContain("comments=true");
+
+    await app.inject({ method: "GET", url: "/agent-ops/pr/view?number=5" });
+    expect(client.calls[1].path).not.toContain("comments");
+  });
+
   it("GET /agent-ops/pr/list forwards ?state=", async () => {
     client.setResponse("GET", "/pr/list", { ok: true, status: 200, body: { prs: [] } });
     await app.inject({ method: "GET", url: "/agent-ops/pr/list?state=closed" });
@@ -271,7 +282,7 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].body).toMatchObject({ cwd: "/workspace/clone", repo: "octocat/hello" });
   });
 
-  // ---- GitHub Actions reads (gh run / gh workflow, read-only) ----
+  // ---- GitHub Actions (gh run / gh workflow) ----
 
   it("GET /agent-ops/run/list forwards filters + cwd/repo to /actions/runs", async () => {
     client.setResponse("GET", "/actions/runs", { ok: true, status: 200, body: { runs: [] } });
@@ -296,6 +307,20 @@ describe("agent-ops routes", () => {
     expect(path.split("?")[0]).toBe("/actions/runs/view");
     expect(path).toContain("id=42");
     expect(path).toContain("logFailed=true");
+  });
+
+  it("POST /agent-ops/run/rerun forwards id/failed + cwd/repo to /actions/runs/rerun", async () => {
+    client.setResponse("POST", "/actions/runs/rerun", {
+      ok: true, status: 200, body: { run: { databaseId: 42 }, onlyFailed: true },
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/run/rerun",
+      payload: { id: "42", failed: true, cwd: "/workspace/c", repo: "octocat/hello" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/actions/runs/rerun");
+    expect(client.calls[0].body).toMatchObject({ id: "42", failed: true, cwd: "/workspace/c", repo: "octocat/hello" });
   });
 
   it("GET /agent-ops/workflow/list forwards to /actions/workflows", async () => {
@@ -538,6 +563,33 @@ describe("agent-ops routes", () => {
     const res = await app.inject({ method: "GET", url: "/agent-ops/issue/statuses?tracker=linear" });
     expect(res.statusCode).toBe(200);
     expect(client.calls[0].path).toBe("/issue/statuses?tracker=linear");
+  });
+
+  it("POST /agent-ops/issue/comment/edit relays the issue + comment id (SHI-86)", async () => {
+    client.setResponse("POST", "/issue/comment/edit", {
+      ok: true, status: 200, body: { ok: true, summary: "edited a comment on SHI-1" },
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/issue/comment/edit",
+      payload: { tracker: "linear:SHI", id: "SHI-1", commentId: "c1", body: "corrected" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/issue/comment/edit");
+    expect(client.calls[0].body).toMatchObject({ id: "SHI-1", commentId: "c1", body: "corrected" });
+  });
+
+  it("POST /agent-ops/issue/comment/edit surfaces a 403 refusal verbatim (SHI-86)", async () => {
+    client.setResponse("POST", "/issue/comment/edit", {
+      ok: false, status: 403, body: { error: "was written by someone else" },
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/issue/comment/edit",
+      payload: { tracker: "github", id: "42", commentId: "9001", body: "x" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toBe("was written by someone else");
   });
 
   it("GET /agent-ops/issue/view surfaces a 404 verbatim", async () => {

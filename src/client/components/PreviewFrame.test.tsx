@@ -159,6 +159,104 @@ describe("PreviewFrame", () => {
     await screen.findByTitle("Live Preview");
   });
 
+  it("reloads the current page in place instead of re-navigating to the entry URL", async () => {
+    // Regression: refresh used to re-assign `src`, which sends a preview the
+    // user had navigated into (SPA route, sub-page) back to the front page.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+
+    // The injected preview script announces itself — only then do we know a
+    // "reload" command will be honoured.
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "loaded" },
+      source: iframe.contentWindow,
+    }));
+
+    const srcSetter = vi.fn();
+    Object.defineProperty(iframe, "src", { set: srcSetter, get: () => "http://localhost:5173", configurable: true });
+
+    fireEvent.click(screen.getByTitle("Refresh preview"));
+
+    expect(postMessage).toHaveBeenCalledWith({ source: "shipit-toolbar", type: "reload" }, "*");
+    expect(srcSetter).not.toHaveBeenCalled();
+  });
+
+  it("falls back to re-assigning src when the preview script never loaded", async () => {
+    // No "loaded" message — a non-proxied local preview, a 502, or an
+    // auth-gated response. A hard re-fetch is the only thing that can work.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    const srcSetter = vi.fn();
+    Object.defineProperty(iframe, "src", { set: srcSetter, get: () => "http://localhost:5173", configurable: true });
+
+    fireEvent.click(screen.getByTitle("Refresh preview"));
+
+    expect(srcSetter).toHaveBeenCalledWith("http://localhost:5173");
+    expect(postMessage).not.toHaveBeenCalledWith({ source: "shipit-toolbar", type: "reload" }, "*");
+  });
+
+  it("shows the path an iframe reports, and updates it on client-side navigation", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+
+    const report = (path: string) => window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "path", path },
+      source: iframe.contentWindow,
+    }));
+
+    report("/orders/8842?tab=open");
+    expect(await screen.findByText("/orders/8842")).toBeInTheDocument();
+    expect(screen.getByText("?tab=open")).toBeInTheDocument();
+
+    report("/settings/secrets");
+    expect(await screen.findByText("/settings/secrets")).toBeInTheDocument();
+    expect(screen.queryByText("/orders/8842")).not.toBeInTheDocument();
+  });
+
+  it("ignores a reported path that is not a same-document absolute path", async () => {
+    // The value is authored by the previewed page. A protocol-relative
+    // "//evil.example" would resolve against the slot URL into a foreign
+    // origin, putting someone else's host in the tooltip and on the clipboard.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+
+    for (const path of ["//evil.example/x", "http://evil.example/x", "javascript:alert(1)", 42]) {
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { source: "shipit-preview", type: "path", path },
+        source: iframe.contentWindow,
+      }));
+    }
+
+    expect(screen.queryByRole("button", { name: /Copy preview URL/ })).not.toBeInTheDocument();
+  });
+
+  it("does not show a path reported by a different session's background iframe", async () => {
+    // Slots are per (session, port); a background preview reporting its route
+    // must not overwrite what the visible one says.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "path", path: "/visible" },
+      source: iframe.contentWindow,
+    }));
+    expect(await screen.findByText("/visible")).toBeInTheDocument();
+
+    // A message from a window that owns no slot is dropped entirely.
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "path", path: "/from-nowhere" },
+      source: window,
+    }));
+    expect(screen.queryByText("/from-nowhere")).not.toBeInTheDocument();
+    expect(screen.getByText("/visible")).toBeInTheDocument();
+  });
+
   it("posts a back-navigation message to the active iframe when Back is clicked", async () => {
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
@@ -568,6 +666,37 @@ describe("PreviewFrame", () => {
     expect(screen.getByText("Preview not available over this host")).toBeInTheDocument();
     expect(screen.getByText("192.168.1.5:4123")).toBeInTheDocument();
     expect(screen.queryByText("Connecting to dev server...")).not.toBeInTheDocument();
+    // docs/254 req 8: explaining the constraint isn't enough — name a host that
+    // actually works, so the user has something to act on rather than a rule to
+    // reason about. Asserted here and not only in the helper's unit tests,
+    // because the helper could keep passing while the component stopped
+    // rendering what it returns.
+    expect(screen.getByText("http://192-168-1-5.sslip.io:4123")).toBeInTheDocument();
+  });
+
+  it("explains the constraint without inventing a host when none can be suggested", () => {
+    // A non-loopback IPv6 literal reaches the empty state (buildSubdomainUrl
+    // returns null for it) but gets no suggestion — sslip.io does serve dashed
+    // IPv6 names, but encoding one correctly is fiddly and deliberately out of
+    // scope, so the empty state must stop at the explanation. A bogus concrete
+    // suggestion would be worse than none.
+    vi.stubEnv("VITE_API_HOST", "[2001:db8::1]:4123");
+    render(
+      <PreviewFrame
+        preview={{
+          running: true,
+          port: 3000,
+          url: "/preview/abc/3000/",
+          source: "detected",
+          detectedPorts: [3000],
+        }}
+        sessionId="abc"
+        {...defaultProps}
+        detectedPorts={[3000]}
+      />,
+    );
+    expect(screen.getByText("Preview not available over this host")).toBeInTheDocument();
+    expect(screen.queryByText(/sslip\.io/)).not.toBeInTheDocument();
   });
 
   it("passes an AbortSignal to preview-health fetch so a hung response can't strand the poll", async () => {

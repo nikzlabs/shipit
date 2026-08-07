@@ -26,6 +26,7 @@ import {
   createIssueForTracker,
   createLabelForTracker,
   commentOnIssueForTracker,
+  editCommentForTracker,
   updateIssueForTracker,
   setIssueStatusForTracker,
   setIssueAssigneeForTracker,
@@ -34,8 +35,28 @@ import {
 import { ServiceError } from "./types.js";
 import type { GitHubTrackerContext } from "../trackers/index.js";
 
-const TEAM = { id: "team-1", key: "SHI", name: "ShipIt" };
-const GH: GitHubTrackerContext = { token: "ghp_test", repo: { owner: "octocat", repo: "hello-world" } };
+/**
+ * docs/248 — Linear is a declared tracker like any other, so the context these
+ * services receive carries the declaration. `LINEAR_TRACKER` is the id it
+ * resolves to; the bare `"linear"` no longer names anything.
+ */
+const LINEAR_TEAM = "SHI";
+const LINEAR_TRACKER = "linear:SHI";
+const GH: GitHubTrackerContext = {
+  token: "ghp_test",
+  repo: { owner: "octocat", repo: "hello-world" },
+  declared: [{ kind: "linear", name: "roadmap", team: LINEAR_TEAM }],
+};
+
+/** The lazy team-key → team-id lookup every Linear call now makes first. */
+const TEAM_LOOKUP_DATA = { teams: { nodes: [{ id: "team-1", key: LINEAR_TEAM }] } };
+
+/** A context whose only declared tracker is Linear (no GitHub repo in play). */
+const LINEAR_CTX: GitHubTrackerContext = {
+  token: null,
+  repo: null,
+  declared: [{ kind: "linear", name: "roadmap", team: LINEAR_TEAM }],
+};
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -98,8 +119,7 @@ describe("getIssueForTracker (docs/175)", () => {
 
   it("dispatches to the Linear tracker by key", async () => {
     credentialStore.setLinearToken("lin_api_x");
-    credentialStore.setLinearTeam(TEAM);
-
+    
     const fetchImpl = (async (_url: string, init?: RequestInit) => {
       const body = JSON.parse((init?.body as string) ?? "{}") as {
         query?: string;
@@ -112,6 +132,7 @@ describe("getIssueForTracker (docs/175)", () => {
           issue: {
             id: "abc",
             identifier: "TRACKER-28",
+            team: { key: "SHI" },
             title: "Decouple priorities",
             url: "https://linear.app/example/issue/TRACKER-28",
             description: "Body",
@@ -126,19 +147,21 @@ describe("getIssueForTracker (docs/175)", () => {
 
     const { tracker, issue } = await getIssueForTracker(
       credentialStore,
-      "linear",
+      LINEAR_TRACKER,
       "TRACKER-28",
       fetchImpl,
+      LINEAR_CTX,
     );
-    expect(tracker.id).toBe("linear");
-    expect(issue.identifier).toBe("TRACKER-28");
+    expect(tracker.id).toBe(LINEAR_TRACKER);
+    // req 15 — the identifier renders in the declared name's form.
+    expect(issue.identifier).toBe("roadmap#TRACKER-28");
     expect(issue.priority.level).toBe("urgent");
     expect(issue.assignee?.name).toBe("Nik");
   });
 
   it("errors when the tracker is unconfigured (Linear, no token)", async () => {
     await expect(
-      getIssueForTracker(credentialStore, "linear", "TRACKER-1"),
+      getIssueForTracker(credentialStore, LINEAR_TRACKER, "TRACKER-1", undefined, LINEAR_CTX),
     ).rejects.toMatchObject({ statusCode: 400 });
   });
 
@@ -191,8 +214,7 @@ describe("listIssuesForTracker availableStatuses (docs/191)", () => {
   it("attaches the Linear team's workflow states for the inline editor", async () => {
     const store = tmpStore();
     store.setLinearToken("lin_x");
-    store.setLinearTeam(TEAM);
-    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
       if (query.includes("TeamIssues")) {
         return jsonResponse({ data: { team: { issues: { nodes: [] } } } });
@@ -211,9 +233,11 @@ describe("listIssuesForTracker availableStatuses (docs/191)", () => {
           },
         });
       }
+      // docs/248 — every Linear call first resolves the declared team key to a team id.
+      if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
       throw new Error(`no route for "${query.trim().slice(0, 20)}"`);
     }) as unknown as typeof fetch;
-    const out = await listIssuesForTracker(store, "linear", fetchImpl, undefined);
+    const out = await listIssuesForTracker(store, LINEAR_TRACKER, fetchImpl, LINEAR_CTX);
     // Sorted by board position, regardless of the response order.
     expect(out.availableStatuses).toEqual([
       { name: "Todo", type: "unstarted" },
@@ -236,8 +260,7 @@ describe("listIssuesForTracker availableStatuses (docs/191)", () => {
   it("drops duplicate-status issues from the default open list, keeps them when includeDone", async () => {
     const store = tmpStore();
     store.setLinearToken("lin_x");
-    store.setLinearTeam(TEAM);
-    const nodes = [
+        const nodes = [
       {
         id: "a", identifier: "SHI-1", title: "Open one", url: "https://linear.app/x/SHI-1",
         priority: 0, state: { name: "Todo", type: "unstarted" }, assignee: null, labels: { nodes: [] },
@@ -251,29 +274,32 @@ describe("listIssuesForTracker availableStatuses (docs/191)", () => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
       if (query.includes("TeamIssues")) return jsonResponse({ data: { team: { issues: { nodes } } } });
       if (query.includes("TeamStates")) return jsonResponse({ data: { team: { states: { nodes: [] } } } });
+      // docs/248 — every Linear call first resolves the declared team key to a team id.
+      if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
       throw new Error(`no route for "${query.trim().slice(0, 20)}"`);
     }) as unknown as typeof fetch;
 
-    const open = await listIssuesForTracker(store, "linear", fetchImpl, undefined);
-    expect(open.issues.map((i) => i.identifier)).toEqual(["SHI-1"]);
+    const open = await listIssuesForTracker(store, LINEAR_TRACKER, fetchImpl, LINEAR_CTX);
+    // req 15 — identifiers render in the declared name's form.
+    expect(open.issues.map((i) => i.identifier)).toEqual(["roadmap#SHI-1"]);
 
-    const all = await listIssuesForTracker(store, "linear", fetchImpl, undefined, { includeDone: true });
-    expect(all.issues.map((i) => i.identifier)).toEqual(["SHI-1", "SHI-2"]);
+    const all = await listIssuesForTracker(store, LINEAR_TRACKER, fetchImpl, LINEAR_CTX, { includeDone: true });
+    expect(all.issues.map((i) => i.identifier)).toEqual(["roadmap#SHI-1", "roadmap#SHI-2"]);
   });
 
   it("degrades to no availableStatuses when the states lookup fails (best-effort)", async () => {
     const store = tmpStore();
     store.setLinearToken("lin_x");
-    store.setLinearTeam(TEAM);
-    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
+      if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
       if (query.includes("TeamIssues")) {
         return jsonResponse({ data: { team: { issues: { nodes: [] } } } });
       }
       // TeamStates errors — the list must still succeed without statuses.
       return jsonResponse({ errors: [{ message: "states boom" }] });
     }) as unknown as typeof fetch;
-    const out = await listIssuesForTracker(store, "linear", fetchImpl, undefined);
+    const out = await listIssuesForTracker(store, LINEAR_TRACKER, fetchImpl, LINEAR_CTX);
     expect(out.issues).toEqual([]);
     expect(out.availableStatuses).toBeUndefined();
   });
@@ -298,23 +324,24 @@ describe("listLabelsForTracker (SHI-92 foundation)", () => {
   it("returns the Linear workspace labels with their colors", async () => {
     const store = tmpStore();
     store.setLinearToken("lin_x");
-    store.setLinearTeam(TEAM);
-    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
       if (query.includes("IssueLabels")) {
         return jsonResponse({
           data: { issueLabels: { nodes: [{ name: "security", color: "#d73a4a" }] } },
         });
       }
+      // docs/248 — every Linear call first resolves the declared team key to a team id.
+      if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
       throw new Error(`no route for "${query.trim().slice(0, 20)}"`);
     }) as unknown as typeof fetch;
-    const out = await listLabelsForTracker(store, "linear", fetchImpl, undefined);
+    const out = await listLabelsForTracker(store, LINEAR_TRACKER, fetchImpl, LINEAR_CTX);
     expect(out.labels).toEqual([{ name: "security", color: "#d73a4a" }]);
   });
 
   it("returns an empty set for an unconfigured tracker (no error)", async () => {
     // Linear with no token/team is unconfigured — a normal empty state.
-    const out = await listLabelsForTracker(tmpStore(), "linear", undefined, undefined);
+    const out = await listLabelsForTracker(tmpStore(), LINEAR_TRACKER, undefined, LINEAR_CTX);
     expect(out.labels).toEqual([]);
   });
 });
@@ -335,8 +362,7 @@ describe("listStatusesForTracker (SHI-199)", () => {
   it("returns the Linear team's workflow states in board order", async () => {
     const store = tmpStore();
     store.setLinearToken("lin_x");
-    store.setLinearTeam(TEAM);
-    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
       if (query.includes("TeamStates")) {
         return jsonResponse({
@@ -352,9 +378,11 @@ describe("listStatusesForTracker (SHI-199)", () => {
           },
         });
       }
+      // docs/248 — every Linear call first resolves the declared team key to a team id.
+      if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
       throw new Error(`no route for "${query.trim().slice(0, 20)}"`);
     }) as unknown as typeof fetch;
-    const out = await listStatusesForTracker(store, "linear", fetchImpl, undefined);
+    const out = await listStatusesForTracker(store, LINEAR_TRACKER, fetchImpl, LINEAR_CTX);
     // Sorted by board position, not the order returned.
     expect(out.statuses).toEqual([
       { name: "Backlog", type: "backlog", color: "#bec2c8" },
@@ -363,7 +391,7 @@ describe("listStatusesForTracker (SHI-199)", () => {
   });
 
   it("returns an empty set for an unconfigured tracker (no error)", async () => {
-    const out = await listStatusesForTracker(tmpStore(), "linear", undefined, undefined);
+    const out = await listStatusesForTracker(tmpStore(), LINEAR_TRACKER, undefined, LINEAR_CTX);
     expect(out.statuses).toEqual([]);
   });
 });
@@ -398,18 +426,19 @@ describe("user-initiated inline writes (docs/191)", () => {
   it("userSetIssuePriority updates Linear priority and returns the issue", async () => {
     const store = tmpStore();
     store.setLinearToken("lin_x");
-    store.setLinearTeam(TEAM);
-    const node = {
+        const node = {
       id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
       priority: 2, priorityLabel: "High", state: { name: "Todo", type: "unstarted" }, assignee: null, labels: { nodes: [] },
     };
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
-      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1" } } });
+      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI" } } } });
       if (query.includes("issueUpdate")) return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
+      // docs/248 — every Linear call first resolves the declared team key to a team id.
+      if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
       throw new Error(`no route for "${query.trim().slice(0, 20)}"`);
     });
-    const out = await userSetIssuePriority(store, "linear", "SHI-9", "high", fetchImpl as unknown as typeof fetch);
+    const out = await userSetIssuePriority(store, LINEAR_TRACKER, "SHI-9", "high", fetchImpl as unknown as typeof fetch, LINEAR_CTX);
     // The issueUpdate input mapped "high" → numeric 2.
     const update = fetchImpl.mock.calls.find(
       ([, i]) => ((JSON.parse((i?.body as string) ?? "{}").query as string) ?? "").includes("issueUpdate"),
@@ -597,16 +626,23 @@ function linearFetch(states: { id: string; name: string; type: string; position:
   const node = {
     id: "uuid-1", identifier: "SHI-9", title: "New doc", url: "https://linear.app/x/SHI-9",
     priority: 0, state: { name: "Todo", type: "unstarted" }, assignee: null,
-    team: { states: { nodes: states } },
+    team: { key: "SHI", states: { nodes: states } },
   };
   return vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
     const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
     if (query.includes("IssueStates")) {
-      return jsonResponse({ data: { issue: { id: "uuid-1", team: { states: { nodes: states } } } } });
+      return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI", states: { nodes: states } } } } });
     }
     if (query.includes("issueUpdate")) {
       return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
     }
+    // `IssueId` resolves a key/UUID for a mutation; the docs/248 team guard reads
+    // the team off it, so the stub has to carry one.
+    if (query.includes("IssueId")) {
+      return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI" } } } });
+    }
+    // docs/248 — every Linear call first resolves the declared team key to a team id.
+    if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
     throw new Error(`linearFetch: no route for "${query.trim().slice(0, 30)}"`);
   });
 }
@@ -635,7 +671,7 @@ describe("issue write services (docs/177)", () => {
 
   it("create: rejects an unconfigured tracker with a 409 ServiceError", async () => {
     await expect(
-      createIssueForTracker(store, "linear", "x", ""),
+      createIssueForTracker(store, LINEAR_TRACKER, "x", "", undefined, undefined, LINEAR_CTX),
     ).rejects.toMatchObject({ statusCode: 409 });
   });
 
@@ -661,6 +697,97 @@ describe("issue write services (docs/177)", () => {
     ).rejects.toMatchObject({ statusCode: 422 });
   });
 
+  // docs/248 req 11's carve-out — reversing a write grants no access the write
+  // did not already have (the card could only exist if the destination was
+  // declared when it was written), so an Undo must survive the repository
+  // dropping that declaration rather than being stranded behind a config edit.
+  it("undo: reaches a destination the repository no longer declares", async () => {
+    const fetchImpl = ghFetch();
+    await undoIssueWrite(
+      store,
+      { tracker: "github:acme/planning", issueId: "42", undo: { kind: "create" } },
+      fetchImpl,
+      // The context declares NOTHING — the card's recorded destination is the
+      // only thing that can resolve it.
+      { token: "ghp_test", repo: { owner: "octocat", repo: "hello-world" } },
+    );
+    const patch = fetchImpl.mock.calls.find(([, i]) => i?.method === "PATCH")!;
+    expect(patch[0]).toContain("/repos/acme/planning/issues/42");
+  });
+
+  // req 16's exception — Undo is NOT re-targeted by a re-pointed name. This test
+  // previously asserted the opposite, and asserting it is what made the defect
+  // legible: it expected the undo to PATCH `acme/new-planning#42`, a DIFFERENT
+  // repository's issue 42, using a snapshot taken from `acme/old-planning#42`.
+  // Linear's team guard would have caught the equivalent attempt; GitHub has no
+  // such guard, so the wrong repository was silently rewritten.
+  it("undo: refuses rather than following a name that has been re-pointed", async () => {
+    const fetchImpl = ghFetch();
+    await expect(
+      undoIssueWrite(
+        store,
+        {
+          tracker: "github:acme/old-planning",
+          trackerName: "planning",
+          issueId: "42",
+          undo: { kind: "create" },
+        },
+        fetchImpl,
+        {
+          token: "ghp_test",
+          repo: { owner: "octocat", repo: "hello-world" },
+          declared: [{ kind: "github", name: "planning", owner: "acme", repo: "new-planning" }],
+        },
+      ),
+    ).rejects.toThrow(/now points at .*new-planning.*but this write was made against/s);
+    // Nothing was written anywhere — not the new destination, not the old one.
+    expect(fetchImpl.mock.calls.some(([, i]) => i?.method === "PATCH")).toBe(false);
+  });
+
+  // The name is gone from shipit.yaml entirely — req 11's carve-out still applies,
+  // so the undo reaches the destination it recorded. Only a name pointing
+  // SOMEWHERE ELSE is refused; a name pointing nowhere is not a conflict.
+  it("undo: still reaches the recorded destination when the name is undeclared", async () => {
+    const fetchImpl = ghFetch();
+    await undoIssueWrite(
+      store,
+      {
+        tracker: "github:acme/old-planning",
+        trackerName: "planning",
+        issueId: "42",
+        undo: { kind: "create" },
+      },
+      fetchImpl,
+      { token: "ghp_test", repo: { owner: "octocat", repo: "hello-world" }, declared: [] },
+    );
+    const patch = fetchImpl.mock.calls.find(([, i]) => i?.method === "PATCH")!;
+    expect(patch[0]).toContain("/repos/acme/old-planning/issues/42");
+  });
+
+  // The declaration still points where the write went — the ordinary case, which
+  // must keep working: the re-point check is an equality test, not a ban on
+  // cards that carry a name.
+  it("undo: proceeds when the name still points at the recorded destination", async () => {
+    const fetchImpl = ghFetch();
+    await undoIssueWrite(
+      store,
+      {
+        tracker: "github:acme/planning",
+        trackerName: "planning",
+        issueId: "42",
+        undo: { kind: "create" },
+      },
+      fetchImpl,
+      {
+        token: "ghp_test",
+        repo: { owner: "octocat", repo: "hello-world" },
+        declared: [{ kind: "github", name: "planning", owner: "acme", repo: "planning" }],
+      },
+    );
+    const patch = fetchImpl.mock.calls.find(([, i]) => i?.method === "PATCH")!;
+    expect(patch[0]).toContain("/repos/acme/planning/issues/42");
+  });
+
   it("undo: create → cancels the issue (close as not_planned)", async () => {
     const fetchImpl = ghFetch();
     await undoIssueWrite(
@@ -675,24 +802,22 @@ describe("issue write services (docs/177)", () => {
 
   it("undo: create on Linear cancels via the team's canceled state", async () => {
     store.setLinearToken("lin_x");
-    store.setLinearTeam({ id: "team-1", key: "SHI", name: "ShipIt" });
-    const fetchImpl = linearFetch([
+        const fetchImpl = linearFetch([
       { id: "s-todo", name: "Todo", type: "unstarted", position: 0 },
       { id: "s-done", name: "Done", type: "completed", position: 1 },
       { id: "s-cancel", name: "Canceled", type: "canceled", position: 2 },
     ]);
-    await undoIssueWrite(store, { tracker: "linear", issueId: "uuid-1", undo: { kind: "create" } }, fetchImpl);
+    await undoIssueWrite(store, { tracker: LINEAR_TRACKER, issueId: "uuid-1", undo: { kind: "create" } }, fetchImpl);
     expect(lastIssueUpdateInput(fetchImpl)).toEqual({ stateId: "s-cancel" });
   });
 
   it("undo: create on Linear falls back to completed when the team has no canceled state", async () => {
     store.setLinearToken("lin_x");
-    store.setLinearTeam({ id: "team-1", key: "SHI", name: "ShipIt" });
-    const fetchImpl = linearFetch([
+        const fetchImpl = linearFetch([
       { id: "s-todo", name: "Todo", type: "unstarted", position: 0 },
       { id: "s-done", name: "Done", type: "completed", position: 1 },
     ]);
-    await undoIssueWrite(store, { tracker: "linear", issueId: "uuid-1", undo: { kind: "create" } }, fetchImpl);
+    await undoIssueWrite(store, { tracker: LINEAR_TRACKER, issueId: "uuid-1", undo: { kind: "create" } }, fetchImpl);
     // No canceled state → the first setStatus throws, the service retries with completed.
     expect(lastIssueUpdateInput(fetchImpl)).toEqual({ stateId: "s-done" });
   });
@@ -714,6 +839,87 @@ describe("issue write services (docs/177)", () => {
     expect(preview.endsWith("…")).toBe(true);
     expect(preview).not.toContain("\n");
     expect(preview.length).toBeLessThanOrEqual(281); // 280 + ellipsis
+  });
+
+  // ---- comment edit (SHI-86) ----------------------------------------------
+
+  /**
+   * `ghFetch` plus the two calls a comment edit adds: the by-id comment read
+   * (author + owning issue + prior body) and the PATCH that rewrites it.
+   */
+  function ghFetchWithComment(over: { author?: string; issueUrl?: string } = {}) {
+    const base = ghFetch();
+    return vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = url as string;
+      const method = init?.method ?? "GET";
+      if (u.endsWith("/user")) return ghResponse({ login: "octocat" });
+      if (u.includes("/issues/comments/9001")) {
+        if (method === "GET") {
+          return ghResponse({
+            id: 9001,
+            body: "old text",
+            issue_url:
+              over.issueUrl ?? "https://api.github.com/repos/octocat/hello-world/issues/42",
+            user: { login: over.author ?? "octocat" },
+          });
+        }
+        return ghResponse({ id: 9001, body: JSON.parse(init?.body as string).body });
+      }
+      return base(url, init);
+    });
+  }
+
+  it("comment edit: rewrites the comment and snapshots the prior body for undo", async () => {
+    const fetchImpl = ghFetchWithComment();
+    const out = await editCommentForTracker(store, "github", "42", "9001", "corrected", fetchImpl, GH);
+    expect(out.verb).toBe("comment-edit");
+    expect(out.summary).toContain("octocat/hello-world#42");
+    // Undo restores the exact prior body — the symmetric reverse write.
+    expect(out.undo).toEqual({ kind: "comment-edit", commentId: "9001", previousBody: "old text" });
+    // The card's line 2 shows the NEW body; the old one is one Undo away.
+    expect(out.content).toEqual({ comment: "corrected" });
+  });
+
+  it("comment edit: undo restores the previous body", async () => {
+    const fetchImpl = ghFetchWithComment();
+    await undoIssueWrite(
+      store,
+      {
+        tracker: "github",
+        issueId: "42",
+        undo: { kind: "comment-edit", commentId: "9001", previousBody: "old text" },
+      },
+      fetchImpl,
+      GH,
+    );
+    const patch = fetchImpl.mock.calls.find(
+      ([u, i]) => i?.method === "PATCH" && (u as string).includes("/issues/comments/9001"),
+    )!;
+    expect(JSON.parse(patch[1]?.body as string)).toEqual({ body: "old text" });
+  });
+
+  // The judgement call, enforced end to end: editing a comment ShipIt did not
+  // write would silently rewrite a human's words, and neither backend refuses
+  // it. A 403 (not a 422) — there is no other value that would have worked.
+  it("comment edit: refuses a comment written by someone else, as a 403", async () => {
+    const fetchImpl = ghFetchWithComment({ author: "some-human" });
+    await expect(
+      editCommentForTracker(store, "github", "42", "9001", "rewritten", fetchImpl, GH),
+    ).rejects.toMatchObject({ statusCode: 403 });
+    expect(
+      fetchImpl.mock.calls.some(
+        ([u, i]) => i?.method === "PATCH" && (u as string).includes("/issues/comments/"),
+      ),
+    ).toBe(false);
+  });
+
+  it("comment edit: refuses a comment id belonging to another issue", async () => {
+    const fetchImpl = ghFetchWithComment({
+      issueUrl: "https://api.github.com/repos/octocat/hello-world/issues/99",
+    });
+    await expect(
+      editCommentForTracker(store, "github", "42", "9001", "rewritten", fetchImpl, GH),
+    ).rejects.toThrow(/not on issue #42/);
   });
 
   it("edit: snapshots the prior title for undo", async () => {
@@ -755,20 +961,21 @@ describe("issue write services (docs/177)", () => {
 
   it("undo: edit → restores the prior parent on Linear (SHI-206)", async () => {
     store.setLinearToken("lin_x");
-    store.setLinearTeam(TEAM);
-    const node = {
+        const node = {
       id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
       priority: 0, priorityLabel: "No priority", state: { name: "Todo" }, assignee: null, labels: { nodes: [] },
     };
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
-      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-prior" } } });
+      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-prior", team: { key: "SHI" } } } });
       if (query.includes("issueUpdate")) return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
+      // docs/248 — every Linear call first resolves the declared team key to a team id.
+      if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
       throw new Error(`no route for "${query.trim().slice(0, 30)}"`);
     });
     await undoIssueWrite(
       store,
-      { tracker: "linear", issueId: "uuid-1", undo: { kind: "edit", previousParentId: "uuid-prior" } },
+      { tracker: LINEAR_TRACKER, issueId: "uuid-1", undo: { kind: "edit", previousParentId: "uuid-prior" } },
       fetchImpl as unknown as typeof fetch,
     );
     // The reverse write re-parents to the snapshotted prior id (resolved verbatim).
@@ -778,11 +985,10 @@ describe("issue write services (docs/177)", () => {
 
   it("edit: snapshots the prior priority level for undo on Linear (SHI-92)", async () => {
     store.setLinearToken("lin_x");
-    store.setLinearTeam(TEAM);
-    const node = {
+        const node = {
       id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
       priority: 2, priorityLabel: "High", state: { name: "Todo", type: "unstarted" }, assignee: null,
-      labels: { nodes: [] },
+      labels: { nodes: [] }, team: { key: "SHI" },
     };
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
@@ -790,11 +996,13 @@ describe("issue write services (docs/177)", () => {
         // Prior issue has priority level "low" (numeric 4).
         return jsonResponse({ data: { issue: { ...node, priority: 4, priorityLabel: "Low" } } });
       }
-      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1" } } });
+      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI" } } } });
       if (query.includes("issueUpdate")) return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
+      // docs/248 — every Linear call first resolves the declared team key to a team id.
+      if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
       throw new Error(`no route for "${query.trim().slice(0, 30)}"`);
     });
-    const out = await updateIssueForTracker(store, "linear", "SHI-9", { priority: "high" }, fetchImpl as unknown as typeof fetch);
+    const out = await updateIssueForTracker(store, LINEAR_TRACKER, "SHI-9", { priority: "high" }, fetchImpl as unknown as typeof fetch, LINEAR_CTX);
     // The issueUpdate input mapped "high" → numeric 2.
     const update = fetchImpl.mock.calls.find(([, i]) => ((JSON.parse((i?.body as string) ?? "{}").query as string) ?? "").includes("issueUpdate"))!;
     expect(JSON.parse(update[1]?.body as string).variables.input).toEqual({ priority: 2 });
@@ -803,11 +1011,10 @@ describe("issue write services (docs/177)", () => {
 
   it("edit: reparents on Linear, resolves the parentId, and snapshots the prior parent (SHI-206)", async () => {
     store.setLinearToken("lin_x");
-    store.setLinearTeam(TEAM);
-    const node = {
+        const node = {
       id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
       priority: 2, priorityLabel: "High", state: { name: "Todo", type: "unstarted" }, assignee: null,
-      labels: { nodes: [] },
+      labels: { nodes: [] }, team: { key: "SHI" },
     };
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
@@ -815,38 +1022,42 @@ describe("issue write services (docs/177)", () => {
         // Prior issue already nests under SHI-100 → its internal id is snapshotted.
         return jsonResponse({ data: { issue: { ...node, parent: { id: "uuid-old", identifier: "SHI-100" } } } });
       }
-      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1" } } });
+      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI" } } } });
       if (query.includes("issueUpdate")) {
         return jsonResponse({ data: { issueUpdate: { success: true, issue: { ...node, parent: { id: "uuid-204", identifier: "SHI-204" } } } } });
       }
+      // docs/248 — every Linear call first resolves the declared team key to a team id.
+      if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
       throw new Error(`no route for "${query.trim().slice(0, 30)}"`);
     });
-    const out = await updateIssueForTracker(store, "linear", "SHI-9", { parent: "SHI-204" }, fetchImpl as unknown as typeof fetch);
+    const out = await updateIssueForTracker(store, LINEAR_TRACKER, "SHI-9", { parent: "SHI-204" }, fetchImpl as unknown as typeof fetch, LINEAR_CTX);
     // The issueUpdate input carries the resolved parentId.
     const update = fetchImpl.mock.calls.find(([, i]) => ((JSON.parse((i?.body as string) ?? "{}").query as string) ?? "").includes("issueUpdate"))!;
     expect(JSON.parse(update[1]?.body as string).variables.input).toEqual({ parentId: "uuid-1" });
     expect(out.undo).toMatchObject({ kind: "edit", previousParentId: "uuid-old" });
     // docs/189 — the reparent is surfaced on line 2.
-    expect(out.content?.attrs).toContain("parent → SHI-204");
+    // req 15 — ShipIt-emitted references carry the declared name form.
+    expect(out.content?.attrs).toContain("parent → roadmap#SHI-204");
   });
 
   it("edit: detaching on Linear snapshots previousParentId null and sends parentId null (SHI-206)", async () => {
     store.setLinearToken("lin_x");
-    store.setLinearTeam(TEAM);
-    const node = {
+        const node = {
       id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
       priority: 0, priorityLabel: "No priority", state: { name: "Todo", type: "unstarted" }, assignee: null,
-      labels: { nodes: [] },
+      labels: { nodes: [] }, team: { key: "SHI" },
     };
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
       // Prior issue has no parent → previousParentId is null (undo would detach).
       if (query.includes("query Issue")) return jsonResponse({ data: { issue: node } });
-      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1" } } });
+      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI" } } } });
       if (query.includes("issueUpdate")) return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
+      // docs/248 — every Linear call first resolves the declared team key to a team id.
+      if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
       throw new Error(`no route for "${query.trim().slice(0, 30)}"`);
     });
-    const out = await updateIssueForTracker(store, "linear", "SHI-9", { parent: null }, fetchImpl as unknown as typeof fetch);
+    const out = await updateIssueForTracker(store, LINEAR_TRACKER, "SHI-9", { parent: null }, fetchImpl as unknown as typeof fetch, LINEAR_CTX);
     const update = fetchImpl.mock.calls.find(([, i]) => ((JSON.parse((i?.body as string) ?? "{}").query as string) ?? "").includes("issueUpdate"))!;
     expect(JSON.parse(update[1]?.body as string).variables.input).toEqual({ parentId: null });
     expect(out.undo).toMatchObject({ kind: "edit", previousParentId: null });
@@ -889,7 +1100,7 @@ describe("issue write services (docs/177)", () => {
 
   it("rejects an unconfigured tracker with a ServiceError", async () => {
     await expect(
-      getIssueForTracker(store, "linear", "TRACKER-1"),
+      getIssueForTracker(store, LINEAR_TRACKER, "TRACKER-1", undefined, LINEAR_CTX),
     ).rejects.toBeInstanceOf(ServiceError);
   });
 

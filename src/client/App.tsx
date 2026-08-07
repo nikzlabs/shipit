@@ -143,6 +143,7 @@ import {
 } from "./utils/doc-paths.js";
 import { dispatchAgentMessage } from "./utils/dispatch-agent-message.js";
 import type { AgentInterfaceProvenance } from "../server/shared/agent-interface-sdk/protocol.js";
+import { buildIssueSeedPrompt } from "../server/shared/issue-ref.js";
 import { sendUserMessage } from "./utils/send-user-message.js";
 import { buildReleaseConfirmMessage } from "./utils/release-confirm-message.js";
 import { isAgentMessagingBlocked } from "./utils/agent-messaging-trust.js";
@@ -477,6 +478,7 @@ export default function App() {
         uploadRefs,
         uploads: payloadUploads,
         resetMergedBranch,
+        dictated,
       } = payload;
       // docs/203, docs/220 — `/review [@path]` is a chat-native entry point to AI
       // review: same composed prompt as the modal button, sent as a normal
@@ -575,10 +577,19 @@ export default function App() {
           void navigate(`/session/${currentSessionId}`, { replace: true });
         }
 
+        // SHI-320 — first message of a session the Issues tab seeded from an
+        // issue. Only the session it was seeded for may claim it: prefilling
+        // doesn't pin the user to that session, and the ref must not follow
+        // them into an unrelated one.
+        const pendingIssue = useSessionStore.getState().pendingIssueRef;
+        const issueRef =
+          pendingIssue?.sessionId === currentSessionId ? pendingIssue.ref : undefined;
+
         const message = {
           type: "send_message" as const,
           text,
           sessionId: currentSessionId,
+          ...(issueRef ? { issueRef } : {}),
           files:
             settings.pendingFiles.length > 0
               ? settings.pendingFiles
@@ -590,9 +601,12 @@ export default function App() {
           })(),
           // docs/218 — per-send opt-out for the auto-reset-merged-branch control.
           ...(resetMergedBranch !== undefined ? { resetMergedBranch } : {}),
+          // docs/144 — tell the agent this message was spoken, not typed, so it
+          // reads STT artifacts as artifacts. The bubble above stays verbatim.
+          ...(dictated ? { dictated: true } : {}),
         };
 
-        sendUserMessage({
+        const sent = sendUserMessage({
           bubble: {
             role: "user",
             text,
@@ -618,6 +632,11 @@ export default function App() {
             return true;
           },
         });
+        // Consumed: the ref belongs to the frame now (including the stashed-
+        // for-reconnect case). Left in place on a dropped send so the retry
+        // still carries it — `sendUserMessage` returns false only when nothing
+        // reached the wire.
+        if (issueRef && sent) useSessionStore.getState().setPendingIssueRef(undefined);
       } else {
         // No session — can't send without one (sessions are created via claim-session).
         // Still append the optimistic bubble so the user sees what they typed,
@@ -834,7 +853,7 @@ export default function App() {
   // Returns whether the answer reached the wire — AskUserQuestion gates its
   // answered-state lock on this, so it must not swallow the boolean.
   const handleAnswerQuestion = useCallback(
-    (toolUseId: string, answers: Record<string, string>, text: string): boolean => {
+    (toolUseId: string, answers: Record<string, string>, text: string, dictated?: boolean): boolean => {
       // Forward the session's current permission mode so answering a clarifying
       // question stays in the same mode it was asked in. Without this, an answer
       // given in plan mode resumes the CLI in default mode and the agent starts
@@ -855,6 +874,8 @@ export default function App() {
             answers,
             text,
             ...(pm !== "auto" ? { permissionMode: pm } : {}),
+            // docs/144 — an "Other" answer that was spoken rather than typed.
+            ...(dictated ? { dictated: true } : {}),
           }),
       });
     },
@@ -1036,7 +1057,17 @@ export default function App() {
   // binding; Linear ignores it. `fetchTrackers` is idempotent and cheap.
   // eslint-disable-next-line no-restricted-syntax -- external system sync: warm tracker config for inline issue-link interception
   useEffect(() => {
-    void useIssuesStore.getState().fetchTrackers();
+    void (async () => {
+      await useIssuesStore.getState().fetchTrackers();
+      // SHI-325 — the list is repo-scoped too: the GitHub tracker resolves
+      // against the session's repo binding, so the same tracker id yields
+      // different issues per session. Refetch whenever the tab is showing one
+      // (the fetch-on-open effect above is keyed on `rightTab`, so it does NOT
+      // re-run for a session change while the tab stays open).
+      if (useUiStore.getState().rightTab === "issues") {
+        await useIssuesStore.getState().fetchIssues();
+      }
+    })();
   }, [sessionId]);
 
   // docs/133 Phase 4: tell the server whether the PR tab is the active
@@ -1280,7 +1311,7 @@ export default function App() {
   // than firing a headless session that auto-sends, it seeds the chat input with
   // the issue's context so the user can edit/augment the prompt before sending.
   const handleIssueStartSession = useCallback(
-    async (issue: TrackerIssue, pickedRepoUrl?: string) => {
+    async (issue: TrackerIssue, tracker: TrackerId, pickedRepoUrl?: string) => {
       const { messages, sessions, sessionId } = useSessionStore.getState();
       const defaultRepoUrl =
         sessions.find((s) => s.id === sessionId)?.remoteUrl ??
@@ -1304,14 +1335,34 @@ export default function App() {
         await handleNewSessionForRepo(repoUrl);
       }
 
-      // Same prompt the server's seedFromIssueRef would have sent — now editable
-      // in the input instead of dispatched immediately.
-      const lines = [
-        `You are working on issue ${issue.identifier}: ${issue.title}`,
-      ];
-      if (issue.description?.trim()) lines.push("", issue.description.trim());
-      if (issue.url?.trim()) lines.push("", `Issue link: ${issue.url.trim()}`);
-      useSessionStore.getState().setPrefillText(lines.join("\n"));
+      // Same prompt the server's seedFromIssueRef sends — shared so the two
+      // can't drift — but here it lands in the composer, editable. It names the
+      // issue and nothing more: the agent fetches the body itself, and a short
+      // seed leaves room for the user to append what they actually want done
+      // before sending, instead of scrolling past a pasted description.
+      useSessionStore.getState().setPrefillText(buildIssueSeedPrompt(issue));
+
+      // SHI-320 — the prompt above is not enough for the server to know this
+      // session came from an issue, and inferring it from the text would be
+      // guesswork (the user is free to rewrite it). Park the ref against the
+      // session we just landed in; `handleSend` attaches it to the first
+      // message, which is where the branch gets pinned to the pointer
+      // (docs/248 req 22) and the issue moves to started.
+      const seededSessionId = useSessionStore.getState().sessionId;
+      useSessionStore.getState().setPendingIssueRef(
+        seededSessionId
+          ? {
+            sessionId: seededSessionId,
+            ref: {
+              tracker,
+              identifier: issue.identifier,
+              title: issue.title,
+              ...(issue.url ? { url: issue.url } : {}),
+              ...(issue.description ? { description: issue.description } : {}),
+            },
+          }
+          : undefined,
+      );
       useUiStore.getState().setMobilePanel("chat");
     },
     [handleNewSessionForRepo],

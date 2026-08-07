@@ -86,9 +86,10 @@ function ChangedDocChip({ sessionId, file }: { sessionId: string; file: NotableF
 /**
  * A related-issue chip (docs/206). Option 3 (intent-led pill): a leading verb
  * segment carries the source/intent, so order and wrapping never change
- * meaning. Click opens ShipIt's inline issue detail for a known tracker
- * (CLAUDE.md §2: inline beats link-out); an unknown-shape pointer with a URL
- * links out, otherwise it's a static badge.
+ * meaning. Click opens ShipIt's inline issue detail when the reference resolved
+ * to a declared destination (CLAUDE.md §2: inline beats link-out); an
+ * unresolvable reference with a URL links out, otherwise it's a static badge —
+ * legible, never a broken in-app link (docs/248 req 11).
  */
 function PrCardIssueChip({ chip }: { chip: IssueChipRef }) {
   const label = INTENT_LABEL[chip.intent];
@@ -113,8 +114,8 @@ function PrCardIssueChip({ chip }: { chip: IssueChipRef }) {
     </>
   );
 
-  // Known tracker → inline detail view.
-  if (chip.tracker !== "unknown") {
+  // Resolved to a declared destination → inline detail view.
+  if (chip.tracker) {
     const tracker = chip.tracker;
     return (
       <button

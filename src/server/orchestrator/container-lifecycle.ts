@@ -18,7 +18,7 @@ import {
   CONTAINER_BUILD_ID_LABEL,
   CONTAINER_SESSION_ID_LABEL,
 } from "./session-container.js";
-import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
+import { CONTAINER_WORKSPACE_DIR, DEP_CACHE_CONTAINER_PATH } from "../shared/fs-constants.js";
 import {
   CONTAINER_SESSION_STATE_DIR,
   sessionStateDirForWorkspace,
@@ -179,8 +179,12 @@ interface MountSpec {
   workspaceDir: string;
 }
 
-/** Container-internal mount point for the shared dependency cache. */
-export const DEP_CACHE_CONTAINER_PATH = "/dep-cache";
+/**
+ * Container-internal mount point for the shared dependency cache. Defined in
+ * `shared/fs-constants.ts` (session code needs it too — docs/248) and
+ * re-exported here for this module's existing importers.
+ */
+export { DEP_CACHE_CONTAINER_PATH };
 
 /**
  * docs/150 §8 — stable, shared Playwright browser cache path. The session-worker

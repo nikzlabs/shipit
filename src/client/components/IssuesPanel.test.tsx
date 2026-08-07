@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, cleanup, screen } from "@testing-library/react";
+import { act, render, cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { IssuesPanel } from "./IssuesPanel.js";
@@ -11,7 +11,7 @@ import {
   saveIssueFilters,
   ISSUE_FILTERS_KEY,
 } from "../utils/local-storage.js";
-import type { RepoInfo, TrackerIssue } from "../../server/shared/types.js";
+import type { RepoInfo, TrackerInfo, TrackerIssue } from "../../server/shared/types.js";
 
 function makeRepo(url: string, over: Partial<RepoInfo> = {}): RepoInfo {
   return { url, addedAt: "2026-01-01T00:00:00.000Z", lastUsedAt: "2026-01-01T00:00:00.000Z", status: "ready", ...over };
@@ -52,9 +52,9 @@ describe("IssuesPanel", () => {
 
   it("renders when the active tracker has no issues entry yet", () => {
     useIssuesStore.setState({
-      trackers: [{ id: "linear", label: "Linear", configured: true }],
+      trackers: [{ id: "linear", kind: "linear" as const, label: "Linear", configured: true }],
       activeTracker: "linear",
-      infoByTracker: { linear: { id: "linear", label: "Linear", configured: true } },
+      infoByTracker: { linear: { id: "linear", kind: "linear" as const, label: "Linear", configured: true } },
     });
     expect(() =>
       render(
@@ -70,9 +70,9 @@ describe("IssuesPanel", () => {
   // computed each render, or the panel loops into React #185.
   it("renders without a loop when filters are active", () => {
     useIssuesStore.setState({
-      trackers: [{ id: "linear", label: "Linear", configured: true }],
+      trackers: [{ id: "linear", kind: "linear" as const, label: "Linear", configured: true }],
       activeTracker: "linear",
-      infoByTracker: { linear: { id: "linear", label: "Linear", configured: true } },
+      infoByTracker: { linear: { id: "linear", kind: "linear" as const, label: "Linear", configured: true } },
       issuesByTracker: {
         linear: [makeIssue({ id: "SHI-1", title: "Auth bug", status: { name: "Todo" } })],
       },
@@ -100,9 +100,9 @@ describe("IssuesPanel repo picker (docs/236)", () => {
   function renderWithRepos(repos: RepoInfo[], activeRepoUrl?: string) {
     useRepoStore.setState({ repos, ...(activeRepoUrl ? { activeRepoUrl } : {}) });
     useIssuesStore.setState({
-      trackers: [{ id: "linear", label: "Linear", configured: true }],
+      trackers: [{ id: "linear", kind: "linear" as const, label: "Linear", configured: true }],
       activeTracker: "linear",
-      infoByTracker: { linear: { id: "linear", label: "Linear", configured: true } },
+      infoByTracker: { linear: { id: "linear", kind: "linear" as const, label: "Linear", configured: true } },
       issuesByTracker: { linear: [makeIssue({ id: "SHI-1", title: "Auth bug" })] },
     });
     const onStartSession = vi.fn();
@@ -126,7 +126,9 @@ describe("IssuesPanel repo picker (docs/236)", () => {
 
     expect(onStartSession).toHaveBeenCalledTimes(1);
     expect(onStartSession.mock.calls[0]![0]).toMatchObject({ identifier: "SHI-1" });
-    expect(onStartSession.mock.calls[0]![1]).toBe(website.url);
+    // SHI-320 — the tracker rides along so App can build a resolvable IssueRef.
+    expect(onStartSession.mock.calls[0]![1]).toBe("linear");
+    expect(onStartSession.mock.calls[0]![2]).toBe(website.url);
   });
 
   it("omits hidden repos, but keeps the current target even when hidden", async () => {
@@ -152,8 +154,83 @@ describe("IssuesPanel repo picker (docs/236)", () => {
     await userEvent.click(screen.getByRole("button", { name: /^start session$/i }));
 
     expect(onStartSession).toHaveBeenCalledTimes(1);
+    expect(onStartSession.mock.calls[0]![1]).toBe("linear");
     // No explicit repo — App resolves the session's own repo, as it always has.
-    expect(onStartSession.mock.calls[0]![1]).toBeUndefined();
+    expect(onStartSession.mock.calls[0]![2]).toBeUndefined();
+  });
+});
+
+/**
+ * SHI-325 — an issue opened in the tab must not stay on screen after switching
+ * to a repository that doesn't declare its tracker (docs/248 req 11). Panel-level
+ * because the observable behaviour is "the detail is gone and the list is back".
+ */
+describe("IssuesPanel repo switch (SHI-325)", () => {
+  const roadmap: TrackerInfo = {
+    id: "linear:SHI",
+    kind: "linear",
+    label: "roadmap",
+    configured: true,
+    name: "roadmap",
+    binding: { key: "SHI", name: "ShipIt" },
+  };
+
+  afterEach(() => {
+    useIssuesStore.setState({ repoScope: null, activeTracker: "linear" });
+  });
+
+  function renderWithOpenIssue() {
+    useIssuesStore.setState({
+      repoScope: "https://github.com/acme/app.git",
+      trackers: [roadmap],
+      activeTracker: "linear:SHI",
+      infoByTracker: { "linear:SHI": roadmap },
+      issuesByTracker: { "linear:SHI": [makeIssue({ id: "SHI-1", title: "Auth bug" })] },
+      selected: { tracker: "linear:SHI", id: "SHI-1", identifier: "SHI-1", title: "Auth bug" },
+      detail: makeIssue({ id: "SHI-1", title: "Auth bug" }),
+    });
+    render(
+      <MemoryRouter>
+        <IssuesPanel onStartSession={() => {}} onConnect={() => {}} />
+      </MemoryRouter>,
+    );
+    // The detail view is what's on screen: it has a back control, the list doesn't.
+    expect(screen.getByTitle("Back to issues")).toBeInTheDocument();
+  }
+
+  it("falls back to the list when the incoming repository is a different one", () => {
+    renderWithOpenIssue();
+
+    act(() => useIssuesStore.getState().setRepoScope("https://github.com/acme/website.git"));
+
+    expect(screen.queryByTitle("Back to issues")).toBeNull();
+    // The async gap: declarations aren't known yet, so the list says so rather
+    // than claiming "not connected" or showing the old repo's trackers.
+    expect(screen.getByText(/loading issues/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /roadmap/i })).toBeNull();
+  });
+
+  it("keeps the open issue when the switch stays inside the same repository", () => {
+    renderWithOpenIssue();
+
+    act(() => useIssuesStore.getState().setRepoScope("https://github.com/acme/app.git"));
+
+    expect(screen.getByTitle("Back to issues")).toBeInTheDocument();
+  });
+
+  it("falls back to the list once the new declarations drop the open tracker", async () => {
+    renderWithOpenIssue();
+    const gh: TrackerInfo = { id: "github", kind: "github", label: "GitHub", configured: true };
+    globalThis.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ trackers: [gh] }), { status: 200 }),
+    ) as typeof fetch;
+
+    await act(async () => {
+      await useIssuesStore.getState().fetchTrackers();
+    });
+
+    expect(screen.queryByTitle("Back to issues")).toBeNull();
+    expect(screen.getByRole("button", { name: /github/i })).toBeInTheDocument();
   });
 });
 

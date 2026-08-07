@@ -215,13 +215,225 @@ async function readPromptFile(promptFile: string, deps: RunDeps): Promise<string
   return readBodyFromFileOrStdin(promptFile, deps.io, "shipit session create", "prompt file");
 }
 
+/**
+ * docs/255 — the host-inventory query shared by `shipit session find` and
+ * `shipit session list --all`. Both are Ops-only; the orchestrator's 403 is
+ * surfaced verbatim, so the shim carries no second copy of the gate.
+ */
+async function runHostSessionQuery(
+  params: URLSearchParams,
+  deps: RunDeps,
+  label: string,
+): Promise<{
+  sessions: Record<string, unknown>[];
+  truncated: boolean;
+  total: number;
+  nextOffset?: number;
+}> {
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  const res = await deps.call("GET", `/agent-ops/session/host-sessions${qs}`, undefined, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, label), 1);
+  }
+  const nextOffset = Number(res.body.nextOffset);
+  return {
+    sessions: (res.body.sessions as Record<string, unknown>[] | undefined) ?? [],
+    truncated: res.body.truncated === true,
+    total: Number(res.body.total ?? 0),
+    ...(Number.isFinite(nextOffset) ? { nextOffset } : {}),
+  };
+}
+
+/**
+ * The "there is more" footer. Names the exact next command rather than saying
+ * "pass --limit", because the server caps `limit` — past the cap, paging with
+ * `--offset` is the ONLY way to reach the rest, and a hint that suggests
+ * otherwise sends the agent in a loop against a ceiling it cannot raise.
+ */
+function moreLine(total: number, nextOffset: number | undefined, noun: string): string {
+  const base = `… ${total} ${noun} in total.`;
+  return nextOffset === undefined ? base : `${base} Next page: --offset ${nextOffset}`;
+}
+
+/** Render one inventory record as an aligned, scannable text block. */
+function renderHostSession(s: Record<string, unknown>): string {
+  const lines = [
+    `${asString(s.title) || "(untitled)"} (${asString(s.id)})`,
+    `  kind:      ${asString(s.kind) || "session"}`,
+    `  branch:    ${asString(s.branch) || "(no branch)"}`,
+    `  repo:      ${asString(s.remoteUrl) || "(standalone)"}`,
+    `  container: ${asString(s.containerName)}`,
+    `  created:   ${asString(s.createdAt)}`,
+    `  last-used: ${asString(s.lastUsedAt)}`,
+    `  disk:      ${asString(s.diskTier)}${s.archived === true ? " (archived)" : ""}`,
+  ];
+  if (s.parentSessionId) lines.push(`  parent:    ${asString(s.parentSessionId)}`);
+  if (s.rootSessionId) lines.push(`  root:      ${asString(s.rootSessionId)}`);
+  if (s.agentId) lines.push(`  agent:     ${asString(s.agentId)}${s.model ? ` / ${asString(s.model)}` : ""}`);
+  const pr = s.pr as Record<string, unknown> | undefined;
+  if (pr) {
+    lines.push(`  pr:        #${asString(pr.number)} ${asString(pr.state)} ${asString(pr.url)}`);
+    lines.push(`             ${asString(pr.headBranch)} → ${asString(pr.baseBranch)}`);
+  }
+  const prev = s.previousPr as Record<string, unknown> | undefined;
+  if (prev) lines.push(`  prev-pr:   #${asString(prev.number)} ${asString(prev.url)}`);
+  if (s.mergedAt) lines.push(`  merged:    ${asString(s.mergedAt)}`);
+  if (s.closedAt) lines.push(`  closed:    ${asString(s.closedAt)}`);
+  return lines.join("\n");
+}
+
+/**
+ * Read a PR number out of what an operator actually has in hand: `1744`,
+ * `#1744`, or a PR URL in any of its real forms.
+ *
+ * The `/pull/<n>` branch is checked FIRST and is why this isn't a one-liner. A
+ * plain "trailing digits" match reads `…/pull/1744/files` as no match at all
+ * and — worse — `…/pull/1744?x=1` as PR **1**, silently looking up the wrong
+ * PR. Both URLs are ordinary things to paste out of a browser.
+ */
+function parsePrNumber(raw: string): string | undefined {
+  const value = raw.trim();
+  const fromUrl = /\/pull\/(\d+)(?:[/?#]|$)/.exec(value)?.[1];
+  if (fromUrl) return fromUrl;
+  // Not a PR URL: accept `1744` or `#1744`, anchored so a stray number inside
+  // some other string can't be mistaken for the PR.
+  return /^#?(\d+)$/.exec(value)?.[1];
+}
+
+/**
+ * docs/255 — `shipit session find --branch|--pr|--container|--id`.
+ *
+ * The one-step answer to "which session produced this?", for an Ops session
+ * triaging a branch, a PR, or a container name lifted from `docker ps` or the
+ * host journal. Metadata only: the orchestrator never returns another session's
+ * conversation, prompts, secrets, or workspace contents.
+ */
+export async function handleSessionFind(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: {
+      "--branch": "branch",
+      "--pr": "pr",
+      "--container": "container",
+      "--id": "id",
+      // Muscle-memory alias. It maps onto the SAME `id=` query param — the
+      // route deliberately doesn't take a `session=` filter, because that is
+      // the param name `api-container-guard.ts` reads as a SCOPE.
+      "--session": "id",
+      "--limit": "limit",
+      "--offset": "offset",
+    },
+    booleans: {
+      "--json": "json",
+      "--include-archived": "includeArchived",
+      "--include-warm": "includeWarm",
+    },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit session find: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+
+  const params = new URLSearchParams();
+  if (parsed.values.branch) params.set("branch", parsed.values.branch);
+  if (parsed.values.container) params.set("container", parsed.values.container);
+  if (parsed.values.id) params.set("id", parsed.values.id);
+  if (parsed.values.pr) {
+    const digits = parsePrNumber(parsed.values.pr);
+    if (!digits) {
+      fail(deps.io, `shipit session find: could not read a PR number from "${parsed.values.pr}".`);
+    }
+    params.set("pr", digits);
+  }
+  if (params.toString() === "") {
+    fail(
+      deps.io,
+      "shipit session find: one of --branch, --pr, --container or --id is required.\n" +
+        "For the whole inventory, run `shipit session list --all`.",
+    );
+  }
+  if (parsed.booleans.has("includeArchived")) params.set("includeArchived", "true");
+  if (parsed.booleans.has("includeWarm")) params.set("includeWarm", "true");
+  if (parsed.values.limit) params.set("limit", parsed.values.limit);
+  if (parsed.values.offset) params.set("offset", parsed.values.offset);
+
+  const result = await runHostSessionQuery(params, deps, "Failed to look up host sessions");
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(result.sessions)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  if (result.sessions.length === 0) {
+    success(
+      deps.io,
+      "No matching session.\nArchived sessions are excluded by default — retry with --include-archived.",
+    );
+    return;
+  }
+  const blocks = result.sessions.map(renderHostSession);
+  if (result.truncated) blocks.push(moreLine(result.total, result.nextOffset, "matches"));
+  success(deps.io, blocks.join("\n\n"));
+}
+
 export async function handleSessionList(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
-    values: { "--turn": "turn" },
-    booleans: { "--json": "json" },
+    values: { "--turn": "turn", "--limit": "limit", "--offset": "offset" },
+    booleans: {
+      "--json": "json",
+      "--all": "all",
+      "--include-archived": "includeArchived",
+      "--include-warm": "includeWarm",
+    },
   });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit session list: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+
+  // docs/255 — the host-inventory flags only mean anything alongside `--all`.
+  // Refuse rather than ignore: `shipit session list --include-warm` would
+  // otherwise quietly return the children list, which looks like a successful
+  // answer to a question it never asked.
+  const hostOnlyFlags = [
+    ...(parsed.booleans.has("includeWarm") ? ["--include-warm"] : []),
+    ...(parsed.booleans.has("includeArchived") ? ["--include-archived"] : []),
+    ...(parsed.values.offset ? ["--offset"] : []),
+  ];
+  if (!parsed.booleans.has("all") && hostOnlyFlags.length > 0) {
+    fail(
+      deps.io,
+      `shipit session list: ${hostOnlyFlags[0]} only applies to the host inventory.\n` +
+        "Add --all (Ops sessions only), or drop the flag to list this session's children.",
+    );
+  }
+
+  // docs/255 — `--all` switches to the HOST inventory (Ops-only). Without it the
+  // command is unchanged: this session's own spawned children, and nothing else.
+  if (parsed.booleans.has("all")) {
+    const params = new URLSearchParams();
+    if (parsed.booleans.has("includeArchived")) params.set("includeArchived", "true");
+    if (parsed.booleans.has("includeWarm")) params.set("includeWarm", "true");
+    if (parsed.values.limit) params.set("limit", parsed.values.limit);
+    if (parsed.values.offset) params.set("offset", parsed.values.offset);
+    const result = await runHostSessionQuery(params, deps, "Failed to list host sessions");
+    if (parsed.booleans.has("json")) {
+      deps.io.stdout(`${JSON.stringify(result.sessions)}\n`);
+      deps.io.exit(0);
+      return;
+    }
+    if (result.sessions.length === 0) {
+      success(deps.io, "No sessions on this host.");
+      return;
+    }
+    const lines = result.sessions.map((s) =>
+      [
+        asString(s.id),
+        asString(s.kind) || "session",
+        asString(s.branch) || "(no branch)",
+        s.pr ? `#${asString((s.pr as Record<string, unknown>).number)}` : "-",
+        asString(s.title),
+      ].join("\t"),
+    );
+    if (result.truncated) lines.push(moreLine(result.total, result.nextOffset, "sessions"));
+    success(deps.io, lines.join("\n"));
+    return;
   }
 
   const turn = parsed.values.turn;

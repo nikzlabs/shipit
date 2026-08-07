@@ -1,0 +1,26 @@
+# 254 — Repo group separation — checklist
+
+- [x] Palette: 16 entries, light values + dark overrides, scoped per the `--color-sandbox` cascade rule
+- [x] `RepoInfo.colorIndex` + `color_index` column
+- [x] Backfill migration for existing repos, in sidebar display order
+- [x] Assignment on add: lowest free index, counting hidden repos, stable across re-add
+- [x] `PATCH /api/repos/:url` accepts `colorIndex`, validated server-side
+- [x] Optimistic client store action with revert on failure
+- [x] Group edge as `border-left` on the group element (survives the sticky header)
+- [x] Opaque header band, washed with the group's own color (`--repo-band-mix`)
+- [x] Ops + Sandbox groups use their own semantic colors
+- [x] Suppressed when the sidebar renders a single group
+- [x] Colour picker in Project Settings → Appearance
+- [x] Tests: palette, store assignment, service validation, migration backfill, sidebar rendering, picker
+- [x] `npm run lint:dev` + `npm run typecheck` clean
+- [x] Verified in-browser in Claude Light and Claude Dark
+- [x] Independent fresh-context review against `requirements.md` (Codex, 2026-08-06)
+- [x] Palette retuned so no entry collides with a status colour in any theme, with a guard test
+- [x] Optimistic colour update no longer lets a stale failure stomp a newer value
+- [x] PATCH rejects a present-but-malformed field instead of silently skipping it
+- [x] Migration test runs the real migration rather than a copy of its logic
+- [x] Gap between groups so adjacent edges don't merge into one rail
+- [x] Open questions on reqs 5 and 11 settled by Nik; both requirements reworded, no code change
+- [x] Header band retuned: the neutral fill made light-theme headers the heaviest surface in the rail
+- [x] Band-weight guard across all fourteen themes, verified to fail both too-heavy and too-faint
+- [x] Independent review of the band retune (Codex, 2026-08-06) — two test overclaims fixed, no production defect

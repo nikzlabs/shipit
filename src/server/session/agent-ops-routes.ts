@@ -143,11 +143,16 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("GET", `/pr/status${prTargetQs(request.query)}`, undefined, reply),
   );
 
-  // GET /agent-ops/pr/view?number=N — view a PR's details
-  app.get<{ Querystring: { number?: string; cwd?: string; repo?: string } }>(
+  // GET /agent-ops/pr/view?number=N[&comments=true] — view a PR's details,
+  // optionally with its conversation (docs/255). `comments` is forwarded so the
+  // orchestrator only pays for the second round-trip when the shim asked.
+  app.get<{ Querystring: { number?: string; cwd?: string; repo?: string; comments?: string } }>(
     "/agent-ops/pr/view",
     async (request, reply) => {
-      const qs = prTargetQs(request.query, request.query.number ? { number: request.query.number } : {});
+      const extra: Record<string, string> = {};
+      if (request.query.number) extra.number = request.query.number;
+      if (request.query.comments === "true") extra.comments = "true";
+      const qs = prTargetQs(request.query, extra);
       return relay("GET", `/pr/view${qs}`, undefined, reply);
     },
   );
@@ -207,11 +212,12 @@ export function registerAgentOpsRoutes(
   );
 
   // ---------------------------------------------------------------------------
-  // GitHub Actions reads (read-only) — back `gh run list|view` and
-  // `gh workflow list|view`. Repo-aware (cwd/repo) like the PR ops. The worker
-  // injects the trusted SESSION_ID; the orchestrator resolves the target repo.
-  // There is intentionally NO dispatch/rerun/cancel route — manipulating CI is
-  // a human/CI action, so the shim keeps those verbs blocked.
+  // GitHub Actions — back `gh run list|view|rerun` and `gh workflow list|view`.
+  // Repo-aware (cwd/repo) like the PR ops. The worker injects the trusted
+  // SESSION_ID; the orchestrator resolves the target repo. `rerun` is the only
+  // write: it re-executes already-committed workflow content on the session's
+  // own branch. There is intentionally NO dispatch/cancel/delete route — those
+  // choose new code or destroy state, and stay human/CI actions.
   // ---------------------------------------------------------------------------
 
   // GET /agent-ops/run/list — list workflow runs
@@ -239,6 +245,14 @@ export function registerAgentOpsRoutes(
       if (logFailed) extra.logFailed = logFailed;
       return relay("GET", `/actions/runs/view${prTargetQs(request.query, extra)}`, undefined, reply);
     },
+  );
+
+  // POST /agent-ops/run/rerun — re-run an existing run (the group's one write).
+  // The orchestrator enforces the own-branch guardrail; this router just narrows
+  // the surface, exactly as it does for `pr/:number/merge`.
+  app.post<{ Body: { id?: string | number; failed?: boolean; cwd?: string; repo?: string } }>(
+    "/agent-ops/run/rerun",
+    async (request, reply) => relay("POST", "/actions/runs/rerun", request.body ?? {}, reply),
   );
 
   // GET /agent-ops/workflow/list — list workflow definitions
@@ -299,6 +313,12 @@ export function registerAgentOpsRoutes(
   // the created issue. (ShipIt *bug* filing stays human-gated; that's docs/164.)
   // ---------------------------------------------------------------------------
 
+  // GET /agent-ops/issue/trackers — the destinations this session can reach plus
+  // its shipit.yaml declaration warnings (docs/248 reqs 8, 10). The shim calls
+  // this before resolving a reference, so names resolve against exactly the set
+  // the orchestrator holds.
+  app.get("/agent-ops/issue/trackers", async (_request, reply) => relay("GET", "/issue/trackers", undefined, reply));
+
   // GET /agent-ops/issue/view?tracker=&id= — single issue (read)
   app.get<{ Querystring: { tracker?: string; id?: string } }>(
     "/agent-ops/issue/view",
@@ -354,37 +374,43 @@ export function registerAgentOpsRoutes(
   );
 
   // POST /agent-ops/issue/create { tracker, title, body, labels?, priority?, parent?, createMissingLabels? } (docs/187, SHI-92, SHI-206, SHI-230)
-  app.post<{ Body: { tracker?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean } }>(
+  app.post<{ Body: { tracker?: string; trackerName?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean } }>(
     "/agent-ops/issue/create",
     async (request, reply) => relay("POST", "/issue/create", request.body ?? {}, reply),
   );
 
   // POST /agent-ops/issue/label/create { tracker, name, color?, description? } (SHI-230)
-  app.post<{ Body: { tracker?: string; name?: string; color?: string; description?: string } }>(
+  app.post<{ Body: { tracker?: string; trackerName?: string; name?: string; color?: string; description?: string } }>(
     "/agent-ops/issue/label/create",
     async (request, reply) => relay("POST", "/issue/label/create", request.body ?? {}, reply),
   );
 
   // POST /agent-ops/issue/comment { tracker, id, body }
-  app.post<{ Body: { tracker?: string; id?: string; body?: string } }>(
+  app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; body?: string } }>(
     "/agent-ops/issue/comment",
     async (request, reply) => relay("POST", "/issue/comment", request.body ?? {}, reply),
   );
 
+  // POST /agent-ops/issue/comment/edit { tracker, id, commentId, body } (SHI-86)
+  app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; commentId?: string; body?: string } }>(
+    "/agent-ops/issue/comment/edit",
+    async (request, reply) => relay("POST", "/issue/comment/edit", request.body ?? {}, reply),
+  );
+
   // POST /agent-ops/issue/edit { tracker, id, title?, body?, labels?, priority?, parent?, createMissingLabels? } (SHI-92, SHI-206, SHI-230)
-  app.post<{ Body: { tracker?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean } }>(
+  app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean } }>(
     "/agent-ops/issue/edit",
     async (request, reply) => relay("POST", "/issue/edit", request.body ?? {}, reply),
   );
 
   // POST /agent-ops/issue/status { tracker, id, status }
-  app.post<{ Body: { tracker?: string; id?: string; status?: string } }>(
+  app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; status?: string } }>(
     "/agent-ops/issue/status",
     async (request, reply) => relay("POST", "/issue/status", request.body ?? {}, reply),
   );
 
   // POST /agent-ops/issue/assign { tracker, id, assignee | null }
-  app.post<{ Body: { tracker?: string; id?: string; assignee?: string | null } }>(
+  app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; assignee?: string | null } }>(
     "/agent-ops/issue/assign",
     async (request, reply) => relay("POST", "/issue/assign", request.body ?? {}, reply),
   );
@@ -558,6 +584,40 @@ export function registerAgentOpsRoutes(
       const turn = request.query.turn;
       const qs = turn ? `?turn=${encodeURIComponent(turn)}` : "";
       return relay("GET", `/children${qs}`, undefined, reply);
+    },
+  );
+
+  // GET /agent-ops/session/host-sessions[?branch=&pr=&container=&id=
+  //                                       &includeArchived=&limit=]
+  //
+  // docs/255 — host session inventory, Ops sessions only. Backs
+  // `shipit session find` and `shipit session list --all`. The worker injects
+  // the trusted SESSION_ID; the orchestrator gates the route on
+  // `session.kind === "ops"` and returns metadata only (never another session's
+  // conversation, prompts, secrets, or workspace contents).
+  app.get<{
+    Querystring: {
+      branch?: string;
+      pr?: string;
+      container?: string;
+      id?: string;
+      includeArchived?: string;
+      includeWarm?: string;
+      limit?: string;
+      offset?: string;
+    };
+  }>(
+    "/agent-ops/session/host-sessions",
+    async (request, reply) => {
+      const params = new URLSearchParams();
+      for (const key of [
+        "branch", "pr", "container", "id", "includeArchived", "includeWarm", "limit", "offset",
+      ] as const) {
+        const value = request.query[key];
+        if (value) params.set(key, value);
+      }
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      return relay("GET", `/host-sessions${qs}`, undefined, reply);
     },
   );
 

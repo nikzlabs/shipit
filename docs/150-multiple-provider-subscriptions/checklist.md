@@ -253,3 +253,22 @@ account to move them to").
 - [x] SHI-283 landed: both sign-out routes go through the service-layer `signOutProvider` (guard → retire agent → revoke per-session copy → drop rows), sharing `retireSessionProviderAccount` with the disconnect path. Scoped to `account`-route sessions on an account being signed out (reserved routes untouched, archived sessions included).
 - [x] Unit (`services/provider-signout.test.ts`): per-session copies revoked, resident agent retired, conversation state preserved, reserved/other-provider/dangling routes untouched, archived included, mid-turn refusal revokes nothing.
 - [x] Integration: the sign-out test that encoded the leak now asserts the per-session token is gone, the resume file survives, and the dangling pin is still left in place.
+
+## Post-ship fix — the limit notice that arrived as assistant text (2026-08-06)
+
+Production incident on session `174b5d98`: the Claude CLI hit its session limit
+~2 minutes into a turn, reported it as an ordinary assistant message, and ended
+the turn `subtype: "success"`. No failover, no exhaustion stamp, no quota retry
+— and the notice became the auto-commit subject, with a healthy second account
+sitting idle.
+
+- [x] Widen `EXHAUSTION_PATTERNS`: add `session` to the window alternation and make `usage` optional — the CLI now says "You've hit your session limit", which none of the five patterns matched.
+- [x] Stop gating detection solely on `agent_result.error`: fall through to the turn's final assistant text (`detectHardExhaustionInTurnText`) at all three sites — the req-7 stamp (`agent-listeners.ts`), the req-14 quota retry (`turn-executor.ts`), and the one-shot consult fallback (`services/sub-agent.ts`).
+- [x] Give the text channel its own anchored notice grammar rather than reusing `EXHAUSTION_PATTERNS`, bounded to a notice-length message (`MAX_LIMIT_NOTICE_CHARS`). Caught by cross-agent review: the length bound alone let "The Vercel deploy failed because your account is out of credits" (85 chars) bench a healthy Claude subscription and repeat the turn.
+- [x] Promote a text-detected exhaustion to a failed turn (`status: "error"` + the notice as `error`) where the two channels meet, so `lastTurnErrored`, the transcript error row and `shipit session wait` all keep working off `error` alone. Also caught by review: without it, an exhaustion with no account left to fail over to retires as a success — the original incident, one hop along. Same promotion at the end of the one-shot consult's fallback loop.
+- [x] Check the error channel *instead of* the text channel, not with a nullish fallthrough, so a non-quota failure ending on notice-shaped output cannot bench an account (the sub-agent path had the fallthrough).
+- [x] Parse the CLI's wall-clock reset form (`resets 5:10pm (UTC)`) to the next occurrence of that clock time, gated on an explicit UTC marker with no offset suffix (`UTC+02:00` is not UTC — review catch); unzoned clock times still take the 15-minute fallback.
+- [x] Unit (`agent-rate-limits.test.ts`): the verbatim incident string on both channels, the with/without-`usage` wordings, the wall-clock parse (incl. 12am/12pm, next-occurrence, offset-suffix rejection), and the negatives — notice-shaped phrases something else introduces, long prose mentioning quota, ordinary summaries, unzoned clock times.
+- [x] Unit (`agent-listeners.test.ts`): a success-subtype turn whose assistant text is the notice benches the account and ends errored; an ordinary success turn does neither.
+- [x] Integration (`quota-exhaustion-retry.test.ts`): the same shape re-runs the turn on a fresh agent and does not commit the exhausted attempt; a retry that also exhausts in text ends errored rather than successful; a success turn whose text merely mentions limits still ends as one successful turn.
+- [x] Unit (`sub-agent.test.ts`): a consult whose final text is the notice benches and retries on the next subscription; with no account left it fails rather than returning the notice as its answer; a non-quota error alongside notice-shaped text benches nothing.

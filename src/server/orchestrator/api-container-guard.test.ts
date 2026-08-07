@@ -110,6 +110,14 @@ describe("registerContainerOriginGuard — request gating", () => {
     // A query-scoped container-facing route (Tier C egress decision): the session
     // arrives as ?session=, not in the path — exercises §3's query-param fallback.
     app.get("/api/egress/decision", { config: { containerAccessible: true } }, async () => ({ allow: false }));
+    // docs/255 — the Ops host-session inventory. It reads a `?id=` FILTER that
+    // names another session; §3 must still scope on the PATH segment, so an ops
+    // container can query about any session but only ever through its own path.
+    app.get<{ Params: { id: string } }>(
+      "/api/sessions/:id/host-sessions",
+      { config: { containerAccessible: true } },
+      async () => ({ sessions: [] }),
+    );
     await app.ready();
   });
 
@@ -189,6 +197,24 @@ describe("registerContainerOriginGuard — request gating", () => {
     expect(res.statusCode).toBe(403);
   });
 
+  it("scopes the ops inventory route on the PATH, not on its ?id= filter (docs/255)", async () => {
+    // Own path + a filter naming another session: allowed (the filter is a
+    // query, and the route's own Ops gate is what decides what it may return).
+    const own = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${OWN_SESSION}/host-sessions?id=sess-other`,
+      remoteAddress: CONTAINER_IP,
+    });
+    expect(own.statusCode).toBe(200);
+    // Another session's path: still refused by §3, unchanged by docs/255.
+    const other = await app.inject({
+      method: "GET",
+      url: "/api/sessions/sess-other/host-sessions",
+      remoteAddress: CONTAINER_IP,
+    });
+    expect(other.statusCode).toBe(403);
+  });
+
   it("lets a NON-container (browser) origin reach everything, including globals", async () => {
     const secrets = await app.inject({ method: "PUT", url: "/api/secrets", remoteAddress: BROWSER_IP });
     expect(secrets.statusCode).toBe(200);
@@ -238,11 +264,17 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:id/pr/:number/reopen",
   // docs/224 — gated agent merge (`gh pr merge`), sandbox dangerousGitHubOps grant.
   "POST /api/sessions/:id/pr/:number/merge",
-  // github actions — gh run / gh workflow (read-only)
+  // github actions — gh run / gh workflow (reads)
   "GET /api/sessions/:id/actions/runs",
   "GET /api/sessions/:id/actions/runs/view",
   "GET /api/sessions/:id/actions/workflows",
   "GET /api/sessions/:id/actions/workflows/view",
+  // `gh run rerun` — the group's one write. Re-executes already-committed
+  // workflow content against an existing commit, and only for a run on the
+  // session's OWN branch (enforced in `services/github.ts`). Deliberately not
+  // accompanied by dispatch / cancel / delete routes: those choose new code or
+  // destroy state.
+  "POST /api/sessions/:id/actions/runs/rerun",
   // release — shipit release plan/prepare (docs/214)
   "POST /api/sessions/:id/release/plan",
   "POST /api/sessions/:id/release/prepare",
@@ -254,9 +286,14 @@ const GOLDEN_CONTAINER_ROUTES = [
   "GET /api/sessions/:id/issue/list",
   "GET /api/sessions/:id/issue/labels",
   "GET /api/sessions/:id/issue/statuses",
+  "GET /api/sessions/:id/issue/trackers",
   "GET /api/sessions/:id/issue/comments",
   "POST /api/sessions/:sessionId/issue/create",
   "POST /api/sessions/:sessionId/issue/comment",
+  // SHI-86 — `shipit issue comment edit`. Same posture as the writes around it;
+  // the comment it may reach is additionally narrowed server-side to one on the
+  // named issue that ShipIt itself authored.
+  "POST /api/sessions/:sessionId/issue/comment/edit",
   "POST /api/sessions/:sessionId/issue/edit",
   "POST /api/sessions/:sessionId/issue/status",
   "POST /api/sessions/:sessionId/issue/assign",
@@ -272,6 +309,12 @@ const GOLDEN_CONTAINER_ROUTES = [
   "GET /api/sessions/:id/source/log",
   "GET /api/sessions/:id/source/blame",
   "GET /api/sessions/:id/source/show",
+  // docs/255 — `shipit session find` / `shipit session list --all` (ops sessions).
+  // Reached under the CALLER'S OWN id like every route here, and gated a second
+  // time on the server-authoritative `session.kind === "ops"`. Returns metadata
+  // only (id/title/branch/repo/parent/PR number+url+state) — never another
+  // session's conversation, prompts, secrets, or workspace contents.
+  "GET /api/sessions/:id/host-sessions",
   // agent — shipit agent run / shipit agent result. The result read is
   // own-session scoped like the spawn (the worker injects the caller's id), and
   // returns only that session's own persisted consult cards (SHI-245).

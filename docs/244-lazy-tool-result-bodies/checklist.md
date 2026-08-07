@@ -129,6 +129,7 @@
 - [x] ~~`message_steered` echoes full base64 images unprojected~~ — **fixed (SHI-297).**
 - [x] ~~`sub_agent_consult_card.outputMarkdown` is modal-only content shipped whole~~ — **fixed (SHI-297).**
 - [x] ~~Reconnect snapshot resends already-committed tool inputs~~ — **fixed (SHI-297).** Live nested subagent results stay unprojected, which is correct and is now named as such rather than left implicit.
+- [x] ~~The client's 1 MB cap sliced a content-block array as a raw string~~ — **fixed.** The serve path has `projectBlockArray` precisely because a `JSON.stringify`'d MCP result is one line that a byte cut leaves unparseable; the client cap did the raw cut anyway, so an over-cap screenshot rendered as a wall of raw JSON instead of an image. It only reached results the projection leaves inline — a nested subagent's screenshot above all. `capContentBlocks` now caps the text inside the blocks and keeps the image whole. See `plan.md` → *The client cap had the block-array bug too*.
 
 ## The three remaining browser-facing paths (SHI-297)
 

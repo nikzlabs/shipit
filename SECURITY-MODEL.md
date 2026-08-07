@@ -338,7 +338,19 @@ ShipIt has **no built-in user authentication** on the orchestrator — it relies
 deployment putting an access layer in front. This is intentional for a single-tenant tool,
 but it means **you must not expose a raw ShipIt instance to the public internet.**
 
-- **Local install** binds to `localhost` only — nothing is exposed off the machine.
+- **Local install** binds to `127.0.0.1` only — nothing is exposed off the machine.
+  This is the default, not an assumption: `docker/local/prod/compose.yml` publishes
+  through `${SHIPIT_BIND_ADDR:-127.0.0.1}`, and a test fails the build if that
+  regresses. Do not rely on a host firewall as a substitute — on Linux, Docker's
+  published-port rules sit above ufw's in the `FORWARD` chain, so `ufw default deny
+  incoming` reports active while the port stays reachable; on macOS the application
+  firewall is off by default. Two deliberate opt-ins widen it:
+  - `deployment/local/tailscale.sh` **adds** a tailnet binding alongside loopback,
+    reachable only from your own tailnet. See [`docs/254`](docs/254-local-bind-and-tailnet-access/plan.md).
+  - `SHIPIT_BIND_ADDR=0.0.0.0` in `~/.shipit/.shipit.env` exposes ShipIt to every
+    network the machine joins, with **no authentication in front of it**. Anyone who
+    can reach the port gets an agent with a shell and your repositories. Only set
+    this on a network you control.
 - **VPS install** offers, during setup, to put ShipIt behind **Cloudflare Zero Trust**
   (required SSO / email allow-list by default) and/or **Tailscale**, with **no open inbound
   ports** in either case. See [`deployment/README.md`](deployment/README.md) for the access

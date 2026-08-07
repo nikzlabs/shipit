@@ -33,13 +33,19 @@ Tests use Vitest with two project configs in `vitest.config.ts`:
 ## Server Tests
 
 - Use temp directories (`fs.mkdtempSync`) cleaned up in `afterEach` with `fs.rmSync(tmpDir, { recursive: true, force: true })`.
-- Testability is built in — modules accept optional constructor parameters for isolation: `SessionManager(sessionsFile?)`, `GitManager(workspaceDir?)`, `UsageManager(usageFile?)`, `ThreadManager(threadsDir?)`, `DeploymentStore(baseDir?)`.
+- Testability is built in. Store-backed managers take a `DatabaseManager` — `SessionManager(dbManager)`, `UsageManager(dbManager)`, `RepoStore(dbManager)` — so a test passes an isolated database rather than a temp file path. Filesystem-backed ones still take a directory: `GitManager(workspaceDir?)`. (The older `sessionsFile?` / `usageFile?` / `ThreadManager` / `DeploymentStore` signatures are gone — persistence moved to SQLite.)
 
 ## Integration Tests
 
 Live in `src/server/orchestrator/integration_tests/` — one file per feature area.
 
-Shared stubs and helpers (`TestClient`, `StubViteManager`, `StubAuthManager`, `FakeClaudeProcess`, `StubFileWatcher`, `waitForClaude`) are in `test-helpers.ts`.
+Shared stubs live in `src/server/orchestrator/integration_tests/`, split across files — `grep` for the class rather than assuming `test-helpers.ts`:
+
+- `test-helpers.ts` — `TestClient`, `StubAuthManager`, `StubGitHubAuthManager`
+- `container-test-helpers.ts` — `StubTerminal`, `StubWatcher`
+- Some fakes are local to the test that uses them (e.g. `FakeCodexProcess` in `codex-agent.test.ts`)
+
+There is no `StubViteManager` — dev servers moved to Docker Compose via `ServiceManager`.
 
 Each test file:
 1. Uses `buildApp()` with injected stubs

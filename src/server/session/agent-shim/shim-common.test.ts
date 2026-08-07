@@ -15,7 +15,7 @@ import type { AddressInfo } from "node:net";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { callBroker, readBodyFromFileOrStdin, readStdin, type ShimIO } from "./shim-common.js";
+import { applyJq, callBroker, readBodyFromFileOrStdin, readStdin, type ShimIO } from "./shim-common.js";
 
 function makeIO() {
   let stderr = "";
@@ -171,5 +171,91 @@ describe("readStdin", () => {
   it("resolves with content once stdin reaches EOF", async () => {
     const result = await readStdin(pipedStdin("hello world"), 1000);
     expect(result).toBe("hello world");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyJq — the tiny `-q/--jq` path evaluator
+// ---------------------------------------------------------------------------
+
+/** Convenience: assert success and return the printed lines. */
+function jqValues(value: unknown, expr: string): string[] {
+  const res = applyJq(value, expr);
+  if (!res.ok) throw new Error(`expected success, got ${res.kind}: ${res.message}`);
+  return res.values;
+}
+
+describe("applyJq", () => {
+  it("reads a top-level field, unquoted", () => {
+    expect(jqValues({ state: "MERGED" }, ".state")).toEqual(["MERGED"]);
+  });
+
+  it("reads a nested path", () => {
+    expect(jqValues({ a: { b: 7 } }, ".a.b")).toEqual(["7"]);
+  });
+
+  it("returns the whole value for the identity expression", () => {
+    expect(jqValues({ a: 1 }, ".")).toEqual([`{"a":1}`]);
+  });
+
+  it("iterates an array, one element per line", () => {
+    expect(jqValues([1, "two", true], ".[]")).toEqual(["1", "two", "true"]);
+  });
+
+  it("iterates and projects a field", () => {
+    expect(jqValues([{ n: 1 }, { n: 2 }], ".[].n")).toEqual(["1", "2"]);
+  });
+
+  it("supports a numeric index and a field-then-iterate path", () => {
+    expect(jqValues([{ n: 1 }, { n: 2 }], ".[1].n")).toEqual(["2"]);
+    expect(jqValues({ runs: [{ id: 5 }] }, ".runs[].id")).toEqual(["5"]);
+  });
+
+  it("emits nothing for an empty stream", () => {
+    expect(jqValues([], ".[]")).toEqual([]);
+  });
+
+  it("renders missing fields, null, and containers like jq -r", () => {
+    expect(jqValues({ a: 1 }, ".missing")).toEqual(["null"]);
+    expect(jqValues({ a: null }, ".a")).toEqual(["null"]);
+    expect(jqValues({ a: { b: 1 } }, ".a")).toEqual([`{"b":1}`]);
+  });
+
+  it("refuses expressions outside the subset, naming the expression", () => {
+    for (const expr of [
+      '.[] | select(.state=="MERGED")',
+      ".state // empty",
+      "state",
+      "..",
+      '.["state"]',
+      "$__loader",
+      ".a[1",
+    ]) {
+      const res = applyJq({ state: "OPEN", a: [1] }, expr);
+      expect(res.ok, expr).toBe(false);
+      if (res.ok) continue;
+      expect(res.kind).toBe("unsupported");
+      expect(res.message).toContain(expr);
+    }
+  });
+
+  it("reports a type mismatch as an evaluation error, not an unsupported one", () => {
+    const res = applyJq({ state: "OPEN" }, ".state.nested");
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.kind).toBe("evaluation");
+    expect(res.message).toContain("cannot index string");
+
+    const iter = applyJq({ state: "OPEN" }, ".state[]");
+    expect(iter.ok).toBe(false);
+    if (iter.ok) return;
+    expect(iter.kind).toBe("evaluation");
+    expect(iter.message).toContain("cannot iterate over string");
+  });
+
+  it("rejects a path deeper than the step cap", () => {
+    const deep = `.${Array.from({ length: 40 }, (_, i) => `f${i}`).join(".")}`;
+    const res = applyJq({}, deep);
+    expect(res.ok).toBe(false);
   });
 });

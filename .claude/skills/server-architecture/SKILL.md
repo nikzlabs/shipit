@@ -58,10 +58,7 @@ CredentialStore                   (unified credentials)
 initGlobalGitConfig()             (GIT_CONFIG_GLOBAL)
 AgentRegistry                     (detect installed CLIs)
 GitHubAuthManager                 (GitHub token + API)
-ThreadManager                     (conversation threads)
-DeploymentManager                 (register Vercel, Cloudflare)
-DeploymentStore                   (deploy history)
-FeatureManager                    (scan docs/)
+markdown.ts                       (scan workspace for docs/ markdown)
 SessionContainerManager           (Docker, production only)
 SessionRunnerRegistry             (active runners)
 ```
@@ -78,9 +75,8 @@ Singleton managers created in `buildApp()`. Shared across all connections.
 - `RepoStore` — imported repos, clone status, warm session IDs
 - `SessionRunnerRegistry` — active runners (max 10 concurrent)
 - `SessionContainerManager` — Docker containers
-- `CredentialStore` — git identity, GitHub token, agent API keys
+- `CredentialStore` — git identity, GitHub token, agent auth (one encrypted file)
 - `AuthManager` / `GitHubAuthManager` — authentication state
-- `DeploymentManager` / `DeploymentStore` — deployment targets and history
 - `AgentRegistry` — detected agent CLIs
 
 ### Per-Connection (WebSocket lifetime)
@@ -219,14 +215,15 @@ Handlers receive a `ctx` object combining three interfaces (see `ws-handlers/typ
 - `getActiveDir()`, `getActiveSessionDir()`, `getActiveAppSessionId()`
 - `activateSession()`, `checkGitIdentity()`, `scheduleAutoPush()`
 
-**`RunnerCtx`** — per-session runner delegation (agent, queue, terminal, turn state):
-- `getAgent()`, `setAgent()`, `getIsClaudeRunning()`
-- `getMessageQueue()`, `clearMessageQueue()`
-- `getRunner()`, `attachToRunner()`, `detachFromRunner()`
-- `getAccumulatedText()`, `getTurnSummary()`, `getChatMessageGroups()`
+**`RunnerCtx`** — per-session runner delegation:
+- `agentFactory(agentId)`
+- `getActiveAgentId()` / `setActiveAgentId()`, `getSelectedModel()` / `setSelectedModel()`, `getSelectedReasoning()` / `setSelectedReasoning()` — per-connection identifiers that don't depend on runner state
+- `getRunner()`, `getRunnerRegistry()`, `attachToRunner()`, `detachFromRunner()`
+
+**Turn state is NOT on the context.** There are no `getIsClaudeRunning()`, `getAccumulatedText()`, `getTurnSummary()`, `getChatMessageGroups()`, `getMessageQueue()`, or `clearMessageQueue()` accessors — they were removed because they silently no-op'd after a WS disconnect. Resolve a runner with `resolveRunner(ctx)` (which prefers the registry) and read/write it directly: `runner.running`, `runner.turnSummary = "…"`. See `CLAUDE.md` → *WebSocket lifecycle MUST NOT affect server behavior*.
 
 **`AppCtx`** — app-level managers and factories:
-- `sessionManager`, `chatHistoryManager`, `threadManager`, etc.
+- `sessionManager`, `chatHistoryManager`, etc.
 - `createGitManager()`, `createRepoGit()`, `createSessionDir()`
 - `workspaceDir`, `sessionsRoot`, `defaultAgentId`
 
@@ -278,29 +275,34 @@ All types live in `src/server/shared/types/`:
 | `domain-types.ts` | `SessionInfo`, `RepoInfo`, `ProjectTemplate` |
 | `claude-types.ts` | `ClaudeEvent`, NDJSON message types |
 | `agent-types.ts` | `AgentProcess`, `AgentEvent`, `AgentCapabilities` |
-| `deployment-types.ts` | `DeployTargetInfo`, `DeployConfigField` |
-| `github-types.ts` | `GitHubRepo`, `PullRequestInfo` |
-| `terminal-types.ts` | `TerminalProcess` interface |
-| `thread-types.ts` | `ThreadInfo`, `CheckpointInfo` |
-| `usage-types.ts` | `UsageRecord`, cost tracking |
+| `deployment-types.ts` | `GitHubDeploymentStatus` |
+| `github-types.ts` | `WsGitHubSetToken`, `WsGitHubPush`, … (GitHub WS messages) |
+| `terminal-types.ts` | `TerminalProcess`, `WsTerminalStart`, … |
+| `usage-types.ts` | `UsageTurn`, `TurnUsage`, `SessionUsage`, `WeeklyUsage` |
 | `attachment-types.ts` | `ImageAttachment`, `FileContextRef` |
 
 Types are shared between server and client (client imports from `../../server/shared/types.js`).
 
 ## Persistence
 
-| Data | Storage | Location |
-|------|---------|----------|
-| Session metadata | JSON file | `SessionManager` (`/workspace/.vibe-sessions.json`) |
-| Chat history | Per-session JSON | `ChatHistoryManager` (`/workspace/sessions/{id}/.chat-history.json`) |
-| Git identity | Global git config | `CredentialStore` (`/credentials/.gitconfig`) |
-| GitHub token | File | `CredentialStore` (`/credentials/.github-token`) |
-| Agent API keys | File | `CredentialStore` (`/credentials/.agent-env`) |
-| Usage stats | JSON file | `UsageManager` (`/workspace/.shipit-usage.json`) |
-| Deploy history | JSON file | `DeploymentStore` (`/workspace/.deploy-history.json`) |
-| Threads | Directory of JSON | `ThreadManager` (`/workspace/.vibe-threads/`) |
-| Repos | JSON file | `RepoStore` (`/workspace/.vibe-repos.json`) |
+**Persistence is SQLite** (`src/server/shared/database.ts`), not JSON files. The managers below are thin typed accessors over their tables; adding a persisted field means a table column plus a `database.ts` migration.
+
+| Data | Storage | Owner |
+|------|---------|-------|
+| Session metadata | `sessions` table | `SessionManager` (`sessions.ts`) |
+| Chat history | `messages` table | `ChatHistoryManager` (`chat-history.ts`) |
+| Usage stats | `usage_turns` table | `UsageManager` (`usage.ts`) |
+| Repos | `repos` table | `RepoStore` (`repo-store.ts`) |
+| Secrets | `secrets` table | `SecretStore` (`secret-store.ts`) |
+| Reviews, rewind snapshots, egress rules, presentations | their own tables | see `database.ts` |
+| GitHub token, agent env, provider-account metadata | `{credentialsDir}/shipit-credentials.json` (encrypted **when a cipher is supplied**, not unconditionally) | `CredentialStore` (`credential-store.ts`) |
+| Git identity | `.gitconfig` in the credentials dir, via `GIT_CONFIG_GLOBAL` — not a `CredentialStore` field | `git-config.ts` |
+| Provider subscription auth | Per-account filesystem roots (`.claude/…`, `.codex/auth.json`) | `provider-account-manager.ts` |
 | Session code | Git repo | `/workspace/sessions/{uuid}/` |
+
+Those are four distinct stores — SQLite domain records, the CredentialStore JSON, global git config, and the provider CLI auth roots. Don't collapse them.
+
+Deploy status is **not** persisted locally — it is read from the GitHub Deployments API (see the `deployment-architecture` skill). The `.vibe-sessions.json` / `.shipit-usage.json` names survive only as file-watcher ignore entries (`fs-constants.ts`), not as stores. There is no `ThreadManager`.
 
 ## Key Files
 
@@ -315,7 +317,7 @@ Types are shared between server and client (client imports from `../../server/sh
 | `src/server/orchestrator/container-session-runner.ts` | `ContainerSessionRunner` (production runner) |
 | `src/server/orchestrator/session-container.ts` | Docker container management |
 | `src/server/session/session-worker.ts` | In-container Fastify server |
-| `src/server/session/claude.ts` | `ClaudeProcess` — spawns CLI, parses NDJSON |
+| `src/server/session/agents/claude/process.ts` | `ClaudeProcess` — spawns CLI, parses NDJSON (per-agent dirs since docs/155) |
 | `src/server/orchestrator/service-manager.ts` | `ServiceManager` — Docker Compose lifecycle |
 | `src/server/orchestrator/compose-generator.ts` | Compose override generation, volume rewriting |
 | `src/server/shared/git.ts` | `GitManager` — per-session git |

@@ -1,10 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
   GITHUB_TRACKER_PREFIX,
-  defaultTrackerLabel,
   githubTrackerId,
   isGitHubTracker,
+  isLinearTracker,
+  linearTrackerId,
+  normalizeLinearTeamKey,
   parseGitHubTrackerId,
+  parseLinearTrackerId,
   parseOwnerRepo,
 } from "./tracker-id.js";
 
@@ -64,8 +67,48 @@ describe("isGitHubTracker", () => {
   });
 });
 
-describe("defaultTrackerLabel", () => {
-  it("labels a declared tracker with the repository name", () => {
-    expect(defaultTrackerLabel({ owner: "acme", repo: "planning" })).toBe("planning");
+describe("linearTrackerId / parseLinearTrackerId (docs/248 req 5)", () => {
+  it("round-trips a team key through the qualified id", () => {
+    expect(linearTrackerId("SHI")).toBe("linear:SHI");
+    expect(parseLinearTrackerId("linear:SHI")).toBe("SHI");
   });
+
+  it("upper-cases the key so a declaration written `shi` matches `SHI-304`", () => {
+    expect(linearTrackerId("shi")).toBe("linear:SHI");
+    expect(parseLinearTrackerId("linear:shi")).toBe("SHI");
+  });
+
+  // The bare `linear` is the retired deployment-wide binding (req 1 removed it),
+  // so it names no destination this build can reach — it must not silently
+  // resolve to some team.
+  it("returns null for the retired bare `linear` id", () => {
+    expect(parseLinearTrackerId("linear")).toBeNull();
+  });
+
+  it("returns null for a GitHub id", () => {
+    expect(parseLinearTrackerId("github:acme/planning")).toBeNull();
+  });
+
+  it("recognizes both the bare and qualified linear ids as Linear", () => {
+    expect(isLinearTracker("linear")).toBe(true);
+    expect(isLinearTracker("linear:SHI")).toBe(true);
+    expect(isLinearTracker("github")).toBe(false);
+  });
+});
+
+describe("normalizeLinearTeamKey", () => {
+  it.each([
+    ["SHI", "SHI"],
+    ["shi", "SHI"],
+    ["  Ops2  ", "OPS2"],
+  ])("normalizes %j to %j", (input, expected) => {
+    expect(normalizeLinearTeamKey(input)).toBe(expected);
+  });
+
+  it.each([["", "empty"], ["1SHI", "leading digit"], ["a b", "whitespace"], ["SHI-1", "a full key"]])(
+    "rejects %j (%s)",
+    (input) => {
+      expect(normalizeLinearTeamKey(input)).toBeNull();
+    },
+  );
 });

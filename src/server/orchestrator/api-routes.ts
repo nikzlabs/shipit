@@ -41,6 +41,7 @@ import { registerBootstrapRoutes } from "./api-routes-bootstrap.js";
 import { registerContainerRoutes } from "./api-routes-container.js";
 import { registerHostRoutes } from "./api-routes-host.js";
 import { registerSourceRoutes } from "./api-routes-source.js";
+import { registerHostSessionRoutes } from "./api-routes-host-sessions.js";
 import { registerFileRoutes } from "./api-routes-files.js";
 import { registerGitRoutes } from "./api-routes-git.js";
 import { registerSessionCrudRoutes } from "./api-routes-session-crud.js";
@@ -365,6 +366,7 @@ export async function registerApiRoutes(
   await registerContainerRoutes(app, deps);
   await registerHostRoutes(app, deps);
   await registerSourceRoutes(app, deps);
+  await registerHostSessionRoutes(app, deps);
   await registerPreviewRoutes(app, deps);
   await registerGitHubRoutes(app, deps);
   if (deps.reviewStore) {

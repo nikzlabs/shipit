@@ -135,7 +135,14 @@ export async function runDispatchedTurn(
   const agentText = opts.messageOrigin
     ? formatSessionMessagePrompt(surfacedText, opts.messageOrigin)
     : surfacedText;
-  const prompt = assembleAgentPrompt({ userText: agentText, fileContext, imageContext });
+  const prompt = assembleAgentPrompt({
+    userText: agentText,
+    fileContext,
+    imageContext,
+    // docs/144 — set only by a human-dictated dispatch (a quick-capture prompt
+    // spoken into the overlay); server-composed turns never carry it.
+    dictated: opts.dictated,
+  });
 
   // Chat-history metadata for the persisted user row — mirrors the WS path so a
   // reload shows the same inline image / file chips on the dispatched bubble.

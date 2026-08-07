@@ -34,11 +34,21 @@ describe("mapAgentOpsPath", () => {
     expect(mapAgentOpsPath("/agent-ops/pr/status")).toBe("pr/status");
   });
 
-  it("maps the Actions reads onto their /actions/* names", () => {
+  it("maps the Actions routes onto their /actions/* names", () => {
     expect(mapAgentOpsPath("/agent-ops/run/list")).toBe("actions/runs");
     expect(mapAgentOpsPath("/agent-ops/run/view")).toBe("actions/runs/view");
+    expect(mapAgentOpsPath("/agent-ops/run/rerun")).toBe("actions/runs/rerun");
     expect(mapAgentOpsPath("/agent-ops/workflow/list")).toBe("actions/workflows");
     expect(mapAgentOpsPath("/agent-ops/workflow/view")).toBe("actions/workflows/view");
+  });
+
+  it("still denies the CI verbs the shim never emits", () => {
+    // `rerun` was unbundled from these three deliberately — dispatch chooses new
+    // workflow content, cancel/delete destroy state. Nothing here should map.
+    expect(mapAgentOpsPath("/agent-ops/run/cancel")).toBeNull();
+    expect(mapAgentOpsPath("/agent-ops/run/delete")).toBeNull();
+    expect(mapAgentOpsPath("/agent-ops/workflow/run")).toBeNull();
+    expect(mapAgentOpsPath("/agent-ops/workflow/dispatch")).toBeNull();
   });
 
   it("maps the numbered PR edit and per-PR operations", () => {

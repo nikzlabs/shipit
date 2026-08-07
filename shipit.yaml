@@ -1,12 +1,4 @@
 agent:
-  # 6 GiB absorbs spike load when lint/typecheck run alongside the agent and
-  # dev server. Peak RSS of `npm run lint` is ~2.85 GiB (full type-aware run
-  # across all 697 TS files); a concurrent `npm run typecheck` adds another
-  # whole-project TS program, and at 4 GiB the combined spike still risked
-  # OOM-killing one of them mid-run. The extra 2 GiB gives that headroom.
-  memory: 6144
-  cpu: 2.0
-  pids: 4096
   # Keep this as a bare package-manager command: the session worker tunes a
   # bare `npm install` with `--prefer-offline --no-audit --no-fund` so it lands
   # fast on the warm download cache (/dep-cache). Shell wrappers bypass that
@@ -17,6 +9,24 @@ agent:
 # `setupServiceManager` short-circuits on the missing `compose:` key and the
 # inner UI never boots. See docs/118-shipit-ui-local/plan.md.
 compose: docker-compose.yml
+# docs/248 — every issue tracker this repository uses is declared here. ShipIt has
+# no built-in tracker any more, so without this block a session reaches only this
+# repository's own GitHub Issues and the Linear tab disappears. The credential
+# (and therefore the workspace) is configured in ShipIt settings; the declaration
+# names the team and gives it the name every reference and `--tracker` uses.
+issues:
+  trackers:
+    - kind: linear
+      team: SHI
+      name: roadmap
+    # docs/247 — ShipIt's own planning issues live in a private repository,
+    # separate from this public source repo. Migration off Linear in progress.
+    - kind: github
+      repo: nikzlabs/shipit-planning
+      name: planning
+      # `name` is the address (`planning#42`); `label` is what the Issues tab
+      # shows. Without it the tab would render the lower-case slug.
+      label: Planning
 # Release auto-publish (docs/214): ShipIt cuts releases by merging a version-bump
 # PR into the `stable` maintenance branch. On merge, .github/workflows/release.yml
 # derives the tag `v<package.json version>`, gates on a green build, tags the

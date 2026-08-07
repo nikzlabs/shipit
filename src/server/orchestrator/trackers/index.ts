@@ -3,6 +3,7 @@
  */
 
 export {
+  TrackerPermissionError,
   TrackerResolutionError,
   type Tracker,
   type ListIssuesOptions,

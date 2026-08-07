@@ -200,9 +200,22 @@ Linear / GitHub  ──(user OAuth)──▶  Tracker adapter  ──▶  GET /a
 "Start session" mirrors the docs "Start Session" flow (`handleDocStartSession`):
 instead of POSTing to `/api/sessions/headless` and auto-dispatching the first
 turn, it switches to a fresh session (when the current one already has messages)
-and **prefills the chat input** with the issue's context (`identifier`, `title`,
-`description`, link — the same text `seedFromIssueRef` would have sent). The user
-can then edit/augment the prompt before sending. The prefill + fresh-session
+and **prefills the chat input** with a pointer to the issue — the same text
+`seedFromIssueRef` would have sent, shared as `buildIssueSeedPrompt()` so the
+two paths can't drift. The user can then edit/augment the prompt before sending.
+
+**The seed names the issue; it does not copy it.** It is two lines —
+`Work on issue <identifier>: <title>` plus `Read it with
+\`shipit issue view <identifier>\``. The earlier seed pasted the issue's whole
+description and a link line into the composer, which buried whatever the user
+wanted to append underneath a wall of tracker text and froze a body the agent
+can read live anyway. Since the agent can fetch the issue itself, the seed's
+only job is to say *which* issue and leave the composer short enough to type
+into. (The pointer must stay extractable — see `extractIssueRefsFromText`'s
+`issue <id>` lead-in rule, which the wording is written against and a round-trip
+test in `issue-ref.test.ts` pins.)
+
+The prefill + fresh-session
 handling lives in `App.tsx#handleIssueStartSession` (where
 `handleNewSessionForRepo` and `setPrefillText` are available); `IssuesPanel` only
 resolves the repo for the `canStart` gate and delegates the click upward.
@@ -210,6 +223,19 @@ resolves the repo for the `canStart` gate and delegates the click upward.
 The server-side `seedFromIssueRef()` / `createHeadlessSession({ issueRef })`
 seeding primitive is retained for the **push** trigger (docs/156) — only the
 in-app **pull** path stopped calling it.
+
+**The issue still reaches the server, just later (SHI-320).** Prefilled text is
+not enough: two server behaviors are owed to a session *started from an issue*
+regardless of what the user types — the branch must come from the issue's
+pointer and never its title (docs/248 req 22), and the issue must move to
+**started**. Neither can be inferred from a prompt the user is free to rewrite.
+So `handleIssueStartSession` parks the ref in the session store
+(`pendingIssueRef`, scoped to the session it seeded) and `handleSend` attaches
+it to the **first** message as `send_message.issueRef`. Warm graduation is the
+only thing that reads it: it renames the branch via
+`services/issue-seeded-session.ts` (which reuses `seedFromIssueRef`, so both
+paths derive the same branch) and fires `markIssueStartedFromSeed`. A message to
+an already-graduated session ignores the field.
 
 ## Key files
 
@@ -426,6 +452,9 @@ Actual key files (server):
   `GET /api/trackers/linear/teams`.
 - `src/server/orchestrator/services/headless-sessions.ts` — `seedFromIssueRef()`
   (branch + title + first prompt) and `createHeadlessSession({ issueRef })`.
+- `src/server/shared/issue-ref.ts` — `buildIssueSeedPrompt()`, the one seed text
+  both paths use (client-importable, so `App.tsx` shares it), sitting next to
+  the `extractIssueRefsFromText()` parser that has to read it back.
 - `src/server/orchestrator/credential-store.ts` — Linear token + team binding.
 
 Actual key files (client):
