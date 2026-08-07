@@ -239,6 +239,35 @@ const ISSUE_FIELDS_WITH_STATES = `
   team { key states(first: 100) { nodes { id name type position color } } }
 `;
 
+/** A GraphQL error entry, with the `extensions.code` Linear puts its kind in. */
+interface LinearGraphqlError {
+  message: string;
+  extensions?: { code?: string | null } | null;
+}
+
+/** Linear's throttle marker — `RATELIMITED` in a GraphQL error's `extensions`. */
+function isRateLimitedError(err: LinearGraphqlError): boolean {
+  return (err.extensions?.code ?? "").toUpperCase() === "RATELIMITED";
+}
+
+/** The same check against an unparsed error body (a non-2xx GraphQL response). */
+function isLinearRateLimited(text: string): boolean {
+  try {
+    const parsed = JSON.parse(text) as { errors?: LinearGraphqlError[] };
+    return (parsed.errors ?? []).some(isRateLimitedError);
+  } catch {
+    return false;
+  }
+}
+
+/** docs/247 — a throttle named as a throttle, with the wait when Linear said. */
+function rateLimitMessage(status: number, retryAfterSeconds: number | null): string {
+  return (
+    `Linear is rate-limiting requests (${status}) — not an auth or access failure, so re-connecting the ` +
+    `API key or checking the declared team will not help. Wait ${waitPhrase(retryAfterSeconds)} and retry.`
+  );
+}
+
 /** Run a GraphQL query against Linear and return the typed `data` payload. */
 async function linearGraphql<T>(
   token: string,
@@ -259,26 +288,38 @@ async function linearGraphql<T>(
   } catch (err) {
     throw new Error(`Linear request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
   }
-  // Throttle first, for the same reason GitHub's adapter does (docs/247): a
-  // rate limit is not an auth failure, and telling someone to re-connect a
+  // Throttle before auth, for the same reason GitHub's adapter does (docs/247):
+  // a rate limit is not an auth failure, and telling someone to re-connect a
   // working credential sends them to fix something that isn't broken. Linear
-  // does NOT share GitHub's ambiguity — it answers a throttle with `429`, which
-  // cannot collide with the 401/403 below — so this only replaces the bare
-  // "Linear API returned 429" with something the caller can act on.
+  // does NOT share GitHub's ambiguity — nothing here turns a throttle into the
+  // access message below — so this only replaces a bare "Linear API returned
+  // <status>" with something the caller can act on.
   if (res.status === 429) {
-    throw new Error(
-      `Linear is rate-limiting requests (429) — not an auth or access problem. The API key and the ` +
-        `declared team are fine; wait ${waitPhrase(parseRetryAfterSeconds(res))} and retry.`,
-    );
+    throw new Error(rateLimitMessage(res.status, parseRetryAfterSeconds(res)));
   }
   if (res.status === 401 || res.status === 403) {
     throw new Error("Linear rejected the API token (401/403). Re-connect Linear with a valid API key.");
   }
+  // A throttle does not necessarily arrive as a 429: Linear's GraphQL API also
+  // reports one in the ERROR BODY of a 400, as `errors[].extensions.code ===
+  // "RATELIMITED"`. So a failed status has to be read before it is turned into
+  // a bare status message. Both shapes are handled because we could not reach
+  // linear.app to confirm which one a given deployment sees.
   if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    if (isLinearRateLimited(text)) {
+      throw new Error(rateLimitMessage(res.status, parseRetryAfterSeconds(res)));
+    }
     throw new Error(`Linear API returned ${res.status}`);
   }
-  const body = (await res.json()) as { data?: T; errors?: { message: string }[] };
+  const body = (await res.json()) as { data?: T; errors?: LinearGraphqlError[] };
   if (body.errors && body.errors.length > 0) {
+    // Same code can ride on a 200 — GraphQL is free to report an error with an
+    // OK status — so the throttle check applies here too, ahead of the generic
+    // error text.
+    if (body.errors.some(isRateLimitedError)) {
+      throw new Error(rateLimitMessage(res.status, parseRetryAfterSeconds(res)));
+    }
     throw new Error(`Linear GraphQL error: ${body.errors.map((e) => e.message).join("; ")}`);
   }
   if (!body.data) {

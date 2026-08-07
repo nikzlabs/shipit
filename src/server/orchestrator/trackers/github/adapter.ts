@@ -330,25 +330,46 @@ function parsePositiveInt(raw: string | null): number | null {
  * repository-missing-or-inaccessible message — that fallback is deliberate:
  * mislabelling a real access failure as a throttle would tell the user to wait
  * for something that will never clear.
+ *
+ * Note what a spent quota does and does NOT prove. `x-ratelimit-remaining: 0`
+ * is solid evidence the credential's quota is gone, and no evidence at all that
+ * its *access* is healthy — a permission failure can coincide with an exhausted
+ * quota, and the headers ride on responses generally. So the quota is reported
+ * as the near cause without asserting that everything else is fine; see
+ * {@link GitHubTracker.throttleError}.
  */
 export function classifyGitHubThrottle(res: Response, body: string): GitHubThrottle | null {
   if (res.status !== 403 && res.status !== 429) return null;
   const { message, documentationUrl } = parseErrorBody(body);
   const retryAfter = parseRetryAfterSeconds(res);
-
-  if (/secondary rate limit/i.test(message)) {
-    return { kind: "secondary", ...(retryAfter !== null ? { retryAfterSeconds: retryAfter } : {}) };
-  }
+  const secondaryText = /secondary rate limit/i.test(message);
+  const primaryText = !secondaryText && /rate limit exceeded/i.test(message);
   const quotaSpent = res.headers.get("x-ratelimit-remaining")?.trim() === "0";
-  if (quotaSpent || /rate limit exceeded/i.test(message)) {
-    const reset = secondsUntilEpoch(parsePositiveInt(res.headers.get("x-ratelimit-reset")));
-    const wait = retryAfter ?? reset;
-    return { kind: "primary", ...(wait !== null ? { retryAfterSeconds: wait } : {}) };
-  }
+
+  // `x-ratelimit-reset` is the end of the CURRENT window and rides on every
+  // response, so it only means "wait this long" once the quota is actually
+  // spent — reading it otherwise would inflate a 60-second secondary limit into
+  // the 40 minutes left in the hour. The two waits can both be present and
+  // disagree (a secondary limit hit with the quota also spent), and only the
+  // LONGER one satisfies both limits, so that is what we report.
+  const reset =
+    quotaSpent || primaryText
+      ? secondsUntilEpoch(parsePositiveInt(res.headers.get("x-ratelimit-reset")))
+      : null;
+  const wait = longestWait(retryAfter, reset);
+
+  if (secondaryText) return { kind: "secondary", ...wait };
+  if (quotaSpent || primaryText) return { kind: "primary", ...wait };
   if (retryAfter !== null || /rate.?limit/i.test(documentationUrl) || res.status === 429) {
-    return { kind: "secondary", ...(retryAfter !== null ? { retryAfterSeconds: retryAfter } : {}) };
+    return { kind: "secondary", ...wait };
   }
   return null;
+}
+
+/** The longer of two possible waits, as a spreadable partial. */
+function longestWait(a: number | null, b: number | null): { retryAfterSeconds?: number } {
+  const known = [a, b].filter((v): v is number => v !== null);
+  return known.length > 0 ? { retryAfterSeconds: Math.max(...known) } : {};
 }
 
 export class GitHubTracker implements Tracker {
@@ -791,8 +812,15 @@ export class GitHubTracker implements Tracker {
    * mislabelled as an access failure sends the user to fix something that isn't
    * broken, which is the bug being fixed here.
    *
-   * The body is read off a `clone()` so the original response is still intact
-   * for `parseGitHubError`, which several callers use for the non-throttle case.
+   * Neither message claims access was independently verified, because it wasn't:
+   * a secondary limit means GitHub throttled this request, and a spent quota
+   * means the credential is out of requests. Neither rules out a permission
+   * problem sitting behind it, so both point at retrying first and checking
+   * access only if the wait doesn't clear it.
+   *
+   * The body is read off a `clone()`. No 403/429 currently falls through to a
+   * caller that reads the body (`parseGitHubError`), so the clone is not
+   * load-bearing today — it is what keeps that true if a fallthrough is added.
    */
   private async throttleError(res: Response): Promise<string | null> {
     if (res.status !== 403 && res.status !== 429) return null;
@@ -804,20 +832,21 @@ export class GitHubTracker implements Tracker {
     }
     const throttle = classifyGitHubThrottle(res, body);
     if (!throttle) return null;
-    const where = this.repo ? ` to \`${this.repo.owner}/${this.repo.repo}\`` : "";
+    const slug = this.repo ? `${this.repo.owner}/${this.repo.repo}` : null;
     const wait = waitPhrase(throttle.retryAfterSeconds);
     if (throttle.kind === "secondary") {
       return (
-        `GitHub is throttling requests${where} — a secondary rate limit (${res.status}), not an access ` +
-        `problem. The repository and the connected credential are fine, so there is nothing to fix: wait ` +
-        `${wait} and retry. If this is a batch of writes, slow the rate — GitHub's content-creation limits ` +
-        `are per-minute and per-hour.`
+        `GitHub is throttling requests${slug ? ` to \`${slug}\`` : ""} — a secondary rate limit ` +
+        `(${res.status}), not an access failure, so checking the repository slug or the credential's grant ` +
+        `will not help. Wait ${wait} and retry. If this is a batch of writes, slow the rate — GitHub's ` +
+        `content-creation limits are per-minute and per-hour.`
       );
     }
     return (
-      `GitHub's request quota for the connected credential is exhausted (${res.status}) — a primary rate ` +
-      `limit, not an access problem. The repository and the credential are fine; the quota resets in ` +
-      `${wait}, so retry after that.`
+      `GitHub's request quota for the connected credential is exhausted (${res.status}) — ` +
+      `\`x-ratelimit-remaining\` is 0, so this is a rate limit rather than the usual meaning of a ${res.status}. ` +
+      `The quota resets in ${wait}; retry after that${slug ? `, and only if it still fails check that the ` +
+      `credential can access \`${slug}\`` : ""}.`
     );
   }
 

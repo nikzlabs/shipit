@@ -685,8 +685,88 @@ describe("GitHubTracker rate limits (docs/247)", () => {
   });
 
   it("leaves a non-throttle failed write on GitHub's own message", async () => {
-    // The body is still readable after the throttle check clones the response.
+    // A 422 never enters the throttle path at all — pinned so the classification
+    // added above cannot start swallowing GitHub's own validation messages.
     const tracker = trackerReturning(() => errorResponse({ message: "Validation Failed: bad label" }, 422));
     expect(await rejection(tracker.addComment("42", "hi"))).toMatch(/Validation Failed: bad label/);
+  });
+
+  it("classifies on the body alone, with no rate-limit headers at all", async () => {
+    const tracker = trackerReturning(() => errorResponse(SECONDARY_BODY, 403));
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/secondary rate limit/);
+    expect(message).toMatch(/a few minutes/);
+    expect(message).not.toMatch(/does not exist/);
+  });
+
+  it("classifies on the headers alone, with no message it recognizes", async () => {
+    const reset = String(Math.floor(Date.now() / 1000) + 1800);
+    const tracker = trackerReturning(() =>
+      errorResponse({ message: "Forbidden" }, 403, {
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": reset,
+      }),
+    );
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/quota for the connected credential is exhausted/);
+    expect(message).toMatch(/resets in 30 minutes/);
+  });
+
+  it("reads a non-JSON body rather than giving up on it", async () => {
+    const tracker = trackerReturning(
+      () =>
+        new Response("You have exceeded a secondary rate limit. Please wait a few minutes.", {
+          status: 403,
+          headers: { "Content-Type": "text/plain" },
+        }),
+    );
+    expect(await rejection(tracker.listIssues())).toMatch(/secondary rate limit/);
+  });
+
+  it("reports the LONGER wait when Retry-After and a spent quota disagree", async () => {
+    // A secondary limit hit while the hourly quota is also spent: retrying after
+    // the 60s Retry-After would just hit the quota, so the wait must satisfy both.
+    const reset = String(Math.floor(Date.now() / 1000) + 1200);
+    const tracker = trackerReturning(() =>
+      errorResponse(SECONDARY_BODY, 403, {
+        "Retry-After": "60",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": reset,
+      }),
+    );
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/secondary rate limit/); // the body still names the kind
+    expect(message).toMatch(/20 minutes/);
+    expect(message).not.toMatch(/60 seconds/);
+  });
+
+  it("does not read x-ratelimit-reset while the quota still has requests left", async () => {
+    // `reset` is the end of the current window and rides on every response —
+    // treating it as a wait would inflate a 60-second throttle to 40 minutes.
+    const reset = String(Math.floor(Date.now() / 1000) + 2400);
+    const tracker = trackerReturning(() =>
+      errorResponse(SECONDARY_BODY, 403, {
+        "Retry-After": "60",
+        "x-ratelimit-remaining": "4287",
+        "x-ratelimit-reset": reset,
+      }),
+    );
+    expect(await rejection(tracker.listIssues())).toMatch(/60 seconds/);
+  });
+
+  it("does not claim access is healthy when a spent quota accompanies a permission body", async () => {
+    // A spent quota proves the credential is out of requests and NOTHING about
+    // whether it may touch the repository — the two can coincide. The message
+    // must say retry-then-check, not "the credential is fine".
+    const tracker = trackerReturning(() =>
+      errorResponse({ message: "Resource not accessible by integration" }, 403, {
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 300),
+      }),
+    );
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/quota for the connected credential is exhausted/);
+    expect(message).toMatch(/only if it still fails check that the credential can access/);
+    expect(message).not.toMatch(/credential are fine|nothing to fix/);
   });
 });
