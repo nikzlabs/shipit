@@ -247,6 +247,39 @@ issues:
     expect(appended.filter((m) => m.issueWrite)).toHaveLength(1);
   });
 
+  // The production scenario, at the scale it actually happened. Before the
+  // docs/194 Layer 1 guard (4ee77aa5, 2026-06-13) each viewer reconnect wiped the
+  // poller's in-memory `mergedSessions` edge, re-promoted the already-merged PR
+  // and re-ran these writes — SHI-126 and SHI-128 each ended up carrying **89
+  // byte-identical** "Resolved by ShipIt on merge of PR #1294" / "Referenced by
+  // merged PR #1294" comments, posted within a ~3-hour window on 2026-06-12, and
+  // 17 issues were affected in total. It went unnoticed for two months because
+  // nobody scrolls to the bottom of a closed issue; it surfaced only when the
+  // docs/247 Linear migration's write-dedup window collapsed the copies.
+  //
+  // The two tests above lock the guard at N=2. This one asserts the property the
+  // duplicates violated, on the COMMENT bodies specifically rather than on an
+  // aggregate call count: however many times the merge handler re-fires for one
+  // PR, each provenance comment is posted exactly once.
+  it("posts each provenance comment exactly once across many re-fires of one PR", async () => {
+    const { deps, calls, appended } = makeHarness("open");
+    const pr = mergedPr("## Summary\nDone.\n\nCloses octocat/hello-world#42\nRefs octocat/hello-world#43");
+
+    for (let i = 0; i < 89; i++) await applyMergedPrIssueRefs(deps, pr);
+
+    const commentBodies = calls
+      .filter((c) => c.method === "POST" && c.url.includes("/comments"))
+      .map((c) => (c.body as { body: string }).body);
+    expect(commentBodies.filter((b) => b.startsWith("Resolved by ShipIt on merge of PR #7"))).toHaveLength(1);
+    expect(commentBodies.filter((b) => b.startsWith("Referenced by merged PR #7"))).toHaveLength(1);
+    expect(commentBodies).toHaveLength(2);
+
+    // …and the rest of the effects stay single too: one status flip, and one card
+    // each for the close and the progress comment.
+    expect(calls.filter((c) => c.method === "PATCH")).toHaveLength(1);
+    expect(appended.filter((m) => m.issueWrite)).toHaveLength(2);
+  });
+
   // docs/194 Layer 2 — even if the guard regressed, the card id is deterministic
   // (keyed by session + PR + tracker + issue + verb) so the client's
   // idempotent-by-cardId store collapses a re-fire instead of rendering a
