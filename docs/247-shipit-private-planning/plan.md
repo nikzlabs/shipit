@@ -260,6 +260,14 @@ dedup window silently made a fidelity choice the migration never made explicitly
 A driver that wanted true 1:1 fidelity would have to disambiguate identical
 same-day bodies deliberately.
 
+**Those duplicates were history, not a live defect** — and the raw count hid that.
+Every one in the corpus was created between 2026-06-11 and 2026-06-13, none after;
+`runMergeEffect` landed on 2026-06-13 in `4ee77aa5` ("Fix duplicate issue-status
+cards on PR merge"). An issue tracker is an append-only record, so a bug fixed
+months ago still reads as 89 live symptoms at the bottom of a closed issue. **Date
+a finding from a migrated corpus before acting on it**: this one was briefed to a
+child session as an open bug before anyone checked when it happened.
+
 ## Export fidelity
 
 Two defects found while probing this migration are **fixed on `main`**
