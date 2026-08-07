@@ -55,7 +55,11 @@ import {
   syncProviderAccountTokenBack,
 } from "../session-credentials.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
-import { detectHardExhaustion, exhaustionLockoutUntil } from "../ws-handlers/agent-rate-limits.js";
+import {
+  detectHardExhaustion,
+  detectHardExhaustionInTurnText,
+  exhaustionLockoutUntil,
+} from "../ws-handlers/agent-rate-limits.js";
 import { commitSubAgentWork } from "./sub-agent-commit.js";
 import type { GitManager } from "../../shared/git.js";
 import { ServiceError } from "./types.js";
@@ -382,10 +386,21 @@ export async function runSubAgent(
     // fallback is bounded by the connected subscription set: every account is
     // attempted at most once. API-key routes never enter this branch because
     // only account routes are benched or accepted as fallbacks.
+    // A limit hit mid-consult arrives the same two ways a primary turn's does:
+    // as the run's error, or — when the CLI reports it as an ordinary assistant
+    // message and still ends the turn successfully — as the run's final text.
+    // Same policy as the primary path: the error is the provider talking, so
+    // only when it is silent do we read the model's words. Falling through from
+    // a *non-quota* error to the text would let a transport or model-access
+    // failure that happens to end on quota-looking partial output bench a
+    // healthy account.
+    const detectExhaustion = (run: typeof result) =>
+      (run.status === "error" && run.error
+        ? detectHardExhaustion(run.error)
+        : detectHardExhaustionInTurnText(run.text));
+
     const attemptedAccountIds = new Set(accountId ? [accountId] : []);
-    let exhausted = result.status === "error" && result.error
-      ? detectHardExhaustion(result.error)
-      : null;
+    let exhausted = detectExhaustion(result);
     while (exhausted && accountId && deps.providerAccountManager) {
       const failedAccountId = accountId;
       deps.providerAccountManager.markAccountExhausted(
@@ -427,9 +442,16 @@ export async function runSubAgent(
       attemptedAccountIds.add(accountId);
       provisionAttempt();
       result = await spawn();
-      exhausted = result.status === "error" && result.error
-        ? detectHardExhaustion(result.error)
-        : null;
+      exhausted = detectExhaustion(result);
+    }
+    // The loop can only exit with `exhausted` still set when there was nowhere
+    // left to fail over to, and a text-channel notice leaves `status: "success"`
+    // — so the consult would render as a completed review whose entire answer is
+    // the provider's limit notice. It is a failed run; say so. (An
+    // error-channel exhaustion already carries both fields, so this is a no-op
+    // there.)
+    if (exhausted && result.status === "success") {
+      result = { ...result, status: "error", error: result.error ?? result.text.trim() };
     }
 
     // §5 — attribute the sub-agent's cost AND token usage to subAgentId, not the

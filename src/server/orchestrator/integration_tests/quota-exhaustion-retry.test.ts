@@ -100,6 +100,8 @@ async function waitFor(fn: () => boolean, label = "condition", timeoutMs = 2000)
 }
 
 const QUOTA_ERROR = "You've hit Claude's 5h usage limit. It resets at 2099-01-01T00:00:00.000Z.";
+/** Verbatim from the incident — the CLI's own notice, delivered as assistant text. */
+const QUOTA_NOTICE_TEXT = "You've hit your session limit · resets 5:10pm (UTC)";
 
 describe("same-turn quota failover (docs/150 req 14)", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -149,6 +151,103 @@ describe("same-turn quota failover (docs/150 req 14)", () => {
     await waitFor(() => !runner.running, "turn finished");
 
     expect(agents).toHaveLength(2);
+
+    runner.dispose({ force: true });
+  });
+
+  // The shape production hit on 2026-08-06 (session 174b5d98): the Claude CLI
+  // reported the limit as an ordinary assistant message and then ended the turn
+  // `subtype: "success"`, so the adapter left `agent_result.error` undefined.
+  // Gated on that field, the retry never fired: the turn retired as a success,
+  // no failover happened, and the limit notice became the auto-commit subject.
+  it("retries when the limit arrives as assistant text on a success turn", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const { deps, prepareAgentEnv, autoCommit } = makeDeps(agents);
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+
+    agents[0]!.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: QUOTA_NOTICE_TEXT }],
+    });
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+
+    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "retry agent run");
+    expect(agents[0]!.kill).toHaveBeenCalled();
+    expect(prepareAgentEnv).toHaveBeenCalledTimes(2);
+    // The exhausted attempt must not commit — that is how the limit notice
+    // became a commit subject in the first place.
+    expect(autoCommit).not.toHaveBeenCalled();
+
+    agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[1]!.emit("done", 0);
+    await waitFor(() => !runner.running, "turn finished");
+
+    runner.dispose({ force: true });
+  });
+
+  // Bounded to one retry on the text channel too — and the turn it ends on must
+  // not look like a success. That is the original incident (a limit notice
+  // retiring as a completed turn), one account further along.
+  it("ends errored, not successful, when the retry hits the limit in text as well", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDeps(agents);
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+
+    agents[0]!.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: QUOTA_NOTICE_TEXT }],
+    });
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "retry agent run");
+
+    agents[1]!.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: QUOTA_NOTICE_TEXT }],
+    });
+    agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[1]!.emit("done", 0);
+    await waitFor(() => !runner.running, "turn finished");
+
+    expect(agents).toHaveLength(2);
+    expect(runner.lastTurnErrored).toBe(true);
+
+    runner.dispose({ force: true });
+  });
+
+  // The text channel carries the agent's own prose, so it matches only the
+  // provider's own notice, anchored. An ordinary short summary that happens to
+  // contain quota words — somebody else's billing problem — must still end as
+  // one successful turn.
+  it("does not retry a successful turn whose text merely mentions limits", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDeps(agents);
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+
+    agents[0]!.emit("event", {
+      type: "agent_assistant",
+      content: [{
+        type: "text",
+        text: "The Vercel deploy failed because your account is out of credits; add funds and retry.",
+      }],
+    });
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[0]!.emit("done", 0);
+    await waitFor(() => !runner.running, "turn finished");
+
+    expect(agents).toHaveLength(1);
+    expect(runner.lastTurnErrored).toBe(false);
 
     runner.dispose({ force: true });
   });
