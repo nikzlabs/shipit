@@ -173,6 +173,17 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].path).toContain("/pr/view?number=5");
   });
 
+  it("GET /agent-ops/pr/view forwards ?comments=true, and only when asked", async () => {
+    // docs/255 — the conversation is a second GitHub round-trip, so the relay
+    // must pass the shim's opt-in through and must not invent it.
+    client.setResponse("GET", "/pr/view", { ok: true, status: 200, body: { pr: { number: 5 } } });
+    await app.inject({ method: "GET", url: "/agent-ops/pr/view?number=5&comments=true" });
+    expect(client.calls[0].path).toContain("comments=true");
+
+    await app.inject({ method: "GET", url: "/agent-ops/pr/view?number=5" });
+    expect(client.calls[1].path).not.toContain("comments");
+  });
+
   it("GET /agent-ops/pr/list forwards ?state=", async () => {
     client.setResponse("GET", "/pr/list", { ok: true, status: 200, body: { prs: [] } });
     await app.inject({ method: "GET", url: "/agent-ops/pr/list?state=closed" });

@@ -40,10 +40,12 @@
  * For documentation: see /shipit-docs/github.md inside the container.
  */
 
+import { wrapUntrustedContent } from "../../shared/untrusted-input.js";
 import {
   applyJq,
   asString,
   callBroker,
+  capText,
   defaultIO,
   fail,
   filterJson,
@@ -71,7 +73,7 @@ const HELP = `${SHIM_NAME} — pull-request operations brokered through the Ship
 Supported subcommands:
   gh pr create   [-t TITLE] [-b BODY|--body-file FILE] [-B BASE] [-d|--draft] [--fill] [-l|--label LABEL]
   gh pr edit     [<number>] [-t TITLE] [-b BODY|--body-file FILE] [--add-label LABEL] [--remove-label LABEL]
-  gh pr view     [<number>] [--json FIELDS] [-q|--jq EXPR] [-w|--web]
+  gh pr view     [<number>] [-c|--comments] [--json FIELDS] [-q|--jq EXPR]
   gh pr list     [--state STATE] [--json FIELDS] [-q|--jq EXPR]
   gh pr status
   gh pr comment  [<number>] (-b BODY|--body-file FILE)
@@ -91,6 +93,10 @@ Operations target the repo of the current working directory's clone. Pass
 
 -q/--jq requires --json and supports simple paths only (${JQ_SUPPORTED_FORMS});
 anything else exits 3 with a message naming the expression.
+
+--json validates its field names: an unsupported one exits 2 listing what the
+subcommand can return, never an empty object. Review feedback is read with
+\`gh pr view <n> --comments\` (or --json comments,reviews,reviewThreads).
 
 This is a ShipIt shim, not the real gh CLI. \`gh run\`/\`gh workflow\` are reads
 plus \`gh run rerun\` — re-running an existing run on the branch you are working
@@ -207,9 +213,76 @@ function emitJson(deps: RunDeps, command: string, payload: unknown, jq: string |
   deps.io.exit(0);
 }
 
-/** Split a `--json a,b` value into the field list `filterJson` expects. */
-function jsonFields(raw: string): string[] {
-  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+// ---------------------------------------------------------------------------
+// `--json` field sets (docs/255)
+//
+// Each `--json` subcommand declares what it can return, and the value is
+// validated against that list BEFORE any network call. Previously `filterJson`
+// silently dropped names it didn't recognise, so `--json totallyBogusField` and
+// `--json comments` both printed `{}` — an unsupported field was
+// indistinguishable from "this PR has no data", and a reviewer's findings read
+// as a PR with no discussion on it. Never let those two look alike.
+// ---------------------------------------------------------------------------
+
+/**
+ * `gh pr view --json`. `base`/`head` are ShipIt's original spellings;
+ * `baseRefName`/`headRefName` are real gh's, accepted as aliases. The
+ * conversation fields (`comments`, `reviews`, `reviewThreads`,
+ * `reviewDecision`) cost an extra round-trip and are fetched only when named.
+ */
+const PR_VIEW_JSON_FIELDS = [
+  "additions", "author", "base", "baseRefName", "body", "comments", "createdAt",
+  "deletions", "head", "headRefName", "isDraft", "labels", "merged", "mergedAt",
+  "number", "reviewDecision", "reviewThreads", "reviews", "state", "title",
+  "updatedAt", "url",
+];
+
+/** The subset of `PR_VIEW_JSON_FIELDS` that requires the conversation fetch. */
+const PR_CONVERSATION_FIELDS = new Set(["comments", "reviews", "reviewThreads", "reviewDecision"]);
+
+const PR_LIST_JSON_FIELDS = ["base", "head", "isDraft", "number", "state", "title", "url"];
+
+const RUN_JSON_FIELDS = [
+  "conclusion", "createdAt", "databaseId", "displayTitle", "event", "headBranch",
+  "headSha", "number", "status", "updatedAt", "url", "workflowDatabaseId", "workflowName",
+];
+const RUN_VIEW_JSON_FIELDS = [...RUN_JSON_FIELDS, "jobs", "logs"];
+
+const WORKFLOW_JSON_FIELDS = ["id", "name", "path", "state", "url"];
+
+/**
+ * Split a `--json a,b` value into the field list `filterJson` expects, failing
+ * on a name the subcommand cannot return.
+ *
+ * Exit code 2 — an ordinary usage error, the same class as `-q` without
+ * `--json`, and distinct from 1 (the request ran and failed) and 3 (an
+ * unsupported jq expression).
+ */
+function jsonFields(
+  raw: string,
+  deps: RunDeps,
+  command: string,
+  supported: string[],
+): string[] {
+  const available = `Supported fields for ${command}: ${supported.join(", ")}`;
+  const fields = raw.split(",").map((s) => s.trim());
+  if (raw.trim() === "") {
+    fail(deps.io, `${command}: --json needs at least one comma-separated field.\n${available}`);
+  }
+  // An empty component (`--json title,,state`, a trailing comma) is a typo, and
+  // dropping it quietly is the same silent-acceptance this validation exists to
+  // remove — say so rather than proceeding with what survived the split.
+  if (fields.some((f) => f === "")) {
+    fail(deps.io, `${command}: --json has an empty field name in "${raw}".\n${available}`);
+  }
+  const unknown = fields.filter((f) => !supported.includes(f));
+  if (unknown.length > 0) {
+    fail(
+      deps.io,
+      `${command}: unknown --json field${unknown.length > 1 ? "s" : ""}: ${unknown.map((f) => `"${f}"`).join(", ")}\n${available}`,
+    );
+  }
+  return fields;
 }
 
 async function handlePrCreate(args: string[], deps: RunDeps): Promise<void> {
@@ -334,15 +407,38 @@ async function handlePrView(args: string[], deps: RunDeps): Promise<void> {
   }
   requireJsonForJq(deps, "gh pr view", parsed);
 
-  const qs = targetQuery(deps, parsed.values.repo, { number: parsed.positional[0] });
+  const fields = parsed.values.json !== undefined
+    ? jsonFields(parsed.values.json, deps, "gh pr view", PR_VIEW_JSON_FIELDS)
+    : undefined;
+  const wantsComments = parsed.booleans.has("comments");
+  // docs/255 — who pays for the conversation round-trip. An explicit
+  // `--comments`, a `--json` naming any conversation field, or a plain view
+  // (which prints the summary line) needs it; `--json state -q .state` — the
+  // merge-read one-liner — deliberately does not.
+  const wantsConversationJson = fields?.some((f) => PR_CONVERSATION_FIELDS.has(f)) === true;
+  const needsConversation = wantsComments || wantsConversationJson || fields === undefined;
+
+  const qs = targetQuery(deps, parsed.values.repo, {
+    number: parsed.positional[0],
+    comments: needsConversation ? "true" : undefined,
+  });
   const res = await deps.call("GET", `/agent-ops/pr/view${qs}`, undefined, deps.env);
   if (res.status >= 200 && res.status < 300) {
     const pr = res.body.pr as Record<string, unknown> | null;
     if (!pr) {
       fail(deps.io, "No pull request found for this branch.", 1);
     }
-    if (parsed.values.json !== undefined) {
-      emitJson(deps, "gh pr view", filterJson(pr, jsonFields(parsed.values.json)), parsed.values.jq);
+    // A conversation fetch that failed comes back as an error string rather
+    // than empty arrays, so it can never be read as "no comments". An explicit
+    // request fails loudly; a plain view still prints the PR (exit 0) with the
+    // reason on stderr.
+    const conversationError = asString(pr.conversationError);
+    if (conversationError && (wantsComments || wantsConversationJson)) {
+      fail(deps.io, `gh pr view: could not read this PR's conversation: ${conversationError}`, 1);
+    }
+
+    if (fields !== undefined) {
+      emitJson(deps, "gh pr view", filterJson(pr, fields), parsed.values.jq);
       return;
     }
     // Plain-text rendering similar to real gh. We coerce field values to
@@ -355,10 +451,175 @@ async function handlePrView(args: string[], deps: RunDeps): Promise<void> {
       "",
       asString(pr.body),
     ];
+    if (conversationError) {
+      deps.io.stderr(`Note: this PR's comments could not be read: ${conversationError}\n`);
+    } else if (wantsComments) {
+      lines.push("", renderConversation(pr));
+    } else {
+      lines.push("", conversationSummary(pr));
+    }
     success(deps.io, lines.join("\n"));
     return;
   }
   fail(deps.io, formatError(res, "Failed to view PR"), 1);
+}
+
+// ---------------------------------------------------------------------------
+// PR conversation rendering (docs/255)
+// ---------------------------------------------------------------------------
+
+/**
+ * Cap on the rendered conversation. A PR discussion is unbounded in principle;
+ * this keeps one `--comments` read from swallowing the agent's context. The
+ * envelope says when it clipped.
+ */
+const MAX_CONVERSATION_CHARS = 40_000;
+
+/** Pull the three conversation arrays off a PR payload. */
+function conversationOf(pr: Record<string, unknown>): {
+  comments: Record<string, unknown>[];
+  reviews: Record<string, unknown>[];
+  threads: Record<string, unknown>[];
+} {
+  const arr = (value: unknown): Record<string, unknown>[] =>
+    Array.isArray(value) ? (value as Record<string, unknown>[]) : [];
+  return {
+    comments: arr(pr.comments),
+    reviews: arr(pr.reviews),
+    threads: arr(pr.reviewThreads),
+  };
+}
+
+/**
+ * How many of each kind GitHub actually holds, which is NOT the same as how
+ * many we fetched: the query is bounded, so a very busy PR returns a window.
+ * Reporting the fetched length as the total would tell the agent it had read
+ * everything when it hadn't — the same "looks complete, isn't" failure this
+ * feature exists to remove. `*Total` comes back from the orchestrator; a
+ * missing one falls back to the fetched length.
+ */
+function totalOf(pr: Record<string, unknown>, key: string, fetched: number): number {
+  const value = pr[key];
+  return typeof value === "number" && value >= fetched ? value : fetched;
+}
+
+/** ` (showing the N most recent)` when the fetch was windowed, else "". */
+function windowNote(total: number, fetched: number): string {
+  return total > fetched ? ` (showing ${fetched})` : "";
+}
+
+/** `@login` for a comment/review author, or `@ghost` for a deleted account. */
+function authorOf(item: Record<string, unknown>): string {
+  const author = item.author as Record<string, unknown> | null | undefined;
+  const login = author ? asString(author.login) : "";
+  return `@${login || "ghost"}`;
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+/**
+ * The one-line summary a plain `gh pr view` ends with. The whole point is that
+ * a PR with discussion on it can never render as a quiet one — so the
+ * zero case is stated explicitly rather than left as silence.
+ */
+function conversationSummary(pr: Record<string, unknown>): string {
+  const { comments, reviews, threads } = conversationOf(pr);
+  const commentTotal = totalOf(pr, "commentsTotal", comments.length);
+  const reviewTotal = totalOf(pr, "reviewsTotal", reviews.length);
+  const threadTotal = totalOf(pr, "reviewThreadsTotal", threads.length);
+  if (commentTotal === 0 && reviewTotal === 0 && threadTotal === 0) {
+    return "No comments, reviews, or review threads.";
+  }
+  const parts: string[] = [];
+  if (commentTotal > 0) parts.push(plural(commentTotal, "comment"));
+  if (reviewTotal > 0) parts.push(plural(reviewTotal, "review"));
+  if (threadTotal > 0) {
+    const unresolved = threads.filter((t) => t.isResolved !== true).length;
+    parts.push(`${plural(threadTotal, "review thread")}${unresolved > 0 ? ` (${unresolved} unresolved)` : ""}`);
+  }
+  const num = asString(pr.number);
+  return `${parts.join(" · ")} — run \`gh pr view ${num} --comments\` to read them.`;
+}
+
+/** `path:line` for an inline thread, falling back to where it was written. */
+function threadLocation(t: Record<string, unknown>): string {
+  const path = asString(t.path) || "(file unknown)";
+  // An OUTDATED thread has no current `line` — GitHub only keeps the line it
+  // was originally left on. Without the fallback the most common review
+  // finding (one whose code has since moved) would render as a bare filename.
+  const line = t.line ?? t.originalLine;
+  if (line === null || line === undefined) return path;
+  return `${path}:${asString(line)}`;
+}
+
+/**
+ * Full `--comments` rendering: conversation comments, reviews, inline threads.
+ *
+ * Every byte here is authored by whoever can comment on the PR — on a public
+ * repo, anyone — so the whole block goes through the SHI-98 untrusted-input
+ * envelope (`shared/untrusted-input.ts`, `source: "pr"`), exactly as the
+ * `shipit issue` shim does with issue comments. It is data to read, never
+ * instructions to follow.
+ */
+function renderConversation(pr: Record<string, unknown>): string {
+  const { comments, reviews, threads } = conversationOf(pr);
+  const commentTotal = totalOf(pr, "commentsTotal", comments.length);
+  const reviewTotal = totalOf(pr, "reviewsTotal", reviews.length);
+  const threadTotal = totalOf(pr, "reviewThreadsTotal", threads.length);
+  const out: string[] = [];
+
+  if (commentTotal === 0 && reviewTotal === 0 && threadTotal === 0) {
+    return "No comments, reviews, or review threads.";
+  }
+
+  if (comments.length > 0) {
+    out.push(`--- Comments (${commentTotal}${windowNote(commentTotal, comments.length)}) ---`);
+    for (const c of comments) {
+      out.push("", `${authorOf(c)} · ${asString(c.createdAt)}`, asString(c.body));
+    }
+  }
+
+  if (reviews.length > 0) {
+    if (out.length > 0) out.push("");
+    out.push(`--- Reviews (${reviewTotal}${windowNote(reviewTotal, reviews.length)}) ---`);
+    for (const r of reviews) {
+      out.push("", `${authorOf(r)} ${asString(r.state)} · ${asString(r.submittedAt)}`);
+      const body = asString(r.body);
+      out.push(body.trim() ? body : "(no summary body)");
+    }
+  }
+
+  if (threads.length > 0) {
+    const unresolved = threads.filter((t) => t.isResolved !== true).length;
+    if (out.length > 0) out.push("");
+    out.push(`--- Review threads (${threadTotal}${windowNote(threadTotal, threads.length)}, ${unresolved} unresolved) ---`);
+    for (const t of threads) {
+      const flags = [
+        t.isResolved === true ? "resolved" : "unresolved",
+        ...(t.isOutdated === true ? ["outdated"] : []),
+      ].join(", ");
+      out.push("", `${threadLocation(t)} [${flags}]`);
+      const hunk = asString(t.diffHunk);
+      if (hunk.trim()) out.push(...hunk.split("\n").map((l) => `  ${l}`));
+      for (const c of (Array.isArray(t.comments) ? (t.comments as Record<string, unknown>[]) : [])) {
+        out.push(`  ${authorOf(c)}: ${asString(c.body)}`);
+      }
+    }
+  }
+
+  // Totals without bodies (an inconsistent payload) must not render as an
+  // empty envelope — say what we know instead.
+  if (out.length === 0) return "No comments, reviews, or review threads.";
+
+  const { text, truncated } = capText(out.join("\n"), MAX_CONVERSATION_CHARS);
+  return wrapUntrustedContent({
+    source: "pr",
+    content: text,
+    provenance: `pull request #${asString(pr.number)} — anyone who can comment authors this`,
+    truncated,
+  });
 }
 
 async function handlePrList(args: string[], deps: RunDeps): Promise<void> {
@@ -375,6 +636,10 @@ async function handlePrList(args: string[], deps: RunDeps): Promise<void> {
     fail(deps.io, `Unsupported flag for gh pr list: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
   requireJsonForJq(deps, "gh pr list", parsed);
+  // Validate --json before the network call, like real gh (and like gh pr view).
+  const fields = parsed.values.json !== undefined
+    ? jsonFields(parsed.values.json, deps, "gh pr list", PR_LIST_JSON_FIELDS)
+    : undefined;
 
   const qs = targetQuery(deps, parsed.values.repo, { state: parsed.values.state });
   const res = await deps.call("GET", `/agent-ops/pr/list${qs}`, undefined, deps.env);
@@ -382,8 +647,7 @@ async function handlePrList(args: string[], deps: RunDeps): Promise<void> {
     fail(deps.io, formatError(res, "Failed to list PRs"), 1);
   }
   const prs = (res.body.prs as Record<string, unknown>[] | undefined) ?? [];
-  if (parsed.values.json !== undefined) {
-    const fields = jsonFields(parsed.values.json);
+  if (fields !== undefined) {
     emitJson(deps, "gh pr list", prs.map((pr) => filterJson(pr, fields)), parsed.values.jq);
     return;
   }
@@ -604,6 +868,9 @@ async function handleRunList(args: string[], deps: RunDeps): Promise<void> {
     fail(deps.io, `Unsupported flag for gh run list: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
   requireJsonForJq(deps, "gh run list", parsed);
+  const fields = parsed.values.json !== undefined
+    ? jsonFields(parsed.values.json, deps, "gh run list", RUN_JSON_FIELDS)
+    : undefined;
   const qs = targetQuery(deps, parsed.values.repo, {
     workflow: parsed.values.workflow,
     branch: parsed.values.branch,
@@ -615,8 +882,7 @@ async function handleRunList(args: string[], deps: RunDeps): Promise<void> {
     fail(deps.io, formatError(res, "Failed to list workflow runs"), 1);
   }
   const runs = (res.body.runs as Record<string, unknown>[] | undefined) ?? [];
-  if (parsed.values.json !== undefined) {
-    const fields = jsonFields(parsed.values.json);
+  if (fields !== undefined) {
     emitJson(deps, "gh run list", runs.map((r) => filterJson(r, fields)), parsed.values.jq);
     return;
   }
@@ -659,6 +925,9 @@ async function handleRunView(args: string[], deps: RunDeps): Promise<void> {
     fail(deps.io, "ShipIt's gh shim does not support --web. The run details are printed on stdout.");
   }
   requireJsonForJq(deps, "gh run view", parsed);
+  const fields = parsed.values.json !== undefined
+    ? jsonFields(parsed.values.json, deps, "gh run view", RUN_VIEW_JSON_FIELDS)
+    : undefined;
   const wantsLog = parsed.booleans.has("log");
   const wantsLogFailed = parsed.booleans.has("logFailed");
   const qs = targetQuery(deps, parsed.values.repo, {
@@ -677,10 +946,10 @@ async function handleRunView(args: string[], deps: RunDeps): Promise<void> {
   const jobs = (res.body.jobs as Record<string, unknown>[] | undefined) ?? [];
   const logs = asString(res.body.logs);
 
-  if (parsed.values.json !== undefined) {
+  if (fields !== undefined) {
     // Merge jobs/logs into the run object so `--json jobs` / `--json …` works.
     const merged = { ...run, jobs, logs };
-    emitJson(deps, "gh run view", filterJson(merged, jsonFields(parsed.values.json)), parsed.values.jq);
+    emitJson(deps, "gh run view", filterJson(merged, fields), parsed.values.jq);
     return;
   }
 
@@ -781,13 +1050,15 @@ async function handleWorkflowList(args: string[], deps: RunDeps): Promise<void> 
     fail(deps.io, `Unsupported flag for gh workflow list: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
   requireJsonForJq(deps, "gh workflow list", parsed);
+  const fields = parsed.values.json !== undefined
+    ? jsonFields(parsed.values.json, deps, "gh workflow list", WORKFLOW_JSON_FIELDS)
+    : undefined;
   const res = await deps.call("GET", `/agent-ops/workflow/list${targetQuery(deps, parsed.values.repo)}`, undefined, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to list workflows"), 1);
   }
   const workflows = (res.body.workflows as Record<string, unknown>[] | undefined) ?? [];
-  if (parsed.values.json !== undefined) {
-    const fields = jsonFields(parsed.values.json);
+  if (fields !== undefined) {
     emitJson(deps, "gh workflow list", workflows.map((w) => filterJson(w, fields)), parsed.values.jq);
     return;
   }
@@ -818,6 +1089,9 @@ async function handleWorkflowView(args: string[], deps: RunDeps): Promise<void> 
     fail(deps.io, `Unsupported flag for gh workflow view: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
   requireJsonForJq(deps, "gh workflow view", parsed);
+  const fields = parsed.values.json !== undefined
+    ? jsonFields(parsed.values.json, deps, "gh workflow view", WORKFLOW_JSON_FIELDS)
+    : undefined;
   if (parsed.booleans.has("web")) {
     fail(deps.io, "ShipIt's gh shim does not support --web.");
   }
@@ -837,8 +1111,8 @@ async function handleWorkflowView(args: string[], deps: RunDeps): Promise<void> 
   if (!workflow) {
     fail(deps.io, `No workflow matching "${wf}" found.`, 1);
   }
-  if (parsed.values.json !== undefined) {
-    emitJson(deps, "gh workflow view", filterJson(workflow, jsonFields(parsed.values.json)), parsed.values.jq);
+  if (fields !== undefined) {
+    emitJson(deps, "gh workflow view", filterJson(workflow, fields), parsed.values.jq);
     return;
   }
   const runs = (res.body.runs as Record<string, unknown>[] | undefined) ?? [];

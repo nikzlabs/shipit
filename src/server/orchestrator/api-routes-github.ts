@@ -582,7 +582,11 @@ export async function registerGitHubRoutes(
 
   // GET /api/sessions/:id/pr/view — view PR details (current branch's PR by default)
   // GET /api/sessions/:id/pr/view?number=N — view a specific PR
-  app.get<{ Params: { id: string }; Querystring: { number?: string; cwd?: string; repo?: string } }>(
+  // GET /api/sessions/:id/pr/view?comments=true — also read the PR's
+  //   conversation (issue comments, reviews, inline review threads). Opt-in
+  //   because it costs a second round-trip; the merge-polling path
+  //   (`--json state`) never asks for it. docs/255.
+  app.get<{ Params: { id: string }; Querystring: { number?: string; cwd?: string; repo?: string; comments?: string } }>(
     "/api/sessions/:id/pr/view",
     { config: { containerAccessible: true } },
     async (request, reply) => {
@@ -603,6 +607,7 @@ export async function registerGitHubRoutes(
         const pr = await viewPullRequest(git, deps.githubAuthManager, {
           number: num,
           remoteUrl,
+          comments: request.query.comments === "true",
         });
         return { pr };
       } catch (err) {

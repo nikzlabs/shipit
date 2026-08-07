@@ -43,6 +43,7 @@ import { isGitHubTracker, isLinearTracker } from "../../shared/tracker-id.js";
 import { wrapUntrustedContent } from "../../shared/untrusted-input.js";
 import {
   asString,
+  capText,
   fail,
   normalizeLabels,
   parseFlags,
@@ -579,11 +580,6 @@ export async function handleIssueStatuses(args: string[], deps: RunDeps): Promis
 const MAX_ISSUE_FREETEXT_CHARS = 24_000;
 const MAX_ISSUE_COMMENTS_CHARS = 24_000;
 
-/** Clamp `text` to `max` chars, reporting whether it was truncated. */
-function capText(text: string, max: number): { text: string; truncated: boolean } {
-  if (text.length <= max) return { text, truncated: false };
-  return { text: `${text.slice(0, max).trimEnd()}\n…[truncated]`, truncated: true };
-}
 
 /**
  * Render a single `TrackerIssue` as a stable human-readable block.
