@@ -534,11 +534,20 @@ the tracker is used day to day, not about what the code does.
    export returns comments newest-first** — and rewrite references in the 330
    bodies, the 1,390 comments and the **5 titles** that carry one. Three rewrites,
    not one: internal `SHI-N` → `planning#M` from the mapping (1,174), `linear.app`
-   URLs → the same (122), and the **980 bare `#N`** PR references → the qualified
-   `nikzlabs/shipit#N`, since inside this repository a bare `#N` points here rather
-   than at the source repo. All tracker writes against the mapping Pass A produced;
-   **nothing in this repository changes**, so this step opens no PR and can run for
-   as long as the pacing requires.
+   URLs → the same (the **89** that point at an issue; the other ~29 are uploads,
+   Linear docs and a Slack invite, with no key to map), and the **980 bare `#N`**
+   PR references → the qualified `nikzlabs/shipit#N`, since inside this repository
+   a bare `#N` points here rather than at the source repo. All tracker writes
+   against the mapping Pass A produced; **nothing in this repository changes**, so
+   this step opens no PR and can run for as long as the pacing requires.
+
+   [`pass-b.py`](./pass-b.py) implements it, and
+   [`test-rewrite.py`](./test-rewrite.py) pins the rewrite rules against the traps
+   this migration found the hard way — the markdown link rewritten as a unit, the
+   non-issue URLs left alone, the header's own key surviving, and `#1354` inside
+   inline or fenced code not being a reference at all. That last one matters at
+   this volume: 980 bare-number rewrites across a corpus full of shell snippets
+   would otherwise corrupt code samples in a way no count would reveal.
 10. **Rewrite every reference in this repository** — **Human gate 3.** From that mapping, in one PR
     (req 10): doc `issue:` frontmatter, inline doc mentions, code comments,
     `CLAUDE.md`. 2,797 mentions across 686 files — it conflicts with every open
