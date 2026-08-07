@@ -211,6 +211,45 @@ describe("escalateDiskTiers", () => {
     expect(sm.get("pinned-old")?.diskTier).not.toBe("hot");
   });
 
+  // docs/256 — the reaper asymmetry. `idle-enforcer.ts` has always skipped a
+  // reserved always-on preview; this ladder did not, so the `hot → light` rung
+  // destroyed the very container docs/241 promises to keep up (and the
+  // keep-preview restart supervisor then recreated it — a fight, not a
+  // one-shot).
+  it("docs/241: NEVER descends a session with an always-on preview reservation", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-reserved");
+    fs.mkdirSync(wsDir, { recursive: true });
+    fs.writeFileSync(path.join(wsDir, "keep.txt"), "x");
+    // Old enough for the gentle eviction clock, let alone `hot → light`. A
+    // reserved preview that nobody views and no turn touches is the normal
+    // shape here: it is serving HTTP, which the idle age never sees.
+    insertSession({
+      id: "reserved-old",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 5),
+      diskTier: "hot",
+      workspaceDir: wsDir,
+    });
+    sm.setKeepPreviewRunning("reserved-old", true);
+
+    const { registry, disposed } = fakeRegistry();
+    const result = await escalateDiskTiers(baseDeps(sm, registry));
+
+    expect(result.toLight).toBe(0);
+    expect(result.toEvicted).toBe(0);
+    expect(sm.get("reserved-old")?.diskTier).toBe("hot");
+    expect(disposed).not.toContain("reserved-old");
+    expect(fs.existsSync(path.join(wsDir, "keep.txt"))).toBe(true);
+
+    // Control: releasing the reservation lets the same session descend, which
+    // proves the reservation — not some unrelated condition — held it.
+    sm.setKeepPreviewRunning("reserved-old", false);
+    const after = await escalateDiskTiers(baseDeps(sm, registry));
+    expect(after.toLight + after.toEvicted).toBeGreaterThan(0);
+    expect(sm.get("reserved-old")?.diskTier).not.toBe("hot");
+  });
+
   it("paces age-based descents when paceMs is set", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
