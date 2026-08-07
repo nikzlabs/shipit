@@ -33,6 +33,7 @@ import type {
 } from "../../../shared/types.js";
 import { githubHeaders, parseGitHubError } from "../../github-api.js";
 import { formatIssueReference } from "../../../shared/issue-ref.js";
+import { parseRetryAfterSeconds, secondsUntilEpoch, waitPhrase } from "../throttle.js";
 import {
   TrackerPermissionError,
   TrackerResolutionError,
@@ -275,6 +276,81 @@ export function resolveGitHubState(status: string): { state: "open" | "closed"; 
   }
 }
 
+/** A 403/429 that is really a rate limit — see {@link classifyGitHubThrottle}. */
+export interface GitHubThrottle {
+  /**
+   * `secondary` — one of GitHub's per-minute/per-hour content-creation or
+   * concurrency limits, the kind a burst of writes trips. `primary` — the
+   * credential's hourly request quota is spent.
+   */
+  kind: "secondary" | "primary";
+  /** Seconds to wait, when GitHub said; absent when it didn't. */
+  retryAfterSeconds?: number;
+}
+
+/** The `message` / `documentation_url` of GitHub's standard JSON error body. */
+function parseErrorBody(body: string): { message: string; documentationUrl: string } {
+  try {
+    const parsed = JSON.parse(body) as { message?: unknown; documentation_url?: unknown };
+    return {
+      message: typeof parsed.message === "string" ? parsed.message : "",
+      documentationUrl: typeof parsed.documentation_url === "string" ? parsed.documentation_url : "",
+    };
+  } catch {
+    // Not JSON — match against the raw text rather than giving up on it.
+    return { message: body, documentationUrl: "" };
+  }
+}
+
+function parsePositiveInt(raw: string | null): number | null {
+  const v = raw?.trim() ?? "";
+  return /^\d+$/.test(v) ? Number(v) : null;
+}
+
+/**
+ * Decide whether a failed response is a **throttle** rather than an access
+ * failure, and which kind (docs/247).
+ *
+ * This is the discrimination `accessError` cannot make. GitHub answers both
+ * "this credential may not touch that repository" and "you are going too fast"
+ * with a `403`, so the status alone is not enough; what separates them is that a
+ * throttle carries signals an authorization failure never does. Per GitHub's
+ * rate-limit docs (verified 2026-08), in rough order of confidence:
+ *
+ *  - the body says so — "You have exceeded a secondary rate limit …";
+ *  - `x-ratelimit-remaining: 0` (with `x-ratelimit-reset`), which is the primary
+ *    quota being spent. An ordinary 403 carries these headers too, but with a
+ *    NON-zero remaining, so only the zero is a signal;
+ *  - a `Retry-After` header, which GitHub sends on a secondary limit and has no
+ *    reason to send on an authorization failure;
+ *  - a `documentation_url` pointing at the rate-limit docs.
+ *
+ * A bare `429` is a throttle by definition, so it needs no corroboration. When
+ * none of this is present we return null and the caller keeps today's
+ * repository-missing-or-inaccessible message — that fallback is deliberate:
+ * mislabelling a real access failure as a throttle would tell the user to wait
+ * for something that will never clear.
+ */
+export function classifyGitHubThrottle(res: Response, body: string): GitHubThrottle | null {
+  if (res.status !== 403 && res.status !== 429) return null;
+  const { message, documentationUrl } = parseErrorBody(body);
+  const retryAfter = parseRetryAfterSeconds(res);
+
+  if (/secondary rate limit/i.test(message)) {
+    return { kind: "secondary", ...(retryAfter !== null ? { retryAfterSeconds: retryAfter } : {}) };
+  }
+  const quotaSpent = res.headers.get("x-ratelimit-remaining")?.trim() === "0";
+  if (quotaSpent || /rate limit exceeded/i.test(message)) {
+    const reset = secondsUntilEpoch(parsePositiveInt(res.headers.get("x-ratelimit-reset")));
+    const wait = retryAfter ?? reset;
+    return { kind: "primary", ...(wait !== null ? { retryAfterSeconds: wait } : {}) };
+  }
+  if (retryAfter !== null || /rate.?limit/i.test(documentationUrl) || res.status === 429) {
+    return { kind: "secondary", ...(retryAfter !== null ? { retryAfterSeconds: retryAfter } : {}) };
+  }
+  return null;
+}
+
 export class GitHubTracker implements Tracker {
   readonly id: TrackerId;
   readonly label: string;
@@ -351,7 +427,7 @@ export class GitHubTracker implements Tracker {
       throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
     if (res.status === 404) return null;
-    this.assertOk(res);
+    await this.assertOk(res);
     const node = (await res.json()) as GitHubIssueNode;
     if (node.pull_request) return null; // a PR number, not an issue
     // Surface the fixed Open/Closed targets so the agent can pick a valid
@@ -378,7 +454,7 @@ export class GitHubTracker implements Tracker {
     } catch (err) {
       throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
-    this.assertOk(res);
+    await this.assertOk(res);
     const nodes = (await res.json()) as GitHubCommentNode[];
     return nodes.map(toTrackerComment);
   }
@@ -427,7 +503,7 @@ export class GitHubTracker implements Tracker {
     } catch (err) {
       throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
-    this.assertOk(res);
+    await this.assertOk(res);
     const carriers = (await res.json()) as { number: number }[];
     if (carriers.length > 0) {
       throw new Error(
@@ -503,7 +579,7 @@ export class GitHubTracker implements Tracker {
     if (res.status === 404) {
       throw new Error(`Comment ${commentId} not found in ${ref.owner}/${ref.repo}.`);
     }
-    this.assertOk(res);
+    await this.assertOk(res);
     return (await res.json()) as GitHubCommentNode;
   }
 
@@ -592,7 +668,7 @@ export class GitHubTracker implements Tracker {
     } catch (err) {
       throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
-    this.assertOk(res);
+    await this.assertOk(res);
     const nodes = (await res.json()) as { name?: string | null; color?: string | null }[];
     return nodes
       .filter((n) => Boolean(n?.name))
@@ -642,7 +718,7 @@ export class GitHubTracker implements Tracker {
     } catch (err) {
       throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
-    this.assertOk(res);
+    await this.assertOk(res);
     const data = (await res.json()) as { login: string };
     return data.login;
   }
@@ -668,6 +744,8 @@ export class GitHubTracker implements Tracker {
     } catch (err) {
       throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
+    const throttled = await this.throttleError(res);
+    if (throttled) throw new Error(throttled);
     if (res.status === 401 || res.status === 403) {
       throw new Error(this.accessError(res.status));
     }
@@ -687,11 +765,13 @@ export class GitHubTracker implements Tracker {
     } catch (err) {
       throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
-    this.assertOk(res);
+    await this.assertOk(res);
     return (await res.json()) as GitHubIssueNode[];
   }
 
-  private assertOk(res: Response): void {
+  private async assertOk(res: Response): Promise<void> {
+    const throttled = await this.throttleError(res);
+    if (throttled) throw new Error(throttled);
     if (res.status === 401 || res.status === 403) {
       throw new Error(this.accessError(res.status));
     }
@@ -704,6 +784,44 @@ export class GitHubTracker implements Tracker {
   }
 
   /**
+   * The message for a response that turns out to be a rate limit, or null when
+   * it isn't one and the caller should fall through to its usual handling
+   * (docs/247). Checked BEFORE {@link accessError} because a throttle and an
+   * access failure share the `403`, and only this direction is safe: a throttle
+   * mislabelled as an access failure sends the user to fix something that isn't
+   * broken, which is the bug being fixed here.
+   *
+   * The body is read off a `clone()` so the original response is still intact
+   * for `parseGitHubError`, which several callers use for the non-throttle case.
+   */
+  private async throttleError(res: Response): Promise<string | null> {
+    if (res.status !== 403 && res.status !== 429) return null;
+    let body = "";
+    try {
+      body = await res.clone().text();
+    } catch {
+      // Unreadable body — the header signals stand on their own.
+    }
+    const throttle = classifyGitHubThrottle(res, body);
+    if (!throttle) return null;
+    const where = this.repo ? ` to \`${this.repo.owner}/${this.repo.repo}\`` : "";
+    const wait = waitPhrase(throttle.retryAfterSeconds);
+    if (throttle.kind === "secondary") {
+      return (
+        `GitHub is throttling requests${where} — a secondary rate limit (${res.status}), not an access ` +
+        `problem. The repository and the connected credential are fine, so there is nothing to fix: wait ` +
+        `${wait} and retry. If this is a batch of writes, slow the rate — GitHub's content-creation limits ` +
+        `are per-minute and per-hour.`
+      );
+    }
+    return (
+      `GitHub's request quota for the connected credential is exhausted (${res.status}) — a primary rate ` +
+      `limit, not an access problem. The repository and the credential are fine; the quota resets in ` +
+      `${wait}, so retry after that.`
+    );
+  }
+
+  /**
    * docs/248 req 18 — fail closed with an error that names **both**
    * possibilities. GitHub deliberately returns `404` rather than `403` for a
    * private repository the credential cannot see, so "missing" and
@@ -713,6 +831,11 @@ export class GitHubTracker implements Tracker {
    * in the same place, so it gets the same message rather than the old
    * "re-connect GitHub" advice — for a *named* repository the token is usually
    * fine and the grant is what's missing.
+   *
+   * docs/247 added the third cause req 18 did not anticipate: a **rate limit**
+   * also arrives as a `403`, and for that one the repository and the credential
+   * are both fine. It is classified out by {@link throttleError} before reaching
+   * here, so everything this method sees is genuinely an access question.
    */
   private accessError(status: number): string {
     if (!this.repo) {

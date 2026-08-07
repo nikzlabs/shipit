@@ -166,6 +166,29 @@ describe("LinearTracker", () => {
     await expect(tracker.listIssues()).rejects.toThrow(/rejected the API token/);
   });
 
+  /**
+   * docs/247 — Linear does NOT share GitHub's 403-means-either blind spot (it
+   * answers a throttle with 429, which cannot collide with the auth statuses),
+   * but "Linear API returned 429" gave the caller nothing to act on. The two
+   * halves are pinned together: a 429 must read as a throttle, and 401/403 must
+   * keep sending the user to the credential.
+   */
+  it("reports a 429 as rate limiting, not as a rejected token", async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({}), { status: 429, headers: { "Retry-After": "120" } }),
+    );
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    let message = "resolved";
+    try {
+      await tracker.listIssues();
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toMatch(/rate-limiting requests/);
+    expect(message).toMatch(/2 minutes/);
+    expect(message).not.toMatch(/Re-connect Linear/);
+  });
+
   it("surfaces GraphQL errors", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ errors: [{ message: "boom" }] }));
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });

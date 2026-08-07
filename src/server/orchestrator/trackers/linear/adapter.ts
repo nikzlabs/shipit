@@ -33,6 +33,7 @@ import type {
 } from "../../../shared/types.js";
 import { formatIssueReference } from "../../../shared/issue-ref.js";
 import { linearTrackerId } from "../../../shared/tracker-id.js";
+import { parseRetryAfterSeconds, waitPhrase } from "../throttle.js";
 import {
   TrackerPermissionError,
   TrackerResolutionError,
@@ -257,6 +258,18 @@ async function linearGraphql<T>(
     });
   } catch (err) {
     throw new Error(`Linear request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+  }
+  // Throttle first, for the same reason GitHub's adapter does (docs/247): a
+  // rate limit is not an auth failure, and telling someone to re-connect a
+  // working credential sends them to fix something that isn't broken. Linear
+  // does NOT share GitHub's ambiguity — it answers a throttle with `429`, which
+  // cannot collide with the 401/403 below — so this only replaces the bare
+  // "Linear API returned 429" with something the caller can act on.
+  if (res.status === 429) {
+    throw new Error(
+      `Linear is rate-limiting requests (429) — not an auth or access problem. The API key and the ` +
+        `declared team are fine; wait ${waitPhrase(parseRetryAfterSeconds(res))} and retry.`,
+    );
   }
   if (res.status === 401 || res.status === 403) {
     throw new Error("Linear rejected the API token (401/403). Re-connect Linear with a valid API key.");
