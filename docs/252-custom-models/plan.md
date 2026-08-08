@@ -63,13 +63,14 @@ that single gap. Resolving it is the real work; DeepSeek is just the first case 
 
 | Concept | Is | Identified by |
 |---|---|---|
-| **Harness** | a CLI to spawn, speaking exactly one API style | `claude`, `codex` |
-| **Service** | a catalogue entry: endpoints, API styles, and the models declared for each | a `serviceId` such as `openrouter` |
-| **Model** | a model id a service offers | the pair (serviceId, model id) |
+| **Harness** | a CLI to spawn, speaking one API style ([and if that is wrong, it is expensive](#what-a-third-harness-could-break)) | `claude`, `codex` |
+| **Service** | a catalogue entry: endpoints, API styles, and per **billing mode** the models declared for each | a `serviceId` such as `openrouter` |
+| **Model** | a model id a service offers under one of its billing modes | the triple (serviceId, billingMode, model id) |
 
-A service is *not* the credential. One service holds zero or more user-supplied
-credential routes — see the ownership table under Design, which req 12's "another
-subscription of the same service" depends on.
+A service is *not* the credential, and it is not one billing mode either. One service holds
+one or two billing modes, and each mode holds zero or more user-supplied credential routes —
+see the ownership table under Design, which req 12's "another subscription of the same
+service" depends on.
 
 A model id alone is **not** a global identifier: the same model is reachable through
 DeepSeek directly and through a gateway like OpenRouter, at different prices and
@@ -114,12 +115,12 @@ the design.
 
 | # | Phase | Reqs | Lands |
 |---|---|---|---|
-| 1 | Catalogue and identities | 5, 6, 7, 15 | The data model, with its launch rows. No user-visible change. |
+| 1 | Catalogue and identities | 5, 6, 7, 15 | The data model, its launch rows and prices. No user-visible change. |
 | 2 | Credentials and Settings | 5, 7 | You can save a service key. It does nothing yet. |
 | 3 | Spawn shaping and eligibility | 1, 2, 3, 8 | **A session runs on a custom service.** |
 | 4 | In-session switching | 4 | Switching models, including across services. |
 | 5 | Credential-failure policy | 12 | Correct behaviour when a credential dies. |
-| 6 | Usage and attribution | 10, 11 | You can see what you are running and what it costs you. |
+| 6 | Usage, cost and attribution | 10, 11, 16 | You can see what you are running, and where the money went. |
 | 7 | Non-turn work | 9 | Naming and PR descriptions get their own model. |
 | 8 | Model retirement | 13 | Sessions survive a model leaving the catalogue. |
 | 9 | Harness install selection | 14 | Deployments choose their harnesses. |
@@ -127,9 +128,10 @@ the design.
 **Phase 1 — Catalogue and identities.** The service catalogue as data: `serviceId`, the
 API styles each service speaks, per style the models declared for it plus the metadata
 that style needs, and a per-style endpoint. `AgentId` gains a declared API style and stops
-meaning anything else. The selected model becomes the pair `(serviceId, modelId)`
-throughout — types, persistence, and the picker's plumbing. Anthropic and OpenAI become
-ordinary catalogue rows.
+meaning anything else. The selected model becomes the triple
+`(serviceId, billingMode, modelId)` throughout — types, persistence, and the picker's
+plumbing — with each billing mode declaring its own models per style. Anthropic and OpenAI
+become ordinary catalogue rows, each already carrying both modes.
 
 It also authors the launch rows req 15 names: Anthropic, OpenAI, DeepSeek, OpenRouter and
 Vercel AI Gateway. Only Anthropic and OpenAI are reachable at this point — the rest need
@@ -146,14 +148,30 @@ which of its models are declared under each (req 6). For the gateways that is re
 recall — it must be checked against each gateway's current documentation when the row is
 written, not assumed from this doc.
 
+**The catalogue also carries per-model pricing**, because req 16's split cannot be computed
+without it: `costUsd` is the harness's own price table applied to whatever model it thinks it
+is running (measured below), so neither "you paid" nor "at API rates" can come from it for a
+custom service. This is a real widening of what a catalogue row costs to maintain — req 6
+kept the model list short precisely to keep per-model metadata cheap, and prices move more
+often than model lists do. It belongs in phase 1 because it is catalogue data and phase 1 is
+where the catalogue's shape is fixed; only phase 6 consumes it. If the upkeep proves
+unacceptable, the thing to drop is req 16's cost figures, not to scatter a second price
+source elsewhere.
+
 **This phase also carries the third-harness capability survey** (see *What a third harness
 could break*). It belongs here because this is the phase that freezes the types the survey
 could invalidate, and nowhere later is cheaper.
 
-**Phase 2 — Credentials and Settings.** Per-service credential storage, the Settings →
-Services screen (see the mockup), a compile-time env-key name per catalogue service, and
-closing the compose delivery gap so a stored key reaches a compose-backed containerized
-session. Existing subscription-backed vendors keep their current credential path untouched.
+**Phase 2 — Credentials and Settings.** Credential storage per `(service, billing mode)`,
+the Settings → Services add-flow ([`mockup-services.html`](./mockup-services.html)), a
+compile-time env-key name per catalogue service, and closing the compose delivery gap so a
+stored key reaches a compose-backed containerized session. Existing subscription-backed
+vendors keep their current credential path untouched.
+
+It also **re-keys the routing settings** from per-`AgentId` to per-`(service, mode)`:
+`selectionMode`, `isPrimary` ordering and `failoverCutoffs` (`ProviderAccountsCard`). They
+move here rather than into phase 5 because they are Settings state, and because a
+subscription card is meaningless without them.
 
 Ends with a key you can save, edit and remove, that is delivered to the session container
 and used by nothing. Shipping this alone is deliberate: credential storage and delivery is
@@ -162,8 +180,8 @@ turns run.
 
 **Phase 3 — Spawn shaping and eligibility.** Both spawn sites set the base URL and
 credential from the selected model's service, after the scrub. Eligibility moves from
-`hasAnyAuthForProvider(provider)` to the per-model credential question, which is what stops
-`claude-*` models being offered on an install whose only credential is a DeepSeek key.
+`hasAnyAuthForProvider(provider)` to the per-billing-mode credential question, which is what
+stops `claude-*` models being offered on an install whose only credential is a DeepSeek key.
 
 It is also where req 3 becomes observable: the moment a custom model is offered, it is
 offered in the one picker alongside everything else, with no separate surface for a
@@ -177,8 +195,8 @@ already established this works (Appendix B); this is the version that follows th
 requirements.
 
 **Phase 4 — In-session switching.** Widen the resident process's identity from a model
-string to the whole spawn-relevant tuple — harness, service, API style, endpoint,
-credential route, model — so a same-id/different-service switch forces a respawn instead of
+string to the whole spawn-relevant tuple — harness, service, billing mode, API style,
+endpoint, credential route, model — so a same-id/different-service switch forces a respawn instead of
 silently reusing the old endpoint and credential. Mid-session switching then works across
 services, not just within one.
 
@@ -188,15 +206,22 @@ interception must not drag a key-authenticated service into vendor re-auth, and 
 same-turn quota retry needs the same credential-kind gate that account benching already
 has. Establish Codex coverage rather than assuming it.
 
-**Phase 6 — Usage and attribution.** Quota reporting moves from `AgentId → routeId` to
-per-service, with a service that reports no quota rendering nothing at all. Attribution
-surfaces the active model, its service, and whether it bills a key or a subscription — in
-the surfaces that already exist, not in new composer chrome (see below). The Settings →
-Harnesses screen lands here too, since it is the same join rendered for a different question.
+**Phase 6 — Usage, cost and attribution.** Quota reporting moves from `AgentId → routeId` to
+per-`(service, billing mode)`, with a mode that reports no quota rendering nothing at all.
+Attribution surfaces the active model, its service and its billing mode — in the surfaces
+that already exist, not in new composer chrome (see below). The usage view splits spend and
+plan usage by `(service, mode)` (req 16), which needs the price table phase 1 carries. The
+Settings → Harnesses screen lands here too, since it is the same join rendered for a
+different question.
+
+This is the phase most likely to want splitting in two: the quota/attribution half is a
+re-keying of existing machinery, while the cost half (req 16) depends on the price table and
+on resolving what `costUsd` means per billing mode. If that question is still open when the
+phase starts, ship the re-keying and hold the cost split.
 
 **Phase 7 — Non-turn work.** Session naming and PR descriptions get their own explicitly
-chosen `(service, model)`, visible as a setting whose unset state resolves to the first
-eligible model rather than to a named one. Includes
+chosen `(service, billing mode, model)`, visible as a setting whose unset state resolves to
+the first eligible model rather than to a named one. Includes
 normalizing a blank PR generation into the generic fallback — today's code returns the
 empty string in containerized production — and the durable, dismissible failure notice.
 
@@ -340,10 +365,10 @@ credential.
 Anthropic and OpenAI are catalogue rows like any other, not special cases (req 5).
 `AgentId` keeps meaning *harness* only, and gains a declared API style.
 
-The picker's list for the active harness is then every `(service, model)` pair the
-service declares under that harness's style, filtered to services with a usable
-credential (reqs 6, 8). Note the entry is the **pair**, not the model id — the same id
-can come from more than one service at different prices.
+The picker's list for the active harness is then every `(service, billingMode, model)` the
+catalogue declares under that harness's style, filtered to modes with a usable credential
+(reqs 6, 8). Note the entry is the **triple**, not the model id — the same id can come from
+more than one service, and from two modes of one service, at different prices.
 
 It stays **one model picker**, listing every eligible model the same way regardless of which
 service provides it (req 3). A vendor's own models must not get a separate surface or a
@@ -516,9 +541,11 @@ refuses to mark a reserved API-key route exhausted ("they are metered billing, n
 subscription window", `:642`), treats reserved routes as always usable (`:720`), skips
 them when stamping exhaustion (`:800`), and never routes onto pay-as-you-go because a
 subscription is unavailable (docs/150 req 12, `:605`). The work is to lift that from
-per-`AgentId` accounts to per-service credentials, not to invent a policy.
+per-`AgentId` accounts to per-`(service, billing mode)` credentials, not to invent a
+policy — and the existing code's reserved-key-route carve-out is that same billing-mode
+distinction, drawn one level down.
 
-**Eligibility** (req 8) moves from `hasAnyAuthForProvider(provider)` to a per-model
+**Eligibility** (req 8) moves from `hasAnyAuthForProvider(provider)` to a per-billing-mode
 question: *does the service offering this model have a credential?* With Anthropic as an
 ordinary service, "Claude with no account connected" and "DeepSeek with no key" become
 the same condition answered by the same code. This retires the spike's overstatement

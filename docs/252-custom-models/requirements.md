@@ -2,6 +2,12 @@
 
 The design that implements these requirements is in [`plan.md`](./plan.md).
 
+**These are the things this feature changes. Everything ShipIt already does is a requirement
+too, and is not restated here** — existing behaviour must keep working at least as well as it
+does today. So a requirement below is silent about an existing capability when this feature
+does not change it, and that silence is not permission to drop it. Where a requirement *does*
+describe something that already works, it is because this feature changes it in some way.
+
 No open questions remain.
 
 ## Requirements
@@ -174,11 +180,34 @@ No open questions remain.
     not rejected.** Reqs 5 and 7 stand: for now every service is ShipIt's. Adding
     user-supplied endpoints later would extend this requirement rather than contradict it.
 
+16. Usage and cost are reported **split by service and billing mode**, so it is clear where
+    money was actually spent and where a subscription was used. Reporting usage is not new;
+    the split is. Once a session's turns can span both, a single combined total stops being
+    meaningful — money that left the user's account and usage covered by a plan they already
+    pay for are different things, and are not added together into one figure.
+
+    For subscription usage the user can also see **what it would have cost at that service's
+    API rates**, which is what says whether the subscription is worth keeping. It is shown as
+    a comparison and never as money spent.
+
+    This holds at session scope and across all sessions.
+
 ## Open questions
 
 _None._
 
 ## Resolved questions
+
+- 2026-08-08 — Should the usage/cost split be a requirement? **Chosen: yes, and only the
+  split.** Review found the cost view had no requirement behind it — "cost" and "price"
+  appeared in these requirements only as rationale, never as an obligation — while the design
+  and `plan.md`'s phase 6 both promised one. The human's correction narrowed what to add:
+  **reporting usage and cost is an existing feature, and existing behaviour is already a
+  requirement without being restated.** What is new, and therefore what req 16 states, is the
+  *split* by service and billing mode, plus the API-rate comparison for subscription usage.
+  The general principle went into this document's preamble, because it governs how every
+  requirement here should be read — and it is why several requirements are silent about
+  capabilities this feature does not change.
 
 - 2026-08-08 — Does reasoning effort need to say anything about the model? **Chosen: no —
   reasoning stays a property of the harness, and this feature adds nothing.** No new
@@ -512,6 +541,13 @@ human, but most of the mechanism did not. What the human actually said, in order
 - "if the user chooses the wrong value, the harness may complain … it doesn't necessarily
   need to be disabled in the UI from the get-go" → the corollary that the harness's own
   error is the authoritative signal, not a ShipIt-side prediction.
+- "we should probably split it across services, so it's clear for the user where they were
+  paying and where they were using the subscription" → req 16.
+- "I'd like to understand how much tokens it would cost without a subscription" → req 16's
+  API-rate comparison, overruling the agent's decision to withhold it.
+- "it is an existing feature. So whatever is existing is a requirement … we don't need to
+  clarify that everything else that worked before should work at least on the same level or
+  better" → the preamble, and the narrowing of req 16 to the split alone.
 - "if there was also a DeepSeek subscription, it would be a separate block here, right?" and
   "subscriptions, they may provide more restricted model choice" → the billing-mode split
   across reqs 5, 6, 8, 10, 11 and 12. The agent had first answered "no, one block" from how
