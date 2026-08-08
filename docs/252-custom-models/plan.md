@@ -730,7 +730,8 @@ retired model resolves through that map at the point the model is read, and runs
 successor; the picker offers only current models.
 
 The map lives **inside a `(service, billing mode)` and maps model id to model id** — it
-crosses neither. Both halves are requirements (req 13) and both are load-bearing. Because
+crosses neither, and the successor must additionally be runnable on the session's harness.
+All three are requirements (req 13) and all three are load-bearing. Because
 `serviceId` is unchanged, the credential, the endpoint and the provider are unchanged, so
 a remap cannot strand a session on a service the user has no credential for. Because the
 **mode** is unchanged, *whether* the turn is billed is unchanged — the successor is declared
@@ -739,6 +740,17 @@ work. That second half is why the map is keyed per mode rather than per service:
 declares its models *per mode* (req 6), so a per-service map would have no way to say that
 the subscription's successor and the key's successor differ, or that the subscription has
 none at all.
+
+**The harness is the axis this map does not yet carry** (req 13). A model's availability
+depends on the API style too, so a successor declared only under a style the session's
+pinned harness does not speak strands the session exactly as a missing successor would. A
+`(service, mode): old → new` map cannot say "this successor under `anthropic-messages`,
+that one under `openai-responses`". Two shapes work and the choice belongs to whoever builds
+this: key the map per `(service, mode, style)`, or keep it per `(service, mode)` and make
+authoring a successor **fail the catalogue check** unless the successor is declared under at
+least the styles the retired model was. The second is cheaper and states the intent better —
+the map stays one entry, and the invariant is enforced where rows are authored rather than
+where sessions run. Either way the runtime behaviour req 13 specifies is the same.
 
 **What preserving the mode does not buy is an unchanged rate.** Two models under one
 service's key are priced differently, so a metered session's turns can get cheaper or dearer

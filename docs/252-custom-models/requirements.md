@@ -8,8 +8,7 @@ does today. So a requirement below is silent about an existing capability when t
 does not change it, and that silence is not permission to drop it. Where a requirement *does*
 describe something that already works, it is because this feature changes it in some way.
 
-Three open questions are outstanding — see [below](#open-questions). All three came from
-Codex's review of this document on 2026-08-08.
+No open questions remain.
 
 ## Requirements
 
@@ -37,9 +36,16 @@ Codex's review of this document on 2026-08-08.
    subscription may offer fewer models than the key does. So the billing mode is part of
    what a user picks, not something resolved out of sight (reqs 6, 11).
 
-   Several *subscriptions* to one service are a different matter: those **are**
-   interchangeable, ShipIt routes between them (req 12), and the user never chooses among
-   them. So what a user picks is the mode, never the individual credential.
+   Several *subscriptions* to one service are a different matter: **the user does not choose
+   among them.** ShipIt routes between them (req 12), so what a user picks is the mode, never
+   the individual credential.
+
+   That is deliberately not a claim that the accounts are equivalent. Plans come in tiers,
+   and a cheaper account may not offer everything a dearer one does — so a turn routed to
+   another account can meet a model that account cannot run. ShipIt already routes between
+   subscription accounts without comparing what they are entitled to, and this feature does
+   not change that; treating tiers properly is a separate feature, not something this one
+   silently promises by calling the accounts interchangeable.
 
    **The mechanism for subscription modes is in scope for this feature**: a catalogue
    service can declare one, and everything built on billing modes — the picker, Settings,
@@ -147,13 +153,21 @@ Codex's review of this document on 2026-08-08.
 13. Models leave the catalogue as ShipIt revises which ones are worth carrying (req 6).
     A session already pinned to a removed model keeps working: each service maps its own
     retired models to their successors, and the session moves onto the successor. A
-    successor is always another model **of the same service and the same billing mode** —
-    a retirement never moves a session to a different service, which would change the
-    credential it needs, the price it pays, and who provides it; and it never moves a
-    session across billing modes, which is the same silent shift onto metered billing that
-    req 12 refuses to make on failover. If a mode has no successor to offer, that is a
-    catalogue mistake to fix rather than a case to fall back from. The session then
-    reports what it is actually
+    successor is always another model **of the same service and the same billing mode, and
+    one the session's harness can run** — a retirement never moves a session to a different
+    service, which would change the credential it needs and who provides it; it never moves
+    a session across billing modes, which is the same silent shift onto metered billing that
+    req 12 refuses to make on failover; and it never lands on a model the pinned harness
+    cannot speak to (req 6), which would strand the session as surely as having no successor
+    at all. If any of those has no successor to offer, that is a catalogue mistake to fix
+    rather than a case to fall back from.
+
+    What a retirement does **not** preserve is the price. Two models under one service's key
+    are priced differently, so a metered session's turns can get cheaper or dearer across a
+    remap. Holding the billing mode fixed is what keeps *included* work from becoming
+    *billed* work, which is the discontinuity worth preventing; the rate is not promised, and
+    the change is visible rather than silent because the session reports the model it moved
+    to. The session then reports what it is actually
     running (req 11) — a remap is never invisible, and never leaves a session unable to
     take a turn.
 
@@ -221,40 +235,41 @@ Codex's review of this document on 2026-08-08.
 
 ## Open questions
 
-- **Must a retirement successor still run on the session's harness?** Req 13 now scopes the
-  successor to the same service *and* the same billing mode, and then promises the session is
-  "never left unable to take a turn". But req 6 makes a model's availability depend on the
-  **API style** too — a service declares which of its models work under each style — so a
-  successor declared only under a style the session's pinned harness does not speak leaves
-  that session unable to take a turn, which is the promise failing. This is the third
-  instance of the same defect: the successor was scoped to the service (2026-08-05), then to
-  the billing mode (2026-08-08), and the harness axis was missed both times. *Agent's
-  recommendation: state the condition as the property req 13 already promises — the successor
-  must be runnable on the harness the session is pinned to — and leave the map's shape to
-  `plan.md`, which currently cannot express a per-harness successor.*
-
-- **Are several subscriptions to one service really interchangeable?** Req 5 says they are,
-  and that is what justifies never showing the user which one a turn used; req 12 routes
-  between them on that basis. It assumes the accounts have the same model entitlements —
-  which is false for tiered plans, where a cheaper account may not offer the larger models.
-  Req 8 would then offer a model because the *mode* has a credential, and req 12 could route
-  a turn to an account that cannot run it. `mockup-services.html` already illustrates the
-  case in its own copy: "a bigger plan first, a smaller one as backup". *Agent's
-  recommendation: this is pre-existing behaviour rather than something this feature breaks —
-  ShipIt already routes between subscription accounts without comparing entitlements — so the
-  cheapest honest fix is to narrow req 5's claim to what it needs (the user does not choose
-  among them) instead of asserting an equivalence that is not true. Treating tiers properly
-  is a separate feature.*
-
-- **May a retirement change what a metered turn costs?** Req 13 preserves the service and the
-  billing mode, but two models under one service's key are priced differently, so a remap can
-  make a metered session cheaper or dearer. Req 13 does not claim otherwise — `plan.md` did,
-  and has been corrected — so this is a question about whether the behaviour is acceptable,
-  not about a contradiction. *Agent's recommendation: acceptable, and no requirement change.
-  A successor at an identical price is not generally available, req 11 already makes the
-  running model visible, and req 16 reports what was spent.*
+_None._
 
 ## Resolved questions
+
+- 2026-08-08 — **Codex's review of this document**, three questions answered together. Run
+  under CLAUDE.md's cross-backend rule (Claude-authored work reviewed by the other backend).
+  It returned five findings and all five held up on checking; two were stale sentences in
+  `plan.md` and one was a missing phase assignment, all fixed there rather than here.
+
+  - **Must a successor still run on the session's harness? Chosen: yes.** Req 13 scoped the
+    successor to the same service and mode and then promised a session is "never left unable
+    to take a turn" — but req 6 makes availability depend on the **API style** as well, so a
+    successor declared only under a style the pinned harness does not speak breaks that
+    promise. This is the *third* time the same defect surfaced on a new axis: the successor
+    was scoped to the service on 2026-08-05, to the billing mode earlier on 2026-08-08, and
+    the harness was missed both times. Req 13 now states the condition it was always
+    promising — the successor must be one the session's harness can run — which closes the
+    axis rather than the instance. `plan.md`'s per-`(service, mode)` map cannot express a
+    per-harness successor and is flagged there.
+  - **Are several subscriptions to one service really interchangeable? Chosen: no — narrow
+    the claim.** Req 5 asserted it, and req 12 routes between them on that basis, but tiered
+    plans make it false: a cheaper account may not offer what a dearer one does, so req 8 can
+    offer a model the routed-to account cannot run. `mockup-services.html` had already
+    contradicted the requirement in its own copy — "a bigger plan first, a smaller one as
+    backup". Req 5 now claims only what it needs, that the user does not choose among them,
+    and says explicitly that this is not an equivalence claim. Not a regression this feature
+    introduces: ShipIt already routes between accounts without comparing entitlements, so
+    handling tiers is a separate feature rather than something to bolt on here.
+  - **May a retirement change what a metered turn costs? Chosen: yes, and no requirement
+    change.** A same-price successor is not generally available; holding the billing mode
+    fixed is what prevents *included* work becoming *billed* work, which is the discontinuity
+    worth preventing, and req 11 makes the moved-to model visible so the change is not
+    silent. Req 13 gained a paragraph saying so, because the absence of the promise was
+    being read as the promise. `plan.md` *had* claimed the price was unchanged — twice, in
+    two different wrong ways — and is corrected.
 
 - 2026-08-08 — Four gaps found by a review pass, answered together. Three are the same
   failure: the billing-mode decision was applied to reqs 5, 6, 8, 10, 11 and 12 and not to
@@ -677,6 +692,10 @@ human, but most of the mechanism did not. What the human actually said, in order
   derived default, replacing the fixed model an earlier draft assumed. The mechanism is the
   human's sketch and is stated in `plan.md`; the requirement states only the property it
   has to have — a default the install can actually run.
+
+Reqs 5 and 13 were changed again on 2026-08-08 from **Codex's** review, under CLAUDE.md's
+cross-backend rule. Same shape as the round below: the findings are the reviewer's, the
+choice among the options is the human's, and all three recommendations were taken as offered.
 
 Reqs 6, 9, 13 and 15 were changed on 2026-08-08 from **the agent's** review findings, not
 from anything the human said: the human's contribution was choosing among the options, and
