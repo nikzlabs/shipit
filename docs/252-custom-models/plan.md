@@ -6,9 +6,7 @@ description: Separate harness from service so a user can run any configured serv
 
 # 252 — Custom models
 
-Implements [`requirements.md`](./requirements.md), which has **one open question** — whether
-a service's billing mode is part of what you select. It touches the identity table below, so
-implementation is blocked until it is resolved.
+Implements [`requirements.md`](./requirements.md), which has no open questions.
 
 **Visual reference — the picker:** [`mockup-picker.html`](./mockup-picker.html) — an
 **interactive** prototype of the two-selector composer (harness, then model). Change the
@@ -265,12 +263,34 @@ sense once they are separated:
 | Thing | Owner | Example |
 |---|---|---|
 | `serviceId` | ShipIt catalogue | `openrouter` |
-| credential route | the user — one key, or one subscription account, belonging to that service | a stored key, or `acct_…` |
-| selected model | the session | `(serviceId, modelId)` |
-| turn route | resolved per turn from the credential routes of that service | which key/account this turn used |
+| **billing mode** | ShipIt catalogue, per service — `sub` or `key`, each declaring its own models | DeepSeek `sub` vs DeepSeek `key` |
+| credential route | the user — one key, or one subscription account, within a mode | a stored key, or `acct_…` |
+| selected model | the session | `(serviceId, billingMode, modelId)` |
+| turn route | resolved per turn from the credential routes **of that mode** | which key/account this turn used |
 
 One catalogue service can therefore hold several credential routes, which is exactly the
-case req 12 fails over between.
+case req 12 fails over between — but only *within* a mode.
+
+**The billing mode is selected; the credential route is not** (req 5). This is the line that
+took a wrong turn once, so it is worth stating plainly. An earlier draft had the mode
+resolved per turn alongside the route, on the grounds that ShipIt's account manager already
+walks subscription accounts before falling back to a metered key. That is how the code
+behaves and it is the wrong basis for the decision — the two modes are not interchangeable
+the way two subscriptions are:
+
+- **Their model sets can differ.** A plan tier need not include everything the API sells, so
+  a merged list offers a model the resolved route cannot serve (req 6).
+- **Their prices differ**, which is already the reason this design lists the same model id
+  separately per service. Included-versus-metered is that same distinction inside one
+  service, so merging them contradicts the rule that justifies the pair.
+- **Failover never crosses them** (req 12), so a merged entry leaves a user with a spent
+  subscription and an unused key unable to say "charge me, keep working" — the same class of
+  dead end req 9 exists to prevent.
+
+Several *subscriptions* to one service still collapse into one mode: req 12 routes between
+them and the user never picks among them. So the picker's grouping key is
+`(serviceId, billingMode)`, which is at most two groups per service rather than one per
+credential.
 
 Anthropic and OpenAI are catalogue rows like any other, not special cases (req 5).
 `AgentId` keeps meaning *harness* only, and gains a declared API style.
@@ -332,9 +352,11 @@ survived, and what did not:
   "harness" and "model" in front of them. The closed composer is
   `Claude Code ▾ | deepseek-v4-flash ▾`.
 - **The service pill is disclosure-on-demand**, appearing only when that model id is offered
-  by more than one credentialed service on this harness. That is the sole case where the id
-  alone cannot say who is billing you — exactly the case the pair identity exists for — so it
-  shows up when the ambiguity is real and costs nothing otherwise.
+  by more than one eligible group on this harness. That is the sole case where the id alone
+  cannot say who is billing you — exactly the case the identity exists for — so it shows up
+  when the ambiguity is real and costs nothing otherwise. It names the **billing mode**
+  ("Subscription") when the duplicate rows are within one service, and the **service**
+  ("OpenRouter") when they cross services, because that is the axis that actually differs.
 - **No API style anywhere in the picker.** `anthropic-messages` / `openai-responses` is
   ShipIt's vocabulary for why a join holds; it is not a fact anyone chooses on. Each harness
   row states its **model count** instead, which is the same information in the form the

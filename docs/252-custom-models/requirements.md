@@ -2,9 +2,7 @@
 
 The design that implements these requirements is in [`plan.md`](./plan.md).
 
-**One open question** — whether a service's billing mode is part of what you select. See
-[below](#open-questions). Requirements and design work continue; implementation does not
-start while it is open.
+No open questions remain.
 
 ## Requirements
 
@@ -26,15 +24,25 @@ start while it is open.
 4. A user can switch models within a session while keeping the same harness, as far
    as that harness supports it.
 
-5. A service is authenticated by an API key or by a subscription. Supporting a
-   subscription takes per-service work on ShipIt's side — its own login, refresh, and
-   account handling — so this feature adds **key-authenticated** services;
-   subscription-backed services remain the ones ShipIt already implements.
+5. A service offers its models under one or more **billing modes**: an API key, or a
+   subscription. A service may have **both**, and they are not interchangeable — the same
+   model can cost nothing extra under a subscription and be metered under a key, and a
+   subscription may offer fewer models than the key does. So the billing mode is part of
+   what a user picks, not something resolved out of sight (reqs 6, 11).
+
+   Several *subscriptions* to one service are a different matter: those **are**
+   interchangeable, ShipIt routes between them (req 12), and the user never chooses among
+   them. So what a user picks is the mode, never the individual credential.
+
+   Supporting a subscription takes per-service work on ShipIt's side — its own login,
+   refresh, and account handling — so this feature adds **key** modes;
+   subscription modes remain the ones ShipIt already implements.
 
 6. A service may speak more than one API style, and a harness speaks one. A model is
    offered on a harness when the service speaks that harness's style **and** the
-   catalogue declares that model works there — a service can speak a style without every
-   one of its models being usable under it.
+   catalogue declares that model works there **under the billing mode in use** — a
+   service can speak a style without every one of its models being usable under it, and a
+   subscription can include fewer models than the same service's API key.
 
    The catalogue does not mirror everything a service offers. ShipIt lists a
    **maintained subset** — at any moment only a handful of models are worth using for
@@ -52,10 +60,11 @@ start while it is open.
    (req 6). So a service or model ShipIt does not yet know about does require a ShipIt
    change. This is a deliberate narrowing of an earlier answer; see the receipts.
 
-8. A model is selectable only when its service has a credential configured. One rule
-   applies uniformly to every service, with none treated as a default or built-in: so
-   "Claude with no account connected" and "DeepSeek with no key" are the same
-   condition, and neither is offered.
+8. A model is selectable only when the billing mode offering it has a credential
+   configured. One rule applies uniformly to every service, with none treated as a
+   default or built-in: so "Claude with no account connected" and "DeepSeek with no key"
+   are the same condition, and neither is offered. A service with a key but no
+   subscription offers exactly what the key offers.
 
    This is about credentials, and nothing else. Whether a selectable model then works
    *well* is req 1's best-effort territory — ShipIt does not guarantee that every
@@ -87,19 +96,20 @@ start while it is open.
    for a thrown error. The notice must also still be findable after a reload or a
    session switch — a message that vanishes with the tab is silent in practice.
 
-10. Usage is reported per **service**, not per model. A service may expose its own
-    quota or subscription, and the indicator reflects whatever the service in use
-    reports. A service with no quota to report — an ordinary API key, which has no
-    allowance and nothing that resets — shows no indicator at all, rather than an
-    empty or placeholder one.
+10. Usage is reported per **billing mode of a service**, not per model. A subscription
+    exposes a quota, and the indicator reflects whatever the mode in use reports. A mode
+    with no quota to report — an ordinary API key, which has no allowance and nothing
+    that resets — shows no indicator at all, rather than an empty or placeholder one. So
+    a service holding both shows a quota when the subscription is in use and nothing when
+    the key is.
 
 11. ShipIt is honest about what a session is running on. The user can tell which model
-    and which service are in use, and whether that service bills a key or a
-    subscription.
+    and which service are in use, and whether it is billed to a key or a subscription —
+    which is knowable exactly because the billing mode is part of the selection (req 5)
+    rather than resolved out of sight.
 
-12. When a service's credential stops working mid-session — revoked, expired, rate
-    limited — what ShipIt does depends on **how that service is authenticated**, not on
-    what the error says:
+12. When a credential stops working mid-session — revoked, expired, rate limited — what
+    ShipIt does depends on **the billing mode in use**, not on what the error says:
 
     - **Subscriptions fail over.** If the user has more than one subscription to that
       same service, ShipIt moves the turn to another of them, as it does today.
@@ -108,6 +118,10 @@ start while it is open.
       price, which is the user's choice to make and not ShipIt's.
     - **API keys do not fail over.** ShipIt stops and says so. Recovering from a bad
       key is the harness's job; ShipIt runs no recovery or re-prompt flow of its own.
+
+    Failover never crosses **billing modes** either, for the same reason it never crosses
+    services: a spent subscription does not silently start charging a key. Moving to the
+    key is a selection the user makes (req 5), and one they now *can* make.
 
     When no subscription is left to fail over to, ShipIt stops and says so, exactly as
     it does for a key.
@@ -162,40 +176,30 @@ start while it is open.
 
 ## Open questions
 
-- **Is a service's billing mode part of what you select, or resolved per turn?** Raised by
-  "if there was also a DeepSeek subscription, it would be a separate block, right?" — and
-  the observation that a subscription may offer a *more restricted* model set than the same
-  service's API key.
-
-  These requirements were written assuming one billing mode per service: req 5 says a
-  service is authenticated by a key **or** a subscription, req 6 declares models per
-  service and style, and req 12 branches on "how that **service** is authenticated". A
-  service holding both breaks all three, and it is not hypothetical — ShipIt already does
-  it for Anthropic today, where subscription accounts and a metered API-key route coexist.
-
-  The agent's proposal, prototyped in [`mockup-picker.html`](./mockup-picker.html), is that
-  a **billing mode** is part of the selection — so a model is identified by
-  `(service, billing mode, model)` — and the picker shows one group per (service, billing
-  mode). Reasoning:
-
-  1. **Model sets can differ.** A plan tier need not include everything the API sells, so a
-     merged list would offer a model the resolved route cannot serve.
-  2. **Prices differ**, which is already this design's stated reason for keeping the same
-     model id as separate entries per service (DeepSeek-direct vs OpenRouter). Included
-     versus metered is the same distinction inside one service.
-  3. **It closes a real gap**: ShipIt never fails over from a spent subscription onto
-     metered billing, so with one merged entry a user with both credentials has no way to
-     say "charge me, keep working".
-
-  Several *subscriptions* of one service still collapse into one group — req 12 routes
-  between them automatically, and choosing among them would be noise. So the grouping key
-  is the billing mode, not the credential, which caps it at two groups per service.
-
-  If adopted, reqs 5, 6, 8, 11 and 12 need rewording from "a service is authenticated by X"
-  to "a service offers its models under one or more billing modes". Not applied: this is
-  the agent's proposal from a question the human raised, not a decision the human has made.
+_None._
 
 ## Resolved questions
+
+- 2026-08-08 — Is a service's billing mode part of what you select, or resolved per turn?
+  **Chosen: part of the selection.** A model is identified by `(service, billing mode,
+  model)`, and the picker shows one group per service *per mode* — so a service holding both
+  a subscription and an API key is two blocks, not one. Three reasons, any one sufficient:
+  a subscription may include **fewer models** than the same service's key, so a merged list
+  would offer a model the resolved route cannot serve; the two **differ in price**, which is
+  already this design's stated reason for listing the same model id separately per service
+  (DeepSeek-direct vs OpenRouter), and included-versus-metered is that same distinction
+  inside one service; and it closes a real gap, since ShipIt never fails over from a spent
+  subscription onto metered billing, so under one merged entry a user holding both had no
+  way to say "charge me, keep working".
+
+  Scoped deliberately to the **mode**, not the credential: several subscriptions to one
+  service stay merged, because req 12 already routes between them and choosing among them
+  would be noise — which also caps the picker at two groups per service rather than one per
+  credential. Reqs 5, 6, 8, 10, 11 and 12 reworded from "a service is authenticated by X" to
+  the billing-mode form. The agent had proposed this from the human's question; the human's
+  "yes, I think it makes sense" is what adopted it. Not hypothetical either: ShipIt already
+  holds subscription accounts and a metered key route together for Anthropic, so the
+  singular wording was already slightly false.
 
 - 2026-08-07 — Gateway support: catalogue *content*, or a capability the catalogue does not
   have? **Chosen: content — carry the common gateways explicitly; custom URLs later.** The
@@ -343,7 +347,9 @@ start while it is open.
 
 - 2026-08-05 — At the moment a credential failure arrives, can ShipIt tell a spent
   subscription apart from a bad key? **Chosen: it does not have to.** The rule keys on
-  how the service is authenticated — subscriptions fail over, API keys do not — which
+  how the service is authenticated *(narrowed 2026-08-08 to the billing mode in use, since
+  one service can hold both — see that receipt; the substance below is unchanged)* —
+  subscriptions fail over, API keys do not — which
   ShipIt knows statically from its own configuration, instead of having to classify an
   error whose text is not reliable. Failover is scoped to subscriptions of the *same*
   service, because that is the only case that is lossless: the model and price are
@@ -481,6 +487,13 @@ human, but most of the mechanism did not. What the human actually said, in order
   Claude being selected by default" → req 14, both halves. The human also identified the
   prior unimplemented sketch (`docs/154-cursor-agent-adapter`) that req 14 now supersedes.
 - "Redeploy" → req 14's closing paragraph: the harness set is a property of the deployment.
+- "if there was also a DeepSeek subscription, it would be a separate block here, right?" and
+  "subscriptions, they may provide more restricted model choice" → the billing-mode split
+  across reqs 5, 6, 8, 10, 11 and 12. The agent had first answered "no, one block" from how
+  the code models routes today; the human rejected that as the wrong basis — "who cares how
+  this is currently modeled in the code? we need to provide the best UX from the user
+  perspective" — which is what produced the rewrite.
+- "yes, I think it makes sense" → adopting the billing-mode selection.
 - "gateway support - at least openrouter/vercel/1st party providers imo" → req 15. Raised as
   feedback the human relayed without endorsing a reading ("not sure that I fully understand
   it"), so it was recorded as an open question first and only became a requirement after the

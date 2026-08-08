@@ -177,6 +177,17 @@
   .acct .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); flex: none; }
   .acct .grow { flex: 1; }
 
+  /* ---- billing modes within one service ---- */
+  .modes { margin-top: 10px; display: flex; flex-direction: column; gap: 9px; }
+  .mode {
+    border: 1px solid var(--border-soft); border-radius: 8px;
+    background: var(--bg-modal); padding: 10px 12px;
+  }
+  .mode-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .mode-top .grow { flex: 1; }
+  .mode .svc-meta { margin-top: 5px; }
+  .mode .models { margin-top: 7px; }
+
   /* ---- harness table ---- */
   table.harness { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   table.harness th {
@@ -328,29 +339,48 @@
           <div class="svc-actions"><button class="btn ghost">Add account</button></div>
         </div>
 
-        <!-- DeepSeek: API key configured, TWO styles -->
+        <!-- DeepSeek: ONE service, TWO billing modes, different model sets -->
         <div class="svc">
           <div class="svc-logo">D</div>
           <div class="svc-body">
             <div class="svc-top">
               <span class="svc-name">DeepSeek</span>
-              <span class="pill key">API key</span>
               <span class="pill ok">Configured</span>
               <span class="pill style">anthropic-messages</span>
               <span class="pill style">openai-responses</span>
             </div>
-            <div class="svc-meta">
-              Key <code class="k">sk-&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;4f2a</code>
-              &middot; billed by DeepSeek &middot; no quota to report
+            <div class="svc-meta">Two billing modes &middot; each offers its own models</div>
+
+            <div class="modes">
+              <div class="mode">
+                <div class="mode-top">
+                  <span class="pill sub">Subscription</span>
+                  <span class="grow" style="font-size:11.5px;color:var(--text-secondary)">nik@&hellip; — DeepSeek Pro</span>
+                  <button class="btn ghost">Add account</button>
+                </div>
+                <div class="usage">
+                  <div class="usage-bar"><div class="usage-fill" style="width:41%"></div></div>
+                  <div class="usage-txt">41% of monthly limit &middot; resets in 12d</div>
+                </div>
+                <div class="models"><span class="chip">deepseek-v4-flash</span></div>
+              </div>
+
+              <div class="mode">
+                <div class="mode-top">
+                  <span class="pill key">API key</span>
+                  <span class="grow" style="font-size:11.5px;color:var(--text-secondary)">
+                    <code class="k">sk-&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;4f2a</code>
+                  </span>
+                  <button class="btn ghost">Replace</button>
+                  <button class="btn ghost">Remove</button>
+                </div>
+                <div class="svc-meta">Metered &middot; no quota to report</div>
+                <div class="models">
+                  <span class="chip">deepseek-v4-flash</span>
+                  <span class="chip">deepseek-v4-pro</span>
+                </div>
+              </div>
             </div>
-            <div class="models">
-              <span class="chip">deepseek-v4-flash</span>
-              <span class="chip">deepseek-v4-pro</span>
-            </div>
-          </div>
-          <div class="svc-actions">
-            <button class="btn ghost">Replace</button>
-            <button class="btn ghost">Remove</button>
           </div>
         </div>
       </div>
@@ -450,9 +480,25 @@
       key-authenticated ones — no row gains a new login flow.
     </div>
     <div class="note">
-      <span class="req">req 10</span><b>DeepSeek shows no usage indicator at all</b> — not an
-      empty bar, not &ldquo;n/a&rdquo;. An API key has no allowance and nothing that resets, so
-      there is nothing to render. Compare the two subscription rows above it.
+      <span class="req">req 10</span><b>DeepSeek&rsquo;s key mode shows no usage indicator at
+      all</b> — not an empty bar, not &ldquo;n/a&rdquo;. An API key has no allowance and nothing
+      that resets, so there is nothing to render. Its subscription mode, one row up, does show
+      one — which is why the indicator belongs to the <i>billing mode</i> rather than to the
+      service.
+    </div>
+    <div class="note">
+      <span class="req">req 5</span><b>DeepSeek is one service with two billing modes.</b>
+      A subscription and an API key are not two services — same endpoints, same styles, one
+      row — but they are not interchangeable either: the subscription includes only
+      <code class="k">deepseek-v4-flash</code>, while the key also sells
+      <code class="k">deepseek-v4-pro</code>, and one is metered where the other is not.
+      <div class="callout">
+        So each mode carries its own credential, its own model list, and its own usage
+        indicator — a quota for the subscription, nothing for the key
+        (<span class="req" style="margin:0">req 10</span>). Several <i>subscriptions</i> to
+        one service would nest inside the subscription mode, since ShipIt routes between
+        those itself (<span class="req" style="margin:0">req 12</span>).
+      </div>
     </div>
     <div class="note">
       <span class="req">req 6</span><b>A service can speak two styles.</b> DeepSeek shows both
