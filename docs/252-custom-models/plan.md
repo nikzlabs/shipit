@@ -179,9 +179,9 @@ has. Establish Codex coverage rather than assuming it.
 
 **Phase 6 — Usage and attribution.** Quota reporting moves from `AgentId → routeId` to
 per-service, with a service that reports no quota rendering nothing at all. Attribution
-surfaces the active model, its service, and whether it bills a key or a subscription. The
-Settings → Harnesses screen lands here too, since it is the same join rendered for a
-different question.
+surfaces the active model, its service, and whether it bills a key or a subscription — in
+the surfaces that already exist, not in new composer chrome (see below). The Settings →
+Harnesses screen lands here too, since it is the same join rendered for a different question.
 
 **Phase 7 — Non-turn work.** Session naming and PR descriptions get their own explicitly
 chosen `(service, model)`, visible as a setting whose unset state resolves to the first
@@ -317,6 +317,22 @@ selection with no successor to move to (req 13's map never crosses services). Re
 answers it — an API key does not fail over, so ShipIt stops and says so. The split only
 changes *where* that surfaces, from a failed turn to a picker state you can see before
 sending.
+
+**Attribution needs no new surface** (req 11). Once the harness and the service are on the
+composer's two triggers, "which model, which service, key or subscription" is already on
+screen or one click away: the model trigger carries the model and its service, and the model
+menu's group headers carry the billing kind. Req 11 asks that the user *can tell* — not that
+it be restated permanently — so a standing "Running *model* via *service* on *harness*" row
+under the composer is redundant chrome and was cut from the prototype for exactly that
+reason.
+
+What still needs doing is smaller than a new surface: `UsageModal` already shows a **Model**
+stat (`UsageModal.tsx`), and that is the established home for "what actually ran" — a
+comment in `ModelAgentSelector.tsx` already names it as such, having moved live-model display
+there once. Service and billing kind join it there. Attribution is then two places with
+distinct jobs: the picker answers *what will run next*, the usage modal answers *what did
+run* — which is the same split the selector's precedence rules already maintain between the
+persisted selection and the CLI's last-reported model.
 
 **Full separation is the point.** No code path should ask "which vendor's agent is
 this?" to decide anything about credentials. Concretely, req 2 means a user with only a

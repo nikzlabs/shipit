@@ -190,12 +190,11 @@
   .banner b { color: inherit; }
   .banner .ico { font-size: 13px; line-height: 1.35; }
 
-  .attrib {
-    border: 1px solid var(--border); border-radius: 9px;
-    background: var(--bg-secondary); padding: 11px 13px;
-    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px;
+  .scaffold {
+    font-size: 11px; color: var(--text-tertiary); padding: 2px 4px;
+    border-left: 2px dashed var(--border); padding-left: 10px;
   }
-  .attrib .lbl { color: var(--text-tertiary); font-size: 11px; }
+  .scaffold b { color: var(--text-secondary); font-weight: 500; }
   .chip {
     font-size: 11.5px; padding: 3px 8px; border-radius: 6px;
     background: var(--bg-elevated); border: 1px solid var(--border);
@@ -321,6 +320,18 @@
     <div class="callout">
       Toggle <i>Has taken its first turn</i>. In the combined picker this state is legible
       only from inside the dropdown; here it is visible on the closed composer.
+    </div>
+  </div>
+  <div class="note">
+    <span class="req">req 11</span><b>No persistent attribution strip.</b> An earlier version of
+    this prototype carried a &ldquo;Running <i>model</i> via <i>service</i> on <i>harness</i>&rdquo;
+    row under the composer. It was cut as redundant: the two triggers already show the model, its
+    service and the harness, and the model menu&rsquo;s group headers already carry the billing
+    kind. Req 11 asks that the user <i>can tell</i>, not that it is restated permanently.
+    <div class="callout">
+      &ldquo;What actually ran&rdquo; keeps its existing home in the usage modal
+      (<code class="k">UsageModal.tsx</code>, which already shows a <b>Model</b> stat) — that is
+      where service and billing kind should join it, rather than in new composer chrome.
     </div>
   </div>
   <div class="note">
@@ -665,25 +676,15 @@ function readout() {
       <div>${state.note.text}</div></div>`);
   }
 
-  if (state.pinned) {
-    out.push(`<div class="banner"><span class="ico">&#128274;</span><div>
-      Harness fixed to <b>${hns(state.harness).name}</b> for this session — per-agent credential
-      isolation pins it at the first turn (docs/138). Models stay switchable (req 4).
-    </div></div>`);
-  }
-
-  if (!stranded) {
-    out.push(`<div class="attrib">
-      <span class="lbl">Running</span>
-      <span class="chip">${state.model}</span>
-      <span class="lbl">via</span>
-      <span class="chip">${s.name}</span>
-      <span class="pill ${s.auth === 'sub' ? 'sub' : 'key'}">${s.auth === 'sub' ? 'Subscription' : 'API key'}</span>
-      <span class="lbl">on</span>
-      <span class="chip">${hns(state.harness).name}</span>
-      ${s.auth === 'key' ? '<span class="lbl">no quota to report</span>' : ''}
-    </div>`);
-  }
+  // No steady-state attribution strip. The closed composer already carries model, service
+  // and harness, and the model menu's group headers carry the billing kind — so a permanent
+  // "Running X via Y on Z" row would restate what is on screen. Only events get a banner.
+  // The line below is prototype scaffolding so a reader can verify state, not proposed UI.
+  out.push(`<div class="scaffold">
+    prototype readout, not UI &mdash; harness <b>${state.harness}</b> &middot;
+    service <b>${state.service}</b> &middot; model <b>${state.model}</b>
+    ${stranded ? '&middot; <b>stranded</b>' : ''}${state.pinned ? ' &middot; <b>pinned</b>' : ''}
+  </div>`);
   return out.join('');
 }
 
