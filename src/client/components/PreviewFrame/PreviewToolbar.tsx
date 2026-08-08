@@ -6,7 +6,8 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from "../ui/dropdown-menu.js";
-import { Button } from "../ui/button.js";
+import { Button, buttonVariants } from "../ui/button.js";
+import { cn } from "../../utils/cn.js";
 import { StatusDot } from "../ui/status-dot.js";
 import { DeviceSelector } from "../DeviceSelector.js";
 import { usePreviewStore } from "../../stores/preview-store.js";
@@ -113,6 +114,15 @@ export function PreviewToolbar({
   const setDevicePreset = usePreviewStore((s) => s.setDevicePreset);
   const toggleLandscape = usePreviewStore((s) => s.toggleLandscape);
   const setCustomSize = usePreviewStore((s) => s.setCustomSize);
+
+  // The page the preview is CURRENTLY on, not the slot's entry URL —
+  // `activeSlotUrl` is where the iframe was pointed when the slot was created,
+  // so a user who had clicked into a sub-route (or an SPA route) was sent back
+  // to the front page. Same reasoning as the refresh button. `previewFullUrl`
+  // is the injected script's reported location, already origin-checked in
+  // PreviewFrame; it's null when the page never reported one, and the entry URL
+  // is then the only location we know.
+  const openUrl = previewFullUrl ?? activeSlotUrl;
 
   return (
     <div className="flex items-center justify-between gap-2 px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs text-(--color-text-secondary)">
@@ -239,27 +249,32 @@ export function PreviewToolbar({
         >
           <ArrowClockwiseIcon size={ICON_SIZE.SM} />
         </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => {
-            // Open the page the preview is CURRENTLY on, not the slot's entry
-            // URL — `activeSlotUrl` is where the iframe was pointed when the
-            // slot was created, so a user who had clicked into a sub-route (or
-            // an SPA route) landed back on the front page. Same reasoning as
-            // the refresh button. `previewFullUrl` is the injected script's
-            // reported location, already origin-checked in PreviewFrame; it's
-            // null when the page never reported one, and the entry URL is then
-            // the only thing we know.
-            const url = previewFullUrl ?? activeSlotUrl;
-            if (url) window.open(url, "_blank", "noopener,noreferrer");
-          }}
-          title="Open preview in new tab"
-          disabled={!activeSlotUrl}
-          className="h-7 w-7 p-0"
-        >
-          <ArrowSquareOutIcon size={ICON_SIZE.SM} />
-        </Button>
+        {openUrl ? (
+          // A real anchor, not a `<button>` calling `window.open`. Nothing on
+          // the web can choose which surface a link opens in — an installed PWA
+          // hands `_blank` to its own in-app browser (iOS since 16.4, Android
+          // Custom Tabs) and no API overrides that. What a genuine link DOES
+          // buy is the platform's native affordances on top of it: long-press →
+          // "Open in Safari/Chrome", the share sheet, and on desktop the
+          // cmd/ctrl/middle-click that a scripted open silently swallows. So
+          // the user can route it to their real browser even though we can't.
+          <a
+            href={openUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open preview in new tab"
+            aria-label="Open preview in new tab"
+            className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-7 w-7 p-0")}
+          >
+            <ArrowSquareOutIcon size={ICON_SIZE.SM} />
+          </a>
+        ) : (
+          // No URL to link to — an anchor without an href is not a control, so
+          // fall back to the disabled button for the same affordance and look.
+          <Button variant="ghost" size="sm" title="Open preview in new tab" disabled className="h-7 w-7 p-0">
+            <ArrowSquareOutIcon size={ICON_SIZE.SM} />
+          </Button>
+        )}
       </div>
     </div>
   );

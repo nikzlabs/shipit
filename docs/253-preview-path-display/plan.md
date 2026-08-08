@@ -46,12 +46,21 @@ Attribution is by `contentWindow` identity, matching the existing `loaded`
 handling — a message from a window that owns no slot is dropped, so one preview
 cannot report a path on another's behalf.
 
-That recovered absolute URL also backs the toolbar's **open-in-new-tab** button,
+That recovered absolute URL also backs the toolbar's **open-in-new-tab** control,
 which used to open `activeSlotUrl` — the URL the slot was *created* with — and so
 dropped a user who had clicked into a sub-route back onto the front page. Same
-regression the refresh fix (PR #2019) addressed, one button over. It falls back to
+regression the refresh fix (PR #2019) addressed, one control over. It falls back to
 the slot URL when the page reported no path (a non-proxied local preview, a 502),
 which is the only location we know in that case.
+
+That control is an `<a target="_blank" rel="noopener noreferrer">` rather than a
+button calling `window.open`. Nothing on the web selects which surface a link
+opens in — an installed PWA routes `_blank` to its own in-app browser (iOS since
+16.4, Android Custom Tabs) and no API overrides that. A real link is what layers
+the platform's native affordances on top: long-press → "Open in Safari/Chrome",
+the share sheet, and on desktop the cmd/ctrl/middle-click a scripted open
+swallows. The disabled `<Button>` remains for the no-URL case, where an anchor
+with no `href` would not be a control at all.
 
 ## State lives per slot
 

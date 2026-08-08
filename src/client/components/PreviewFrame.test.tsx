@@ -203,15 +203,13 @@ describe("PreviewFrame", () => {
     expect(postMessage).not.toHaveBeenCalledWith({ source: "shipit-toolbar", type: "reload" }, "*");
   });
 
-  it("opens the page the preview is currently on in a new tab, not the entry URL", async () => {
-    // Same regression as the refresh button above: the button used to open
+  it("links to the page the preview is currently on, not the entry URL", async () => {
+    // Same regression as the refresh button above: the control used to open
     // `activeSlotUrl`, so a user who had navigated into a sub-route got the
     // front page in the new tab.
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
-    const open = vi.fn();
-    vi.stubGlobal("open", open);
 
     window.dispatchEvent(new MessageEvent("message", {
       data: { source: "shipit-preview", type: "path", path: "/orders/8842?tab=open" },
@@ -219,21 +217,41 @@ describe("PreviewFrame", () => {
     }));
     await screen.findByText("/orders/8842");
 
-    fireEvent.click(screen.getByTitle("Open preview in new tab"));
-
-    expect(open).toHaveBeenCalledWith("http://localhost:5173/orders/8842?tab=open", "_blank", "noopener,noreferrer");
+    expect(screen.getByTitle("Open preview in new tab")).toHaveAttribute(
+      "href",
+      "http://localhost:5173/orders/8842?tab=open",
+    );
   });
 
-  it("falls back to the entry URL in a new tab when the page reported no path", async () => {
+  it("falls back to the entry URL when the page reported no path", async () => {
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     await screen.findByTitle("Live Preview");
-    const open = vi.fn();
-    vi.stubGlobal("open", open);
 
-    fireEvent.click(screen.getByTitle("Open preview in new tab"));
+    expect(screen.getByTitle("Open preview in new tab")).toHaveAttribute("href", "http://localhost:5173");
+  });
 
-    expect(open).toHaveBeenCalledWith("http://localhost:5173", "_blank", "noopener,noreferrer");
+  it("opens the preview as a real link, so the platform's own link handling applies", async () => {
+    // A `<button>` calling window.open gives the user no way to route the
+    // preview anywhere — no long-press "Open in Safari/Chrome" on mobile, no
+    // cmd/middle-click on desktop. An anchor does, and `noopener noreferrer`
+    // keeps arbitrary preview code from touching the ShipIt tab that spawned it.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    await screen.findByTitle("Live Preview");
+
+    const link = screen.getByTitle("Open preview in new tab");
+    expect(link.tagName).toBe("A");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  });
+
+  it("falls back to a disabled button when there is no preview to link to", () => {
+    render(<PreviewFrame preview={null} {...defaultProps} />);
+
+    const control = screen.getByTitle("Open preview in new tab");
+    expect(control.tagName).toBe("BUTTON");
+    expect(control).toBeDisabled();
   });
 
   it("shows the path an iframe reports, and updates it on client-side navigation", async () => {

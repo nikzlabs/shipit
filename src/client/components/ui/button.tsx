@@ -2,7 +2,12 @@ import { forwardRef, type ButtonHTMLAttributes } from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "../../utils/cn.js";
 
-const buttonVariants = cva(
+/**
+ * Exported so a control that must be a real `<a>` — anything the user should be
+ * able to long-press, cmd/middle-click, or hand to the platform's own link
+ * handling — can carry button styling without a `<button>` faking a link.
+ */
+export const buttonVariants = cva(
   "inline-flex items-center justify-center whitespace-nowrap rounded-md font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
   {
     variants: {
