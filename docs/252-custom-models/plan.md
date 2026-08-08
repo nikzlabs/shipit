@@ -20,6 +20,10 @@ credential. There is no "Available" block: the catalogue lives in the dialog. On
 `(service, billing mode)`, matching what the picker groups on, and a subscription card holds
 its accounts, their order and the routing settings.
 
+**Visual reference — usage and cost:** [`mockup-usage.html`](./mockup-usage.html) — the usage
+view split by service × billing mode, at session and global scope. Three states: a mixed
+session, a session that cost nothing, and all-sessions with a weekly chart.
+
 **Visual reference — Settings → Harnesses:** [`mockup-harnesses.html`](./mockup-harnesses.html)
 — the derived service×style join, and the background-work setting. Static; the one screen
 where API styles are shown, because explaining the join is its whole purpose.
@@ -652,6 +656,35 @@ quota to report but full token accounting. Req 10 keeps that slot **empty** for 
 service, which is what a key-based route already does today — so this is inherited
 behavior to preserve, not new behavior to build. Putting spend in that slot is
 deliberately out of scope; the data exists, but it is its own feature.
+
+**Cost is reported per service × billing mode, and a single total stops being honest**
+([prototype](./mockup-usage.html)). `UsageModal` shows one **Cost** stat today
+(`currentSessionUsage.totalCostUsd`), which is correct while a session has one provider and
+one way of paying. Once a session can move between a subscription and a metered key — even
+within one service — that total silently adds *money spent* to *tokens already paid for*.
+
+The split is the same axis as everywhere else, and the two DeepSeek rows in the prototype are
+why it has to be the **mode** and not the service: one service, two lines, and merging them
+would attach a price to a row that is mostly free.
+
+Two headline numbers rather than one, because dollars and quota do not sum: **"You paid"**
+totals the metered rows only — the one figure that is money — and plan usage is counted in
+turns beside it. A session with no metered rows says **"Nothing"**, not `$0.00`; a zero reads
+as telemetry that came back empty, which is the wrong impression for what is the normal case
+for a subscription user.
+
+Two things to settle before building it:
+
+- **What `costUsd` means for a subscription turn is currently unknown.** `usage.ts` records
+  the CLI's figure uniformly, with no notion of billing mode, so the same stored number may
+  be money spent or a notional API-equivalent depending on how the turn was authenticated.
+  Which one each harness reports under subscription auth has to be established — the whole
+  screen depends on it, and the prototype assumes the honest reading by showing no dollar
+  figure on plan rows.
+- **Whether plan usage carries a notional value** ("this would have cost $240 on the API")
+  is the number that says whether a subscription is worth keeping. Deliberately absent here:
+  it puts a dollar figure on a row whose point is that no money moved. Req 10's receipt ruled
+  the same way for the quota indicator, calling spend-in-that-slot a separate feature.
 
 **The known-wrong behaviors** resolve unevenly:
 
