@@ -318,6 +318,14 @@ answers it — an API key does not fail over, so ShipIt stops and says so. The s
 changes *where* that surfaces, from a failed turn to a picker state you can see before
 sending.
 
+**The triggers carry no labels, and usually no service.** A product name and a model id do
+not need the words "harness" and "model" in front of them, so the closed composer is
+`Claude Code ▾ | deepseek-v4-flash ▾`. The service pill is **disclosure-on-demand**: it
+appears only when that model id is offered by more than one credentialed service on this
+harness. That is the sole case where the id alone cannot say who is billing you — and it is
+exactly the case the pair identity exists for, so the disambiguation appears precisely when
+the ambiguity is real and costs nothing the rest of the time.
+
 **Attribution needs no new surface** (req 11). Once the harness and the service are on the
 composer's two triggers, "which model, which service, key or subscription" is already on
 screen or one click away: the model trigger carries the model and its service, and the model

@@ -323,6 +323,18 @@
     </div>
   </div>
   <div class="note">
+    <b>The triggers carry no labels, and usually no service.</b> A product name and a model id
+    do not need the words &ldquo;harness&rdquo; and &ldquo;model&rdquo; in front of them. The
+    service pill is disclosure-on-demand: it appears <i>only</i> when the same model id is
+    offered by more than one credentialed service on this harness — the one case where the id
+    alone cannot say who is billing you, and the reason models are identified by the pair.
+    <div class="callout">
+      Give OpenRouter a key while on <code class="k">deepseek-v4-flash</code> and the pill
+      appears; take it away and it goes. In the common case the composer is two words and a
+      model id.
+    </div>
+  </div>
+  <div class="note">
     <span class="req">req 11</span><b>No persistent attribution strip.</b> An earlier version of
     this prototype carried a &ldquo;Running <i>model</i> via <i>service</i> on <i>harness</i>&rdquo;
     row under the composer. It was cut as redundant: the two triggers already show the model, its
@@ -590,7 +602,6 @@ function harnessSelector() {
     <button class="trigger ${open ? 'open' : ''}" ${state.pinned ? 'disabled' : ''}
             onclick="toggleMenu('harness')"
             title="${state.pinned ? 'The harness is fixed once the session has taken a turn.' : 'Which agent CLI runs this session'}">
-      <span class="lead">Harness</span>
       <span>${h ? h.name : '—'}</span>
       ${lock}
     </button>`;
@@ -644,12 +655,16 @@ function modelSelector() {
   }
 
   const s = svc(state.service);
+  // The service pill is disclosure-on-demand, not decoration: it appears only when this
+  // model id is offered by more than one credentialed service on this harness, which is
+  // the sole case where the id alone cannot say who is billing you. Otherwise the id is
+  // unambiguous and the pill is clutter.
+  const ambiguous = rows.filter(r => r.model === state.model).length > 1;
   return `${menu}
     <button class="trigger ${open ? 'open' : ''}" onclick="toggleMenu('model')"
-            title="Model, grouped by the service that provides it">
-      <span class="lead">Model</span>
+            title="Model — ${s.name}, ${s.auth === 'sub' ? 'subscription' : 'API key'}">
       <span class="mono" ${stranded ? 'style="color:var(--warning)"' : ''}>${state.model}</span>
-      <span class="pill ${s.auth === 'sub' ? 'sub' : 'key'}">${s.name}</span>
+      ${ambiguous ? `<span class="pill ${s.auth === 'sub' ? 'sub' : 'key'}">${s.name}</span>` : ''}
       <span class="caret">&#9660;</span>
     </button>`;
 }
