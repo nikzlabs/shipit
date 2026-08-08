@@ -279,13 +279,21 @@
       branch showing up in a third place.
     </div>
     <div class="note against">
-      <span class="req">open</span><b>What is <code class="k">costUsd</code> when the turn was
-      on a subscription?</b> ShipIt records the CLI&rsquo;s figure uniformly today
-      (<code class="k">usage.ts</code>), with no notion of billing mode — so the same stored
-      number may be money spent or a notional API-equivalent, depending on how the turn was
-      authenticated. Which one each harness reports under subscription auth has to be
-      established before this screen can be trusted; the mock assumes the honest reading and
-      shows no dollar figure on plan rows.
+      <span class="req">open</span><b><code class="k">costUsd</code> cannot supply either
+      figure for a custom service.</b> Verified against the spike&rsquo;s own turns, still in
+      the dogfood database: four turns on <code class="k">deepseek-v4-flash</code> run through
+      Claude Code against a DeepSeek key, recorded at <code class="k">$0.347</code> and
+      <code class="k">$0.694</code> &mdash; roughly <b>18&times;</b> what that many tokens cost
+      at DeepSeek&rsquo;s rates, and the <i>same</i> multiple on both despite very different
+      input/output/cache shapes.
+      <div class="callout">
+        A constant ratio across differing shapes is a price table being applied. So
+        <code class="k">total_cost_usd</code> is the CLI pricing the model <i>it</i> thinks it
+        is running &mdash; neither money spent nor a useful notional. Both numbers on this
+        screen therefore need a ShipIt-owned price table keyed by
+        <code class="k">(service, model)</code>, which is per-model catalogue upkeep req 6 has
+        kept small so far. A real cost of this screen, and one to count before building it.
+      </div>
     </div>
   </div>
 </div></div>

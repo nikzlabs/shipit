@@ -146,6 +146,10 @@ which of its models are declared under each (req 6). For the gateways that is re
 recall — it must be checked against each gateway's current documentation when the row is
 written, not assumed from this doc.
 
+**This phase also carries the third-harness capability survey** (see *What a third harness
+could break*). It belongs here because this is the phase that freezes the types the survey
+could invalidate, and nowhere later is cheaper.
+
 **Phase 2 — Credentials and Settings.** Per-service credential storage, the Settings →
 Services screen (see the mockup), a compile-time env-key name per catalogue service, and
 closing the compose delivery gap so a stored key reaches a compose-backed containerized
@@ -209,6 +213,40 @@ sketch in `docs/154-cursor-agent-adapter`, which proposed the same mechanism
 (`INSTALL_*_CLI` booleans written to `/opt/shipit/agents/installed.json`) for the same
 reason. Last because nothing else depends on it, and because it is the phase most likely
 to be deferred indefinitely without cost.
+
+## What a third harness could break
+
+This design is derived from two CLIs, and `AgentId`'s conflation is the standing proof that
+a model derived from too few cases hardens into the wrong shape. Adding Cursor
+(`docs/154-cursor-agent-adapter`) or OpenCode later should not force a re-cut of the
+catalogue — so their capabilities are **surveyed during phase 1**, before the types are
+frozen, and integrating them stays out of scope.
+
+The survey is cheap and its purpose is narrow: answer these questions for each candidate,
+and check whether any answer contradicts an assumption below. Each assumption is stated with
+what it would cost to be wrong.
+
+| Assumption | Where it lives | If a harness violates it |
+|---|---|---|
+| **A harness speaks exactly one API style** | req 6, the whole service×style join, `AgentId → style` | The join becomes many-to-many and a harness needs a *set* of styles. Cheap now, invasive later. |
+| The **model is a per-invocation argument** | spawn shaping, req 4's respawn boundary | A config-file-only CLI needs a per-session config written before each spawn; mid-session switching changes shape. |
+| The **endpoint is overridable per invocation** | spawn shaping, the whole feature | A CLI reading one global config cannot host two sessions on two services at once. |
+| **A raw API key can authenticate it** | req 2, req 5 | An OAuth-only CLI cannot use a key-authenticated service at all, so it offers a narrower catalogue than the join implies. |
+| **Reasoning is an enum flag** | docs/217, `AgentCapabilities.reasoning` | A numeric budget rather than named levels needs a different control, not a different option list. |
+| **Per-turn usage is reported** | req 10, the usage screen | A harness reporting nothing leaves rows with volume and no cost — survivable, but the screen must not assume. |
+
+**The first row is the one to check first.** It is the assumption most likely to be wrong and
+the most expensive to fix late: OpenCode is a multi-provider CLI by design, so "one harness,
+one style" is exactly the shape it would contradict. If a harness can speak several styles,
+then `(harness, service)` compatibility is a set intersection rather than an equality test —
+a change to req 6's rule and to every join built on it. Discovering that in phase 1 is a
+type change; discovering it after phase 6 is a re-cut of the catalogue, the picker, the
+Harnesses screen and the usage grouping.
+
+Note this is a **survey, not an integration**. Nothing here proposes shipping a third
+harness; req 14's install-time selection already covers how one would arrive. The deliverable
+is the filled-in table and, if a row is contradicted, a decision made while it is still
+cheap.
 
 ## Design
 
@@ -688,13 +726,29 @@ them as parts of a whole, which they are not. The split still tells its story ac
 toggle — weeks where Paid rises are weeks where At API rates falls, meaning work moved *off*
 the plans rather than that there was more of it, which Turns confirms.
 
-**One thing to establish before building it:** what `costUsd` means for a subscription turn
-is currently unknown. `usage.ts` records the CLI's figure uniformly, with no notion of
-billing mode, so the same stored number may be money spent or a notional API-equivalent
-depending on how the turn was authenticated. Both halves of this screen now depend on the
-answer — the paid total needs the money reading, the "at API rates" figure needs the notional
-one, and if the CLI only ever reports one of them the other has to be computed from token
-counts and a price table.
+**`costUsd` is the harness's price table, not ground truth — verified, and it is worse than
+"which reading is it".** The spike's turns are still in the dogfood database
+(`.inner-shipit/.shipit.db`, `usage_turns`): four turns on `deepseek-v4-flash`, run through
+Claude Code against a DeepSeek **API key**, recorded at `$0.347` and `$0.694`. Those turns
+were billed by DeepSeek at DeepSeek's rates; the recorded figures are ~18× what that volume
+of tokens costs there, and the ratio is **the same on both turns** despite very different
+input/output/cache shapes. A constant multiple across differing shapes is a price table being
+applied, not noise.
+
+So `total_cost_usd` is the CLI computing a price for the model *it* believes it is running.
+For a custom service it is neither money spent nor a useful notional — it is Anthropic-family
+prices applied to another vendor's tokens. Three consequences:
+
+- **"You paid" cannot come from `costUsd`** for anything but the harness's own vendor.
+- **"At API rates" cannot come from it either**, for the same reason.
+- Therefore **ShipIt needs its own price table keyed by `(service, model)`** to compute either
+  figure honestly — which puts per-model pricing into the catalogue, the axis req 6 has
+  deliberately kept small. That is a real cost of the usage screen and it should be counted
+  against it, not discovered in phase 6.
+
+The narrower original question — what the figure means for a *subscription* turn on the
+harness's own vendor — is still open and now secondary. The dogfood data cannot answer it,
+because every recorded turn there is key-authenticated.
 
 **The known-wrong behaviors** resolve unevenly:
 
