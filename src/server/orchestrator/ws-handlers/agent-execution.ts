@@ -1,12 +1,11 @@
-import { randomUUID } from "node:crypto";
-import type { WsServerMessage, ImageAttachment, FileAttachment, PermissionMode, BranchAutoResetCard } from "../../shared/types.js";
+import type { WsServerMessage, ImageAttachment, FileAttachment, PermissionMode } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
 import { buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
-import { emitChatCard, emitNoticeInTurn } from "../chat-card-persistence.js";
 import { postTurnCommit } from "./post-turn.js";
 import { resolveRunner } from "./resolve-runner.js";
-import { autoResetMergedBranchOnContinue, isResetEligible } from "../services/pre-turn-reset.js";
+import { isResetEligible } from "../services/pre-turn-reset.js";
+import { applyPreTurnReset, type PreTurnResetHookResult } from "../pre-turn-reset-hook.js";
 import { sessionAccountId, sessionNeedsAccountFailover } from "../services/provider-account-switch.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
@@ -345,11 +344,12 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   };
 
   // docs/218 — pre-turn auto-reset of a MERGED session's branch to the latest
-  // base, BEFORE the turn runs. Interactive path only (queued messages recurse
-  // back through here, so they're covered). Fully fail-safe: a skip/throw leaves
-  // the branch un-moved and the turn runs normally. On a real move we prepend a
-  // context prefix to the prompt (agent: don't re-apply shipped work) and emit a
-  // persisted "branch updated" card right after the user row (see below).
+  // base, BEFORE the turn runs. The decision, the git move, the "branch updated"
+  // card and the planning#297 skip notice all live in the shared hook, which the
+  // dispatch path calls too (planning#333) — so a message from the Agent Interface
+  // SDK, `shipit session message`, or a wake turn continues on the same fresh
+  // base a typed message would. Fully fail-safe: a skip/throw leaves the branch
+  // un-moved and the turn runs normally.
   //
   // Skip entirely for a `/compact` request (docs/178): compaction is a
   // maintenance command, not a continuation of work, so it must NOT trigger the
@@ -357,75 +357,25 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // reset prepends would derail the compaction (the agent reacts to the merge
   // notice instead of compacting). The reset still runs on the user's next real
   // turn, where it belongs.
-  //
-  // planning#297 — a skip is no longer silent. When the session IS merged and the
-  // reset was refused, the helper returns the clause that refused it; we persist
-  // that as a transcript notice (same anchor as the card below) and prepend the
-  // agent-facing half to this turn's prompt. The user's report was "it silently
-  // didn't sync and it was not clear to me that this was a failure mode" — and
-  // the agent, equally unaware, went on to author a commit for a merged PR.
-  let branchResetCard: BranchAutoResetCard | null = null;
-  let resetSkipNotice: { message: string; level: "info" | "warn" } | null = null;
-  let resetAgentPrefix = "";
+  let resetHook: PreTurnResetHookResult = { agentPrefix: "" };
   if (capturedSessionId && capturedSessionDir && runner && !opts.compact) {
-    const reset = await autoResetMergedBranchOnContinue(
-      {
-        getSession: (id) => ctx.sessionManager.get(id),
-        getPrStatus: (id) => ctx.sessionManager.getPrStatus(id),
+    resetHook = await applyPreTurnReset({
+      deps: {
+        sessionManager: ctx.sessionManager,
+        prStatusPoller: ctx.prStatusPoller,
         createGitManager: ctx.createGitManager,
+        sseBroadcast: ctx.sseBroadcast,
+        chatHistoryManager: ctx.chatHistoryManager,
         getAutoResetMergedBranch: () => ctx.credentialStore.getAutoResetMergedBranch(),
       },
-      capturedSessionId,
-      capturedSessionDir,
-      opts.resetMergedBranch,
-    );
-    if (reset.moved) {
-      resetAgentPrefix = reset.agentPrefix ?? "";
-      branchResetCard = {
-        cardId: `branch-reset-${randomUUID()}`,
-        base: reset.base!,
-        prNumber: reset.prNumber!,
-        prUrl: reset.prUrl!,
-        fromSha: reset.fromSha!,
-        toSha: reset.toSha!,
-        createdAt: new Date().toISOString(),
-      };
-      // docs/216 + docs/218 — the branch now sits at the clean base, so the
-      // lingering "merged" PR card no longer reflects reality. Re-arm NOW (clear
-      // merged + reArm poller + emit a gray "ready" card carrying the
-      // previousMergedPr breadcrumb that overrides the active viewer's stale
-      // merged card) so the PR card flips to the no-current-PR state the moment
-      // the branch-updated card appears — rather than lagging until the
-      // post-turn `postTurnReArmReset` runs after the whole turn. The post-turn
-      // call stays as a fail-safe (manual `git reset` with no pre-turn move) and
-      // no-ops here, having already cleared `mergedAt`.
-      await detectAndReArmResetSession({
-        deps: {
-          sessionManager: ctx.sessionManager,
-          prStatusPoller: ctx.prStatusPoller,
-          createGitManager: ctx.createGitManager,
-          sseBroadcast: ctx.sseBroadcast,
-        },
-        sessionId: capturedSessionId,
-        sessionDir: capturedSessionDir,
-        emit: (msg) => runner.emitMessage(msg),
-        // The reset itself just fetched and moved the branch onto
-        // `origin/<base>`, so the base ref is current — skip the helper's own
-        // freshening fetch rather than pay for it in front of the user's turn.
-        skipFetch: true,
-      });
-      // docs/218 — the branch now sits at the fresh base (HEAD !== mergedHeadSha),
-      // so the session is no longer reset-eligible. Push `reset_eligible: false`
-      // NOW so the composer's "start from the latest base" control disappears the
-      // moment the reset runs — rather than lingering for the entire turn until
-      // the post-turn recompute fires. This covers every send path (composer,
-      // action buttons, programmatic), unlike the client-side optimistic clear.
-      runner.emitMessage({ type: "reset_eligible", sessionId: capturedSessionId, eligible: false });
-    } else if (reset.skip) {
-      resetAgentPrefix = reset.agentPrefix ?? "";
-      resetSkipNotice = { message: reset.skip.notice, level: reset.skip.level };
-    }
+      runner,
+      sessionId: capturedSessionId,
+      sessionDir: capturedSessionDir,
+      // The per-send tick box (Phase 3): `false` = unticked for this message.
+      ...(opts.resetMergedBranch !== undefined ? { intent: opts.resetMergedBranch } : {}),
+    });
   }
+  const resetAgentPrefix = resetHook.agentPrefix;
 
   // docs/221 — drain the pending out-of-band notice. The docs/218 reset above
   // both moves the branch and speaks to the agent in the same breath because it
@@ -458,43 +408,12 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     (agentPrefix ? `${agentPrefix}\n\n` : "") +
     assembleAgentPrompt({ userText, fileContext, imageContext, dictated: opts.dictated });
 
-  // docs/218 — emit the persisted "branch updated" card right after the resumed
-  // user row (and before the agent's response). Runs inside the executor via the
-  // `afterUserMessagePersisted` hook so it lands in the FRESH turn (post
-  // `resetRunnerTurnState`) at its true transcript anchor. `emitChatCard` makes it
-  // durable in the same call, so the destructive move always has a record.
-  //
-  // planning#297 — the skip notice rides the same hook and the same anchor. The two
-  // are mutually exclusive (the branch either moved or it didn't), and both are
-  // wrapped: this hook is called un-awaited and unguarded by the executor, so a
-  // throw here would abort the turn setup. A missing notice is a regression; a
-  // notice that kills the turn is a worse one.
-  const afterUserMessagePersisted =
-    (branchResetCard || resetSkipNotice) && runner
-      ? (sid: string): void => {
-          try {
-            if (branchResetCard) {
-              emitChatCard(
-                runner,
-                { type: "branch_auto_reset_card", sessionId: sid, card: branchResetCard },
-                { role: "assistant", text: "", branchAutoReset: branchResetCard },
-                { chatHistoryManager: ctx.chatHistoryManager, sessionId: sid },
-              );
-            }
-            if (resetSkipNotice) {
-              emitNoticeInTurn(
-                runner,
-                sid,
-                resetSkipNotice.message,
-                ctx.chatHistoryManager,
-                resetSkipNotice.level,
-              );
-            }
-          } catch (err) {
-            console.error(`[pre-turn-reset] pre-turn transcript record failed for ${sid}:`, err);
-          }
-        }
-      : undefined;
+  // docs/218 — the persisted "branch updated" card (or the planning#297 skip notice)
+  // is emitted right after the resumed user row, from inside the executor via
+  // the `afterUserMessagePersisted` hook, so it lands in the FRESH turn (post
+  // `resetRunnerTurnState`) at its true transcript anchor. The closure comes
+  // back from `applyPreTurnReset`, which owns the durability + throw-guard.
+  const afterUserMessagePersisted = resetHook.afterUserMessagePersisted;
 
   // Listener deps — same shape the runner-registry builds for system turns.
   const listenerDeps: AgentListenerDeps = {
@@ -709,24 +628,31 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   const drainNext = (): Promise<void> =>
     drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emit);
 
-  await executeAgentTurn(runner, deps, currentAgent, {
-    agentId,
-    sessionId,
-    prompt,
-    userText,
-    ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
-    // The client already rendered an optimistic bubble — don't echo.
-    emitUserEcho: false,
-    persistUserMessage,
-    ...(afterUserMessagePersisted ? { afterUserMessagePersisted } : {}),
-    isNewSession,
-    fallbackTitle: userText.slice(0, 80) || "New session",
-    turnStartHeadHash,
-    drainNext,
-    emit,
-    useStreaming,
-    reuseExistingAgent: existingAgent !== null,
-    emitErrorOnNoResult: true,
-    onInterruptedTurn,
-  });
+  // docs/218 — a branch that moved must leave a record even if the turn dies
+  // before it reaches the anchor (`afterUserMessagePersisted`). `ensureRecorded`
+  // is latched against that hook, so exactly one of them writes the card.
+  try {
+    await executeAgentTurn(runner, deps, currentAgent, {
+      agentId,
+      sessionId,
+      prompt,
+      userText,
+      ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
+      // The client already rendered an optimistic bubble — don't echo.
+      emitUserEcho: false,
+      persistUserMessage,
+      ...(afterUserMessagePersisted ? { afterUserMessagePersisted } : {}),
+      isNewSession,
+      fallbackTitle: userText.slice(0, 80) || "New session",
+      turnStartHeadHash,
+      drainNext,
+      emit,
+      useStreaming,
+      reuseExistingAgent: existingAgent !== null,
+      emitErrorOnNoResult: true,
+      onInterruptedTurn,
+    });
+  } finally {
+    if (sessionId) resetHook.ensureRecorded?.(sessionId);
+  }
 }

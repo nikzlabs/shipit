@@ -33,6 +33,8 @@ import {
 } from "./session-agent-env.js";
 import { emitPrLifecycleAfterCommit } from "./services/pr-lifecycle.js";
 import { detectAndReArmMergedSession, detectAndReArmResetSession } from "./services/pr-rearm.js";
+import { applyPreTurnReset } from "./pre-turn-reset-hook.js";
+import { isResetEligible } from "./services/pre-turn-reset.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
@@ -506,6 +508,33 @@ export function createRunnerRegistry(
           liveSteering: credentialStore?.getLiveSteering() ?? false,
           steeringCapable: getAgentCapabilities(runner.agentId)?.supportsSteering ?? false,
         }),
+        // docs/218 + planning#333 — pre-turn auto-reset of a merged session's branch
+        // onto the latest base, for turns that arrive programmatically: an Agent
+        // Interface SDK message from a page the agent built, `shipit session
+        // message`, a notify-on-merge wake, a Create-PR button. The interactive
+        // path wires the same helper in `agent-execution.ts`; both go through
+        // `applyPreTurnReset` so the two transports can't drift.
+        //
+        // Same lazy poller resolution as `postTurnReArmReset` below. Skipped
+        // when the poller or credential store is absent (minimal test wiring) —
+        // the reset needs the merged PR's base branch and the global setting.
+        preTurnReset: async (runner, sessionId, sessionDir) => {
+          const prStatusPoller = getPrStatusPoller?.();
+          if (!prStatusPoller || !credentialStore) return { agentPrefix: "" };
+          return await applyPreTurnReset({
+            deps: {
+              sessionManager,
+              prStatusPoller,
+              createGitManager,
+              sseBroadcast,
+              chatHistoryManager,
+              getAutoResetMergedBranch: () => credentialStore.getAutoResetMergedBranch(),
+            },
+            runner,
+            sessionId,
+            sessionDir,
+          });
+        },
         // docs/149 — emit the PR lifecycle card after a system-turn commit.
         // Lazy poller resolution because the poller is constructed AFTER the
         // runner registry; the closure fires post-turn, by which time it's set.
@@ -548,6 +577,29 @@ export function createRunnerRegistry(
               sessionDir,
               emit,
             });
+            // docs/218 + planning#333 — recompute + push the composer's
+            // reset-eligibility signal after every turn, the same way the WS
+            // adapter does. Without it this path was write-only: only a turn
+            // that MOVED the branch emitted `false` (from the pre-turn hook), so
+            // a dispatched turn that skipped the reset and then committed — or
+            // one that left the tree dirty — never corrected an `eligible: true`
+            // pushed at activation, and the composer kept offering a reset the
+            // server would refuse. Safety-only; the client ANDs the global
+            // setting. Best-effort — never blocks the post-turn flow.
+            try {
+              const eligible = await isResetEligible(
+                {
+                  getSession: (id) => sessionManager.get(id),
+                  getPrStatus: (id) => sessionManager.getPrStatus(id),
+                  createGitManager,
+                },
+                sessionId,
+                sessionDir,
+              );
+              emit({ type: "reset_eligible", sessionId, eligible });
+            } catch (err) {
+              console.error(`[pre-turn-reset] post-turn eligibility signal failed for ${sessionId}:`, err);
+            }
           },
         } : {}),
       });

@@ -135,14 +135,51 @@ export async function runDispatchedTurn(
   const agentText = opts.messageOrigin
     ? formatSessionMessagePrompt(surfacedText, opts.messageOrigin)
     : surfacedText;
-  const prompt = assembleAgentPrompt({
-    userText: agentText,
-    fileContext,
-    imageContext,
-    // docs/144 — set only by a human-dictated dispatch (a quick-capture prompt
-    // spoken into the overlay); server-composed turns never carry it.
-    dictated: opts.dictated,
-  });
+
+  // docs/218 + planning#333 — auto-reset a MERGED session's branch onto the latest
+  // base BEFORE this turn's prompt is assembled, exactly as the interactive path
+  // does. A dispatched message is a continuation of the session's work — an
+  // Agent Interface SDK click, a `shipit session message`, a wake turn — and
+  // without this it ran on a branch still sitting on already-merged commits.
+  //
+  // No per-send intent is passed: the tick box is a composer control, so a
+  // dispatch follows the global `autoResetMergedBranch` setting (which is what
+  // the box reflects when it is ticked). The hook is fail-safe and its own
+  // safety gate decides — see `SystemTurnDeps.preTurnReset`.
+  //
+  // Runs ONCE per dispatched message, outside `runOnce`, so a no-result retry
+  // neither re-resets nor re-emits the transcript card.
+  //
+  // `postTurn: "none"` is excluded, and it is the ONE exclusion — the same kind
+  // the interactive path makes for `/compact`: about what the turn *is*, not
+  // about which transport carried it. It marks a turn that is a STEP INSIDE a
+  // git operation the driver owns (docs/146 rebase-conflict resolution, which
+  // commits via `rebase --continue` and force-pushes at the end), not a
+  // continuation of the session's work. No reset could fire there anyway — the
+  // gate refuses a conflicted tree — but the planning#297 skip machinery would
+  // still fire, persisting "this branch still sits on the already-merged
+  // commits" and telling the agent to consider `shipit branch reset-to-base`
+  // while its actual job is to edit the conflicted files. Note the clause it
+  // would report is `dirty-tree`, NOT `rebase-in-progress`: `computeResetBlocker`
+  // checks `isClean()` first, and a conflicted rebase has an unclean tree. So
+  // the exclusion is load-bearing, not belt-and-braces.
+  const reset = sessionDir && opts.postTurn !== "none"
+    ? await deps.preTurnReset?.(runner, runner.sessionId, sessionDir)
+    : undefined;
+
+  // The `[System] …` prefix rides in FRONT of the assembled prompt, exactly as
+  // the interactive path places it: the branch moved (or conspicuously did not)
+  // moments ago, so the agent has to read that before the message it is acting on.
+  const prompt =
+    (reset?.agentPrefix ? `${reset.agentPrefix}\n\n` : "") +
+    assembleAgentPrompt({
+      userText: agentText,
+      fileContext,
+      imageContext,
+      // docs/144 — set only by a human-dictated dispatch (a quick-capture prompt
+      // spoken into the overlay); server-composed turns never carry it.
+      dictated: opts.dictated,
+    });
 
   // Chat-history metadata for the persisted user row — mirrors the WS path so a
   // reload shows the same inline image / file chips on the dispatched bubble.
@@ -319,6 +356,13 @@ export async function runDispatchedTurn(
       emitUserEcho: attempt === 0,
       ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
       ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
+      // docs/218 — the "branch updated" card (or the planning#297 skip notice) lands
+      // right after the user row, inside the fresh turn. Attempt 0 only: a
+      // no-result retry re-enters the executor with the user row already
+      // written, and firing the hook again would duplicate the card.
+      ...(attempt === 0 && reset?.afterUserMessagePersisted
+        ? { afterUserMessagePersisted: reset.afterUserMessagePersisted }
+        : {}),
       persistUserMessage:
         attempt === 0
           ? (sid) =>
@@ -416,5 +460,13 @@ export async function runDispatchedTurn(
     });
   };
 
-  await runOnce(0);
+  // docs/218 — a branch that moved must leave a record even if the turn dies
+  // before reaching the anchor (`afterUserMessagePersisted`) — an admission
+  // refusal, a spawn failure, a throw in env prep. `ensureRecorded` is latched
+  // against that hook, so exactly one of the two writes the card.
+  try {
+    await runOnce(0);
+  } finally {
+    reset?.ensureRecorded?.(runner.sessionId);
+  }
 }
