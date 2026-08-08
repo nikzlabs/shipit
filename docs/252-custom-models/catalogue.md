@@ -76,9 +76,9 @@ Two smaller arguments on top:
   four strings under a forty-line comment explaining which ids are CLI aliases and which are
   pinned versions, and why — the reasoning that stops the list being "tidied" into breakage.
 
-*(An earlier draft argued this partly from "there is no Zod or Ajv in the dependency tree".
-That is false — `zod@4.4.3` arrives via the MCP SDK and `ajv@8.18.0` via the MCP SDK, Fastify
-and ESLint. The ownership distinction above is the argument that holds.)*
+*(Note for anyone tempted by the obvious extra argument: "there is no schema validator in the
+tree" would be false — `zod` and `ajv` both arrive transitively, via the MCP SDK, Fastify and
+ESLint.)*
 
 ## Types
 
@@ -129,7 +129,7 @@ interface ModeCommon {
  *  was metered (reqs 5, 11, 12). */
 export type BillingModeDef =
   | (ModeCommon & { kind: "key"; credential: KeyCredential })
-  | (ModeCommon & { kind: "sub" });
+  | (ModeCommon & { kind: "sub"; integration: SubIntegrationId });
 
 export interface ServiceDef {
   id: string;
@@ -190,9 +190,16 @@ export type CredentialTarget =
   | { kind: "env"; name: string }
   | { kind: "config-file"; path: string; pointer: string };   // OpenCode-shaped
 
-/** SERVICE side, key modes only: what the user supplies and how ShipIt stores it.
- *  A `sub` mode carries no such field — its credential is an account, obtained by that
- *  vendor's own flow, which is why the union above attaches this to `key` alone. */
+/** SERVICE side, subscription modes: WHICH integration obtains and refreshes the account.
+ *  A `sub` mode cannot be described by `kind: "sub"` alone — today's subscriptions are
+ *  provider-specific all the way down (an `AgentAuthManager` implementation, a credential-root
+ *  layout, a login method, a quota integration in the limits registry), and those are
+ *  currently selected by `AgentId`. This field is what they get selected by instead, and it is
+ *  the catalogue-side half of the per-service work req 5 keeps out of the mechanism.
+ *  🔍 — the name is settled here; what GLM's implementation needs is phase 2's to find out. */
+export type SubIntegrationId = "anthropic-oauth" | "openai-chatgpt" | "zai-plan";
+
+/** SERVICE side, key modes only: what the user supplies and how ShipIt stores it. */
 export interface KeyCredential {
   storageEnv: string;
   /** Rare, and the reason the target is not purely a harness property: a service may need
@@ -236,9 +243,14 @@ Two consequences worth stating because they are easy to get wrong in code:
 - **The scrub still runs first.** `scrubEnvAuthForScopedHome` deletes the harness's auth
   variables for a scoped account (`claude/process.ts:12` ✅); writing a custom service's key
   into the harness's variable must happen *after* that, or the scrub removes it.
-- **The target is the harness's variable, not the service's.** `storageEnv` names how ShipIt
-  stores the secret; it is never what the child process sees. Confusing the two produces a CLI
-  that ignores a key that is definitely present, which reads as an auth bug and is not.
+- **The target is the harness's variable, not the service's** — and the storage name must be
+  *removed* on the way, which is work rather than a property. Pushed secrets land in the
+  worker's own `process.env` (`session-worker.ts:356` ✅) and both adapters copy the whole
+  environment into the child (`claude/process.ts:409`, `codex/adapter.ts:243` ✅), so
+  `DEEPSEEK_API_KEY` **is** visible to the CLI unless spawn shaping deletes it. It does no harm
+  there, but the reverse mistake does: assuming the CLI will read it. Confusing storage with
+  target produces a CLI that ignores a key that is demonstrably present, which reads as an auth
+  bug and is not.
 
 ### When the overlap has more than one style, the harness's order decides
 
@@ -290,6 +302,13 @@ export interface HarnessDef {
   capabilities: Omit<AgentCapabilities, "models">;
 }
 ```
+
+**There is no model-switching capability flag, and req 4's "as far as that harness supports
+it" is currently carried by nothing.** Both shipped harnesses support it — the model is
+per-turn data for each — so no flag is declared rather than one being declared `true` twice.
+If a survey candidate turns out to fix its model at process start, that is when
+`AgentCapabilities` gains the flag and the picker gates on it; inventing it now would be a
+field with one possible value.
 
 `AgentCapabilities` (`types/agent-types.ts:61` ✅) keeps every field it has today —
 `supportsResume`, `supportsImages`, `supportsSystemPrompt`, `supportsPermissionModes`,
@@ -428,7 +447,7 @@ export const SERVICES = [
     modes: [
       { kind: "sub",                                       // ✅ OAuth accounts exist today
         endpoints: { [A_MSG]: "https://api.anthropic.com" },
-        // `sub` modes carry no credential field    // ✅ OAuth accounts today
+        integration: "anthropic-oauth",            // ✅ this integration exists
         retired: [],
         models: [
           { id: "claude-opus-5",   label: "Opus 5",   styles: [A_MSG], contextWindow: { default: 1_000_000 }, price: PRICE_TODO },
@@ -466,7 +485,7 @@ export const SERVICES = [
     modes: [
       { kind: "sub",                                       // ✅ ChatGPT account auth today
         endpoints: { [O_RESP]: "https://api.openai.com" },
-        // `sub` modes carry no credential field    // ✅ ~/.codex/auth.json
+        integration: "openai-chatgpt",             // ✅ ~/.codex/auth.json
         retired: [
           // ✅ the id remap `gpt-5.6 → gpt-5.6-sol` is today's normalizeCodexModelId
           // (agent-registry.ts:141). 🔍 the style and the placement under BOTH modes are

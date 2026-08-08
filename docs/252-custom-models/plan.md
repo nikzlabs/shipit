@@ -165,8 +165,8 @@ its credential route from `subAgentId` *before* reading that default
 string cannot say which — so it would silently resolve to the harness's own vendor, which is
 the exact conflation this feature exists to remove, surviving in a corner. It becomes the
 triple here alongside the session's, migrates by the same rule below, and its picker follows
-the session picker in phase 4. An earlier draft's "the selection becomes the triple
-throughout" quietly did not include it.
+the session picker in phase 4. "The selection becomes the triple throughout" has to include
+it explicitly, because nothing about that phrase makes this path visible.
 
 **Existing sessions need a billing mode, and the answer is already on disk.** The triple
 needs a third element, and migration must supply it — a choice that decides what a user is
@@ -192,6 +192,26 @@ Only the last row is a judgement, and it fails in the safe direction: a session 
 earlier drafts got this wrong in different ways — the first ignored the columns entirely and
 relabelled every key session as `sub`; the second read `kind` and would have billed
 `claude-env-oauth` subscribers as metered, hiding their quota (reqs 10, 12, 16).
+
+**The fallback has one invariant it must not break: the chosen mode has to actually offer the
+model.** A session can hold a selection before any route is pinned — pinning happens at first
+turn preparation (`session-agent-env.ts:399`) — so the evidence-free row is reachable with a
+real model. If phase 1's research puts a model under `key` only, as the catalogue explicitly
+allows for `claude-fable-5`, defaulting it to `sub` produces a triple the catalogue does not
+contain, which req 8 would then refuse to offer. So the rule is: prefer `sub`, **but only
+among the modes that declare this model**; if only one mode offers it, that is the answer
+regardless of preference.
+
+**The credential route belongs to a `(service, billing mode)`, and changing either must
+invalidate it.** This is the sharpest edge in the whole migration, and it is not covered by
+respawning. A session stores its route as a bare `{kind, id}`, and environment preparation
+**reuses it unconditionally whenever it is present** (`session-agent-env.ts:359`), while
+`setModel` changes only the model (`sessions.ts:813`). Left alone, switching to a different
+service would respawn correctly — new endpoint, new model — and then authenticate with the
+*previous* service's credential. That is not a failed turn; it is a turn billed to the wrong
+account, which is precisely what req 11 exists to prevent. So the persisted route gains its
+owning `(service, mode)` and is cleared whenever the selection's service or mode changes,
+re-pinning on the next turn through the existing preflight.
 
 This phase is a refactor with **no behaviour change**: the picker offers exactly the models
 it offers today, now derived from the catalogue rather than from `AGENT_DEFS`. That is the
@@ -281,8 +301,17 @@ running conversation total rather than a turn cost (`usage.ts:115`). For a custo
 delta is the CLI's price table applied to the wrong vendor's tokens (measured below), so it
 cannot be the figure ShipIt reports.
 
-So the row stores **tokens, attribution, and the rate that was applied** — not a price looked
-up later. Computing money at read time from the live catalogue was this doc's first answer and
+**Rows written before this exists get an explicit `legacy` attribution, and are not
+backfilled.** Req 16's split holds "across all sessions", so old rows need somewhere honest to
+go, and their true attribution is not recoverable: a historical row has a model string and no
+route, and sub-agent rows carry `sub_agent_id` without any billing information at all
+(`services/sub-agent.ts:457`), so the parent session cannot answer for them either. Guessing
+would produce a confidently wrong split of real money. A named bucket the UI can render as
+"before ShipIt tracked this" is the honest option, and it drains on its own as old sessions
+age out.
+
+So each new row stores **tokens, attribution, and the rate that was applied** — not a price
+looked up later. Computing money at read time from the live catalogue was this doc's first answer and
 it is wrong in two ways that only show up with time: a price edit would silently restate every
 historical "You paid", and a retired model would have no price to look up at all — which the
 already-declared `gpt-5.6` retirement demonstrates. Req 16 asks where money *was* spent, which
@@ -438,7 +467,7 @@ handful of models are worth using for coding at any time, so an aggregator adver
 Per-model metadata — the context window, the display label, the price — is simply stated
 per model, there being few enough of them. **Reasoning is deliberately not among them**: it
 stays keyed to the harness (see the explicit non-change below), so the catalogue carries no
-reasoning field. An earlier draft of this paragraph listed it, contradicting that decision. The cost is a judgement call
+reasoning field. The cost is a judgement call
 ShipIt owns and revises: which models are worth carrying. A per-style endpoint belongs here too:
 one base URL per service is wrong for a service whose styles live at different paths.
 
@@ -474,8 +503,7 @@ which would put Anthropic models under **Claude Code** via OpenRouter — but th
 about a vendor, not about this repository, so it is an item on
 [`catalogue.md`](./catalogue.md)'s phase-1 checklist and not a fact this design may lean on.
 The more striking illustration, Anthropic models under **Codex**, additionally needs
-OpenRouter to speak the Responses API, which nothing here establishes. An earlier draft
-asserted that crossing as the example.
+OpenRouter to speak the Responses API, which nothing here establishes.
 
 **User-supplied endpoints are deferred, not designed away** (req 15). Nothing here should
 foreclose them: a service row is already `(endpoints, styles, declared models)`, which is
@@ -705,7 +733,7 @@ none, from the turn's own text (`turn-executor.ts:1032`). A key-authenticated se
 answering "quota exceeded" would therefore be retried once on the same bad key, which is
 exactly what req 12 forbids. Both paths need the gate.
 
-That also means there is no service re-prompt flow to build; an earlier draft proposed
+That also means there is no service re-prompt flow to build; the spike proposed
 one. See Appendix A for what has to be *removed* instead.
 
 The rule generalizes rather than invents. Today `provider-account-manager.ts` already
@@ -764,9 +792,12 @@ reasoning block at all shows no control rather than an empty one.
 That makes three things a harness switch can move — model, billing mode, effort — and the
 composer has to report all of them in one message rather than the last one to be computed.
 
-**Mid-session model switching** (req 4) is a capability question per harness, not a new
-mechanism: the model is already per-turn data — a spawn flag for Claude Code, a `turn/start`
-field for Codex — and `AgentCapabilities` already carries per-harness flags. A switch that
+**Mid-session model switching** (req 4) is not a new mechanism: the model is already per-turn
+data — a spawn flag for Claude Code, a `turn/start` field for Codex — so both shipped
+harnesses support it unconditionally. Req 4's "as far as that harness supports it" is
+therefore carried by **no flag today**, deliberately: a capability with one possible value is
+noise, and `AgentCapabilities` gains one only if a candidate turns up that fixes its model at
+process start. A switch that
 crosses *services* additionally re-resolves the credential and base URL for the next spawn.
 
 ShipIt already forces a respawn boundary for a *model* change:
@@ -831,12 +862,30 @@ string and the feature degrades silently (`app-di.ts:485`), and the callback tha
 a selection has neither model nor harness (`services/github.ts:1511`). Req 9 explicitly calls
 that half a *change*, not a preserved behaviour.
 
-So phase 7 depends on phase 3 in a way the table does not show: the resolver phase 3 builds —
-selection → harness, endpoint, credential, style — has to be **a callable component rather
-than inline spawn code**, and phase 7 is the second caller that proves it. If phase 3 inlines
-it, phase 7 either duplicates it or ends up inventing a second execution path, which is where
-a small feature turns into a subsystem. This is a factoring constraint on phase 3, not new
-machinery, and it is worth stating because it is invisible from phase 3's own scope.
+Two things follow, and only the first is free.
+
+**Phase 3 must expose its resolver as a callable component** — selection → harness, endpoint,
+credential, style — because phase 7 is its second caller. If phase 3 inlines that logic,
+phase 7 duplicates it. That is a factoring constraint, invisible from phase 3's own scope,
+and it costs nothing to honour up front.
+
+**But a resolver only chooses; something still has to run the model, and in production nothing
+can.** The orchestrator has no agent: the CLIs and their credentials live in session
+containers, which is why the default text generator returns `""`. So req 9's pull-request half
+needs an execution path, and this is the one place in this design where new surface is
+unavoidable rather than a re-keying of something existing. **It runs in a session container,
+over the worker HTTP surface that already exists** — that is where the binaries and
+credentials are, and CLAUDE.md's orchestrator↔container rule is HTTP-only, never exec. The
+orchestrator resolves the triple and asks a container to run one short prompt.
+
+Which container is the real question, and it has an uncomfortable answer: the natural host is
+the session whose pull request is being described, and **that container may be gone** — idle
+sessions are destroyed, not paused. So the path needs either a container started for the
+purpose or an acceptance that the description is generated while the session is still warm.
+This doc does not settle that, and it should be settled before phase 7 rather than inside it;
+it is the single largest unknown left in these phases, and it is a *lifecycle* question rather
+than a model-selection one. Session naming is unaffected — it already runs a CLI
+(`session-namer.ts:28`) and only needs the resolved triple threaded through.
 It is a `(service, billing mode, model)` selection like any other, not a service alone: a
 service does not identify something callable, and the mode is what says whether the work is
 metered. It surfaces as its own setting, and it has a default so the feature works
@@ -868,8 +917,7 @@ titles, PR descriptions — that a small one does fine. Nothing here says otherw
 cheapness is not a requirement. If it turns out to matter, the fix is the catalogue's
 ordering, not a new "suitable for background work" concept.
 
-The two halves are not symmetric, and an earlier draft wrongly said both merely preserve
-today's behavior:
+The two halves are not symmetric, and only one of them preserves today's behavior:
 
 - *Session naming already behaves as required.* `generateSessionName` returns `null` on
   any failure and is documented as silent best-effort (`session-namer.ts:19`);
@@ -916,7 +964,7 @@ none at all.
 **The harness is the third axis, and a bare id→id map cannot carry it** (req 13). A model's
 availability depends on the API style too, so a successor declared only under a style the
 session's pinned harness does not speak strands the session exactly as a missing successor
-would. Two things follow, and an earlier draft of this paragraph had only the first:
+would. Two things follow, and the second is the one that is easy to miss:
 
 1. A `(service, mode): old → new` map cannot express a retirement whose successor **differs
    by style**.
@@ -952,9 +1000,14 @@ run the intended Sol model". Req 13 generalizes that one-off shim from a hardcod
 per-`AgentId` special case into a per-service catalogue field resolved at the same
 boundary.
 
-Because the session now reports the successor, req 11 makes the remap visible rather
-than silent — the picker and attribution show what is actually running, not what was
-originally chosen.
+**The remap writes through to the session's stored selection; it is not a read-time
+normalization.** The precedent this generalizes, `normalizeCodexModelId`, rewrites the model
+only at the turn boundary (`agent-registry.ts:136`) and leaves the persisted row alone — and
+the picker deliberately gives the *persisted* model precedence over the live one the CLI
+reports (`ModelAgentSelector.tsx:121`). Transcribing the shim's shape would therefore run the
+successor while continuing to display the retired id, which is exactly the invisible remap
+reqs 11 and 13 forbid. Resolving through the record and persisting the result makes the
+picker and attribution agree with what is running, without a second precedence rule.
 
 **Usage** (req 10) is reported per **billing mode of a service** — but the *credential route*
 stays in the key, and dropping it would be a regression, not a simplification. Today's shape
@@ -997,9 +1050,9 @@ as telemetry that came back empty, which is the wrong impression for what is the
 for a subscription user.
 
 **Plan usage carries its API-rate value too** — "≈ $243.60 at API rates". That is the number
-that says whether a subscription is worth keeping, and an earlier draft withheld it to
-protect the paid/included distinction. That was overcautious: the distinction is carried by
-colour, wording and position, not by the absence of a second figure. It is not the paid
+that says whether a subscription is worth keeping. Withholding it to protect the
+paid/included distinction is overcautious: that distinction is carried by colour, wording and
+position, not by the absence of a second figure. It is not the paid
 colour, it sits below the volume rather than in the amount slot, it is prefixed `≈` and
 suffixed "at API rates", and it is **never** summed into "You paid", which stays the only
 figure that is money.
@@ -1160,9 +1213,7 @@ endpoint *and* OpenAI-style ones, while several others are OpenAI-style only. Po
 a harness at a service that does not speak its style fails at the **wire format**, not
 at auth — a failure that looks nothing like a bad key.
 
-(An earlier draft claimed only DeepSeek served an Anthropic-style surface. That was
-wrong, and the correction strengthens the case for storing style per service rather
-than hardcoding one endpoint.)
+(This is why style is stored per service rather than one endpoint being hardcoded.)
 
 DeepSeek itself speaks **both** — the `/anthropic` endpoint and, per its own docs, the
 OpenAI Responses API with a Codex adaptation. So one DeepSeek key surfaces models under
