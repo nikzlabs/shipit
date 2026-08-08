@@ -86,6 +86,15 @@
   .r .amt .v.paid { color: var(--paid); }
   .r .amt .v.incl { color: var(--incl); }
   .r .amt .s { display: block; font-size: 10.5px; color: var(--text-tertiary); margin-top: 3px; }
+  /* Notional value: deliberately NOT the paid green, so it never reads as money that moved. */
+  .r .amt .notional {
+    display: block; font-size: 11px; color: var(--text-tertiary); margin-top: 5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums;
+  }
+  .hl .worth {
+    font-size: 12px; color: var(--text-tertiary); margin-top: 7px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums;
+  }
 
   .pill {
     font-size: 10px; padding: 2px 7px; border-radius: 999px; white-space: nowrap;
@@ -111,16 +120,26 @@
     font-size: 11px; color: var(--text-tertiary);
   }
   .chart-head .grow { flex: 1; }
-  .legend { display: flex; gap: 12px; font-size: 11px; }
-  .legend span { display: flex; align-items: center; gap: 5px; color: var(--text-secondary); }
-  .legend i { width: 9px; height: 9px; border-radius: 2px; display: block; }
+  .toggle { display: flex; gap: 3px; }
+  .toggle button {
+    font: inherit; font-size: 11px; padding: 3px 9px; border-radius: 6px; cursor: pointer;
+    background: transparent; border: 1px solid transparent; color: var(--text-tertiary);
+  }
+  .toggle button:hover { background: var(--bg-hover); color: var(--text-secondary); }
+  .toggle button.on {
+    background: var(--bg-elevated); border-color: var(--border); color: var(--text-primary);
+  }
   .bars { display: flex; gap: 12px; align-items: flex-end; height: 128px; }
-  .bar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; gap: 2px; }
+  .bar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; }
   .bar .seg { border-radius: 2px; display: block; }
   .bar .seg.paid { background: var(--paid); }
-  .bar .seg.incl { background: var(--incl); opacity: .55; }
+  .bar .seg.worth { background: var(--incl); opacity: .55; }
+  .bar .seg.turns { background: var(--text-tertiary); opacity: .6; }
   .bar .cap { font-size: 10px; color: var(--text-tertiary); text-align: center; margin-top: 7px; }
-  .bar .val { font-size: 10px; color: var(--paid); text-align: center; margin-bottom: 4px; }
+  .bar .val {
+    font-size: 10px; text-align: center; margin-bottom: 4px; color: var(--text-tertiary);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums;
+  }
 
   /* ---- notes ---- */
   .notes { display: flex; flex-direction: column; gap: 12px; }
@@ -175,6 +194,7 @@
       <div class="hl">
         <div class="cap">Included in plans</div>
         <div class="big incl num">23 turns</div>
+        <div class="worth">&asymp; $6.90 at API rates</div>
         <div class="why">Ran against subscriptions you already pay for. No marginal cost.</div>
       </div>
     </div>
@@ -191,6 +211,7 @@
           <span class="v incl">Included</span>
           <span class="quota"><span class="quota-bar"><span class="quota-fill" style="width:62%"></span></span></span>
           <span class="s">62% of session limit</span>
+          <span class="notional">&asymp; $5.40 at API rates</span>
         </div>
       </div>
       <div class="r">
@@ -204,6 +225,7 @@
           <span class="v incl">Included</span>
           <span class="quota"><span class="quota-bar"><span class="quota-fill" style="width:41%"></span></span></span>
           <span class="s">41% of monthly limit</span>
+          <span class="notional">&asymp; $1.50 at API rates</span>
         </div>
       </div>
       <div class="r">
@@ -281,7 +303,9 @@
       <div class="hl">
         <div class="cap">You paid</div>
         <div class="big incl">Nothing</div>
-        <div class="why">Every turn ran on a plan you already pay for.</div>
+        <div class="worth">&asymp; $2.10 at API rates</div>
+        <div class="why">Every turn ran on a plan you already pay for &mdash; and that is what
+          those turns would have cost without one.</div>
       </div>
     </div>
     <div class="rows">
@@ -296,6 +320,7 @@
           <span class="v incl">Included</span>
           <span class="quota"><span class="quota-bar"><span class="quota-fill" style="width:12%"></span></span></span>
           <span class="s">12% of session limit</span>
+          <span class="notional">&asymp; $2.10 at API rates</span>
         </div>
       </div>
     </div>
@@ -335,6 +360,7 @@
       <div class="hl">
         <div class="cap">Included in plans</div>
         <div class="big incl num">612 turns</div>
+        <div class="worth">&asymp; $243.60 at API rates</div>
         <div class="why">Across 2 subscriptions.</div>
       </div>
     </div>
@@ -343,12 +369,12 @@
       <div class="r">
         <div class="who"><span class="name">Anthropic</span><span class="pill sub">Subscription</span></div>
         <div class="vol">486 turns</div>
-        <div class="amt"><span class="v incl">Included</span><span class="s">2 accounts</span></div>
+        <div class="amt"><span class="v incl">Included</span><span class="s">2 accounts</span><span class="notional">&asymp; $198.20 at API rates</span></div>
       </div>
       <div class="r">
         <div class="who"><span class="name">DeepSeek</span><span class="pill sub">Subscription</span></div>
         <div class="vol">126 turns</div>
-        <div class="amt"><span class="v incl">Included</span></div>
+        <div class="amt"><span class="v incl">Included</span><span class="notional">&asymp; $45.40 at API rates</span></div>
       </div>
       <div class="r">
         <div class="who"><span class="name">OpenRouter</span><span class="pill key">API key</span></div>
@@ -370,51 +396,83 @@
     <div class="chart">
       <div class="chart-head">
         <span class="grow">Weekly</span>
-        <span class="legend">
-          <span><i style="background:var(--paid)"></i>Paid</span>
-          <span><i style="background:var(--incl);opacity:.55"></i>Included</span>
-        </span>
+        <span class="toggle" id="metric-toggle"></span>
       </div>
-      <div class="bars">
-        <div class="bar"><div class="val">$1.10</div><span class="seg paid" style="height:14px"></span><span class="seg incl" style="height:46px"></span><div class="cap">Jun 30</div></div>
-        <div class="bar"><div class="val">$2.40</div><span class="seg paid" style="height:30px"></span><span class="seg incl" style="height:38px"></span><div class="cap">Jul 7</div></div>
-        <div class="bar"><div class="val">$4.80</div><span class="seg paid" style="height:60px"></span><span class="seg incl" style="height:30px"></span><div class="cap">Jul 14</div></div>
-        <div class="bar"><div class="val">$1.90</div><span class="seg paid" style="height:24px"></span><span class="seg incl" style="height:52px"></span><div class="cap">Jul 21</div></div>
-        <div class="bar"><div class="val">$5.30</div><span class="seg paid" style="height:66px"></span><span class="seg incl" style="height:26px"></span><div class="cap">Jul 28</div></div>
-        <div class="bar"><div class="val">$2.90</div><span class="seg paid" style="height:36px"></span><span class="seg incl" style="height:44px"></span><div class="cap">Aug 4</div></div>
-      </div>
+      <div class="bars" id="bars"></div>
     </div>
 
     <div class="foot">
-      Bar height is turns, so the two segments are comparable; the figure above each bar is
-      money. Weeks where the paid segment grows are weeks work moved off the plans.
+      One series at a time. Stacking paid on included was tried and dropped: two segments in
+      one bar with two different units invites reading them as parts of a whole, which they
+      are not.
     </div>
   </div>
 
   <div class="notes">
     <div class="note">
-      <b>The chart answers &ldquo;is my spend drifting up?&rdquo;</b> which is the only
-      question a global cost view is really for. Splitting the bar makes the cause visible
-      too: paid growth with flat total volume means work moved off a subscription, not that
-      you did more of it.
+      <b>One series at a time, on a toggle.</b> Today&rsquo;s chart already toggles
+      <i>cost</i> vs <i>turns</i>; this adds a third option rather than stacking a second
+      series onto the first. Stacking was tried and dropped — two segments in one bar, in two
+      different units, invites reading them as parts of a whole, which they are not.
       <div class="callout">
-        Today&rsquo;s weekly chart toggles between <i>cost</i> and <i>turns</i>. Stacking one
-        series on the other is a change, and worth checking against the existing control —
-        two ways to see the same data is how a chart gets cluttered.
+        The story survives the split: flip between <b>Paid</b> and <b>At API rates</b> and the
+        two move in opposite directions. Weeks where spend rose are weeks work moved
+        <i>off</i> the plans, not weeks with more work in them &mdash; which <b>Turns</b>
+        confirms.
       </div>
     </div>
-    <div class="note against">
-      <span class="req">open</span><b>Should plan usage carry a notional dollar value?</b>
-      &ldquo;This would have cost $240 on the API&rdquo; is the number that tells you whether
-      a subscription is worth keeping — genuinely useful, and the data may already exist.
-      Deliberately not shown here: it puts a dollar figure on a row whose whole point is that
-      no money moved, which is the confusion this screen exists to remove. Req 10&rsquo;s
-      receipt already ruled the same way for the quota indicator, calling spend-in-that-slot a
-      separate feature.
+    <div class="note">
+      <span class="req">req 11</span><b>Plan usage carries its API-rate value.</b>
+      &ldquo;&asymp; $243.60 at API rates&rdquo; is the number that says whether a subscription
+      is worth keeping, and hiding it to protect the paid/included distinction was
+      overcautious &mdash; the distinction is carried by <i>colour, wording and position</i>,
+      not by the absence of a second figure.
+      <div class="callout">
+        It is deliberately not the paid green, sits below the volume rather than in the amount
+        slot, and is prefixed <b>&asymp;</b> and suffixed <b>at API rates</b>. It is never
+        added into &ldquo;You paid&rdquo;, which stays the only figure that is money.
+      </div>
     </div>
   </div>
 </div></div>
 
 </div>
+
+<script>
+// One series at a time — today's UsageModal already toggles cost vs turns, and stacking a
+// second series onto it was rejected as confusing. The third option exists because plan
+// usage now has a value as well as a volume.
+const WEEKS = [
+  { week:'Jun 30', paid:1.10, worth:34.20, turns:96  },
+  { week:'Jul 7',  paid:2.40, worth:29.80, turns:88  },
+  { week:'Jul 14', paid:4.80, worth:22.10, turns:104 },
+  { week:'Jul 21', paid:1.90, worth:41.60, turns:121 },
+  { week:'Jul 28', paid:5.30, worth:19.40, turns:99  },
+  { week:'Aug 4',  paid:2.90, worth:36.50, turns:110 },
+];
+const METRICS = [
+  { key:'paid',  label:'Paid',         fmt: v => '$' + v.toFixed(2) },
+  { key:'worth', label:'At API rates', fmt: v => '≈$' + v.toFixed(0) },
+  { key:'turns', label:'Turns',        fmt: v => String(v) },
+];
+let metric = 'paid';
+
+function renderChart() {
+  document.getElementById('metric-toggle').innerHTML = METRICS.map(m =>
+    `<button class="${m.key === metric ? 'on' : ''}" onclick="setMetric('${m.key}')">${m.label}</button>`
+  ).join('');
+
+  const m = METRICS.find(x => x.key === metric);
+  const max = Math.max(...WEEKS.map(w => w[metric]));
+  document.getElementById('bars').innerHTML = WEEKS.map(w => `
+    <div class="bar">
+      <div class="val">${m.fmt(w[metric])}</div>
+      <span class="seg ${metric}" style="height:${Math.round((w[metric] / max) * 96)}px"></span>
+      <div class="cap">${w.week}</div>
+    </div>`).join('');
+}
+function setMetric(k) { metric = k; renderChart(); }
+renderChart();
+</script>
 </body>
 </html>

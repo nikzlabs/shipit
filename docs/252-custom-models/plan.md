@@ -673,18 +673,28 @@ turns beside it. A session with no metered rows says **"Nothing"**, not `$0.00`;
 as telemetry that came back empty, which is the wrong impression for what is the normal case
 for a subscription user.
 
-Two things to settle before building it:
+**Plan usage carries its API-rate value too** — "≈ $243.60 at API rates". That is the number
+that says whether a subscription is worth keeping, and an earlier draft withheld it to
+protect the paid/included distinction. That was overcautious: the distinction is carried by
+colour, wording and position, not by the absence of a second figure. It is not the paid
+colour, it sits below the volume rather than in the amount slot, it is prefixed `≈` and
+suffixed "at API rates", and it is **never** summed into "You paid", which stays the only
+figure that is money.
 
-- **What `costUsd` means for a subscription turn is currently unknown.** `usage.ts` records
-  the CLI's figure uniformly, with no notion of billing mode, so the same stored number may
-  be money spent or a notional API-equivalent depending on how the turn was authenticated.
-  Which one each harness reports under subscription auth has to be established — the whole
-  screen depends on it, and the prototype assumes the honest reading by showing no dollar
-  figure on plan rows.
-- **Whether plan usage carries a notional value** ("this would have cost $240 on the API")
-  is the number that says whether a subscription is worth keeping. Deliberately absent here:
-  it puts a dollar figure on a row whose point is that no money moved. Req 10's receipt ruled
-  the same way for the quota indicator, calling spend-in-that-slot a separate feature.
+**The weekly chart stays a toggle and does not stack.** `UsageModal` already toggles cost vs
+turns; this adds a third option (Paid / At API rates / Turns) rather than stacking a second
+series on the first. Two segments in one bar carrying two different units invites reading
+them as parts of a whole, which they are not. The split still tells its story across the
+toggle — weeks where Paid rises are weeks where At API rates falls, meaning work moved *off*
+the plans rather than that there was more of it, which Turns confirms.
+
+**One thing to establish before building it:** what `costUsd` means for a subscription turn
+is currently unknown. `usage.ts` records the CLI's figure uniformly, with no notion of
+billing mode, so the same stored number may be money spent or a notional API-equivalent
+depending on how the turn was authenticated. Both halves of this screen now depend on the
+answer — the paid total needs the money reading, the "at API rates" figure needs the notional
+one, and if the CLI only ever reports one of them the other has to be computed from token
+counts and a price table.
 
 **The known-wrong behaviors** resolve unevenly:
 
