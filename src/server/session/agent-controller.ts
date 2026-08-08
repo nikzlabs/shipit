@@ -20,6 +20,7 @@ import type { PermissionBroker } from "./permission-broker.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
 import { getErrorMessage } from "../shared/utils.js";
+import { restoreFullResolutionScreenshots } from "./playwright-screenshot.js";
 import {
   formatNodeRuntimeNotice,
   prefixPromptWithNotice,
@@ -465,13 +466,19 @@ export class AgentController {
    */
   private wireAgentEvents(agent: AgentProcess, runToken?: string): void {
     agent.on("event", (event: AgentEvent) => {
+      // A Playwright screenshot arrives shrunk to fit the model's token budget;
+      // the full-resolution capture is on disk beside it. Swap it in here, on
+      // the one path every backend's events pass through, so what ShipIt
+      // persists and renders is the sharp one. The model's copy is already
+      // delivered and is not affected. See `playwright-screenshot.ts`.
+      const forWire = restoreFullResolutionScreenshots(event);
       // planning#290 — the event channel carries the spawn token too. It used to be
       // the only channel that didn't, so a retired process's late `agent_result`
       // (the canonical turn-ended signal) was routed into whatever proxy held
       // the orchestrator's slot, settling a turn that had just started. The
       // orchestrator strips the token back off before handing the event to the
       // proxy, so `AgentEvent` consumers never see it.
-      this.deps.broadcast({ type: "agent_event", data: { ...event, runToken } });
+      this.deps.broadcast({ type: "agent_event", data: { ...forWire, runToken } });
       // docs/240 — `agent_result` is the canonical turn-ended signal (the same
       // one the orchestrator keys its post-turn flow off). A resident streaming
       // process stays in the slot afterwards, so `running` alone can't tell an
