@@ -34,7 +34,8 @@ import {
 import { emitPrLifecycleAfterCommit } from "./services/pr-lifecycle.js";
 import { detectAndReArmMergedSession, detectAndReArmResetSession } from "./services/pr-rearm.js";
 import { applyPreTurnReset } from "./pre-turn-reset-hook.js";
-import { isResetEligible } from "./services/pre-turn-reset.js";
+import { emitResetEligible } from "./services/pre-turn-reset.js";
+import { wireResetEligibleOnFileChange } from "./reset-eligible-watch.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
@@ -313,6 +314,21 @@ export function createRunnerRegistry(
       getPrStatusPoller?.()?.notifyRunnerIdle(sessionId);
     },
     onRunnerCreated: (runner) => {
+      // planning#341 — keep the composer's "start from the latest base" control
+      // honest between turns: recompute + push `reset_eligible` when the
+      // workspace file watcher reports a change (debounced, merged sessions
+      // only). Without it the signal was computed at three moments and never
+      // again, so anything that dirtied the tree — a terminal command, a
+      // compose service writing to the mounted workspace — left the control
+      // painted for an operation the pre-turn gate would then refuse.
+      wireResetEligibleOnFileChange(
+        {
+          getSession: (id) => sessionManager.get(id),
+          getPrStatus: (id) => sessionManager.getPrStatus(id),
+          createGitManager,
+        },
+        runner,
+      );
       // Shared listener deps — same shape `wireAgentListeners` consumes on
       // the WS path. The system-turn flow now goes through the same listener,
       // so a Fix CI / child-session / `/agent/dispatch` turn produces chat
@@ -587,16 +603,14 @@ export function createRunnerRegistry(
             // server would refuse. Safety-only; the client ANDs the global
             // setting. Best-effort — never blocks the post-turn flow.
             try {
-              const eligible = await isResetEligible(
+              await emitResetEligible(
                 {
                   getSession: (id) => sessionManager.get(id),
                   getPrStatus: (id) => sessionManager.getPrStatus(id),
                   createGitManager,
                 },
-                sessionId,
-                sessionDir,
+                { sessionId, sessionDir, origin: "post-turn", emit },
               );
-              emit({ type: "reset_eligible", sessionId, eligible });
             } catch (err) {
               console.error(`[pre-turn-reset] post-turn eligibility signal failed for ${sessionId}:`, err);
             }

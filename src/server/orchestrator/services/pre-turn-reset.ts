@@ -106,6 +106,45 @@ export interface ResetSkipInfo extends ResetSkip {
 
 const NOT_MOVED: ResetOutcome = { moved: false };
 
+/** How many uncommitted paths the `dirty-tree` detail names before it summarises the rest. */
+const DIRTY_PATH_LIMIT = 10;
+
+/**
+ * planning#341 — name the files that made the tree dirty, as a fragment appended to
+ * the `dirty-tree` detail.
+ *
+ * `detail` is the single string every skip surface is built from — the
+ * `console.warn`, the persisted transcript notice, and the agent prompt prefix —
+ * so putting the paths here puts them in all three at once, which is what the ops
+ * investigation needed and what the user needs in order to act ("the working tree
+ * has uncommitted changes" is unactionable when you did not knowingly change
+ * anything; the motivating incident's writer was a compose service mounting the
+ * workspace read-write, not the user).
+ *
+ * Capped at {@link DIRTY_PATH_LIMIT} with a `+N more` count: a `git reset --hard`
+ * that clobbers a dependency tree can leave thousands of paths dirty, and an
+ * unbounded list would push the notice past anything a person reads.
+ *
+ * Sorted so the log line and the notice are stable across runs (git's status order
+ * is not), and fail-safe: a throw or an empty result degrades to the bare sentence
+ * rather than losing the refusal itself. Called only on the refusal path, so the
+ * second `git status` costs nothing on the healthy one.
+ *
+ * No trailing period — the caller's templates continue the sentence.
+ */
+async function formatDirtyPaths(git: GitManager): Promise<string> {
+  let paths: string[];
+  try {
+    paths = [...(await git.uncommittedPaths())].sort();
+  } catch {
+    return "";
+  }
+  if (paths.length === 0) return "";
+  const shown = paths.slice(0, DIRTY_PATH_LIMIT);
+  const extra = paths.length - shown.length;
+  return ` — uncommitted paths: ${shown.join(", ")}${extra > 0 ? ` (+${extra} more)` : ""}`;
+}
+
 /**
  * The SAFETY-ONLY eligibility gate — "this branch carries nothing that isn't
  * already merged AND the repo is in a plain, resettable state." Deliberately
@@ -170,12 +209,10 @@ export async function computeResetBlocker(
   }
 
   if (!(await git.isClean())) {
-    return {
-      clause: "dirty-tree",
-      detail:
-        "the working tree has uncommitted changes, and a hard reset would discard them "
-        + "permanently (uncommitted edits have no reflog entry)",
-    };
+    const why =
+      "the working tree has uncommitted changes, and a hard reset would discard them "
+      + "permanently (uncommitted edits have no reflog entry)";
+    return { clause: "dirty-tree", detail: `${why}${await formatDirtyPaths(git)}` };
   }
 
   const branch = await git.currentBranchOrNull();
@@ -235,35 +272,123 @@ export async function isResetEligible(
   sessionId: string,
   sessionDir: string,
 ): Promise<boolean> {
+  return (await computeResetEligibility(deps, sessionId, sessionDir)).eligible;
+}
+
+/** The signal plus enough context to explain it — see {@link computeResetEligibility}. */
+export interface ResetEligibility {
+  /** The value pushed to the client as `reset_eligible`. */
+  eligible: boolean;
+  /**
+   * Whether this session has a merged pull request at all. False is the ordinary
+   * state of nearly every session and means the signal carries no information —
+   * callers use it to stay quiet rather than logging `eligible=false` fleet-wide.
+   */
+  merged: boolean;
+  /** On a merged, ineligible session: which clause refused. Null otherwise. */
+  blocker: ResetSkip | null;
+}
+
+/**
+ * {@link isResetEligible}'s implementation, keeping the *reason* alongside the
+ * boolean so {@link emitResetEligible} can log it. Same cheap-exit and same
+ * fail-safe-false as before — a git throw is not a reason to block a turn.
+ */
+export async function computeResetEligibility(
+  deps: ResetEligibleSignalDeps,
+  sessionId: string,
+  sessionDir: string,
+): Promise<ResetEligibility> {
   try {
     const session = deps.getSession(sessionId);
-    if (!session?.mergedAt) return false; // cheap-exit before constructing git
+    if (!session?.mergedAt) return { eligible: false, merged: false, blocker: null }; // cheap-exit before constructing git
     const prStatus = deps.getPrStatus(sessionId);
     const git = deps.createGitManager(sessionDir);
-    return await computeResetEligible(session, prStatus, git);
+    const blocker = await computeResetBlocker(session, prStatus, git);
+    return { eligible: blocker === null, merged: true, blocker };
   } catch {
-    return false;
+    return { eligible: false, merged: false, blocker: null };
   }
 }
 
 /**
- * Recompute the safety-only eligibility signal and push it to a session's
- * attached viewers via the runner's broadcast transport. Used by the
+ * Where a `reset_eligible` push came from. Log-only, but the point of the log
+ * line is to tell these apart — see {@link emitResetEligible}.
+ */
+export type ResetEligibleOrigin =
+  | "activation"
+  | "post-turn"
+  | "merge-detected"
+  | "file-change";
+
+/**
+ * Recompute the safety-only eligibility signal, log it, and push it to a
+ * session's attached viewers.
+ *
+ * The single emit path for `reset_eligible`, so the four moments that recompute
+ * it (session activation, post-turn, merge detection, and planning#341's file-watcher
+ * recompute) cannot drift in what they compute or in what they record.
+ *
+ * planning#341 — the log line exists because the ops investigation into a refused
+ * reset could not distinguish "the client was holding a stale `true`" from "the
+ * tree became dirty after the signal was correct": neither the emitted value nor
+ * its reason was written down anywhere. It logs the value, the origin, and (when
+ * false) the clause and detail that refused — which for `dirty-tree` now names
+ * the paths. Only for MERGED sessions: for everything else the answer is a
+ * constant false and logging it would bury the interesting lines.
+ *
+ * Transient + emit-only (recomputed on every activation), so a bare `emitMessage`
+ * is the right transport — nothing to persist. Never throws:
+ * {@link computeResetEligibility} is fail-safe, and the emit is a broadcast.
+ */
+export async function emitResetEligible(
+  deps: ResetEligibleSignalDeps,
+  args: {
+    sessionId: string;
+    sessionDir: string;
+    origin: ResetEligibleOrigin;
+    emit: (msg: WsServerMessage) => void;
+    /**
+     * planning#341 — the value this caller last pushed. When it equals the freshly
+     * computed one, the push AND its log line are suppressed; the return value
+     * still reports the current value. Only the file-watcher recompute sets it:
+     * it fires repeatedly against an unchanging answer, and only transitions are
+     * news. The one-shot callers (activation, post-turn, merge detection) emit
+     * unconditionally, because a client that just attached has no value at all.
+     */
+    previous?: boolean | null;
+  },
+): Promise<boolean> {
+  const { sessionId, sessionDir, origin, emit } = args;
+  const { eligible, merged, blocker } = await computeResetEligibility(deps, sessionId, sessionDir);
+  if (args.previous !== undefined && args.previous === eligible) return eligible;
+  if (merged) {
+    const why = blocker ? `: ${blocker.clause} — ${blocker.detail}` : "";
+    console.log(`[pre-turn-reset] reset_eligible=${eligible} for ${sessionId} (${origin})${why}`);
+  }
+  emit({ type: "reset_eligible", sessionId, eligible });
+  return eligible;
+}
+
+/**
+ * {@link emitResetEligible} against a runner's broadcast transport. Used by the
  * merge-detection path (`onMergeDetectedCb`): a PR that merges while the user is
  * sitting ON the session — never re-activating it — makes the session newly
  * reset-eligible, but neither the activation nor the post-turn recompute fires,
  * so the "start from latest base" composer control would stay hidden until they
- * switched away and back. This is transient + emit-only (recomputed on every
- * activation), so a bare `emitMessage` is the right transport — nothing to
- * persist. Fail-safe: `isResetEligible` already swallows its own errors.
+ * switched away and back.
  */
 export async function emitResetEligibleSignal(
   deps: ResetEligibleSignalDeps,
   runner: { sessionDir: string; emitMessage: (msg: WsServerMessage) => void },
   sessionId: string,
 ): Promise<void> {
-  const eligible = await isResetEligible(deps, sessionId, runner.sessionDir);
-  runner.emitMessage({ type: "reset_eligible", sessionId, eligible });
+  await emitResetEligible(deps, {
+    sessionId,
+    sessionDir: runner.sessionDir,
+    origin: "merge-detected",
+    emit: (msg) => runner.emitMessage(msg),
+  });
 }
 
 export async function autoResetMergedBranchOnContinue(

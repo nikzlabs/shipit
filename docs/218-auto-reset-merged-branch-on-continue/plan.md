@@ -630,6 +630,66 @@ recorded" guarantee was still hollow:
   `runner-registry-factory.ts`'s `postTurnReArmReset` now recomputes and pushes
   the signal, matching what the WS adapter already did.
 
+### Phase 8 — planning#341: the eligibility signal stops going stale, and the refusal names the files
+
+An Ops investigation into a refused reset. A session whose PR had merged; an
+agent-built preview compose service mounted the workspace read-write, wrote two
+tracked files when the user clicked Approve in that page, and then called
+`window.shipit.agent.sendMessage()`. The user saw the composer's "start from the
+latest base" checkbox, sent, and got "Branch not updated to the latest base."
+
+Two visibility defects, no change to the gate. **The refusal itself was correct** —
+a hard reset would have destroyed the uncommitted edit — and no clause of
+{@link computeResetBlocker} was touched. That a write-then-send action can never
+satisfy the clean-tree gate on a merged session is a real product limit (ShipIt
+deliberately never stashes on auto-paths, docs/146), not something this phase
+tries to fix.
+
+- **The `reset_eligible` signal is recomputed when the workspace changes.** It
+  was computed at exactly three moments — WS activation, post-turn, merge
+  detection — and never in between, so anything that dirtied the tree of a
+  merged, untouched session left the client holding a `true` the server would no
+  longer honour: the UI painted a control for an operation the pre-turn gate then
+  refused with `dirty-tree`. The things that dirty a tree between turns are not
+  things a user thinks of as work (a terminal command, a compose service writing
+  to the mounted workspace, a dev server materialising a generated file), and
+  none of them ends a turn. New `reset-eligible-watch.ts` wires a debounced
+  recompute onto the runner's existing `files_changed` stream, from
+  `onRunnerCreated`.
+- **Why the watcher rather than re-validating at send time.** The server already
+  re-validates at send time — `autoResetMergedBranchOnContinue` evaluates the full
+  gate twice and, since planning#297, reports the clause that refused. A second,
+  client-driven pre-send check would be a round trip that changes nothing about
+  correctness and still leaves the control painted for as long as the user looks
+  at it before sending. The defect is that the *painted* control outlives the fact
+  it depicts, so the fix belongs where the fact changes.
+- **Three gates keep a chatty watcher cheap**, since `isResetEligible` shells out
+  to git: it only schedules for sessions with a merged pull request (an in-memory
+  lookup, and the signal is a constant `false` for everything else); it debounces
+  a burst into one recompute (750 ms); and it skips while a turn is running,
+  because the agent rewrites files continuously and the post-turn recompute fires
+  immediately afterwards anyway. The push is additionally deduplicated against the
+  last value *this* watcher sent — a watcher firing against an unchanging answer
+  should be silent in the WS stream and in the log alike. The one-shot callers
+  keep emitting unconditionally: a client that just attached has no value at all.
+- **The `dirty-tree` refusal names the files.** "The working tree has uncommitted
+  changes" is unactionable when you did not knowingly change anything — in the
+  incident the writer was a compose service, not the user. `computeResetBlocker`
+  now appends the paths from the existing `GitManager.uncommittedPaths()` to the
+  clause's `detail`, capped at 10 with a `+N more` count and sorted for stability.
+  `detail` is the single string every skip surface is built from, so this reaches
+  the `console.warn`, the persisted transcript notice and the agent prompt prefix
+  at once. Fail-safe (a throw degrades to the bare sentence rather than losing the
+  refusal) and charged only to the refusal path — the healthy path never makes the
+  second `git status` call.
+- **`reset_eligible` is logged, with its origin and its reason.** The
+  investigation could not distinguish "the client held a stale `true`" from "the
+  tree became dirty later", because neither the emitted value nor its reason was
+  recorded anywhere. The four recompute sites now go through one
+  `emitResetEligible` helper that logs `reset_eligible=<value> for <id> (<origin>)`
+  plus the refusing clause and detail — merged sessions only, so a fleet-wide
+  constant `false` cannot bury the interesting lines.
+
 ## Review notes
 
 Reviewed by Codex (cross-agent). Accepted: PR-head-SHA capture instead of local HEAD

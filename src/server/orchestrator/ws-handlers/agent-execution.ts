@@ -4,7 +4,7 @@ import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileC
 import { buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
 import { postTurnCommit } from "./post-turn.js";
 import { resolveRunner } from "./resolve-runner.js";
-import { isResetEligible } from "../services/pre-turn-reset.js";
+import { emitResetEligible } from "../services/pre-turn-reset.js";
 import { applyPreTurnReset, type PreTurnResetHookResult } from "../pre-turn-reset-hook.js";
 import { sessionAccountId, sessionNeedsAccountFailover } from "../services/provider-account-switch.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
@@ -580,16 +580,14 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       // eligible → the control reappears. Safety-only; the client ANDs the
       // global setting. Best-effort — never blocks the post-turn flow.
       try {
-        const eligible = await isResetEligible(
+        await emitResetEligible(
           {
             getSession: (id) => ctx.sessionManager.get(id),
             getPrStatus: (id) => ctx.sessionManager.getPrStatus(id),
             createGitManager: ctx.createGitManager,
           },
-          sessionId,
-          sessionDir,
+          { sessionId, sessionDir, origin: "post-turn", emit },
         );
-        emit({ type: "reset_eligible", sessionId, eligible });
       } catch (err) {
         console.error(`[pre-turn-reset] post-turn eligibility signal failed for ${sessionId}:`, err);
       }
