@@ -552,7 +552,10 @@ export function PreviewFrame({
           <Button
             variant="primary"
             size="md"
-            onClick={() => window.open(activeSlotUrl, "_blank")}
+            // `noopener,noreferrer` like the toolbar's button: the preview is
+            // arbitrary user code, and an opener handle lets it navigate the
+            // ShipIt tab it was launched from.
+            onClick={() => window.open(activeSlotUrl, "_blank", "noopener,noreferrer")}
           >
             <ArrowSquareOutIcon size={ICON_SIZE.SM} />
             Open in new tab
