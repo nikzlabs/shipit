@@ -321,12 +321,15 @@ be reached by re-keying the existing singleton environment map, and it is phase 
 /** HARNESS side: where a credential of each kind lands for THIS CLI, by default. */
 /** Keyed by `via`, NOT by billing `kind` — an earlier version named these `key`/`sub`, which
  *  read as billing and left the mapping to the implementer. */
+/** Both optional, and the narrowing runs both ways — an earlier version made `account`
+ *  mandatory, which forced a key-only CLI (both survey candidates look like one) to invent a
+ *  fake account destination and could make an account-backed service falsely eligible.
+ *  INVARIANT: at least one is present, or the harness can authenticate nothing at all.
+ *  Eligibility must read this: a mode whose credential shapes this harness cannot carry is
+ *  not offered, rather than offered and failing at spawn. */
 export interface CredentialTargets {
-  /** Absent ⇒ this CLI cannot take a supplied secret at all (an OAuth-only harness). It then
-   *  joins only to modes offering an `account` credential — a narrowing of the join, which
-   *  eligibility must apply, rather than a failure at spawn. */
-  string?: CredentialTarget;
-  account: { kind: "scoped-home" } | CredentialTarget;
+  string?: CredentialTarget;                          // absent ⇒ OAuth-only CLI
+  account?: { kind: "scoped-home" } | CredentialTarget; // absent ⇒ key-only CLI
 }
 ```
 
@@ -400,6 +403,10 @@ export type SpawnShape = {
   model:
     | { kind: "flag"; flag: string }                 // Claude: --model <id>
     | { kind: "turn-payload"; field: string };       // Codex: JSON-RPC turn/start
+  // 🔍 NOT SETTLED: the survey records OpenCode taking `-m provider/model`, which neither
+  // variant expresses — the flag carries a bare model id, and nothing says how a `serviceId`
+  // becomes that CLI's provider namespace or what happens when the two names differ. Left
+  // undeclared rather than guessed; it is on the phase-1 checklist.
   /** How the endpoint is overridden. `none` means the harness offers no way. */
   endpoint:
     | { kind: "env"; name: string }                         // Claude: ANTHROPIC_BASE_URL
@@ -696,9 +703,17 @@ table applied to whatever model *it* thinks it is running, measured in `plan.md`
 18× on real turns. For a turn on the harness's **own** vendor, ShipIt bills against it today — the adapter
 copies `total_cost_usd` through (`claude/adapter.ts:318` ✅) and `UsageManager` deltas it
 (`usage.ts:115` ✅) — but *what it means* there is 🔍: neither citation shows whose price table
-produced it, nor what it represents on a subscription turn where no money moved. The catalogue
-table must not regress today's behaviour, and settling that one cost-source rule is phase 6's
-first task, not an assumption it inherits. Codex reports no dollar figure at
+produced it, nor what it represents on a subscription turn where no money moved.
+
+**One rule, applied uniformly: the reported figure always comes from the catalogue table, and
+`total_cost_usd` is never reported as money.** It stays recorded as telemetry, because it is
+what today's accounting is built on and throwing it away would lose a cross-check, but it does
+not reach the usage view for any service. Two reasons to prefer uniformity over "use the
+vendor's own number when we have it": a per-service exception means two figures computed two
+ways in one column, which is the confusion req 16's split exists to remove; and on a
+*subscription* turn the number represents nothing at all, so the exception would need its own
+sub-exception. The cost is that Claude's reported figure changes from the CLI's to ShipIt's —
+a real change, in a column that was already an estimate, and phase 6 should say so in the PR. Codex reports no dollar figure at
 all either way.
 
 ```ts
@@ -764,6 +779,9 @@ Every 🔍, but these change the *shape* rather than the contents:
    pair rather than a harness.
 3. **Does driving OpenCode mean writing a per-session `opencode.json`?** If so, `SpawnShape`
    needs a config-file writer and per-session config generation is a new spawn-path concern.
+   And **how does a `serviceId` map to its provider namespace** in `-m provider/model`? If
+   the names can differ, `SpawnShape.model` needs a namespace alongside the id — a field, but
+   only if the answer says so.
 4. **Is `claude-fable-5` genuinely unavailable under an Anthropic subscription?** Today's
    `METERED_MODELS` asserts metered billing, not exclusion.
 5. **Which DeepSeek models does its Anthropic-compatible endpoint serve, and do OpenRouter or

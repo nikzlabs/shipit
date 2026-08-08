@@ -145,9 +145,10 @@ become ordinary catalogue rows, each already carrying both modes.
 
 **The rows themselves are written out in [`catalogue.md`](./catalogue.md)**, including the
 types. So this phase is transcription for what the repo already settles, research for each 🔍
-marker, and two open shape questions the survey closes (how a service-fused harness is
-represented; whether a config-file harness needs more of `SpawnShape`). What it is *not* is a
-re-derivation of the axes. That document also settles the format: **TypeScript source, not YAML**,
+marker. One shape question stays open on purpose — how a service-fused harness would be
+represented — because no requirement commits to one and inventing a shape for it would be
+speculative ([`catalogue.md`](./catalogue.md)). What phase 1 is *not* is a re-derivation of
+the axes. That document also settles the format: **TypeScript source, not YAML**,
 because the repo already does this and the existing `CLAUDE_MODELS` shows why (a four-string
 list carrying a forty-line comment about alias resolution that no YAML parser would preserve
 and no test would check).
@@ -337,7 +338,10 @@ would produce a confidently wrong split of real money. A named bucket the UI can
 age out.
 
 So each new row stores **tokens, attribution, and the rate that was applied** — not a price
-looked up later. Concretely, `RecordedTurn` gains `service_id`, `billing_mode`, and the four unit rates in
+looked up later. The rate always comes from the catalogue, for every service including the
+harness's own vendor: `total_cost_usd` stays recorded as telemetry and is never the reported
+figure ([`catalogue.md`](./catalogue.md) settles that rule, so nothing is left for phase 6 to
+decide). Concretely, `RecordedTurn` gains `service_id`, `billing_mode`, and the four unit rates in
 force (`input`, `output`, `cacheRead`, `cacheWrite`).
 
 **These are all-or-nothing, not independently nullable.** Either every one is present or every
@@ -453,9 +457,10 @@ grouping.
 
 **Req 6 is deliberately not on the hook for this one.** It states the rule as an overlap —
 a model is offered when the service and the harness *share* a style — which holds whether a
-harness speaks one style or several. So a contradicted first row is a design cost and not a
-requirements change, which is the point of phrasing it that way. The one-style assumption
-survives only in this design's data shapes, which is where a survey can afford to break it.
+harness speaks one style or several. So a contradicted row is a design cost and not a
+requirements change, which is the point of phrasing it that way. (The one-style assumption is
+already gone from the data shapes: `styles` is a set on both sides. This row remains in the
+table because the survey has not been *run*, not because the design still assumes it.)
 
 **And it appears to be contradicted** — from documentation, not from a run: OpenCode
 integrates the Vercel AI SDK and the models.dev registry across 75+ providers, which would
@@ -948,48 +953,32 @@ string and the feature degrades silently (`app-di.ts:485`), and the callback tha
 a selection has neither model nor harness (`services/github.ts:1511`). Req 9 explicitly calls
 that half a *change*, not a preserved behaviour.
 
-Two things follow, and only the first is free.
+**A resolver only chooses; something still has to run the model — and that path already
+exists.** The orchestrator has no *resident* agent, which is why the default text generator
+returns `""`. But it does have a one-shot brokered spawn: `spawnSubAgent()` posts to the
+worker's `/agent/spawn`, runs a fresh adapter **outside** the resident agent slot, and returns
+the accumulated text over the HTTP response (`container-session-runner.ts:437`), with a local
+in-process twin for `RUNTIME_MODE=local` (`session-runner.ts:1488`). It is HTTP-only, as
+CLAUDE.md requires, and it is what `shipit agent run` already uses.
 
-**Phase 3 must expose its resolver as a callable component** — selection → harness, endpoint,
-credential, style — because phase 7 is its second caller. If phase 3 inlines that logic,
-phase 7 duplicates it. That is a factoring constraint, invisible from phase 3's own scope,
-and it costs nothing to honour up front.
+**It also solves the lifecycle problem for free.** An in-flight spawn is registered in
+`_subAgentAborts`, and `subAgentSpawnsInFlight` feeds `agentBusy` precisely so a backgrounded
+consult stays off the idle-eviction list (`container-session-runner.ts:394`). So a generation
+in progress is already protected from reclamation, and `dispose` can already cancel it.
 
-**But a resolver only chooses; something still has to run the model, and in production nothing
-can.** The orchestrator has no agent: the CLIs and their credentials live in session
-containers, which is why the default text generator returns `""`. So req 9's pull-request half
-needs an execution path, and this is the one place in this design where new surface is
-unavoidable rather than a re-keying of something existing. **It runs in a session container,
-over the worker HTTP surface that already exists** — that is where the binaries and
-credentials are, and CLAUDE.md's orchestrator↔container rule is HTTP-only, never exec. The
-orchestrator resolves the triple and asks a container to run one short prompt.
+**What phase 3 must still do is expose its resolver** — selection → harness, endpoint,
+credential, style — **as a callable component rather than inline spawn code**, because phase 7
+is its second caller. That is a factoring constraint, invisible from phase 3's own scope, and
+free if honoured up front.
 
-Which container, then — **the session's own, generated inside the post-turn flow**, which is
-where the PR is created and where the container is most likely to still be up.
+Two earlier drafts of this paragraph were wrong in opposite directions: the first said the
+container is alive "by construction", the second that new surface and new busy protection were
+unavoidable. Neither was true. Phase 3 has to widen this same spawn path for custom-service
+selections anyway, so phase 7 is only its second caller.
 
-**"Most likely" is the honest word, and an earlier draft of this paragraph said "by
-construction", which is false.** The runner is marked not-running *before* post-turn work
-begins — deliberately, to close a reconnect window (`agent-listeners.ts:1330`) — and under
-host memory pressure the idle enforcer drops the grace period to zero and may dispose a
-detached runner that is not `agentBusy` (`idle-enforcer.ts:101`). `agentBusy` covers turns,
-CLI background tasks and sub-agent consults (`session-runner.ts:1460`), and would not cover a
-bare worker-HTTP generation. So the generation has to **hold the same protection a turn
-holds** for its duration. That is the one piece of lifecycle work req 9 requires, it is small,
-and it is real: without it the description is lost precisely on the busiest hosts.
-
-**The outside-turn case is settled the same way, and an earlier draft was wrong to leave it
-open.** Req 9's fallback covers *the chosen service failing*, not ShipIt having reclaimed a
-container, so declining to run at all would leave the requirement unmet — and a requirement is
-not something this document may trade away. A PR is created by a user action *on a session*,
-and ShipIt already starts that session's container for user actions: this is the ordinary
-activation path, not new lifecycle. So non-turn work **activates the session's container if it
-is not resident**, exactly as opening the session would.
-
-Starting a container to write a sentence is a real cost, and it is the right one: the
-alternative is a feature that works only while a container happens to be warm, which is worse
-than slow and is precisely the silent degradation req 9 exists to remove. The generic-text
-fallback then means what req 9 says it means — the chosen service failed — rather than
-doubling as an excuse for infrastructure timing.
+For a pull request created outside a turn, from a session whose container is gone, this is the
+ordinary activation path: ShipIt starts a session's container for user actions, and creating a
+PR is one.
 
 Session naming is unaffected — it already runs a CLI (`session-namer.ts:28`) and only needs
 the resolved triple threaded through.
@@ -1026,10 +1015,15 @@ ordering, not a new "suitable for background work" concept.
 
 The two halves are not symmetric, and only one of them preserves today's behavior:
 
-- *Session naming already behaves as required.* `generateSessionName` returns `null` on
-  any failure and is documented as silent best-effort (`session-namer.ts:19`);
-  graduation installs a placeholder first (`graduate-session.ts:158`) and keeps it when
-  naming returns `null` (`graduate-session.ts:311`). Only the notice is new.
+- *Session naming's **failure** behaviour already matches; its **selection** does not.*
+  `generateSessionName` returns `null` on any failure and is documented as silent best-effort
+  (`session-namer.ts:19`); graduation installs a placeholder first
+  (`graduate-session.ts:158`) and keeps it when naming returns `null`
+  (`graduate-session.ts:311`) — so on that half only the notice is new. But the call takes
+  `(userText, agentId, credentialRoot)` and passes no model at all
+  (`services/graduate-session.ts:243`), so it cannot express req 9's independently chosen
+  `(service, billing mode, model)`. An earlier draft said naming "already behaves as
+  required", which was true of the fallback and false of the requirement.
 - *PR descriptions do not.* `generatePrDescriptionFromContext` returns whatever
   `generateText` returns (`services/github.ts:1412`), and in containerized production
   that is the empty string (`app-di.ts:485`) — the generic prose lives only in the
