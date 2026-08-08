@@ -20,12 +20,12 @@ It is not a finished catalogue and does not claim to be. The 🔍 rows are resea
 OpenRouter and Vercel are named with their contents deliberately open, since req 6's
 maintained subset is a judgement made when a row is authored.
 
-**One shape question stays open on purpose**: how a harness fused to its own service (Cursor)
-would be represented, since no requirement commits to that harness and inventing a shape for
-it would be speculative. The other one is closed — `SpawnShape` already carries the
-config-file case for endpoint and credential, and `CredentialTargets.string` is optional so an
-OAuth-only CLI narrows the join instead of failing at spawn. Neither of the two shipped
-harnesses is affected by either.
+**Two shape questions stay open on purpose**, both raised by the survey and neither affecting
+a shipped harness: how a harness fused to its own service (Cursor) would be represented, and
+how a `serviceId` becomes a provider namespace for a CLI taking `provider/model` (OpenCode).
+`SpawnShape.model` expresses neither rather than guessing. A third is closed — `SpawnShape`
+carries the config-file case for endpoint and credential, and `CredentialTargets` is optional
+on both sides, so an OAuth-only or key-only CLI narrows the join instead of failing at spawn.
 
 ### Why the Cursor CLI / OpenCode survey is in this document
 
@@ -141,9 +141,13 @@ export interface ModelDef {
   styles: ApiStyle[];
   /** ALWAYS the service's API rate. See Pricing — never the incremental cost. */
   price: ModelPrice;
-  /** The window is not intrinsic to the model: today's table records Codex's *effective*
-   *  272K rather than the model's advertised maximum, precisely because the harness imposes
-   *  and reports it (`model-windows.ts:47` ✅). `default` is required so a missing value is
+  /** The window is not intrinsic to the model: today's table records `272_000` for the
+   *  GPT-5 family rather than the model's advertised maximum (`model-windows.ts:47` ✅), and
+   *  runtime telemetry replaces it with whatever the app-server reports
+   *  (`codex-event-handler.ts:625` ✅). That the *cause* is Codex imposing that window is the
+   *  file's own comment rather than something the code demonstrates — 🔍 — but the shape
+   *  question does not depend on it: the recorded value differs from the model's advertised
+   *  maximum either way, so a per-harness key is needed regardless of why. `default` is required so a missing value is
    *  a failure, not an empty object; `byHarness` carries the case above. Keyed by harness
    *  and not by style, because two harnesses can share a style and still impose different
    *  windows — which an earlier draft got wrong. */
@@ -288,7 +292,6 @@ shipping could not be declared at all.
   … }
 ```
 
-```ts
 So there are **three independent axes**, and each has exactly one owner:
 
 | Axis | Field | Answers |
@@ -317,10 +320,20 @@ So `storageEnv` is **the variable a credential is materialized into at spawn** a
 place it is stored. Storage is per *instance*, the way accounts already are:
 
 ```ts
-/** One credential the user actually supplied. `ProviderAccount` is this for `via: "account"`
- *  (`domain-types/provider.ts` ✅); this is its missing twin for `via: "string"`. Shares the
- *  route-id space, because req 12's failover, the per-route quota key and `provider_route_id`
- *  on a session all already address credentials by route id. */
+/** One credential the user actually supplied, for `via: "string"`.
+ *
+ *  `ProviderAccount` is the nearest existing analogue but NOT a template: it is keyed by
+ *  `provider: AgentId` (`domain-types/provider.ts:16` ✅), which is the conflation this whole
+ *  feature removes, so both types end up keyed by `(serviceId, billingMode)` and phase 2
+ *  re-keys the account rows as well as adding these.
+ *
+ *  It also needs a place in `ProviderRouteKind`, today `"account" | "reserved"`
+ *  (`domain-types/provider.ts:3` ✅) — and it is neither. It is not `reserved` (that means
+ *  env-supplied and singleton, and these are user-managed and plural) and not `account`
+ *  (no login flow, no credential root). So the union gains a third member, `"string"`, and
+ *  `provider_route_kind` on a session (`session.ts:205` ✅) can carry it. That is a migration
+ *  and a widened union, and it is the concrete shape of the "new persisted representation"
+ *  below. */
 export interface StringCredential {
   id: string;                    // the route id: `svc-mode-<n>`
   serviceId: ServiceId;
@@ -336,8 +349,9 @@ export interface StringCredential {
 re-keying `agentEnv`, which is a single `Record<string, string>` whose named slot the next
 write overwrites (`credential-store.ts:34`, `:298` ✅). Phase 2 owns it.
 
-/** HARNESS side: where a credential of each kind lands for THIS CLI, by default. */
-/** Keyed by `via`, NOT by billing `kind` — an earlier version named these `key`/`sub`, which
+```ts
+/** HARNESS side: where a credential of each kind lands for THIS CLI, by default.
+ *  Keyed by `via`, NOT by billing `kind` — an earlier version named these `key`/`sub`, which
  *  read as billing and left the mapping to the implementer. */
 /** Both optional, and the narrowing runs both ways — an earlier version made `account`
  *  mandatory, which forced a key-only CLI (both survey candidates look like one) to invent a
@@ -717,8 +731,9 @@ same document marks unverified.
 Req 16 reports what was spent per service and billing mode, and what subscription usage
 **would have cost at that service's API rates**. For a **redirected** turn — any custom
 service — neither number can come from the harness: `total_cost_usd` is the CLI's own price
-table applied to whatever model *it* thinks it is running, measured in `plan.md` as a constant
-18× on real turns. For a turn on the harness's **own** vendor, ShipIt bills against it today — the adapter
+table applied to whatever model *it* thinks it is running. (`plan.md` records what the dogfood
+data does and does not show; it does **not** establish a ratio, and two earlier attempts to
+state one were withdrawn.) For a turn on the harness's **own** vendor, ShipIt bills against it today — the adapter
 copies `total_cost_usd` through (`claude/adapter.ts:318` ✅) and `UsageManager` deltas it
 (`usage.ts:115` ✅) — but *what it means* there is 🔍: neither citation shows whose price table
 produced it, nor what it represents on a subscription turn where no money moved.

@@ -145,9 +145,11 @@ become ordinary catalogue rows, each already carrying both modes.
 
 **The rows themselves are written out in [`catalogue.md`](./catalogue.md)**, including the
 types. So this phase is transcription for what the repo already settles, research for each 🔍
-marker. One shape question stays open on purpose — how a service-fused harness would be
-represented — because no requirement commits to one and inventing a shape for it would be
-speculative ([`catalogue.md`](./catalogue.md)). What phase 1 is *not* is a re-derivation of
+marker. **Two** shape questions stay open on purpose, both from the survey and neither
+affecting a shipped harness: how a service-fused harness would be represented (Cursor), and
+how a `serviceId` maps to a provider namespace for a CLI that takes `provider/model` rather
+than a bare id (OpenCode) — `SpawnShape.model` expresses neither, deliberately, rather than
+guessing ([`catalogue.md`](./catalogue.md)). What phase 1 is *not* is a re-derivation of
 the axes. That document also settles the format: **TypeScript source, not YAML**,
 because the repo already does this and the existing `CLAUDE_MODELS` shows why (a four-string
 list carrying a forty-line comment about alias resolution that no YAML parser would preserve
@@ -726,6 +728,17 @@ documentation that has been rendered as UI; the audience for the service×style 
 whoever reads this doc, which is why the mockup stays an explanatory artifact. The
 background-work model setting (req 9) is a separate obligation and does ship.
 
+**It is a property of *two* images, not one, and an earlier draft only designed for one.** The
+orchestrator image and the session-worker image each install the CLIs independently
+(`docker/Dockerfile.prod:45`, `docker/Dockerfile.session-worker.prod:108`), and the
+orchestrator does not merely record the set — it probes **its own** binaries to decide what
+the picker offers (`agent-registry.ts:375`) and runs session naming locally
+(`session-namer.ts:22`). So a selection written only into the worker image would leave an
+uninstalled harness still listed in the picker and still used for background work. The
+installed set has to be authoritative across the boundary: one input, consumed by both image
+builds, with the orchestrator reading the declared set rather than trusting a probe of
+whatever happens to be on its own `$PATH`.
+
 This is not a new mechanism — `docs/154-cursor-agent-adapter` specified it and was never
 implemented: `INSTALL_CLAUDE_CLI` / `INSTALL_CODEX_CLI` / `INSTALL_CURSOR_CLI` booleans
 consumed by the image build, with the result written to `/opt/shipit/agents/installed.json`
@@ -1182,26 +1195,27 @@ them as parts of a whole, which they are not. The split still tells its story ac
 toggle — weeks where Paid rises are weeks where At API rates falls, meaning work moved *off*
 the plans rather than that there was more of it, which Turns confirms.
 
-**`costUsd` is the harness's price table, not ground truth — measured, though more carefully
-than an earlier draft measured it.** The spike's turns are still in the dogfood database
-(`.inner-shipit/.shipit.db`, `usage_turns`): four rows on `deepseek-v4-flash`, run through
-Claude Code against a DeepSeek **API key**. Two are full turns —
-`$0.346747` and `$0.694466` — one is `$0.028413`, which is a *delta* against a cumulative of
-`$0.375160` and is therefore corroboration of the cumulative-to-delta behaviour rather than a
-third data point, and one is `$0`.
+**What the dogfood data actually shows, which is less than two earlier drafts claimed.** The
+spike's turns are in `.inner-shipit/.shipit.db` (`usage_turns`): four rows on
+`deepseek-v4-flash`, run through Claude Code against a DeepSeek **API key** — two full turns
+at `$0.346747` and `$0.694466`, one `$0.028413` which is a *delta* against a cumulative of
+`$0.375160` (corroborating the cumulative-to-delta behaviour rather than being a third data
+point), and one `$0`.
 
-The finding is that **a single linear price function fits both full turns exactly**. Solving
-the two rows for a per-token rate gives ≈`$5.3`/M input and ≈`$0.5`/M cache-read (the output
-rate is under-determined by two equations and barely moves the result), and those rates
-reproduce both recorded figures to the cent despite the turns having very different shapes —
-54k/810/99k tokens against 88k/2.1k/397k. An exact linear fit across differing shapes is a
-price table being applied, not a vendor reporting what it charged.
+**That is not enough to prove whose price table produced the figures, and this document no
+longer claims it is.** Two earlier attempts both overreached: the first reported a "constant
+18×" against DeepSeek's rates, which the database cannot support because it holds no vendor
+rate and no invoice; the second replaced it with "an exact linear fit across differing shapes",
+which is worse — two observations against three unknown rates (input, output, cache-read) fit
+exactly by construction, so the fit is arithmetic rather than evidence. Vendor billing is
+itself linear in tokens, so even a genuine fit would not distinguish the two hypotheses.
 
-What the database **cannot** show is the comparison to DeepSeek's own rates: it holds no
-vendor rate and no invoice. That those figures are roughly an order of magnitude above what
-DeepSeek charges for that volume is external knowledge (🔍), and an earlier draft stated it as
-a measured "constant 18×" while also mis-describing the dataset as two turns rather than four.
-The fit above is the part this repository actually proves, and it is sufficient.
+**The design does not need that proof.** Req 16 requires a price table on its own terms, from
+facts that are not in doubt: the "at API rates" comparison for a *subscription* turn cannot
+come from a CLI that reports nothing meaningful when no money moved, and Codex reports no
+dollar figure at all. Those alone put a `(service, mode, model)` table in phase 1. What
+remains genuinely open is narrower — what a first-party `total_cost_usd` means on a
+subscription turn — and it is recorded as such rather than dressed up as a measurement.
 
 So `total_cost_usd` is the CLI computing a price for the model *it* believes it is running.
 For a custom service it is neither money spent nor a useful notional — it is Anthropic-family
