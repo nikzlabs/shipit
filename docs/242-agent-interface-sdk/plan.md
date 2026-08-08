@@ -614,6 +614,17 @@ not set `systemTurn`, completion callbacks, or other options merely to force one
 branch. Changes to ShipIt's shared live-steering preference therefore apply to
 SDK and UI sends consistently.
 
+**Inheritance runs the other way too — planning#333.** Where the dispatch path lacked
+something the typed path had, the SDK exposed it. docs/218's merged-branch
+auto-reset was wired only into the interactive path, so an SDK click on a session
+whose PR had merged started its turn on a branch still sitting on already-shipped
+commits — no reset, no `[System] …your PR merged…` prefix, and no "Branch updated
+to latest `<base>`" card. The fix belongs to docs/218 (the wiring moved into a
+shared `applyPreTurnReset` that both transports call), not here; the point for
+this feature is the general one: a page-composed message is the user continuing
+the session, so anything the composer path does *to the session* has to happen
+for it too.
+
 ## Rejected alternatives
 
 ### Direct orchestrator API from the child page

@@ -1,0 +1,203 @@
+/**
+ * docs/218 — the per-turn WIRING of the merged-branch auto-reset, shared by
+ * every transport that starts a turn.
+ *
+ * `services/pre-turn-reset.ts` owns the decision and the git move. This module
+ * owns what a turn has to do around it: prepend the agent-facing prefix, emit
+ * the persisted "branch updated" card (or the planning#297 skip notice) at its true
+ * transcript anchor, re-arm the stale merged PR card, and push
+ * `reset_eligible: false` so the composer control disappears the moment the
+ * branch moves.
+ *
+ * ## Why it is shared (planning#333)
+ *
+ * docs/218 scoped the reset to the INTERACTIVE path (`runAgentWithMessage`) and
+ * wrote the wiring inline there, with "if we later want programmatic continues
+ * to reset too, factor a shared helper then." Later is now: the Agent Interface
+ * SDK (docs/242) turns a click inside an agent-built page into a real agent
+ * turn, and that message is dispatched — so it reached `runDispatchedTurn`,
+ * which had none of this, and the agent went on working on a branch still
+ * sitting on already-merged commits. Every other programmatic continue (`shipit
+ * session message`, a notify-on-merge wake, a Create-PR button) had the same
+ * hole.
+ *
+ * So the hook is transport-agnostic and BOTH adapters call it. Nothing narrows
+ * it by who sent the message: the safety gate
+ * ({@link import("./services/pre-turn-reset.js").computeResetBlocker}) is what
+ * decides, and it already refuses everything a per-caller carve-out would have
+ * — a CI-fix turn runs on an open PR (`not-merged`), a rebase-driver turn runs
+ * mid-sequencer (`rebase-in-progress`), and any branch carrying unshipped work
+ * fails `head-moved`. Adding a second, weaker gate keyed on the caller would
+ * only let those two disagree.
+ *
+ * The per-send intent (`resetMergedBranch`, the composer's tick box) is a
+ * composer concept and stays one: a dispatched turn passes no intent, so it
+ * follows the global `autoResetMergedBranch` setting — which is exactly what
+ * the box shows when it is ticked.
+ */
+
+import { randomUUID } from "node:crypto";
+import type { BranchAutoResetCard } from "../shared/types.js";
+import { autoResetMergedBranchOnContinue } from "./services/pre-turn-reset.js";
+import { detectAndReArmResetSession, type ReArmDeps } from "./services/pr-rearm.js";
+import {
+  emitChatCard,
+  emitNoticeInTurn,
+  type InProgressPersister,
+} from "./chat-card-persistence.js";
+import type { SessionRunnerInterface } from "./session-runner.js";
+
+/**
+ * Everything the hook needs: the re-arm deps (session manager, PR poller, git,
+ * SSE) plus chat history to persist the card/notice and the global setting.
+ */
+export interface PreTurnResetHookDeps extends ReArmDeps {
+  chatHistoryManager: InProgressPersister;
+  getAutoResetMergedBranch: () => boolean;
+}
+
+/** The runner surface the hook touches — emit + the card-recording state. */
+export type PreTurnResetRunner = Pick<
+  SessionRunnerInterface,
+  | "emitMessage"
+  | "running"
+  | "chatMessageGroups"
+  | "recordedCards"
+  | "steeredMessages"
+  | "getTurnEventBuffer"
+  | "lastPersistedBufferIndex"
+>;
+
+export interface PreTurnResetHookResult {
+  /** Prepend to this turn's prompt (empty when there is nothing to say). */
+  agentPrefix: string;
+  /**
+   * Pass through as `TurnInput.afterUserMessagePersisted` so the card / notice
+   * lands right after the user row, inside the fresh turn. Undefined when the
+   * turn has no transcript record to write.
+   */
+  afterUserMessagePersisted?: (sessionId: string) => void;
+  /**
+   * Safety net — call from a `finally` around the turn. A branch that moved
+   * MUST leave a visible record: it is a destructive operation the user did not
+   * watch happen, and the card is the only durable evidence of it. The anchored
+   * hook above is the preferred delivery (it interleaves right after the user
+   * bubble), but it only fires if the turn gets far enough to persist that row,
+   * and a turn can die before it — an admission refusal, a spawn failure, a
+   * throw in env prep. This emits the same record late (appended at the end of
+   * the transcript) rather than not at all. Latched with the hook, so exactly
+   * one of the two ever writes.
+   */
+  ensureRecorded?: (sessionId: string) => void;
+}
+
+const NO_RESET: PreTurnResetHookResult = { agentPrefix: "" };
+
+/**
+ * Run the docs/218 pre-turn reset for a turn that is about to start, and return
+ * the two things the caller has to thread into it.
+ *
+ * Fail-safe throughout: the service swallows its own git errors, and a throw in
+ * the transcript work is logged rather than allowed to abort the turn (a
+ * missing notice is a regression; a notice that kills the turn is a worse one).
+ */
+export async function applyPreTurnReset(args: {
+  deps: PreTurnResetHookDeps;
+  runner: PreTurnResetRunner;
+  sessionId: string;
+  sessionDir: string;
+  /**
+   * The composer's per-send tick box. `false` = unticked for this message →
+   * skip. Absent on every programmatic path (there is no box), so those follow
+   * the global setting.
+   */
+  intent?: boolean;
+}): Promise<PreTurnResetHookResult> {
+  const { deps, runner, sessionId, sessionDir, intent } = args;
+
+  const reset = await autoResetMergedBranchOnContinue(
+    {
+      getSession: (id) => deps.sessionManager.get(id),
+      getPrStatus: (id) => deps.sessionManager.getPrStatus(id),
+      createGitManager: deps.createGitManager,
+      getAutoResetMergedBranch: deps.getAutoResetMergedBranch,
+    },
+    sessionId,
+    sessionDir,
+    intent,
+  );
+
+  if (!reset.moved && !reset.skip) return NO_RESET;
+
+  let card: BranchAutoResetCard | null = null;
+
+  if (reset.moved) {
+    card = {
+      cardId: `branch-reset-${randomUUID()}`,
+      base: reset.base!,
+      prNumber: reset.prNumber!,
+      prUrl: reset.prUrl!,
+      fromSha: reset.fromSha!,
+      toSha: reset.toSha!,
+      createdAt: new Date().toISOString(),
+    };
+    // docs/216 + docs/218 — the branch now sits at the clean base, so the
+    // lingering "merged" PR card no longer reflects reality. Re-arm NOW (clear
+    // merged + reArm poller + emit a gray "ready" card carrying the
+    // previousMergedPr breadcrumb) so the PR card flips to the no-current-PR
+    // state the moment the branch-updated card appears — rather than lagging
+    // until the post-turn `postTurnReArmReset` runs after the whole turn. That
+    // post-turn call stays as a fail-safe for the manual-`git reset` path and
+    // no-ops here, having already cleared `mergedAt`.
+    await detectAndReArmResetSession({
+      deps,
+      sessionId,
+      sessionDir,
+      emit: (msg) => runner.emitMessage(msg),
+      // The reset itself just fetched and moved the branch onto `origin/<base>`,
+      // so the base ref is current — skip the helper's own freshening fetch
+      // rather than pay for it in front of the user's turn.
+      skipFetch: true,
+    });
+    // docs/218 — the branch now sits at the fresh base (HEAD !== mergedHeadSha),
+    // so the session is no longer reset-eligible. Push `reset_eligible: false`
+    // NOW so the composer's "start from the latest base" control disappears the
+    // moment the reset runs — rather than lingering for the entire turn until
+    // the post-turn recompute fires.
+    runner.emitMessage({ type: "reset_eligible", sessionId, eligible: false });
+  }
+
+  const skipNotice = reset.skip;
+
+  // One delivery, two triggers. `emitChatCard` persists in the same call, so
+  // whichever fires first is the durable record and the other must not double
+  // it. Wrapped: the anchored trigger is called un-awaited and unguarded by the
+  // executor, so a throw here would abort the turn setup. A missing card is a
+  // regression; a card that kills the turn is a worse one.
+  let recorded = false;
+  const record = (sid: string): void => {
+    if (recorded) return;
+    recorded = true;
+    try {
+      if (card) {
+        emitChatCard(
+          runner,
+          { type: "branch_auto_reset_card", sessionId: sid, card },
+          { role: "assistant", text: "", branchAutoReset: card },
+          { chatHistoryManager: deps.chatHistoryManager, sessionId: sid },
+        );
+      }
+      if (skipNotice) {
+        emitNoticeInTurn(runner, sid, skipNotice.notice, deps.chatHistoryManager, skipNotice.level);
+      }
+    } catch (err) {
+      console.error(`[pre-turn-reset] pre-turn transcript record failed for ${sid}:`, err);
+    }
+  };
+
+  return {
+    agentPrefix: reset.agentPrefix ?? "",
+    afterUserMessagePersisted: record,
+    ensureRecorded: record,
+  };
+}

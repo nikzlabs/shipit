@@ -256,17 +256,31 @@ durable record. Control = intent (before); card = record (after).
 
 ## Path coverage
 
-**Interactive path only** (`runAgentWithMessage` in `agent-execution.ts`). A human
-resuming is the real signal. **Queued user messages count as interactive** —
-`drainNextQueuedMessage` recurses back into `runAgentWithMessage`, so a message
-queued before the merge was detected still flows through this hook (and the gate
-re-validates, so the first eligible message resets and the rest run on the moved,
-no-longer-eligible branch). System/dispatch turns (CI auto-fix never runs on a merged
-PR; programmatic `shipit session message` is niche) are out of scope — a destructive
-reset underneath an automated message is more surprising than helpful. If we later
-want programmatic continues to reset too, factor a shared helper then. Documented here
-as a deliberate scope boundary (unlike docs/202/216, which wire both paths because
-their detection is cheap and idempotent; ours is a destructive action).
+**Every turn that starts, whichever transport starts it.**
+
+The original scope was the interactive path only (`runAgentWithMessage` in
+`agent-execution.ts`), on the reasoning that "a destructive reset underneath an
+automated message is more surprising than helpful", with the note *"if we later
+want programmatic continues to reset too, factor a shared helper then."*
+**planning#333 did exactly that** — see "Phase 5" under As built. The wiring now lives
+in `pre-turn-reset-hook.ts` (`applyPreTurnReset`) and both adapters call it:
+
+- **Interactive** (`runAgentWithMessage`) — a typed message, and any **queued**
+  user message (`drainNextQueuedMessage` recurses back through it).
+- **Dispatched** (`runDispatchedTurn`) — an Agent Interface SDK message
+  (docs/242), `shipit session message`, a notify-on-merge wake, a Create-PR
+  button, and every queue drain on that side.
+
+Nothing narrows by caller, because **the safety gate already is the narrowing**:
+a CI-fix turn's session is not merged (`not-merged`), a rebase-driver turn is
+mid-sequencer (`rebase-in-progress`), and a branch carrying unshipped work fails
+`head-moved`. A second, caller-keyed gate could only disagree with the first one.
+
+The per-send tick box stays a composer concept: a dispatched turn passes no
+intent, so it follows the global `autoResetMergedBranch` setting.
+
+**`/compact` remains excluded** (see Edge cases) — that exclusion is about what
+kind of request it is, not which transport carried it.
 
 ## Composition with docs/202 / docs/216 — no new PR-card logic
 
@@ -550,6 +564,33 @@ the second time they had reported "changes are missing from the merged PR".
   set at commit time, because the docs/202 re-arm that clears it runs *after* —
   so gating on `mergedAt` alone would have blocked and mis-explained a
   legitimate pre-PR push.
+
+**Phase 5 (planning#333) — programmatic messages continue on the fresh base too, and
+the card is unconditional.** The Agent Interface SDK (docs/242) turns a click
+inside a page the agent built into a real agent turn — dispatched, not typed. It
+therefore reached `runDispatchedTurn`, which had none of this feature's wiring,
+so on a merged session the turn ran on a branch still sitting on already-shipped
+commits with no prefix and no card. Two changes:
+
+- **The wiring is shared.** `pre-turn-reset-hook.ts#applyPreTurnReset` holds
+  everything that used to be inline in `agent-execution.ts` — the reset call, the
+  branch-updated card, the planning#297 skip notice, the docs/216 re-arm, and the
+  `reset_eligible: false` push. `runAgentWithMessage` calls it directly;
+  `runDispatchedTurn` calls it through the optional `SystemTurnDeps.preTurnReset`
+  dep (wired in `runner-registry-factory.ts`, the same lazy-poller shape
+  `postTurnReArmReset` uses). One implementation, so the transports cannot drift
+  — which is the same reason the gate itself was collapsed into one function in
+  planning#297.
+- **The record has two triggers, latched.** The card is delivered at its
+  transcript anchor (`afterUserMessagePersisted`), *or*, if the turn dies before
+  it reaches that anchor — an admission refusal, a spawn failure, a throw in env
+  prep — by `ensureRecorded` from the caller's `finally`. Whichever runs first
+  latches; the other is a no-op. A branch that moved always leaves evidence,
+  because the card is the only durable record that a destructive move happened
+  at all.
+
+On the dispatch side the hook runs **once per message**, outside the no-result
+retry loop, so a retried turn neither re-resets nor duplicates the card.
 
 ## Review notes
 

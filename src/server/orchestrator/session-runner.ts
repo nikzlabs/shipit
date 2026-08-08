@@ -17,6 +17,7 @@ import type { SecretFinding } from "../shared/secret-scan.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from "../shared/sub-agent-run.js";
 import { runAgentToCompletion, buildSubAgentRunParams } from "../shared/sub-agent-run.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
+import type { PreTurnResetHookResult, PreTurnResetRunner } from "./pre-turn-reset-hook.js";
 
 // `runDispatchedTurn` lives in a separate module because it depends on
 // `wireAgentListeners` at runtime, which would otherwise create an import
@@ -666,6 +667,28 @@ export interface SystemTurnDeps {
     sessionDir: string,
     emit: (msg: WsServerMessage) => void,
   ) => Promise<void>;
+  /**
+   * docs/218 + planning#333 — run the PRE-turn auto-reset of a merged session's
+   * branch onto the latest base, before this dispatched turn's prompt is built.
+   *
+   * docs/218 wired this on the interactive path only, on the reasoning that a
+   * destructive reset underneath an automated message would surprise. The Agent
+   * Interface SDK (docs/242) made that boundary wrong: a click inside an
+   * agent-built page IS the user continuing the session, it arrives as a
+   * dispatch, and without this hook the turn ran on a branch still sitting on
+   * already-merged commits. Every other programmatic continue (`shipit session
+   * message`, a notify-on-merge wake, a Create-PR button) had the same hole.
+   *
+   * Nothing here narrows by caller: the safety gate inside the helper already
+   * refuses every case a carve-out would have (a CI-fix turn's session is not
+   * merged; a rebase-driver turn is mid-sequencer; a branch with unshipped work
+   * fails the merged-head check). Optional so minimal test setups can omit it.
+   */
+  preTurnReset?: (
+    runner: PreTurnResetRunner,
+    sessionId: string,
+    sessionDir: string,
+  ) => Promise<PreTurnResetHookResult>;
   /**
    * docs/149 — write a CLI-rotated OAuth token back to the orchestrator source
    * after a system turn. Optional; production wires it to

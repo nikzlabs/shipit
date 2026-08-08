@@ -118,3 +118,45 @@ failure, so one PR.
 - [x] **The `mergedHeadSha`-ancestry test is what keeps it precise.** Gating on `mergedAt` alone would false-positive on the flow ShipIt's own agent instructions prescribe after a merge (rebase onto the fresh base → commit → `gh pr create` again): `mergedAt` is still set at commit time there, because the docs/202 re-arm that clears it runs *after*. Limitation stated in the module docstring rather than papered over — the test discriminates cleanly only under a **squash** merge; under merge-commit / rebase-and-merge the anchor is in the base, so that push is blocked too (a notice that over-warns and a push deferred to the `gh pr create` the flow ends in — no lost commit).
 - [x] Tests: `pre-turn-reset.test.ts` (`skip reporting` block — clause-per-gate-failure, level split, breadcrumb fallback, post-fetch TOCTOU, the log line, silence on a non-merged session and on a successful move); new `merged-push-guard.test.ts`; `post-turn.test.ts` (commit-but-no-push + persisted notice, the moved-HEAD variant, pushes normally once rebased off the merged tip, pushes normally when not merged, and a throwing notice not taking the turn down).
 - [x] `npm run typecheck` + `npm run lint:dev` + `npm run test:dev` green
+
+## Phase 7 — planning#333: programmatic messages reset too, and the card is unconditional ✅
+
+The Agent Interface SDK (docs/242) turns a click inside an agent-built page into a
+real agent turn — dispatched, not typed — so it reached `runDispatchedTurn`, which
+had none of this feature's wiring. On a merged session the turn ran on a branch
+still sitting on already-shipped commits: no reset, no `[System] …merged…` prefix,
+no card. Every other programmatic continue (`shipit session message`, a
+notify-on-merge wake, a Create-PR button) had the same hole. This phase cashes in
+the plan's own "if we later want programmatic continues to reset too, factor a
+shared helper then."
+
+- [x] New `pre-turn-reset-hook.ts` (`applyPreTurnReset`) holds the whole per-turn
+      wiring that used to be inline in `agent-execution.ts`: the reset call, the
+      branch-updated card, the planning#297 skip notice, the docs/216 re-arm, and the
+      `reset_eligible: false` push. One implementation, so the two transports
+      cannot drift — the same reason planning#297 collapsed the gate into one function.
+- [x] `runAgentWithMessage` calls it directly (still skipped for `/compact`);
+      `runDispatchedTurn` calls it through a new optional
+      `SystemTurnDeps.preTurnReset`, wired in `runner-registry-factory.ts` with
+      the same lazy-poller shape `postTurnReArmReset` uses.
+- [x] **No caller-keyed carve-out.** The safety gate already refuses everything one
+      would have excluded — a CI-fix turn's session is `not-merged`, a rebase-driver
+      turn is `rebase-in-progress`, unshipped work is `head-moved`. A second gate
+      could only disagree with the first.
+- [x] The per-send tick box stays a composer concept: a dispatch passes no intent,
+      so it follows the global `autoResetMergedBranch` setting.
+- [x] **The card always appears when the branch moved.** Two triggers, latched:
+      the transcript anchor (`afterUserMessagePersisted`) or, when the turn dies
+      before reaching it (admission refusal, spawn failure, a throw in env prep),
+      `ensureRecorded` from the caller's `finally`. Whichever runs first wins; the
+      other no-ops. A destructive move nobody watched must never be silent.
+- [x] On the dispatch side the hook runs **once per message**, outside the
+      no-result retry loop — a retried turn neither re-resets nor duplicates the card.
+- [x] Tests: `pre-turn-reset-hook.test.ts` (card at the anchor, `reset_eligible`
+      push, the late-delivery path, exactly-once across both triggers, a throwing
+      transcript write not taking the turn down, the skip-notice levels, silence on
+      a non-merged session) and `dispatched-turn-pre-turn-reset.test.ts` (real
+      `SessionRunner.dispatch` → prefix in front of the prompt the agent runs,
+      delivery on a healthy and on a dying turn, once-per-message across a
+      no-result retry, no-op when no hook is wired).
+- [x] `npm run typecheck` + `npm run lint:dev` + `npm run test:dev` green
