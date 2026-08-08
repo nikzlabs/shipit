@@ -43,21 +43,42 @@
  * projection swaps the base64 for a content-addressed `/images/:hash` URL, so a
  * bigger screenshot does not weigh on the transcript payload either.
  *
- * ## Why the basename, and why sync
+ * ## How the file is found, and why the read is sync
  *
  * The link in the reply is relative to whatever root the MCP client advertised
  * (`../tmp/.playwright-mcp/page-….png` under a `/workspace` root), so resolving
- * it as written would mean trusting a path out of tool output. Taking its
- * BASENAME and joining that to {@link PLAYWRIGHT_OUTPUT_DIR} is traversal-proof
- * by construction and correct for every auto-named capture, which is the only
- * kind that carries an image block at all — pass `filename` and the MCP returns
- * a link with no image (see `playwright-mcp.ts`), so there is nothing here to
- * substitute and we leave it alone.
+ * it as written would mean trusting a path out of tool output. It is used for
+ * two things instead: the `.playwright-mcp/` segment is what identifies this as
+ * a Playwright capture (so another MCP's `chart.png` is never substituted just
+ * because a file of that name exists), and the BASENAME is what gets joined to
+ * {@link PLAYWRIGHT_OUTPUT_DIR} — traversal-proof by construction, and correct
+ * for every auto-named capture. Auto-named is the only kind that carries an
+ * image block at all: pass `filename` and the MCP returns a link with no image
+ * (see `playwright-mcp.ts`), so there is nothing to substitute and we leave it.
+ * {@link readCaptureFile} covers what a basename alone does not — symlinks and
+ * the stat/read race.
  *
  * The read is synchronous on purpose. This sits on the worker's single agent
  * event → SSE path (`agent-controller.ts`), where ordering is load-bearing;
  * making that handler async to save a few milliseconds of file read would let
  * events overtake each other.
+ *
+ * ## Where this does not reach
+ *
+ * Two gaps, both known, neither worth a second call site:
+ *
+ *   - **Codex.** Its handler stringifies every MCP result
+ *     (`codex-event-handler.ts` — `typeof payload === "string" ? payload :
+ *     JSON.stringify(payload)`), so a Codex tool_result carries no image block
+ *     in the first place and its screenshots do not render in the transcript at
+ *     all, before or after this. Making them render is its own change; there is
+ *     nothing here to restore.
+ *   - **`RUNTIME_MODE=local`.** The dogfood inner instance spawns adapters
+ *     in-process and never goes through `AgentController` (`app-lifecycle.ts`),
+ *     so it keeps the shrunk copy. The orchestrator-side listener both modes DO
+ *     share is the wrong home for this: under containers the file lives in
+ *     another container's `/tmp`, so reading it there would either find nothing
+ *     or — worse — find an unrelated file of the same name.
  */
 
 import fs from "node:fs";
@@ -66,13 +87,63 @@ import { PLAYWRIGHT_OUTPUT_DIR } from "./agents/playwright-mcp.js";
 import type { AgentEvent } from "../shared/types.js";
 
 /**
- * Skip anything larger. The substituted image is persisted as base64 in the
- * chat row, so an unbounded read would put a pathological capture — a full page
- * screenshot of an infinite-scroll feed — straight into SQLite. At the ceiling
- * the MCP itself will emit (`1568×N`), a realistic PNG stays far below this;
- * the bound exists for the shapes nobody has thought of.
+ * Skip anything larger — matching `MAX_IMAGE_SIZE_BYTES`, the ceiling the
+ * orchestrator already puts on a user-attached image (`validation.ts`), because
+ * the two end up in the same places and the smaller of two limits is the real
+ * one.
+ *
+ * The bound is not about the image; it is about everything the base64 of it
+ * passes through *before* docs/244's projection swaps it for a URL. That string
+ * is retained in the worker's SSE replay ring, which is bounded by event COUNT
+ * (5000) and not by bytes; it is written to SQLite and rewritten in full by
+ * `replaceInProgress` at every later tool-result boundary in the turn; and it is
+ * re-read and re-hashed whenever `/images/:hash` scans the history. A nested
+ * subagent screenshot is deliberately left inline on the live path too, so it
+ * also survives the client's 1 MB cap whole.
+ *
+ * The measured full-page captures this exists to restore are under 1 MB, so 5
+ * MiB is generous; the bound is for the shapes nobody has thought of.
  */
-export const MAX_SCREENSHOT_BYTES = 12 * 1024 * 1024;
+export const MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Read a file that only ever should be a capture this MCP just wrote, without
+ * trusting the directory it sits in.
+ *
+ * `/tmp/.playwright-mcp` is writable by every same-UID process in the session
+ * container, so `statSync` then `readFileSync` is two lookups of a name that can
+ * change in between: a symlink planted at that path is followed, and a file that
+ * passes the size check can be swapped for a larger one before the read. Neither
+ * crosses a privilege boundary — anything that could plant the symlink can
+ * already read the file itself — but the size race is a real memory hazard and
+ * the fix is one open call.
+ *
+ * So: open ONCE with `O_NOFOLLOW`, and let `fstat` and the read both speak to
+ * that descriptor. The name is resolved a single time, and what is measured is
+ * what is read.
+ */
+function readCaptureFile(file: string): Buffer | null {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size > MAX_SCREENSHOT_BYTES) return null;
+    const buffer = Buffer.alloc(stat.size);
+    let read = 0;
+    while (read < stat.size) {
+      const n = fs.readSync(fd, buffer, read, stat.size - read, read);
+      if (n <= 0) break;
+      read += n;
+    }
+    return read === stat.size ? buffer : null;
+  } catch {
+    // Missing (evicted by `--output-max-size`), a symlink, or unreadable. The
+    // shrunk copy is still a screenshot — keep it.
+    return null;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
 
 const IMAGE_MEDIA_TYPES: Record<string, string> = {
   ".png": "image/png",
@@ -80,20 +151,27 @@ const IMAGE_MEDIA_TYPES: Record<string, string> = {
   ".jpg": "image/jpeg",
 };
 
-/** First markdown link to an image file in the result's text. */
+/**
+ * The directory segment the link must contain to be one of ours. Derived from
+ * the constant rather than written out, so moving the output dir moves this.
+ */
+const OUTPUT_DIR_SEGMENT = `${path.basename(PLAYWRIGHT_OUTPUT_DIR)}/`;
+
+/**
+ * First markdown link to an image file *in the Playwright output directory*.
+ *
+ * Two separate jobs. The directory segment decides whether this result is a
+ * Playwright capture at all — without it, any MCP tool that returns prose
+ * linking `chart.png` plus an image block would be substituted the moment a file
+ * of that name happened to exist in the output dir. The basename is what we then
+ * resolve with, because the link is tool output and a basename cannot traverse.
+ */
 function linkedImageName(text: string): string | null {
   const match = /\]\(([^)\s]+\.(?:png|jpe?g))\)/i.exec(text);
-  if (!match?.[1]) return null;
-  // Basename only — see the module docstring. `path.basename` on a Windows-style
-  // path would keep the backslashes, but the MCP runs in this Linux container.
-  const name = path.basename(match[1]);
+  const link = match?.[1];
+  if (!link?.includes(OUTPUT_DIR_SEGMENT)) return null;
+  const name = path.basename(link);
   return name && name !== "." && name !== ".." ? name : null;
-}
-
-/** Bytes a base64 string decodes to, without decoding it. */
-function base64Bytes(data: string): number {
-  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
-  return Math.floor((data.length * 3) / 4) - padding;
 }
 
 /**
@@ -124,32 +202,16 @@ function substituteBlocks(content: unknown[]): unknown[] | null {
   const mediaType = IMAGE_MEDIA_TYPES[path.extname(name).toLowerCase()];
   if (!mediaType) return null;
 
-  const file = path.join(PLAYWRIGHT_OUTPUT_DIR, name);
-  let size: number;
-  try {
-    const stat = fs.statSync(file);
-    if (!stat.isFile()) return null;
-    size = stat.size;
-  } catch {
-    // Evicted by `--output-max-size`, or written somewhere we didn't predict.
-    // The shrunk copy is still a screenshot; keep it.
-    return null;
-  }
-  if (size > MAX_SCREENSHOT_BYTES) return null;
-  // When the cap doesn't fire the MCP ships the file's own bytes, so equal
-  // lengths mean the block already IS the file — the common viewport case, and
-  // not worth a read plus a base64 encode to reproduce byte for byte. Equal
-  // lengths for two *different* images is possible in principle; both ways of
-  // being wrong here are harmless (skip ⇒ today's image, substitute ⇒ the same
-  // bytes), which is why a byte count is enough and a hash would be waste.
-  if (size === base64Bytes(existingBase64)) return null;
+  const capture = readCaptureFile(path.join(PLAYWRIGHT_OUTPUT_DIR, name));
+  if (!capture) return null;
 
-  let data: string;
-  try {
-    data = fs.readFileSync(file).toString("base64");
-  } catch {
-    return null;
-  }
+  // When the cap doesn't fire the MCP ships the file's own bytes, so the block
+  // already IS the file and there is nothing to change. Compared as BYTES, not
+  // byte counts: two different images of equal length would otherwise leave the
+  // shrunk one in place, which is the one outcome this whole module exists to
+  // prevent. The decode costs a fraction of the read we have already done.
+  if (capture.equals(Buffer.from(existingBase64, "base64"))) return null;
+  const data = capture.toString("base64");
 
   const original = content[imageIndex] as Record<string, unknown>;
   const source = (original.source ?? {}) as Record<string, unknown>;

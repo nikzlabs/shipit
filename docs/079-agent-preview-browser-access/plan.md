@@ -308,10 +308,41 @@ already holds the shrunk copy the MCP handed it directly; only the event ShipIt
 persists and renders is rewritten. So the viewer gets full resolution at zero
 token cost, and in the full-page case for fewer bytes than before.
 
-Two deliberate choices, both in that file's docstring: the on-disk file is
-located by the **basename** of the link (tool output is untrusted, and a
-basename cannot traverse), and the read is **synchronous** because that handler's
-event ordering is load-bearing.
+Three deliberate choices, all in that file's docstring. The link's
+`.playwright-mcp/` segment is what identifies the result as a Playwright capture
+(so another MCP's `chart.png` is never substituted just because a file of that
+name exists), its **basename** is what gets resolved (tool output is untrusted,
+and a basename cannot traverse), and the read is **synchronous** because that
+handler's event ordering is load-bearing.
+
+A basename alone is only *lexical* containment, which cross-backend review
+caught: `/tmp/.playwright-mcp` is writable by every same-UID process in the
+container, so `statSync` then `readFileSync` follows a planted symlink and
+leaves a window where a file that passed the size check is swapped for a larger
+one before the read. Neither crosses a privilege boundary — anything that could
+plant the symlink can already read the file — but the size race is a real memory
+hazard. `readCaptureFile` opens **once** with `O_NOFOLLOW` and lets `fstat` and
+the read both speak to that descriptor, so the name resolves a single time and
+what is measured is what is read.
+
+The ceiling is `MAX_IMAGE_SIZE_BYTES` (5 MiB), the same one `validation.ts` puts
+on a user-attached image, because both end up in the same places and the smaller
+of two limits is the real one. What it bounds is not the image but everything
+the base64 passes through *before* the docs/244 projection swaps it for a URL:
+the worker's SSE replay ring (bounded by event COUNT, not bytes), the SQLite row
+that `replaceInProgress` rewrites in full at every later tool-result boundary,
+and the re-hash whenever `/images/:hash` scans history. Measured full-page
+captures are under 1 MB.
+
+**Where this does not reach**, both known and both left alone. **Codex**
+stringifies every MCP result (`codex-event-handler.ts`), so its tool_result
+carries no image block and its screenshots do not render in the transcript at
+all — making them render is its own change, and there is nothing here to
+restore. **`RUNTIME_MODE=local`** spawns adapters in-process and never passes
+through `AgentController`, so the dogfood inner instance keeps the shrunk copy;
+the orchestrator-side listener both modes share is the wrong home, because under
+containers the file lives in another container's `/tmp` and reading it there
+would find nothing — or an unrelated file of the same name.
 
 Raising the *capture* resolution — `deviceScaleFactor: 2` via the MCP's
 `--config`, so a Retina viewer gets a 2× viewport shot too — is possible and
