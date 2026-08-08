@@ -43,13 +43,32 @@ describe("describePermissionDetails", () => {
   });
 
   it("falls back to the pretty-printed input for a command-less tool", () => {
-    expect(describePermissionDetails({ file_path: ".npmrc", content: "x" }))
-      .toBe(JSON.stringify({ file_path: ".npmrc", content: "x" }, null, 2));
+    expect(describePermissionDetails({ file_path: ".npmrc", content: "x" }, { path: ".npmrc" }))
+      .toBe(JSON.stringify({ content: "x" }, null, 2));
   });
 
   it("has nothing to show for an empty or absent input", () => {
     expect(describePermissionDetails({})).toBeUndefined();
     expect(describePermissionDetails(undefined)).toBeUndefined();
+  });
+
+  // A toggle that expands to what the card already shows is noise — and, since
+  // the card is persisted, persisted noise. Both of these are the COMMON shape,
+  // not an edge: most gated Bash calls are short, and `apply_patch` carries
+  // nothing but the path.
+  it("has nothing to show when the summary already contains the whole command", () => {
+    expect(describePermissionDetails({ command: "ls" }, { summary: "Bash: ls" })).toBeUndefined();
+  });
+
+  it("has nothing to show when the input is only the path the card renders", () => {
+    expect(describePermissionDetails({ file_path: ".npmrc" }, { summary: "apply_patch .npmrc", path: ".npmrc" }))
+      .toBeUndefined();
+  });
+
+  it("still discloses a command the summary had to clip", () => {
+    const command = `sed -i 's/a/b/' ${"/workspace/deep".repeat(12)}/file.ts`;
+    const summary = describePermissionRequest("Bash", undefined, { command });
+    expect(describePermissionDetails({ command }, { summary })).toBe(command);
   });
 
   it("bounds the body so a Write's file content can't ship megabytes", () => {
@@ -74,12 +93,25 @@ describe("PermissionBroker", () => {
     expect(req.details).toBe(command);
   });
 
-  it("omits details when they would only repeat the summary", () => {
+  // With the summary DERIVED, not supplied — the production shape. An explicit
+  // summary would have made this pass even under an exact-equality check.
+  it("omits details for a short command the summary already shows in full", () => {
     const { broker, events } = makeBroker();
-    broker.openRequest({ toolName: "Bash", input: { command: "ls" }, summary: "ls" });
+    broker.openRequest({ toolName: "Bash", input: { command: "ls" } });
 
     const req = events[0];
     if (req.type !== "agent_permission_request") throw new Error("unreachable");
+    expect(req.summary).toBe("Bash: ls");
+    expect(req.details).toBeUndefined();
+  });
+
+  it("omits details for a path-only input the card already renders", () => {
+    const { broker, events } = makeBroker();
+    broker.openRequest({ toolName: "apply_patch", input: { file_path: ".npmrc" } });
+
+    const req = events[0];
+    if (req.type !== "agent_permission_request") throw new Error("unreachable");
+    expect(req.path).toBe(".npmrc");
     expect(req.details).toBeUndefined();
   });
 

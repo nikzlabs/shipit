@@ -548,8 +548,16 @@ describe("a tool result routes to the message that issued the call", () => {
   });
 
   it("routes each result to its own caller when several messages are open", () => {
-    handleAgentEvent(ctx, assistantEvent("first", [{ id: "tu-a", name: "Read", input: { file_path: "/a" } }]));
-    handleAgentEvent(ctx, assistantEvent("second", [{ id: "tu-b", name: "Read", input: { file_path: "/b" } }]));
+    // Seeded directly rather than driven through two `agent_assistant` events:
+    // consecutive streaming events MERGE into one row, so that would have left
+    // both calls on a single message and the test would pass under the old
+    // last-message behaviour too. Two rows is the shape that pins the bucketing.
+    useSessionStore.setState({
+      messages: [
+        { role: "assistant", text: "first", toolUse: [{ type: "tool_use", id: "tu-a", name: "Read", input: { file_path: "/a" } }] },
+        { role: "assistant", text: "second", toolUse: [{ type: "tool_use", id: "tu-b", name: "Read", input: { file_path: "/b" } }], streaming: true },
+      ] as unknown as ChatMessage[],
+    });
     handleAgentEvent(ctx, {
       type: "agent_event",
       event: {

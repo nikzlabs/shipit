@@ -200,8 +200,17 @@ megabytes through the WS card and the persisted `permission_prompt` blob. It
 rides the existing card payload end to end (event → `emitChatCard` →
 `PersistedPermissionRequest` → permission store) and renders behind a collapsed
 disclosure on the **pending** card only — once resolved, the tool's own
-transcript row carries the full command and its output. `details` is omitted
-when it would only repeat `summary`. Still NOT asserted: a *reason*. The CLI
+transcript row carries the full command and its output.
+
+`details` is omitted whenever there is nothing left to disclose, which is *most*
+requests — a toggle expanding to what the card already shows is noise, and
+persisted noise at that. Two cases, both the common shape rather than an edge:
+the collapsed summary already contains the whole body unclipped (`Bash: ls` over
+`ls`), or the input's only content is the path the card renders on its own line
+(`apply_patch` with a bare `file_path`). An exact `details !== summary` check
+caught neither, since the summary is prefixed with the tool name.
+
+Still NOT asserted: a *reason*. The CLI
 supplies only `{tool_name, input, tool_use_id}`, so the generic copy stands
 (Thread D).
 
