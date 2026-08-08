@@ -75,9 +75,11 @@ const HANDLED_INTERRUPT_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
  * undefined for path-less tools (e.g. Bash), where the card falls back to the
  * tool name + command summary.
  */
+const PATH_KEYS = ["file_path", "notebook_path", "path"];
+
 export function extractPermissionPath(input: Record<string, unknown> | undefined): string | undefined {
   if (!input) return undefined;
-  for (const key of ["file_path", "notebook_path", "path"]) {
+  for (const key of PATH_KEYS) {
     const value = input[key];
     if (typeof value === "string" && value.trim()) return value;
   }
@@ -93,6 +95,59 @@ export function describePermissionRequest(toolName: string, path: string | undef
     return `${toolName}: ${oneLine.length > 100 ? `${oneLine.slice(0, 97)}…` : oneLine}`;
   }
   return toolName;
+}
+
+/**
+ * Bound on the `details` body carried to the card. Generous enough that a real
+ * shell command — a heredoc, a long pipeline — arrives whole, small enough that
+ * a `Write`'s file `content` can't push megabytes through the WS card and the
+ * persisted `permission_prompt` blob.
+ */
+export const PERMISSION_DETAILS_CHARS = 4_000;
+
+/** Whitespace-insensitive comparison — a summary is one line, a body may not be. */
+const collapse = (text: string) => text.replace(/\s+/g, " ").trim();
+
+/**
+ * The full gated call, for the card's expandable disclosure.
+ *
+ * The one-line `summary` above is clipped to ~100 chars, which for a `sed -i`
+ * cuts off the target path — precisely the part that explains why the backend
+ * gated it. The whole input is in hand here and was being discarded, leaving
+ * the user approving an action they could not read. So: the raw `command` when
+ * there is one (the shell case, both backends), otherwise the pretty-printed
+ * input.
+ *
+ * Returns undefined when there is nothing left to disclose, which is most
+ * requests — a "Show details" toggle that expands to what the card already
+ * shows is noise, and it would be persisted noise. Two ways that happens, and
+ * both are the common case rather than an edge:
+ *
+ *   - the collapsed summary already contains the whole body unclipped
+ *     (`Bash: ls` over `ls`);
+ *   - the input's only content is the path the card renders on its own line
+ *     (`apply_patch` with a bare `file_path`).
+ */
+export function describePermissionDetails(
+  input: Record<string, unknown> | undefined,
+  shown: { summary?: string; path?: string } = {},
+): string | undefined {
+  if (!input) return undefined;
+  const command = input.command;
+  let body: string | undefined;
+  if (typeof command === "string" && command.trim()) {
+    body = command;
+  } else {
+    const rest = Object.entries(input).filter(
+      ([key, value]) => !(PATH_KEYS.includes(key) && value === shown.path),
+    );
+    if (rest.length > 0) body = JSON.stringify(Object.fromEntries(rest), null, 2);
+  }
+  if (!body) return undefined;
+  if (shown.summary && collapse(shown.summary).includes(collapse(body))) return undefined;
+  return body.length > PERMISSION_DETAILS_CHARS
+    ? `${body.slice(0, PERMISSION_DETAILS_CHARS)}…`
+    : body;
 }
 
 export class PermissionBroker {
@@ -179,6 +234,7 @@ export class PermissionBroker {
 
     const requestId = `perm_${randomUUID()}`;
     const summary = input.summary ?? describePermissionRequest(input.toolName, path, input.input);
+    const details = describePermissionDetails(input.input, { summary, ...(path ? { path } : {}) });
 
     let settle!: (decision: PermissionDecision) => void;
     const decision = new Promise<PermissionDecision>((res) => {
@@ -199,6 +255,7 @@ export class PermissionBroker {
       toolName: input.toolName,
       ...(path ? { path } : {}),
       summary,
+      ...(details ? { details } : {}),
       ...(input.agentId ? { agentId: input.agentId } : {}),
     });
 

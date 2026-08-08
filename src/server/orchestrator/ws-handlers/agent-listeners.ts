@@ -609,6 +609,7 @@ export function wireAgentListeners(
           toolName: event.toolName,
           ...(event.path ? { path: event.path } : {}),
           ...(event.summary ? { summary: event.summary } : {}),
+          ...(event.details ? { details: event.details } : {}),
           ...(event.agentId ? { agentId: event.agentId } : {}),
           createdAt,
         };
@@ -621,6 +622,7 @@ export function wireAgentListeners(
             toolName: event.toolName,
             ...(event.path ? { path: event.path } : {}),
             ...(event.summary ? { summary: event.summary } : {}),
+            ...(event.details ? { details: event.details } : {}),
             ...(event.agentId ? { agentId: event.agentId } : {}),
             createdAt,
           },

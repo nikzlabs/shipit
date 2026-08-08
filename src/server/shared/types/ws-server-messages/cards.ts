@@ -114,6 +114,8 @@ export interface WsPermissionRequestCard {
   path?: string;
   /** One-line human summary of what is being requested. */
   summary?: string;
+  /** The gated call in full (raw command / pretty-printed input) for the card's disclosure. */
+  details?: string;
   /** Which agent raised it (display only). */
   agentId?: string;
   createdAt: string;

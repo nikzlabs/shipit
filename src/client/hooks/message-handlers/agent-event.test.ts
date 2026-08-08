@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useSessionStore } from "../../stores/session-store.js";
 import { handleAgentEvent, CLIENT_CONTENT_CAP } from "./agent-event.js";
+import { handlePermissionRequestCard } from "./permission-request-card.js";
 import { parseContentForImages } from "../../components/ToolResult.js";
 import type { HandlerContext } from "./types.js";
-import type { WsAgentEvent } from "../../../server/shared/types.js";
+import type { WsAgentEvent, WsPermissionRequestCard } from "../../../server/shared/types.js";
 import type { ChatMessage } from "../../components/MessageList.js";
 
 const ctx: HandlerContext = {
@@ -497,5 +498,104 @@ describe("a subagent's subagent (docs/244 round-4)", () => {
     const result = findResult("inner-bash")!;
     expect(result.content.length).toBeLessThanOrEqual(CLIENT_CONTENT_CAP);
     expect(result.truncated).toBeUndefined();
+  });
+});
+
+describe("a tool result routes to the message that issued the call", () => {
+  // A permission card is appended as its own `role: "assistant"` message, so it
+  // sits between the assistant message holding the gated `tool_use` and that
+  // tool's later `tool_result`. The result branch used to attach to
+  // `prev[prev.length - 1]` blindly — the card — while `buildVisualElements`
+  // pairs a tool with its result strictly WITHIN one message. The gated Bash
+  // row therefore resolved `result === undefined` and, once streaming ended,
+  // `isInspectable` was false: no onClick, no "Show output", the full command
+  // and its output unreachable behind the 80-char inline slice. The persisted
+  // row was always right, so only a page RELOAD repaired it. It must be right
+  // live, with no reload.
+  const resultEvent = (id: string, content: string): WsAgentEvent => ({
+    type: "agent_event",
+    event: {
+      type: "agent_tool_result",
+      content: [{ type: "tool_result", tool_use_id: id, content }],
+    },
+  } as unknown as WsAgentEvent);
+
+  const pairedResult = (id: string) => {
+    const messages = useSessionStore.getState().messages;
+    const owner = messages.find((m) => m.toolUse?.some((t) => t.id === id));
+    // Deliberately scoped to the OWNER message: this is the same lookup
+    // `buildVisualElements` performs, so a result anywhere else reads as absent
+    // exactly as it does on screen.
+    return owner?.toolResults?.find((r) => r.toolUseId === id);
+  };
+
+  it("pairs a gated tool with its result when a permission card lands in between", () => {
+    handleAgentEvent(ctx, assistantEvent("Fixing the typo", [
+      { id: "tu-sed", name: "Bash", input: { command: "sed -i 's/teh/the/' /workspace/src/a.ts" } },
+    ]));
+    handlePermissionRequestCard(ctx, {
+      type: "permission_request_card",
+      requestId: "req-1",
+      toolName: "Bash",
+      summary: "Bash: sed -i 's/teh/the/' /workspace/src/a.ts",
+    } as unknown as WsPermissionRequestCard);
+    handleAgentEvent(ctx, resultEvent("tu-sed", "done"));
+
+    expect(pairedResult("tu-sed")?.content).toBe("done");
+    // ...and the card is still its own untouched row.
+    const card = useSessionStore.getState().messages.find((m) => m.permissionPrompt?.requestId === "req-1");
+    expect(card?.toolResults).toBeUndefined();
+  });
+
+  it("routes each result to its own caller when several messages are open", () => {
+    // Seeded directly rather than driven through two `agent_assistant` events:
+    // consecutive streaming events MERGE into one row, so that would have left
+    // both calls on a single message and the test would pass under the old
+    // last-message behaviour too. Two rows is the shape that pins the bucketing.
+    useSessionStore.setState({
+      messages: [
+        { role: "assistant", text: "first", toolUse: [{ type: "tool_use", id: "tu-a", name: "Read", input: { file_path: "/a" } }] },
+        { role: "assistant", text: "second", toolUse: [{ type: "tool_use", id: "tu-b", name: "Read", input: { file_path: "/b" } }], streaming: true },
+      ] as unknown as ChatMessage[],
+    });
+    handleAgentEvent(ctx, {
+      type: "agent_event",
+      event: {
+        type: "agent_tool_result",
+        content: [
+          { type: "tool_result", tool_use_id: "tu-a", content: "A" },
+          { type: "tool_result", tool_use_id: "tu-b", content: "B" },
+        ],
+      },
+    } as unknown as WsAgentEvent);
+
+    expect(pairedResult("tu-a")?.content).toBe("A");
+    expect(pairedResult("tu-b")?.content).toBe("B");
+  });
+
+  it("keeps attaching to the trailing assistant message when no caller is found", () => {
+    handleAgentEvent(ctx, assistantEvent("thinking"));
+    handleAgentEvent(ctx, resultEvent("tu-orphan", "orphan output"));
+
+    const messages = useSessionStore.getState().messages;
+    expect(messages[messages.length - 1].toolResults?.[0]).toMatchObject({
+      toolUseId: "tu-orphan",
+      content: "orphan output",
+    });
+  });
+
+  it("skips a terminal card row when falling back", () => {
+    handleAgentEvent(ctx, assistantEvent("thinking"));
+    handlePermissionRequestCard(ctx, {
+      type: "permission_request_card",
+      requestId: "req-2",
+      toolName: "Bash",
+    } as unknown as WsPermissionRequestCard);
+    handleAgentEvent(ctx, resultEvent("tu-orphan", "orphan output"));
+
+    const messages = useSessionStore.getState().messages;
+    const card = messages.find((m) => m.permissionPrompt?.requestId === "req-2");
+    expect(card?.toolResults).toBeUndefined();
+    expect(messages.find((m) => m.text === "thinking")?.toolResults?.[0]?.content).toBe("orphan output");
   });
 });

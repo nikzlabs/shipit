@@ -21,6 +21,7 @@ export const handlePermissionRequestCard: Handler<WsPermissionRequestCard> = (_c
     toolName: data.toolName,
     ...(data.path ? { path: data.path } : {}),
     ...(data.summary ? { summary: data.summary } : {}),
+    ...(data.details ? { details: data.details } : {}),
     ...(data.agentId ? { agentId: data.agentId } : {}),
     ...(data.createdAt ? { createdAt: data.createdAt } : {}),
   });

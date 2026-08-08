@@ -352,6 +352,7 @@ export interface ChatMessage {
     toolName?: string;
     path?: string;
     summary?: string;
+    details?: string;
     agentId?: string;
     createdAt?: string;
     remembered?: boolean;

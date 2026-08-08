@@ -385,6 +385,14 @@ export interface AgentPermissionRequestEvent {
   path?: string;
   /** One-line human description of what is being requested (shown on the card). */
   summary?: string;
+  /**
+   * The gated call in full — the raw `command`, or the pretty-printed tool
+   * input — for the card's expandable disclosure. `summary` is clipped to one
+   * ~100-char line, which for a `sed -i` cuts off the target path; this is what
+   * lets the user actually read what they are approving. Bounded by
+   * `PERMISSION_DETAILS_CHARS`, and omitted when it would only repeat `summary`.
+   */
+  details?: string;
   /** Which agent produced it (display only). */
   agentId?: AgentId;
 }
