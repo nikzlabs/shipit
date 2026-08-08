@@ -6,7 +6,10 @@ description: Separate harness from service so a user can run any configured serv
 
 # 252 — Custom models
 
-Implements [`requirements.md`](./requirements.md), which has no open questions.
+Implements [`requirements.md`](./requirements.md), which has no open questions. Every
+numbered requirement is met by a phase below; where a phase's answer costs something
+(activating a container to write a PR description, an estimated rather than billed cost
+figure), the cost is stated rather than the requirement narrowed.
 
 **The inventory is a separate document:** [`catalogue.md`](./catalogue.md) — every harness
 and service as the TypeScript declarations phase 1 transcribes, plus a **first, unverified
@@ -124,8 +127,8 @@ the design.
 |---|---|---|---|
 | 1 | Catalogue and identities | 5, 6, 7, 15 | The data model, its launch rows and prices. No user-visible change. |
 | 2 | Credentials and Settings | 5, 7, 15 | You can save a service key. It does nothing yet. |
-| 3 | Spawn shaping and eligibility | 1, 2, 3, 8, 16 | **A session runs on a custom service.** Turns record what billed them. |
-| 4 | In-session switching | 4 | Switching models, including across services. |
+| 3 | Spawn shaping and eligibility | 1, 2, 3, 8, 11, 16 | **A session runs on a custom service.** Turns record what billed them, and respawn on a service change. |
+| 4 | In-session switching | 4 | The picker acts mid-session, across services. |
 | 5 | Credential-failure policy | 12 | Correct behaviour when a credential dies. |
 | 6 | Usage, cost and attribution | 10, 11, 16 | You can *see* what you are running and where the money went. (Phase 3 records it.) |
 | 7 | Non-turn work | 9 | Naming and PR descriptions get their own model. |
@@ -285,6 +288,18 @@ process argument, while Codex spawns `app-server` and sends the model in the JSO
 `hasAnyAuthForProvider(provider)` to the per-billing-mode credential question, which is what
 stops `claude-*` models being offered on an install whose only credential is a DeepSeek key.
 
+**Phase 3 must also widen the resident process's spawn identity, and sequencing that into
+phase 4 is a bug.** The guard that forces a respawn compares two model *strings*
+(`resident-model-guard.ts:40`), so a switch between two services offering the same model id —
+`deepseek-v4-flash` direct versus through a gateway — looks like no change at all and reuses
+the running process, with the previous service's endpoint and credential. Phase 3 is the phase
+that makes the picker service-grouped, so it is the phase that first makes that switch
+*reachable*: leaving the identity widening until phase 4 means phase 3 ships a version where
+choosing a different service silently bills the previous one. That breaks req 11 and the
+"coherent on its own" rule these phases are built on. The identity becomes the whole
+spawn-relevant tuple here — harness, service, billing mode, model, style, endpoint, credential
+route — and phase 4 is then only the picker acting mid-session.
+
 **Phase 3 also widens the per-turn usage record, and it has to — this is the one ordering
 mistake in these phases that cannot be repaired later.** `UsageRow` stores a bare `model` and
 a `cost_usd` with no service and no billing mode (`usage.ts:28`), and session and global
@@ -312,11 +327,20 @@ age out.
 
 So each new row stores **tokens, attribution, and the rate that was applied** — not a price
 looked up later. Concretely, `RecordedTurn` gains `service_id`, `billing_mode`, the resolved
-style, and the four unit rates in force (`input`, `output`, `cacheRead`, `cacheWrite`), all
-**nullable**. Null is the `legacy` bucket: it needs no extra discriminator and no widening of
+style, and the four unit rates in force (`input`, `output`, `cacheRead`, `cacheWrite`).
+
+**These are all-or-nothing, not independently nullable.** Either every one is present or every
+one is null; there is no such thing as a row that knows its service but not what it was
+charged. Independent nullable columns would let a caller write half a row, and since
+historical attribution cannot be reconstructed afterwards, a half-row is unrecoverable in
+exactly the way this whole paragraph exists to prevent. A `CHECK` constraint enforces it at
+the one place that matters — the write — rather than a convention every future caller has to
+remember.
+
+All-null is the `legacy` bucket. It needs no extra discriminator and no widening of
 `BillingMode`, which stays `"sub" | "key"` and describes a *selection* rather than a row's
-provenance. A row with a null `service_id` is one written before this existed; the aggregation
-groups it under its own heading and never guesses which service it belonged to. Computing money at read time from the live catalogue was this doc's first answer and
+provenance: a legacy row is one written before this existed, the aggregation groups it under
+its own heading, and it never guesses which service it belonged to. Computing money at read time from the live catalogue was this doc's first answer and
 it is wrong in two ways that only show up with time: a price edit would silently restate every
 historical "You paid", and a retired model would have no price to look up at all — which the
 already-declared `gpt-5.6` retirement demonstrates. Req 16 asks where money *was* spent, which
@@ -343,7 +367,7 @@ services, not just within one.
 **Phase 5 — Credential-failure policy.** Branch on how the failing service is
 authenticated rather than on the error text. Two gates, not one: the auth-error
 interception must not drag a key-authenticated service into vendor re-auth, and the
-same-turn quota retry needs the same credential-kind gate that account benching already
+same-turn quota retry needs the same billing-mode gate that account benching already
 has. Establish Codex coverage rather than assuming it.
 
 **Phase 6 — Usage, cost and attribution.** Quota reporting moves from `AgentId → routeId` to
@@ -743,7 +767,7 @@ benching checks the route kind and bails for a reserved route
 all**: it fires whenever exhaustion is detected, from the error object or, when there is
 none, from the turn's own text (`turn-executor.ts:1032`). A key-authenticated service
 answering "quota exceeded" would therefore be retried once on the same bad key, which is
-exactly what req 12 forbids. Both paths need the gate.
+exactly what req 12 forbids. Both paths need the gate — on `kind`, never on how the credential is shaped.
 
 That also means there is no service re-prompt flow to build; the spike proposed
 one. See Appendix A for what has to be *removed* instead.
@@ -925,12 +949,19 @@ bare worker-HTTP generation. So the generation has to **hold the same protection
 holds** for its duration. That is the one piece of lifecycle work req 9 requires, it is small,
 and it is real: without it the description is lost precisely on the busiest hosts.
 
-Nor does req 9's fallback excuse the outside-turn case. Req 9 permits a generic description
-when *the chosen service fails* — not when ShipIt reclaimed the container. A PR opened long
-after its session was reclaimed is therefore genuinely unmet by this design, and saying so is
-better than stretching the requirement to cover it. What this design declines to do is start
-a container to write a sentence; whether that is the right trade is a question for whoever
-picks up phase 7, and it is the last open decision in these phases.
+**The outside-turn case is settled the same way, and an earlier draft was wrong to leave it
+open.** Req 9's fallback covers *the chosen service failing*, not ShipIt having reclaimed a
+container, so declining to run at all would leave the requirement unmet — and a requirement is
+not something this document may trade away. A PR is created by a user action *on a session*,
+and ShipIt already starts that session's container for user actions: this is the ordinary
+activation path, not new lifecycle. So non-turn work **activates the session's container if it
+is not resident**, exactly as opening the session would.
+
+Starting a container to write a sentence is a real cost, and it is the right one: the
+alternative is a feature that works only while a container happens to be warm, which is worse
+than slow and is precisely the silent degradation req 9 exists to remove. The generic-text
+fallback then means what req 9 says it means — the chosen service failed — rather than
+doubling as an excuse for infrastructure timing.
 
 Session naming is unaffected — it already runs a CLI (`session-namer.ts:28`) and only needs
 the resolved triple threaded through.
@@ -1091,11 +1122,17 @@ The split is the same axis as everywhere else, and the two **GLM** rows in the p
 why it has to be the **mode** and not the service: one service, two lines — its coding plan
 and its API key — and merging them would attach a price to a row that is mostly free.
 
-Two headline numbers rather than one, because dollars and quota do not sum: **"You paid"**
-totals the metered rows only — the one figure that is money — and plan usage is counted in
-turns beside it. A session with no metered rows says **"Nothing"**, not `$0.00`; a zero reads
-as telemetry that came back empty, which is the wrong impression for what is the normal case
-for a subscription user.
+Two headline numbers rather than one, because dollars and quota do not sum: **"Metered spend
+(est.)"** totals the metered rows only — the one figure that is money — and plan usage is
+counted in turns beside it. A session with no metered rows says **"Nothing"**, not `$0.00`; a
+zero reads as telemetry that came back empty, which is the wrong impression for what is the
+normal case for a subscription user.
+
+**"est." is load-bearing, not hedging.** The figure is computed from the catalogue's four
+rates, which cannot express per-request, image or tiered-cache charges
+([`catalogue.md`](./catalogue.md)), so calling it "You paid" would assert a fact about a bank
+statement — the same class of error as trusting `costUsd`, which is what motivated the price
+table in the first place.
 
 **Plan usage carries its API-rate value too** — "≈ $243.60 at API rates". That is the number
 that says whether a subscription is worth keeping. Withholding it to protect the
@@ -1315,16 +1352,3 @@ It was never an implementation of these requirements: it hardcoded one model id 
 endpoint, and made `hasAnyAuthForProvider`/`reservedRouteFor` treat a DeepSeek key as a
 Claude-provider route — an overstatement req 8 now rules out. Its findings about *ShipIt's*
 code are in Appendix A; the code itself is recoverable from this branch's history.
-
-## Appendix C — verifying a service in dogfood
-
-Not a requirement — a working note, kept because it is how this branch was validated
-and it is not obvious. Declare the credential in the `dev` service's
-`x-shipit-secrets`, set it in the **outer** Settings → Secrets, `shipit service restart dev`
-(a running service does not pick up a newly declared secret), then drive the inner
-instance over its API — `POST /api/sessions/headless` with `model`, then
-`/agent/dispatch`, `/status`, `/history`.
-
-**What this does not prove:** local mode spawns agents in-process and never exercises
-the container path (`session-worker.ts:742`). A green dogfood run shows the model and
-the stream parsing work; it does not validate a containerized session.

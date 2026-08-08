@@ -27,17 +27,10 @@ config-file case for endpoint and credential, and `CredentialTargets.key` is opt
 OAuth-only CLI narrows the join instead of failing at spawn. Neither of the two shipped
 harnesses is affected by either.
 
-**The survey stays in this document.** It was asked for, and deleting it to make the launch
-types look more settled would trade a real benefit for a cosmetic one: the whole reason to
-survey now is that these types freeze in phase 1, and a candidate that contradicts them is
-cheaper to hear about before then. Carrying an open question honestly is not the same as
-leaving the design unsettled — the axes are settled, and the survey can only add a variant to
-a union that already has three.
-
-It is also where the
-third-harness survey's rows live; the *consequences* of that survey for the design are in
-`plan.md`'s [What a third harness could break](./plan.md#what-a-third-harness-could-break),
-not repeated here.
+The third-harness survey's rows also live here — it stays because these types freeze in phase
+1, and a candidate that contradicts them is far cheaper heard now. Its *consequences* for the
+design are in `plan.md`'s
+[What a third harness could break](./plan.md#what-a-third-harness-could-break).
 
 ## Read this first: what is checked and what is not
 
@@ -143,6 +136,12 @@ export interface BillingModeDef {
   kind: BillingMode;
   /** HOW YOU AUTHENTICATE. Independent of the above — see below. */
   credential: ModeCredential;
+  /** WHERE THE QUOTA COMES FROM. Required on `kind: "sub"`, absent on `kind: "key"`.
+   *  A third independent axis: GLM's plan is a subscription (quota) authenticated by a key
+   *  (no login flow), so tying the quota integration to the credential shape — as an earlier
+   *  version did by hanging it off `via: "account"` — leaves req 15's own launch subscription
+   *  with no way to report a quota at all (req 10). */
+  quota?: QuotaIntegrationId;
   endpoints: Partial<Record<ApiStyle, string>>;
   models: ModelDef[];
   retired: RetiredModel[];
@@ -151,11 +150,12 @@ export interface BillingModeDef {
 /** These two axes are NOT the same axis, and collapsing them is the mistake this shape
  *  exists to prevent. A subscription can be authenticated by a plain API key, and this
  *  repository already contains one: `claude-env-oauth` is an env-delivered *subscription*
- *  token, quota-bearing and ranked above metered billing, sitting in the same reserved-route
- *  mechanism as `claude-api-key` (`provider-account-manager.ts:619` ✅). */
+ *  token. It is ranked above the API-key route (`provider-account-manager.ts:619` ✅), and
+ *  it is classified as quota-bearing elsewhere — `provider-account-reserved-route.test.ts:92`
+ *  and `claude/limits-provider.ts:85` ✅. Three citations because it is three claims. */
 export type ModeCredential =
-  | { via: "account"; integration: SubIntegrationId }
-  | { via: "key"; storageEnv: string;
+  | { via: "account"; integration: LoginIntegrationId }   // a vendor login/refresh flow
+  | { via: "key"; storageEnv: string;                     // a string the user pastes
       targetOverride?: Partial<Record<HarnessId, CredentialTarget>> };
 
 export interface ServiceDef {
@@ -228,15 +228,18 @@ export type CredentialTarget =
  *  layout, a login method, a quota integration in the limits registry), and those are
  *  currently selected by `AgentId`. This field is what they get selected by instead, and it is
  *  the catalogue-side half of the per-service work req 5 keeps out of the mechanism.
- *  Only `via: "account"` modes need one — GLM's plan does not appear here, because it
- *  authenticates with a key and so has no login flow to name.
  *  🔍 THROUGHOUT — these identifiers do not exist. Today the auth managers and limits
  *  providers are keyed by `AgentId` ("claude", "codex") in a `Map<AgentId, AgentAuthManager>`
  *  (`agents/index.ts:39`, `agent-auth-manager.ts:1`). The OAuth *implementations* are real;
  *  these names are this document's proposal for what replaces `AgentId` as their key. An
  *  earlier version of this block marked them ✅ on the strength of the implementations
  *  existing, which is the inference-as-verified-fact the rules above forbid. */
-export type SubIntegrationId = "anthropic-oauth" | "openai-chatgpt";
+/** Selects the login/refresh implementation. Only `via: "account"` modes need one. */
+export type LoginIntegrationId = "anthropic-oauth" | "openai-chatgpt";
+
+/** Selects the quota-reporting implementation — what fills req 10's indicator. Keyed
+ *  separately from the login flow because the two do not always come together. */
+export type QuotaIntegrationId = "anthropic-oauth-usage" | "openai-chatgpt-usage" | "zai-plan-usage";
 
 **GLM is the case that forces this, and it is the launch subscription** (req 15): its coding
 plan is billed as a *plan* — an allowance, not per-token — while being authenticated with an
@@ -501,7 +504,8 @@ export const SERVICES = [
     modes: [
       { kind: "sub",                                       // ✅ OAuth accounts exist today
         endpoints: { [A_MSG]: "https://api.anthropic.com" },
-        credential: { via: "account", integration: "anthropic-oauth" },  // 🔍 the id is new
+        credential: { via: "account", integration: "anthropic-oauth" },
+        quota: "anthropic-oauth-usage",             // 🔍 the ids are new
         retired: [],
         models: [
           { id: "claude-opus-5",   label: "Opus 5",   styles: [A_MSG], contextWindow: { default: 1_000_000 }, price: PRICE_TODO },
@@ -539,7 +543,8 @@ export const SERVICES = [
     modes: [
       { kind: "sub",                                       // ✅ ChatGPT account auth today
         endpoints: { [O_RESP]: "https://api.openai.com" },
-        credential: { via: "account", integration: "openai-chatgpt" },   // 🔍 the id is new
+        credential: { via: "account", integration: "openai-chatgpt" },
+        quota: "openai-chatgpt-usage",             // 🔍 the ids are new
         retired: [
           // ✅ the id remap `gpt-5.6 → gpt-5.6-sol` is today's normalizeCodexModelId
           // (agent-registry.ts:141). 🔍 the style and the placement under BOTH modes are
@@ -593,13 +598,22 @@ export const SERVICES = [
       { kind: "sub",  // an allowance, authenticated by a key — see ModeCredential above
         credential: { via: "key", storageEnv: "ZAI_CODING_PLAN_KEY",
                       targetOverride: { claude: { kind: "env", name: "ANTHROPIC_AUTH_TOKEN" } } },
+        quota: "zai-plan-usage",  // a plan HAS a quota even with no login flow (req 10)
         /* 🔍 endpoints, models, quota — phase 2 owns this integration */ },
       { kind: "key", credential: { via: "key", storageEnv: "ZAI_API_KEY" },
         /* 🔍 offers more models than the plan — that asymmetry is the point */ },
     ],
   },
-  { id: "openrouter", name: "OpenRouter", /* 🔍 key mode; a maintained subset, req 6 */ },
-  { id: "vercel", name: "Vercel AI Gateway", /* 🔍 key mode */ },
+  // 🔍 Both gateways: one `key` mode each, shape identical to DeepSeek's above. Endpoints,
+  // styles and the maintained subset (req 6) are authored per gateway against its current
+  // documentation — deliberately not guessed here, so these rows are elided rather than
+  // filled with plausible-looking values.
+  { id: "openrouter", name: "OpenRouter",
+    modes: [{ kind: "key", credential: { via: "key", storageEnv: "OPENROUTER_API_KEY" },
+              endpoints: { /* 🔍 */ }, models: [ /* 🔍 */ ], retired: [] }] },
+  { id: "vercel", name: "Vercel AI Gateway",
+    modes: [{ kind: "key", credential: { via: "key", storageEnv: "VERCEL_AI_GATEWAY_KEY" },
+              endpoints: { /* 🔍 */ }, models: [ /* 🔍 */ ], retired: [] }] },
 ] as const satisfies readonly ServiceDef[];
 ```
 
@@ -659,8 +673,15 @@ single `cache_create` figure (`usage.ts:45` ✅), so the extra dimensions have n
 to multiply. Modelling each provider's full schema means a pricing engine per service,
 maintained against vendors who change it, to refine a number req 16 wants for a *comparison*
 and a service-level split. So these figures are labelled estimates and the requirement is read
-as written: it asks where money went, not for an invoice. If that reading is wrong the fix is
-a requirements conversation, not a wider table.
+as written: it asks where money went, not for an invoice.
+
+**That has a consequence for the wording, and it is not optional.** A figure derived from four
+rates cannot be labelled "You paid", which asserts a fact about a bank statement. It is
+ShipIt's estimate of metered spend and the UI must say so — the prototype's headline needs
+changing. Labelling an estimate as the thing it approximates is the same class of dishonesty
+as `total_cost_usd`, which is what started this section. If exact billed figures are wanted,
+that is a requirements conversation and a different mechanism (reading each vendor's billing
+API), not a wider table here.
 
 `plan.md` records the standing risk: per-model pricing widens what a catalogue row costs to
 maintain, prices move more often than model lists do, and if the upkeep proves unacceptable

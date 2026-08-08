@@ -186,7 +186,7 @@
 
     <div class="headline">
       <div class="hl">
-        <div class="cap">You paid</div>
+        <div class="cap">Metered spend (est.)</div>
         <div class="big paid num">$0.42</div>
         <div class="why">Metered API keys only. This is money that left your account.</div>
       </div>
@@ -310,7 +310,7 @@
     </div>
     <div class="headline">
       <div class="hl">
-        <div class="cap">You paid</div>
+        <div class="cap">Metered spend (est.)</div>
         <div class="big incl">Nothing</div>
         <div class="worth">&asymp; $2.10 at API rates</div>
         <div class="why">Every turn ran on a plan you already pay for &mdash; and that is what
@@ -361,7 +361,7 @@
 
     <div class="headline">
       <div class="hl">
-        <div class="cap">You paid</div>
+        <div class="cap">Metered spend (est.)</div>
         <div class="big paid num">$18.40</div>
         <div class="why">Across 3 metered services.</div>
       </div>
@@ -439,7 +439,12 @@
       <div class="callout">
         It is deliberately not the paid green, sits below the volume rather than in the amount
         slot, and is prefixed <b>&asymp;</b> and suffixed <b>at API rates</b>. It is never
-        added into &ldquo;You paid&rdquo;, which stays the only figure that is money.
+        added into &ldquo;Metered spend&rdquo;, which stays the only figure that is money. It says
+      <em>est.</em> because it is computed from ShipIt&rsquo;s own per-model rates, not read
+      from a vendor invoice &mdash; the four rates it carries cannot express per-request,
+      image or tiered-cache charges. Labelling an estimate &ldquo;You paid&rdquo; asserts a
+      fact about a bank statement, which is the same dishonesty as trusting the CLI&rsquo;s
+      own cost figure.
       </div>
     </div>
   </div>
