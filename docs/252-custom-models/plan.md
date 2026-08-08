@@ -14,21 +14,15 @@ credentials, the installed harness set and whether the session has taken a turn,
 selectors react. It is the artifact for the picker decision below; open it and drive it
 rather than reading the description.
 
-**Visual reference — Settings, two variants, undecided.**
-[`mockup-services.html`](./mockup-services.html) is **variant B**: an interactive add-flow —
-you start empty, press *Add service*, and pick service → billing mode → credential, each add
-becoming its own row. There is no "Available" block and no grouping by service; the catalogue
-lives in the dialog. Variant A is the catalogue layout inside `mockup.html` below. The
-trade is stated in the design section: B's steady-state screen is only what you configured,
-at the cost of making "which services does ShipIt support?" a dialog away — which matters
-because req 15 turns the shipped catalogue into a promise.
+**Visual reference — Settings → Services:** [`mockup-services.html`](./mockup-services.html)
+— **interactive**. You start empty, press *Add service*, and pick service → billing mode →
+credential. There is no "Available" block: the catalogue lives in the dialog. One card per
+`(service, billing mode)`, matching what the picker groups on, and a subscription card holds
+its accounts, their order and the routing settings.
 
-**Visual reference — Settings (variant A):** [`mockup.html`](./mockup.html) — the Settings **Services** screen
-(catalogue rows, credential entry, which rows show a usage indicator), the **Harnesses**
-screen (the derived service×style join, and the background-work setting), and the
-in-session model picker with its attribution. Self-contained static HTML; open it
-directly. It is where the layout decisions are easiest to check, in particular that no
-screen offers to add a service or a harness.
+**Visual reference — Settings → Harnesses:** [`mockup-harnesses.html`](./mockup-harnesses.html)
+— the derived service×style join, and the background-work setting. Static; the one screen
+where API styles are shown, because explaining the join is its whole purpose.
 
 ## The idea
 
@@ -421,30 +415,42 @@ regardless of credentials, and a harness that was installed still offers only th
 whose service has a credential (req 8). The picker's filter is the conjunction, and an
 uninstalled harness should be absent rather than shown-and-empty.
 
-**Two Settings layouts are prototyped and neither is chosen.** They differ in what the
-steady-state screen is a list *of*:
+**Settings → Services is an add-flow, not a catalogue listing.** Two layouts were
+prototyped and this one was chosen; the rejected one (a Connected/Available listing of every
+service ShipIt knows, with billing modes nested inside each service card) has been deleted
+rather than kept, so nothing in this folder still shows it.
 
-- **Variant A** (`mockup.html`) lists the **catalogue**: every service ShipIt knows,
-  split into Connected and Available, with a service's billing modes nested inside its card.
-  "What can I use?" is answered at a glance, and the screen grows with the catalogue whether
-  or not you use any of it.
-- **Variant B** (`mockup-services.html`) lists **your credentials**: one row per thing you
-  added, no Available block, the catalogue surfacing only inside the add dialog. The screen
-  is proportional to your setup rather than to ShipIt's.
+The screen is a list of **what you configured**, not of what exists. It starts empty; the
+catalogue appears inside the add dialog, at the moment it is a choice. That keeps the screen
+proportional to the user's setup rather than to ShipIt's — the rejected layout grew with the
+catalogue whether or not any of it was used.
 
-Variant B's add dialog is where its argument is strongest: step 2 asks *how do you pay for
-it*, showing "Subscription — 1 model" against "API key — 2 models". The distinction the model
-picker groups on is the one the user makes at add time, rather than one they discover later
-in a nested card. Its cost is req 15's: carrying OpenRouter and Vercel is only worth
-something if people find them, and B makes finding them a click.
+The discoverability cost was weighed and accepted: req 15 makes the shipped catalogue a
+promise, and a listing answers "which services does ShipIt support?" at a glance where this
+needs a click. The judgement is that someone who needs OpenRouter or Vercel is looking for
+it and will find it.
 
-B also exposes a counting mismatch worth deciding on rather than discovering in code: a row
-is a **credential**, while a picker group is a **billing mode**, so two Anthropic
-subscriptions are two rows and one group. That is correct — req 12 routes between them and
-the picker must not ask which — and it is right that each row carries its own quota, since
-allowances are per account. The prototype renders the derived grouping beside the list so
-the relationship is visible rather than surprising; whether that panel is a real part of the
-design or scaffolding for the decision is itself open.
+Two things make the add-flow the better fit rather than merely the tidier one:
+
+- **Step 2 asks how you pay for it**, showing "Subscription — 1 model" against "API key —
+  2 models". The distinction the picker groups on is one the user makes deliberately, rather
+  than discovering later inside a nested card.
+- **A card is one `(service, billing mode)`** — exactly the picker's grouping. An earlier
+  draft made every credential its own row, so two Anthropic subscriptions were two rows in
+  Settings and one group in the picker, with the two surfaces counting differently. Grouping
+  by service × mode removes the mismatch rather than explaining it.
+
+**The routing settings are why the card is the group.** Order, *Use in order* vs *Spread
+across accounts*, and the failover cutoffs are all answers to "which of these accounts
+next?" — a question that only exists where there is a group to choose from. Today they are
+per-`AgentId` (`selectionMode`, `isPrimary`, `failoverCutoffs` in `ProviderAccountsCard`);
+per `(service, mode)` is that same setting re-keyed, not a new mechanism. Nesting the
+accounts and housing the routing settings turned out to be the same fix.
+
+An API-key card therefore has **no routing controls at all** — not a disabled group, not an
+empty section, and no sentence explaining the absence. Keys do not fail over (req 12), so
+there is nothing to order and nothing to spread. The asymmetry between the two card types is
+req 12 rendered.
 
 **Credential failure branches on credential type, not on the error** (req 12). This is
 the load-bearing simplification: ShipIt does not classify the failure, it looks at how
