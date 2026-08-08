@@ -19,7 +19,7 @@
     margin: 0; padding: 40px 24px 90px; color: var(--text-primary);
     background: radial-gradient(1200px 600px at 80% -10%, #15151a 0%, transparent 60%), var(--bg-page);
   }
-  .wrap { max-width: 1180px; margin: 0 auto; }
+  .wrap { max-width: 980px; margin: 0 auto; }
   h1 { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
   .page-sub { font-size: 13px; color: var(--text-secondary); line-height: 1.65; margin: 0 0 30px; }
   code.k {
@@ -28,12 +28,11 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .cols { display: grid; grid-template-columns: 1fr 330px; gap: 22px; align-items: start; }
 
   /* ---- modal shell ---- */
   .modal {
     display: flex; background: var(--bg-modal); border: 1px solid var(--border);
-    border-radius: 14px; overflow: hidden; min-height: 520px; position: relative;
+    border-radius: 14px; overflow: hidden; min-height: 540px; position: relative;
   }
   .nav { width: 168px; flex: none; background: var(--bg-secondary); padding: 16px 10px;
          border-right: 1px solid var(--border); }
@@ -50,11 +49,13 @@
     font: inherit; font-size: 12px; padding: 6px 11px; border-radius: 7px; cursor: pointer;
     background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text-secondary);
   }
-  .btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+  .btn:disabled { opacity: .3; cursor: default; }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .btn.primary:disabled { opacity: .4; cursor: default; }
+  .btn.primary:disabled { opacity: .4; }
   .btn.ghost { background: transparent; }
   .btn.lg { font-size: 13px; padding: 9px 16px; }
+  .btn.tiny { font-size: 11px; padding: 3px 7px; line-height: 1.2; }
 
   /* ---- empty state ---- */
   .empty {
@@ -62,32 +63,81 @@
     text-align: center; color: var(--text-tertiary);
   }
   .empty .big { font-size: 14px; color: var(--text-secondary); margin-bottom: 6px; }
-  .empty .small { font-size: 12.5px; line-height: 1.6; max-width: 420px; margin: 0 auto 18px; }
+  .empty .small { font-size: 12.5px; line-height: 1.6; max-width: 430px; margin: 0 auto 18px; }
 
-  /* ---- credential rows ---- */
-  .rows { border: 1px solid var(--border); border-radius: 11px; overflow: hidden; }
-  .row { display: flex; gap: 12px; padding: 13px 14px; border-bottom: 1px solid var(--border-soft); }
-  .row:last-child { border-bottom: none; }
+  /* ---- one card per (service, billing mode) ---- */
+  .grp {
+    border: 1px solid var(--border); border-radius: 11px; background: var(--bg-modal);
+    margin-bottom: 12px; overflow: hidden;
+  }
+  .grp-head { display: flex; gap: 11px; align-items: flex-start; padding: 13px 14px; }
   .logo {
     width: 28px; height: 28px; flex: none; border-radius: 7px; background: var(--bg-elevated);
     border: 1px solid var(--border); display: flex; align-items: center; justify-content: center;
     font-size: 12px; font-weight: 700; color: var(--text-secondary);
   }
-  .row-body { flex: 1; min-width: 0; }
-  .row-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .row-name { font-size: 13.5px; font-weight: 500; }
-  .row-meta { font-size: 11.5px; color: var(--text-tertiary); margin-top: 4px; line-height: 1.55; }
-  .row-actions { display: flex; gap: 6px; align-items: flex-start; }
-  .models { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+  .grp-body { flex: 1; min-width: 0; }
+  .grp-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .grp-name { font-size: 13.5px; font-weight: 500; }
+  .grp-meta { font-size: 11.5px; color: var(--text-tertiary); margin-top: 4px; line-height: 1.55; }
+  .models { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
   .chip {
     font-size: 11px; padding: 2px 7px; border-radius: 5px; background: var(--bg-secondary);
     border: 1px solid var(--border-soft); color: var(--text-secondary);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
-  .usage { margin-top: 8px; max-width: 320px; }
-  .usage-bar { height: 4px; border-radius: 3px; background: var(--bg-elevated); overflow: hidden; }
+
+  /* ---- accounts inside a subscription group ---- */
+  .accts { margin-top: 10px; border: 1px solid var(--border-soft); border-radius: 8px; overflow: hidden; }
+  .acct {
+    display: flex; align-items: center; gap: 9px; padding: 8px 10px;
+    border-bottom: 1px solid var(--border-soft); background: var(--bg-secondary);
+    font-size: 12px; color: var(--text-secondary);
+  }
+  .acct:last-child { border-bottom: none; }
+  .acct .ord { display: flex; flex-direction: column; gap: 1px; }
+  .acct .ord button {
+    background: none; border: none; color: var(--text-tertiary); cursor: pointer;
+    font-size: 8px; line-height: 1; padding: 1px 2px;
+  }
+  .acct .ord button:disabled { opacity: .22; cursor: default; }
+  .acct .ord button:hover:not(:disabled) { color: var(--text-primary); }
+  .acct .who { flex: 1; min-width: 0; }
+  .acct .use { width: 132px; flex: none; display: block; }
+  .usage-bar { display: block; height: 4px; border-radius: 3px; background: var(--bg-elevated); overflow: hidden; }
   .usage-fill { height: 100%; background: var(--accent); }
-  .usage-txt { font-size: 11px; color: var(--text-tertiary); margin-top: 5px; }
+  .usage-txt { display: block; font-size: 10.5px; color: var(--text-tertiary); margin-top: 4px; }
+
+  /* ---- routing settings, only on subscription groups ---- */
+  .routing {
+    border-top: 1px solid var(--border-soft); background: var(--bg-secondary);
+    padding: 12px 14px 13px;
+  }
+  .routing-title {
+    font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--text-tertiary); margin-bottom: 8px;
+  }
+  label.radio {
+    display: flex; gap: 8px; align-items: flex-start; padding: 5px 6px;
+    border-radius: 7px; cursor: pointer; font-size: 12px;
+  }
+  label.radio:hover { background: var(--bg-hover); }
+  label.radio input { accent-color: var(--accent); margin-top: 2px; }
+  label.radio .lbl { color: var(--text-secondary); }
+  label.radio .hint2 { display: block; color: var(--text-tertiary); font-size: 11px; line-height: 1.5; }
+  .cutoff {
+    display: flex; align-items: center; gap: 8px; margin-top: 9px;
+    padding-top: 9px; border-top: 1px dashed var(--border);
+    font-size: 11.5px; color: var(--text-tertiary);
+  }
+  .cutoff input {
+    width: 52px; background: var(--bg-modal); border: 1px solid var(--border);
+    border-radius: 6px; padding: 3px 6px; color: var(--text-primary); font-size: 11.5px;
+  }
+  .no-routing {
+    border-top: 1px solid var(--border-soft); background: var(--bg-secondary);
+    padding: 10px 14px; font-size: 11.5px; color: var(--text-tertiary); line-height: 1.55;
+  }
 
   .pill {
     font-size: 10px; padding: 2px 7px; border-radius: 999px;
@@ -95,7 +145,7 @@
   }
   .pill.sub { border-color: #3b3565; background: #1d1a33; color: #b3a9ee; }
   .pill.key { border-color: #2f4a3a; background: #16241c; color: #86c9a3; }
-  .pill.warn { border-color: #4a3a18; background: #221a0d; color: #e8c98a; }
+  .pill.prim { border-color: #33336a; background: #1d1d3a; color: #a5a5e8; }
 
   /* ---- add dialog ---- */
   .scrim {
@@ -118,10 +168,7 @@
     font-size: 13px; margin-bottom: 6px;
   }
   .opt:hover { background: var(--bg-hover); }
-  .opt.on { border-color: var(--accent); background: rgba(99,102,241,.12); color: var(--accent-soft); }
   .opt .grow { flex: 1; }
-  .opt.dim { opacity: .4; cursor: default; }
-  .opt.dim:hover { background: var(--bg-modal); }
   .input {
     width: 100%; background: var(--bg-modal); border: 1px solid var(--accent);
     border-radius: 7px; padding: 8px 10px; color: var(--text-primary);
@@ -129,24 +176,7 @@
   }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 
-  /* ---- derived panel + notes ---- */
-  .side { display: flex; flex-direction: column; gap: 12px; }
-  .card {
-    background: var(--bg-modal); border: 1px solid var(--border); border-radius: 11px;
-    padding: 14px 16px;
-  }
-  .card h3 {
-    margin: 0 0 4px; font-size: 11px; letter-spacing: .07em; text-transform: uppercase;
-    color: var(--text-secondary);
-  }
-  .card .hint { font-size: 11.5px; color: var(--text-tertiary); line-height: 1.55; }
-  .grp { margin-top: 11px; }
-  .grp-head {
-    display: flex; align-items: center; gap: 7px; font-size: 11.5px;
-    color: var(--text-secondary); padding-bottom: 4px;
-  }
-  .grp-head .grow { flex: 1; }
-  .grp-models { display: flex; flex-wrap: wrap; gap: 4px; padding-left: 2px; }
+  /* ---- notes ---- */
   .note {
     border: 1px solid var(--border); border-left: 2px solid var(--accent);
     background: var(--bg-modal); border-radius: 9px; padding: 12px 15px;
@@ -157,8 +187,10 @@
     display: inline-block; font-size: 10px; background: #1d1d3a; border: 1px solid #33336a;
     color: #a5a5e8; padding: 1px 6px; border-radius: 4px; margin-right: 7px; vertical-align: 1px;
   }
-  .note.against { border-left-color: var(--warning); }
-  .note.against .req { background: #2a2110; border-color: #4a3a18; color: #e8c98a; }
+  .note .callout {
+    margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--border);
+    color: var(--text-tertiary); font-size: 12px;
+  }
   .notes { display: flex; flex-direction: column; gap: 12px; margin-top: 26px; }
   .section-label {
     font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
@@ -171,92 +203,98 @@
 
 <h1>Services as an add-flow &mdash; variant B</h1>
 <p class="page-sub">
-  An alternative to the catalogue layout in <code class="k">mockup.html</code>. There is no
-  &ldquo;Available&rdquo; block and no grouping by service: you start empty, press
-  <b>Add service</b>, and each thing you add becomes its own row. The catalogue still exists —
-  it is what the dialog offers — but it is only visible while you are adding.
-  <b>Interactive: add and remove things.</b>
+  An alternative to the catalogue layout in <code class="k">mockup.html</code>. You start
+  empty, press <b>Add service</b>, and pick service &rarr; billing mode &rarr; credential.
+  There is no &ldquo;Available&rdquo; block: the catalogue lives in the dialog. One card per
+  <b>service &times; billing mode</b>, matching what the model picker groups on — and a
+  subscription card is where the accounts, their order, and the routing settings live.
+  <b>Interactive: add, reorder, remove.</b>
 </p>
 
 <div class="section-label">Settings &rarr; Services</div>
-<div class="cols">
-  <div class="modal" id="modal">
-    <div class="nav">
-      <div class="nav-head">Settings</div>
-      <div class="nav-item active">Services</div>
-      <div class="nav-item">Harnesses</div>
-      <div class="nav-item">Git</div>
-      <div class="nav-item">Instructions</div>
-      <div class="nav-item">Voice</div>
-      <div class="nav-item">Advanced</div>
-    </div>
-    <div class="pane">
-      <h2 class="pane-title">Services</h2>
-      <p class="pane-desc">
-        Each row is one credential. A service can appear more than once — a subscription and
-        an API key are different things to add.
-      </p>
-      <div id="list"></div>
-    </div>
-    <div id="dialog-host"></div>
+<div class="modal" id="modal">
+  <div class="nav">
+    <div class="nav-head">Settings</div>
+    <div class="nav-item active">Services</div>
+    <div class="nav-item">Harnesses</div>
+    <div class="nav-item">Git</div>
+    <div class="nav-item">Instructions</div>
+    <div class="nav-item">Voice</div>
+    <div class="nav-item">Advanced</div>
   </div>
-
-  <div class="side">
-    <div class="card">
-      <h3>What the picker sees</h3>
-      <div class="hint">
-        Derived, not configured. Rows collapse to one group per <b>service &times; billing
-        mode</b> — several subscriptions to one service become a single group, because ShipIt
-        routes between them (req 12).
-      </div>
-      <div id="derived"></div>
-    </div>
+  <div class="pane">
+    <h2 class="pane-title">Services</h2>
+    <p class="pane-desc">
+      One card per service and billing mode. A subscription card holds every account you have
+      with that service and decides how ShipIt picks between them.
+    </p>
+    <div id="list"></div>
   </div>
+  <div id="dialog-host"></div>
 </div>
 
 <div class="notes">
   <div class="note">
+    <span class="req">req 12</span><b>Routing settings live on the subscription card, because
+    that is the thing they route within.</b> Order, <i>Use in order</i> vs <i>Spread across
+    accounts</i>, and the failover cutoffs are all answers to &ldquo;which of these accounts
+    next?&rdquo; — a question that only exists where there is a group to choose from.
+    <div class="callout">
+      Today these are per-<i>provider</i> settings (<code class="k">selectionMode</code>,
+      <code class="k">isPrimary</code>, <code class="k">failoverCutoffs</code> in
+      <code class="k">ProviderAccountsCard</code>). Per service &times; mode is the same
+      setting re-keyed, not a new one.
+    </div>
+  </div>
+  <div class="note">
+    <span class="req">req 12</span><b>An API-key card has no routing controls at all</b> — not
+    a disabled group, not an empty section, and no sentence explaining the absence. Keys do
+    not fail over, so there is nothing to order and nothing to spread. The asymmetry between
+    the two card types <i>is</i> req 12, rendered.
+    <div class="callout">
+      A draft carried &ldquo;No failover: an API key is metered billing&hellip;&rdquo; on every
+      key card. Cut: it repeats verbatim once per key service, and the missing controls already
+      say it — the same reason the harness menu does not announce that its set is fixed.
+    </div>
+  </div>
+  <div class="note">
+    <span class="req">req 5</span><b>The card is the picker&rsquo;s group.</b> An earlier draft
+    of this variant made every credential its own row, which meant two Anthropic subscriptions
+    were two rows in Settings and one group in the picker — the two surfaces counting
+    differently. Grouping by service &times; mode removes that mismatch instead of explaining
+    it, and gives the routing settings somewhere to live. Those turned out to be the same fix.
+  </div>
+  <div class="note">
     <span class="req">req 7</span><b>The catalogue moves into the dialog.</b> Variant A shows
-    every service ShipIt knows about in an &ldquo;Available&rdquo; block, so the screen grows
-    with the catalogue whether or not you use any of it. Here the steady-state screen is only
-    what you configured, and the catalogue appears at the moment it is a choice.
+    every service ShipIt knows in an &ldquo;Available&rdquo; block, so the screen grows with
+    the catalogue whether or not you use any of it. Here the steady-state screen is only what
+    you configured.
+    <div class="callout">
+      Discoverability was weighed and accepted: someone who needs OpenRouter or Vercel is
+      looking for it, and will find it in the dialog.
+    </div>
   </div>
   <div class="note">
-    <span class="req">req 5</span><b>Billing mode is picked at add time, not discovered later.</b>
-    Step 2 of the dialog is exactly the distinction the model picker groups on — so the thing
-    the user chooses here is the thing they select there. In variant A the two modes are nested
-    inside one service card, which reads as one thing that happens to have two halves.
-  </div>
-  <div class="note">
-    <span class="req">req 15</span><b>Discoverability is the cost.</b> &ldquo;Which services
-    does ShipIt support?&rdquo; is answerable at a glance in variant A and requires opening a
-    dialog here. That matters more than usual because req 15 makes the shipped catalogue a
-    promise — carrying OpenRouter and Vercel is only worth something if people find them.
-  </div>
-  <div class="note against">
-    <span class="req">open</span><b>Rows are credentials; picker groups are modes.</b> Add two
-    Anthropic subscription accounts and you get two rows but one picker group. That is correct
-    — req 12 routes between them and the picker must not ask you to choose — but the two
-    surfaces now count differently, and the panel on the right exists to make that legible
-    rather than surprising. Worth deciding whether that is acceptable or whether accounts
-    should nest inside one row, as variant A does.
+    <span class="req">req 5</span><b>Billing mode is picked at add time.</b> Step 2 asks
+    <i>how do you pay for it</i> and shows &ldquo;Subscription &mdash; 1 model&rdquo; against
+    &ldquo;API key &mdash; 2 models&rdquo;, so the distinction the picker groups on is one the
+    user makes deliberately rather than discovers later.
   </div>
 </div>
 
 </div>
 
 <script>
-// The catalogue: still ShipIt's, still req 15's launch set — only now it is what the
-// dialog offers rather than a permanent list on the screen.
+// ShipIt's catalogue (req 15's launch set). Visible only inside the add dialog.
 const CATALOGUE = [
   { id:'anthropic', name:'Anthropic', logo:'A', modes:{
-      sub:{ models:['opus-5','sonnet-5','haiku-4.5'], quota:[62,'of session limit · resets in 2h 14m'] },
+      sub:{ models:['opus-5','sonnet-5','haiku-4.5'], unit:'session limit', reset:'resets in 2h 14m' },
       key:{ models:['opus-5','sonnet-5','haiku-4.5','claude-fable-5'] } } },
   { id:'openai', name:'OpenAI', logo:'O', modes:{
-      sub:{ models:['gpt-5.6-sol','gpt-5.6-mini'], quota:[18,'of weekly limit · resets Mon'] },
+      sub:{ models:['gpt-5.6-sol','gpt-5.6-mini'], unit:'weekly limit', reset:'resets Mon' },
       key:{ models:['gpt-5.6-sol','gpt-5.6-mini'] } } },
   { id:'deepseek', name:'DeepSeek', logo:'D', modes:{
-      sub:{ models:['deepseek-v4-flash'], quota:[41,'of monthly limit · resets in 12d'] },
+      sub:{ models:['deepseek-v4-flash'], unit:'monthly limit', reset:'resets in 12d' },
       key:{ models:['deepseek-v4-flash','deepseek-v4-pro'] } } },
   { id:'openrouter', name:'OpenRouter', logo:'R', modes:{
       key:{ models:['deepseek-v4-flash','kimi-k3','qwen-4-coder'] } } },
@@ -268,37 +306,107 @@ const CATALOGUE = [
 const cat = id => CATALOGUE.find(s => s.id === id);
 const modeLabel = m => (m === 'sub' ? 'Subscription' : 'API key');
 
-// One entry per CREDENTIAL — this is the whole point of the variant.
-let creds = [];
+// ONE entry per (service, billing mode) — the same grouping the model picker uses.
+// `accounts` is ordered; index 0 is the primary. A key group holds exactly one.
+let groups = [];
 let seq = 0;
-let dlg = null;   // { service, mode, value } while the add dialog is open
+let dlg = null;
 
-function addCred(serviceId, mode, value) {
-  creds.push({ id: ++seq, service: serviceId, mode, value });
+const findGroup = (service, mode) => groups.find(g => g.service === service && g.mode === mode);
+
+function addCredential(service, mode, label) {
+  let g = findGroup(service, mode);
+  if (!g) {
+    g = { id: ++seq, service, mode, accounts: [],
+          selection: 'strict', cutoff: { session: 90, weekly: 90 } };
+    groups.push(g);
+  }
+  const acct = { id: ++seq, label, pct: (seq * 17 + 23) % 92 };
+  // A service has one key; adding another replaces it. Subscriptions accumulate.
+  if (mode === 'key') g.accounts = [acct]; else g.accounts.push(acct);
   render();
 }
-function removeCred(id) { creds = creds.filter(c => c.id !== id); render(); }
 
-function openDialog() { dlg = { service: null, mode: null, value: '' }; render(); }
+function removeAccount(gid, aid) {
+  const g = groups.find(x => x.id === gid);
+  g.accounts = g.accounts.filter(a => a.id !== aid);
+  if (!g.accounts.length) groups = groups.filter(x => x.id !== gid);
+  render();
+}
+function moveAccount(gid, aid, dir) {
+  const g = groups.find(x => x.id === gid);
+  const i = g.accounts.findIndex(a => a.id === aid);
+  const j = i + dir;
+  if (j < 0 || j >= g.accounts.length) return;
+  [g.accounts[i], g.accounts[j]] = [g.accounts[j], g.accounts[i]];
+  render();
+}
+function setSelection(gid, mode) { groups.find(x => x.id === gid).selection = mode; render(); }
+function setCutoff(gid, key, v) {
+  const n = parseInt(v, 10);
+  if (!Number.isNaN(n)) groups.find(x => x.id === gid).cutoff[key] = Math.min(100, Math.max(1, n));
+}
+
+// ---- add dialog -------------------------------------------------------------
+function openDialog(service, mode) { dlg = { service: service ?? null, mode: mode ?? null, value: '' }; render(); }
 function closeDialog() { dlg = null; render(); }
 function dlgPickService(id) {
   const modes = Object.keys(cat(id).modes);
-  // Skip step 2 when the service offers only one way in — a one-option choice is not one.
+  // Skip step 2 when there is only one way in — a one-option choice is not a choice.
   dlg = { service: id, mode: modes.length === 1 ? modes[0] : null, value: '' };
   render();
 }
 function dlgPickMode(m) { dlg = { ...dlg, mode: m, value: '' }; render(); }
 function dlgSetValue(v) { dlg.value = v; }
 function dlgConfirm() {
-  const label = dlg.mode === 'sub' ? 'nik@example.com' : (dlg.value || 'sk-••••••••4f2a');
-  addCred(dlg.service, dlg.mode, label);
+  const n = (findGroup(dlg.service, 'sub')?.accounts.length ?? 0) + 1;
+  addCredential(dlg.service, dlg.mode,
+    dlg.mode === 'sub' ? `nik+${n}@example.com` : (dlg.value || 'sk-••••••••4f2a'));
   dlg = null;
   render();
 }
 
-// ---------------------------------------------------------------- render
+// ---- render -----------------------------------------------------------------
+function renderAccounts(g) {
+  const s = cat(g.service), m = s.modes[g.mode];
+  return `<div class="accts">${g.accounts.map((a, i) => `
+    <div class="acct">
+      <div class="ord">
+        <button onclick="moveAccount(${g.id},${a.id},-1)" ${i === 0 ? 'disabled' : ''} title="Move up">&#9650;</button>
+        <button onclick="moveAccount(${g.id},${a.id},1)" ${i === g.accounts.length - 1 ? 'disabled' : ''} title="Move down">&#9660;</button>
+      </div>
+      <span class="who">${a.label}${i === 0 ? ' <span class="pill prim">Primary</span>' : ''}</span>
+      <span class="use">
+        <span class="usage-bar"><span class="usage-fill" style="width:${a.pct}%;display:block"></span></span>
+        <span class="usage-txt">${a.pct}% of ${m.unit} &middot; ${m.reset}</span>
+      </span>
+      <button class="btn ghost tiny" onclick="removeAccount(${g.id},${a.id})">Remove</button>
+    </div>`).join('')}</div>`;
+}
+
+function renderRouting(g) {
+  const opt = (v, label, hint) => `
+    <label class="radio">
+      <input type="radio" name="sel-${g.id}" ${g.selection === v ? 'checked' : ''}
+             onchange="setSelection(${g.id},'${v}')" />
+      <span><span class="lbl">${label}</span><span class="hint2">${hint}</span></span>
+    </label>`;
+  return `<div class="routing">
+    <div class="routing-title">How ShipIt picks between these accounts</div>
+    ${opt('strict', 'Use in order',
+          'New sessions start on the first account with quota. Best when the accounts differ — a bigger plan first, a smaller one as backup.')}
+    ${opt('balanced', 'Spread across accounts',
+          'New sessions go to whichever account has been used least, so quota drains evenly. Best when the accounts are equivalent.')}
+    <div class="cutoff">
+      Move off an account past
+      <input type="number" value="${g.cutoff.session}" oninput="setCutoff(${g.id},'session',this.value)" />% session
+      <input type="number" value="${g.cutoff.weekly}" oninput="setCutoff(${g.id},'weekly',this.value)" />% weekly
+    </div>
+  </div>`;
+}
+
 function renderList() {
-  if (!creds.length) {
+  if (!groups.length) {
     return `<div class="empty">
       <div class="big">No services yet</div>
       <div class="small">
@@ -308,36 +416,44 @@ function renderList() {
       <button class="btn primary lg" onclick="openDialog()">Add service</button>
     </div>`;
   }
-  const rows = creds.map(c => {
-    const s = cat(c.service);
-    const m = s.modes[c.mode];
-    return `<div class="row">
-      <div class="logo">${s.logo}</div>
-      <div class="row-body">
-        <div class="row-top">
-          <span class="row-name">${s.name}</span>
-          <span class="pill ${c.mode}">${modeLabel(c.mode)}</span>
+  const cards = groups.map(g => {
+    const s = cat(g.service), m = s.modes[g.mode];
+    const isSub = g.mode === 'sub';
+    return `<div class="grp">
+      <div class="grp-head">
+        <div class="logo">${s.logo}</div>
+        <div class="grp-body">
+          <div class="grp-top">
+            <span class="grp-name">${s.name}</span>
+            <span class="pill ${g.mode}">${modeLabel(g.mode)}</span>
+            ${isSub && g.accounts.length > 1
+              ? `<span class="pill">${g.accounts.length} accounts</span>` : ''}
+          </div>
+          ${isSub
+            ? renderAccounts(g)
+            : `<div class="grp-meta"><span class="mono">${g.accounts[0].label}</span> &middot; metered, no quota to report</div>`}
+          <div class="models">${m.models.map(x => `<span class="chip">${x}</span>`).join('')}</div>
         </div>
-        <div class="row-meta">${c.mode === 'sub' ? c.value : `<span class="mono">${c.value}</span> · metered, no quota to report`}</div>
-        ${m.quota ? (() => {
-          // Quota belongs to the ACCOUNT, not the mode — two subscriptions to one service
-          // have independent allowances, which is half the reason a row is a credential.
-          // Varied deterministically by id so a committed mock renders identically.
-          const pct = (m.quota[0] + c.id * 13) % 92;
-          return `<div class="usage">
-            <div class="usage-bar"><div class="usage-fill" style="width:${pct}%"></div></div>
-            <div class="usage-txt">${pct}% ${m.quota[1]}</div>
-          </div>`;
-        })() : ''}
-        <div class="models">${m.models.map(x => `<span class="chip">${x}</span>`).join('')}</div>
+        <div>
+          ${isSub
+            ? `<button class="btn ghost" onclick="openDialog('${g.service}','sub')">Add account</button>`
+            : `<button class="btn ghost" onclick="openDialog('${g.service}','key')">Replace</button>
+               <button class="btn ghost" onclick="removeAccount(${g.id},${g.accounts[0].id})">Remove</button>`}
+        </div>
       </div>
-      <div class="row-actions">
-        <button class="btn ghost" onclick="removeCred(${c.id})">Remove</button>
-      </div>
+      ${isSub && g.accounts.length > 1
+        ? renderRouting(g)
+        : isSub
+          // Kept because it is actionable — it names a capability you can reach. The key
+          // card gets nothing: the absence of routing controls is itself the statement,
+          // and one identical "no failover" line per key service is the clutter that
+          // absence already avoids.
+          ? `<div class="no-routing">One account — nothing to route between yet. Add a second to choose an order and a strategy.</div>`
+          : ''}
     </div>`;
   }).join('');
-  return `<div class="rows">${rows}</div>
-    <div style="margin-top:13px"><button class="btn" onclick="openDialog()">Add service</button></div>`;
+  return cards +
+    `<div style="margin-top:4px"><button class="btn" onclick="openDialog()">Add service</button></div>`;
 }
 
 function renderDialog() {
@@ -346,30 +462,34 @@ function renderDialog() {
   let body = '';
 
   if (!s) {
-    body = `<div class="step">1 · Which service</div>` +
+    body = `<div class="step">1 &middot; Which service</div>` +
       CATALOGUE.map(x => `<div class="opt" onclick="dlgPickService('${x.id}')">
         <span class="grow">${x.name}</span>
-        <span class="hint">${Object.keys(x.modes).map(modeLabel).join(' · ')}</span>
+        <span class="hint">${Object.keys(x.modes).map(modeLabel).join(' &middot; ')}</span>
       </div>`).join('');
   } else if (!dlg.mode) {
-    body = `<div class="step">2 · How do you pay for it</div>` +
-      Object.keys(s.modes).map(m => `<div class="opt" onclick="dlgPickMode('${m}')">
-        <span class="grow">${modeLabel(m)}</span>
-        <span class="hint">${s.modes[m].models.length} model${s.modes[m].models.length === 1 ? '' : 's'}</span>
-      </div>`).join('') +
+    body = `<div class="step">2 &middot; How do you pay for it</div>` +
+      Object.keys(s.modes).map(m => {
+        const n = s.modes[m].models.length;
+        return `<div class="opt" onclick="dlgPickMode('${m}')">
+          <span class="grow">${modeLabel(m)}</span>
+          <span class="hint">${n} model${n === 1 ? '' : 's'}</span>
+        </div>`;
+      }).join('') +
       `<div class="hint" style="margin-top:9px">
          These are not interchangeable: they can offer different models and they bill
          differently, so you pick one per credential.
        </div>`;
   } else {
     const m = s.modes[dlg.mode];
-    body = `<div class="step">3 · ${dlg.mode === 'sub' ? 'Sign in' : 'Paste the key'}</div>` +
+    body = `<div class="step">3 &middot; ${dlg.mode === 'sub' ? 'Sign in' : 'Paste the key'}</div>` +
       (dlg.mode === 'sub'
-        ? `<div class="hint">Opens ${s.name}&rsquo;s login in a new tab — ShipIt does not see
-             your password. You can add more accounts later; ShipIt routes between them.</div>`
+        ? `<div class="hint">Opens ${s.name}&rsquo;s login in a new tab — ShipIt does not see your
+             password. Added accounts join this service&rsquo;s subscription card, where you set
+             their order.</div>`
         : `<input class="input" placeholder="sk-…" oninput="dlgSetValue(this.value)" />
-           <div class="hint" style="margin-top:8px">Stored per service. Metered — no quota to
-             report, so this row shows no usage bar.</div>`) +
+           <div class="hint" style="margin-top:8px">One key per service. Metered — no quota to
+             report, so this card shows no usage.</div>`) +
       `<div class="step">Offers</div>
        <div class="models">${m.models.map(x => `<span class="chip">${x}</span>`).join('')}</div>`;
   }
@@ -389,33 +509,9 @@ function renderDialog() {
   </div>`;
 }
 
-// The picker's view: collapse credentials to (service, mode). This is where the two
-// surfaces differ, so it is rendered rather than described.
-function renderDerived() {
-  if (!creds.length) return `<div class="hint" style="margin-top:11px">Nothing configured — the picker offers no models.</div>`;
-  const groups = new Map();
-  for (const c of creds) {
-    const k = `${c.service}/${c.mode}`;
-    if (!groups.has(k)) groups.set(k, { service: c.service, mode: c.mode, n: 0 });
-    groups.get(k).n++;
-  }
-  return [...groups.values()].map(g => {
-    const s = cat(g.service);
-    return `<div class="grp">
-      <div class="grp-head">
-        <span class="grow">${s.name}</span>
-        <span class="pill ${g.mode}">${modeLabel(g.mode)}</span>
-      </div>
-      <div class="grp-models">${s.modes[g.mode].models.map(x => `<span class="chip">${x}</span>`).join('')}</div>
-      ${g.n > 1 ? `<div class="hint" style="margin-top:5px">${g.n} accounts &mdash; one group; ShipIt routes between them, so the picker never asks which</div>` : ''}
-    </div>`;
-  }).join('');
-}
-
 function render() {
   document.getElementById('list').innerHTML = renderList();
   document.getElementById('dialog-host').innerHTML = renderDialog();
-  document.getElementById('derived').innerHTML = renderDerived();
 }
 
 render();
