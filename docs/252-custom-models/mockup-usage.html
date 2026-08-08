@@ -1,0 +1,522 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Custom models — Usage split by service and billing mode</title>
+<style>
+  :root {
+    --bg-page: #0a0a0b; --bg-modal: #111113; --bg-secondary: #18181b;
+    --bg-elevated: #1f1f23; --bg-hover: #26262b;
+    --border: #2a2a30; --border-soft: #1f1f24;
+    --text-primary: #ececee; --text-secondary: #a1a1aa; --text-tertiary: #6b6b74;
+    --accent: #6366f1; --accent-soft: #818cf8;
+    --paid: #86c9a3; --paid-dim: #2f4a3a; --paid-bg: #16241c;
+    --incl: #b3a9ee; --incl-dim: #3b3565; --incl-bg: #1d1a33;
+    --warning: #f59e0b;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px 24px 90px; color: var(--text-primary);
+    background: radial-gradient(1200px 600px at 80% -10%, #15151a 0%, transparent 60%), var(--bg-page);
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
+  .page-sub { font-size: 13px; color: var(--text-secondary); line-height: 1.65; margin: 0 0 30px; }
+  code.k {
+    background: var(--bg-secondary); border: 1px solid var(--border-soft);
+    padding: 1px 5px; border-radius: 4px; font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .mono, .num { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+  .section-label {
+    font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--text-tertiary); margin: 0 0 12px;
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  .section-label .n {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: var(--bg-elevated); border: 1px solid var(--border);
+    color: var(--text-secondary); font-size: 10px; letter-spacing: 0;
+  }
+  .cols { display: grid; grid-template-columns: 1fr 330px; gap: 22px; align-items: start; }
+  .stage { margin-bottom: 46px; }
+
+  /* ---- panel ---- */
+  .panel {
+    background: var(--bg-modal); border: 1px solid var(--border);
+    border-radius: 13px; overflow: hidden;
+  }
+  .panel-head {
+    padding: 15px 18px 14px; border-bottom: 1px solid var(--border-soft);
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  .panel-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+  .panel-head .sub { font-size: 12px; color: var(--text-tertiary); }
+  .panel-head .grow { flex: 1; }
+
+  /* ---- headline ---- */
+  .headline { display: flex; gap: 30px; padding: 17px 18px 16px; align-items: flex-start; }
+  .hl { min-width: 0; }
+  .hl .cap {
+    font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--text-tertiary); margin-bottom: 5px;
+  }
+  .hl .big { font-size: 25px; font-weight: 600; letter-spacing: -.01em; line-height: 1.1; }
+  .hl .big.paid { color: var(--paid); }
+  .hl .big.incl { color: var(--incl); }
+  .hl .why { font-size: 11.5px; color: var(--text-tertiary); margin-top: 6px; line-height: 1.5; max-width: 260px; }
+  .hl-div { width: 1px; align-self: stretch; background: var(--border-soft); }
+
+  /* ---- breakdown ---- */
+  .rows { border-top: 1px solid var(--border-soft); }
+  .r {
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 18px; border-bottom: 1px solid var(--border-soft); font-size: 12.5px;
+  }
+  .r:last-child { border-bottom: none; }
+  .r .who { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .r .name { color: var(--text-primary); }
+  .r .models { color: var(--text-tertiary); font-size: 11.5px; }
+  .r .vol { width: 150px; flex: none; color: var(--text-tertiary); font-size: 11.5px; text-align: right; }
+  .r .amt { width: 156px; flex: none; text-align: right; }
+  .r .amt .v { font-size: 13.5px; }
+  .r .amt .v.paid { color: var(--paid); }
+  .r .amt .v.incl { color: var(--incl); }
+  .r .amt .s { display: block; font-size: 10.5px; color: var(--text-tertiary); margin-top: 3px; }
+  /* Notional value: deliberately NOT the paid green, so it never reads as money that moved. */
+  .r .amt .notional {
+    display: block; font-size: 11px; color: var(--text-tertiary); margin-top: 5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums;
+  }
+  .hl .worth {
+    font-size: 12px; color: var(--text-tertiary); margin-top: 7px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums;
+  }
+
+  .pill {
+    font-size: 10px; padding: 2px 7px; border-radius: 999px; white-space: nowrap;
+    border: 1px solid var(--border); color: var(--text-tertiary);
+  }
+  .pill.sub { border-color: var(--incl-dim); background: var(--incl-bg); color: var(--incl); }
+  .pill.key { border-color: var(--paid-dim); background: var(--paid-bg); color: var(--paid); }
+  /* The legacy bucket is deliberately colourless: it is neither of the two things the
+     split names, and tinting it either way would imply an attribution it does not have. */
+  .r.legacy { opacity: 0.72; }
+  .r.legacy .name { color: var(--text-secondary); }
+  .r.legacy .v { color: var(--text-secondary); }
+
+  .quota { display: block; margin-top: 5px; width: 130px; margin-left: auto; }
+  .quota-bar { display: block; height: 3px; border-radius: 2px; background: var(--bg-elevated); overflow: hidden; }
+  .quota-fill { height: 100%; background: var(--incl); display: block; }
+
+  .foot {
+    padding: 11px 18px; border-top: 1px solid var(--border-soft);
+    background: var(--bg-secondary); font-size: 11.5px; color: var(--text-tertiary);
+    line-height: 1.55;
+  }
+
+  /* ---- weekly chart ---- */
+  .chart { padding: 16px 18px 6px; }
+  .chart-head {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+    font-size: 11px; color: var(--text-tertiary);
+  }
+  .chart-head .grow { flex: 1; }
+  .toggle { display: flex; gap: 3px; }
+  .toggle button {
+    font: inherit; font-size: 11px; padding: 3px 9px; border-radius: 6px; cursor: pointer;
+    background: transparent; border: 1px solid transparent; color: var(--text-tertiary);
+  }
+  .toggle button:hover { background: var(--bg-hover); color: var(--text-secondary); }
+  .toggle button.on {
+    background: var(--bg-elevated); border-color: var(--border); color: var(--text-primary);
+  }
+  .bars { display: flex; gap: 12px; align-items: flex-end; height: 128px; }
+  .bar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; }
+  .bar .seg { border-radius: 2px; display: block; }
+  .bar .seg.paid { background: var(--paid); }
+  .bar .seg.worth { background: var(--incl); opacity: .55; }
+  .bar .seg.turns { background: var(--text-tertiary); opacity: .6; }
+  .bar .cap { font-size: 10px; color: var(--text-tertiary); text-align: center; margin-top: 7px; }
+  .bar .val {
+    font-size: 10px; text-align: center; margin-bottom: 4px; color: var(--text-tertiary);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- notes ---- */
+  .notes { display: flex; flex-direction: column; gap: 12px; }
+  .note {
+    border: 1px solid var(--border); border-left: 2px solid var(--accent);
+    background: var(--bg-modal); border-radius: 9px; padding: 12px 15px;
+    font-size: 12.5px; line-height: 1.68; color: var(--text-secondary);
+  }
+  .note b { color: var(--text-primary); }
+  .note .req {
+    display: inline-block; font-size: 10px; background: #1d1d3a; border: 1px solid #33336a;
+    color: #a5a5e8; padding: 1px 6px; border-radius: 4px; margin-right: 7px; vertical-align: 1px;
+  }
+  .note .callout {
+    margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--border);
+    color: var(--text-tertiary); font-size: 12px;
+  }
+  .note.against { border-left-color: var(--warning); }
+  .note.against .req { background: #2a2110; border-color: #4a3a18; color: #e8c98a; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Usage, split by where the money went</h1>
+<p class="page-sub">
+  Prototype for <code class="k">docs/252-custom-models</code>. Today the usage modal shows one
+  <b>Cost</b> figure, because there is one provider and one way of paying. Once a session can
+  move between a subscription and a metered key — even within a single service — one total
+  silently adds <i>money you spent</i> to <i>tokens that were already paid for</i>. This
+  splits it on the same axis everything else in this feature splits on:
+  <b>service &times; billing mode</b>.
+</p>
+
+<!-- ============================ 1. SESSION ============================ -->
+<div class="section-label"><span class="n">1</span> This session — mixed, the case that breaks a single total</div>
+<div class="stage"><div class="cols">
+  <div class="panel">
+    <div class="panel-head">
+      <h2>Add a rate limit to the upload endpoint</h2>
+      <span class="grow"></span>
+      <span class="sub">31 turns &middot; 1h 12m</span>
+    </div>
+
+    <div class="headline">
+      <div class="hl">
+        <div class="cap">Metered spend (est.)</div>
+        <div class="big paid num">$0.42</div>
+        <div class="why">Metered API keys only. ShipIt&rsquo;s estimate of what you were charged &mdash; not a bank statement.</div>
+      </div>
+      <div class="hl-div"></div>
+      <div class="hl">
+        <div class="cap">Included in plans</div>
+        <div class="big incl num">23 turns</div>
+        <div class="worth">&asymp; $6.90 at API rates</div>
+        <div class="why">Ran against subscriptions you already pay for. No marginal cost.</div>
+      </div>
+    </div>
+
+    <div class="rows">
+      <div class="r">
+        <div class="who">
+          <span class="name">Anthropic</span>
+          <span class="pill sub">Subscription</span>
+          <span class="models">opus-5, sonnet-5</span>
+        </div>
+        <div class="vol">18 turns &middot; 1.4M tokens</div>
+        <div class="amt">
+          <span class="v incl">Included</span>
+          <span class="quota"><span class="quota-bar"><span class="quota-fill" style="width:62%"></span></span></span>
+          <span class="s">62% of session limit</span>
+          <span class="notional">&asymp; $5.40 at API rates</span>
+        </div>
+      </div>
+      <div class="r">
+        <div class="who">
+          <span class="name">GLM</span>
+          <span class="pill sub">Subscription</span>
+          <span class="models">glm-5</span>
+        </div>
+        <div class="vol">5 turns &middot; 220K tokens</div>
+        <div class="amt">
+          <span class="v incl">Included</span>
+          <span class="quota"><span class="quota-bar"><span class="quota-fill" style="width:41%"></span></span></span>
+          <span class="s">41% of monthly limit</span>
+          <span class="notional">&asymp; $1.50 at API rates</span>
+        </div>
+      </div>
+      <div class="r">
+        <div class="who">
+          <span class="name">DeepSeek</span>
+          <span class="pill key">API key</span>
+          <span class="models">deepseek-v4-pro</span>
+        </div>
+        <div class="vol">6 turns &middot; 310K tokens</div>
+        <div class="amt"><span class="v paid num">$0.11</span><span class="s">metered</span></div>
+      </div>
+      <div class="r">
+        <div class="who">
+          <span class="name">OpenRouter</span>
+          <span class="pill key">API key</span>
+          <span class="models">kimi-k3</span>
+        </div>
+        <div class="vol">2 turns &middot; 95K tokens</div>
+        <div class="amt"><span class="v paid num">$0.31</span><span class="s">metered</span></div>
+      </div>
+    </div>
+
+    <div class="foot">
+      The two GLM rows would be the same service, split by billing mode — one included in the
+      coding plan, the other charged per token. GLM is used because it really has both;
+      DeepSeek, which an earlier draft used here, sells no subscription.
+    </div>
+  </div>
+
+  <div class="notes">
+    <div class="note">
+      <span class="req">req 11</span><b>Two headline numbers, because there are two kinds of
+      thing.</b> Dollars and quota do not add up, so they are not added up. &ldquo;You
+      paid&rdquo; sums the metered rows only — the one figure that is money — and everything
+      on a plan is counted in turns beside it.
+      <div class="callout">
+        A single <b>Cost</b> stat is the current design and it is fine today, when a session
+        has one provider and one way of paying. It stops being fine the moment a session
+        can move between a subscription and a key.
+      </div>
+    </div>
+    <div class="note">
+      <span class="req">req 5</span><b>The split is service &times; billing mode</b> — the same
+      grouping as the picker and Settings. A service with both modes is the proof it has to be
+      the mode and not the service: one service, two lines, and merging them would put a
+      metered price against a row that is mostly free.
+    </div>
+    <div class="note">
+      <span class="req">req 10</span><b>Quota belongs to the subscription rows only.</b> A
+      metered row shows a price and no bar; a plan row shows a bar and no price. That is
+      req 10&rsquo;s &ldquo;no indicator at all&rdquo; rule and req 12&rsquo;s billing-mode
+      branch showing up in a third place.
+    </div>
+    <div class="note against">
+      <span class="req">req 16</span><b><code class="k">costUsd</code> cannot supply either
+      figure for a custom service.</b> For a redirected turn the harness reports a figure its
+      own price table produced for the model <i>it</i> believes it is running &mdash; and
+      whichever vendor that is, it is not the one that billed. For a subscription turn no money
+      moved at all, so there is nothing for a reported figure to be.
+      <div class="callout">
+        Both numbers on this screen therefore need a ShipIt-owned price table keyed by
+        <code class="k">(service, billing mode, model)</code> &mdash; the mode is in the key
+        because one service can price the same model differently under a plan and a key.
+        That is per-model catalogue upkeep req 6 has kept small so far: a real cost of this
+        screen, and one to count before building it.
+        <br><br>
+        An earlier version of this note claimed the dogfood database showed a constant
+        <b>18&times;</b> ratio proving whose price table was applied. It does not &mdash; the
+        rows store tokens and a cost but no vendor rate, so the comparison has no second term.
+        The claim is withdrawn; <code class="k">plan.md</code> records what the data does and
+        does not show. Req 16 needs the price table on its own terms and never needed that
+        proof.
+      </div>
+    </div>
+    <div class="note">
+      <span class="req">req 16</span><b>The legacy group carries its own total and joins
+      neither headline.</b> Pre-feature rows have no service and no billing mode, which is why
+      they are grouped rather than split &mdash; but they also have no <i>known dollar
+      meaning</i>. One may be a cumulative delta, one an acknowledged over-counted
+      pre-migration value, one a Codex zero that means &ldquo;reported nothing&rdquo; rather
+      than &ldquo;cost nothing&rdquo;.
+      <div class="callout">
+        So the group shows what the user has already been shown, labelled as earlier
+        accounting, and is added into neither &ldquo;Metered spend&rdquo; nor &ldquo;at API
+        rates&rdquo; &mdash; it has no persisted rates, so it could not feed the second one
+        even if its provenance were known. It is colourless on purpose: tinting it as plan or
+        metered would assert the very attribution the bucket exists to admit is missing. The
+        group drains on its own as old sessions age out.
+      </div>
+    </div>
+  </div>
+</div></div>
+
+<!-- ============================ 2. SUBSCRIPTION-ONLY ============================ -->
+<div class="section-label"><span class="n">2</span> A session that cost nothing — say so, don&rsquo;t print $0.00</div>
+<div class="stage"><div class="cols">
+  <div class="panel">
+    <div class="panel-head">
+      <h2>Fix the flaky upload test</h2>
+      <span class="grow"></span>
+      <span class="sub">9 turns &middot; 14m</span>
+    </div>
+    <div class="headline">
+      <div class="hl">
+        <div class="cap">Metered spend (est.)</div>
+        <div class="big incl">Nothing</div>
+        <div class="worth">&asymp; $2.10 at API rates</div>
+        <div class="why">Every turn ran on a plan you already pay for &mdash; and that is what
+          those turns would have cost without one.</div>
+      </div>
+    </div>
+    <div class="rows">
+      <div class="r">
+        <div class="who">
+          <span class="name">Anthropic</span>
+          <span class="pill sub">Subscription</span>
+          <span class="models">sonnet-5</span>
+        </div>
+        <div class="vol">9 turns &middot; 480K tokens</div>
+        <div class="amt">
+          <span class="v incl">Included</span>
+          <span class="quota"><span class="quota-bar"><span class="quota-fill" style="width:12%"></span></span></span>
+          <span class="s">12% of session limit</span>
+          <span class="notional">&asymp; $2.10 at API rates</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div class="note">
+      <b>&ldquo;Nothing&rdquo; beats &ldquo;$0.00&rdquo;.</b> A zero reads as a measurement
+      that came back empty — possibly broken telemetry. The word states the actual fact: this
+      session did not cost money, which is the normal case for a subscription user and should
+      not look like a failure.
+      <div class="callout">
+        The second headline is dropped rather than shown empty: with nothing paid there is no
+        contrast to draw, and one column says it.
+      </div>
+    </div>
+  </div>
+</div></div>
+
+<!-- ============================ 3. GLOBAL ============================ -->
+<div class="section-label"><span class="n">3</span> All sessions — the same split, plus what it costs over time</div>
+<div class="stage"><div class="cols">
+  <div class="panel">
+    <div class="panel-head">
+      <h2>All sessions</h2>
+      <span class="grow"></span>
+      <span class="sub">last 6 weeks</span>
+    </div>
+
+    <div class="headline">
+      <div class="hl">
+        <div class="cap">Metered spend (est.)</div>
+        <div class="big paid num">$18.40</div>
+        <div class="why">Across 3 metered services.</div>
+      </div>
+      <div class="hl-div"></div>
+      <div class="hl">
+        <div class="cap">Included in plans</div>
+        <div class="big incl num">612 turns</div>
+        <div class="worth">&asymp; $243.60 at API rates</div>
+        <div class="why">Across 2 subscriptions.</div>
+      </div>
+    </div>
+
+    <div class="rows">
+      <div class="r">
+        <div class="who"><span class="name">Anthropic</span><span class="pill sub">Subscription</span></div>
+        <div class="vol">486 turns</div>
+        <div class="amt"><span class="v incl">Included</span><span class="s">2 accounts</span><span class="notional">&asymp; $198.20 at API rates</span></div>
+      </div>
+      <div class="r">
+        <div class="who"><span class="name">GLM</span><span class="pill sub">Subscription</span></div>
+        <div class="vol">126 turns</div>
+        <div class="amt"><span class="v incl">Included</span><span class="notional">&asymp; $45.40 at API rates</span></div>
+      </div>
+      <div class="r">
+        <div class="who"><span class="name">OpenRouter</span><span class="pill key">API key</span></div>
+        <div class="vol">88 turns</div>
+        <div class="amt"><span class="v paid num">$11.20</span><span class="s">metered</span></div>
+      </div>
+      <div class="r">
+        <div class="who"><span class="name">DeepSeek</span><span class="pill key">API key</span></div>
+        <div class="vol">54 turns</div>
+        <div class="amt"><span class="v paid num">$5.90</span><span class="s">metered</span></div>
+      </div>
+      <div class="r">
+        <div class="who"><span class="name">Vercel AI Gateway</span><span class="pill key">API key</span></div>
+        <div class="vol">12 turns</div>
+        <div class="amt"><span class="v paid num">$1.30</span><span class="s">metered</span></div>
+      </div>
+      <div class="r legacy">
+        <div class="who"><span class="name">Before ShipIt tracked this</span><span class="pill legacy">Unattributed</span></div>
+        <div class="vol">1,204 turns</div>
+        <div class="amt"><span class="v num">$31.70</span><span class="s">earlier accounting</span></div>
+      </div>
+    </div>
+
+    <div class="chart">
+      <div class="chart-head">
+        <span class="grow">Weekly</span>
+        <span class="toggle" id="metric-toggle"></span>
+      </div>
+      <div class="bars" id="bars"></div>
+    </div>
+
+    <div class="foot">
+      One series at a time. Stacking paid on included was tried and dropped: two segments in
+      one bar with two different units invites reading them as parts of a whole, which they
+      are not.
+    </div>
+  </div>
+
+  <div class="notes">
+    <div class="note">
+      <b>One series at a time, on a toggle.</b> Today&rsquo;s chart already toggles
+      <i>cost</i> vs <i>turns</i>; this adds a third option rather than stacking a second
+      series onto the first. Stacking was tried and dropped — two segments in one bar, in two
+      different units, invites reading them as parts of a whole, which they are not.
+      <div class="callout">
+        The story survives the split: flip between <b>Paid</b> and <b>At API rates</b> and the
+        two move in opposite directions. Weeks where spend rose are weeks work moved
+        <i>off</i> the plans, not weeks with more work in them &mdash; which <b>Turns</b>
+        confirms.
+      </div>
+    </div>
+    <div class="note">
+      <span class="req">req 11</span><b>Plan usage carries its API-rate value.</b>
+      &ldquo;&asymp; $243.60 at API rates&rdquo; is the number that says whether a subscription
+      is worth keeping, and hiding it to protect the paid/included distinction was
+      overcautious &mdash; the distinction is carried by <i>colour, wording and position</i>,
+      not by the absence of a second figure.
+      <div class="callout">
+        It is deliberately not the paid green, sits below the volume rather than in the amount
+        slot, and is prefixed <b>&asymp;</b> and suffixed <b>at API rates</b>. It is never
+        added into &ldquo;Metered spend&rdquo;, which stays the only figure that is money. It says
+      <em>est.</em> because it is computed from ShipIt&rsquo;s own per-model rates, not read
+      from a vendor invoice &mdash; the four rates it carries cannot express per-request,
+      image or tiered-cache charges. Labelling an estimate &ldquo;You paid&rdquo; asserts a
+      fact about a bank statement, which is the same dishonesty as trusting the CLI&rsquo;s
+      own cost figure.
+      </div>
+    </div>
+  </div>
+</div></div>
+
+</div>
+
+<script>
+// One series at a time — today's UsageModal already toggles cost vs turns, and stacking a
+// second series onto it was rejected as confusing. The third option exists because plan
+// usage now has a value as well as a volume.
+const WEEKS = [
+  { week:'Jun 30', paid:1.10, worth:34.20, turns:96  },
+  { week:'Jul 7',  paid:2.40, worth:29.80, turns:88  },
+  { week:'Jul 14', paid:4.80, worth:22.10, turns:104 },
+  { week:'Jul 21', paid:1.90, worth:41.60, turns:121 },
+  { week:'Jul 28', paid:5.30, worth:19.40, turns:99  },
+  { week:'Aug 4',  paid:2.90, worth:36.50, turns:110 },
+];
+const METRICS = [
+  { key:'paid',  label:'Paid',         fmt: v => '$' + v.toFixed(2) },
+  { key:'worth', label:'At API rates', fmt: v => '≈$' + v.toFixed(0) },
+  { key:'turns', label:'Turns',        fmt: v => String(v) },
+];
+let metric = 'paid';
+
+function renderChart() {
+  document.getElementById('metric-toggle').innerHTML = METRICS.map(m =>
+    `<button class="${m.key === metric ? 'on' : ''}" onclick="setMetric('${m.key}')">${m.label}</button>`
+  ).join('');
+
+  const m = METRICS.find(x => x.key === metric);
+  const max = Math.max(...WEEKS.map(w => w[metric]));
+  document.getElementById('bars').innerHTML = WEEKS.map(w => `
+    <div class="bar">
+      <div class="val">${m.fmt(w[metric])}</div>
+      <span class="seg ${metric}" style="height:${Math.round((w[metric] / max) * 96)}px"></span>
+      <div class="cap">${w.week}</div>
+    </div>`).join('');
+}
+function setMetric(k) { metric = k; renderChart(); }
+renderChart();
+</script>
+</body>
+</html>

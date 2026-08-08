@@ -1,0 +1,895 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Custom models — two-selector picker prototype</title>
+<style>
+  :root {
+    --bg-page: #0a0a0b;
+    --bg-modal: #111113;
+    --bg-secondary: #18181b;
+    --bg-elevated: #1f1f23;
+    --bg-hover: #26262b;
+    --border: #2a2a30;
+    --border-soft: #1f1f24;
+    --text-primary: #ececee;
+    --text-secondary: #a1a1aa;
+    --text-tertiary: #6b6b74;
+    --accent: #6366f1;
+    --accent-soft: #818cf8;
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 600px at 80% -10%, #15151a 0%, transparent 60%),
+      var(--bg-page);
+    color: var(--text-primary);
+    padding: 40px 24px 90px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  .page-title { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
+  .page-sub { font-size: 13px; color: var(--text-secondary); line-height: 1.65; margin: 0 0 32px; }
+  code.k {
+    background: var(--bg-secondary); border: 1px solid var(--border-soft);
+    padding: 1px 5px; border-radius: 4px; font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .section-label {
+    font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--text-tertiary); margin: 0 0 12px;
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  .section-label .n {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: var(--bg-elevated); border: 1px solid var(--border);
+    color: var(--text-secondary); font-size: 10px; letter-spacing: 0;
+  }
+  .cols { display: grid; grid-template-columns: 300px 1fr; gap: 22px; align-items: start; }
+  .card {
+    background: var(--bg-modal); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px 18px;
+  }
+  .card h3 {
+    margin: 0 0 3px; font-size: 12px; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--text-secondary);
+  }
+  .card .hint { font-size: 11.5px; color: var(--text-tertiary); line-height: 1.5; }
+
+  /* ---- scenario knobs ---- */
+  .knob-group { margin-top: 14px; }
+  .knob-group + .knob-group { border-top: 1px solid var(--border-soft); padding-top: 14px; }
+  .knob-title {
+    font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--text-tertiary); margin-bottom: 8px;
+  }
+  label.knob {
+    display: flex; align-items: center; gap: 9px;
+    padding: 5px 7px; border-radius: 7px; cursor: pointer; font-size: 13px;
+  }
+  label.knob:hover { background: var(--bg-secondary); }
+  label.knob input { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
+  label.knob .sub { color: var(--text-tertiary); font-size: 11px; margin-left: auto; }
+
+  /* ---- transcript above the composer, so menus have room to open upward ---- */
+  .transcript {
+    height: 250px; display: flex; flex-direction: column; justify-content: flex-end;
+    gap: 10px; padding: 0 4px 14px;
+  }
+  .bubble {
+    align-self: flex-start; max-width: 78%; font-size: 13px; line-height: 1.6;
+    padding: 9px 13px; border-radius: 11px;
+    border: 1px solid var(--border); background: var(--bg-modal);
+    color: var(--text-secondary);
+  }
+  .bubble.user {
+    align-self: flex-end; background: var(--bg-elevated); color: var(--text-primary);
+  }
+  .bubble .dots::before { content: "\25CF"; color: var(--accent); font-size: 9px; }
+  .transcript-note {
+    font-size: 11.5px; color: var(--text-tertiary); text-align: center; padding-top: 4px;
+  }
+
+  /* ---- composer ---- */
+  .composer {
+    background: var(--bg-modal); border: 1px solid var(--border);
+    border-radius: 14px; padding: 14px 16px 12px;
+  }
+  .composer-input {
+    color: var(--text-tertiary); font-size: 14px; padding: 6px 2px 16px;
+  }
+  .composer-bar { display: flex; align-items: center; gap: 8px; }
+  .composer-bar .spacer { flex: 1; }
+  .send {
+    background: var(--accent); color: #fff; border: none; border-radius: 8px;
+    width: 30px; height: 30px; font-size: 14px; cursor: default;
+  }
+
+  /* ---- selector triggers ---- */
+  .sel { position: relative; }
+  .trigger {
+    display: inline-flex; align-items: center; gap: 7px;
+    background: transparent; border: 1px solid transparent;
+    color: var(--text-secondary); font: inherit; font-size: 12.5px; font-weight: 500;
+    padding: 6px 9px; border-radius: 8px; cursor: pointer;
+  }
+  .trigger:hover:not([disabled]) { background: var(--bg-hover); }
+  .trigger[disabled] { cursor: default; opacity: .72; }
+  .trigger.open { background: var(--bg-hover); border-color: var(--border); }
+  .trigger .caret { color: var(--text-tertiary); font-size: 9px; }
+  .trigger .lock { color: var(--text-tertiary); font-size: 11px; }
+  .trigger .lead {
+    color: var(--text-tertiary); font-size: 10px; letter-spacing: .07em;
+    text-transform: uppercase;
+  }
+  .divider { width: 1px; height: 18px; background: var(--border); }
+
+  /* ---- dropdown ---- */
+  .menu {
+    position: absolute; bottom: calc(100% + 8px); left: 0;
+    min-width: 268px; background: var(--bg-elevated);
+    border: 1px solid var(--border); border-radius: 11px;
+    padding: 5px; z-index: 40;
+    box-shadow: 0 18px 40px rgba(0,0,0,.55);
+  }
+  .menu.right { left: auto; right: 0; }
+  .menu-label {
+    display: flex; align-items: center; gap: 7px;
+    padding: 7px 9px 4px; font-size: 10px; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--text-tertiary);
+  }
+  .menu-label .grow { flex: 1; }
+  .item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 9px; border-radius: 7px; font-size: 13px; cursor: pointer;
+  }
+  .item:hover { background: var(--bg-hover); }
+  .item.sel-row { background: rgba(99,102,241,.14); color: var(--accent-soft); }
+  .item.disabled { opacity: .4; cursor: default; }
+  .item.disabled:hover { background: transparent; }
+  .item .grow { flex: 1; }
+  .item .mono, .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+  }
+  .item .check { color: var(--accent); font-size: 12px; }
+  .menu-empty { padding: 14px 11px; font-size: 12.5px; color: var(--text-tertiary); line-height: 1.6; }
+
+  /* ---- pills ---- */
+  .pill {
+    font-size: 10px; padding: 2px 7px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--text-tertiary);
+    letter-spacing: .02em; text-transform: none; white-space: nowrap;
+  }
+  .pill.sub { border-color: #3b3565; background: #1d1a33; color: #b3a9ee; }
+  .pill.key { border-color: #2f4a3a; background: #16241c; color: #86c9a3; }
+
+  /* ---- state readout ---- */
+  .readout { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .banner {
+    display: flex; gap: 10px; align-items: flex-start;
+    border-radius: 9px; padding: 10px 13px; font-size: 12.5px; line-height: 1.6;
+    border: 1px solid var(--border); background: var(--bg-secondary);
+    color: var(--text-secondary);
+  }
+  .banner.warn { border-color: #4a3a18; background: #221a0d; color: #e8c98a; }
+  .banner.info { border-color: #2c3556; background: #15192c; color: #a8b4e8; }
+  .banner b { color: inherit; }
+  .banner .ico { font-size: 13px; line-height: 1.35; }
+
+  .scaffold {
+    font-size: 11px; color: var(--text-tertiary); padding: 2px 4px;
+    border-left: 2px dashed var(--border); padding-left: 10px;
+  }
+  .scaffold b { color: var(--text-secondary); font-weight: 500; }
+  .chip {
+    font-size: 11.5px; padding: 3px 8px; border-radius: 6px;
+    background: var(--bg-elevated); border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  /* ---- notes ---- */
+  .notes { display: flex; flex-direction: column; gap: 12px; margin-top: 26px; }
+  .note {
+    border: 1px solid var(--border); border-left: 2px solid var(--accent);
+    background: var(--bg-modal); border-radius: 9px; padding: 12px 15px;
+    font-size: 12.5px; line-height: 1.68; color: var(--text-secondary);
+  }
+  .note b { color: var(--text-primary); }
+  .note .req {
+    display: inline-block; font-size: 10px; letter-spacing: .04em;
+    background: #1d1d3a; border: 1px solid #33336a; color: #a5a5e8;
+    padding: 1px 6px; border-radius: 4px; margin-right: 7px; vertical-align: 1px;
+  }
+  .note .callout {
+    margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--border);
+    color: var(--text-tertiary); font-size: 12px;
+  }
+  .note.against { border-left-color: var(--warning); }
+  .note.against .req { background: #2a2110; border-color: #4a3a18; color: #e8c98a; }
+
+  /* ---- before/after ---- */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 8px; }
+  .compare .card { padding: 0; overflow: hidden; }
+  .compare .cap {
+    padding: 11px 15px; border-bottom: 1px solid var(--border-soft);
+    font-size: 12px; color: var(--text-secondary);
+  }
+  .compare .cap b { color: var(--text-primary); }
+  .compare .body { padding: 15px; }
+  .fakemenu {
+    background: var(--bg-elevated); border: 1px solid var(--border);
+    border-radius: 10px; padding: 5px; width: 258px;
+  }
+  hr.sep { border: none; border-top: 1px solid var(--border-soft); margin: 46px 0 34px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1 class="page-title">Two selectors: harness, then model</h1>
+<p class="page-sub">
+  Prototype for <code class="k">docs/252-custom-models</code>. Today one dropdown lists models
+  grouped by <i>harness</i>, because harness and provider are the same thing. Once they are
+  separated, that grouping is wrong — the harness stops being a group and becomes an axis.
+  This splits it into two selectors and lets you drive the result.
+  <b>The left panel is prototype scaffolding, not proposed UI</b> — it stands in for what
+  Settings and the deployment would decide.
+</p>
+
+<div class="section-label"><span class="n">1</span> Interactive — change the knobs, open the selectors</div>
+
+<div class="cols">
+  <div class="card">
+    <h3>Scenario</h3>
+    <div class="hint">Stands in for Settings &rarr; Services, the install&rsquo;s harness set, and how far the session has got.</div>
+
+    <div class="knob-group">
+      <div class="knob-title">Credentials configured</div>
+      <div id="knob-creds"></div>
+    </div>
+
+    <div class="knob-group">
+      <div class="knob-title">Harnesses installed</div>
+      <div id="knob-harnesses"></div>
+    </div>
+
+    <div class="knob-group">
+      <div class="knob-title">Session</div>
+      <label class="knob">
+        <input type="checkbox" id="knob-pinned" />
+        <span>Has taken its first turn</span>
+        <span class="sub">pins harness</span>
+      </label>
+    </div>
+  </div>
+
+  <div>
+    <div class="transcript">
+      <div class="bubble user">Add a rate limit to the upload endpoint</div>
+      <div class="bubble agent">
+        <span class="dots"></span> Reading <span class="mono">src/server/routes/upload.ts</span>&hellip;
+      </div>
+      <div class="transcript-note">
+        The selectors sit in the composer, so the menus open upward — as they do in ShipIt.
+      </div>
+    </div>
+    <div class="composer">
+      <div class="composer-input">Describe what you want to build&hellip;</div>
+      <div class="composer-bar">
+        <div class="sel" id="sel-harness"></div>
+        <div class="divider"></div>
+        <div class="sel" id="sel-model"></div>
+        <div class="sel" id="sel-effort"></div>
+        <div class="spacer"></div>
+        <button class="send">&uarr;</button>
+      </div>
+    </div>
+
+    <div class="readout" id="readout"></div>
+  </div>
+</div>
+
+<div class="notes">
+  <div class="note">
+    <span class="req">req 3</span><b>Model selection is still one place.</b> Req 3 says every
+    model is selected the same way in the same place — it says nothing about the harness, which
+    is a different choice with different consequences. Splitting them keeps one model list
+    while giving the harness the affordance it actually needs.
+  </div>
+  <div class="note">
+    <span class="req">docs/138</span><b>This is the real argument for the split: the lock.</b>
+    Per-agent credential isolation pins the harness for life after the first turn, while models
+    stay switchable (<span class="req" style="margin:0">req 4</span>). Today that shows up as
+    greyed-out rows scattered inside one model list, with a lock badge on a group header — you
+    have to open the menu and read it to find out. Two selectors make it structural: one
+    control is disabled with the reason on it, the other is fully live.
+    <div class="callout">
+      Toggle <i>Has taken its first turn</i>. In the combined picker this state is legible
+      only from inside the dropdown; here it is visible on the closed composer.
+    </div>
+  </div>
+  <div class="note">
+    <b>The picker states what you choose on, and nothing else.</b> No labels on the triggers,
+    no API style, no explanatory footers. Each harness row gives its <b>model count</b> —
+    the same information as the style, in the form the decision actually needs. Styles stay on
+    Settings &rarr; Harnesses, whose entire job is explaining why a service appears under one
+    harness and not another.
+    <div class="callout">
+      The service pill is the one conditional element: it appears <i>only</i> when the same
+      model id is offered by more than one credentialed service on this harness — the single
+      case where the id alone cannot say who is billing you, and the reason models are
+      identified by the pair. Give OpenRouter a key while on
+      <code class="k">deepseek-v4-flash</code> and it appears; take it away and it goes.
+    </div>
+  </div>
+  <div class="note">
+    <b>The third control is reasoning, and its levels are the harness&rsquo;s.</b> Claude Code
+    offers <code class="k">low&hellip;max</code>, Codex offers
+    <code class="k">none&hellip;xhigh</code> — each CLI&rsquo;s own accepted values (docs/217),
+    deliberately not narrowed by the selected model. A harness with no reasoning setting shows
+    no control: tick Cursor on, switch to it, and the control is gone rather than empty.
+    <div class="callout">
+      So a harness switch can strand the <i>effort</i> too. Set <b>Max</b> on Claude Code and
+      switch to Codex: it returns to <b>Default</b> and says so. It is not mapped to a
+      neighbour — a level name shared by two CLIs is not a promise of shared semantics, and
+      Default is always valid. <b>High</b>, which both accept, survives untouched.
+    </div>
+  </div>
+  <div class="note">
+    <span class="req">req 11</span><b>No persistent attribution strip.</b> An earlier version of
+    this prototype carried a &ldquo;Running <i>model</i> via <i>service</i> on <i>harness</i>&rdquo;
+    row under the composer. It was cut as redundant: the two triggers already show the model, its
+    service and the harness, and the model menu&rsquo;s group headers already carry the billing
+    kind. Req 11 asks that the user <i>can tell</i>, not that it is restated permanently.
+    <div class="callout">
+      &ldquo;What actually ran&rdquo; keeps its existing home in the usage modal
+      (<code class="k">UsageModal.tsx</code>, which already shows a <b>Model</b> stat) — that is
+      where service and billing kind should join it, rather than in new composer chrome.
+    </div>
+  </div>
+  <div class="note">
+    <span class="req">req 6</span><b>The model list is the harness&rsquo;s style joined against
+    your credentials.</b> Switch to Codex with only a DeepSeek key and you get one model, not
+    two — the service speaks both styles but declares only <code class="k">deepseek-v4-flash</code>
+    under <code class="k">openai-responses</code>. The grouping is by <i>service</i>, because
+    that is what decides the credential, the price and the billing pill.
+  </div>
+  <div class="note">
+    <span class="req">req 14</span><b>Uninstalled harnesses are absent, not greyed.</b> Cursor
+    appears in the harness list only once the deployment installs it. Being installed is a
+    precondition of the credential rule, not an exception to it — so the two knobs compose:
+    no install means no models whatever your keys.
+  </div>
+  <div class="note">
+    <span class="req">req 5</span><b>A subscription and a key on one service are two blocks,
+    not one.</b> Tick &ldquo;&hellip; and a coding plan&rdquo; under GLM: two
+    <code class="k">GLM</code> groups appear, and the plan offers only
+    <code class="k">glm-5</code> while the key also offers <code class="k">glm-5-air</code>.
+    GLM is used here because it really has both &mdash; DeepSeek, which an earlier draft
+    used, sells no subscription at all.
+    <div class="callout">
+      Two independent reasons, either sufficient. <b>Model sets can differ</b> — a plan tier
+      need not include everything the API sells, and a merged block would list a model the
+      subscription cannot serve. <b>Prices differ</b> — included versus metered, which is the
+      same argument that already makes DeepSeek-direct and OpenRouter separate rows rather
+      than one <code class="k">deepseek-v4-flash</code>.
+    </div>
+  </div>
+  <div class="note">
+    <b>But several subscriptions of one service stay in ONE block.</b> The grouping key is the
+    <i>billing mode</i>, not the credential. Req 12 routes between subscription accounts of a
+    service automatically, so making the user choose between them here would be noise — and it
+    caps the blow-up at two groups per service rather than one per credential.
+    <div class="callout">
+      This is also what fixes a hole in the merged version: with a subscription spent and a key
+      sitting unused, ShipIt never fails over onto metered billing — so under one block there
+      was no way to say &ldquo;charge me, keep working&rdquo;. Two blocks make that a normal
+      selection.
+    </div>
+  </div>
+  <div class="note">
+    <b>Entries are pairs, not model ids.</b> Give OpenRouter a key and
+    <code class="k">deepseek-v4-flash</code> appears twice, under two services, at two prices.
+    One list of bare model ids could not express that; two rows under two group headers can.
+    Add Vercel too and it is three.
+  </div>
+  <div class="note">
+    <span class="req">req 15</span><b>The gateways are catalogue rows, not a feature.</b>
+    OpenRouter and Vercel AI Gateway are in the list because req 15 says the shipped catalogue
+    must contain them — nothing in this prototype treats a gateway differently from DeepSeek.
+    If a gateway needed special handling here, the service abstraction would be wrong.
+    <div class="callout">
+      Their declared styles are illustrative. Which styles each gateway really speaks, and
+      which models under each, is research to do when the catalogue row is authored (req 6).
+    </div>
+  </div>
+  <div class="note">
+    <b>The other harness&rsquo;s models are one control away, not lost.</b> The combined picker
+    showed everything at once and greyed what you could not have — worse as a lock affordance,
+    better as a map. The obvious patch was a footer on the model menu (&ldquo;3 more models on
+    Codex&rdquo;), and it was wrong: it grows with every installed harness, and it is useless
+    the moment the harness is pinned, which is most of a session&rsquo;s life.
+    <div class="callout">
+      The harness menu already answers it, on the control that would act on it: each row
+      states its own model count. Open the harness selector — <b>Claude Code &middot; 5 models
+      available</b>, <b>Codex &middot; 3 models available</b>. That does not grow into clutter,
+      because it is one line in a menu that lists harnesses anyway.
+    </div>
+  </div>
+  <div class="note against">
+    <span class="req">open</span><b>Switching harness can strand the selected model.</b> The
+    prototype keeps the model when the new harness also offers it (that is why
+    <code class="k">deepseek-v4-flash</code> survives a Claude&nbsp;Code &rarr; Codex switch)
+    and otherwise moves to the first eligible model and says so. Silently landing somewhere
+    else would contradict req 11; refusing the switch would make the harness selector lie about
+    being enabled. This is the one interaction the split creates that the combined picker never
+    had, because there the model and harness moved together by construction.
+  </div>
+  <div class="note">
+    <span class="req">req 12</span><b>Removing a credential strands a running session — and
+    that is already the specified behaviour.</b> Uncheck the service the session is on. Req 8
+    says its models stop being selectable, but the session is already <i>on</i> one, and unlike
+    a retirement (req 13) there is no successor of the same service to move to. Req 12 answers
+    it without needing a new rule: an API key does not fail over, so ShipIt stops and says so.
+    <div class="callout">
+      What the split adds is only <i>where</i> that shows up — a picker state you can see
+      before you send, rather than a failure you discover by taking a turn.
+    </div>
+  </div>
+</div>
+
+<hr class="sep" />
+
+<div class="section-label"><span class="n">2</span> Against today — same state, both shapes</div>
+<div class="compare">
+  <div class="card">
+    <div class="cap"><b>Today</b> — one menu, grouped by harness</div>
+    <div class="body">
+      <div class="fakemenu">
+        <div class="menu-label"><span class="grow">Claude Code</span></div>
+        <div class="item"><span class="grow mono">opus-5</span></div>
+        <div class="item"><span class="grow mono">sonnet-5</span></div>
+        <div class="item"><span class="grow mono">haiku-4.5</span></div>
+        <div class="menu-label"><span class="grow">Codex</span><span class="pill">&#128274; locked</span></div>
+        <div class="item disabled"><span class="grow mono">gpt-5.6-sol</span></div>
+        <div class="item disabled"><span class="grow mono">gpt-5.6-mini</span></div>
+      </div>
+      <div class="hint" style="margin-top:13px">
+        The group header is the harness, so a service cannot be a group — and once custom
+        services exist there is nowhere to put &ldquo;DeepSeek&rdquo;. The lock lives on a
+        header you only see with the menu open.
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="cap"><b>Proposed</b> — harness is an axis, service is the group</div>
+    <div class="body">
+      <div class="fakemenu">
+        <div class="menu-label"><span class="grow">Anthropic</span><span class="pill sub">Subscription</span></div>
+        <div class="item"><span class="grow mono">opus-5</span></div>
+        <div class="item"><span class="grow mono">sonnet-5</span></div>
+        <div class="menu-label"><span class="grow">DeepSeek</span><span class="pill key">API key</span></div>
+        <div class="item sel-row"><span class="grow mono">deepseek-v4-flash</span><span class="check">&#10003;</span></div>
+        <div class="item"><span class="grow mono">deepseek-v4-pro</span></div>
+      </div>
+      <div class="hint" style="margin-top:13px">
+        The harness moved out to its own control, freeing the group header for the service —
+        which is what the billing pill, the usage indicator and the credential all hang off.
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<script>
+// ---------------------------------------------------------------- catalogue
+// `reasoning` is a property of the HARNESS, not of the model — the vocabularies are the
+// CLI's own accepted values (docs/217, verified against each binary), and they differ.
+// Deliberately not narrowed by the selected model: there is no maintainable source for
+// which models honour which level, and a per-model claim would still say nothing about
+// whether this harness forwards it. A harness with no reasoning block shows no control.
+const HARNESSES = [
+  { id:'claude', name:'Claude Code', style:'anthropic-messages', version:'v2.4.1', preinstalled:true,
+    reasoning:{ label:'Reasoning', options:['low','medium','high','xhigh','max'] } },
+  { id:'codex',  name:'Codex',       style:'openai-responses',   version:'v0.9.3', preinstalled:true,
+    reasoning:{ label:'Reasoning effort', options:['none','minimal','low','medium','high','xhigh'] } },
+  { id:'cursor', name:'Cursor',      style:'openai-responses',   version:'v1.2.0', preinstalled:false },
+];
+
+const EFFORT_LABEL = { none:'None', minimal:'Minimal', low:'Low', medium:'Medium',
+                       high:'High', xhigh:'Extra high', max:'Max' };
+
+// A service holds one BILLING MODE per entry, and each mode declares its own models per
+// API style (req 6). Two modes of one service are separate entries because they differ in
+// price and can differ in model set — the same reason DeepSeek-direct and OpenRouter are
+// separate. Several *subscriptions* of one service are NOT separate: req 12 routes between
+// them automatically, so they collapse into the one subscription entry (`accounts`).
+const SERVICES = [
+  { id:'anthropic', name:'Anthropic', preset:true, modes:[
+      { kind:'sub', accounts:2,
+        styles:{ 'anthropic-messages':['opus-5','sonnet-5','haiku-4.5'] } },
+  ]},
+  { id:'openai', name:'OpenAI', preset:true, modes:[
+      { kind:'sub', accounts:1,
+        styles:{ 'openai-responses':['gpt-5.6-sol','gpt-5.6-mini'] } },
+  ]},
+  { id:'deepseek', name:'DeepSeek', preset:true, modes:[
+      // Key only: DeepSeek sells no subscription. An earlier draft gave it one, which was
+      // simply wrong about the world.
+      { kind:'key',
+        styles:{ 'anthropic-messages':['deepseek-v4-flash','deepseek-v4-pro'],
+                 'openai-responses':['deepseek-v4-flash'] } },
+  ]},
+  // GLM carries BOTH modes for real — a coding plan alongside an ordinary API — which is
+  // why it replaced DeepSeek as the two-modes illustration and is the intended test case.
+  // Its declared styles and models are illustrative here; authoring the row is research.
+  { id:'glm', name:'GLM', preset:true, modes:[
+      { kind:'key',
+        styles:{ 'anthropic-messages':['glm-5','glm-5-air'],
+                 'openai-responses':['glm-5','glm-5-air'] } },
+      // Toggled on by a knob. Deliberately a SMALLER model set than the key — the coding
+      // plan does not include everything the API sells. This is the case that makes one
+      // merged block impossible: a union list would offer a model the plan cannot serve.
+      { kind:'sub', accounts:1, optional:true,
+        styles:{ 'anthropic-messages':['glm-5'],
+                 'openai-responses':['glm-5'] } },
+  ]},
+  { id:'openrouter', name:'OpenRouter', preset:false, modes:[
+      { kind:'key',
+        styles:{ 'anthropic-messages':['deepseek-v4-flash','kimi-k3'],
+                 'openai-responses':['deepseek-v4-flash','kimi-k3'] } },
+  ]},
+  { id:'vercel', name:'Vercel AI Gateway', preset:false, modes:[
+      { kind:'key', styles:{ 'openai-responses':['deepseek-v4-flash','kimi-k3'] } },
+  ]},
+  { id:'fireworks', name:'Fireworks', preset:false, modes:[
+      { kind:'key', styles:{ 'openai-responses':['deepseek-v4-flash','qwen4-coder'] } },
+  ]},
+];
+
+const svc = id => SERVICES.find(s => s.id === id);
+const hns = id => HARNESSES.find(h => h.id === id);
+const routeLabel = k => (k === 'sub' ? 'Subscription' : 'API key');
+
+// ---------------------------------------------------------------- state
+const state = {
+  creds: new Set(SERVICES.filter(s => s.preset).map(s => s.id)),
+  installed: new Set(HARNESSES.filter(h => h.preinstalled).map(h => h.id)),
+  glmSub: false,  // has the user configured GLM's coding plan as well as its key?
+  pinned: false,
+  harness: 'claude',
+  service: 'deepseek',
+  mode: 'key',    // the billing mode, part of the selection — not resolved per turn
+  model: 'deepseek-v4-flash',
+  effort: null,  // null = Default, i.e. omit the flag and let the backend choose
+  open: null,
+  note: null,
+};
+
+const modesOf = s => s.modes.filter(m => !m.optional || (s.id === 'glm' && state.glmSub));
+
+// Every (service, mode, model) a harness can offer: the harness's style must be declared
+// by that billing mode of a service you hold a credential for.
+function eligible(harnessId) {
+  const h = hns(harnessId);
+  if (!h || !state.installed.has(harnessId)) return [];
+  const out = [];
+  for (const s of SERVICES) {
+    if (!state.creds.has(s.id)) continue;
+    for (const m of modesOf(s)) {
+      for (const model of (m.styles[h.style] || [])) {
+        out.push({ service: s.id, mode: m.kind, model, accounts: m.accounts ?? 0 });
+      }
+    }
+  }
+  return out;
+}
+
+const isEligible = (hId, sId, mode, model) =>
+  eligible(hId).some(e => e.service === sId && e.mode === mode && e.model === model);
+
+// ---------------------------------------------------------------- actions
+function pickHarness(id) {
+  if (state.pinned || id === state.harness) { state.open = null; return render(); }
+  state.harness = id;
+
+  // A harness switch can strand BOTH the model and the effort level, so the messages are
+  // collected rather than assigned — an earlier version let the model note overwrite the
+  // effort one, silently losing half of what changed.
+  const msgs = [];
+  let kind = 'info';
+
+  // Keep the selection when the new harness offers the same (service, mode, model);
+  // otherwise move to the first eligible one and say so. Never land silently (req 11).
+  if (!isEligible(id, state.service, state.mode, state.model)) {
+    const first = eligible(id)[0];
+    if (first) {
+      msgs.push(`<b>${state.model}</b> is not offered on ${hns(id).name}, so the session moved `
+              + `to <b>${first.model}</b> via ${svc(first.service).name} `
+              + `(${routeLabel(first.mode).toLowerCase()}).`);
+      state.service = first.service; state.mode = first.mode; state.model = first.model;
+    } else {
+      kind = 'warn';
+      msgs.push(`${hns(id).name} has no models — none of the services you have a key for `
+              + `work with it.`);
+    }
+  }
+
+  // The effort value can be stranded too, because the vocabularies differ: Codex has
+  // `minimal` and `none`, Claude Code has `max`. Reset to Default rather than guessing an
+  // equivalent — a shared name across two CLIs is not a promise of shared semantics, and
+  // Default is always valid.
+  const r = hns(id).reasoning;
+  if (state.effort !== null && (!r || !r.options.includes(state.effort))) {
+    const was = EFFORT_LABEL[state.effort] ?? state.effort;
+    state.effort = null;
+    msgs.push(r
+      ? `<b>${was}</b> is not one of ${hns(id).name}'s levels, so reasoning went back to <b>Default</b>.`
+      : `${hns(id).name} exposes no reasoning setting, so <b>${was}</b> no longer applies.`);
+  }
+
+  state.note = msgs.length ? { kind, text: msgs.join(' ') } : null;
+  state.open = null;
+  render();
+}
+
+function effortSelector() {
+  const h = hns(state.harness);
+  // No reasoning block on this harness → no control at all, not a disabled one.
+  if (!h || !h.reasoning) return '';
+  const open = state.open === 'effort';
+  const cur = state.effort;
+
+  let menu = '';
+  if (open) {
+    const row = (v, label) => `<div class="item ${cur === v ? 'sel-row' : ''}"
+        onclick="pickEffort(${v === null ? 'null' : `'${v}'`})">
+        <span class="grow">${label}</span>
+        <span class="check">${cur === v ? '&#10003;' : ''}</span>
+      </div>`;
+    menu = `<div class="menu right">
+      <div class="menu-label"><span class="grow">${h.reasoning.label}</span></div>
+      ${row(null, 'Default')}
+      ${h.reasoning.options.map(v => row(v, EFFORT_LABEL[v] ?? v)).join('')}
+    </div>`;
+  }
+
+  const label = cur === null ? 'Default' : (EFFORT_LABEL[cur] ?? cur);
+  return `${menu}
+    <button class="trigger ${open ? 'open' : ''}" onclick="toggleMenu('effort')"
+            title="${h.reasoning.label}: ${label} — the levels are ${h.name}'s, not the model's">
+      <span>${label}</span>
+      <span class="caret">&#9660;</span>
+    </button>`;
+}
+
+function pickEffort(v) { state.effort = v; state.open = null; render(); }
+
+function pickModel(serviceId, mode, model) {
+  state.service = serviceId; state.mode = mode; state.model = model;
+  state.note = null; state.open = null;
+  render();
+}
+
+function toggleMenu(which) {
+  state.open = state.open === which ? null : which;
+  render();
+}
+
+// ---------------------------------------------------------------- render
+function harnessSelector() {
+  const h = hns(state.harness);
+  const open = state.open === 'harness';
+  const list = HARNESSES.filter(x => state.installed.has(x.id));
+
+  let menu = '';
+  if (open && !state.pinned) {
+    const rows = list.map(x => {
+      const n = eligible(x.id).length;
+      const sel = x.id === state.harness;
+      return `<div class="item ${sel ? 'sel-row' : ''}" onclick="pickHarness('${x.id}')">
+        <span class="grow">${x.name}</span>
+        <span class="check">${sel ? '&#10003;' : ''}</span>
+      </div>
+      <div style="padding:0 9px 6px 9px;font-size:11px;color:var(--text-tertiary)">
+        ${n ? `${n} model${n === 1 ? '' : 's'} available`
+            : 'no models — no service you have a key for works with it'}
+      </div>`;
+    }).join('');
+    menu = `<div class="menu">${rows}</div>`;
+  }
+
+  const lock = state.pinned
+    ? `<span class="lock" title="Locked for this session after the first turn — per-agent credential isolation">&#128274;</span>`
+    : `<span class="caret">&#9660;</span>`;
+
+  return `${menu}
+    <button class="trigger ${open ? 'open' : ''}" ${state.pinned ? 'disabled' : ''}
+            onclick="toggleMenu('harness')"
+            title="${state.pinned ? 'The harness is fixed once the session has taken a turn.' : 'Which agent CLI runs this session'}">
+      <span>${h ? h.name : '—'}</span>
+      ${lock}
+    </button>`;
+}
+
+function modelSelector() {
+  const open = state.open === 'model';
+  const rows = eligible(state.harness);
+  const stranded = !isEligible(state.harness, state.service, state.mode, state.model);
+
+  let menu = '';
+  if (open) {
+    let inner = '';
+    if (!rows.length) {
+      inner = `<div class="menu-empty">
+        No models. ${state.installed.has(state.harness)
+          ? `None of the services you have a key for work with ${hns(state.harness).name}.`
+          : 'This harness is not installed.'}
+      </div>`;
+    } else {
+      let lastGroup = null;
+      for (const r of rows) {
+        const key = `${r.service}/${r.mode}`;
+        if (key !== lastGroup) {
+          const s = svc(r.service);
+          // One group per (service, billing mode). Several subscription ACCOUNTS of one
+          // service stay inside a single group — req 12 routes between them, so choosing
+          // one here would be noise.
+          inner += `<div class="menu-label">
+            <span class="grow">${s.name}</span>
+            <span class="pill ${r.mode}" title="${r.mode === 'sub'
+              ? `Included in the plan${r.accounts > 1 ? ` · ${r.accounts} accounts, ShipIt routes between them` : ''}`
+              : 'Metered — billed per token'}">${routeLabel(r.mode)}</span>
+          </div>`;
+          lastGroup = key;
+        }
+        const sel = !stranded && r.service === state.service && r.mode === state.mode
+                    && r.model === state.model;
+        inner += `<div class="item ${sel ? 'sel-row' : ''}"
+             onclick="pickModel('${r.service}','${r.mode}','${r.model}')">
+          <span class="grow mono">${r.model}</span>
+          <span class="check">${sel ? '&#10003;' : ''}</span>
+        </div>`;
+      }
+    }
+    menu = `<div class="menu right">${inner}</div>`;
+  }
+
+  const s = svc(state.service);
+  // The service pill is disclosure-on-demand: shown only when this model id appears in
+  // more than one group, which is the sole case where the id alone cannot say what you
+  // are billed. With a subscription AND a key on one service, that now happens within a
+  // single service — so the pill names the billing mode, not just the service.
+  const dupes = rows.filter(r => r.model === state.model);
+  const ambiguous = dupes.length > 1;
+  const sameService = ambiguous && dupes.every(r => r.service === state.service);
+  return `${menu}
+    <button class="trigger ${open ? 'open' : ''}" onclick="toggleMenu('model')"
+            title="Model — ${s.name}, ${routeLabel(state.mode).toLowerCase()}">
+      <span class="mono" ${stranded ? 'style="color:var(--warning)"' : ''}>${state.model}</span>
+      ${ambiguous ? `<span class="pill ${state.mode}">${
+        sameService ? routeLabel(state.mode) : s.name
+      }</span>` : ''}
+      <span class="caret">&#9660;</span>
+    </button>`;
+}
+
+function readout() {
+  const out = [];
+  const s = svc(state.service);
+  const stranded = !isEligible(state.harness, state.service, state.mode, state.model);
+
+  if (stranded) {
+    out.push(`<div class="banner warn"><span class="ico">&#9888;</span><div>
+      <b>${state.model}</b> via ${s.name} (${routeLabel(state.mode).toLowerCase()}) is no longer
+      available on ${hns(state.harness).name}
+      — ${state.creds.has(s.id)
+          ? 'this harness or billing mode does not offer it.'
+          : `you removed the ${s.name} credential.`}
+      The session cannot take a turn until you pick another model.
+      <div style="margin-top:5px;color:var(--text-tertiary)">
+        Deliberately not auto-moved: the alternatives are a different price, which req 12
+        says is the user&rsquo;s call and not ShipIt&rsquo;s.
+      </div>
+    </div></div>`);
+  } else if (state.note) {
+    out.push(`<div class="banner ${state.note.kind}"><span class="ico">&#8635;</span>
+      <div>${state.note.text}</div></div>`);
+  }
+
+  out.push(`<div class="scaffold">
+    prototype readout, not UI &mdash; harness <b>${state.harness}</b> &middot;
+    service <b>${state.service}</b> &middot; billing <b>${state.mode}</b> &middot;
+    model <b>${state.model}</b>
+    ${stranded ? '&middot; <b>stranded</b>' : ''}${state.pinned ? ' &middot; <b>pinned</b>' : ''}
+  </div>`);
+  return out.join('');
+}
+
+function knobs() {
+  document.getElementById('knob-creds').innerHTML = SERVICES.map(s => {
+    const kinds = modesOf(s).map(m => routeLabel(m.kind).toLowerCase()).join(' + ');
+    const row = `<label class="knob">
+      <input type="checkbox" ${state.creds.has(s.id) ? 'checked' : ''}
+             onchange="toggleCred('${s.id}')" />
+      <span>${s.name}</span>
+      <span class="sub">${kinds}</span>
+    </label>`;
+    // The second billing mode hangs off its service, because that is what it is.
+    const extra = s.id === 'glm'
+      ? `<label class="knob" style="margin-left:20px">
+           <input type="checkbox" ${state.glmSub ? 'checked' : ''} onchange="toggleGlmSub()" />
+           <span style="color:var(--text-secondary)">&hellip; and a coding plan</span>
+           <span class="sub">fewer models</span>
+         </label>`
+      : '';
+    return row + extra;
+  }).join('');
+
+  document.getElementById('knob-harnesses').innerHTML = HARNESSES.map(h => `
+    <label class="knob">
+      <input type="checkbox" ${state.installed.has(h.id) ? 'checked' : ''}
+             onchange="toggleInstalled('${h.id}')" />
+      <span>${h.name}</span>
+      <span class="sub">${h.style}</span>
+    </label>`).join('');
+}
+
+// Adds a SECOND BILLING MODE to a service that already has one — not a second service.
+function toggleGlmSub() {
+  state.glmSub = !state.glmSub;
+  state.note = null;
+  render();
+}
+
+function toggleCred(id) {
+  state.creds.has(id) ? state.creds.delete(id) : state.creds.add(id);
+  state.note = null;
+  render();
+}
+
+function toggleInstalled(id) {
+  state.installed.has(id) ? state.installed.delete(id) : state.installed.add(id);
+  // The deployment changing under the session is not a user choice — land on the first
+  // installed harness rather than pretending the old one is still there.
+  if (!state.installed.has(state.harness)) {
+    const first = HARNESSES.find(h => state.installed.has(h.id));
+    if (first) { state.harness = first.id; state.note = null; }
+  }
+  render();
+}
+
+function render() {
+  document.getElementById('sel-harness').innerHTML = harnessSelector();
+  document.getElementById('sel-model').innerHTML = modelSelector();
+  document.getElementById('sel-effort').innerHTML = effortSelector();
+  document.getElementById('readout').innerHTML = readout();
+  knobs();
+  document.getElementById('knob-pinned').checked = state.pinned;
+}
+
+document.getElementById('knob-pinned').addEventListener('change', e => {
+  state.pinned = e.target.checked;
+  state.open = null;
+  render();
+});
+
+// Capture phase on purpose: the trigger's own onclick re-renders and detaches the
+// event target, so by the bubble phase `closest('.sel')` walks a node with no parents
+// and reports every click as outside — closing the menu the same tick it opened.
+document.addEventListener('click', e => {
+  if (state.open && !e.target.closest('.sel')) { state.open = null; render(); }
+}, true);
+
+render();
+</script>
+</body>
+</html>

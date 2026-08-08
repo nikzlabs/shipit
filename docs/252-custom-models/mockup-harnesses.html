@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Custom models — Settings mockup</title>
+<title>Custom models — Settings → Harnesses</title>
 <style>
   :root {
     --bg-page: #0a0a0b;
@@ -177,6 +177,17 @@
   .acct .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); flex: none; }
   .acct .grow { flex: 1; }
 
+  /* ---- billing modes within one service ---- */
+  .modes { margin-top: 10px; display: flex; flex-direction: column; gap: 9px; }
+  .mode {
+    border: 1px solid var(--border-soft); border-radius: 8px;
+    background: var(--bg-modal); padding: 10px 12px;
+  }
+  .mode-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .mode-top .grow { flex: 1; }
+  .mode .svc-meta { margin-top: 5px; }
+  .mode .models { margin-top: 7px; }
+
   /* ---- harness table ---- */
   table.harness { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   table.harness th {
@@ -237,212 +248,22 @@
 </head>
 <body>
 
-<div class="page-title">Custom models — Settings</div>
+<div class="page-title">Custom models — Settings &rarr; Harnesses</div>
 <div class="page-sub">
-  Visual reference for <code>docs/252-custom-models/plan.md</code>. Shows the three surfaces the
-  feature touches: the <b>service catalogue with its credentials</b>, the <b>harness view</b> that
-  makes the service&times;style join legible, and the <b>session model picker</b> those two feed.
-  Requirement numbers refer to <code>requirements.md</code>.
+  Visual reference for <code>docs/252-custom-models/plan.md</code>. This screen is
+  <b>derived</b>: every cell is the catalogue joined against your credentials, which is why it
+  is the one place API styles are shown. It also holds the <b>background-work</b> setting
+  (req 9). Requirement numbers refer to <code>requirements.md</code>.
+  <br /><br />
+  The two sibling surfaces have their own prototypes:
+  <code>mockup-services.html</code> for Settings &rarr; Services, and
+  <code>mockup-picker.html</code> for the in-session composer. This file previously carried
+  early versions of both; they were removed once those prototypes superseded them.
 </div>
 
-<!-- ============================ 1. SERVICES ============================ -->
-<div class="section-label"><span class="n">1</span> Settings &rarr; Services — the catalogue and its credentials</div>
-<div class="stage">
-<div class="cols">
-  <div class="modal">
-    <div class="nav">
-      <div class="nav-head">Settings</div>
-      <div class="nav-item active">Services</div>
-      <div class="nav-item">Harnesses</div>
-      <div class="nav-item">Git</div>
-      <div class="nav-item">Instructions</div>
-      <div class="nav-item">Voice</div>
-      <div class="nav-item">Advanced</div>
-      <div class="nav-note">
-        <div class="nav-item gone" style="padding:2px 0">Claude</div>
-        <div class="nav-item gone" style="padding:2px 0">Codex</div>
-        The per-agent tabs are gone. They were the conflation this feature removes:
-        a tab per <i>harness</i> that actually held a <i>service&rsquo;s</i> credentials.
-      </div>
-    </div>
-
-    <div class="pane">
-      <h2 class="pane-title">Services</h2>
-      <p class="pane-desc">
-        Services are defined by ShipIt. You supply a credential for the ones you want to use —
-        you never describe a new service.
-      </p>
-
-      <div class="card">
-        <div class="card-head">
-          <h3>Connected</h3>
-          <span class="hint">3 of 5 configured</span>
-        </div>
-
-        <!-- Anthropic: subscription, 2 accounts, usage -->
-        <div class="svc">
-          <div class="svc-logo">A</div>
-          <div class="svc-body">
-            <div class="svc-top">
-              <span class="svc-name">Anthropic</span>
-              <span class="pill sub">Subscription</span>
-              <span class="pill style">anthropic-messages</span>
-            </div>
-            <div class="svc-meta">2 accounts &middot; failover: use in order</div>
-            <div class="accts">
-              <div class="acct"><span class="dot"></span><span class="grow">nik@&hellip; — Max</span><span class="pill">Primary</span></div>
-              <div class="acct"><span class="dot"></span><span class="grow">work@&hellip; — Pro</span></div>
-            </div>
-            <div class="usage">
-              <div class="usage-bar"><div class="usage-fill" style="width:62%"></div></div>
-              <div class="usage-txt">62% of session limit &middot; resets in 2h 14m</div>
-            </div>
-            <div class="models">
-              <span class="chip">opus-5</span><span class="chip">sonnet-5</span><span class="chip">haiku-4.5</span>
-            </div>
-          </div>
-          <div class="svc-actions"><button class="btn ghost">Add account</button></div>
-        </div>
-
-        <!-- OpenAI: subscription -->
-        <div class="svc">
-          <div class="svc-logo">O</div>
-          <div class="svc-body">
-            <div class="svc-top">
-              <span class="svc-name">OpenAI</span>
-              <span class="pill sub">Subscription</span>
-              <span class="pill style">openai-responses</span>
-            </div>
-            <div class="svc-meta">1 account</div>
-            <div class="accts">
-              <div class="acct"><span class="dot"></span><span class="grow">nik@&hellip; — Plus</span><span class="pill">Primary</span></div>
-            </div>
-            <div class="usage">
-              <div class="usage-bar"><div class="usage-fill" style="width:18%"></div></div>
-              <div class="usage-txt">18% of weekly limit &middot; resets Mon</div>
-            </div>
-            <div class="models">
-              <span class="chip">gpt-5.6-sol</span><span class="chip">gpt-5.6-mini</span>
-            </div>
-          </div>
-          <div class="svc-actions"><button class="btn ghost">Add account</button></div>
-        </div>
-
-        <!-- DeepSeek: API key configured, TWO styles -->
-        <div class="svc">
-          <div class="svc-logo">D</div>
-          <div class="svc-body">
-            <div class="svc-top">
-              <span class="svc-name">DeepSeek</span>
-              <span class="pill key">API key</span>
-              <span class="pill ok">Configured</span>
-              <span class="pill style">anthropic-messages</span>
-              <span class="pill style">openai-responses</span>
-            </div>
-            <div class="svc-meta">
-              Key <code class="k">sk-&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;4f2a</code>
-              &middot; billed by DeepSeek &middot; no quota to report
-            </div>
-            <div class="models">
-              <span class="chip">deepseek-v4-flash</span>
-              <span class="chip">deepseek-v4-pro</span>
-            </div>
-          </div>
-          <div class="svc-actions">
-            <button class="btn ghost">Replace</button>
-            <button class="btn ghost">Remove</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-head">
-          <h3>Available</h3>
-          <span class="hint">add a key to use these</span>
-        </div>
-
-        <!-- OpenRouter: key entry open -->
-        <div class="svc">
-          <div class="svc-logo">R</div>
-          <div class="svc-body">
-            <div class="svc-top">
-              <span class="svc-name">OpenRouter</span>
-              <span class="pill key">API key</span>
-              <span class="pill off">Not configured</span>
-              <span class="pill style">anthropic-messages</span>
-              <span class="pill style">openai-responses</span>
-            </div>
-            <div class="svc-meta">Aggregator &middot; ShipIt carries a curated subset of its models</div>
-            <div class="keyrow">
-              <input class="input focused" value="sk-or-v1-" />
-              <button class="btn primary">Save</button>
-              <button class="btn ghost">Cancel</button>
-            </div>
-            <div class="models">
-              <span class="chip dim">deepseek-v4-flash</span>
-              <span class="chip dim">kimi-k3</span>
-              <span class="chip dim">qwen-4-coder</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="svc">
-          <div class="svc-logo">F</div>
-          <div class="svc-body">
-            <div class="svc-top">
-              <span class="svc-name">Fireworks</span>
-              <span class="pill key">API key</span>
-              <span class="pill off">Not configured</span>
-              <span class="pill style">openai-responses</span>
-            </div>
-            <div class="svc-meta">Codex only — does not speak the Anthropic style</div>
-            <div class="models"><span class="chip dim">deepseek-v4-flash</span></div>
-          </div>
-          <div class="svc-actions"><button class="btn">Add key</button></div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="notes">
-    <div class="note">
-      <span class="req">req 7</span><b>ShipIt owns the list; you own the keys.</b>
-      There is no &ldquo;Add custom service&rdquo; button anywhere on this screen — that is the
-      point, not an omission. Both cards are ShipIt&rsquo;s catalogue, split only by whether you
-      have supplied a credential.
-    </div>
-    <div class="note">
-      <span class="req">req 7</span><b>Anthropic and OpenAI are ordinary rows.</b>
-      They sit in the same list as DeepSeek, with the same shape. Nothing marks them as the
-      built-in or default choice.
-    </div>
-    <div class="note">
-      <span class="req">req 5</span><b>Auth type is a property of the service.</b>
-      The <span class="pill sub">Subscription</span> rows offer &ldquo;Add account&rdquo;;
-      the <span class="pill key">API key</span> rows offer a key field. This feature adds the
-      key-authenticated ones — no row gains a new login flow.
-    </div>
-    <div class="note">
-      <span class="req">req 10</span><b>DeepSeek shows no usage indicator at all</b> — not an
-      empty bar, not &ldquo;n/a&rdquo;. An API key has no allowance and nothing that resets, so
-      there is nothing to render. Compare the two subscription rows above it.
-    </div>
-    <div class="note">
-      <span class="req">req 6</span><b>A service can speak two styles.</b> DeepSeek shows both
-      <span class="pill style">anthropic-messages</span> and
-      <span class="pill style">openai-responses</span>; Fireworks shows one, which is why it can
-      only ever appear under Codex.
-      <div class="callout">
-        Style tags are shown because they are the only visible explanation for why a service
-        appears under one harness and not another.
-      </div>
-    </div>
-  </div>
-</div>
-</div>
 
 <!-- ============================ 2. HARNESSES ============================ -->
-<div class="section-label"><span class="n">2</span> Settings &rarr; Harnesses — where the join becomes legible</div>
+<div class="section-label">Settings &rarr; Harnesses — where the join becomes legible</div>
 <div class="stage">
 <div class="cols">
   <div class="modal" style="min-height:auto">
@@ -460,7 +281,8 @@
       <h2 class="pane-title">Harnesses</h2>
       <p class="pane-desc">
         A harness is the agent CLI ShipIt spawns. Each speaks one API style, which decides
-        the services it can drive. Harnesses ship with ShipIt — there is nothing to add here.
+        the services it can drive. This deployment installed these two; the set is chosen when
+        ShipIt is installed and changing it means redeploying, so there is nothing to add here.
       </p>
 
       <div class="card">
@@ -495,6 +317,7 @@
                   <span class="chip">OpenAI</span>
                   <span class="chip">DeepSeek</span>
                   <span class="chip dim">OpenRouter — no key</span>
+                  <span class="chip dim">Vercel AI Gateway — no key</span>
                   <span class="chip dim">Fireworks — no key</span>
                 </div>
                 <div class="hsub" style="margin-top:7px">
@@ -515,11 +338,14 @@
           <div class="svc-body">
             <div class="svc-top">
               <span class="svc-name" style="font-weight:500">Runs on</span>
-              <span class="chip">Anthropic &middot; haiku-4.5</span>
+              <span class="chip">Automatic &mdash; first available</span>
+              <span style="color:var(--text-tertiary);font-size:12px">currently</span>
+              <span class="chip">Anthropic &middot; opus-5</span>
               <button class="btn ghost">Change</button>
             </div>
             <div class="svc-meta">
-              ShipIt&rsquo;s default. Chosen independently of whatever a session is using.
+              Default. Follows whatever this install can run; pin one to stop it moving.
+              Chosen independently of whatever a session is using.
             </div>
           </div>
         </div>
@@ -543,97 +369,30 @@
       model not declared for that style is simply absent rather than listed-and-broken.
     </div>
     <div class="note">
+      <span class="req">req 14</span><b>Two rows because this deployment installed two.</b>
+      Harnesses are not user-editable and the set is a property of the deployment, chosen at
+      install from what ShipIt supports, Claude Code and Codex by default. A harness that was
+      not installed is <i>absent</i> from this table and from the picker — not listed and empty.
+      <div class="callout">
+        <i>Installed</i> and <i>credentialed</i> are separate gates: no install, no models
+        whatever your keys; installed, and you still only get the services you have a key for.
+      </div>
+    </div>
+    <div class="note">
       <span class="req">req 2</span><b>Claude Code is listed while driving DeepSeek.</b>
       Using a harness never requires an account with that harness&rsquo;s own vendor — remove the
       Anthropic row from Services and this one still works.
     </div>
     <div class="note">
       <span class="req">req 9</span><b>Background work names a service and a model,</b> visible
-      as its own setting with a ShipIt-supplied default. A default is fine; a hidden dependency
-      is not — the failure this comes from was a lapsed subscription silently breaking session
-      naming.
-    </div>
-  </div>
-</div>
-</div>
-
-<!-- ============================ 3. PICKER ============================ -->
-<div class="section-label"><span class="n">3</span> In-session model picker — one surface, every model</div>
-<div class="stage">
-<div class="cols">
-  <div style="display:flex;gap:26px;align-items:flex-start;padding:22px;border:1px solid var(--border);border-radius:12px;background:var(--bg-modal)">
-    <div>
-      <div style="font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--text-tertiary);margin-bottom:9px">Claude Code session</div>
-      <div class="dropdown">
-        <div class="dd-search">Search models&hellip;</div>
-        <div class="dd-group"><span>Anthropic</span><span>Subscription</span></div>
-        <div class="dd-item"><span class="mono">opus-5</span></div>
-        <div class="dd-item"><span class="mono">sonnet-5</span></div>
-        <div class="dd-item"><span class="mono">haiku-4.5</span></div>
-        <div class="dd-group"><span>DeepSeek</span><span>API key</span></div>
-        <div class="dd-item sel"><span class="mono">deepseek-v4-flash</span><span class="pill ok">Active</span></div>
-        <div class="dd-item"><span class="mono">deepseek-v4-pro</span></div>
-        <div class="dd-foot">
-          OpenRouter also offers <code class="k">deepseek-v4-flash</code> — add its key in
-          Settings to see it here as a separate entry.
-        </div>
+      as its own setting. A default is fine; a hidden dependency is not — the failure this comes
+      from was a lapsed subscription silently breaking session naming.
+      <div class="callout">
+        Which is why the default is <b>a rule, not a model</b>: unset resolves to the first
+        model this install can actually run. A named default would be broken from day one on
+        an install whose only credential is a DeepSeek key — the install this feature exists
+        to make possible.
       </div>
-    </div>
-
-    <div>
-      <div style="font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--text-tertiary);margin-bottom:9px">Attribution, in-session</div>
-      <div style="width:300px;border:1px solid var(--border);border-radius:9px;background:var(--bg-secondary);padding:12px 14px">
-        <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
-          <span class="chip">deepseek-v4-flash</span>
-          <span style="color:var(--text-tertiary);font-size:12px">via</span>
-          <span class="chip">DeepSeek</span>
-          <span class="pill key">API key</span>
-        </div>
-        <div style="font-size:11.5px;color:var(--text-tertiary);margin-top:8px;line-height:1.55">
-          No usage indicator — this service reports no quota.
-        </div>
-      </div>
-
-      <div style="width:300px;border:1px solid var(--border);border-radius:9px;background:var(--bg-secondary);padding:12px 14px;margin-top:12px">
-        <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
-          <span class="chip">sonnet-5</span>
-          <span style="color:var(--text-tertiary);font-size:12px">via</span>
-          <span class="chip">Anthropic</span>
-          <span class="pill sub">Subscription</span>
-        </div>
-        <div class="usage" style="max-width:none">
-          <div class="usage-bar"><div class="usage-fill" style="width:62%"></div></div>
-          <div class="usage-txt">62% &middot; resets in 2h 14m</div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="notes">
-    <div class="note">
-      <span class="req">req 3</span><b>One picker, one ordering rule.</b> Every eligible model is
-      listed the same way regardless of who provides it. A vendor&rsquo;s own models get no
-      separate surface and no privileged position.
-    </div>
-    <div class="note">
-      <span class="req">req 8</span><b>Ineligible models are absent, not greyed.</b> The list is
-      filtered to services with a credential. &ldquo;Anthropic with no account&rdquo; and
-      &ldquo;DeepSeek with no key&rdquo; are the same condition and get the same treatment.
-    </div>
-    <div class="note">
-      <b>Entries are pairs, not model ids.</b> The footer names the case that forces this: the
-      same <code class="k">deepseek-v4-flash</code> reachable through two services, at different
-      prices. Persisting a bare model id cannot express which one you picked.
-    </div>
-    <div class="note">
-      <span class="req">req 11</span><b>Attribution says model, service and how it bills.</b>
-      Necessary because the model id alone is ambiguous, and because a retirement
-      (<span class="req" style="margin:0">req 13</span>) can move a session onto a successor —
-      this is where that becomes visible rather than silent.
-    </div>
-    <div class="note">
-      <span class="req">req 4</span><b>Switching is in-session.</b> The picker changes the model
-      without changing harness, so the session keeps its history and its container.
     </div>
   </div>
 </div>
