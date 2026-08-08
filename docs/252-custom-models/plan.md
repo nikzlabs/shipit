@@ -338,10 +338,10 @@ would produce a confidently wrong split of real money. A named bucket the UI can
 age out.
 
 So each new row stores **tokens, attribution, and the rate that was applied** — not a price
-looked up later. The rate always comes from the catalogue, for every service including the
-harness's own vendor: `total_cost_usd` stays recorded as telemetry and is never the reported
-figure ([`catalogue.md`](./catalogue.md) settles that rule, so nothing is left for phase 6 to
-decide). Concretely, `RecordedTurn` gains `service_id`, `billing_mode`, and the four unit rates in
+looked up later. The rate comes from the catalogue for every service **except** the
+harness's own vendor, where ShipIt's existing first-party figure is preserved rather than
+replaced by an approximation ([`catalogue.md`](./catalogue.md) settles the rule and records
+what stays open: what that figure means on a subscription turn). Concretely, `RecordedTurn` gains `service_id`, `billing_mode`, and the four unit rates in
 force (`input`, `output`, `cacheRead`, `cacheWrite`).
 
 **These are all-or-nothing, not independently nullable.** Either every one is present or every
@@ -394,9 +394,11 @@ that already exist, not in new composer chrome (see below). The usage view split
 plan usage by `(service, mode)` (req 16), which needs the price table phase 1 carries.
 
 This is the phase most likely to want splitting in two: the quota/attribution half is a
-re-keying of existing machinery, while the cost half (req 16) depends on the price table and
-on resolving what `costUsd` means per billing mode. If that question is still open when the
-phase starts, ship the re-keying and hold the cost split.
+re-keying of existing machinery, while the cost half (req 16) depends on the price table phase
+1 authors. The cost-source rule itself is settled ([`catalogue.md`](./catalogue.md)) — the
+catalogue table everywhere except the harness's own vendor, whose existing figure is
+preserved. The one thing left to establish is what that first-party figure means on a
+subscription turn, and it is narrow enough not to block the split.
 
 **Phase 7 — Non-turn work.** Session naming and PR descriptions get their own explicitly
 chosen `(service, billing mode, model)`, visible as a setting whose unset state resolves to
@@ -601,11 +603,18 @@ style, so this is a no-op until a multi-style harness arrives.
 
 The picker's list for the active harness is then every `(service, billingMode, model)` the
 catalogue declares under a style the harness shares, filtered to modes with a usable
-credential (reqs 6, 8) — **and to modes whose credential shape this harness can actually
-carry**. That last clause is not decoration: a harness with no way to take a supplied secret
-(an OAuth-only CLI) would otherwise be offered a key-authenticated service and fail at spawn,
-which is the ShipIt-imposed limitation req 1 rules out. `CredentialTargets` already expresses
-it; eligibility has to read it. Note the entry is the **triple**, not the model id — the same id can come from
+credential **that this harness can carry** (reqs 6, 8). Those are one test, not two, and
+writing them as two is a real bug: a mode may *accept* both an account and a string while the
+user has configured only one of them, so "the mode has a credential" and "the mode declares a
+shape this harness supports" can both be true of *different* credentials. Concretely — an
+Anthropic subscription with only an OAuth account connected, offered to a key-only harness:
+the mode has a credential, the mode declares a `string` shape the harness supports, and the
+model is offered and cannot authenticate.
+
+So the predicate is over **configured routes**: is there a route in this mode whose `via` the
+harness has a target for? That is the check `CredentialTargets` exists to feed, and stating it
+over modes rather than routes reintroduces exactly the ShipIt-imposed failure req 1 rules
+out. Note the entry is the **triple**, not the model id — the same id can come from
 more than one service, and from two modes of one service, at different prices.
 
 It stays **one model picker**, listing every eligible model the same way regardless of which
@@ -921,9 +930,11 @@ does still need building is the compose path — a compose-backed containerized 
 compose-declared and `mcp__*` secrets, so a stored service key never reaches it.
 
 **A subscription mode is supported as a mechanism; each vendor's subscription is its own
-integration** (req 5). The distinction matters for credential delivery, which is why it is
-stated here: a key travels through `agentEnv`, while a subscription travels through account
-credential roots and filesystem mounts and needs its own login and refresh. So the catalogue,
+integration** (req 5). What that integration *consists of* varies, and assuming it is always a
+login flow is the mistake to avoid: an account-backed subscription travels through credential
+roots and filesystem mounts and needs login and refresh, while a **string-delivered** one —
+GLM's coding plan — is a supplied secret with no account root and no login at all, needing
+multi-instance storage and a quota reader instead ([`catalogue.md`](./catalogue.md)). So the catalogue,
 picker, eligibility, usage and failover are all written to handle a subscription mode on any
 service, and adding a *particular* vendor's is a bounded piece of per-service work rather
 than a change to any of that. Existing subscription-backed vendors keep their current path
@@ -1171,14 +1182,26 @@ them as parts of a whole, which they are not. The split still tells its story ac
 toggle — weeks where Paid rises are weeks where At API rates falls, meaning work moved *off*
 the plans rather than that there was more of it, which Turns confirms.
 
-**`costUsd` is the harness's price table, not ground truth — verified, and it is worse than
-"which reading is it".** The spike's turns are still in the dogfood database
-(`.inner-shipit/.shipit.db`, `usage_turns`): four turns on `deepseek-v4-flash`, run through
-Claude Code against a DeepSeek **API key**, recorded at `$0.347` and `$0.694`. Those turns
-were billed by DeepSeek at DeepSeek's rates; the recorded figures are ~18× what that volume
-of tokens costs there, and the ratio is **the same on both turns** despite very different
-input/output/cache shapes. A constant multiple across differing shapes is a price table being
-applied, not noise.
+**`costUsd` is the harness's price table, not ground truth — measured, though more carefully
+than an earlier draft measured it.** The spike's turns are still in the dogfood database
+(`.inner-shipit/.shipit.db`, `usage_turns`): four rows on `deepseek-v4-flash`, run through
+Claude Code against a DeepSeek **API key**. Two are full turns —
+`$0.346747` and `$0.694466` — one is `$0.028413`, which is a *delta* against a cumulative of
+`$0.375160` and is therefore corroboration of the cumulative-to-delta behaviour rather than a
+third data point, and one is `$0`.
+
+The finding is that **a single linear price function fits both full turns exactly**. Solving
+the two rows for a per-token rate gives ≈`$5.3`/M input and ≈`$0.5`/M cache-read (the output
+rate is under-determined by two equations and barely moves the result), and those rates
+reproduce both recorded figures to the cent despite the turns having very different shapes —
+54k/810/99k tokens against 88k/2.1k/397k. An exact linear fit across differing shapes is a
+price table being applied, not a vendor reporting what it charged.
+
+What the database **cannot** show is the comparison to DeepSeek's own rates: it holds no
+vendor rate and no invoice. That those figures are roughly an order of magnitude above what
+DeepSeek charges for that volume is external knowledge (🔍), and an earlier draft stated it as
+a measured "constant 18×" while also mis-describing the dataset as two turns rather than four.
+The fit above is the part this repository actually proves, and it is sufficient.
 
 So `total_cost_usd` is the CLI computing a price for the model *it* believes it is running.
 For a custom service it is neither money spent nor a useful notional — it is Anthropic-family

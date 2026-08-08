@@ -269,6 +269,7 @@ export type LoginIntegrationId = "anthropic-oauth" | "openai-chatgpt";
 /** Selects the quota-reporting implementation — what fills req 10's indicator. Keyed
  *  separately from the login flow because the two do not always come together. */
 export type QuotaIntegrationId = "anthropic-oauth-usage" | "openai-chatgpt-usage" | "zai-plan-usage";
+```
 
 **GLM is the case that forces this, and it is the launch subscription** (req 15): its coding
 plan is billed as a *plan* — an allowance, not per-token — while being authenticated with an
@@ -287,6 +288,7 @@ shipping could not be declared at all.
   … }
 ```
 
+```ts
 So there are **three independent axes**, and each has exactly one owner:
 
 | Axis | Field | Answers |
@@ -309,14 +311,30 @@ and writing it overwrites the previous value (`credential-store.ts:298` ✅).
 
 For a **key** mode that is fine — req 12 says keys do not fail over, so one is all it can use.
 For a **subscription** mode delivered as a string it is not: GLM's coding plan is exactly that
-shape, and a user with two of them is precisely the case req 12 exists for. So
-`storageEnv` must be read as **the variable name a credential is materialized into at spawn**,
-not as the place it is stored. Storage is per *instance*, with a route id, the way accounts
-already are — otherwise the second plan overwrites the first and failover has nothing to fail
-over to.
+shape, and a user with two of them is precisely the case req 12 exists for.
 
-**This is new persisted representation, and the only piece of it in this design.** It cannot
-be reached by re-keying the existing singleton environment map, and it is phase 2's work.
+So `storageEnv` is **the variable a credential is materialized into at spawn** and never the
+place it is stored. Storage is per *instance*, the way accounts already are:
+
+```ts
+/** One credential the user actually supplied. `ProviderAccount` is this for `via: "account"`
+ *  (`domain-types/provider.ts` ✅); this is its missing twin for `via: "string"`. Shares the
+ *  route-id space, because req 12's failover, the per-route quota key and `provider_route_id`
+ *  on a session all already address credentials by route id. */
+export interface StringCredential {
+  id: string;                    // the route id: `svc-mode-<n>`
+  serviceId: ServiceId;
+  billingMode: BillingMode;
+  label: string;                 // user-facing, like an account's
+  secret: string;                // stored encrypted, materialized into `storageEnv` at spawn
+  priority: number;              // the ordering req 12 routes by
+  createdAt: number;
+}
+```
+
+**This is the only piece of genuinely new persistence in the design.** It cannot be reached by
+re-keying `agentEnv`, which is a single `Record<string, string>` whose named slot the next
+write overwrites (`credential-store.ts:34`, `:298` ✅). Phase 2 owns it.
 
 /** HARNESS side: where a credential of each kind lands for THIS CLI, by default. */
 /** Keyed by `via`, NOT by billing `kind` — an earlier version named these `key`/`sub`, which
@@ -705,15 +723,20 @@ copies `total_cost_usd` through (`claude/adapter.ts:318` ✅) and `UsageManager`
 (`usage.ts:115` ✅) — but *what it means* there is 🔍: neither citation shows whose price table
 produced it, nor what it represents on a subscription turn where no money moved.
 
-**One rule, applied uniformly: the reported figure always comes from the catalogue table, and
-`total_cost_usd` is never reported as money.** It stays recorded as telemetry, because it is
-what today's accounting is built on and throwing it away would lose a cross-check, but it does
-not reach the usage view for any service. Two reasons to prefer uniformity over "use the
-vendor's own number when we have it": a per-service exception means two figures computed two
-ways in one column, which is the confusion req 16's split exists to remove; and on a
-*subscription* turn the number represents nothing at all, so the exception would need its own
-sub-exception. The cost is that Claude's reported figure changes from the CLI's to ShipIt's —
-a real change, in a column that was already an estimate, and phase 6 should say so in the PR. Codex reports no dollar figure at
+**The rule, and it is not "always use the table":** the reported figure comes from the
+catalogue table **except where ShipIt already reports the harness's own vendor's figure, which
+is preserved**. `UsageManager` calls its delta "the true session bill" and docs/013 describes
+post-migration turns as exact; the preamble to `requirements.md` makes existing behaviour
+contractual, so replacing a first-party number with a four-rate approximation would be a
+regression this feature is not entitled to make. An earlier version of this paragraph argued
+for uniformity on the grounds that the column "was already an estimate" — which is unsupported,
+and was reasoning backwards from a preference for one rule.
+
+Two figures computed two ways in one column is a genuine cost, and it is smaller than the
+alternative: the rows are already split by service and mode (req 16), so the two sources never
+share a cell. What remains 🔍 is what a first-party `total_cost_usd` means on a *subscription*
+turn, where no money moved — that one is phase 6's to establish, and it is a narrow question
+about one value rather than an open choice of rule. Codex reports no dollar figure at
 all either way.
 
 ```ts
