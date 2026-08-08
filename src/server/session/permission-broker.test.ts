@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
-import { PermissionBroker, extractPermissionPath, describePermissionRequest } from "./permission-broker.js";
+import {
+  PermissionBroker,
+  extractPermissionPath,
+  describePermissionRequest,
+  describePermissionDetails,
+  PERMISSION_DETAILS_CHARS,
+} from "./permission-broker.js";
 import type { AgentEvent } from "../shared/types.js";
 
 function makeBroker() {
@@ -26,7 +32,57 @@ describe("describePermissionRequest", () => {
   });
 });
 
+describe("describePermissionDetails", () => {
+  // The summary is clipped to ~100 chars, which for a `sed -i` cuts off the
+  // target path — the part that explains why the CLI gated the call. `details`
+  // is what the card's disclosure expands to, so it must carry the WHOLE
+  // command (multi-line included), not the summary's first line again.
+  it("carries the raw command whole, newlines and all", () => {
+    const command = "sed -i 's/teh/the/' /workspace/src/server/session/a-very-long-path/file.ts\necho done";
+    expect(describePermissionDetails({ command })).toBe(command);
+  });
+
+  it("falls back to the pretty-printed input for a command-less tool", () => {
+    expect(describePermissionDetails({ file_path: ".npmrc", content: "x" }))
+      .toBe(JSON.stringify({ file_path: ".npmrc", content: "x" }, null, 2));
+  });
+
+  it("has nothing to show for an empty or absent input", () => {
+    expect(describePermissionDetails({})).toBeUndefined();
+    expect(describePermissionDetails(undefined)).toBeUndefined();
+  });
+
+  it("bounds the body so a Write's file content can't ship megabytes", () => {
+    const details = describePermissionDetails({ command: "x".repeat(PERMISSION_DETAILS_CHARS * 3) })!;
+    expect(details).toHaveLength(PERMISSION_DETAILS_CHARS + 1);
+    expect(details.endsWith("…")).toBe(true);
+  });
+});
+
 describe("PermissionBroker", () => {
+  it("broadcasts the full gated command alongside the clipped summary", () => {
+    const { broker, events } = makeBroker();
+    const command = `sed -i 's/teh/the/' ${"/workspace/deep".repeat(12)}/file.ts`;
+    broker.openRequest({ toolName: "Bash", input: { command }, toolUseId: "tu-1" });
+
+    const req = events[0];
+    if (req.type !== "agent_permission_request") throw new Error("unreachable");
+    // The summary is still the clipped one-liner the card shows collapsed...
+    expect(req.summary!.length).toBeLessThanOrEqual(101 + "Bash: ".length);
+    // ...and the details carry what the summary had to cut, including the
+    // target path the user needs in order to decide.
+    expect(req.details).toBe(command);
+  });
+
+  it("omits details when they would only repeat the summary", () => {
+    const { broker, events } = makeBroker();
+    broker.openRequest({ toolName: "Bash", input: { command: "ls" }, summary: "ls" });
+
+    const req = events[0];
+    if (req.type !== "agent_permission_request") throw new Error("unreachable");
+    expect(req.details).toBeUndefined();
+  });
+
   it("broadcasts a request event and resolves with the user's decision", async () => {
     const { broker, events } = makeBroker();
     const pending = broker.request({ toolName: "Write", input: { file_path: ".npmrc" }, agentId: "claude" });

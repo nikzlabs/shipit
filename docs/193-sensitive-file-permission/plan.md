@@ -185,6 +185,41 @@ mechanism to/from it:
 A future backend implements `setPermissionRequester` (or bridges to
 `/agent-ops/permission/request`) and gets the card for free.
 
+## What the card shows, and what the card must not break
+
+Two things the live production build got wrong, both fixed after the fact.
+
+**The gated call is readable in full.** The card's `summary` is a clipped
+one-liner (`describePermissionRequest`, ~100 chars), and for a `sed -i` the
+clip lands exactly on the target path — the part that explains why the backend
+gated the call, leaving the user approving something they can't read. The
+broker now also emits `details`: the raw `command` when there is one (both
+backends supply it), otherwise the pretty-printed tool input, bounded by
+`PERMISSION_DETAILS_CHARS` (4 000) so a `Write`'s file body can't push
+megabytes through the WS card and the persisted `permission_prompt` blob. It
+rides the existing card payload end to end (event → `emitChatCard` →
+`PersistedPermissionRequest` → permission store) and renders behind a collapsed
+disclosure on the **pending** card only — once resolved, the tool's own
+transcript row carries the full command and its output. `details` is omitted
+when it would only repeat `summary`. Still NOT asserted: a *reason*. The CLI
+supplies only `{tool_name, input, tool_use_id}`, so the generic copy stands
+(Thread D).
+
+**A card must not orphan the gated tool's result.** The card is appended as its
+own `role: "assistant"` message, so it sits between the message holding the
+gated `tool_use` and that tool's later `tool_result`. The client's
+`agent_tool_result` branch used to attach results to `prev[prev.length - 1]`
+blindly, while `buildVisualElements` pairs a tool with its result strictly
+WITHIN one message — so the result landed on the card, the tool row resolved
+`result === undefined`, and once streaming ended `isInspectable` was false: no
+`onClick`, no "Show output", the command and output reachable only by reloading
+the page (the server's `attachToolResultsToGroup` was always correct, which is
+why a reload repaired it). Results now route to the message whose `toolUse`
+holds the matching id, falling back to the last assistant message — skipping
+terminal card carriers, the same `isTerminalTranscriptEntry` predicate the
+streaming-text merge branch uses. The two branches disagreeing was the bug; any
+mid-turn card in that position reproduced it, not just this one.
+
 ## Key files
 
 **Worker / agent-agnostic core**
@@ -199,7 +234,7 @@ A future backend implements `setPermissionRequester` (or bridges to
 - `src/server/orchestrator/proxy-agent-process.ts` + `container-session-runner.ts` — `resolvePermission` → `/agent/permission/resolve`.
 - `src/server/orchestrator/ws-handlers/agent-listeners.ts` — `agent_permission_request` → emitChatCard + `session_attention` (Thread C); `agent_permission_resolved` → patch the recorded card via `updateRecordedCard` + `persistTurnInProgress` (mid-turn clobber fix; DB-row `updatePermissionCard` fallback) + `permission_resolved` + clear attention.
 - `src/server/orchestrator/chat-card-persistence.ts` — `updateRecordedCard` (patch a recorded card in place for a transition that lands within its own turn, without re-emitting it); `emitChatCard` advances `lastPersistedBufferIndex` past the buffer after persisting (the switch/reconnect overlap fix that kept a pending card from vanishing).
-- `src/client/hooks/message-handlers/agent-event.ts` — the streaming-assistant merge excludes card-carrying messages (`CARD_MESSAGE_FIELDS`) as merge targets, so a replayed event can't rebuild a card message and drop its card field.
+- `src/client/hooks/message-handlers/agent-event.ts` — the streaming-assistant merge excludes card-carrying messages (`CARD_MESSAGE_FIELDS`) as merge targets, so a replayed event can't rebuild a card message and drop its card field; `agent_tool_result` routes each result to the message whose `toolUse` holds the id (`indexOfToolUse` / `fallbackResultTarget`), so a card between a call and its result can't orphan the tool row.
 - `src/server/orchestrator/{session-runner,container-session-runner}.ts` — `awaitingPermissionIds` per-runner set (Thread C).
 - `src/server/orchestrator/index.ts` — `session_attention` connect snapshot.
 - `src/server/orchestrator/ws-handlers/send-message.ts` — `handleAnswerQuestion` forwards the session's permission mode so a clarifying answer stays in plan mode (Thread A).
@@ -208,7 +243,7 @@ A future backend implements `setPermissionRequester` (or bridges to
 - WS types: `ws-client-messages.ts` (`WsResolvePermission`), `ws-server-messages.ts` (`WsPermissionRequestCard`, `WsPermissionResolved`).
 
 **Client**
-- `src/client/stores/permission-store.ts`, `src/client/components/PermissionRequestCard.tsx` — card store + render (generic copy, Thread D).
+- `src/client/stores/permission-store.ts`, `src/client/components/PermissionRequestCard.tsx` — card store + render (generic copy, Thread D; `details` disclosure on the pending card).
 - `src/client/hooks/message-handlers/{permission-request-card,permission-resolved}.ts` + registration.
 - `src/client/components/MessageList.tsx` (render + `onResolvePermission`), `visual-elements.ts` (`CARD_MESSAGE_FIELDS`), `utils/session-data.ts` (rehydrate), `App.tsx` (send `resolve_permission`; forward permission mode on `answer_question`, Thread A).
 - `src/client/hooks/useServerEvents.ts` (`session_attention` listener), `stores/session-store.ts` (`awaitingPermissionSessions`), `hooks/{useAttentionInfo,useAttentionNotifications}.ts` (Thread C).
@@ -237,3 +272,6 @@ A future backend implements `setPermissionRequester` (or bridges to
 - `claude/mcp-writer.test.ts` — `shipit-permission` registration.
 - `codex/adapter.test.ts` — requester routing (allow→accept, deny→reject), `buildCodexPermissionInput`, auto-accept fallback preserved.
 - `visual-elements.test.ts` — empty-text carrier render guard.
+- `agent-event.test.ts` — a tool result routes to the message that issued the call: the gated tool pairs with its result **live, with no reload**, when a permission card lands in between; per-caller routing across several open messages; the no-match fallback, which skips a terminal card row.
+- `PermissionRequestCard.test.tsx` — the `details` disclosure is collapsed by default, expands to the full command, and is absent when the broker had nothing beyond the summary.
+- `permission-broker.test.ts` — `describePermissionDetails` (raw command whole, JSON fallback, `PERMISSION_DETAILS_CHARS` bound) and the broadcast carrying `details` alongside the clipped `summary`.

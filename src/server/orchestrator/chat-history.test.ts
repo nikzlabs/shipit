@@ -32,7 +32,7 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
   codeRollbackHash: "c0ffee",
   voiceNote: { id: "v1", headline: "h", kind: "authored", createdAt: "t" },
   bugReport: { cardId: "b1", phase: "filed", title: "T", body: "B", stage2Ran: true, producer: "ops", issueNumber: 5, issueUrl: "u" },
-  permissionPrompt: { requestId: "p1", phase: "approved", toolName: "Write", path: ".npmrc", summary: "Write .npmrc", agentId: "claude", createdAt: "2026-06-05T00:00:00.000Z", remembered: true },
+  permissionPrompt: { requestId: "p1", phase: "approved", toolName: "Write", path: ".npmrc", summary: "Write .npmrc", details: "{\n  \"file_path\": \".npmrc\"\n}", agentId: "claude", createdAt: "2026-06-05T00:00:00.000Z", remembered: true },
   egressPrompt: { cardId: "eg1", host: "evil.example.com", phase: "denied", createdAt: "2026-06-05T00:00:00.000Z" },
   compaction: { id: "c1", trigger: "manual", preTokens: 100, postTokens: 20, durationMs: 9, createdAt: "t" },
   subAgentConsult: { cardId: "sac1", spawnId: "spawn-1", subAgentId: "codex", status: "success", durationMs: 47000, costUsd: 0.03, truncated: false, outputMarkdown: "## Findings\n\n- `foo.ts:42` — bug\n", createdAt: "2026-06-05T00:00:00.000Z" },

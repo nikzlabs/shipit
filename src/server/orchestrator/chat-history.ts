@@ -76,6 +76,8 @@ export interface PersistedPermissionRequest {
   toolName: string;
   path?: string;
   summary?: string;
+  /** The gated call in full (raw command / pretty-printed input) for the card's disclosure. */
+  details?: string;
   agentId?: string;
   createdAt: string;
   /** True when the user approved with "remember this file for the session". */

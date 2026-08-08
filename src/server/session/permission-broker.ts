@@ -95,6 +95,38 @@ export function describePermissionRequest(toolName: string, path: string | undef
   return toolName;
 }
 
+/**
+ * Bound on the `details` body carried to the card. Generous enough that a real
+ * shell command — a heredoc, a long pipeline — arrives whole, small enough that
+ * a `Write`'s file `content` can't push megabytes through the WS card and the
+ * persisted `permission_prompt` blob.
+ */
+export const PERMISSION_DETAILS_CHARS = 4_000;
+
+/**
+ * The full gated call, for the card's expandable disclosure.
+ *
+ * The one-line `summary` above is clipped to ~100 chars, which for a `sed -i`
+ * cuts off the target path — precisely the part that explains why the backend
+ * gated it. The whole input is in hand here and was being discarded, leaving
+ * the user approving an action they could not read. So: the raw `command` when
+ * there is one (the shell case, both backends), otherwise the pretty-printed
+ * input, and undefined when there is nothing to show beyond the summary.
+ */
+export function describePermissionDetails(input: Record<string, unknown> | undefined): string | undefined {
+  if (!input) return undefined;
+  const command = input.command;
+  const body = typeof command === "string" && command.trim()
+    ? command
+    : Object.keys(input).length > 0
+      ? JSON.stringify(input, null, 2)
+      : undefined;
+  if (!body) return undefined;
+  return body.length > PERMISSION_DETAILS_CHARS
+    ? `${body.slice(0, PERMISSION_DETAILS_CHARS)}…`
+    : body;
+}
+
 export class PermissionBroker {
   private pending = new Map<string, PendingRequest>();
   /** toolUseId → requestId, so a retried open re-attaches to one card (idempotency). */
@@ -179,6 +211,7 @@ export class PermissionBroker {
 
     const requestId = `perm_${randomUUID()}`;
     const summary = input.summary ?? describePermissionRequest(input.toolName, path, input.input);
+    const details = describePermissionDetails(input.input);
 
     let settle!: (decision: PermissionDecision) => void;
     const decision = new Promise<PermissionDecision>((res) => {
@@ -199,6 +232,7 @@ export class PermissionBroker {
       toolName: input.toolName,
       ...(path ? { path } : {}),
       summary,
+      ...(details && details !== summary ? { details } : {}),
       ...(input.agentId ? { agentId: input.agentId } : {}),
     });
 
