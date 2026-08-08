@@ -621,11 +621,22 @@ compile-time key name per catalogue service is sufficient (Appendix A). What
 does still need building is the compose path — a compose-backed containerized session receives only
 compose-declared and `mcp__*` secrets, so a stored service key never reaches it.
 
-**Subscription credentials are out of scope for the services this feature adds**
-(req 5), which is what keeps credential delivery to one flow. Subscriptions travel through account
-credential roots and filesystem mounts rather than `agentEnv`, and each needs its own
-login and refresh — the reason req 5 draws the line where it does. Existing
-subscription-backed vendors keep their current path unchanged.
+**A subscription mode is supported as a mechanism; each vendor's subscription is its own
+integration** (req 5). The distinction matters for credential delivery, which is why it is
+stated here: a key travels through `agentEnv`, while a subscription travels through account
+credential roots and filesystem mounts and needs its own login and refresh. So the catalogue,
+picker, eligibility, usage and failover are all written to handle a subscription mode on any
+service, and adding a *particular* vendor's is a bounded piece of per-service work rather
+than a change to any of that. Existing subscription-backed vendors keep their current path
+unchanged.
+
+**GLM is the intended validation case** (req 15's open subscription coverage). It has a
+coding plan alongside an ordinary API, so it is a *custom* service that genuinely carries
+both modes — which is the case Anthropic cannot test, since Anthropic's dual mode is the
+pre-existing one. Note this is why the prototypes were corrected: they illustrated the split
+with a DeepSeek subscription, and DeepSeek has none. As with the gateways, GLM's actual
+styles, models and plan limits are research to do when the row is authored, not recalled
+from this doc.
 
 **Spawn shaping** sets the base URL and credential at both spawn sites, after the
 scrub, from the *selected model's* service rather than from a model-id prefix.

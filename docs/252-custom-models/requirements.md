@@ -40,9 +40,13 @@ No open questions remain.
    interchangeable, ShipIt routes between them (req 12), and the user never chooses among
    them. So what a user picks is the mode, never the individual credential.
 
-   Supporting a subscription takes per-service work on ShipIt's side — its own login,
-   refresh, and account handling — so this feature adds **key** modes;
-   subscription modes remain the ones ShipIt already implements.
+   **The mechanism for subscription modes is in scope for this feature**: a catalogue
+   service can declare one, and everything built on billing modes — the picker, Settings,
+   eligibility, usage, failover — handles it without knowing which vendor it belongs to.
+   What is *not* blanket in scope is any particular vendor's subscription: each needs its
+   own login, refresh and account handling, which is per-service work decided per service.
+   So this requirement says a service *may* have a subscription mode; which services
+   actually ship one is req 15's question, not this one.
 
 6. A service may speak more than one API style, and a harness speaks one. A model is
    offered on a harness when the service speaks that harness's style **and** the
@@ -85,8 +89,8 @@ No open questions remain.
    That choice is **visible in the UI as its own setting**, and it has a default so
    nobody has to configure it before ShipIt works. The default is **derived, not a named
    model**: it is the first model the install can actually run — the first model of the
-   first service — so it is never a model whose service has no credential (req 8) or
-   whose harness was not installed (req 14). A default is acceptable where a hidden
+   first service and billing mode — so it is never a model whose mode has no credential
+   (req 8) or whose harness was not installed (req 14). A default is acceptable where a hidden
    dependency is not: the user can see what non-turn work runs on and change it, and
    until they do it follows whatever the install has rather than pointing at a vendor
    they may never have used or have stopped paying for.
@@ -168,6 +172,12 @@ No open questions remain.
     follows req 6 and is authored per service; this requirement is about the services being
     present, not about what they turn out to offer.
 
+    **Which of them ship a subscription mode is deliberately left open.** Req 5 puts the
+    *mechanism* in scope, but each vendor's subscription is its own integration, so the
+    launch set's subscription coverage is decided per service rather than promised here.
+    Anthropic and OpenAI already have theirs. At least one custom service with a real
+    subscription is wanted, so the mechanism ships exercised rather than theoretical.
+
     A gateway is not a new kind of thing. It is a service with a key that reaches many
     upstream vendors, so it needs no mechanism of its own — which is why this is a statement
     about catalogue contents rather than about capability. One consequence is worth naming
@@ -197,6 +207,21 @@ No open questions remain.
 _None._
 
 ## Resolved questions
+
+- 2026-08-08 — Does this feature add subscription modes, or only key modes? **Chosen: the
+  mechanism yes, specific vendors case by case.** Review found req 5's scope limit ("this
+  feature adds key modes") contradicted its own illustrations, which demonstrated the
+  billing-mode split with a *DeepSeek subscription*. The sentence had survived the
+  billing-mode rewrite unedited. Resolved by separating the two things it had bundled:
+  building support for subscription modes is in scope, so the picker, Settings, eligibility,
+  usage and failover all handle one without knowing whose it is; integrating any particular
+  vendor's subscription stays per-service work, decided per service. Req 15 gained the
+  matching note that the launch set's subscription coverage is left open.
+
+  A factual correction came with it: **DeepSeek has no subscription**, so every mock
+  illustrating one was wrong. The prototypes now use **GLM**, which has a coding plan
+  alongside its API — a service that genuinely has both modes, and the intended test case
+  for the mechanism.
 
 - 2026-08-08 — Should the usage/cost split be a requirement? **Chosen: yes, and only the
   split.** Review found the cost view had no requirement behind it — "cost" and "price"
@@ -541,6 +566,12 @@ human, but most of the mechanism did not. What the human actually said, in order
 - "if the user chooses the wrong value, the harness may complain … it doesn't necessarily
   need to be disabled in the UI from the get-go" → the corollary that the harness's own
   error is the authoritative signal, not a ShipIt-side prediction.
+- "as part of this feature, we should build support for other subscriptions. Whether we
+  actually add actual subscriptions remains to be seen" → req 5's scope rewrite, splitting
+  the mechanism from each vendor's integration, and req 15's open subscription coverage.
+- "there is no DeepSeek subscriptions, but there is a GLM coding plan, and we could use that
+  for testing" → the correction of every mock that illustrated a DeepSeek subscription, and
+  GLM as the intended validation case.
 - "we should probably split it across services, so it's clear for the user where they were
   paying and where they were using the subscription" → req 16.
 - "I'd like to understand how much tokens it would cost without a subscription" → req 16's

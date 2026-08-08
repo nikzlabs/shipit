@@ -293,9 +293,14 @@ const CATALOGUE = [
   { id:'openai', name:'OpenAI', logo:'O', modes:{
       sub:{ models:['gpt-5.6-sol','gpt-5.6-mini'], unit:'weekly limit', reset:'resets Mon' },
       key:{ models:['gpt-5.6-sol','gpt-5.6-mini'] } } },
+  // DeepSeek is key-only: it sells no subscription. GLM carries both for real — a coding
+  // plan alongside an ordinary API — and is the intended test case for the mechanism.
+  // Its models and plan limits are illustrative; authoring the row is research.
   { id:'deepseek', name:'DeepSeek', logo:'D', modes:{
-      sub:{ models:['deepseek-v4-flash'], unit:'monthly limit', reset:'resets in 12d' },
       key:{ models:['deepseek-v4-flash','deepseek-v4-pro'] } } },
+  { id:'glm', name:'GLM', logo:'G', modes:{
+      sub:{ models:['glm-5'], unit:'monthly plan', reset:'resets in 12d' },
+      key:{ models:['glm-5','glm-5-air'] } } },
   { id:'openrouter', name:'OpenRouter', logo:'R', modes:{
       key:{ models:['deepseek-v4-flash','kimi-k3','qwen-4-coder'] } } },
   { id:'vercel', name:'Vercel AI Gateway', logo:'V', modes:{

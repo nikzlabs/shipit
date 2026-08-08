@@ -368,11 +368,12 @@
     no install means no models whatever your keys.
   </div>
   <div class="note">
-    <span class="req">open</span><b>A subscription and a key on one service are two blocks,
-    not one.</b> Tick &ldquo;&hellip; and a subscription&rdquo; under DeepSeek: two
-    <code class="k">DEEPSEEK</code> groups appear, and the subscription offers only
-    <code class="k">deepseek-v4-flash</code> while the key also offers
-    <code class="k">deepseek-v4-pro</code>.
+    <span class="req">req 5</span><b>A subscription and a key on one service are two blocks,
+    not one.</b> Tick &ldquo;&hellip; and a coding plan&rdquo; under GLM: two
+    <code class="k">GLM</code> groups appear, and the plan offers only
+    <code class="k">glm-5</code> while the key also offers <code class="k">glm-5-air</code>.
+    GLM is used here because it really has both &mdash; DeepSeek, which an earlier draft
+    used, sells no subscription at all.
     <div class="callout">
       Two independent reasons, either sufficient. <b>Model sets can differ</b> — a plan tier
       need not include everything the API sells, and a merged block would list a model the
@@ -521,15 +522,25 @@ const SERVICES = [
         styles:{ 'openai-responses':['gpt-5.6-sol','gpt-5.6-mini'] } },
   ]},
   { id:'deepseek', name:'DeepSeek', preset:true, modes:[
+      // Key only: DeepSeek sells no subscription. An earlier draft gave it one, which was
+      // simply wrong about the world.
       { kind:'key',
         styles:{ 'anthropic-messages':['deepseek-v4-flash','deepseek-v4-pro'],
                  'openai-responses':['deepseek-v4-flash'] } },
-      // Toggled on by a knob. Deliberately a SMALLER model set than the key — the plan
-      // tier does not include the pro model. This is the case that makes one merged
-      // block impossible: a union list would offer a model the subscription cannot serve.
+  ]},
+  // GLM carries BOTH modes for real — a coding plan alongside an ordinary API — which is
+  // why it replaced DeepSeek as the two-modes illustration and is the intended test case.
+  // Its declared styles and models are illustrative here; authoring the row is research.
+  { id:'glm', name:'GLM', preset:true, modes:[
+      { kind:'key',
+        styles:{ 'anthropic-messages':['glm-5','glm-5-air'],
+                 'openai-responses':['glm-5','glm-5-air'] } },
+      // Toggled on by a knob. Deliberately a SMALLER model set than the key — the coding
+      // plan does not include everything the API sells. This is the case that makes one
+      // merged block impossible: a union list would offer a model the plan cannot serve.
       { kind:'sub', accounts:1, optional:true,
-        styles:{ 'anthropic-messages':['deepseek-v4-flash'],
-                 'openai-responses':['deepseek-v4-flash'] } },
+        styles:{ 'anthropic-messages':['glm-5'],
+                 'openai-responses':['glm-5'] } },
   ]},
   { id:'openrouter', name:'OpenRouter', preset:false, modes:[
       { kind:'key',
@@ -552,7 +563,7 @@ const routeLabel = k => (k === 'sub' ? 'Subscription' : 'API key');
 const state = {
   creds: new Set(SERVICES.filter(s => s.preset).map(s => s.id)),
   installed: new Set(HARNESSES.filter(h => h.preinstalled).map(h => h.id)),
-  dsSub: false,   // does the DeepSeek subscription exist?
+  glmSub: false,  // does the GLM coding plan exist?
   pinned: false,
   harness: 'claude',
   service: 'deepseek',
@@ -563,7 +574,7 @@ const state = {
   note: null,
 };
 
-const modesOf = s => s.modes.filter(m => !m.optional || (s.id === 'deepseek' && state.dsSub));
+const modesOf = s => s.modes.filter(m => !m.optional || (s.id === 'glm' && state.glmSub));
 
 // Every (service, mode, model) a harness can offer: the harness's style must be declared
 // by that billing mode of a service you hold a credential for.
@@ -813,10 +824,10 @@ function knobs() {
       <span class="sub">${kinds}</span>
     </label>`;
     // The second billing mode hangs off its service, because that is what it is.
-    const extra = s.id === 'deepseek'
+    const extra = s.id === 'glm'
       ? `<label class="knob" style="margin-left:20px">
-           <input type="checkbox" ${state.dsSub ? 'checked' : ''} onchange="toggleDsSub()" />
-           <span style="color:var(--text-secondary)">&hellip; and a subscription</span>
+           <input type="checkbox" ${state.glmSub ? 'checked' : ''} onchange="toggleGlmSub()" />
+           <span style="color:var(--text-secondary)">&hellip; and a coding plan</span>
            <span class="sub">fewer models</span>
          </label>`
       : '';
@@ -833,8 +844,8 @@ function knobs() {
 }
 
 // Adds a SECOND BILLING MODE to a service that already has one — not a second service.
-function toggleDsSub() {
-  state.dsSub = !state.dsSub;
+function toggleGlmSub() {
+  state.glmSub = !state.glmSub;
   state.note = null;
   render();
 }
