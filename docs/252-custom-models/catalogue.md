@@ -202,10 +202,12 @@ authenticates *differently depending on the billing mode*:
 - **Claude** — a subscription account uses credential files under a scoped `HOME`, and in
   **local mode** `scrubEnvAuthForScopedHome` deletes `ANTHROPIC_API_KEY` and
   `ANTHROPIC_AUTH_TOKEN` from the child environment so the CLI reads those files
-  (`claude/process.ts:28` ✅ — *local mode only*: the function returns immediately without a
-  `scopedHome`, and the container worker constructs `ClaudeProcess` without a resolver,
-  `session-worker.ts:752` ✅. `plan.md`'s Appendix A records the same asymmetry). The env vars
-  are the *reserved-route* path, not the general one.
+  (`claude/process.ts:28` ✅). **That scrub is local mode only** — it returns immediately
+  without a `scopedHome`, and the container worker constructs `ClaudeProcess` with no resolver
+  (`session-worker.ts:752` ✅); in container mode the account's credentials arrive by mount
+  instead. `plan.md`'s Appendix A records the same asymmetry. What is general is that a
+  subscription authenticates from an **account root**, not from an environment variable: the
+  env vars are the *reserved-route* path (`local-agent-home.ts:80` ✅).
 - **Codex** — a subscription uses `~/.codex/auth.json` and the adapter deletes
   `OPENAI_API_KEY`; key mode uses that variable (`codex/adapter.ts:259` ✅).
 
@@ -226,13 +228,15 @@ export type CredentialTarget =
  *  layout, a login method, a quota integration in the limits registry), and those are
  *  currently selected by `AgentId`. This field is what they get selected by instead, and it is
  *  the catalogue-side half of the per-service work req 5 keeps out of the mechanism.
+ *  Only `via: "account"` modes need one — GLM's plan does not appear here, because it
+ *  authenticates with a key and so has no login flow to name.
  *  🔍 THROUGHOUT — these identifiers do not exist. Today the auth managers and limits
  *  providers are keyed by `AgentId` ("claude", "codex") in a `Map<AgentId, AgentAuthManager>`
  *  (`agents/index.ts:39`, `agent-auth-manager.ts:1`). The OAuth *implementations* are real;
  *  these names are this document's proposal for what replaces `AgentId` as their key. An
  *  earlier version of this block marked them ✅ on the strength of the implementations
  *  existing, which is the inference-as-verified-fact the rules above forbid. */
-export type SubIntegrationId = "anthropic-oauth" | "openai-chatgpt" | "zai-plan";
+export type SubIntegrationId = "anthropic-oauth" | "openai-chatgpt";
 
 **GLM is the case that forces this, and it is the launch subscription** (req 15): its coding
 plan is billed as a *plan* — an allowance, not per-token — while being authenticated with an
@@ -283,7 +287,7 @@ today**: `setApiKey()` assigns `process.env.ANTHROPIC_API_KEY` and writes nothin
 (`services/settings.ts:367` ✅), where Codex's key *is* persisted in `CredentialData.agentEnv`.
 So the variable name is ✅ and the storage is 🔍 — work phase 2 does, not a fact about today.
 
-A key mode's `credential` is a `KeyCredential`; `HarnessDef.spawn.credential` is a
+A mode's `credential` is a `ModeCredential`; `HarnessDef.spawn.credential` is a
 `CredentialTargets`. Resolving a turn reads the source for the value and the target for the
 destination — which is exactly the mapping `plan.md`'s "set the credential after the scrub"
 was leaving to the implementer.
@@ -391,7 +395,7 @@ below is 🔍** — this is the state of the survey before phase 1 runs it, not 
 | API styles it speaks to a remote endpoint | `anthropic-messages` 🔍 | `openai-responses` 🔍 | unclear — see below | many, incl. `openai-chat-completions` |
 | Model per invocation | `--model` flag ✅ | JSON-RPC `turn/start` payload ✅ (`:787`) | `-m/--model <id>` | `-m provider/model` |
 | Endpoint overridable | **no seam today** ✅ | **no seam today** ✅ | apparently not | config file only |
-| Subscription auth | scoped-home files ✅ | `~/.codex/auth.json` ✅ | n/a | n/a |
+| Subscription auth | account root under `HOME` ✅ | `auth.json` under `CODEX_HOME` ✅ | n/a | n/a |
 | Key auth | `ANTHROPIC_API_KEY` ✅ | `OPENAI_API_KEY` ✅ | `CURSOR_API_KEY`, Cursor's own | per provider, in config |
 | Reasoning control | `--effort` enum ✅ | `-c model_reasoning_effort=` ✅ | unknown | `reasoningEffort` in config |
 | Dollar telemetry | cumulative `total_cost_usd` per result ✅ | **none — stored as zero** ✅ | unknown | unknown |
@@ -436,7 +440,7 @@ export const HARNESSES = [
     styles: ["anthropic-messages"],                         // 🔍 see the survey note
     spawn: {
       credential: { key: { kind: "env", name: "ANTHROPIC_API_KEY" },     // ✅ pam.ts:619
-                    sub: { kind: "scoped-home" } },                      // ✅ process.ts:12
+                    sub: { kind: "scoped-home" } },                      // ✅ account roots
       model: { kind: "flag", flag: "--model" },             // ✅ claude/process.ts:369
       endpoint: { kind: "env", name: "ANTHROPIC_BASE_URL" }, // 🔍 no seam today
     },
@@ -449,7 +453,7 @@ export const HARNESSES = [
     styles: ["openai-responses"],                           // 🔍 see the survey note
     spawn: {
       credential: { key: { kind: "env", name: "OPENAI_API_KEY" },        // ✅ adapter.ts:259
-                    sub: { kind: "scoped-home" } },                      // ✅ ~/.codex/auth.json
+                    sub: { kind: "scoped-home" } },                      // ✅ CODEX_HOME
       model: { kind: "turn-payload", field: "model" },      // ✅ codex-event-handler.ts:787
       endpoint: { kind: "config", key: "model_provider.base_url" }, // 🔍 no seam today
     },
