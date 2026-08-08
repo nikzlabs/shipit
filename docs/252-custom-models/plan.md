@@ -359,7 +359,8 @@ survived, and what did not:
 
 - **No labels on the triggers.** A product name and a model id do not need the words
   "harness" and "model" in front of them. The closed composer is
-  `Claude Code ▾ | deepseek-v4-flash ▾`.
+  `Claude Code ▾ | deepseek-v4-flash ▾ High ▾` — three controls, since reasoning
+  (docs/217's per-session control) sits beside the model as it does today.
 - **The service pill is disclosure-on-demand**, appearing only when that model id is offered
   by more than one eligible group on this harness. That is the sole case where the id alone
   cannot say who is billing you — exactly the case the identity exists for — so it shows up
@@ -498,6 +499,18 @@ So the offered levels are the harness's, unnarrowed, and a value the model does 
 is req 1's best-effort territory. A value the *harness* rejects is the harness's error to
 raise — the authoritative answer, arriving from the component that actually knows, which is
 strictly better than a ShipIt-side prediction that pre-disables the control.
+
+**One consequence for the composer, easy to miss because reasoning is not changing:** since
+the levels belong to the harness, a harness switch can strand the *effort value* just as it
+can strand the model. Claude Code has `max` and Codex does not; Codex has `none` and
+`minimal` and Claude Code does not. The rule is the same shape as the model's but the
+fallback is different — **reset to Default rather than mapping to a neighbour**, because a
+level name shared by two CLIs is not a promise of shared semantics, and Default (omit the
+flag) is always valid. A value both harnesses accept survives untouched. A harness with no
+reasoning block at all shows no control rather than an empty one.
+
+That makes three things a harness switch can move — model, billing mode, effort — and the
+composer has to report all of them in one message rather than the last one to be computed.
 
 **Mid-session model switching** (req 4) is a capability question per harness, not a new
 mechanism: the model is already a per-turn spawn argument, and `AgentCapabilities`

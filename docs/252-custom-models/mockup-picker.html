@@ -286,6 +286,7 @@
         <div class="sel" id="sel-harness"></div>
         <div class="divider"></div>
         <div class="sel" id="sel-model"></div>
+        <div class="sel" id="sel-effort"></div>
         <div class="spacer"></div>
         <button class="send">&uarr;</button>
       </div>
@@ -326,6 +327,19 @@
       case where the id alone cannot say who is billing you, and the reason models are
       identified by the pair. Give OpenRouter a key while on
       <code class="k">deepseek-v4-flash</code> and it appears; take it away and it goes.
+    </div>
+  </div>
+  <div class="note">
+    <b>The third control is reasoning, and its levels are the harness&rsquo;s.</b> Claude Code
+    offers <code class="k">low&hellip;max</code>, Codex offers
+    <code class="k">none&hellip;xhigh</code> — each CLI&rsquo;s own accepted values (docs/217),
+    deliberately not narrowed by the selected model. A harness with no reasoning setting shows
+    no control: tick Cursor on, switch to it, and the control is gone rather than empty.
+    <div class="callout">
+      So a harness switch can strand the <i>effort</i> too. Set <b>Max</b> on Claude Code and
+      switch to Codex: it returns to <b>Default</b> and says so. It is not mapped to a
+      neighbour — a level name shared by two CLIs is not a promise of shared semantics, and
+      Default is always valid. <b>High</b>, which both accept, survives untouched.
     </div>
   </div>
   <div class="note">
@@ -476,11 +490,21 @@
 
 <script>
 // ---------------------------------------------------------------- catalogue
+// `reasoning` is a property of the HARNESS, not of the model — the vocabularies are the
+// CLI's own accepted values (docs/217, verified against each binary), and they differ.
+// Deliberately not narrowed by the selected model: there is no maintainable source for
+// which models honour which level, and a per-model claim would still say nothing about
+// whether this harness forwards it. A harness with no reasoning block shows no control.
 const HARNESSES = [
-  { id:'claude', name:'Claude Code', style:'anthropic-messages', version:'v2.4.1', preinstalled:true  },
-  { id:'codex',  name:'Codex',       style:'openai-responses',   version:'v0.9.3', preinstalled:true  },
+  { id:'claude', name:'Claude Code', style:'anthropic-messages', version:'v2.4.1', preinstalled:true,
+    reasoning:{ label:'Reasoning', options:['low','medium','high','xhigh','max'] } },
+  { id:'codex',  name:'Codex',       style:'openai-responses',   version:'v0.9.3', preinstalled:true,
+    reasoning:{ label:'Reasoning effort', options:['none','minimal','low','medium','high','xhigh'] } },
   { id:'cursor', name:'Cursor',      style:'openai-responses',   version:'v1.2.0', preinstalled:false },
 ];
+
+const EFFORT_LABEL = { none:'None', minimal:'Minimal', low:'Low', medium:'Medium',
+                       high:'High', xhigh:'Extra high', max:'Max' };
 
 // A service holds one BILLING MODE per entry, and each mode declares its own models per
 // API style (req 6). Two modes of one service are separate entries because they differ in
@@ -534,6 +558,7 @@ const state = {
   service: 'deepseek',
   mode: 'key',    // the billing mode, part of the selection — not resolved per turn
   model: 'deepseek-v4-flash',
+  effort: null,  // null = Default, i.e. omit the flag and let the backend choose
   open: null,
   note: null,
 };
@@ -564,30 +589,78 @@ const isEligible = (hId, sId, mode, model) =>
 function pickHarness(id) {
   if (state.pinned || id === state.harness) { state.open = null; return render(); }
   state.harness = id;
-  state.note = null;
+
+  // A harness switch can strand BOTH the model and the effort level, so the messages are
+  // collected rather than assigned — an earlier version let the model note overwrite the
+  // effort one, silently losing half of what changed.
+  const msgs = [];
+  let kind = 'info';
+
   // Keep the selection when the new harness offers the same (service, mode, model);
   // otherwise move to the first eligible one and say so. Never land silently (req 11).
   if (!isEligible(id, state.service, state.mode, state.model)) {
     const first = eligible(id)[0];
     if (first) {
-      state.note = {
-        kind: 'info',
-        text: `<b>${state.model}</b> is not offered on ${hns(id).name}, so the session moved to `
-            + `<b>${first.model}</b> via ${svc(first.service).name} `
-            + `(${routeLabel(first.mode).toLowerCase()}).`,
-      };
+      msgs.push(`<b>${state.model}</b> is not offered on ${hns(id).name}, so the session moved `
+              + `to <b>${first.model}</b> via ${svc(first.service).name} `
+              + `(${routeLabel(first.mode).toLowerCase()}).`);
       state.service = first.service; state.mode = first.mode; state.model = first.model;
     } else {
-      state.note = {
-        kind: 'warn',
-        text: `${hns(id).name} has no models — none of the services you have a key for `
-            + `work with it.`,
-      };
+      kind = 'warn';
+      msgs.push(`${hns(id).name} has no models — none of the services you have a key for `
+              + `work with it.`);
     }
   }
+
+  // The effort value can be stranded too, because the vocabularies differ: Codex has
+  // `minimal` and `none`, Claude Code has `max`. Reset to Default rather than guessing an
+  // equivalent — a shared name across two CLIs is not a promise of shared semantics, and
+  // Default is always valid.
+  const r = hns(id).reasoning;
+  if (state.effort !== null && (!r || !r.options.includes(state.effort))) {
+    const was = EFFORT_LABEL[state.effort] ?? state.effort;
+    state.effort = null;
+    msgs.push(r
+      ? `<b>${was}</b> is not one of ${hns(id).name}'s levels, so reasoning went back to <b>Default</b>.`
+      : `${hns(id).name} exposes no reasoning setting, so <b>${was}</b> no longer applies.`);
+  }
+
+  state.note = msgs.length ? { kind, text: msgs.join(' ') } : null;
   state.open = null;
   render();
 }
+
+function effortSelector() {
+  const h = hns(state.harness);
+  // No reasoning block on this harness → no control at all, not a disabled one.
+  if (!h || !h.reasoning) return '';
+  const open = state.open === 'effort';
+  const cur = state.effort;
+
+  let menu = '';
+  if (open) {
+    const row = (v, label) => `<div class="item ${cur === v ? 'sel-row' : ''}"
+        onclick="pickEffort(${v === null ? 'null' : `'${v}'`})">
+        <span class="grow">${label}</span>
+        <span class="check">${cur === v ? '&#10003;' : ''}</span>
+      </div>`;
+    menu = `<div class="menu right">
+      <div class="menu-label"><span class="grow">${h.reasoning.label}</span></div>
+      ${row(null, 'Default')}
+      ${h.reasoning.options.map(v => row(v, EFFORT_LABEL[v] ?? v)).join('')}
+    </div>`;
+  }
+
+  const label = cur === null ? 'Default' : (EFFORT_LABEL[cur] ?? cur);
+  return `${menu}
+    <button class="trigger ${open ? 'open' : ''}" onclick="toggleMenu('effort')"
+            title="${h.reasoning.label}: ${label} — the levels are ${h.name}'s, not the model's">
+      <span>${label}</span>
+      <span class="caret">&#9660;</span>
+    </button>`;
+}
+
+function pickEffort(v) { state.effort = v; state.open = null; render(); }
 
 function pickModel(serviceId, mode, model) {
   state.service = serviceId; state.mode = mode; state.model = model;
@@ -786,6 +859,7 @@ function toggleInstalled(id) {
 function render() {
   document.getElementById('sel-harness').innerHTML = harnessSelector();
   document.getElementById('sel-model').innerHTML = modelSelector();
+  document.getElementById('sel-effort').innerHTML = effortSelector();
   document.getElementById('readout').innerHTML = readout();
   knobs();
   document.getElementById('knob-pinned').checked = state.pinned;
