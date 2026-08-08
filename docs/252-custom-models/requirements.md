@@ -8,7 +8,8 @@ does today. So a requirement below is silent about an existing capability when t
 does not change it, and that silence is not permission to drop it. Where a requirement *does*
 describe something that already works, it is because this feature changes it in some way.
 
-No open questions remain.
+Three open questions are outstanding — see [below](#open-questions). All three came from
+Codex's review of this document on 2026-08-08.
 
 ## Requirements
 
@@ -220,7 +221,38 @@ No open questions remain.
 
 ## Open questions
 
-_None._
+- **Must a retirement successor still run on the session's harness?** Req 13 now scopes the
+  successor to the same service *and* the same billing mode, and then promises the session is
+  "never left unable to take a turn". But req 6 makes a model's availability depend on the
+  **API style** too — a service declares which of its models work under each style — so a
+  successor declared only under a style the session's pinned harness does not speak leaves
+  that session unable to take a turn, which is the promise failing. This is the third
+  instance of the same defect: the successor was scoped to the service (2026-08-05), then to
+  the billing mode (2026-08-08), and the harness axis was missed both times. *Agent's
+  recommendation: state the condition as the property req 13 already promises — the successor
+  must be runnable on the harness the session is pinned to — and leave the map's shape to
+  `plan.md`, which currently cannot express a per-harness successor.*
+
+- **Are several subscriptions to one service really interchangeable?** Req 5 says they are,
+  and that is what justifies never showing the user which one a turn used; req 12 routes
+  between them on that basis. It assumes the accounts have the same model entitlements —
+  which is false for tiered plans, where a cheaper account may not offer the larger models.
+  Req 8 would then offer a model because the *mode* has a credential, and req 12 could route
+  a turn to an account that cannot run it. `mockup-services.html` already illustrates the
+  case in its own copy: "a bigger plan first, a smaller one as backup". *Agent's
+  recommendation: this is pre-existing behaviour rather than something this feature breaks —
+  ShipIt already routes between subscription accounts without comparing entitlements — so the
+  cheapest honest fix is to narrow req 5's claim to what it needs (the user does not choose
+  among them) instead of asserting an equivalence that is not true. Treating tiers properly
+  is a separate feature.*
+
+- **May a retirement change what a metered turn costs?** Req 13 preserves the service and the
+  billing mode, but two models under one service's key are priced differently, so a remap can
+  make a metered session cheaper or dearer. Req 13 does not claim otherwise — `plan.md` did,
+  and has been corrected — so this is a question about whether the behaviour is acceptable,
+  not about a contradiction. *Agent's recommendation: acceptable, and no requirement change.
+  A successor at an identical price is not generally available, req 11 already makes the
+  running model visible, and req 16 reports what was spent.*
 
 ## Resolved questions
 

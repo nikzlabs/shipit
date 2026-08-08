@@ -116,7 +116,7 @@ the design.
 | # | Phase | Reqs | Lands |
 |---|---|---|---|
 | 1 | Catalogue and identities | 5, 6, 7, 15 | The data model, its launch rows and prices. No user-visible change. |
-| 2 | Credentials and Settings | 5, 7 | You can save a service key. It does nothing yet. |
+| 2 | Credentials and Settings | 5, 7, 15 | You can save a service key. It does nothing yet. |
 | 3 | Spawn shaping and eligibility | 1, 2, 3, 8 | **A session runs on a custom service.** |
 | 4 | In-session switching | 4 | Switching models, including across services. |
 | 5 | Credential-failure policy | 12 | Correct behaviour when a credential dies. |
@@ -175,6 +175,16 @@ It also **re-keys the routing settings** from per-`AgentId` to per-`(service, mo
 `selectionMode`, `isPrimary` ordering and `failoverCutoffs` (`ProviderAccountsCard`). They
 move here rather than into phase 5 because they are Settings state, and because a
 subscription card is meaningless without them.
+
+**It also owns GLM's subscription integration** — its login, token refresh and account
+handling — because req 15 makes a working custom subscription a launch commitment, not just
+a catalogue row. This is the phase's one genuinely per-service piece of work, and the only
+place in these nine phases where a *vendor* rather than a *mechanism* is being built. It is
+the least predictable item in the plan for that reason: everything else here is shaped by
+ShipIt's own code, and this is shaped by whatever GLM's plan actually offers. **If it slips,
+it does not block anything** — phases 3 to 9 depend on the billing-mode mechanism, not on
+GLM — but req 15 is unmet until it lands, which is the honest status to report rather than
+counting the catalogue row as done.
 
 Ends with a key you can save, edit and remove, that is delivered to the session container
 and used by nothing. Shipping this alone is deliberate: credential storage and delivery is
@@ -286,9 +296,12 @@ cheap.
 
 Settled by the 2026-08-05 answers. **Every service is ShipIt-defined** (req 5) — there
 is no user-authored service, only user-supplied credentials for services ShipIt ships.
-This feature adds **key-authenticated** services to that set; a subscription needs its
-own login, refresh and account handling, which is per-service ShipIt work, so
-subscription-backed services remain the vendors already implemented.
+This feature builds the **mechanism** for both billing modes (req 5): a catalogue service
+can declare a subscription, and the picker, Settings, eligibility, usage and failover all
+handle one without knowing whose it is. Integrating a *particular* vendor's subscription —
+its login, refresh and account handling — stays per-service work, so which services ship one
+is req 15's question. Req 15 answers it for the launch set: **GLM**, whose integration phase
+2 owns (below).
 
 **Data model — two layers, with different owners.**
 
@@ -411,8 +424,8 @@ The split has one real cost and one new interaction, both worth deciding deliber
   on the control that would act on it, and one line per harness in a menu that already lists
   harnesses does not accumulate into clutter.
 - **Switching harness can strand the selected model.** Keep the model when the new harness
-  also offers that exact `(service, model)` pair — which is why `deepseek-v4-flash` survives
-  a Claude Code → Codex switch — and otherwise move to the first eligible model and say so.
+  also offers that exact `(service, billing mode, model)` triple — which is why
+  `deepseek-v4-flash` survives a Claude Code → Codex switch — and otherwise move to the first eligible model and say so.
   Landing somewhere else silently would contradict req 11; refusing the switch would make an
   enabled control lie. The combined picker never had this case, because there the harness and
   model moved together by construction.
@@ -720,13 +733,20 @@ The map lives **inside a `(service, billing mode)` and maps model id to model id
 crosses neither. Both halves are requirements (req 13) and both are load-bearing. Because
 `serviceId` is unchanged, the credential, the endpoint and the provider are unchanged, so
 a remap cannot strand a session on a service the user has no credential for. Because the
-**mode** is unchanged, what the turn costs is unchanged too — the successor is declared
+**mode** is unchanged, *whether* the turn is billed is unchanged — the successor is declared
 under the same mode, so a session running included work cannot be remapped onto metered
 work. That second half is why the map is keyed per mode rather than per service: a service
 declares its models *per mode* (req 6), so a per-service map would have no way to say that
 the subscription's successor and the key's successor differ, or that the subscription has
-none at all. An earlier draft of this section argued the remap was safe because "the price
-is unchanged" while keying the map per service — under billing modes that was simply false.
+none at all.
+
+**What preserving the mode does not buy is an unchanged rate.** Two models under one
+service's key are priced differently, so a metered session's turns can get cheaper or dearer
+across a remap. Preserving the mode prevents *included* work from becoming *billed* work,
+which is the discontinuity worth preventing; it says nothing about the number. Two earlier
+drafts of this paragraph got this wrong in opposite directions — the first argued a
+per-*service* map was safe because "the price is unchanged", which billing modes made false;
+the second kept the claim while fixing the key, which is still false for a different reason.
 
 A mode that retires a model with no successor to offer is a **catalogue mistake**, not a
 runtime case: there is no fallback to the other mode, because that is the silent shift onto
