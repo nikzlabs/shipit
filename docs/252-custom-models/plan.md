@@ -301,10 +301,14 @@ it, the other is fully live, and both are legible on the closed composer.
 
 The split has one real cost and one new interaction, both worth deciding deliberately:
 
-- **The other harness's models become invisible.** The combined picker showed everything and
-  greyed what you could not have — worse as a lock affordance, better as a map. The
-  mitigation is a footer on the model menu naming what is one switch away, and it must not
-  offer a switch a pinned session cannot make. That footer is the whole mitigation.
+- **The other harness's models stop being visible in one list.** The combined picker showed
+  everything and greyed what you could not have — worse as a lock affordance, better as a
+  map. The obvious patch is a footer on the model menu ("3 more models on Codex"), and it is
+  the wrong one: it grows with every installed harness, and it is useless the moment the
+  harness is pinned, which is most of a session's life. The answer instead is that the
+  **harness menu states each harness's model count on its own row** — the information lands
+  on the control that would act on it, and one line per harness in a menu that already lists
+  harnesses does not accumulate into clutter.
 - **Switching harness can strand the selected model.** Keep the model when the new harness
   also offers that exact `(service, model)` pair — which is why `deepseek-v4-flash` survives
   a Claude Code → Codex switch — and otherwise move to the first eligible model and say so.

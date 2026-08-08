@@ -375,12 +375,18 @@
       which models under each, is research to do when the catalogue row is authored (req 6).
     </div>
   </div>
-  <div class="note against">
-    <span class="req">cost</span><b>The other harness&rsquo;s models become invisible.</b> The
-    combined picker showed everything at once and greyed what you could not have, which is
-    worse as a lock affordance but better as a map. Splitting hides the other harness entirely,
-    so the model menu carries a footer naming what is one switch away. Worth deciding
-    deliberately: that footer is the whole mitigation.
+  <div class="note">
+    <b>The other harness&rsquo;s models are one control away, not lost.</b> The combined picker
+    showed everything at once and greyed what you could not have — worse as a lock affordance,
+    better as a map. The obvious patch was a footer on the model menu (&ldquo;3 more models on
+    Codex&rdquo;), and it was wrong: it grows with every installed harness, and it is useless
+    the moment the harness is pinned, which is most of a session&rsquo;s life.
+    <div class="callout">
+      The harness menu already answers it, on the control that would act on it: each row
+      states its own model count. Open the harness selector — <b>Claude Code &middot; 5 models
+      available</b>, <b>Codex &middot; 3 models available</b>. That does not grow into clutter,
+      because it is one line in a menu that lists harnesses anyway.
+    </div>
   </div>
   <div class="note against">
     <span class="req">open</span><b>Switching harness can strand the selected model.</b> The
@@ -437,7 +443,6 @@
         <div class="menu-label"><span class="grow">DeepSeek</span><span class="pill key">API key</span></div>
         <div class="item sel-row"><span class="grow mono">deepseek-v4-flash</span><span class="check">&#10003;</span></div>
         <div class="item"><span class="grow mono">deepseek-v4-pro</span></div>
-        <div class="menu-foot">3 more models on <b>Codex</b> — switch harness to see them.</div>
       </div>
       <div class="hint" style="margin-top:13px">
         The harness moved out to its own control, freeing the group header for the service —
@@ -507,21 +512,6 @@ function eligible(harnessId) {
 const isEligible = (hId, sId, m) =>
   eligible(hId).some(e => e.service === sId && e.model === m);
 
-// Models one harness switch away, for the footer that mitigates the split's cost.
-function elsewhereCount() {
-  let n = 0;
-  for (const h of HARNESSES) {
-    if (h.id === state.harness || !state.installed.has(h.id)) continue;
-    n += eligible(h.id).length;
-  }
-  return n;
-}
-function elsewhereNames() {
-  return HARNESSES
-    .filter(h => h.id !== state.harness && state.installed.has(h.id) && eligible(h.id).length)
-    .map(h => h.name);
-}
-
 // ---------------------------------------------------------------- actions
 function pickHarness(id) {
   if (state.pinned || id === state.harness) { state.open = null; return render(); }
@@ -587,10 +577,7 @@ function harnessSelector() {
     menu = `<div class="menu">
       <div class="menu-label"><span class="grow">Harness</span></div>
       ${rows}
-      <div class="menu-foot">
-        Installed at deploy time. ${HARNESSES.length - list.length} more supported by ShipIt,
-        not installed here.
-      </div>
+      <div class="menu-foot">Installed at deploy time — nothing to add here.</div>
     </div>`;
   }
 
@@ -638,18 +625,9 @@ function modelSelector() {
           <span class="check">${sel ? '&#10003;' : ''}</span>
         </div>`;
       }
-      // The footer is the whole mitigation for hiding the other harness's models, so
-      // it must not offer a switch the session can no longer make.
-      const n = elsewhereCount();
-      if (n) {
-        const where = `<b>${elsewhereNames().join('</b>, <b>')}</b>`;
-        inner += `<div class="menu-foot">${state.pinned
-          ? `${n} more model${n === 1 ? '' : 's'} on ${where}, out of reach — the harness is
-             fixed for this session.`
-          : `${n} more model${n === 1 ? '' : 's'} on ${where} — switch harness to see
-             ${n === 1 ? 'it' : 'them'}.`}
-        </div>`;
-      }
+      // No "N more models on <other harness>" footer. It grows with every installed
+      // harness, it is useless once the harness is pinned, and the harness menu already
+      // states each harness's model count on the control that would act on it.
     }
     menu = `<div class="menu right">${inner}</div>`;
   }
