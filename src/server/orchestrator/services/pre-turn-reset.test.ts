@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { computeResetEligible, autoResetMergedBranchOnContinue, isResetEligible, emitResetEligibleSignal, resetBranchToBaseExplicit, RESET_REFUSAL_GUIDANCE, type PreTurnResetDeps } from "./pre-turn-reset.js";
+import { computeResetEligible, autoResetMergedBranchOnContinue, isResetEligible, emitResetEligible, emitResetEligibleSignal, resetBranchToBaseExplicit, RESET_REFUSAL_GUIDANCE, type PreTurnResetDeps } from "./pre-turn-reset.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 
 vi.mock("../session-worker-uid.js", () => ({ handWorkspaceBackToWorker: vi.fn() }));
@@ -53,6 +53,7 @@ function makePrStatus(over: Partial<PrStatusSummary> = {}): PrStatusSummary {
 function makeGit(over: Partial<Record<keyof GitManager, unknown>> = {}): GitManager {
   return {
     isClean: vi.fn().mockResolvedValue(true),
+    uncommittedPaths: vi.fn().mockResolvedValue([]),
     currentBranchOrNull: vi.fn().mockResolvedValue("shipit/fix-login"),
     isRebaseInProgress: vi.fn().mockResolvedValue(false),
     isMergeOrSequencerInProgress: vi.fn().mockResolvedValue(false),
@@ -413,6 +414,65 @@ describe("autoResetMergedBranchOnContinue", () => {
       warn.mockRestore();
     });
 
+    /**
+     * planning#341 — "the working tree has uncommitted changes" is unactionable when
+     * the user did not knowingly change anything. In the motivating incident the
+     * writer was a compose service mounting the workspace read-write, so the only
+     * way to understand the refusal was to name the files.
+     */
+    describe("the dirty-tree refusal names the files (planning#341)", () => {
+      function dirtyGit(paths: string[]): GitManager {
+        return makeGit({
+          isClean: vi.fn().mockResolvedValue(false),
+          uncommittedPaths: vi.fn().mockResolvedValue(paths),
+        });
+      }
+
+      it("lists the uncommitted paths in the notice, the agent prefix and the log line", async () => {
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        const out = await autoResetMergedBranchOnContinue(
+          makeDeps({ createGitManager: () => dirtyGit(["src/b.ts", "docs/a.md"]) }),
+          "s1",
+          "/ws",
+        );
+        expect(out.skip?.clause).toBe("dirty-tree");
+        // Sorted, so the log line and the notice are stable across runs.
+        expect(out.skip?.detail).toContain("uncommitted paths: docs/a.md, src/b.ts");
+        expect(out.skip?.notice).toContain("uncommitted paths: docs/a.md, src/b.ts");
+        expect(out.agentPrefix).toContain("uncommitted paths: docs/a.md, src/b.ts");
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("uncommitted paths: docs/a.md, src/b.ts"));
+        warn.mockRestore();
+      });
+
+      it("caps the list at 10 paths and counts the rest", async () => {
+        const paths = Array.from({ length: 14 }, (_, i) => `src/f${String(i).padStart(2, "0")}.ts`);
+        const out = await autoResetMergedBranchOnContinue(
+          makeDeps({ createGitManager: () => dirtyGit(paths) }),
+          "s1",
+          "/ws",
+        );
+        expect(out.skip?.notice).toContain("src/f09.ts (+4 more)");
+        expect(out.skip?.notice).not.toContain("src/f10.ts");
+      });
+
+      it("degrades to the bare sentence rather than losing the refusal", async () => {
+        const git = makeGit({
+          isClean: vi.fn().mockResolvedValue(false),
+          uncommittedPaths: vi.fn().mockRejectedValue(new Error("git status boom")),
+        });
+        const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
+        expect(out.skip?.clause).toBe("dirty-tree");
+        expect(out.skip?.detail).toContain("uncommitted changes");
+        expect(out.skip?.detail).not.toContain("uncommitted paths");
+      });
+
+      it("costs nothing on the healthy path (no second git status when the tree is clean)", async () => {
+        const git = makeGit();
+        await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
+        expect(git.uncommittedPaths).not.toHaveBeenCalled();
+      });
+    });
+
     it("says nothing on a successful move (the branch-updated card is the record there)", async () => {
       const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => makeGit() }), "s1", "/ws");
       expect(out.moved).toBe(true);
@@ -476,6 +536,89 @@ describe("emitResetEligibleSignal (merge-while-viewing push)", () => {
     const git = makeGit({ getHeadHash: vi.fn().mockResolvedValue("deadbeef0000000000000000000000000000beef") });
     await emitResetEligibleSignal(makeDeps({ createGitManager: () => git }), { sessionDir: "/ws", emitMessage }, "s1");
     expect(emitMessage).toHaveBeenCalledWith({ type: "reset_eligible", sessionId: "s1", eligible: false });
+  });
+});
+
+/**
+ * planning#341 — the single emit path for `reset_eligible`. The log line is the point:
+ * the ops investigation into a refused reset could not tell "the client held a
+ * stale true" from "the tree became dirty later", because neither the emitted
+ * value nor its reason was written down anywhere.
+ */
+describe("emitResetEligible (the one emit path, and its log line)", () => {
+  function makeDeps(over: Partial<Omit<PreTurnResetDeps, "getAutoResetMergedBranch">> = {}) {
+    return {
+      getSession: () => makeSession(),
+      getPrStatus: () => makePrStatus(),
+      createGitManager: () => makeGit(),
+      ...over,
+    };
+  }
+
+  it("logs the value and the origin for a merged session", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const emit = vi.fn();
+    await emitResetEligible(makeDeps(), { sessionId: "s1", sessionDir: "/ws", origin: "activation", emit });
+    expect(emit).toHaveBeenCalledWith({ type: "reset_eligible", sessionId: "s1", eligible: true });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("reset_eligible=true for s1 (activation)"));
+    log.mockRestore();
+  });
+
+  it("logs the clause that refused, including the dirty paths", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const git = makeGit({
+      isClean: vi.fn().mockResolvedValue(false),
+      uncommittedPaths: vi.fn().mockResolvedValue(["src/app.ts"]),
+    });
+    await emitResetEligible(makeDeps({ createGitManager: () => git }), {
+      sessionId: "s1", sessionDir: "/ws", origin: "file-change", emit: vi.fn(),
+    });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("reset_eligible=false for s1 (file-change): dirty-tree"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("uncommitted paths: src/app.ts"));
+    log.mockRestore();
+  });
+
+  it("stays out of the log for a non-merged session (a constant false is not news)", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const emit = vi.fn();
+    const s = makeSession();
+    delete s.mergedAt;
+    await emitResetEligible(makeDeps({ getSession: () => s }), {
+      sessionId: "s1", sessionDir: "/ws", origin: "post-turn", emit,
+    });
+    expect(emit).toHaveBeenCalledWith({ type: "reset_eligible", sessionId: "s1", eligible: false });
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining("reset_eligible"));
+    log.mockRestore();
+  });
+
+  /**
+   * The client holds ONE value per session and takes whichever message arrived
+   * last, so no emitter may suppress a push against a value it remembers
+   * privately: an unconditional emitter can have overwritten the client since,
+   * and the suppressed push is the only thing that would correct it. A
+   * deduplicated variant existed and was deleted after cross-agent review.
+   */
+  it("pushes an unchanged value rather than suppressing it (the cross-emitter wedge)", async () => {
+    const emit = vi.fn();
+    for (let i = 0; i < 3; i++) {
+      await emitResetEligible(makeDeps(), { sessionId: "s1", sessionDir: "/ws", origin: "file-change", emit });
+    }
+    expect(emit).toHaveBeenCalledTimes(3);
+    expect(emit).toHaveBeenLastCalledWith({ type: "reset_eligible", sessionId: "s1", eligible: true });
+  });
+
+  it("records a git failure on a merged session instead of an unexplained false", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const emit = vi.fn();
+    const git = makeGit({ isClean: vi.fn().mockRejectedValue(new Error("git boom")) });
+    await emitResetEligible(makeDeps({ createGitManager: () => git }), {
+      sessionId: "s1", sessionDir: "/ws", origin: "file-change", emit,
+    });
+    expect(emit).toHaveBeenCalledWith({ type: "reset_eligible", sessionId: "s1", eligible: false });
+    // Fail-safe for the UI, but NOT silent — this is the ambiguous operational
+    // case the log exists to remove.
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("computation failed (git boom)"));
+    log.mockRestore();
   });
 });
 

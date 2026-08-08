@@ -9,7 +9,7 @@ import { readGlobalSystemPrompt } from "./global-system-prompt.js";
 import { pushToOrigin, isGitAuthError } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
 import { notableFilesForBranch } from "./services/notable-files.js";
-import { isResetEligible } from "./services/pre-turn-reset.js";
+import { emitResetEligible } from "./services/pre-turn-reset.js";
 import { AgentTurnAdmissionError, type SessionRunnerInterface } from "./session-runner.js";
 import { registerPreviewProxy } from "./preview-proxy.js";
 import { projectTurnSnapshotForWire } from "./transcript-projection.js";
@@ -932,16 +932,14 @@ export async function registerRoutes(
             const eligibleDir = dir;
             void (async () => {
               try {
-                const eligible = await isResetEligible(
+                await emitResetEligible(
                   {
                     getSession: (id) => sessionManager.get(id),
                     getPrStatus: (id) => sessionManager.getPrStatus(id),
                     createGitManager,
                   },
-                  sid,
-                  eligibleDir,
+                  { sessionId: sid, sessionDir: eligibleDir, origin: "activation", emit: send },
                 );
-                send({ type: "reset_eligible", sessionId: sid, eligible });
               } catch (err) {
                 console.error(`[pre-turn-reset] eligibility signal failed for ${sid}:`, getErrorMessage(err));
               }

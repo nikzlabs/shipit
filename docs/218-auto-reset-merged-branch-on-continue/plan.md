@@ -630,6 +630,97 @@ recorded" guarantee was still hollow:
   `runner-registry-factory.ts`'s `postTurnReArmReset` now recomputes and pushes
   the signal, matching what the WS adapter already did.
 
+### Phase 8 — planning#341: the eligibility signal stops going stale, and the refusal names the files
+
+An Ops investigation into a refused reset. A session whose PR had merged; an
+agent-built preview compose service mounted the workspace read-write, wrote two
+tracked files when the user clicked Approve in that page, and then called
+`window.shipit.agent.sendMessage()`. The user saw the composer's "start from the
+latest base" checkbox, sent, and got "Branch not updated to the latest base."
+
+Two visibility defects, no change to the gate. **The refusal itself was correct** —
+a hard reset would have destroyed the uncommitted edit — and no clause of
+{@link computeResetBlocker} was touched. That a write-then-send action can never
+satisfy the clean-tree gate on a merged session is a real product limit (ShipIt
+deliberately never stashes on auto-paths, docs/146), not something this phase
+tries to fix.
+
+- **The `reset_eligible` signal is recomputed when the workspace changes.** It
+  was computed at exactly three moments — WS activation, post-turn, merge
+  detection — and never in between, so anything that dirtied the tree of a
+  merged, untouched session left the client holding a `true` the server would no
+  longer honour: the UI painted a control for an operation the pre-turn gate then
+  refused with `dirty-tree`. The things that dirty a tree between turns are not
+  things a user thinks of as work (a terminal command, a compose service writing
+  to the mounted workspace, a dev server materialising a generated file), and
+  none of them ends a turn. New `reset-eligible-watch.ts` wires a debounced
+  recompute onto the runner's existing `files_changed` stream, from
+  `onRunnerCreated`.
+- **Why the watcher rather than re-validating at send time.** The server already
+  re-validates at send time — `autoResetMergedBranchOnContinue` evaluates the full
+  gate twice and, since planning#297, reports the clause that refused. A second,
+  client-driven pre-send check would be a round trip that changes nothing about
+  correctness and still leaves the control painted for as long as the user looks
+  at it before sending. The defect is that the *painted* control outlives the fact
+  it depicts, so the fix belongs where the fact changes.
+- **Three gates keep a chatty watcher cheap**, since `isResetEligible` shells out
+  to git: it only recomputes for sessions with a merged pull request (the signal
+  is a constant `false` for everything else); it collapses a burst into one
+  recompute (750 ms); and it skips while a turn is running, because the agent
+  rewrites files continuously and the post-turn recompute fires immediately
+  afterwards anyway.
+- **The debounce is capped at 5 s, because a trailing edge alone starves.** Every
+  `files_changed` replaces the pending timer, so a writer producing changes more
+  often than the window postpones the recompute forever and the control stays
+  stale indefinitely — this module's own failure mode, reintroduced by its
+  optimisation. Not hypothetical: the worker's file watcher already collapses
+  events on a 300 ms trailing debounce, so anything writing on a 300–750 ms
+  cadence emits a stream that never leaves a quiet window. The recompute now
+  fires at the latest 5 s after the *first* change of a run.
+- **No emitter deduplicates a push against a value it remembers privately.** A
+  watcher-local "I already said `false`" check was written and deleted: the
+  client holds ONE value per session and takes whichever message arrived last, so
+  a private check reasons about state the unconditional emitters may have
+  overwritten since. Concretely — watcher says `false`; a turn runs and its
+  post-turn emitter says `true`; a service dirties the tree; the watcher computes
+  `false`, matches its own remembered `false`, and suppresses the only message
+  that would have corrected the client. The saving was one WS message and one log
+  line, never the git work — the comparison could only happen after the recompute.
+- **The `dirty-tree` refusal names the files.** "The working tree has uncommitted
+  changes" is unactionable when you did not knowingly change anything — in the
+  incident the writer was a compose service, not the user. `computeResetBlocker`
+  now appends the paths from the existing `GitManager.uncommittedPaths()` to the
+  clause's `detail`, capped at 10 with a `+N more` count and sorted for stability.
+  `detail` is the single string every skip surface is built from, so this reaches
+  the `console.warn`, the persisted transcript notice and the agent prompt prefix
+  at once. Fail-safe (a throw degrades to the bare sentence rather than losing the
+  refusal) and charged only to the refusal path — the healthy path never makes the
+  second `git status` call.
+- **`reset_eligible` is logged, with its origin and its reason.** The
+  investigation could not distinguish "the client held a stale `true`" from "the
+  tree became dirty later", because neither the emitted value nor its reason was
+  recorded anywhere. The four recompute sites now go through one
+  `emitResetEligible` helper that logs `reset_eligible=<value> for <id> (<origin>)`
+  plus the refusing clause and detail — merged sessions only, so a fleet-wide
+  constant `false` cannot bury the interesting lines. A git failure is logged as
+  such rather than collapsing into an unexplained `false`: `computeResetEligibility`
+  keeps the `merged` flag it learned before the throw and carries the error, so the
+  one case the log exists to disambiguate cannot itself go dark.
+- **Cross-agent review (Codex) — three signal-correctness bugs, all fixed:** the
+  watcher-local dedupe described above (which could wedge a client at the opposite
+  value); the starving trailing-edge debounce; and a change that landed *during* an
+  in-flight recompute being dropped — the in-flight result was read from a tree
+  predating it, and nothing was scheduled to correct it, so the watcher now
+  re-runs once the in-flight one settles. Also from that review: a git throw no
+  longer erases its own log line, and the wiring hands back the one
+  max-listener slot its permanent `message` listener consumes (each attached
+  viewer registers up to two, so without it a five-viewer session starts printing
+  a `MaxListenersExceededWarning` that reads like a leak). Accepted as a known
+  cost: a dirty merged session runs two `git status` calls per recompute
+  (`isClean()` then `uncommittedPaths()`). Deriving cleanliness from the path list
+  would collapse them into one, but that changes what the *gate* means by clean,
+  and this phase does not touch the gate.
+
 ## Review notes
 
 Reviewed by Codex (cross-agent). Accepted: PR-head-SHA capture instead of local HEAD
