@@ -166,6 +166,22 @@ describe("applyPreTurnReset — the branch moved", () => {
     expect(h.appended.filter((m) => "branchAutoReset" in m)).toHaveLength(1);
   });
 
+  it("appends the late record directly — never as an in-progress rewrite (docs/236)", async () => {
+    // `ensureRecorded` fires when the turn died before the anchor, often before
+    // `executeAgentTurn` ran at all — so `resetRunnerTurnState` never cleared the
+    // runner and `chatMessageGroups` may still hold the PREVIOUS turn's messages
+    // while `running` is still true. Recording in-band there would rewrite that
+    // finished turn as `in_progress=1` rows for the next turn's
+    // `replaceInProgress` to delete wholesale.
+    const h = makeHarness({ running: true });
+    const result = await run(h);
+
+    result.ensureRecorded!("s1");
+
+    expect(h.deps.chatHistoryManager.replaceInProgress).not.toHaveBeenCalled();
+    expect(h.appended.filter((m) => "branchAutoReset" in m)).toHaveLength(1);
+  });
+
   it("writes the record exactly once when both triggers fire", async () => {
     const h = makeHarness();
     const result = await run(h);

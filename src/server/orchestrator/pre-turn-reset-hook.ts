@@ -37,12 +37,13 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { BranchAutoResetCard } from "../shared/types.js";
+import type { BranchAutoResetCard, WsServerMessage } from "../shared/types.js";
 import { autoResetMergedBranchOnContinue } from "./services/pre-turn-reset.js";
 import { detectAndReArmResetSession, type ReArmDeps } from "./services/pr-rearm.js";
 import {
   emitChatCard,
   emitNoticeInTurn,
+  emitNoticePostTurn,
   type InProgressPersister,
 } from "./chat-card-persistence.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
@@ -169,26 +170,54 @@ export async function applyPreTurnReset(args: {
 
   const skipNotice = reset.skip;
 
-  // One delivery, two triggers. `emitChatCard` persists in the same call, so
-  // whichever fires first is the durable record and the other must not double
-  // it. Wrapped: the anchored trigger is called un-awaited and unguarded by the
-  // executor, so a throw here would abort the turn setup. A missing card is a
-  // regression; a card that kills the turn is a worse one.
+  // One delivery, two triggers, one latch. `emitChatCard` persists in the same
+  // call, so whichever fires first is the durable record and the other must not
+  // double it. Wrapped: the anchored trigger is called un-awaited and unguarded
+  // by the executor, so a throw here would abort the turn setup. A missing card
+  // is a regression; a card that kills the turn is a worse one.
+  //
+  // The two triggers take DIFFERENT persistence routes, and that is not a
+  // detail. In-band recording (`recordChatCard` + `persistTurnInProgress`,
+  // which `emitChatCard` chooses on `runner.running`) is only correct inside a
+  // live turn whose state the executor has already reset. The `ensureRecorded`
+  // trigger fires exactly when the turn DIED before reaching the anchor — often
+  // before `executeAgentTurn` ran at all, so `resetRunnerTurnState` never
+  // cleared the runner and `chatMessageGroups` may still hold the PREVIOUS
+  // turn's messages while `running` is still true. Recording in-band there would
+  // rewrite that finished turn as `in_progress=1` rows, which the next turn's
+  // `replaceInProgress` then deletes wholesale — the docs/236 failure. So the
+  // late trigger appends directly instead, landing the record at the current end
+  // of history (the same route `emitNoticePostTurn` takes, for the same reason).
   let recorded = false;
-  const record = (sid: string): void => {
+  const record = (sid: string, anchored: boolean): void => {
     if (recorded) return;
     recorded = true;
     try {
       if (card) {
-        emitChatCard(
-          runner,
-          { type: "branch_auto_reset_card", sessionId: sid, card },
-          { role: "assistant", text: "", branchAutoReset: card },
-          { chatHistoryManager: deps.chatHistoryManager, sessionId: sid },
-        );
+        const wsMessage: WsServerMessage = { type: "branch_auto_reset_card", sessionId: sid, card };
+        const persisted = { role: "assistant" as const, text: "", branchAutoReset: card };
+        if (anchored) {
+          emitChatCard(runner, wsMessage, persisted, {
+            chatHistoryManager: deps.chatHistoryManager,
+            sessionId: sid,
+          });
+        } else {
+          runner.emitMessage(wsMessage);
+          deps.chatHistoryManager.append(sid, persisted);
+        }
       }
       if (skipNotice) {
-        emitNoticeInTurn(runner, sid, skipNotice.notice, deps.chatHistoryManager, skipNotice.level);
+        if (anchored) {
+          emitNoticeInTurn(runner, sid, skipNotice.notice, deps.chatHistoryManager, skipNotice.level);
+        } else {
+          emitNoticePostTurn(
+            (m) => runner.emitMessage(m),
+            deps.chatHistoryManager,
+            sid,
+            skipNotice.notice,
+            skipNotice.level,
+          );
+        }
       }
     } catch (err) {
       console.error(`[pre-turn-reset] pre-turn transcript record failed for ${sid}:`, err);
@@ -197,7 +226,7 @@ export async function applyPreTurnReset(args: {
 
   return {
     agentPrefix: reset.agentPrefix ?? "",
-    afterUserMessagePersisted: record,
-    ensureRecorded: record,
+    afterUserMessagePersisted: (sid) => { record(sid, true); },
+    ensureRecorded: (sid) => { record(sid, false); },
   };
 }
