@@ -8,8 +8,7 @@ does today. So a requirement below is silent about an existing capability when t
 does not change it, and that silence is not permission to drop it. Where a requirement *does*
 describe something that already works, it is because this feature changes it in some way.
 
-One open question is outstanding — see [below](#open-questions). It is a scope question about
-req 16 that review surfaced and the agent should not decide.
+No open questions remain.
 
 ## Requirements
 
@@ -232,24 +231,26 @@ req 16 that review surfaced and the agent should not decide.
     API rates**, which is what says whether the subscription is worth keeping. It is shown as
     a comparison and never as money spent.
 
-    This holds at session scope and across all sessions.
+    This holds at session scope and across all sessions, for usage recorded **from this
+    feature onward**. Turns recorded before it carry no service and no billing mode — for
+    sub-agent turns, not even a credential route — so the attribution is not in the data and
+    cannot be reconstructed. Those are shown as their own group rather than split, guessed at,
+    or dropped from the totals; the group empties by itself as old sessions age out.
 
 ## Open questions
 
-- **Does req 16's split have to cover usage recorded *before* this feature existed?** The
-  requirement says the split holds "at session scope and across all sessions", without
-  qualification. Turns recorded today carry a model id, tokens and a cost, and **no service or
-  billing mode** — and for sub-agent turns not even a route — so the attribution simply is not
-  in the data. It cannot be reconstructed afterwards, and guessing would produce a confident,
-  wrong split of real money.
-
-  The design currently puts those rows in a `legacy` group with no service and no mode, which
-  is honest but is not the split req 16 describes. *Agent's recommendation: accept the legacy
-  group and read req 16 as applying to usage recorded from this feature onward — the group
-  drains on its own as old sessions age out.* The alternatives are to hide pre-existing usage
-  from the split view entirely, or to backfill a guess, which the agent would not do.
+_None._
 
 ## Resolved questions
+
+- 2026-08-08 — Does req 16's split cover usage recorded **before** this feature? **Chosen: no
+  — a legacy group, and the requirement applies going forward.** Review found req 16's "across
+  all sessions" unqualified while the data cannot support it: existing turns store a model id,
+  tokens and a cost, with no service or billing mode, and sub-agent turns not even a route. The
+  three options were a legacy group, hiding pre-existing usage from the split view, or
+  backfilling an inference. Backfilling was rejected as producing a confident, wrong split of
+  real money; hiding was rejected as silently removing spend from totals users have already
+  seen. The group is honest about what is unknown and drains on its own. Req 16 amended.
 
 - 2026-08-08 — **Codex's review of this document**, three questions answered together. Run
   under CLAUDE.md's cross-backend rule (Claude-authored work reviewed by the other backend).
@@ -681,6 +682,9 @@ human, but most of the mechanism did not. What the human actually said, in order
   GLM as the intended validation case.
 - "we should probably split it across services, so it's clear for the user where they were
   paying and where they were using the subscription" → req 16.
+- "Legacy bucket, req 16 applies going forward" → req 16's closing paragraph, chosen from
+  three options after review found the requirement's scope exceeded what the stored data can
+  answer.
 - "I'd like to understand how much tokens it would cost without a subscription" → req 16's
   API-rate comparison, overruling the agent's decision to withhold it.
 - "it is an existing feature. So whatever is existing is a requirement … we don't need to

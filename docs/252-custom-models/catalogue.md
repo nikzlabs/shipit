@@ -27,10 +27,28 @@ config-file case for endpoint and credential, and `CredentialTargets.string` is 
 OAuth-only CLI narrows the join instead of failing at spawn. Neither of the two shipped
 harnesses is affected by either.
 
-The third-harness survey's rows also live here — it stays because these types freeze in phase
-1, and a candidate that contradicts them is far cheaper heard now. Its *consequences* for the
-design are in `plan.md`'s
-[What a third harness could break](./plan.md#what-a-third-harness-could-break).
+### Why the Cursor CLI / OpenCode survey is in this document
+
+Stated at length because it is the thing a reviewer most often proposes cutting, on the
+reasonable-sounding ground that no numbered requirement commits to either harness.
+
+That is true, and it is not the point. **Phase 1 freezes the types every later phase is built
+on**, and the cheapest moment to learn that a harness violates one of them is before that
+happens. The survey has already paid for itself twice: it is why `HarnessDef.styles` is a set
+rather than a scalar — because a multi-provider CLI appears to speak several — and why
+`SpawnShape` carries a config-file variant at all. Both were one-field changes at this stage.
+Discovering either after phase 6 would mean re-cutting the catalogue, the picker and the usage
+grouping.
+
+Two boundaries keep it from becoming scope creep. Nothing here proposes *shipping* Cursor or
+OpenCode — req 14's install-time selection already covers how a harness arrives — and neither
+appears in the `HARNESSES` declaration, only in the survey table. The one shape question the
+survey leaves open (how a service-fused harness would be represented) is deliberately
+unanswered rather than speculatively designed.
+
+Its *consequences* for the design live in `plan.md`'s
+[What a third harness could break](./plan.md#what-a-third-harness-could-break); the rows live
+here.
 
 ## Read this first: what is checked and what is not
 
