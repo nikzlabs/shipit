@@ -141,13 +141,15 @@ export interface ModelDef {
   styles: ApiStyle[];
   /** ALWAYS the service's API rate. See Pricing — never the incremental cost. */
   price: ModelPrice;
-  /** The window is not intrinsic to the model: today's table records `272_000` for the
-   *  GPT-5 family rather than the model's advertised maximum (`model-windows.ts:47` ✅), and
-   *  runtime telemetry replaces it with whatever the app-server reports
-   *  (`codex-event-handler.ts:625` ✅). That the *cause* is Codex imposing that window is the
-   *  file's own comment rather than something the code demonstrates — 🔍 — but the shape
-   *  question does not depend on it: the recorded value differs from the model's advertised
-   *  maximum either way, so a per-harness key is needed regardless of why. `default` is required so a missing value is
+  /** ✅ what the repo shows: the table stores `272_000` for the GPT-5 family
+   *  (`model-windows.ts:47`), and runtime telemetry replaces it with whatever the app-server
+   *  reports (`codex-event-handler.ts:625`).
+   *  🔍 everything else, including both halves of the usual rationale: that this differs from
+   *  the model's advertised maximum, and that Codex is the cause. Both appear in that file as
+   *  a comment, not as anything the code demonstrates.
+   *  So why key by harness at all? Because the value ShipIt reports is per-harness telemetry
+   *  by construction — it comes from the app-server that ran the turn — and a scalar could
+   *  not hold two harnesses' answers for one model. That argument needs neither 🔍 claim. `default` is required so a missing value is
    *  a failure, not an empty object; `byHarness` carries the case above. Keyed by harness
    *  and not by style, because two harnesses can share a style and still impose different
    *  windows — which an earlier draft got wrong. */
@@ -320,30 +322,44 @@ So `storageEnv` is **the variable a credential is materialized into at spawn** a
 place it is stored. Storage is per *instance*, the way accounts already are:
 
 ```ts
-/** One credential the user actually supplied, for `via: "string"`.
+/** ONE type for every credential the user holds, replacing `ProviderAccount` rather than
+ *  sitting beside it. An earlier draft declared a `via: "string"` twin, which left two
+ *  questions unanswered — what `ProviderAccount` is re-keyed *to*, and which routing state the
+ *  new type needs — and the answer to both is that there is only one type.
  *
- *  `ProviderAccount` is the nearest existing analogue but NOT a template: it is keyed by
- *  `provider: AgentId` (`domain-types/provider.ts:16` ✅), which is the conflation this whole
- *  feature removes, so both types end up keyed by `(serviceId, billingMode)` and phase 2
- *  re-keys the account rows as well as adding these.
+ *  Two things change from `ProviderAccount` (`domain-types/provider.ts:16` ✅):
+ *   - keyed by `(serviceId, billingMode)` instead of `provider: AgentId`, which is the
+ *     conflation this whole feature removes;
+ *   - `via` distinguishes a login-flow account from a supplied secret, so plural
+ *     string-delivered subscriptions (GLM's plan) become expressible.
  *
- *  It also needs a place in `ProviderRouteKind`, today `"account" | "reserved"`
- *  (`domain-types/provider.ts:3` ✅) — and it is neither. It is not `reserved` (that means
- *  env-supplied and singleton, and these are user-managed and plural) and not `account`
- *  (no login flow, no credential root). So the union gains a third member, `"string"`, and
- *  `provider_route_kind` on a session (`session.ts:205` ✅) can carry it. That is a migration
- *  and a widened union, and it is the concrete shape of the "new persisted representation"
- *  below. */
-export interface StringCredential {
-  id: string;                    // the route id: `svc-mode-<n>`
+ *  Everything else is preserved deliberately, because the router already depends on it:
+ *  selection filters on `status` and `exhaustedUntil` (`provider-account-manager.ts:648` ✅),
+ *  balanced routing reads `lastUsedAt` (`:536` ✅), and hard exhaustion is persisted precisely
+ *  so a failed credential is not chosen again (`:788` ✅). Dropping any of them would silently
+ *  break req 12's failover. */
+export interface CredentialRoute {
+  id: string;                    // the route id, as today
   serviceId: ServiceId;
   billingMode: BillingMode;
-  label: string;                 // user-facing, like an account's
-  secret: string;                // stored encrypted, materialized into `storageEnv` at spawn
-  priority: number;              // the ordering req 12 routes by
+  via: "account" | "string";
+  label: string;
+  priority: number;              // authoritative order; `isPrimary` stays derived on read
+  status: "ready" | "authenticating" | "auth_failed" | "unavailable";
+  lastUsedAt?: number;
+  exhaustedUntil?: number | null;
   createdAt: number;
+  updatedAt: number;
+  // `via: "string"` only — the secret, stored encrypted and materialized into the mode's
+  // `storageEnv` at spawn. `via: "account"` keeps its credential root on disk as today.
+  secret?: string;
 }
 ```
+
+`ProviderRouteKind` (`"account" | "reserved"`, `domain-types/provider.ts:3` ✅) gains a third
+member for this, because a user-managed plural secret is neither: not `reserved`, which means
+env-supplied and singleton, and not `account`, which means a login flow and a credential root.
+`provider_route_kind` on a session (`session.ts:205` ✅) then carries it.
 
 **This is the only piece of genuinely new persistence in the design.** It cannot be reached by
 re-keying `agentEnv`, which is a single `Record<string, string>` whose named slot the next
@@ -451,6 +467,11 @@ export interface HarnessDef {
   id: string;
   name: string;
   binary: string;
+  /** The service this CLI's own vendor provides, when there is one. Declared because the
+   *  cost rule has an exception for it (see Pricing) and an undeclared "everyone knows Claude
+   *  Code means Anthropic" mapping is exactly the harness/service conflation this feature
+   *  removes. Absent for a harness whose vendor sells no models. */
+  nativeService?: ServiceId;
   /** A SET, not a scalar — see the survey. The service×harness join is an intersection. */
   styles: ApiStyle[];
   spawn: SpawnShape;
@@ -538,6 +559,7 @@ export const HARNESSES = [
     id: "claude",
     name: "Claude Code",
     binary: "claude",                                       // ✅ agent-registry.ts:154
+    nativeService: "anthropic",
     styles: ["anthropic-messages"],                         // 🔍 see the survey note
     spawn: {
       credential: { string: { kind: "env", name: "ANTHROPIC_API_KEY" },  // ✅ pam.ts:619
@@ -551,6 +573,7 @@ export const HARNESSES = [
     id: "codex",
     name: "Codex",
     binary: "codex",                                        // ✅ agent-registry.ts:191
+    nativeService: "openai",
     styles: ["openai-responses"],                           // 🔍 see the survey note
     spawn: {
       credential: { string: { kind: "env", name: "OPENAI_API_KEY" },     // ✅ adapter.ts:259
@@ -739,8 +762,8 @@ copies `total_cost_usd` through (`claude/adapter.ts:318` ✅) and `UsageManager`
 produced it, nor what it represents on a subscription turn where no money moved.
 
 **The rule, and it is not "always use the table":** the reported figure comes from the
-catalogue table **except where ShipIt already reports the harness's own vendor's figure, which
-is preserved**. `UsageManager` calls its delta "the true session bill" and docs/013 describes
+catalogue table **except where the turn ran on the harness's own `nativeService`, where
+ShipIt's existing first-party figure is preserved**. `UsageManager` calls its delta "the true session bill" and docs/013 describes
 post-migration turns as exact; the preamble to `requirements.md` makes existing behaviour
 contractual, so replacing a first-party number with a four-rate approximation would be a
 regression this feature is not entitled to make. An earlier version of this paragraph argued

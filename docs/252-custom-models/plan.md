@@ -927,11 +927,13 @@ OpenRouter leaves the strings equal, no kill fires, and the next turn runs on th
 **old process with the old endpoint and old credential** — silently billing the wrong
 service and contradicting req 11.
 
-So req 4 does need a change after all: the resident process's identity must be the
-whole spawn-relevant tuple — harness, service, API style, endpoint, credential route,
-model — not a model string. This is the same `(service, model id)` identity the picker
-needs, applied one layer down; the two should share a representation rather than each
-inventing one.
+So the resident process's identity must be the whole spawn-relevant tuple — harness, service,
+**billing mode**, API style, endpoint, credential route, model — not a model string. Billing
+mode is not optional in that list: without it a subscription and a key selection for the same
+service and model collapse into one identity, and the switch req 12 exists to make possible
+("charge me, keep working") would reuse the spent subscription's process. This is the picker's
+own `(service, billing mode, model)` identity applied one layer down, and the two should share
+a representation rather than each inventing one.
 
 Note the correction this implies for "the model is already a per-turn spawn argument":
 for a **resident** process it is not. Later turns are injected without spawning until
@@ -1217,12 +1219,14 @@ dollar figure at all. Those alone put a `(service, mode, model)` table in phase 
 remains genuinely open is narrower — what a first-party `total_cost_usd` means on a
 subscription turn — and it is recorded as such rather than dressed up as a measurement.
 
-So `total_cost_usd` is the CLI computing a price for the model *it* believes it is running.
-For a custom service it is neither money spent nor a useful notional — it is Anthropic-family
-prices applied to another vendor's tokens. Three consequences:
+What follows does **not** depend on identifying whose table produced the figure. Three
+consequences, each from something not in doubt:
 
-- **"You paid" cannot come from `costUsd`** for anything but the harness's own vendor.
-- **"At API rates" cannot come from it either**, for the same reason.
+- **Metered spend cannot come from `costUsd`** for a service the CLI was redirected to: the
+  figure is produced by a CLI that was never told which vendor it is talking to, so whatever
+  it means, it is not that vendor's price.
+- **"At API rates" cannot come from it at all**, for a stronger reason that needs no
+  measurement: on a subscription turn no money moved, so there is no figure to reinterpret.
 - Therefore **ShipIt needs its own price table keyed by `(service, billing mode, model)`** to compute either
   figure honestly — which puts per-model pricing into the catalogue, the axis req 6 has
   deliberately kept small. That is a real cost of the usage screen and it should be counted
