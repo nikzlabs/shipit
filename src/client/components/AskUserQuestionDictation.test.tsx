@@ -96,6 +96,26 @@ describe("AskUserQuestion dictation provenance (docs/144)", () => {
     expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Redis Cluster" }, "Redis Cluster");
   });
 
+  it("flags a dictated 'Other' that rides alongside checked multi-select boxes", () => {
+    // The free text is appended to the checked labels, so the flag can't be a
+    // whole-string match against the transcript.
+    const onAnswer = vi.fn(() => true);
+    const multi: AskQuestionItem[] = [{ ...question[0], multiSelect: true }];
+    render(
+      <AskUserQuestion toolUseId="t1" questions={multi} onAnswer={onAnswer} disabled={false} />,
+    );
+    fireEvent.click(screen.getByTestId("option-Redis"));
+    fireEvent.click(screen.getByTestId("option-other"));
+    dictate("also mem cached");
+    fireEvent.click(screen.getByTestId("submit-answer"));
+    expect(onAnswer).toHaveBeenCalledWith(
+      "t1",
+      { "0": "Redis, also mem cached" },
+      "Redis, also mem cached",
+      true,
+    );
+  });
+
   it("does not flag a preset option picked after abandoning a dictated 'Other'", () => {
     // Nothing spoken reaches the prompt, so the hint would be describing text
     // that isn't there.

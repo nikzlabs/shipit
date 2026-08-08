@@ -161,9 +161,42 @@ function deriveAnswersFromResult(
     for (let q = 0; q < questions.length; q++) {
       if (answers[String(q)] === undefined) { target = q; break; }
     }
-    answers[String(target)] = remaining.join(", ");
+    // APPEND, never replace: a multi-select "Auth, Cache, my own idea" matches
+    // two labels and leaves the free text over, and overwriting here dropped
+    // the two checked boxes on reload. Appending also keeps the free text last,
+    // which is the ordering `splitAnsweredValue` reads back.
+    const existing = answers[String(target)];
+    const rest = remaining.join(", ");
+    answers[String(target)] = existing ? `${existing}, ${rest}` : rest;
   }
   return Object.keys(answers).length > 0 ? answers : null;
+}
+
+/**
+ * Split a submitted answer back into the option labels it checked plus any
+ * free-form ("Other") remainder, so the answered card highlights every box the
+ * user actually ticked instead of only an answer that equals a label outright.
+ *
+ * A multi-select answer is ", "-joined with the free text appended LAST
+ * (`buildAnswers`), so the remainder is contiguous at the end: matching leading
+ * segments against option labels and rejoining the rest keeps free text that
+ * itself contains ", " intact.
+ */
+function splitAnsweredValue(
+  q: AskQuestionItem,
+  answered: string,
+): { labels: Set<string>; extra: string | null } {
+  if (!q.multiSelect) {
+    const matched = q.options.some((o) => o.label === answered);
+    return { labels: matched ? new Set([answered]) : new Set(), extra: matched ? null : answered };
+  }
+  const labels = new Set<string>();
+  const rest: string[] = [];
+  for (const part of answered.split(", ")) {
+    if (rest.length === 0 && q.options.some((o) => o.label === part)) labels.add(part);
+    else rest.push(part);
+  }
+  return { labels, extra: rest.length > 0 ? rest.join(", ") : null };
 }
 
 export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, resolvedAnswer }: AskUserQuestionProps) {
@@ -212,9 +245,14 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
       // clears `usingOther` — the closure here would still see the stale set. A
       // question dictated into and then abandoned for a preset option answers
       // with the option label, which is not the free text, so it drops out.
+      //
+      // A multi-select answer is the checked labels with the free text appended
+      // LAST (`buildAnswers`), so the spoken text is either the whole answer or
+      // its final ", "-joined segment — hence the `endsWith`, not a bare `===`.
       const dictated = Object.entries(answers).some(([k, answer]) => {
         const spoken = otherTexts.get(Number(k))?.trim();
-        return dictatedOther.has(Number(k)) && !!spoken && answer === spoken;
+        if (!dictatedOther.has(Number(k)) || !spoken) return false;
+        return answer === spoken || answer.endsWith(`, ${spoken}`);
       });
       const text = formatAnswerText(questions, answers);
       // Omitted rather than passed as `false`, mirroring the wire shape it ends
@@ -228,15 +266,51 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
     [onAnswer, toolUseId, questions, setSubmittedAnswers, dictatedOther, otherTexts],
   );
 
+  /**
+   * Collect the current selections into the wire-shaped answers map.
+   *
+   * The one rule worth stating: on a MULTI-select question "Other" is one more
+   * checked box, so its free text is appended to the checked labels rather than
+   * replacing them. On a single-select question it is genuinely exclusive —
+   * `handleOtherClick` clears that question's selections — so the two are not
+   * the same code path even though they read alike.
+   *
+   * Shared by `handleSubmit` and the `hasAnyAnswer` gate so the button's enabled
+   * state can never disagree with what submitting would actually send.
+   */
+  const buildAnswers = useCallback(() => {
+    const answers: Record<string, string> = {};
+    for (let i = 0; i < questions.length; i++) {
+      const isOther = usingOther.has(i);
+      const otherText = isOther ? otherTexts.get(i)?.trim() : undefined;
+      if (questions[i].multiSelect) {
+        const parts = [...(selections.get(i) ?? [])];
+        if (otherText) parts.push(otherText);
+        if (parts.length > 0) answers[String(i)] = parts.join(", ");
+      } else if (isOther) {
+        if (otherText) answers[String(i)] = otherText;
+      } else {
+        const sel = selections.get(i);
+        if (sel && sel.size > 0) answers[String(i)] = [...sel].join(", ");
+      }
+    }
+    return answers;
+  }, [questions, selections, usingOther, otherTexts]);
+
   const handleOptionClick = useCallback((qIndex: number, label: string, multiSelect: boolean) => {
     if (disabled || submittedAnswers) return;
 
-    // Clear "Other" for this question if selecting a predefined option
-    setUsingOther((prev) => {
-      const next = new Set(prev);
-      if (!multiSelect) next.delete(qIndex);
-      return next;
-    });
+    // Picking a predefined option clears "Other" only on a single-select
+    // question, where the two are mutually exclusive. On a multi-select one
+    // they coexist, so leave `usingOther` (and the typed text) alone.
+    if (!multiSelect) {
+      setUsingOther((prev) => {
+        if (!prev.has(qIndex)) return prev;
+        const next = new Set(prev);
+        next.delete(qIndex);
+        return next;
+      });
+    }
 
     if (multiSelect) {
       setSelections((prev) => {
@@ -251,25 +325,10 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
         return next;
       });
     } else {
-      // Single select: set and submit immediately
-      const answers: Record<string, string> = {};
-      // Fill in answers for other questions from current selections
-      for (const [qi] of selections) {
-        if (qi !== qIndex) {
-          const sel = selections.get(qi);
-          if (sel && sel.size > 0) {
-            answers[String(qi)] = [...sel].join(", ");
-          }
-        }
-      }
-      // Fill in "Other" answers
-      for (const qi of usingOther) {
-        if (qi !== qIndex) {
-          const text = otherTexts.get(qi)?.trim();
-          if (text) answers[String(qi)] = text;
-        }
-      }
-      answers[String(qIndex)] = label;
+      // Single select: set and submit immediately. The sibling questions come
+      // from `buildAnswers`; this question's own entry is overwritten because
+      // the `setUsingOther` above hasn't landed yet in this closure.
+      const answers = { ...buildAnswers(), [String(qIndex)]: label };
 
       // If there are multiple questions, just select — don't auto-submit
       if (questions.length > 1) {
@@ -282,25 +341,33 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
         submitAnswers(answers);
       }
     }
-  }, [disabled, submittedAnswers, selections, usingOther, otherTexts, questions, submitAnswers]);
+  }, [disabled, submittedAnswers, buildAnswers, questions, submitAnswers]);
 
+  /**
+   * "Other" TOGGLES, like every other option. It used to only ever add, so a
+   * mis-click was unrecoverable: the free-text row could not be dismissed, and
+   * on a multi-select question `usingOther` also suppressed the checked boxes,
+   * leaving the card looking frozen.
+   */
   const handleOtherClick = useCallback((qIndex: number) => {
     if (disabled || submittedAnswers) return;
+    const turningOn = !usingOther.has(qIndex);
     setUsingOther((prev) => {
       const next = new Set(prev);
-      next.add(qIndex);
+      if (turningOn) next.add(qIndex);
+      else next.delete(qIndex);
       return next;
     });
-    // Clear predefined selections for single-select
-    const q = questions[qIndex];
-    if (!q.multiSelect) {
+    // Single-select only: "Other" replaces the picked option rather than adding
+    // to it, so turning it on clears that question's selection.
+    if (turningOn && !questions[qIndex].multiSelect) {
       setSelections((prev) => {
         const next = new Map(prev);
         next.delete(qIndex);
         return next;
       });
     }
-  }, [disabled, submittedAnswers, questions]);
+  }, [disabled, submittedAnswers, questions, usingOther]);
 
   const handleOtherTextChange = useCallback((qIndex: number, text: string) => {
     setOtherTexts((prev) => {
@@ -335,23 +402,11 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
   const handleSubmit = useCallback(() => {
     if (disabled || submittedAnswers) return;
 
-    const answers: Record<string, string> = {};
-    for (let i = 0; i < questions.length; i++) {
-      if (usingOther.has(i)) {
-        const text = otherTexts.get(i)?.trim();
-        if (text) answers[String(i)] = text;
-      } else {
-        const sel = selections.get(i);
-        if (sel && sel.size > 0) {
-          answers[String(i)] = [...sel].join(", ");
-        }
-      }
-    }
-
+    const answers = buildAnswers();
     if (Object.keys(answers).length === 0) return;
 
     submitAnswers(answers);
-  }, [disabled, submittedAnswers, questions, selections, usingOther, otherTexts, submitAnswers]);
+  }, [disabled, submittedAnswers, buildAnswers, submitAnswers]);
 
   // Determine if submit button should be shown (multi-select or multi-question)
   const needsSubmitButton = questions.length > 1 || questions.some((q) => q.multiSelect);
@@ -359,11 +414,9 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
   // single single-select question — so a typed free-text answer has a visible
   // way to submit instead of relying on the (undiscoverable) Enter key.
   const showSubmitButton = needsSubmitButton || usingOther.size > 0;
-  const hasAnyAnswer = questions.some((_, i) => {
-    if (usingOther.has(i)) return !!otherTexts.get(i)?.trim();
-    const sel = selections.get(i);
-    return sel && sel.size > 0;
-  });
+  // Derived from the same collection the submit uses: an empty "Other" box next
+  // to two checked options is still an answer, and the button must say so.
+  const hasAnyAnswer = Object.keys(buildAnswers()).length > 0;
 
   const isAnswered = !!submittedAnswers;
 
@@ -373,6 +426,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
         const selectedSet = selections.get(qIndex) ?? new Set<string>();
         const isOther = usingOther.has(qIndex);
         const answeredValue = submittedAnswers?.[String(qIndex)];
+        const answered = answeredValue ? splitAnsweredValue(q, answeredValue) : null;
 
         return (
           <div key={qIndex} className={`p-3 ${qIndex > 0 ? "border-t border-(--color-border-secondary)" : ""}`}>
@@ -388,8 +442,11 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
             {/* Options */}
             <div className="space-y-1.5">
               {q.options.map((opt) => {
-                const isSelected = selectedSet.has(opt.label);
-                const wasAnswered = answeredValue === opt.label;
+                // On a multi-select question "Other" sits ALONGSIDE the checked
+                // boxes, so it must not blank them out — that suppression is
+                // what made the card look like it had cleared and locked up.
+                const isSelected = selectedSet.has(opt.label) && (q.multiSelect || !isOther);
+                const wasAnswered = !!answered?.labels.has(opt.label);
 
                 return (
                   <button
@@ -401,7 +458,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
                         ? wasAnswered
                           ? "border-(--color-accent) bg-(--color-accent-subtle) text-(--color-text-link)"
                           : "border-(--color-border-secondary) bg-(--color-bg-tertiary)/50 text-(--color-text-tertiary)"
-                        : isSelected && !isOther
+                        : isSelected
                         ? "border-(--color-accent) bg-(--color-accent-subtle) text-(--color-text-link)"
                         : "border-(--color-border-secondary) hover:border-(--color-text-tertiary) hover:bg-(--color-bg-hover) text-(--color-text-primary)"
                     } disabled:cursor-default`}
@@ -410,11 +467,11 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
                     <div className="flex items-start gap-2">
                       {/* Checkbox/radio indicator */}
                       <span className={`mt-0.5 shrink-0 w-4 h-4 rounded${q.multiSelect ? "" : "-full"} border flex items-center justify-center ${
-                        (isSelected && !isOther) || wasAnswered
+                        isSelected || wasAnswered
                           ? "border-(--color-accent) bg-(--color-accent)"
                           : "border-(--color-text-tertiary)"
                       }`}>
-                        {((isSelected && !isOther) || wasAnswered) && (
+                        {(isSelected || wasAnswered) && (
                           <CheckIcon size={10} weight="bold" className="text-white" />
                         )}
                       </span>
@@ -465,14 +522,15 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
                 </div>
               )}
 
-              {/* Show answered "Other" value */}
-              {isAnswered && answeredValue && !q.options.some((o) => o.label === answeredValue) && (
+              {/* Show the answered "Other" free text (multi-select: alongside
+                  the checked option rows above, not instead of them) */}
+              {isAnswered && answered?.extra && (
                 <div className="rounded-md px-3 py-2 text-sm border border-(--color-accent) bg-(--color-accent-subtle) text-(--color-text-link)">
                   <div className="flex items-start gap-2">
-                    <span className="mt-0.5 shrink-0 w-4 h-4 rounded-full border border-(--color-accent) bg-(--color-accent) flex items-center justify-center">
+                    <span className={`mt-0.5 shrink-0 w-4 h-4 rounded${q.multiSelect ? "" : "-full"} border border-(--color-accent) bg-(--color-accent) flex items-center justify-center`}>
                       <CheckIcon size={10} weight="bold" className="text-white" />
                     </span>
-                    <span className="font-medium">{answeredValue}</span>
+                    <span className="font-medium">{answered.extra}</span>
                   </div>
                 </div>
               )}
