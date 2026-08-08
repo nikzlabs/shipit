@@ -157,8 +157,8 @@ Vercel AI Gateway and GLM. Only Anthropic and OpenAI are reachable at this point
 need phase 2's credential storage — but they are catalogue data, so they belong to the phase
 that introduces the catalogue. GLM's row is the one that declares **two** billing modes on a
 custom service, so it is what makes the mode-keyed shape above testable rather than
-theoretical; its subscription is not reachable until phase 2 either, and integrating that
-plan's login and refresh is per-service work req 5 keeps separate from the mechanism.
+theoretical; its subscription is not reachable until phase 2 either, and whatever integrating
+that plan turns out to require is per-service work req 5 keeps separate from the mechanism.
 
 **Sub-agent defaults are a second persisted model selection, and they are easy to miss.**
 `SubAgentDefaults.model` is a bare `string` keyed by harness (`agent-types.ts:44`), validated
@@ -262,9 +262,13 @@ assigns `process.env.ANTHROPIC_API_KEY` and writes nothing (`services/settings.t
 of the two custom-service credential paths therefore already exists and the other does not,
 which is worth knowing before estimating this phase as symmetric work.
 
-**It also owns GLM's subscription integration** — its login, token refresh and account
-handling — because req 15 makes a working custom subscription a launch commitment, not just
-a catalogue row. This is the phase's one genuinely per-service piece of work, and the only
+**It also owns GLM's subscription integration** — whatever that turns out to consist of —
+because req 15 makes a working custom subscription a launch commitment, not just a catalogue
+row. The current research says its coding plan is authenticated by a supplied key rather than
+a login flow ([`catalogue.md`](./catalogue.md), 🔍), in which case there is no OAuth dance to
+build and the work is quota reporting plus delivery; an earlier draft asserted "login, token
+refresh and account handling" as though that were established, which the 🔍 marker on the
+entire GLM row forbids. This is the phase's one genuinely per-service piece of work, and the only
 place in these nine phases where a *vendor* rather than a *mechanism* is being built. It is
 the least predictable item in the plan for that reason: everything else here is shaped by
 ShipIt's own code, and this is shaped by whatever GLM's plan actually offers. **If it slips,
@@ -307,8 +311,10 @@ queries just sum that column (`usage.ts:240`). The moment phase 3 lands, turns s
 recorded that phase 6 will be asked to split by `(service, mode)` — and *cannot*, because the
 same model id can come from two services and two modes, and the session's current selection
 says nothing about what an earlier turn ran on. So the row gains `service_id`, `billing_mode`
-and the resolved style **in the phase that starts producing such turns**, not in the phase
-that reads them.
+**in the phase that starts producing such turns**, not in the phase that reads them. (The
+resolved API style is deliberately *not* stored: req 16 groups by service and mode, pricing is
+keyed by service/mode/model, and nothing names a reader for historical style — so it would be
+a column and a migration with no consumer.)
 
 The cost semantics have to be settled here too, and they are not obvious: `costUsd` as
 recorded is already a **delta** ShipIt computes, because Claude Code's `total_cost_usd` is a
@@ -326,8 +332,8 @@ would produce a confidently wrong split of real money. A named bucket the UI can
 age out.
 
 So each new row stores **tokens, attribution, and the rate that was applied** — not a price
-looked up later. Concretely, `RecordedTurn` gains `service_id`, `billing_mode`, the resolved
-style, and the four unit rates in force (`input`, `output`, `cacheRead`, `cacheWrite`).
+looked up later. Concretely, `RecordedTurn` gains `service_id`, `billing_mode`, and the four unit rates in
+force (`input`, `output`, `cacheRead`, `cacheWrite`).
 
 **These are all-or-nothing, not independently nullable.** Either every one is present or every
 one is null; there is no such thing as a row that knows its service but not what it was
@@ -358,20 +364,22 @@ the Claude Code harness takes a turn, with no Anthropic credential anywhere. The
 already established this works (Appendix B); this is the version that follows the
 requirements.
 
-**Phase 4 — In-session switching.** Widen the resident process's identity from a model
-string to the whole spawn-relevant tuple — harness, service, billing mode, API style,
-endpoint, credential route, model — so a same-id/different-service switch forces a respawn instead of
-silently reusing the old endpoint and credential. Mid-session switching then works across
-services, not just within one.
+**Phase 4 — In-session switching.** The resident process's identity was already widened in
+phase 3 — to the whole spawn-relevant tuple: harness, service, billing mode, API style,
+endpoint, credential route, model — because phase 3 is where a same-id/different-service
+switch first becomes reachable. Phase 4 is only the mid-session *interaction* on top of it:
+the picker acting on a live session, across services rather than just within one.
 
-**Phase 5 — Credential-failure policy.** Branch on how the failing service is
-authenticated rather than on the error text. Two gates, not one: the auth-error
+**Phase 5 — Credential-failure policy.** Branch on the **billing mode** of the failing
+selection rather than on the error text, and never on how its credential is delivered. Two gates, not one: the auth-error
 interception must not drag a key-authenticated service into vendor re-auth, and the
 same-turn quota retry needs the same billing-mode gate that account benching already
 has. Establish Codex coverage rather than assuming it.
 
 **Phase 6 — Usage, cost and attribution.** Quota reporting moves from `AgentId → routeId` to
-per-`(service, billing mode)`, with a mode that reports no quota rendering nothing at all.
+per-`(service, billing mode)` **→ route** — the outer key moves, the per-credential inner key
+stays, because two subscriptions have independent windows — with a mode that reports no quota
+rendering nothing at all.
 Attribution surfaces the active model, its service and its billing mode — in the surfaces
 that already exist, not in new composer chrome (see below). The usage view splits spend and
 plan usage by `(service, mode)` (req 16), which needs the price table phase 1 carries.
@@ -582,8 +590,12 @@ identity alongside the endpoint and credential route. Both shipped harnesses dec
 style, so this is a no-op until a multi-style harness arrives.
 
 The picker's list for the active harness is then every `(service, billingMode, model)` the
-catalogue declares under that harness's style, filtered to modes with a usable credential
-(reqs 6, 8). Note the entry is the **triple**, not the model id — the same id can come from
+catalogue declares under a style the harness shares, filtered to modes with a usable
+credential (reqs 6, 8) — **and to modes whose credential shape this harness can actually
+carry**. That last clause is not decoration: a harness with no way to take a supplied secret
+(an OAuth-only CLI) would otherwise be offered a key-authenticated service and fail at spawn,
+which is the ShipIt-imposed limitation req 1 rules out. `CredentialTargets` already expresses
+it; eligibility has to read it. Note the entry is the **triple**, not the model id — the same id can come from
 more than one service, and from two modes of one service, at different prices.
 
 It stays **one model picker**, listing every eligible model the same way regardless of which
@@ -786,13 +798,24 @@ per-`AgentId` accounts to per-`(service, billing mode)` credentials, not to inve
 policy — and the existing code's reserved-key-route carve-out is that same billing-mode
 distinction, drawn one level down.
 
-**`authConfigured` is the gate this feature has to dismantle, and it is in six places, not
-one.** `AgentInfo.authConfigured` means *the harness's own vendor is authenticated*, and every
-surface that decides whether a harness is usable reads it: `AgentRegistry.available()`
-(`agent-registry.ts:401`), HTTP agent selection (`services/settings.ts:323`), WS selection
-(`route-registry.ts:1164`), the picker's disabled state (`ModelAgentSelector.tsx:217`),
-onboarding reopening when nothing is authenticated (`App.tsx:353`), and sub-agent spawning
-(`services/sub-agent.ts:208`). Until all six change, a DeepSeek-only user is refused Claude
+**"The harness's own vendor is authenticated" is the assumption this feature has to dismantle,
+and it is spread across more of the product than any one grep suggests.** Treat the list below
+as a starting map, not an inventory — an earlier draft called it "six places, not one", which
+was itself the over-claim it was warning about, and a missed gate does not fail loudly: it
+leaves a model selectable and then refuses the turn.
+
+Four kinds of site, all reading `AgentInfo.authConfigured` or its derivatives:
+
+- **Availability** — `AgentRegistry.available()` (`agent-registry.ts:401`).
+- **Selection** — HTTP (`services/settings.ts:323`), WS (`route-registry.ts:1164`), the
+  picker's disabled state (`ModelAgentSelector.tsx:217`), the client's automatic redirect to
+  an authenticated agent (`client/utils/resolve-authed-selection.ts:27`).
+- **Turn admission** — `isAgentAuthenticated` (`services/agent-auth-gate.ts:22`), consulted by
+  both `send-message.ts:44` and `services/agent.ts:35`. **This is the one that matters most
+  and the one an inventory built from the picker misses**: get it wrong and the model is
+  offered, chosen, and then the turn is rejected — req 2 failing at the last possible moment.
+- **Spawning others** — sub-agents (`services/sub-agent.ts:208`) and cross-agent reviewer
+  selection. Until all six change, a DeepSeek-only user is refused Claude
 Code — which is req 2 failing, in the exact configuration this feature exists to serve.
 
 The replacement is a split, not a rename, and it is what makes the six sites easy to reason
@@ -1285,27 +1308,9 @@ dogfood run: the log line was `[streaming-claude] spawning:`.
 Any env-shaping for custom models must be applied at both, and **after** the scrub —
 ordering is load-bearing, and is pinned by a test.
 
-### API style is a property of the service, and services differ
-
-*(🔍 — this subsection is vendor research, not a repository finding. See the scope note above;
-`catalogue.md` carries the same facts as phase-1 checklist items.)*
-
-DeepSeek V4 Flash is served by DeepSeek, DeepInfra, Parasail, Fireworks and
-SiliconFlow, aggregated by OpenRouter, plus open weights for self-hosting. API style
-varies per service and is not inferable from the model: DeepSeek exposes an
-Anthropic-style surface (`/anthropic`), OpenRouter exposes an Anthropic Messages
-endpoint *and* OpenAI-style ones, while several others are OpenAI-style only. Pointing
-a harness at a service that does not speak its style fails at the **wire format**, not
-at auth — a failure that looks nothing like a bad key.
-
-(This is why style is stored per service rather than one endpoint being hardcoded.)
-
-DeepSeek itself speaks **both** — the `/anthropic` endpoint and, per its own docs, the
-OpenAI Responses API with a Codex adaptation. So one DeepSeek key surfaces models under
-both harnesses — but *not necessarily the same models*: only `deepseek-v4-flash` is
-supported under Codex today, which is precisely why req 6 makes the per-model
-declaration part of the service rather than deriving it from the style set. An
-OpenAI-style-only service surfaces under Codex alone.
+*(A vendor-research subsection stood here — which services speak which API styles. It was
+duplicated by [`catalogue.md`](./catalogue.md)'s 🔍 rows and phase-1 checklist, which is the
+designated home for claims this repository cannot verify, so it lives there only.)*
 
 ### Two things break — and a third that only looked broken
 
