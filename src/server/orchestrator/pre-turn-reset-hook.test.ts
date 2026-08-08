@@ -202,6 +202,61 @@ describe("applyPreTurnReset — the branch moved", () => {
     const result = await run(h);
     expect(() => result.ensureRecorded!("s1")).not.toThrow();
   });
+
+  it("retries on the fallback when the anchored write threw (latch closes on success)", async () => {
+    // `emitChatCard` emits BEFORE it records or persists, so a throwing WS
+    // listener used to consume the only delivery and leave the card in neither
+    // `recordedCards` nor durable history — an emit-only transcript card. The
+    // latch must close on success, not on attempt.
+    const h = makeHarness();
+    const result = await run(h);
+    let failNextEmit = true;
+    const realEmit = h.runner.emitMessage;
+    (h.runner as { emitMessage: unknown }).emitMessage = (msg: WsServerMessage) => {
+      if (failNextEmit) { failNextEmit = false; throw new Error("viewer transport closed"); }
+      realEmit.call(h.runner, msg);
+    };
+
+    result.afterUserMessagePersisted!("s1"); // throws inside, swallowed
+    expect(h.appended.filter((m) => "branchAutoReset" in m)).toHaveLength(0);
+
+    result.ensureRecorded!("s1"); // the retry the latch must still allow
+
+    expect(h.appended.filter((m) => "branchAutoReset" in m)).toHaveLength(1);
+  });
+
+  it("returns the delivery callbacks even when the post-reset bookkeeping throws", async () => {
+    // The branch is already reset and force-pushed by the time the re-arm runs.
+    // A throw there must not reject out of the hook: both callers establish
+    // their `try/finally` only AFTER it returns, so the turn would abort with
+    // the branch moved and no record — and none reconstructable, since the
+    // re-arm may already have cleared `mergedAt`.
+    // A stateful git, so the reset actually moves HEAD and the re-arm gets past
+    // its own `unmovedSinceMerge` short-circuit to the `reArm` below.
+    let head = MERGED_SHA;
+    const h = makeHarness({
+      git: makeGit({
+        getHeadHash: vi.fn(async () => head),
+        getRefHash: vi.fn(async () => BASE_TIP),
+        headIsAtBase: vi.fn(async () => head === BASE_TIP),
+        resetHardToRemoteBase: vi.fn(async () => {
+          const from = head;
+          head = BASE_TIP;
+          return { from, to: BASE_TIP };
+        }),
+      }),
+    });
+    (h.deps.prStatusPoller as { reArm: unknown }).reArm = () => {
+      throw new Error("pr status write failed");
+    };
+
+    const result = await run(h);
+    expect(h.deps.sessionManager.clearMerged).toHaveBeenCalled(); // the re-arm did reach it
+
+    expect(result.agentPrefix).toContain("was merged into main");
+    result.ensureRecorded!("s1");
+    expect(h.appended.filter((m) => "branchAutoReset" in m)).toHaveLength(1);
+  });
 });
 
 describe("applyPreTurnReset — the branch did not move", () => {

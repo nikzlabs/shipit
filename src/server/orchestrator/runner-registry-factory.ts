@@ -34,6 +34,7 @@ import {
 import { emitPrLifecycleAfterCommit } from "./services/pr-lifecycle.js";
 import { detectAndReArmMergedSession, detectAndReArmResetSession } from "./services/pr-rearm.js";
 import { applyPreTurnReset } from "./pre-turn-reset-hook.js";
+import { isResetEligible } from "./services/pre-turn-reset.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
@@ -576,6 +577,29 @@ export function createRunnerRegistry(
               sessionDir,
               emit,
             });
+            // docs/218 + planning#333 — recompute + push the composer's
+            // reset-eligibility signal after every turn, the same way the WS
+            // adapter does. Without it this path was write-only: only a turn
+            // that MOVED the branch emitted `false` (from the pre-turn hook), so
+            // a dispatched turn that skipped the reset and then committed — or
+            // one that left the tree dirty — never corrected an `eligible: true`
+            // pushed at activation, and the composer kept offering a reset the
+            // server would refuse. Safety-only; the client ANDs the global
+            // setting. Best-effort — never blocks the post-turn flow.
+            try {
+              const eligible = await isResetEligible(
+                {
+                  getSession: (id) => sessionManager.get(id),
+                  getPrStatus: (id) => sessionManager.getPrStatus(id),
+                  createGitManager,
+                },
+                sessionId,
+                sessionDir,
+              );
+              emit({ type: "reset_eligible", sessionId, eligible });
+            } catch (err) {
+              console.error(`[pre-turn-reset] post-turn eligibility signal failed for ${sessionId}:`, err);
+            }
           },
         } : {}),
       });

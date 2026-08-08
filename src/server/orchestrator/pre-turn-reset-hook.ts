@@ -142,30 +142,50 @@ export async function applyPreTurnReset(args: {
       toSha: reset.toSha!,
       createdAt: new Date().toISOString(),
     };
-    // docs/216 + docs/218 — the branch now sits at the clean base, so the
-    // lingering "merged" PR card no longer reflects reality. Re-arm NOW (clear
-    // merged + reArm poller + emit a gray "ready" card carrying the
-    // previousMergedPr breadcrumb) so the PR card flips to the no-current-PR
-    // state the moment the branch-updated card appears — rather than lagging
-    // until the post-turn `postTurnReArmReset` runs after the whole turn. That
-    // post-turn call stays as a fail-safe for the manual-`git reset` path and
-    // no-ops here, having already cleared `mergedAt`.
-    await detectAndReArmResetSession({
-      deps,
-      sessionId,
-      sessionDir,
-      emit: (msg) => runner.emitMessage(msg),
-      // The reset itself just fetched and moved the branch onto `origin/<base>`,
-      // so the base ref is current — skip the helper's own freshening fetch
-      // rather than pay for it in front of the user's turn.
-      skipFetch: true,
-    });
-    // docs/218 — the branch now sits at the fresh base (HEAD !== mergedHeadSha),
-    // so the session is no longer reset-eligible. Push `reset_eligible: false`
-    // NOW so the composer's "start from the latest base" control disappears the
-    // moment the reset runs — rather than lingering for the entire turn until
-    // the post-turn recompute fires.
-    runner.emitMessage({ type: "reset_eligible", sessionId, eligible: false });
+    // Everything from here to the return is BOOKKEEPING about a move that has
+    // ALREADY happened — the branch is reset and the remote force-pushed. So it
+    // must not be able to reject: an exception here would propagate out of this
+    // function, past both callers' `try/finally` (which are established AFTER
+    // this returns), aborting the turn AND destroying the delivery callbacks —
+    // leaving a destructively-moved branch with no card, no notice, and no way
+    // to reconstruct one (the re-arm may already have cleared `mergedAt`).
+    // `detectAndReArmResetSession` catches only its own git checks; the
+    // `clearMerged` / `reArm` / SSE / emit work after them can still throw.
+    try {
+      // docs/216 + docs/218 — the branch now sits at the clean base, so the
+      // lingering "merged" PR card no longer reflects reality. Re-arm NOW (clear
+      // merged + reArm poller + emit a gray "ready" card carrying the
+      // previousMergedPr breadcrumb) so the PR card flips to the no-current-PR
+      // state the moment the branch-updated card appears — rather than lagging
+      // until the post-turn `postTurnReArmReset` runs after the whole turn. That
+      // post-turn call stays as a fail-safe for the manual-`git reset` path and
+      // no-ops here, having already cleared `mergedAt`.
+      await detectAndReArmResetSession({
+        deps,
+        sessionId,
+        sessionDir,
+        emit: (msg) => runner.emitMessage(msg),
+        // The reset itself just fetched and moved the branch onto `origin/<base>`,
+        // so the base ref is current — skip the helper's own freshening fetch
+        // rather than pay for it in front of the user's turn.
+        skipFetch: true,
+      });
+      // docs/218 — the branch now sits at the fresh base (HEAD !== mergedHeadSha),
+      // so the session is no longer reset-eligible. Push `reset_eligible: false`
+      // NOW so the composer's "start from the latest base" control disappears the
+      // moment the reset runs — rather than lingering for the entire turn until
+      // the post-turn recompute fires.
+      runner.emitMessage({ type: "reset_eligible", sessionId, eligible: false });
+    } catch (err) {
+      // The stale merged PR card and the composer control are self-healing (the
+      // post-turn `postTurnReArmReset` recomputes both). The transcript record
+      // is not, which is why it must survive this.
+      console.error(
+        `[pre-turn-reset] post-reset bookkeeping failed for ${sessionId} ` +
+          `(branch WAS moved to origin/${reset.base}; PR card may lag until post-turn):`,
+        err,
+      );
+    }
   }
 
   const skipNotice = reset.skip;
@@ -188,10 +208,21 @@ export async function applyPreTurnReset(args: {
   // `replaceInProgress` then deletes wholesale — the docs/236 failure. So the
   // late trigger appends directly instead, landing the record at the current end
   // of history (the same route `emitNoticePostTurn` takes, for the same reason).
+  //
+  // The latch closes on SUCCESS, not on attempt. Closing it first made the
+  // guarantee hollow in exactly the case it exists for: `emitChatCard` emits
+  // before it records or persists, so a throwing WS listener consumed the only
+  // delivery and left the card in neither `recordedCards` nor durable history —
+  // an emit-only transcript card, the failure class CLAUDE.md prohibits — while
+  // the late trigger no-opped on a latch that had already flipped. A failed
+  // attempt therefore leaves the latch OPEN so the `finally` can retry on the
+  // direct-append route. That accepts a duplicate row in one narrow case (the
+  // in-band write threw *after* `recordChatCard`, and the turn later flushes
+  // its `recordedCards`) — a visible duplicate the client dedupes by `cardId`
+  // is strictly better than a destructive move with no record at all.
   let recorded = false;
   const record = (sid: string, anchored: boolean): void => {
     if (recorded) return;
-    recorded = true;
     try {
       if (card) {
         const wsMessage: WsServerMessage = { type: "branch_auto_reset_card", sessionId: sid, card };
@@ -219,8 +250,13 @@ export async function applyPreTurnReset(args: {
           );
         }
       }
+      recorded = true;
     } catch (err) {
-      console.error(`[pre-turn-reset] pre-turn transcript record failed for ${sid}:`, err);
+      console.error(
+        `[pre-turn-reset] pre-turn transcript record failed for ${sid}` +
+          `${anchored ? " (will retry on the post-turn fallback)" : ""}:`,
+        err,
+      );
     }
   };
 

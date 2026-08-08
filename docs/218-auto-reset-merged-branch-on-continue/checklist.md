@@ -139,10 +139,16 @@ shared helper then."
       `runDispatchedTurn` calls it through a new optional
       `SystemTurnDeps.preTurnReset`, wired in `runner-registry-factory.ts` with
       the same lazy-poller shape `postTurnReArmReset` uses.
-- [x] **No caller-keyed carve-out.** The safety gate already refuses everything one
-      would have excluded — a CI-fix turn's session is `not-merged`, a rebase-driver
-      turn is `rebase-in-progress`, unshipped work is `head-moved`. A second gate
-      could only disagree with the first.
+- [x] **No carve-out by *who sent it*.** The safety gate already refuses what one
+      would have excluded — a CI-fix turn's session is `not-merged`, unshipped work
+      is `head-moved`. A second, caller-keyed gate could only disagree with the first.
+- [x] **One exclusion, by what the turn *is*: `postTurn: "none"`** — docs/146's
+      rebase-conflict resolution turn, a step inside a git operation the driver owns.
+      No reset could fire (conflicted tree), but the planning#297 skip machinery would
+      still tell the agent its branch is stale and point it at
+      `shipit branch reset-to-base` mid-resolution. The clause it would report is
+      `dirty-tree`, **not** `rebase-in-progress` (`computeResetBlocker` checks
+      `isClean()` first), so this is load-bearing rather than belt-and-braces.
 - [x] The per-send tick box stays a composer concept: a dispatch passes no intent,
       so it follows the global `autoResetMergedBranch` setting.
 - [x] **The card always appears when the branch moved.** Two triggers, latched:
@@ -159,4 +165,15 @@ shared helper then."
       `SessionRunner.dispatch` → prefix in front of the prompt the agent runs,
       delivery on a healthy and on a dying turn, once-per-message across a
       no-result retry, no-op when no hook is wired).
+- [x] **Cross-agent review (Codex) — three ways the guarantee was still hollow, all fixed:**
+      the post-reset bookkeeping could **reject out of the hook**, past both callers'
+      `try/finally` (established only after it returns), aborting the turn and taking
+      the delivery callbacks with it — now wrapped, since the PR card and composer
+      control self-heal post-turn but the transcript record does not; the **latch
+      closed on attempt rather than success**, so a throwing WS listener consumed the
+      only delivery and left an emit-only card (the class CLAUDE.md prohibits) with
+      the fallback no-opped; and the **dispatched `postTurnReArmReset` never
+      recomputed `reset_eligible`**, so a skipped-then-committed dispatched turn left
+      an activation-time `eligible: true` standing and the composer offered a reset
+      the server would refuse.
 - [x] `npm run typecheck` + `npm run lint:dev` + `npm run test:dev` green

@@ -271,16 +271,29 @@ in `pre-turn-reset-hook.ts` (`applyPreTurnReset`) and both adapters call it:
   (docs/242), `shipit session message`, a notify-on-merge wake, a Create-PR
   button, and every queue drain on that side.
 
-Nothing narrows by caller, because **the safety gate already is the narrowing**:
-a CI-fix turn's session is not merged (`not-merged`), a rebase-driver turn is
-mid-sequencer (`rebase-in-progress`), and a branch carrying unshipped work fails
-`head-moved`. A second, caller-keyed gate could only disagree with the first one.
+Nothing narrows by *who sent it*, because **the safety gate already is the
+narrowing**: a CI-fix turn's session is not merged (`not-merged`), and a branch
+carrying unshipped work fails `head-moved`. A second, caller-keyed gate could
+only disagree with the first one.
 
 The per-send tick box stays a composer concept: a dispatched turn passes no
 intent, so it follows the global `autoResetMergedBranch` setting.
 
-**`/compact` remains excluded** (see Edge cases) — that exclusion is about what
-kind of request it is, not which transport carried it.
+**Two exclusions, both about what the turn *is* rather than which transport
+carried it:**
+
+- **`/compact`** (interactive) — a maintenance command, not a continuation of
+  work. See Edge cases.
+- **`postTurn: "none"`** (dispatched) — a step *inside* a git operation the
+  driver owns: docs/146's rebase-conflict resolution turn, which commits via
+  `rebase --continue` and force-pushes once the flow ends. No reset could fire
+  there (the tree is conflicted), but the planning#297 skip machinery would still
+  persist "this branch still sits on the already-merged commits" and point the
+  agent at `shipit branch reset-to-base` while its actual job is to edit the
+  conflicted files. Note the clause it would report is **`dirty-tree`, not
+  `rebase-in-progress`** — `computeResetBlocker` checks `isClean()` first, and a
+  conflicted rebase has an unclean tree — so this exclusion is load-bearing
+  rather than belt-and-braces.
 
 ## Composition with docs/202 / docs/216 — no new PR-card logic
 
@@ -404,7 +417,9 @@ fail-safe for the manual-`git reset` path and no-ops here (it has already cleare
 - **`mergedHeadSha` is the PR's `head.sha`, captured in `verifyMissingPr`** — not
   local HEAD (which can advance to unmerged work in the merge-vs-detection window).
   Fail closed if absent (no SHA → no auto-reset).
-- **Interactive path only.**
+- ~~**Interactive path only.**~~ **Superseded by planning#333** — every turn, whichever
+  transport starts it, with one exclusion (`postTurn: "none"`, a step inside the
+  driver's own git operation). See "Path coverage".
 - **No recovery ref** — a merged change is the permanent record; the reflog covers
   recovery; clean-tree clause covers the unrecoverable (uncommitted) case.
 - **Heal the remote at reset (force-with-lease).** Supersedes the original "never
@@ -591,6 +606,29 @@ commits with no prefix and no card. Two changes:
 
 On the dispatch side the hook runs **once per message**, outside the no-result
 retry loop, so a retried turn neither re-resets nor duplicates the card.
+
+Three things the cross-agent review (Codex) caught, each a way the "always
+recorded" guarantee was still hollow:
+
+- **Post-reset bookkeeping must not reject.** The branch is already moved and
+  force-pushed by the time the docs/216 re-arm runs, and that re-arm catches only
+  its own git checks — `clearMerged` / `reArm` / SSE / emit can still throw. The
+  throw propagated out of `applyPreTurnReset`, *past* both callers'
+  `try/finally` (which are established only after it returns), aborting the turn
+  and destroying the delivery callbacks with it. Now wrapped: the PR card and the
+  composer control are self-healing post-turn; the transcript record is not.
+- **The latch closes on success, not on attempt.** `emitChatCard` emits *before*
+  it records or persists, so a throwing WS listener consumed the only delivery
+  and left the card in neither `recordedCards` nor durable history — the
+  emit-only failure class CLAUDE.md prohibits — while `ensureRecorded` no-opped
+  on an already-flipped latch. A failed attempt now leaves the latch open for the
+  fallback's direct append.
+- **The dispatched post-turn path never recomputed `reset_eligible`.** Only a
+  turn that *moved* the branch emitted `false`, so a dispatched turn that skipped
+  the reset and then committed left an activation-time `eligible: true` standing,
+  and the composer kept offering a reset the server would refuse.
+  `runner-registry-factory.ts`'s `postTurnReArmReset` now recomputes and pushes
+  the signal, matching what the WS adapter already did.
 
 ## Review notes
 

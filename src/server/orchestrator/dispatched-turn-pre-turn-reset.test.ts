@@ -135,6 +135,31 @@ describe("dispatched turn — pre-turn merged-branch reset (planning#333)", () =
     expect(calls).toHaveLength(1);
   });
 
+  it("skips a `postTurn: \"none\"` turn — a step inside the driver's own git operation", async () => {
+    // docs/146's rebase-conflict resolution turn. No reset could fire (the gate
+    // refuses a conflicted tree), but the planning#297 skip machinery would still
+    // persist "this branch still sits on the already-merged commits" and tell
+    // the agent to consider `shipit branch reset-to-base` — while its actual job
+    // is to edit the conflicted files and let the driver `rebase --continue`.
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    const { hook, calls } = makeResetHook();
+    deps.preTurnReset = hook;
+    let promptSeen = "";
+    deps.buildRunParams = vi.fn(async (_sid, _agentId, prompt) => {
+      promptSeen = prompt;
+      return { prompt, cwd: "/tmp/s1" } as never;
+    });
+
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "resolve the conflicts", postTurn: "none", systemTurn: true }));
+    await flushTurn();
+
+    expect(calls).toHaveLength(0);
+    expect(promptSeen).toBe("resolve the conflicts");
+  });
+
   it("is a no-op when the runtime wires no hook (minimal setups)", async () => {
     const agents: FakeAgent[] = [];
     const { deps } = makeDispatchTurnDeps(agents, []);

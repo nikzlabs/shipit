@@ -149,7 +149,21 @@ export async function runDispatchedTurn(
   //
   // Runs ONCE per dispatched message, outside `runOnce`, so a no-result retry
   // neither re-resets nor re-emits the transcript card.
-  const reset = sessionDir
+  //
+  // `postTurn: "none"` is excluded, and it is the ONE exclusion — the same kind
+  // the interactive path makes for `/compact`: about what the turn *is*, not
+  // about which transport carried it. It marks a turn that is a STEP INSIDE a
+  // git operation the driver owns (docs/146 rebase-conflict resolution, which
+  // commits via `rebase --continue` and force-pushes at the end), not a
+  // continuation of the session's work. No reset could fire there anyway — the
+  // gate refuses a conflicted tree — but the planning#297 skip machinery would
+  // still fire, persisting "this branch still sits on the already-merged
+  // commits" and telling the agent to consider `shipit branch reset-to-base`
+  // while its actual job is to edit the conflicted files. Note the clause it
+  // would report is `dirty-tree`, NOT `rebase-in-progress`: `computeResetBlocker`
+  // checks `isClean()` first, and a conflicted rebase has an unclean tree. So
+  // the exclusion is load-bearing, not belt-and-braces.
+  const reset = sessionDir && opts.postTurn !== "none"
     ? await deps.preTurnReset?.(runner, runner.sessionId, sessionDir)
     : undefined;
 
