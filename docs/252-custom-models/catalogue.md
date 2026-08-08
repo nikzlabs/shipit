@@ -24,8 +24,10 @@ not repeated here.
 
 ## Read this first: what is checked and what is not
 
-Every declaration carries one of two markers, and the difference matters more than anything
-else in this file.
+Every declaration that makes a **claim about the world** carries one of two markers, and the
+difference matters more than anything else in this file. Structural fields — an endpoint
+string, a label, the shape of a row — carry a marker only where they assert something
+checkable; an earlier draft said "every declaration" and did not hold to it.
 
 | Marker | Means |
 |---|---|
@@ -101,7 +103,11 @@ export interface ModelDef {
   styles: ApiStyle[];
   /** ALWAYS the service's API rate. See Pricing — never the incremental cost. */
   price: ModelPrice;
-  contextWindow: number;
+  /** Per style, because the window is not intrinsic to the model: today's table records
+   *  Codex's *effective* 272K rather than the model's advertised maximum, precisely because
+   *  the harness imposes and reports it (`model-windows.ts:47` ✅). One model reachable
+   *  through two harnesses can therefore have two windows. */
+  contextWindow: Partial<Record<ApiStyle, number>>;
 }
 
 export interface BillingModeDef {
@@ -169,17 +175,38 @@ appear as `ANTHROPIC_AUTH_TOKEN` when Claude Code runs it and as `OPENAI_API_KEY
 does. Neither declaration alone can say that, so both exist:
 
 ```ts
+export type CredentialTarget =
+  | { kind: "env"; name: string }
+  | { kind: "config-file"; path: string; pointer: string };   // OpenCode-shaped
+
 /** SERVICE side: what the user supplies for this mode, and how ShipIt stores it. */
 export type CredentialSource =
-  | { kind: "key"; storageEnv: string }   // e.g. DEEPSEEK_API_KEY — ShipIt's own storage name
-  | { kind: "sub" };                      // an account: files, obtained by that vendor's flow
+  | { kind: "key"; storageEnv: string;
+      /** Rare, and the reason this is not purely a harness property: a service may need
+       *  its key in a DIFFERENT variable than the harness's own vendor uses. See below. */
+      targetOverride?: Partial<Record<HarnessId, CredentialTarget>> }
+  | { kind: "sub" };
 
-/** HARNESS side: where a credential of each kind must land for THIS CLI. */
+/** HARNESS side: where a credential of each kind lands for THIS CLI, by default. */
 export interface CredentialTargets {
-  key: { kind: "env"; name: string };     // Claude: ANTHROPIC_AUTH_TOKEN. Codex: OPENAI_API_KEY.
-  sub: { kind: "scoped-home" };           // both shipped harnesses read files under HOME
+  key: CredentialTarget;
+  sub: { kind: "scoped-home" } | CredentialTarget;
 }
 ```
+
+**Claude Code's key target is `ANTHROPIC_API_KEY`, not `ANTHROPIC_AUTH_TOKEN`** — the repo
+distinguishes them as two different reserved routes, `claude-api-key` and `claude-env-oauth`
+(`provider-account-manager.ts:619` ✅), and `setApiKey()` writes the former
+(`services/settings.ts:367` ✅). An earlier draft marked `ANTHROPIC_AUTH_TOKEN` ✅ as *the*
+key target on the strength of a citation that only proved both variables get scrubbed for a
+scoped home — a citation that proved deletion, not destination.
+
+That distinction is also why `targetOverride` exists rather than a bare per-harness map. The
+two variables are not interchangeable at the wire: one is an `x-api-key` header and the other
+a bearer token, so **which one an Anthropic-*compatible* third-party endpoint wants is a fact
+about that service, not about Claude Code** (🔍 per service — a phase-3 checklist item). Most
+services need no override; the field exists so the one that does is a row edit rather than a
+special case in spawn code.
 
 `BillingModeDef.credential` is a `CredentialSource`; `HarnessDef.spawn.credential` is a
 `CredentialTargets`. Resolving a turn reads the source for the value and the target for the
@@ -260,8 +287,9 @@ labels are a `MODEL_DISPLAY_NAMES` record on the *client* (`client/utils/format-
 (`ModelAgentSelector.tsx:23` ✅) that is three parallel structures keyed by model id, across
 two layers, edited by hand together and checked against nothing. `label`, `contextWindow` and
 billing modes collapse all three — so this feature removes a class of drift rather than only
-adding a table. **`contextWindow` is therefore required, not optional**: dropping it would
-regress today's first-frame windows (Claude 1M, Codex 272K).
+adding a table. **`contextWindow` is therefore required**, keyed by style: dropping it would
+regress today's first-frame windows (Claude 1M, Codex 272K), and flattening it to a scalar
+would lose the harness dimension the existing table's own comment depends on.
 
 ## Harnesses
 
@@ -279,7 +307,7 @@ below is 🔍** — this is the state of the survey before phase 1 runs it, not 
 | Subscription auth | scoped-home files ✅ | `~/.codex/auth.json` ✅ | n/a | n/a |
 | Key auth | `ANTHROPIC_API_KEY` ✅ | `OPENAI_API_KEY` ✅ | `CURSOR_API_KEY`, Cursor's own | per provider, in config |
 | Reasoning control | `--effort` enum ✅ | `-c model_reasoning_effort=` ✅ | unknown | `reasoningEffort` in config |
-| Per-turn cost reported | `total_cost_usd` ✅ | **none — stored as zero** ✅ | unknown | unknown |
+| Dollar telemetry | cumulative `total_cost_usd` per result ✅ | **none — stored as zero** ✅ | unknown | unknown |
 
 **The API-style row is 🔍 for all four columns, including the two shipped ones.** This looks
 pedantic and is not: the repository proves how ShipIt drives a *local* CLI, never what wire
@@ -297,7 +325,12 @@ assumes.
   Phase 3 writes this seam from scratch.
 - **The two shipped harnesses take the model by different mechanisms** — a process flag and a
   turn payload — so "set the model" is two implementations.
-- **Codex reports no per-turn cost.** Turns without dollar telemetry are stored at zero,
+- **Neither harness reports a per-turn cost.** Claude Code's `total_cost_usd` is the running
+  total for the *whole resumed conversation*, not the turn — `UsageManager` stores
+  `max(0, current − previous)` as the delta and keeps the raw cumulative to diff against
+  (`usage.ts:115` ✅). An earlier draft's survey cell said "per-turn cost reported", which is
+  the over-broad ✅ this document's own rules forbid. Codex reports nothing at all: turns
+  without dollar telemetry are stored at zero,
   deliberately without estimating (`ws-handlers/agent-listeners.ts:1220` ✅). Req 16 therefore
   already has a provider that tells it nothing, which argues for the catalogue's own price
   table beyond the custom-service case that motivated it.
@@ -312,7 +345,7 @@ export const HARNESSES = [
     binary: "claude",                                       // ✅ agent-registry.ts:154
     styles: ["anthropic-messages"],                         // 🔍 see the survey note
     spawn: {
-      credential: { key: { kind: "env", name: "ANTHROPIC_AUTH_TOKEN" },  // ✅ process.ts:31
+      credential: { key: { kind: "env", name: "ANTHROPIC_API_KEY" },     // ✅ pam.ts:619
                     sub: { kind: "scoped-home" } },                      // ✅ process.ts:12
       model: { kind: "flag", flag: "--model" },             // ✅ claude/process.ts:369
       endpoint: { kind: "env", name: "ANTHROPIC_BASE_URL" }, // 🔍 no seam today
@@ -337,21 +370,10 @@ export const HARNESSES = [
 
 ### Survey candidates — not shipped, not integrated
 
-Deliberately a **separate constant**. These are notes about CLIs ShipIt does not run; putting
-them in `HARNESSES` would give phase 1 rows that look installable and have no honest
-`capabilities` to declare. Req 14 governs what an install actually has.
-
-```ts
-/** 🔍 ENTIRELY UNVERIFIED. Survey notes for docs/252's third-harness question.
- *  Not a harness list — nothing reads this, and nothing should until a row graduates. */
-export const SURVEY_CANDIDATES = [
-  { id: "cursor", binary: "cursor-agent", styles: "unclear",
-    endpoint: "no known override", credential: "CURSOR_API_KEY, Cursor's own service" },
-  { id: "opencode", binary: "opencode", styles: "many (Vercel AI SDK + models.dev)",
-    endpoint: "opencode.json → provider.<id>.options.baseURL",
-    credential: "opencode.json → provider.<id>.options.apiKey" },
-] as const;
-```
+Cursor CLI and OpenCode appear in the survey table above and **nowhere in the declarations**.
+They are not harnesses ShipIt runs, they have no honest `capabilities` to declare, and req 14
+governs what an install actually has. An earlier draft carried them as an inert
+`SURVEY_CANDIDATES` constant that nothing read and that duplicated the table.
 
 Two things they *appear* to show, both of which phase 1 must confirm and neither of which
 changes a requirement — the design consequences are worked through in `plan.md`:
@@ -383,19 +405,19 @@ export const SERVICES = [
         credential: { kind: "sub" },                       // ✅ OAuth accounts today
         retired: [],
         models: [
-          { id: "claude-opus-5",   label: "Opus 5",   styles: [A_MSG], contextWindow: 1_000_000, price: PRICE_TODO },
-          { id: "claude-sonnet-5", label: "Sonnet 5", styles: [A_MSG], contextWindow: 1_000_000, price: PRICE_TODO },
-          { id: "haiku",           label: "Haiku 4.5", styles: [A_MSG], contextWindow: 200_000, price: PRICE_TODO },
+          { id: "claude-opus-5",   label: "Opus 5",   styles: [A_MSG], contextWindow: { [A_MSG]: 1_000_000 }, price: PRICE_TODO },
+          { id: "claude-sonnet-5", label: "Sonnet 5", styles: [A_MSG], contextWindow: { [A_MSG]: 1_000_000 }, price: PRICE_TODO },
+          { id: "haiku",           label: "Haiku 4.5", styles: [A_MSG], contextWindow: { [A_MSG]: 200_000 }, price: PRICE_TODO },
         ] },
       { kind: "key",
         endpoints: { [A_MSG]: "https://api.anthropic.com" },
         credential: { kind: "key", storageEnv: "ANTHROPIC_API_KEY" },  // ✅
         retired: [],
         models: [
-          { id: "claude-opus-5",   label: "Opus 5",   styles: [A_MSG], contextWindow: 1_000_000, price: PRICE_TODO },
-          { id: "claude-sonnet-5", label: "Sonnet 5", styles: [A_MSG], contextWindow: 1_000_000, price: PRICE_TODO },
-          { id: "haiku",           label: "Haiku 4.5", styles: [A_MSG], contextWindow: 200_000, price: PRICE_TODO },
-          { id: "claude-fable-5",  label: "Fable 5",  styles: [A_MSG], contextWindow: 1_000_000, price: PRICE_TODO },
+          { id: "claude-opus-5",   label: "Opus 5",   styles: [A_MSG], contextWindow: { [A_MSG]: 1_000_000 }, price: PRICE_TODO },
+          { id: "claude-sonnet-5", label: "Sonnet 5", styles: [A_MSG], contextWindow: { [A_MSG]: 1_000_000 }, price: PRICE_TODO },
+          { id: "haiku",           label: "Haiku 4.5", styles: [A_MSG], contextWindow: { [A_MSG]: 200_000 }, price: PRICE_TODO },
+          { id: "claude-fable-5",  label: "Fable 5",  styles: [A_MSG], contextWindow: { [A_MSG]: 1_000_000 }, price: PRICE_TODO },
         ] },
     ],
   },
@@ -426,14 +448,14 @@ export const SERVICES = [
           { id: "gpt-5.6", styles: [O_RESP], successors: { [O_RESP]: "gpt-5.6-sol" } },
         ],
         models: [
-          { id: "gpt-5.6-sol",   label: "GPT-5.6 Sol",   styles: [O_RESP], contextWindow: 272_000, price: PRICE_TODO },
-          { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", styles: [O_RESP], contextWindow: 272_000, price: PRICE_TODO },
-          { id: "gpt-5.6-luna",  label: "GPT-5.6 Luna",  styles: [O_RESP], contextWindow: 272_000, price: PRICE_TODO },
-          { id: "gpt-5.4",       label: "GPT-5.4",       styles: [O_RESP], contextWindow: 272_000, price: PRICE_TODO },
-          { id: "gpt-5.4-mini",  label: "GPT-5.4 Mini",  styles: [O_RESP], contextWindow: 272_000, price: PRICE_TODO },
-          { id: "gpt-5.5",       label: "GPT-5.5",       styles: [O_RESP], contextWindow: 272_000, price: PRICE_TODO },
-          { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", styles: [O_RESP], contextWindow: 272_000, price: PRICE_TODO },
-          { id: "gpt-5.2",       label: "GPT-5.2",       styles: [O_RESP], contextWindow: 272_000, price: PRICE_TODO },
+          { id: "gpt-5.6-sol",   label: "GPT-5.6 Sol",   styles: [O_RESP], contextWindow: { [O_RESP]: 272_000 }, price: PRICE_TODO },
+          { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", styles: [O_RESP], contextWindow: { [O_RESP]: 272_000 }, price: PRICE_TODO },
+          { id: "gpt-5.6-luna",  label: "GPT-5.6 Luna",  styles: [O_RESP], contextWindow: { [O_RESP]: 272_000 }, price: PRICE_TODO },
+          { id: "gpt-5.4",       label: "GPT-5.4",       styles: [O_RESP], contextWindow: { [O_RESP]: 272_000 }, price: PRICE_TODO },
+          { id: "gpt-5.4-mini",  label: "GPT-5.4 Mini",  styles: [O_RESP], contextWindow: { [O_RESP]: 272_000 }, price: PRICE_TODO },
+          { id: "gpt-5.5",       label: "GPT-5.5",       styles: [O_RESP], contextWindow: { [O_RESP]: 272_000 }, price: PRICE_TODO },
+          { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", styles: [O_RESP], contextWindow: { [O_RESP]: 272_000 }, price: PRICE_TODO },
+          { id: "gpt-5.2",       label: "GPT-5.2",       styles: [O_RESP], contextWindow: { [O_RESP]: 272_000 }, price: PRICE_TODO },
         ] },                                               // ✅ all eight, in CODEX_MODELS order
       { kind: "key",
         endpoints: { [O_RESP]: "https://api.openai.com", [O_CC]: "https://api.openai.com" },
@@ -478,18 +500,14 @@ export const SERVICES = [
 ] as const satisfies readonly ServiceDef[];
 ```
 
-### One consequence worth naming
+### What the join produces is derived, and not restated here
 
-**`openai-chat-completions` has no harness at all** in the launch set: both shipped CLIs
-speak the other two styles, so the industry's most widely supported wire format is declared
-and unreachable. It costs nothing to carry, and it is what a multi-provider harness would
-light up on arrival — a better argument for surveying OpenCode now than any of the type-shape
-ones.
-
-Beyond that, which harness reaches which service is a **derived** fact this document should
-not restate: it falls out of the join, it depends on API-style rows that are 🔍 for every
-column, and a test over the real declarations will assert it without drifting. An earlier
-draft enumerated the pairings in prose and had already gone stale once.
+Which harness reaches which service falls out of the declarations, it depends on API-style
+rows that are 🔍 for **every** harness, and a test over the real rows will assert it without
+drifting. Two earlier drafts enumerated the pairings in prose; the first went stale within a
+day, and the second replaced it with a categorical claim ("`openai-chat-completions` has no
+harness at all") that was equally unsafe — derived with confidence from rows the same document
+marks unverified.
 
 ## Pricing
 
@@ -511,7 +529,7 @@ export interface ModelPrice {
  *  test asserts no shipped row still carries either. Negative rather than zero so a forgotten
  *  row is loud — zero is a value that reads as an answer. */
 export const PRICE_TODO: ModelPrice = { input: -1, output: -1 };
-export const CONTEXT_TODO = -1;
+export const CONTEXT_TODO: Partial<Record<ApiStyle, number>> = {};
 ```
 
 **`price` is always the service's API rate for that model — never the incremental cost of a

@@ -92,11 +92,12 @@ each style it speaks. A model is offered on a harness when the service and the h
 **share** a style and the service lists that model under it — an intersection, since both
 sides hold sets.
 
-The declaration is not bureaucracy — it is the only honest way to express reality.
-DeepSeek speaks both styles yet supports only `deepseek-v4-flash` under Codex, and
-Codex additionally wants per-model metadata — a context window at minimum — beyond a
-bare id. A purely derived rule would list `deepseek-v4-pro` under
-Codex and let the turn fail. Nothing forbids that at runtime — req 8 is only about
+The declaration is not bureaucracy — it is the only honest way to express reality. The
+motivating case is DeepSeek, which appears to speak both styles while supporting only
+`deepseek-v4-flash` under Codex (🔍 — [`catalogue.md`](./catalogue.md) carries this as
+research, not as a finding), and Codex additionally wants per-model metadata — a context
+window at minimum — beyond a bare id. Under a purely derived rule, a service in that shape
+would list its unsupported model and let the turn fail. Nothing forbids that at runtime — req 8 is only about
 credentials — so the catalogue is where it has to be prevented, by not listing the pair
 in the first place (req 6).
 
@@ -125,10 +126,10 @@ the design.
 |---|---|---|---|
 | 1 | Catalogue and identities | 5, 6, 7, 15 | The data model, its launch rows and prices. No user-visible change. |
 | 2 | Credentials and Settings | 5, 7, 15 | You can save a service key. It does nothing yet. |
-| 3 | Spawn shaping and eligibility | 1, 2, 3, 8 | **A session runs on a custom service.** |
+| 3 | Spawn shaping and eligibility | 1, 2, 3, 8, 16 | **A session runs on a custom service.** Turns record what billed them. |
 | 4 | In-session switching | 4 | Switching models, including across services. |
 | 5 | Credential-failure policy | 12 | Correct behaviour when a credential dies. |
-| 6 | Usage, cost and attribution | 10, 11, 16 | You can see what you are running, and where the money went. |
+| 6 | Usage, cost and attribution | 10, 11, 16 | You can *see* what you are running and where the money went. (Phase 3 records it.) |
 | 7 | Non-turn work | 9 | Naming and PR descriptions get their own model. |
 | 8 | Model retirement | 13 | Sessions survive a model leaving the catalogue. |
 | 9 | Harness install selection | 14 | Deployments choose their harnesses. |
@@ -156,17 +157,23 @@ custom service, so it is what makes the mode-keyed shape above testable rather t
 theoretical; its subscription is not reachable until phase 2 either, and integrating that
 plan's login and refresh is per-service work req 5 keeps separate from the mechanism.
 
-**Existing sessions need a billing mode, and there is exactly one safe rule.** A persisted
-row today is `(agentId, model)`; the triple needs a third element that no stored value
-supplies, so migration must choose one — and the choice decides what a user is billed.
-Nothing may infer it from how the turn *would* route, because today's router picks a
-subscription account when one exists and the reserved key when none does, which is a runtime
-answer that changes between turns. **Migrate every existing session to `sub` where the service
-has a subscription mode, and to `key` only where it has no subscription mode at all.** That
-reproduces what those sessions were already doing (a connected account is preferred today) and
-it fails safe in the ambiguous case: a session wrongly on `sub` stops and says so (req 12), a
-session wrongly on `key` silently spends money. The user can move it (req 5) — which they
-could not do before this feature, so the reversal is cheap and one-directional by design.
+**Existing sessions need a billing mode, and the answer is already on disk.** The triple
+needs a third element, and migration must supply it — a choice that decides what a user is
+billed. It does not have to be guessed: sessions already persist **`provider_route_kind`**
+(`"account" | "reserved"`) and **`provider_route_id`** (`database.ts:280`,
+`sessions.ts:321`), columns that exist for exactly this distinction. So:
+
+| Stored route | Migrates to | Why |
+|---|---|---|
+| `account` | `sub` | it ran on a subscription account |
+| `reserved` (`claude-api-key`, `codex-api-key`, `claude-env-oauth`) | `key` | it ran on a metered route |
+| absent — pre-dates the columns, or no turn yet | `sub` if the service has one, else `key` | the only case with no evidence |
+
+Only the last row is a judgement, and it fails in the safe direction: a session wrongly on
+`sub` stops and says so (req 12), where one wrongly on `key` silently spends money. An earlier
+draft applied that fallback to *every* session, having asserted that a persisted row is just
+`(agentId, model)` — which would have relabelled every existing API-key session as
+subscription-billed, breaking phase 1's own no-behaviour-change criterion and reqs 8 and 11.
 
 This phase is a refactor with **no behaviour change**: the picker offers exactly the models
 it offers today, now derived from the catalogue rather than from `AGENT_DEFS`. That is the
@@ -239,6 +246,24 @@ process argument, while Codex spawns `app-server` and sends the model in the JSO
 `turn/start` payload, so "set the model" is two implementations, not one. Eligibility moves from
 `hasAnyAuthForProvider(provider)` to the per-billing-mode credential question, which is what
 stops `claude-*` models being offered on an install whose only credential is a DeepSeek key.
+
+**Phase 3 also widens the per-turn usage record, and it has to — this is the one ordering
+mistake in these phases that cannot be repaired later.** `UsageRow` stores a bare `model` and
+a `cost_usd` with no service and no billing mode (`usage.ts:28`), and session and global
+queries just sum that column (`usage.ts:240`). The moment phase 3 lands, turns start being
+recorded that phase 6 will be asked to split by `(service, mode)` — and *cannot*, because the
+same model id can come from two services and two modes, and the session's current selection
+says nothing about what an earlier turn ran on. So the row gains `service_id`, `billing_mode`
+and the resolved style **in the phase that starts producing such turns**, not in the phase
+that reads them.
+
+The cost semantics have to be settled here too, and they are not obvious: `costUsd` as
+recorded is already a **delta** ShipIt computes, because Claude Code's `total_cost_usd` is a
+running conversation total rather than a turn cost (`usage.ts:115`). For a custom service that
+delta is the CLI's price table applied to the wrong vendor's tokens (measured below), so what
+phase 3 stores is **tokens plus attribution**, and money is computed from the catalogue's own
+price table at read time. Storing a dollar figure that was never true is what makes history
+unrecoverable.
 
 It is also where req 3 becomes observable: the moment a custom model is offered, it is
 offered in the one picker alongside everything else, with no separate surface for a
