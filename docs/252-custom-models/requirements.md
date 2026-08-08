@@ -2,7 +2,9 @@
 
 The design that implements these requirements is in [`plan.md`](./plan.md).
 
-No open questions remain.
+**One open question** — whether a service's billing mode is part of what you select. See
+[below](#open-questions). Requirements and design work continue; implementation does not
+start while it is open.
 
 ## Requirements
 
@@ -160,7 +162,38 @@ No open questions remain.
 
 ## Open questions
 
-_None._
+- **Is a service's billing mode part of what you select, or resolved per turn?** Raised by
+  "if there was also a DeepSeek subscription, it would be a separate block, right?" — and
+  the observation that a subscription may offer a *more restricted* model set than the same
+  service's API key.
+
+  These requirements were written assuming one billing mode per service: req 5 says a
+  service is authenticated by a key **or** a subscription, req 6 declares models per
+  service and style, and req 12 branches on "how that **service** is authenticated". A
+  service holding both breaks all three, and it is not hypothetical — ShipIt already does
+  it for Anthropic today, where subscription accounts and a metered API-key route coexist.
+
+  The agent's proposal, prototyped in [`mockup-picker.html`](./mockup-picker.html), is that
+  a **billing mode** is part of the selection — so a model is identified by
+  `(service, billing mode, model)` — and the picker shows one group per (service, billing
+  mode). Reasoning:
+
+  1. **Model sets can differ.** A plan tier need not include everything the API sells, so a
+     merged list would offer a model the resolved route cannot serve.
+  2. **Prices differ**, which is already this design's stated reason for keeping the same
+     model id as separate entries per service (DeepSeek-direct vs OpenRouter). Included
+     versus metered is the same distinction inside one service.
+  3. **It closes a real gap**: ShipIt never fails over from a spent subscription onto
+     metered billing, so with one merged entry a user with both credentials has no way to
+     say "charge me, keep working".
+
+  Several *subscriptions* of one service still collapse into one group — req 12 routes
+  between them automatically, and choosing among them would be noise. So the grouping key
+  is the billing mode, not the credential, which caps it at two groups per service.
+
+  If adopted, reqs 5, 6, 8, 11 and 12 need rewording from "a service is authenticated by X"
+  to "a service offers its models under one or more billing modes". Not applied: this is
+  the agent's proposal from a question the human raised, not a decision the human has made.
 
 ## Resolved questions
 

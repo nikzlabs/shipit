@@ -354,6 +354,32 @@
     no install means no models whatever your keys.
   </div>
   <div class="note">
+    <span class="req">open</span><b>A subscription and a key on one service are two blocks,
+    not one.</b> Tick &ldquo;&hellip; and a subscription&rdquo; under DeepSeek: two
+    <code class="k">DEEPSEEK</code> groups appear, and the subscription offers only
+    <code class="k">deepseek-v4-flash</code> while the key also offers
+    <code class="k">deepseek-v4-pro</code>.
+    <div class="callout">
+      Two independent reasons, either sufficient. <b>Model sets can differ</b> — a plan tier
+      need not include everything the API sells, and a merged block would list a model the
+      subscription cannot serve. <b>Prices differ</b> — included versus metered, which is the
+      same argument that already makes DeepSeek-direct and OpenRouter separate rows rather
+      than one <code class="k">deepseek-v4-flash</code>.
+    </div>
+  </div>
+  <div class="note">
+    <b>But several subscriptions of one service stay in ONE block.</b> The grouping key is the
+    <i>billing mode</i>, not the credential. Req 12 routes between subscription accounts of a
+    service automatically, so making the user choose between them here would be noise — and it
+    caps the blow-up at two groups per service rather than one per credential.
+    <div class="callout">
+      This is also what fixes a hole in the merged version: with a subscription spent and a key
+      sitting unused, ShipIt never fails over onto metered billing — so under one block there
+      was no way to say &ldquo;charge me, keep working&rdquo;. Two blocks make that a normal
+      selection.
+    </div>
+  </div>
+  <div class="note">
     <b>Entries are pairs, not model ids.</b> Give OpenRouter a key and
     <code class="k">deepseek-v4-flash</code> appears twice, under two services, at two prices.
     One list of bare model ids could not express that; two rows under two group headers can.
@@ -456,73 +482,101 @@ const HARNESSES = [
   { id:'cursor', name:'Cursor',      style:'openai-responses',   version:'v1.2.0', preinstalled:false },
 ];
 
-// Per style, the models the catalogue declares work there (req 6) — note DeepSeek
-// declares both of its models under anthropic-messages but only one under openai-responses.
+// A service holds one BILLING MODE per entry, and each mode declares its own models per
+// API style (req 6). Two modes of one service are separate entries because they differ in
+// price and can differ in model set — the same reason DeepSeek-direct and OpenRouter are
+// separate. Several *subscriptions* of one service are NOT separate: req 12 routes between
+// them automatically, so they collapse into the one subscription entry (`accounts`).
 const SERVICES = [
-  { id:'anthropic',  name:'Anthropic',  auth:'sub', preset:true,
-    styles:{ 'anthropic-messages':['opus-5','sonnet-5','haiku-4.5'] } },
-  { id:'openai',     name:'OpenAI',     auth:'sub', preset:true,
-    styles:{ 'openai-responses':['gpt-5.6-sol','gpt-5.6-mini'] } },
-  { id:'deepseek',   name:'DeepSeek',   auth:'key', preset:true,
-    styles:{ 'anthropic-messages':['deepseek-v4-flash','deepseek-v4-pro'],
-             'openai-responses':['deepseek-v4-flash'] } },
-  { id:'openrouter', name:'OpenRouter', auth:'key', preset:false,
-    styles:{ 'anthropic-messages':['deepseek-v4-flash','kimi-k3'],
-             'openai-responses':['deepseek-v4-flash','kimi-k3'] } },
-  { id:'vercel',     name:'Vercel AI Gateway', auth:'key', preset:false,
-    styles:{ 'openai-responses':['deepseek-v4-flash','kimi-k3'] } },
-  { id:'fireworks',  name:'Fireworks',  auth:'key', preset:false,
-    styles:{ 'openai-responses':['deepseek-v4-flash','qwen4-coder'] } },
+  { id:'anthropic', name:'Anthropic', preset:true, modes:[
+      { kind:'sub', accounts:2,
+        styles:{ 'anthropic-messages':['opus-5','sonnet-5','haiku-4.5'] } },
+  ]},
+  { id:'openai', name:'OpenAI', preset:true, modes:[
+      { kind:'sub', accounts:1,
+        styles:{ 'openai-responses':['gpt-5.6-sol','gpt-5.6-mini'] } },
+  ]},
+  { id:'deepseek', name:'DeepSeek', preset:true, modes:[
+      { kind:'key',
+        styles:{ 'anthropic-messages':['deepseek-v4-flash','deepseek-v4-pro'],
+                 'openai-responses':['deepseek-v4-flash'] } },
+      // Toggled on by a knob. Deliberately a SMALLER model set than the key — the plan
+      // tier does not include the pro model. This is the case that makes one merged
+      // block impossible: a union list would offer a model the subscription cannot serve.
+      { kind:'sub', accounts:1, optional:true,
+        styles:{ 'anthropic-messages':['deepseek-v4-flash'],
+                 'openai-responses':['deepseek-v4-flash'] } },
+  ]},
+  { id:'openrouter', name:'OpenRouter', preset:false, modes:[
+      { kind:'key',
+        styles:{ 'anthropic-messages':['deepseek-v4-flash','kimi-k3'],
+                 'openai-responses':['deepseek-v4-flash','kimi-k3'] } },
+  ]},
+  { id:'vercel', name:'Vercel AI Gateway', preset:false, modes:[
+      { kind:'key', styles:{ 'openai-responses':['deepseek-v4-flash','kimi-k3'] } },
+  ]},
+  { id:'fireworks', name:'Fireworks', preset:false, modes:[
+      { kind:'key', styles:{ 'openai-responses':['deepseek-v4-flash','qwen4-coder'] } },
+  ]},
 ];
 
 const svc = id => SERVICES.find(s => s.id === id);
 const hns = id => HARNESSES.find(h => h.id === id);
+const routeLabel = k => (k === 'sub' ? 'Subscription' : 'API key');
 
 // ---------------------------------------------------------------- state
 const state = {
   creds: new Set(SERVICES.filter(s => s.preset).map(s => s.id)),
   installed: new Set(HARNESSES.filter(h => h.preinstalled).map(h => h.id)),
+  dsSub: false,   // does the DeepSeek subscription exist?
   pinned: false,
   harness: 'claude',
   service: 'deepseek',
+  mode: 'key',    // the billing mode, part of the selection — not resolved per turn
   model: 'deepseek-v4-flash',
-  open: null,     // 'harness' | 'model' | null
-  note: null,     // transient explanation of an automatic move
+  open: null,
+  note: null,
 };
 
-// Every (service, model) pair a harness can offer: its style must be spoken by a
-// service you hold a credential for, and the catalogue must declare the model there.
+const modesOf = s => s.modes.filter(m => !m.optional || (s.id === 'deepseek' && state.dsSub));
+
+// Every (service, mode, model) a harness can offer: the harness's style must be declared
+// by that billing mode of a service you hold a credential for.
 function eligible(harnessId) {
   const h = hns(harnessId);
   if (!h || !state.installed.has(harnessId)) return [];
   const out = [];
   for (const s of SERVICES) {
     if (!state.creds.has(s.id)) continue;
-    for (const m of (s.styles[h.style] || [])) out.push({ service: s.id, model: m });
+    for (const m of modesOf(s)) {
+      for (const model of (m.styles[h.style] || [])) {
+        out.push({ service: s.id, mode: m.kind, model, accounts: m.accounts ?? 0 });
+      }
+    }
   }
   return out;
 }
 
-const isEligible = (hId, sId, m) =>
-  eligible(hId).some(e => e.service === sId && e.model === m);
+const isEligible = (hId, sId, mode, model) =>
+  eligible(hId).some(e => e.service === sId && e.mode === mode && e.model === model);
 
 // ---------------------------------------------------------------- actions
 function pickHarness(id) {
   if (state.pinned || id === state.harness) { state.open = null; return render(); }
   state.harness = id;
   state.note = null;
-  // Keep the model when the new harness also offers this exact pair; otherwise move
-  // to the first eligible one and say so. Never land somewhere silently (req 11).
-  if (!isEligible(id, state.service, state.model)) {
+  // Keep the selection when the new harness offers the same (service, mode, model);
+  // otherwise move to the first eligible one and say so. Never land silently (req 11).
+  if (!isEligible(id, state.service, state.mode, state.model)) {
     const first = eligible(id)[0];
     if (first) {
       state.note = {
         kind: 'info',
         text: `<b>${state.model}</b> is not offered on ${hns(id).name}, so the session moved to `
-            + `<b>${first.model}</b> via ${svc(first.service).name}.`,
+            + `<b>${first.model}</b> via ${svc(first.service).name} `
+            + `(${routeLabel(first.mode).toLowerCase()}).`,
       };
-      state.service = first.service;
-      state.model = first.model;
+      state.service = first.service; state.mode = first.mode; state.model = first.model;
     } else {
       state.note = {
         kind: 'warn',
@@ -535,11 +589,9 @@ function pickHarness(id) {
   render();
 }
 
-function pickModel(serviceId, model) {
-  state.service = serviceId;
-  state.model = model;
-  state.note = null;
-  state.open = null;
+function pickModel(serviceId, mode, model) {
+  state.service = serviceId; state.mode = mode; state.model = model;
+  state.note = null; state.open = null;
   render();
 }
 
@@ -559,19 +611,15 @@ function harnessSelector() {
     const rows = list.map(x => {
       const n = eligible(x.id).length;
       const sel = x.id === state.harness;
-      // No API-style pill. Which wire format a harness speaks is ShipIt's concern, not a
-      // fact you choose on — the model count is. The style stays on Settings → Harnesses,
-      // whose job is explaining why a service appears under one harness and not another.
       return `<div class="item ${sel ? 'sel-row' : ''}" onclick="pickHarness('${x.id}')">
         <span class="grow">${x.name}</span>
         <span class="check">${sel ? '&#10003;' : ''}</span>
       </div>
       <div style="padding:0 9px 6px 9px;font-size:11px;color:var(--text-tertiary)">
-        ${n ? `${n} model${n === 1 ? '' : 's'} available` : 'no models — no service you have a key for works with it'}
+        ${n ? `${n} model${n === 1 ? '' : 's'} available`
+            : 'no models — no service you have a key for works with it'}
       </div>`;
     }).join('');
-    // No header and no footer: the rows are harnesses, and the absence of an "add"
-    // affordance is what says the set is fixed. A line saying so is clutter.
     menu = `<div class="menu">${rows}</div>`;
   }
 
@@ -591,7 +639,7 @@ function harnessSelector() {
 function modelSelector() {
   const open = state.open === 'model';
   const rows = eligible(state.harness);
-  const stranded = !isEligible(state.harness, state.service, state.model);
+  const stranded = !isEligible(state.harness, state.service, state.mode, state.model);
 
   let menu = '';
   if (open) {
@@ -603,40 +651,49 @@ function modelSelector() {
           : 'This harness is not installed.'}
       </div>`;
     } else {
-      let lastSvc = null;
+      let lastGroup = null;
       for (const r of rows) {
-        if (r.service !== lastSvc) {
+        const key = `${r.service}/${r.mode}`;
+        if (key !== lastGroup) {
           const s = svc(r.service);
+          // One group per (service, billing mode). Several subscription ACCOUNTS of one
+          // service stay inside a single group — req 12 routes between them, so choosing
+          // one here would be noise.
           inner += `<div class="menu-label">
             <span class="grow">${s.name}</span>
-            <span class="pill ${s.auth === 'sub' ? 'sub' : 'key'}">${s.auth === 'sub' ? 'Subscription' : 'API key'}</span>
+            <span class="pill ${r.mode}" title="${r.mode === 'sub'
+              ? `Included in the plan${r.accounts > 1 ? ` · ${r.accounts} accounts, ShipIt routes between them` : ''}`
+              : 'Metered — billed per token'}">${routeLabel(r.mode)}</span>
           </div>`;
-          lastSvc = r.service;
+          lastGroup = key;
         }
-        const sel = !stranded && r.service === state.service && r.model === state.model;
-        inner += `<div class="item ${sel ? 'sel-row' : ''}" onclick="pickModel('${r.service}','${r.model}')">
+        const sel = !stranded && r.service === state.service && r.mode === state.mode
+                    && r.model === state.model;
+        inner += `<div class="item ${sel ? 'sel-row' : ''}"
+             onclick="pickModel('${r.service}','${r.mode}','${r.model}')">
           <span class="grow mono">${r.model}</span>
           <span class="check">${sel ? '&#10003;' : ''}</span>
         </div>`;
       }
-      // No "N more models on <other harness>" footer. It grows with every installed
-      // harness, it is useless once the harness is pinned, and the harness menu already
-      // states each harness's model count on the control that would act on it.
     }
     menu = `<div class="menu right">${inner}</div>`;
   }
 
   const s = svc(state.service);
-  // The service pill is disclosure-on-demand, not decoration: it appears only when this
-  // model id is offered by more than one credentialed service on this harness, which is
-  // the sole case where the id alone cannot say who is billing you. Otherwise the id is
-  // unambiguous and the pill is clutter.
-  const ambiguous = rows.filter(r => r.model === state.model).length > 1;
+  // The service pill is disclosure-on-demand: shown only when this model id appears in
+  // more than one group, which is the sole case where the id alone cannot say what you
+  // are billed. With a subscription AND a key on one service, that now happens within a
+  // single service — so the pill names the billing mode, not just the service.
+  const dupes = rows.filter(r => r.model === state.model);
+  const ambiguous = dupes.length > 1;
+  const sameService = ambiguous && dupes.every(r => r.service === state.service);
   return `${menu}
     <button class="trigger ${open ? 'open' : ''}" onclick="toggleMenu('model')"
-            title="Model — ${s.name}, ${s.auth === 'sub' ? 'subscription' : 'API key'}">
+            title="Model — ${s.name}, ${routeLabel(state.mode).toLowerCase()}">
       <span class="mono" ${stranded ? 'style="color:var(--warning)"' : ''}>${state.model}</span>
-      ${ambiguous ? `<span class="pill ${s.auth === 'sub' ? 'sub' : 'key'}">${s.name}</span>` : ''}
+      ${ambiguous ? `<span class="pill ${state.mode}">${
+        sameService ? routeLabel(state.mode) : s.name
+      }</span>` : ''}
       <span class="caret">&#9660;</span>
     </button>`;
 }
@@ -644,18 +701,19 @@ function modelSelector() {
 function readout() {
   const out = [];
   const s = svc(state.service);
-  const stranded = !isEligible(state.harness, state.service, state.model);
+  const stranded = !isEligible(state.harness, state.service, state.mode, state.model);
 
   if (stranded) {
     out.push(`<div class="banner warn"><span class="ico">&#9888;</span><div>
-      <b>${state.model}</b> via ${s.name} is no longer available on ${hns(state.harness).name}
+      <b>${state.model}</b> via ${s.name} (${routeLabel(state.mode).toLowerCase()}) is no longer
+      available on ${hns(state.harness).name}
       — ${state.creds.has(s.id)
-          ? 'this harness&rsquo;s API style does not offer it.'
+          ? 'this harness or billing mode does not offer it.'
           : `you removed the ${s.name} credential.`}
       The session cannot take a turn until you pick another model.
       <div style="margin-top:5px;color:var(--text-tertiary)">
-        Deliberately not auto-moved: the alternatives are a different vendor at a different
-        price, which req 12 says is the user&rsquo;s call and not ShipIt&rsquo;s.
+        Deliberately not auto-moved: the alternatives are a different price, which req 12
+        says is the user&rsquo;s call and not ShipIt&rsquo;s.
       </div>
     </div></div>`);
   } else if (state.note) {
@@ -663,26 +721,34 @@ function readout() {
       <div>${state.note.text}</div></div>`);
   }
 
-  // No steady-state attribution strip. The closed composer already carries model, service
-  // and harness, and the model menu's group headers carry the billing kind — so a permanent
-  // "Running X via Y on Z" row would restate what is on screen. Only events get a banner.
-  // The line below is prototype scaffolding so a reader can verify state, not proposed UI.
   out.push(`<div class="scaffold">
     prototype readout, not UI &mdash; harness <b>${state.harness}</b> &middot;
-    service <b>${state.service}</b> &middot; model <b>${state.model}</b>
+    service <b>${state.service}</b> &middot; billing <b>${state.mode}</b> &middot;
+    model <b>${state.model}</b>
     ${stranded ? '&middot; <b>stranded</b>' : ''}${state.pinned ? ' &middot; <b>pinned</b>' : ''}
   </div>`);
   return out.join('');
 }
 
 function knobs() {
-  document.getElementById('knob-creds').innerHTML = SERVICES.map(s => `
-    <label class="knob">
+  document.getElementById('knob-creds').innerHTML = SERVICES.map(s => {
+    const kinds = modesOf(s).map(m => routeLabel(m.kind).toLowerCase()).join(' + ');
+    const row = `<label class="knob">
       <input type="checkbox" ${state.creds.has(s.id) ? 'checked' : ''}
              onchange="toggleCred('${s.id}')" />
       <span>${s.name}</span>
-      <span class="sub">${s.auth === 'sub' ? 'subscription' : 'API key'}</span>
-    </label>`).join('');
+      <span class="sub">${kinds}</span>
+    </label>`;
+    // The second billing mode hangs off its service, because that is what it is.
+    const extra = s.id === 'deepseek'
+      ? `<label class="knob" style="margin-left:20px">
+           <input type="checkbox" ${state.dsSub ? 'checked' : ''} onchange="toggleDsSub()" />
+           <span style="color:var(--text-secondary)">&hellip; and a subscription</span>
+           <span class="sub">fewer models</span>
+         </label>`
+      : '';
+    return row + extra;
+  }).join('');
 
   document.getElementById('knob-harnesses').innerHTML = HARNESSES.map(h => `
     <label class="knob">
@@ -693,15 +759,23 @@ function knobs() {
     </label>`).join('');
 }
 
+// Adds a SECOND BILLING MODE to a service that already has one — not a second service.
+function toggleDsSub() {
+  state.dsSub = !state.dsSub;
+  state.note = null;
+  render();
+}
+
 function toggleCred(id) {
   state.creds.has(id) ? state.creds.delete(id) : state.creds.add(id);
   state.note = null;
   render();
 }
+
 function toggleInstalled(id) {
   state.installed.has(id) ? state.installed.delete(id) : state.installed.add(id);
-  // Falling back is the deployment changing under the session, not a user choice —
-  // land on the first installed harness rather than pretending the old one is there.
+  // The deployment changing under the session is not a user choice — land on the first
+  // installed harness rather than pretending the old one is still there.
   if (!state.installed.has(state.harness)) {
     const first = HARNESSES.find(h => state.installed.has(h.id));
     if (first) { state.harness = first.id; state.note = null; }

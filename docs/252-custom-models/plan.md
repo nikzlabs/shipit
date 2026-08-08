@@ -6,7 +6,9 @@ description: Separate harness from service so a user can run any configured serv
 
 # 252 — Custom models
 
-Implements [`requirements.md`](./requirements.md), which has no open questions.
+Implements [`requirements.md`](./requirements.md), which has **one open question** — whether
+a service's billing mode is part of what you select. It touches the identity table below, so
+implementation is blocked until it is resolved.
 
 **Visual reference — the picker:** [`mockup-picker.html`](./mockup-picker.html) — an
 **interactive** prototype of the two-selector composer (harness, then model). Change the
