@@ -8,6 +8,12 @@ description: Separate harness from service so a user can run any configured serv
 
 Implements [`requirements.md`](./requirements.md), which has no open questions.
 
+**The inventory is a separate document:** [`catalogue.md`](./catalogue.md) — every harness
+and service as the TypeScript declarations phase 1 transcribes, plus the filled-in
+third-harness survey for Cursor CLI and OpenCode. This document is the design; that one is
+its contents. Two findings from it are folded in below, because they change shapes described
+here.
+
 **Visual reference — the picker:** [`mockup-picker.html`](./mockup-picker.html) — an
 **interactive** prototype of the two-selector composer (harness, then model). Change the
 credentials, the installed harness set and whether the session has taken a turn, and the
@@ -63,7 +69,7 @@ that single gap. Resolving it is the real work; DeepSeek is just the first case 
 
 | Concept | Is | Identified by |
 |---|---|---|
-| **Harness** | a CLI to spawn, speaking one API style ([and if that is wrong, it is expensive](#what-a-third-harness-could-break)) | `claude`, `codex` |
+| **Harness** | a CLI to spawn, speaking **one or more** API styles ([the survey found a multi-style one](#what-a-third-harness-could-break)) | `claude`, `codex` |
 | **Service** | a catalogue entry: endpoints, API styles, and per **billing mode** the models declared for each | a `serviceId` such as `openrouter` |
 | **Model** | a model id a service offers under one of its billing modes | the triple (serviceId, billingMode, model id) |
 
@@ -81,8 +87,9 @@ everything off a bare model id.
 
 Compatibility is **partly derived, partly declared** (req 6). Speaking a style is
 necessary but not sufficient: a service also declares *which of its models* work under
-each style it speaks. A model is offered on a harness when the service speaks that
-harness's style and lists that model for it.
+each style it speaks. A model is offered on a harness when the service and the harness
+**share** a style and the service lists that model under it — an intersection, since both
+sides hold sets.
 
 The declaration is not bureaucracy — it is the only honest way to express reality.
 DeepSeek speaks both styles yet supports only `deepseek-v4-flash` under Codex, and
@@ -127,11 +134,18 @@ the design.
 
 **Phase 1 — Catalogue and identities.** The service catalogue as data: `serviceId`, the
 API styles each service speaks, per style the models declared for it plus the metadata
-that style needs, and a per-style endpoint. `AgentId` gains a declared API style and stops
+that style needs, and a per-style endpoint. `AgentId` gains a declared **set** of API styles and stops
 meaning anything else. The selected model becomes the triple
 `(serviceId, billingMode, modelId)` throughout — types, persistence, and the picker's
 plumbing — with each billing mode declaring its own models per style. Anthropic and OpenAI
 become ordinary catalogue rows, each already carrying both modes.
+
+**The rows themselves are written out in [`catalogue.md`](./catalogue.md)**, including the
+types, so this phase is transcription plus the research each 🔍 marker calls for — not a
+design exercise. That document also settles the format: **TypeScript source, not YAML**,
+because the repo already does this and the existing `CLAUDE_MODELS` shows why (a four-string
+list carrying a forty-line comment about alias resolution that no YAML parser would preserve
+and no test would check).
 
 It also authors the launch rows req 15 names: Anthropic, OpenAI, DeepSeek, OpenRouter,
 Vercel AI Gateway and GLM. Only Anthropic and OpenAI are reachable at this point — the rest
@@ -171,10 +185,21 @@ compile-time env-key name per catalogue service, and closing the compose deliver
 stored key reaches a compose-backed containerized session. Existing subscription-backed
 vendors keep their current credential path untouched.
 
-It also **re-keys the routing settings** from per-`AgentId` to per-`(service, mode)`:
-`selectionMode`, `isPrimary` ordering and `failoverCutoffs` (`ProviderAccountsCard`). They
-move here rather than into phase 5 because they are Settings state, and because a
-subscription card is meaningless without them.
+It also **re-keys the routing settings** from per-`AgentId` to per-`(service, mode)`. The
+real names, which an earlier draft of this paragraph got wrong: **`accountSelectionMode`**
+(`"strict" | "balanced"`, default `strict`) and **`failoverCutoffs`** (`{ session, weekly }`,
+both defaulting to 90), both stored in `CredentialData` and both currently
+`Partial<Record<AgentId, …>>` — that `AgentId` key is the thing this phase changes. Order is
+**`priority`**, not `isPrimary`: `isPrimary` survives on the wire shape but is *derived* on
+read as `index === 0` after sorting (`provider-account-manager.ts:299`), so re-keying must
+follow `priority` and leave the derivation alone. They move here rather than into phase 5
+because they are Settings state, and because a subscription card is meaningless without them.
+
+**API-key storage is asymmetric today and phase 2 is where that gets levelled.** Codex's
+`OPENAI_API_KEY` is persisted in `CredentialData.agentEnv`; Claude's `setApiKey()` only
+assigns `process.env.ANTHROPIC_API_KEY` and writes nothing (`services/settings.ts:367`). One
+of the two custom-service credential paths therefore already exists and the other does not,
+which is worth knowing before estimating this phase as symmetric work.
 
 **It also owns GLM's subscription integration** — its login, token refresh and account
 handling — because req 15 makes a working custom subscription a launch commitment, not just
@@ -192,7 +217,13 @@ where the security-relevant review is, and it deserves a PR that isn't also chan
 turns run.
 
 **Phase 3 — Spawn shaping and eligibility.** Both spawn sites set the base URL and
-credential from the selected model's service, after the scrub. Eligibility moves from
+credential from the selected model's service, after the scrub. **There is no existing
+base-URL seam to extend** — no field on `AgentRunParams`, no Claude flag or env assignment,
+no Codex provider config written, no per-invocation override anywhere — so this is new
+surface rather than a widened parameter, and it is the largest single piece of this phase.
+The model reaches the two CLIs by different mechanisms too: Claude takes `--model` as a
+process argument, while Codex spawns `app-server` and sends the model in the JSON-RPC
+`turn/start` payload, so "set the model" is two implementations, not one. Eligibility moves from
 `hasAnyAuthForProvider(provider)` to the per-billing-mode credential question, which is what
 stops `claude-*` models being offered on an install whose only credential is a DeepSeek key.
 
@@ -260,9 +291,15 @@ a model derived from too few cases hardens into the wrong shape. Adding Cursor
 catalogue — so their capabilities are **surveyed during phase 1**, before the types are
 frozen, and integrating them stays out of scope.
 
-The survey is cheap and its purpose is narrow: answer these questions for each candidate,
-and check whether any answer contradicts an assumption below. Each assumption is stated with
-what it would cost to be wrong.
+**A first pass has been run and is in [`catalogue.md`](./catalogue.md)** — from documentation
+rather than from the CLIs, so every cell is marked unverified. It already found two
+contradictions, both in the rows called out below as the expensive ones, and both are folded
+into this section. Phase 1 confirms them against the actual binaries; the value of having
+them now is that the types below are being designed with the answers rather than around them.
+
+The survey's purpose is narrow: answer these questions for each candidate, and check whether
+any answer contradicts an assumption below. Each assumption is stated with what it would cost
+to be wrong.
 
 | Assumption | Where it lives | If a harness violates it |
 |---|---|---|
@@ -286,6 +323,29 @@ a model is offered when the service and the harness *share* a style — which ho
 harness speaks one style or several. So a contradicted first row is a design cost and not a
 requirements change, which is the point of phrasing it that way. The one-style assumption
 survives only in this design's data shapes, which is where a survey can afford to break it.
+
+**And it is contradicted.** OpenCode integrates the Vercel AI SDK and the models.dev registry
+across 75+ providers, so it speaks many styles by construction. `HarnessDef.styles` is
+therefore a **set**, not a scalar, and the join is an intersection — written that way in
+`catalogue.md`. Rewriting req 6 as an overlap earlier today turned out to be the difference
+between a type change and a requirements change; that was luck as much as foresight, but it
+is the reason this costs a field rather than a round of re-approval.
+
+**The third row breaks too, and differently.** OpenCode's endpoint and credential live in
+`opencode.json`, not in flags or environment variables — so driving it means **writing a
+per-session config file before each spawn**, which `SpawnShape` must model and which no
+current adapter does. Its `reasoningEffort` is a config key whose levels come from the
+*provider* rather than the CLI, which is the one place docs/217's harness-keyed reasoning
+model fits badly. Neither is fatal; both are work that would have been discovered inside
+phase 3 otherwise.
+
+**Cursor CLI raises a question the table does not ask.** It authenticates to *Cursor's own*
+service with `CURSOR_API_KEY` and selects from Cursor's lineup; if it has no supported
+base-URL override, it is a CLI permanently fused to one service — which is the very
+conflation this feature exists to undo, arriving from the outside. It would join as a fixed
+`(harness, service)` pair whose service is not user-configurable, rather than as a harness
+that joins the catalogue. Worth deciding deliberately; `catalogue.md` lists it first among
+what phase 1 must check.
 
 Note this is a **survey, not an integration**. Nothing here proposes shipping a third
 harness; req 14's install-time selection already covers how one would arrive. The deliverable
@@ -324,8 +384,9 @@ explicit in req 7 — a service ShipIt does not know about needs a ShipIt change
 **Which is why the catalogue's launch contents are themselves a requirement** (req 15).
 With no user-supplied endpoints, an empty-ish catalogue would make the feature true on
 paper and useless in practice, so the shipped set is specified: Anthropic and OpenAI
-first-party, DeepSeek as the direct key-authenticated case, and OpenRouter and Vercel AI
-Gateway as the gateways.
+first-party, DeepSeek as the direct key-authenticated case, OpenRouter and Vercel AI
+Gateway as the gateways, and GLM as the custom service carrying a subscription. The rows
+themselves are in [`catalogue.md`](./catalogue.md).
 
 **A gateway needs no mechanism of its own** — that is the whole point of having settled on
 the service as the primitive. It is a row with a key that happens to reach many upstream
@@ -337,10 +398,18 @@ service abstraction is wrong, not that gateways need special handling.
 
 One consequence is worth stating because it reads as a bug and is not: a gateway key can
 make a vendor's own models available to a user with no account at that vendor, and — since
-gateways commonly speak the OpenAI style — can offer them under a harness that vendor did
-not write. Anthropic models under Codex, via OpenRouter, is reqs 2 and 6 working exactly as
-specified. The eligibility check must not acquire a "but these are really Anthropic's
-models" special case to prevent it.
+a gateway commonly speaks a style its upstreams do not — can offer them under a harness that
+vendor did not write. A vendor's models reached through a gateway, on the other harness, is
+reqs 2 and 6 working exactly as specified. The eligibility check must not acquire a "but
+these are really Anthropic's models" special case to prevent it.
+
+Which *specific* crossings exist depends on styles nobody has verified yet. OpenRouter serves
+an Anthropic Messages endpoint as well as OpenAI-style ones (Appendix A), so Anthropic models
+under **Claude Code** via OpenRouter is certain, while Anthropic models under **Codex** needs
+OpenRouter to speak the Responses API — an open item in
+[`catalogue.md`](./catalogue.md)'s phase-1 checklist. An earlier draft of this paragraph
+asserted the Codex crossing as the example; it is the more striking illustration and the less
+certain fact.
 
 **User-supplied endpoints are deferred, not designed away** (req 15). Nothing here should
 foreclose them: a service row is already `(endpoints, styles, declared models)`, which is
@@ -385,7 +454,7 @@ them and the user never picks among them. So the picker's grouping key is
 credential.
 
 Anthropic and OpenAI are catalogue rows like any other, not special cases (req 5).
-`AgentId` keeps meaning *harness* only, and gains a declared API style.
+`AgentId` keeps meaning *harness* only, and gains a declared **set** of API styles — a set rather than a scalar because the survey found a multi-style CLI (OpenCode), so the service×harness join is an intersection.
 
 The picker's list for the active harness is then every `(service, billingMode, model)` the
 catalogue declares under that harness's style, filtered to modes with a usable credential
@@ -532,7 +601,9 @@ Two things make the add-flow the better fit rather than merely the tidier one:
 **The routing settings are why the card is the group.** Order, *Use in order* vs *Spread
 across accounts*, and the failover cutoffs are all answers to "which of these accounts
 next?" — a question that only exists where there is a group to choose from. Today they are
-per-`AgentId` (`selectionMode`, `isPrimary`, `failoverCutoffs` in `ProviderAccountsCard`);
+per-`AgentId` (`accountSelectionMode`, `priority`, `failoverCutoffs`; see phase 2 for the
+exact shapes and for why the order is `priority` rather than the `isPrimary` the wire shape
+still shows);
 per `(service, mode)` is that same setting re-keyed, not a new mechanism. Nesting the
 accounts and housing the routing settings turned out to be the same fix.
 
@@ -890,7 +961,7 @@ because every recorded turn there is key-authenticated.
 | `orchestrator/session-agent-env.ts` | `selectAgentEnvForPush` — credential delivery to a container |
 | `orchestrator/local-agent-home.ts` | `resolveLocalAgentHome` — why reserved routes are unscoped |
 | `shared/model-windows.ts` | First-frame context window |
-| `client/components/ModelAgentSelector.tsx` | Picker, `METERED_MODELS` |
+| `client/components/ModelAgentSelector.tsx` | Picker, `METERED_MODELS` — the hand-kept metered set that billing modes delete ([`catalogue.md`](./catalogue.md)) |
 | `shared/types/usage-limits-types.ts` | `SubscriptionLimits` — already keyed by `routeId` |
 | `orchestrator/agents/*/limits-provider.ts` | Per-`AgentId` today; becomes per service (req 10) |
 | `orchestrator/usage.ts` | `RecordedTurn` — token/cost accounting, distinct from quota |
