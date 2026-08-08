@@ -12,7 +12,12 @@ The inventory of what ShipIt will run: every **harness** (agent CLI) and every *
 [`requirements.md`](./requirements.md), chiefly req 15 (what the launch catalogue contains),
 req 6 (how a model becomes available on a harness), req 13 (retirement) and req 16 (cost).
 
-This document exists so **phase 1 is transcription, not invention**. It is also where the
+This document exists so that phase 1 **invents no shapes**: the types are settled here, and
+every row that could be settled from this repository is written out in full. It is not a
+finished catalogue — the 🔍 rows below are research first and transcription second, and GLM,
+OpenRouter and Vercel are named with their contents deliberately left open (req 6's
+maintained subset is a judgement made when the row is authored, not here). What phase 1 must
+not have to do is decide *what shape a row is*. It is also where the
 third-harness survey's rows live; the *consequences* of that survey for the design are in
 `plan.md`'s [What a third harness could break](./plan.md#what-a-third-harness-could-break),
 not repeated here.
@@ -40,7 +45,9 @@ Everything about Cursor CLI, OpenCode, DeepSeek, GLM, OpenRouter and Vercel is �
 the expected state — `plan.md` already says authoring a gateway row "is research, not recall".
 This file is the checklist for that research.
 
-**No prices appear.** See [Pricing](#pricing).
+**No prices appear**, and no context window for an unverified model. Both are required fields
+so that a missing one is a failure rather than a silent default; both use a sentinel a test
+rejects. See [Pricing](#pricing).
 
 ## The format: TypeScript, not YAML
 
@@ -101,8 +108,8 @@ export interface BillingModeDef {
   kind: BillingMode;
   endpoints: Partial<Record<ApiStyle, string>>;
   models: ModelDef[];
-  /** How a credential for THIS MODE reaches the CLI. Not a harness property — see below. */
-  credential: CredentialShape;
+  /** What the user supplies for this mode. Pairs with the harness's targets — see below. */
+  credential: CredentialSource;
   retired: RetiredModel[];
 }
 
@@ -154,28 +161,78 @@ harnesses disprove it — each authenticates *differently depending on the billi
 - **Codex** — a subscription uses `~/.codex/auth.json` and the adapter deletes
   `OPENAI_API_KEY`; key mode uses that variable (`codex/adapter.ts:259` ✅).
 
-So credential delivery is a function of `(harness, billing mode)`, and the mode is where it
-is declared:
+So credential delivery is a function of `(harness, billing mode)` — and **it takes both sides
+to describe it**, which is the part an earlier draft still had wrong after moving the field
+off the harness. The service knows *which secret the user supplied*; only the harness knows
+*where that secret has to land* for its CLI to read it. A DeepSeek key is one value that must
+appear as `ANTHROPIC_AUTH_TOKEN` when Claude Code runs it and as `OPENAI_API_KEY` when Codex
+does. Neither declaration alone can say that, so both exist:
 
 ```ts
-export type CredentialShape =
-  | { kind: "env"; name: string }            // key modes: a token in the environment
-  | { kind: "scoped-home" };                 // subscription modes: files under HOME
+/** SERVICE side: what the user supplies for this mode, and how ShipIt stores it. */
+export type CredentialSource =
+  | { kind: "key"; storageEnv: string }   // e.g. DEEPSEEK_API_KEY — ShipIt's own storage name
+  | { kind: "sub" };                      // an account: files, obtained by that vendor's flow
+
+/** HARNESS side: where a credential of each kind must land for THIS CLI. */
+export interface CredentialTargets {
+  key: { kind: "env"; name: string };     // Claude: ANTHROPIC_AUTH_TOKEN. Codex: OPENAI_API_KEY.
+  sub: { kind: "scoped-home" };           // both shipped harnesses read files under HOME
+}
 ```
+
+`BillingModeDef.credential` is a `CredentialSource`; `HarnessDef.spawn.credential` is a
+`CredentialTargets`. Resolving a turn reads the source for the value and the target for the
+destination — which is exactly the mapping `plan.md`'s "set the credential after the scrub"
+was leaving to the implementer.
+
+Two consequences worth stating because they are easy to get wrong in code:
+
+- **The scrub still runs first.** `scrubEnvAuthForScopedHome` deletes the harness's auth
+  variables for a scoped account (`claude/process.ts:12` ✅); writing a custom service's key
+  into `ANTHROPIC_AUTH_TOKEN` must happen *after* that, or the scrub removes it.
+- **The target is the harness's variable, not the service's.** `storageEnv` names how ShipIt
+  stores the secret; it is never what the child process sees. Confusing the two produces a CLI
+  that ignores a key that is definitely present, which reads as an auth bug and is not.
+
+### When the overlap has more than one style, the harness's order decides
+
+Making `styles` a set on both sides creates a case the scalar version could not have: a
+harness and a model can share **two** styles, and every downstream question — which endpoint,
+which credential target, which retirement successor, what the resident process was spawned
+as — needs exactly one answer.
+
+The rule: **the resolved style is the first entry of the harness's `styles` that the model
+also declares.** The harness's array is therefore ordered by preference, not incidentally,
+and that ordering is a catalogue decision like any other.
+
+It is deliberately *not* part of `ModelSelection`. The user picks a service, a mode and a
+model (req 5); which wire format carries it is ShipIt's business, and putting a fourth
+element in the selection would make the persisted identity depend on a catalogue detail that
+can be re-ordered later. So the style is **resolved**, and it belongs to the spawn identity
+that `plan.md` already respawns on — alongside the endpoint and the credential route.
+
+Neither shipped harness exercises this: both declare exactly one style, so the rule is a
+no-op today and the first entry is the only entry. It exists because a multi-style harness
+appears to be arriving, and because the alternative — discovering the ambiguity in phase 3
+with an implementer picking arbitrarily — is how a silent per-turn inconsistency gets built.
 
 ### How a harness is spawned
 
 ```ts
 export type SpawnShape = {
+  /** Where a credential of each kind must land for this CLI. See "Credentials" above. */
+  credential: CredentialTargets;
   /** How the model id reaches the process. The two shipped harnesses differ. */
   model:
     | { kind: "flag"; flag: string }                 // Claude: --model <id>
     | { kind: "turn-payload"; field: string };       // Codex: JSON-RPC turn/start
   /** How the endpoint is overridden. `none` means the harness offers no way. */
   endpoint:
-    | { kind: "env"; name: string }
-    | { kind: "config-file"; path: string; pointer: string }
-    | { kind: "none" };
+    | { kind: "env"; name: string }                         // Claude: ANTHROPIC_BASE_URL
+    | { kind: "config"; key: string }                       // Codex: -c <key>=<url>
+    | { kind: "config-file"; path: string; pointer: string } // OpenCode: a written file
+    | { kind: "none" };                                     // no override offered
 };
 
 export interface HarnessDef {
@@ -217,7 +274,7 @@ below is 🔍** — this is the state of the survey before phase 1 runs it, not 
 |---|---|---|---|---|
 | Binary | `claude` ✅ | `codex` ✅ | `cursor-agent` | `opencode` |
 | API styles it speaks to a remote endpoint | `anthropic-messages` 🔍 | `openai-responses` 🔍 | unclear — see below | many, incl. `openai-chat-completions` |
-| Model per invocation | `--model` flag ✅ | JSON-RPC `turn/start` payload ✅ | `-m/--model <id>` | `-m provider/model` |
+| Model per invocation | `--model` flag ✅ | JSON-RPC `turn/start` payload ✅ (`:787`) | `-m/--model <id>` | `-m provider/model` |
 | Endpoint overridable | **no seam today** ✅ | **no seam today** ✅ | apparently not | config file only |
 | Subscription auth | scoped-home files ✅ | `~/.codex/auth.json` ✅ | n/a | n/a |
 | Key auth | `ANTHROPIC_API_KEY` ✅ | `OPENAI_API_KEY` ✅ | `CURSOR_API_KEY`, Cursor's own | per provider, in config |
@@ -255,6 +312,8 @@ export const HARNESSES = [
     binary: "claude",                                       // ✅ agent-registry.ts:154
     styles: ["anthropic-messages"],                         // 🔍 see the survey note
     spawn: {
+      credential: { key: { kind: "env", name: "ANTHROPIC_AUTH_TOKEN" },  // ✅ process.ts:31
+                    sub: { kind: "scoped-home" } },                      // ✅ process.ts:12
       model: { kind: "flag", flag: "--model" },             // ✅ claude/process.ts:369
       endpoint: { kind: "env", name: "ANTHROPIC_BASE_URL" }, // 🔍 no seam today
     },
@@ -263,10 +322,12 @@ export const HARNESSES = [
   {
     id: "codex",
     name: "Codex",
-    binary: "codex",                                        // ✅ agent-registry.ts:186
+    binary: "codex",                                        // ✅ agent-registry.ts:191
     styles: ["openai-responses"],                           // 🔍 see the survey note
     spawn: {
-      model: { kind: "turn-payload", field: "model" },      // ✅ codex-event-handler.ts:725
+      credential: { key: { kind: "env", name: "OPENAI_API_KEY" },        // ✅ adapter.ts:259
+                    sub: { kind: "scoped-home" } },                      // ✅ ~/.codex/auth.json
+      model: { kind: "turn-payload", field: "model" },      // ✅ codex-event-handler.ts:787
       endpoint: { kind: "config", key: "model_provider.base_url" }, // 🔍 no seam today
     },
     capabilities: { /* today's AGENT_DEFS entry, minus `models` */ },
@@ -319,7 +380,7 @@ export const SERVICES = [
     modes: [
       { kind: "sub",                                       // ✅ OAuth accounts exist today
         endpoints: { [A_MSG]: "https://api.anthropic.com" },
-        credential: { kind: "scoped-home" },               // ✅ claude/process.ts:12
+        credential: { kind: "sub" },                       // ✅ OAuth accounts today
         retired: [],
         models: [
           { id: "claude-opus-5",   label: "Opus 5",   styles: [A_MSG], contextWindow: 1_000_000, price: PRICE_TODO },
@@ -328,7 +389,7 @@ export const SERVICES = [
         ] },
       { kind: "key",
         endpoints: { [A_MSG]: "https://api.anthropic.com" },
-        credential: { kind: "env", name: "ANTHROPIC_API_KEY" },   // ✅
+        credential: { kind: "key", storageEnv: "ANTHROPIC_API_KEY" },  // ✅
         retired: [],
         models: [
           { id: "claude-opus-5",   label: "Opus 5",   styles: [A_MSG], contextWindow: 1_000_000, price: PRICE_TODO },
@@ -357,23 +418,26 @@ export const SERVICES = [
     modes: [
       { kind: "sub",                                       // ✅ ChatGPT account auth today
         endpoints: { [O_RESP]: "https://api.openai.com" },
-        credential: { kind: "scoped-home" },               // ✅ ~/.codex/auth.json
+        credential: { kind: "sub" },                       // ✅ ~/.codex/auth.json
         retired: [
+          // ✅ the id remap `gpt-5.6 → gpt-5.6-sol` is today's normalizeCodexModelId
+          // (agent-registry.ts:141). 🔍 the style and the placement under BOTH modes are
+          // this document's inference — the shim is mode-blind and style-blind.
           { id: "gpt-5.6", styles: [O_RESP], successors: { [O_RESP]: "gpt-5.6-sol" } },
-        ],                                                 // ✅ today's normalizeCodexModelId
+        ],
         models: [
           { id: "gpt-5.6-sol",   label: "GPT-5.6 Sol",   styles: [O_RESP], contextWindow: 272_000, price: PRICE_TODO },
           { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", styles: [O_RESP], contextWindow: 272_000, price: PRICE_TODO },
           { id: "gpt-5.6-luna",  label: "GPT-5.6 Luna",  styles: [O_RESP], contextWindow: 272_000, price: PRICE_TODO },
-          { id: "gpt-5.5",       label: "GPT-5.5",       styles: [O_RESP], contextWindow: 272_000, price: PRICE_TODO },
           { id: "gpt-5.4",       label: "GPT-5.4",       styles: [O_RESP], contextWindow: 272_000, price: PRICE_TODO },
           { id: "gpt-5.4-mini",  label: "GPT-5.4 Mini",  styles: [O_RESP], contextWindow: 272_000, price: PRICE_TODO },
+          { id: "gpt-5.5",       label: "GPT-5.5",       styles: [O_RESP], contextWindow: 272_000, price: PRICE_TODO },
           { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", styles: [O_RESP], contextWindow: 272_000, price: PRICE_TODO },
           { id: "gpt-5.2",       label: "GPT-5.2",       styles: [O_RESP], contextWindow: 272_000, price: PRICE_TODO },
         ] },                                               // ✅ all eight, in CODEX_MODELS order
       { kind: "key",
         endpoints: { [O_RESP]: "https://api.openai.com", [O_CC]: "https://api.openai.com" },
-        credential: { kind: "env", name: "OPENAI_API_KEY" },   // ✅ codex/adapter.ts:259
+        credential: { kind: "key", storageEnv: "OPENAI_API_KEY" }, // ✅ codex/adapter.ts:259
         retired: [ /* the same gpt-5.6 entry */ ],
         models: [ /* the same eight; styles gain O_CC — 🔍 which of them the key serves */ ] },
     ],
@@ -392,13 +456,13 @@ export const SERVICES = [
       { kind: "key",                                       // no subscription exists
         endpoints: { [O_CC]: "https://api.deepseek.com", [O_RESP]: "https://api.deepseek.com",
                      [A_MSG]: "https://api.deepseek.com/anthropic" },
-        credential: { kind: "env", name: "DEEPSEEK_API_KEY" },
+        credential: { kind: "key", storageEnv: "DEEPSEEK_API_KEY" },
         retired: [],
         models: [
           // Only V4 Flash is believed supported under Codex — the founding example of
           // why req 6 declares models per style rather than deriving them.
-          { id: "deepseek-v4-flash", label: "V4 Flash", styles: [O_CC, O_RESP, A_MSG], contextWindow: 0, price: PRICE_TODO },
-          { id: "deepseek-v4-pro",   label: "V4 Pro",   styles: [O_CC, A_MSG],         contextWindow: 0, price: PRICE_TODO },
+          { id: "deepseek-v4-flash", label: "V4 Flash", styles: [O_CC, O_RESP, A_MSG], contextWindow: CONTEXT_TODO, price: PRICE_TODO },
+          { id: "deepseek-v4-pro",   label: "V4 Pro",   styles: [O_CC, A_MSG],         contextWindow: CONTEXT_TODO, price: PRICE_TODO },
         ] },
     ],
   },
@@ -443,9 +507,11 @@ export interface ModelPrice {
   cacheWrite?: number;
 }
 
-/** Sentinel for a row whose price has not been checked. Phase 1 replaces every one;
- *  a catalogue test asserts no shipped row still carries it. */
+/** Sentinels for values that have not been checked. Phase 1 replaces every one; a catalogue
+ *  test asserts no shipped row still carries either. Negative rather than zero so a forgotten
+ *  row is loud — zero is a value that reads as an answer. */
 export const PRICE_TODO: ModelPrice = { input: -1, output: -1 };
+export const CONTEXT_TODO = -1;
 ```
 
 **`price` is always the service's API rate for that model — never the incremental cost of a

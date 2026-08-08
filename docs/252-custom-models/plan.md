@@ -156,6 +156,18 @@ custom service, so it is what makes the mode-keyed shape above testable rather t
 theoretical; its subscription is not reachable until phase 2 either, and integrating that
 plan's login and refresh is per-service work req 5 keeps separate from the mechanism.
 
+**Existing sessions need a billing mode, and there is exactly one safe rule.** A persisted
+row today is `(agentId, model)`; the triple needs a third element that no stored value
+supplies, so migration must choose one — and the choice decides what a user is billed.
+Nothing may infer it from how the turn *would* route, because today's router picks a
+subscription account when one exists and the reserved key when none does, which is a runtime
+answer that changes between turns. **Migrate every existing session to `sub` where the service
+has a subscription mode, and to `key` only where it has no subscription mode at all.** That
+reproduces what those sessions were already doing (a connected account is preferred today) and
+it fails safe in the ambiguous case: a session wrongly on `sub` stops and says so (req 12), a
+session wrongly on `key` silently spends money. The user can move it (req 5) — which they
+could not do before this feature, so the reversal is cheap and one-directional by design.
+
 This phase is a refactor with **no behaviour change**: the picker offers exactly the models
 it offers today, now derived from the catalogue rather than from `AGENT_DEFS`. That is the
 review criterion — if anything user-visible moves, the phase is wrong. It is also the
@@ -282,7 +294,8 @@ build input, defaulting to Claude Code and Codex. This supersedes the never-impl
 sketch in `docs/154-cursor-agent-adapter`, which proposed the same mechanism
 (`INSTALL_*_CLI` booleans written to `/opt/shipit/agents/installed.json`) for the same
 reason. Last because nothing else depends on it, and because it is the phase most likely
-to be deferred indefinitely without cost.
+to be deferred — though not for free: req 14 is unmet until it lands, so deferring it is
+a requirement left open rather than a phase skipped.
 
 ## What a third harness could break
 
@@ -325,17 +338,18 @@ harness speaks one style or several. So a contradicted first row is a design cos
 requirements change, which is the point of phrasing it that way. The one-style assumption
 survives only in this design's data shapes, which is where a survey can afford to break it.
 
-**And it is contradicted.** OpenCode integrates the Vercel AI SDK and the models.dev registry
-across 75+ providers, so it speaks many styles by construction. `HarnessDef.styles` is
-therefore a **set**, not a scalar, and the join is an intersection — written that way in
-`catalogue.md`. Rewriting req 6 as an overlap earlier today turned out to be the difference
+**And it appears to be contradicted** — from documentation, not from a run: OpenCode
+integrates the Vercel AI SDK and the models.dev registry across 75+ providers, which would
+mean it speaks many styles by construction. That is enough to make `HarnessDef.styles` a
+**set** rather than a scalar and the join an intersection, since the set costs nothing if the
+hypothesis is wrong and costs a re-cut if it is right and discovered late. Rewriting req 6 as an overlap earlier today turned out to be the difference
 between a type change and a requirements change; that was luck as much as foresight, but it
 is the reason this costs a field rather than a round of re-approval.
 
-**The third row breaks too, and differently.** OpenCode's endpoint and credential live in
-`opencode.json`, not in flags or environment variables — so driving it means **writing a
-per-session config file before each spawn**, which `SpawnShape` must model and which no
-current adapter does. Its `reasoningEffort` is a config key whose levels come from the
+**The third row appears to break too, and differently.** OpenCode's endpoint and credential
+are documented as living in `opencode.json` rather than in flags or environment variables —
+which would mean driving it requires **writing a per-session config file before each spawn**,
+a shape `SpawnShape` carries and no current adapter implements. Its `reasoningEffort` is a config key whose levels come from the
 *provider* rather than the CLI, which is the one place docs/217's harness-keyed reasoning
 model fits badly. Neither is fatal; both are work that would have been discovered inside
 phase 3 otherwise.
@@ -460,7 +474,11 @@ credential.
 Anthropic and OpenAI are catalogue rows like any other, not special cases (req 5).
 `AgentId` keeps meaning *harness* only, and gains a declared **set** of API styles — a set
 rather than a scalar because the survey found a CLI that appears to speak several (OpenCode),
-so the service×harness join is an intersection.
+so the service×harness join is an intersection. An intersection can hold more than one style,
+so the resolved style is **the first of the harness's styles the model also declares**
+([`catalogue.md`](./catalogue.md)); it is resolved rather than selected, and rides the spawn
+identity alongside the endpoint and credential route. Both shipped harnesses declare one
+style, so this is a no-op until a multi-style harness arrives.
 
 The picker's list for the active harness is then every `(service, billingMode, model)` the
 catalogue declares under that harness's style, filtered to modes with a usable credential
@@ -640,8 +658,13 @@ one. See Appendix A for what has to be *removed* instead.
 The rule generalizes rather than invents. Today `provider-account-manager.ts` already
 refuses to mark a reserved API-key route exhausted ("they are metered billing, not a
 subscription window", `:642`), treats reserved routes as always usable (`:720`), skips
-them when stamping exhaustion (`:800`), and never routes onto pay-as-you-go because a
-subscription is unavailable (docs/150 req 12, `:605`). The work is to lift that from
+them when stamping exhaustion (`:800`), and never routes onto pay-as-you-go **because a
+subscription ran out** — an exhausted set returns `all_exhausted` rather than falling through
+(`:695`). Stated more strongly than that it is false, and an earlier draft did state it more
+strongly: when there is **no connected subscription at all**, the manual-auth case, the
+reserved key *is* chosen (`:703`). The distinction is exactly the one req 12 preserves —
+never a silent hop off a spent plan, but a key-only user still works. The work is to lift
+that from
 per-`AgentId` accounts to per-`(service, billing mode)` credentials, not to invent a
 policy — and the existing code's reserved-key-route carve-out is that same billing-mode
 distinction, drawn one level down.
@@ -984,7 +1007,10 @@ because every recorded turn there is key-authenticated.
 
 ## Appendix A — findings from the spike
 
-All verified against the code on this branch, not inferred.
+**Scope of the claim:** everything here about *ShipIt's own code* was verified against this
+branch. The subsection on external providers below is **not** in that category — it is vendor
+research from the spike, it cannot be checked from this repository, and `catalogue.md` marks
+the same facts 🔍. An earlier version of this line claimed the whole appendix was verified.
 
 ### The credential pipe exists, but does not reach every session
 
@@ -1040,6 +1066,9 @@ Any env-shaping for custom models must be applied at both, and **after** the scr
 ordering is load-bearing, and is pinned by a test.
 
 ### API style is a property of the service, and services differ
+
+*(🔍 — this subsection is vendor research, not a repository finding. See the scope note above;
+`catalogue.md` carries the same facts as phase-1 checklist items.)*
 
 DeepSeek V4 Flash is served by DeepSeek, DeepInfra, Parasail, Fireworks and
 SiliconFlow, aggregated by OpenRouter, plus open weights for self-hosting. API style
