@@ -6,10 +6,7 @@ description: Separate harness from service so a user can run any configured serv
 
 # 252 — Custom models
 
-Implements [`requirements.md`](./requirements.md), which has **one open question** (gateway
-support: catalogue content, or a capability the catalogue does not have). Phase 1 depends on
-its answer — whether a service can be user-supplied changes what the catalogue is — so
-implementation is blocked until it is resolved.
+Implements [`requirements.md`](./requirements.md), which has no open questions.
 
 **Visual reference — the picker:** [`mockup-picker.html`](./mockup-picker.html) — an
 **interactive** prototype of the two-selector composer (harness, then model). Change the
@@ -110,7 +107,7 @@ the design.
 
 | # | Phase | Reqs | Lands |
 |---|---|---|---|
-| 1 | Catalogue and identities | 5, 6, 7 | The data model. No user-visible change. |
+| 1 | Catalogue and identities | 5, 6, 7, 15 | The data model, with its launch rows. No user-visible change. |
 | 2 | Credentials and Settings | 5, 7 | You can save a service key. It does nothing yet. |
 | 3 | Spawn shaping and eligibility | 1, 2, 3, 8 | **A session runs on a custom service.** |
 | 4 | In-session switching | 4 | Switching models, including across services. |
@@ -127,10 +124,20 @@ meaning anything else. The selected model becomes the pair `(serviceId, modelId)
 throughout — types, persistence, and the picker's plumbing. Anthropic and OpenAI become
 ordinary catalogue rows.
 
+It also authors the launch rows req 15 names: Anthropic, OpenAI, DeepSeek, OpenRouter and
+Vercel AI Gateway. Only Anthropic and OpenAI are reachable at this point — the rest need
+phase 2's credential storage — but they are catalogue data, so they belong to the phase that
+introduces the catalogue.
+
 This phase is a refactor with **no behaviour change**: the picker offers exactly the models
 it offers today, now derived from the catalogue rather than from `AGENT_DEFS`. That is the
 review criterion — if anything user-visible moves, the phase is wrong. It is also the
 largest and least glamorous PR, and everything after it is small by comparison.
+
+Authoring a row means establishing, per service, which API styles it actually speaks and
+which of its models are declared under each (req 6). For the gateways that is research, not
+recall — it must be checked against each gateway's current documentation when the row is
+written, not assumed from this doc.
 
 **Phase 2 — Credentials and Settings.** Per-service credential storage, the Settings →
 Services screen (see the mockup), a compile-time env-key name per catalogue service, and
@@ -221,6 +228,32 @@ one base URL per service is wrong for a service whose styles live at different p
 *The user supplies credentials* (req 7) for the services they want to use. That is the
 whole of what they own; they are not authoring catalogue entries. The consequence is
 explicit in req 7 — a service ShipIt does not know about needs a ShipIt change.
+
+**Which is why the catalogue's launch contents are themselves a requirement** (req 15).
+With no user-supplied endpoints, an empty-ish catalogue would make the feature true on
+paper and useless in practice, so the shipped set is specified: Anthropic and OpenAI
+first-party, DeepSeek as the direct key-authenticated case, and OpenRouter and Vercel AI
+Gateway as the gateways.
+
+**A gateway needs no mechanism of its own** — that is the whole point of having settled on
+the service as the primitive. It is a row with a key that happens to reach many upstream
+vendors, and every part of the design already covers it: curation keeps its hundreds of
+models to a handful (req 6), the pair identity distinguishes its `deepseek-v4-flash` from
+DeepSeek's own, and attribution names it as the service that billed the turn (req 11).
+If adding OpenRouter needs anything the design does not already have, that is a signal the
+service abstraction is wrong, not that gateways need special handling.
+
+One consequence is worth stating because it reads as a bug and is not: a gateway key can
+make a vendor's own models available to a user with no account at that vendor, and — since
+gateways commonly speak the OpenAI style — can offer them under a harness that vendor did
+not write. Anthropic models under Codex, via OpenRouter, is reqs 2 and 6 working exactly as
+specified. The eligibility check must not acquire a "but these are really Anthropic's
+models" special case to prevent it.
+
+**User-supplied endpoints are deferred, not designed away** (req 15). Nothing here should
+foreclose them: a service row is already `(endpoints, styles, declared models)`, which is
+the same shape a user-supplied one would need, so the later feature is a new *source* for
+catalogue rows rather than a new concept. Do not add a mechanism for it now.
 
 **Four distinct identities, which an earlier draft blurred into one.** This doc first
 called a service "a credential + endpoint" and later a ShipIt-owned catalogue row; those

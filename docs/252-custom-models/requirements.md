@@ -2,8 +2,7 @@
 
 The design that implements these requirements is in [`plan.md`](./plan.md).
 
-**One open question** — see [below](#open-questions). Requirements and design work continue;
-implementation does not start while it is open.
+No open questions remain.
 
 ## Requirements
 
@@ -134,40 +133,48 @@ implementation does not start while it is open.
     the deployment's configuration and redeploying. Adding a harness to a running install
     without a redeploy is deliberately not offered.
 
+15. **The catalogue ships with the services that make the feature usable, not merely with
+    the ability to hold services.** "ShipIt supports gateways" has to be a statement about
+    what a user finds in Settings, not about what the data model permits — so what ships is
+    itself a requirement. At minimum:
+
+    - **first-party providers** — Anthropic and OpenAI, as ordinary rows (req 7);
+    - **at least one direct key-authenticated provider** — DeepSeek is the founding case;
+    - **common gateways** — OpenRouter and Vercel AI Gateway.
+
+    Which API styles each of these speaks, and which of its models are declared under each,
+    follows req 6 and is authored per service; this requirement is about the services being
+    present, not about what they turn out to offer.
+
+    A gateway is not a new kind of thing. It is a service with a key that reaches many
+    upstream vendors, so it needs no mechanism of its own — which is why this is a statement
+    about catalogue contents rather than about capability. One consequence is worth naming
+    because it looks like a bug and is not: a gateway key can make a vendor's own models
+    available to someone with no account at that vendor, and — since a gateway typically
+    speaks the OpenAI style — can offer them under a harness that vendor did not write.
+    That is reqs 2 and 6 behaving as specified.
+
+    **Letting a user point ShipIt at a gateway or endpoint it does not carry is deferred,
+    not rejected.** Reqs 5 and 7 stand: for now every service is ShipIt's. Adding
+    user-supplied endpoints later would extend this requirement rather than contradict it.
+
 ## Open questions
 
-- **Gateway support — is it catalogue *content*, or a capability the catalogue does not
-  have?** Raised as "gateway support — at least openrouter/vercel/1st party providers".
-
-  Most of what that asks for is already what reqs 5–8 describe, and was settled by the
-  2026-08-05 receipt that dropped "should we support gateways?" as the wrong axis: a
-  gateway is a service like any other. It has a key (req 5), it speaks one or more API
-  styles (req 6), ShipIt carries a curated subset of its models rather than all 400
-  (req 6), and it bills you rather than the upstream vendor, which req 10 and req 11
-  already report as "via OpenRouter, API key". Even the awkward case is designed for:
-  the same model reachable both first-party and through a gateway is two rows at two
-  prices, which is why a model is identified by the pair and not by an id.
-
-  Two things are genuinely unsettled underneath it:
-
-  1. **Nothing says what the shipped catalogue must contain.** Req 7 says the catalogue
-     is ShipIt's; no requirement names a single service that has to be in it. So
-     "ShipIt supports gateways" is true in principle and unverifiable in practice —
-     an install could ship zero gateways and violate nothing. If the ask is that
-     OpenRouter and Vercel AI Gateway are present at launch alongside the first-party
-     providers, that is a requirement and should be stated as one.
-  2. **Whether "gateway" means one ShipIt catalogues, or one the user points at.** A
-     gateway's selling point is that *any* upstream is reachable through one key and one
-     base URL, which invites "let me supply the base URL myself". That is a
-     **user-defined service**, which reqs 5 and 7 have already rejected twice, on the
-     grounds that a service ShipIt does not know about needs a ShipIt change. If the ask
-     includes it, it reopens those; if it does not, nothing here changes and only (1)
-     is left.
-
-  Not answered by the agent, because the two readings differ by whether a settled
-  decision is reopened.
+_None._
 
 ## Resolved questions
+
+- 2026-08-07 — Gateway support: catalogue *content*, or a capability the catalogue does not
+  have? **Chosen: content — carry the common gateways explicitly; custom URLs later.** The
+  feedback ("gateway support — at least openrouter/vercel/1st party providers") turned out to
+  ask for almost nothing the design lacked: a gateway is a service like any other, which the
+  2026-08-05 receipt had already settled by dropping "should we support gateways?" as the
+  wrong axis. What it did expose is that no requirement said what the shipped catalogue must
+  *contain*, so "ShipIt supports gateways" was true in principle and unverifiable in
+  practice — an install could carry zero gateways and violate nothing. Requirement 15 states
+  the launch set. The second reading — a user supplying a gateway's own base URL — was
+  explicitly **deferred rather than adopted** ("we can always add custom urls later"), so
+  reqs 5 and 7 are untouched and no settled decision was reopened.
 
 - 2026-08-07 — What *is* ShipIt's default for non-turn work? **Chosen: derive it — the
   first model of the first service.** Re-reading found the default was the one part of
@@ -441,6 +448,13 @@ human, but most of the mechanism did not. What the human actually said, in order
   Claude being selected by default" → req 14, both halves. The human also identified the
   prior unimplemented sketch (`docs/154-cursor-agent-adapter`) that req 14 now supersedes.
 - "Redeploy" → req 14's closing paragraph: the harness set is a property of the deployment.
+- "gateway support - at least openrouter/vercel/1st party providers imo" → req 15. Raised as
+  feedback the human relayed without endorsing a reading ("not sure that I fully understand
+  it"), so it was recorded as an open question first and only became a requirement after the
+  answer below.
+- "let's do 1, i.e. explicitly support common gateways. We can always add custom urls later"
+  → req 15's launch set, and its closing paragraph deferring user-supplied endpoints instead
+  of ruling them out.
 - "the default would be 'first model on the first service', something like this" → req 9's
   derived default, replacing the fixed model an earlier draft assumed. The mechanism is the
   human's sketch and is stated in `plan.md`; the requirement states only the property it

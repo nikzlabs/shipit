@@ -276,7 +276,7 @@
       <div class="card">
         <div class="card-head">
           <h3>Connected</h3>
-          <span class="hint">3 of 5 configured</span>
+          <span class="hint">3 of 6 configured</span>
         </div>
 
         <!-- Anthropic: subscription, 2 accounts, usage -->
@@ -360,6 +360,15 @@
           <h3>Available</h3>
           <span class="hint">add a key to use these</span>
         </div>
+        <div class="svc" style="border-bottom:1px solid var(--border-soft)">
+          <div class="svc-body">
+            <div class="svc-meta" style="margin:0">
+              Which services are here is itself a requirement (req 15) — first-party providers,
+              one direct key-authenticated provider, and the common gateways. Not just the
+              ability to hold services.
+            </div>
+          </div>
+        </div>
 
         <!-- OpenRouter: key entry open -->
         <div class="svc">
@@ -384,6 +393,24 @@
               <span class="chip dim">qwen-4-coder</span>
             </div>
           </div>
+        </div>
+
+        <div class="svc">
+          <div class="svc-logo">V</div>
+          <div class="svc-body">
+            <div class="svc-top">
+              <span class="svc-name">Vercel AI Gateway</span>
+              <span class="pill key">API key</span>
+              <span class="pill off">Not configured</span>
+              <span class="pill style">openai-responses</span>
+            </div>
+            <div class="svc-meta">Gateway &middot; declared styles are authored per service (req 6)</div>
+            <div class="models">
+              <span class="chip dim">deepseek-v4-flash</span>
+              <span class="chip dim">kimi-k3</span>
+            </div>
+          </div>
+          <div class="svc-actions"><button class="btn">Add key</button></div>
         </div>
 
         <div class="svc">
@@ -496,6 +523,7 @@
                   <span class="chip">OpenAI</span>
                   <span class="chip">DeepSeek</span>
                   <span class="chip dim">OpenRouter — no key</span>
+                  <span class="chip dim">Vercel AI Gateway — no key</span>
                   <span class="chip dim">Fireworks — no key</span>
                 </div>
                 <div class="hsub" style="margin-top:7px">

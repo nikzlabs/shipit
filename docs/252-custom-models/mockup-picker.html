@@ -340,6 +340,17 @@
     <b>Entries are pairs, not model ids.</b> Give OpenRouter a key and
     <code class="k">deepseek-v4-flash</code> appears twice, under two services, at two prices.
     One list of bare model ids could not express that; two rows under two group headers can.
+    Add Vercel too and it is three.
+  </div>
+  <div class="note">
+    <span class="req">req 15</span><b>The gateways are catalogue rows, not a feature.</b>
+    OpenRouter and Vercel AI Gateway are in the list because req 15 says the shipped catalogue
+    must contain them — nothing in this prototype treats a gateway differently from DeepSeek.
+    If a gateway needed special handling here, the service abstraction would be wrong.
+    <div class="callout">
+      Their declared styles are illustrative. Which styles each gateway really speaks, and
+      which models under each, is research to do when the catalogue row is authored (req 6).
+    </div>
   </div>
   <div class="note against">
     <span class="req">cost</span><b>The other harness&rsquo;s models become invisible.</b> The
@@ -436,6 +447,8 @@ const SERVICES = [
   { id:'openrouter', name:'OpenRouter', auth:'key', preset:false,
     styles:{ 'anthropic-messages':['deepseek-v4-flash','kimi-k3'],
              'openai-responses':['deepseek-v4-flash','kimi-k3'] } },
+  { id:'vercel',     name:'Vercel AI Gateway', auth:'key', preset:false,
+    styles:{ 'openai-responses':['deepseek-v4-flash','kimi-k3'] } },
   { id:'fireworks',  name:'Fireworks',  auth:'key', preset:false,
     styles:{ 'openai-responses':['deepseek-v4-flash','qwen4-coder'] } },
 ];
