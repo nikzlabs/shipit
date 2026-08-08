@@ -19,6 +19,15 @@
 /* Class-based dark mode for Tailwind v4 — includes all dark-like themes */
 @custom-variant dark (&:where(.dark, .dark *, .midnight, .midnight *, .forest, .forest *, .rose, .rose *, .claude, .claude *, .codex, .codex *, .solarized, .solarized *, .high-contrast, .high-contrast *));
 
+/* App-shell height. The default is the CSS dynamic viewport; `useAppViewportHeight`
+   overwrites it with a measured pixel value on every resize/resume, because an
+   installed PWA returning from an externally-opened window can keep a stale
+   `dvh` — which strands the mobile tab bar below the fold with `overflow: hidden`
+   and no way to scroll back to it. See that hook for the full reasoning. */
+:root {
+  --app-height: 100dvh;
+}
+
 /* ── Shared motion tokens (theme-independent) ── */
 :root {
   --duration-fast: 150ms;

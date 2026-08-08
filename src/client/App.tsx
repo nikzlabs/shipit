@@ -17,6 +17,7 @@ import { useServerEvents } from "./hooks/useServerEvents.js";
 import { useResizablePanel } from "./hooks/useResizablePanel.js";
 import { useSearch } from "./hooks/useSearch.js";
 import { useIsMobile } from "./hooks/useMediaQuery.js";
+import { useAppViewportHeight } from "./hooks/useAppViewportHeight.js";
 import { useNotification } from "./hooks/useNotification.js";
 import { useAttentionNotifications } from "./hooks/useAttentionNotifications.js";
 import { useTheme } from "./hooks/useTheme.js";
@@ -383,6 +384,10 @@ export default function App() {
       storageKey: "vibe-panel-split",
     });
   const isMobile = useIsMobile();
+  // Keeps the shell's height matched to the real viewport. Load-bearing on
+  // mobile: the tab bar is the shell's bottom child and `overflow: hidden`
+  // makes anything past that edge unreachable. See the hook.
+  useAppViewportHeight();
   const {
     searchOpen,
     setSearchOpen,
@@ -2017,7 +2022,7 @@ export default function App() {
   // ── Bootstrap loading gate ──
   if (!bootstrapLoaded) {
     return (
-      <div className="flex h-[100dvh] items-center justify-center bg-(--color-bg-primary)">
+      <div className="flex h-(--app-height) items-center justify-center bg-(--color-bg-primary)">
         {showBootstrapSpinner && (
           <CircleNotchIcon
             size={ICON_SIZE.MD}
@@ -2030,7 +2035,7 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={300}>
-      <div className="flex flex-col h-[100dvh] bg-(--color-bg-primary) text-(--color-text-primary)">
+      <div className="flex flex-col h-(--app-height) bg-(--color-bg-primary) text-(--color-text-primary)">
         <AuthOverlayContainer
           showOnboarding={showOnboarding}
           githubNeeded={githubNeeded}

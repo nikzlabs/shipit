@@ -243,7 +243,16 @@ export function PreviewToolbar({
           variant="ghost"
           size="sm"
           onClick={() => {
-            if (activeSlotUrl) window.open(activeSlotUrl, "_blank", "noopener,noreferrer");
+            // Open the page the preview is CURRENTLY on, not the slot's entry
+            // URL — `activeSlotUrl` is where the iframe was pointed when the
+            // slot was created, so a user who had clicked into a sub-route (or
+            // an SPA route) landed back on the front page. Same reasoning as
+            // the refresh button. `previewFullUrl` is the injected script's
+            // reported location, already origin-checked in PreviewFrame; it's
+            // null when the page never reported one, and the entry URL is then
+            // the only thing we know.
+            const url = previewFullUrl ?? activeSlotUrl;
+            if (url) window.open(url, "_blank", "noopener,noreferrer");
           }}
           title="Open preview in new tab"
           disabled={!activeSlotUrl}

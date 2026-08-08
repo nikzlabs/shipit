@@ -46,6 +46,13 @@ Attribution is by `contentWindow` identity, matching the existing `loaded`
 handling — a message from a window that owns no slot is dropped, so one preview
 cannot report a path on another's behalf.
 
+That recovered absolute URL also backs the toolbar's **open-in-new-tab** button,
+which used to open `activeSlotUrl` — the URL the slot was *created* with — and so
+dropped a user who had clicked into a sub-route back onto the front page. Same
+regression the refresh fix (PR #2019) addressed, one button over. It falls back to
+the slot URL when the page reported no path (a non-proxied local preview, a 502),
+which is the only location we know in that case.
+
 ## State lives per slot
 
 Paths are held in a `Map<slotKey, string>` in `PreviewFrame`, keyed the same way as
