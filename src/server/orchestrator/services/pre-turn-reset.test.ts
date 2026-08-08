@@ -591,26 +591,34 @@ describe("emitResetEligible (the one emit path, and its log line)", () => {
     log.mockRestore();
   });
 
-  it("suppresses the push and the log when `previous` already matches", async () => {
-    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  /**
+   * The client holds ONE value per session and takes whichever message arrived
+   * last, so no emitter may suppress a push against a value it remembers
+   * privately: an unconditional emitter can have overwritten the client since,
+   * and the suppressed push is the only thing that would correct it. A
+   * deduplicated variant existed and was deleted after cross-agent review.
+   */
+  it("pushes an unchanged value rather than suppressing it (the cross-emitter wedge)", async () => {
     const emit = vi.fn();
-    const eligible = await emitResetEligible(makeDeps(), {
-      sessionId: "s1", sessionDir: "/ws", origin: "file-change", emit, previous: true,
-    });
-    expect(eligible).toBe(true);
-    expect(emit).not.toHaveBeenCalled();
-    expect(log).not.toHaveBeenCalledWith(expect.stringContaining("reset_eligible"));
-    log.mockRestore();
+    for (let i = 0; i < 3; i++) {
+      await emitResetEligible(makeDeps(), { sessionId: "s1", sessionDir: "/ws", origin: "file-change", emit });
+    }
+    expect(emit).toHaveBeenCalledTimes(3);
+    expect(emit).toHaveBeenLastCalledWith({ type: "reset_eligible", sessionId: "s1", eligible: true });
   });
 
-  it("pushes on a transition even with `previous` set", async () => {
+  it("records a git failure on a merged session instead of an unexplained false", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const emit = vi.fn();
-    const git = makeGit({ isClean: vi.fn().mockResolvedValue(false) });
-    const eligible = await emitResetEligible(makeDeps({ createGitManager: () => git }), {
-      sessionId: "s1", sessionDir: "/ws", origin: "file-change", emit, previous: true,
+    const git = makeGit({ isClean: vi.fn().mockRejectedValue(new Error("git boom")) });
+    await emitResetEligible(makeDeps({ createGitManager: () => git }), {
+      sessionId: "s1", sessionDir: "/ws", origin: "file-change", emit,
     });
-    expect(eligible).toBe(false);
     expect(emit).toHaveBeenCalledWith({ type: "reset_eligible", sessionId: "s1", eligible: false });
+    // Fail-safe for the UI, but NOT silent — this is the ambiguous operational
+    // case the log exists to remove.
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("computation failed (git boom)"));
+    log.mockRestore();
   });
 });
 

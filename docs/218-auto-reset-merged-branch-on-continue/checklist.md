@@ -192,12 +192,19 @@ destroyed the uncommitted edit.
       runner from `onRunnerCreated` in `runner-registry-factory.ts`. Chosen over a
       client-side re-validate-at-send because the server already re-validates at
       send time; the defect is that the painted control outlives the fact it depicts.
-- [x] **Cheap by construction**: schedules only for sessions with a merged pull
-      request (in-memory lookup — the signal is a constant `false` otherwise),
-      debounces a burst into one recompute (750 ms), skips while a turn is running
-      (the agent rewrites files continuously and post-turn recomputes anyway), and
-      dedupes the push against the last value this watcher sent. Clears its timer
-      on `disposed` and `unref`s it.
+- [x] **Cheap by construction**: recomputes only for sessions with a merged pull
+      request (the signal is a constant `false` otherwise), collapses a burst into
+      one recompute (750 ms), and skips while a turn is running (the agent
+      rewrites files continuously and post-turn recomputes anyway). Clears its
+      timer on `disposed` and `unref`s it.
+- [x] **The debounce is capped at 5 s.** A pure trailing edge starves: the
+      worker's watcher already debounces at 300 ms, so a writer on a 300-750 ms
+      cadence would postpone the recompute forever and leave the control stale
+      indefinitely — this module's own failure mode via its own optimisation.
+- [x] **No private dedupe.** A watcher-local "I already said false" check was
+      written and deleted: the client takes whichever message arrived last, so it
+      would suppress exactly the push that corrects a client an unconditional
+      emitter had overwritten with `true`.
 - [x] **The `dirty-tree` clause names the uncommitted paths** via the existing
       `GitManager.uncommittedPaths()` — capped at 10 with `+N more`, sorted for
       stability, appended to `detail` so it reaches the `console.warn`, the
@@ -209,9 +216,19 @@ destroyed the uncommitted edit.
       post-turn ×2, merge detection) and logs value + origin + refusing clause for
       merged sessions, so the next investigation can tell a stale `true` from a
       tree that went dirty later.
-- [x] Tests: `reset-eligible-watch.test.ts` (new — push on change, the dirty
-      transition, debounce, the three cheap-exits, dedupe, dispose, fail-safe) and
-      `pre-turn-reset.test.ts` (+9 — paths in all three surfaces, the 10-path cap,
-      graceful degradation, no second `git status` on the healthy path, and the
-      `emitResetEligible` log/dedupe matrix).
+- [x] **Cross-agent review (Codex) — three signal-correctness bugs, all fixed:**
+      the watcher-local dedupe (could wedge a client at the opposite value), the
+      starving trailing-edge debounce, and a change landing *during* an in-flight
+      recompute being dropped with nothing scheduled to correct the stale result.
+      Also: a git throw no longer erases its own log line, and the wiring hands
+      back the one max-listener slot its permanent `message` listener consumes.
+      Accepted cost: a dirty merged session runs two `git status` calls per
+      recompute — collapsing them would change what the *gate* means by clean.
+- [x] Tests: `reset-eligible-watch.test.ts` (new, 12 — push on change, the dirty
+      transition, debounce, max-wait under a continuous writer, the three
+      cheap-exits, re-push of an unchanged value, re-run after an in-flight
+      recompute, dispose before and during a recompute, the listener slot,
+      fail-safe) and `pre-turn-reset.test.ts` (+9 — paths in all three surfaces,
+      the 10-path cap, graceful degradation, no second `git status` on the healthy
+      path, and the `emitResetEligible` log matrix incl. the git-failure line).
 - [x] `npm run typecheck` + `npm run lint:dev` + `npm run test:dev` green

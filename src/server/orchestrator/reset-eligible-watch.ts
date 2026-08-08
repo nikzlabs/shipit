@@ -33,16 +33,22 @@
  * ## Cost control
  *
  * `isResetEligible` shells out to git, and the watcher is chatty, so three gates
- * keep it cheap: it only schedules for sessions with a merged pull request (the
- * signal is a constant `false` for every other session, and that check is an
- * in-memory lookup); it debounces a burst into one recompute; and it skips while
- * a turn is running, because the agent rewrites files continuously and the
- * post-turn recompute fires immediately afterwards anyway. On top of that the
- * push is deduplicated against the last value this watcher sent — a watcher that
- * fires every few seconds against an unchanging answer should be silent, in the
- * transcript-adjacent WS stream and in the log alike.
+ * keep it cheap: it only recomputes for sessions with a merged pull request (the
+ * signal is a constant `false` for every other session); it collapses a burst
+ * into one recompute; and it skips while a turn is running, because the agent
+ * rewrites files continuously and the post-turn recompute fires immediately
+ * afterwards anyway.
+ *
+ * What it deliberately does NOT do is suppress a push whose value matches the one
+ * it last sent. See {@link emitResetEligible} — the client holds one value per
+ * session and takes whichever message arrived last, so a private "I already said
+ * false" check reasons about state an unconditional emitter may have overwritten
+ * since, and the suppressed push is precisely the one that would have corrected
+ * it. The saving was one WS message, never the git work: the comparison could
+ * only happen after the recompute.
  */
 
+import { EventEmitter } from "node:events";
 import type { WsServerMessage } from "../shared/types/ws-server-messages.js";
 import type { ResetEligibleSignalDeps } from "./services/pre-turn-reset.js";
 import { emitResetEligible } from "./services/pre-turn-reset.js";
@@ -53,6 +59,24 @@ import { emitResetEligible } from "./services/pre-turn-reset.js";
  * disappears well before a user notices the file change and reaches for Send.
  */
 export const RESET_ELIGIBLE_WATCH_DEBOUNCE_MS = 750;
+
+/**
+ * The ceiling on how long a change can be held back by *later* changes.
+ *
+ * A pure trailing-edge debounce starves: every `files_changed` cancels and
+ * replaces the pending timer, so a writer producing changes more often than the
+ * debounce window postpones the recompute forever and the control stays stale
+ * indefinitely — the exact failure this module exists to prevent, reintroduced
+ * by its own optimisation. That writer is not hypothetical here: the worker's
+ * file watcher already collapses events on its own 300 ms trailing debounce
+ * (`session/file-watcher.ts`), so anything writing on a 300–750 ms cadence
+ * (a dev server, a test watcher, a compose service polling) emits a steady
+ * stream of `files_changed` that never leaves a quiet window.
+ *
+ * So the debounce is capped: the recompute fires at the latest this long after
+ * the FIRST change of a run, however many arrive behind it.
+ */
+export const RESET_ELIGIBLE_WATCH_MAX_WAIT_MS = 5_000;
 
 /**
  * The slice of a runner this needs. Structural rather than
@@ -67,6 +91,8 @@ export interface ResetEligibleWatchRunner {
   emitMessage(msg: WsServerMessage): void;
   on(event: "message", listener: (msg: WsServerMessage) => void): unknown;
   on(event: "disposed", listener: () => void): unknown;
+  getMaxListeners(): number;
+  setMaxListeners(n: number): unknown;
 }
 
 /**
@@ -78,19 +104,38 @@ export interface ResetEligibleWatchRunner {
 export function wireResetEligibleOnFileChange(
   deps: ResetEligibleSignalDeps,
   runner: ResetEligibleWatchRunner,
-  opts: { debounceMs?: number } = {},
+  opts: { debounceMs?: number; maxWaitMs?: number } = {},
 ): void {
   const debounceMs = opts.debounceMs ?? RESET_ELIGIBLE_WATCH_DEBOUNCE_MS;
+  const maxWaitMs = opts.maxWaitMs ?? RESET_ELIGIBLE_WATCH_MAX_WAIT_MS;
   let timer: NodeJS.Timeout | null = null;
   let disposed = false;
-  /** The last value this watcher pushed, so an unchanged answer stays silent. */
-  let lastEmitted: boolean | null = null;
-  /** Guards against a slow git recompute overlapping the next debounce fire. */
+  /** When the oldest change still waiting on the debounce arrived — see {@link RESET_ELIGIBLE_WATCH_MAX_WAIT_MS}. */
+  let pendingSince: number | null = null;
+  /** True while a recompute is awaiting git. */
   let inFlight = false;
+  /** A change that landed during an in-flight recompute, which must not be dropped. */
+  let missedWhileInFlight = false;
 
-  const recompute = (): void => {
+  const schedule = (delayMs: number): void => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(recompute, delayMs);
+    // Never hold the process open for a signal that only matters to a live viewer.
+    timer.unref?.();
+  };
+
+  function recompute(): void {
     timer = null;
-    if (disposed || inFlight) return;
+    if (disposed) return;
+    // A recompute already in flight read the tree BEFORE this change landed, so
+    // its result may be stale the moment it publishes. Remember the change and
+    // re-run once it settles, rather than dropping it and leaving the stale
+    // value standing with nothing scheduled to correct it.
+    if (inFlight) {
+      missedWhileInFlight = true;
+      return;
+    }
+    pendingSince = null;
     // The agent owns the tree while its turn runs and rewrites files
     // continuously; the post-turn recompute is authoritative and fires the
     // moment it ends, so nothing is lost by not shelling out to git here.
@@ -98,7 +143,7 @@ export function wireResetEligibleOnFileChange(
     inFlight = true;
     void (async () => {
       try {
-        lastEmitted = await emitResetEligible(deps, {
+        await emitResetEligible(deps, {
           sessionId: runner.sessionId,
           sessionDir: runner.sessionDir,
           origin: "file-change",
@@ -107,7 +152,6 @@ export function wireResetEligibleOnFileChange(
             // a session whose runner is gone.
             if (!disposed) runner.emitMessage(msg);
           },
-          previous: lastEmitted,
         });
       } catch (err) {
         // `emitResetEligible` is fail-safe, so this is belt-and-braces — but it
@@ -115,25 +159,47 @@ export function wireResetEligibleOnFileChange(
         console.error(`[pre-turn-reset] file-change eligibility recompute failed for ${runner.sessionId}:`, err);
       } finally {
         inFlight = false;
+        if (missedWhileInFlight) {
+          missedWhileInFlight = false;
+          if (!disposed) {
+            pendingSince = Date.now();
+            schedule(debounceMs);
+          }
+        }
       }
     })();
-  };
+  }
 
   runner.on("message", (msg: WsServerMessage) => {
     if (disposed || msg.type !== "files_changed") return;
     // Cheap-exit before scheduling anything: for a session with no merged pull
     // request the signal is a constant false, and this is the hot path — every
-    // file the agent touches in every session arrives here.
+    // file the agent touches in every session arrives here. (`getSession` is a
+    // single indexed SQLite read, not a memory lookup, so it stays in front of
+    // the timer rather than inside the recompute.)
     if (!deps.getSession(runner.sessionId)?.mergedAt) return;
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(recompute, debounceMs);
-    // Never hold the process open for a signal that only matters to a live viewer.
-    timer.unref?.();
+    const now = Date.now();
+    pendingSince ??= now;
+    // Trailing-edge debounce, capped so a continuous writer cannot postpone the
+    // recompute forever.
+    schedule(Math.max(0, Math.min(debounceMs, pendingSince + maxWaitMs - now)));
   });
 
   runner.on("disposed", () => {
     disposed = true;
+    missedWhileInFlight = false;
     if (timer) clearTimeout(timer);
     timer = null;
   });
+
+  // Node warns at more than 10 listeners on one emitter, and each attached
+  // viewer already registers up to two `message` listeners (the transport and
+  // the preview-retry hook in `route-registry.ts`). This listener is permanent
+  // and there is exactly one of it, so hand back exactly the slot it consumed —
+  // otherwise a session with five open viewers starts printing a
+  // MaxListenersExceededWarning that reads like a leak. Only when the emitter is
+  // still on the default, so a deliberate ceiling set elsewhere is not stomped.
+  if (runner.getMaxListeners() === EventEmitter.defaultMaxListeners) {
+    runner.setMaxListeners(EventEmitter.defaultMaxListeners + 1);
+  }
 }

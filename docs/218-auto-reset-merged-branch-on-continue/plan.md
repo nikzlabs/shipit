@@ -664,14 +664,28 @@ tries to fix.
   at it before sending. The defect is that the *painted* control outlives the fact
   it depicts, so the fix belongs where the fact changes.
 - **Three gates keep a chatty watcher cheap**, since `isResetEligible` shells out
-  to git: it only schedules for sessions with a merged pull request (an in-memory
-  lookup, and the signal is a constant `false` for everything else); it debounces
-  a burst into one recompute (750 ms); and it skips while a turn is running,
-  because the agent rewrites files continuously and the post-turn recompute fires
-  immediately afterwards anyway. The push is additionally deduplicated against the
-  last value *this* watcher sent — a watcher firing against an unchanging answer
-  should be silent in the WS stream and in the log alike. The one-shot callers
-  keep emitting unconditionally: a client that just attached has no value at all.
+  to git: it only recomputes for sessions with a merged pull request (the signal
+  is a constant `false` for everything else); it collapses a burst into one
+  recompute (750 ms); and it skips while a turn is running, because the agent
+  rewrites files continuously and the post-turn recompute fires immediately
+  afterwards anyway.
+- **The debounce is capped at 5 s, because a trailing edge alone starves.** Every
+  `files_changed` replaces the pending timer, so a writer producing changes more
+  often than the window postpones the recompute forever and the control stays
+  stale indefinitely — this module's own failure mode, reintroduced by its
+  optimisation. Not hypothetical: the worker's file watcher already collapses
+  events on a 300 ms trailing debounce, so anything writing on a 300–750 ms
+  cadence emits a stream that never leaves a quiet window. The recompute now
+  fires at the latest 5 s after the *first* change of a run.
+- **No emitter deduplicates a push against a value it remembers privately.** A
+  watcher-local "I already said `false`" check was written and deleted: the
+  client holds ONE value per session and takes whichever message arrived last, so
+  a private check reasons about state the unconditional emitters may have
+  overwritten since. Concretely — watcher says `false`; a turn runs and its
+  post-turn emitter says `true`; a service dirties the tree; the watcher computes
+  `false`, matches its own remembered `false`, and suppresses the only message
+  that would have corrected the client. The saving was one WS message and one log
+  line, never the git work — the comparison could only happen after the recompute.
 - **The `dirty-tree` refusal names the files.** "The working tree has uncommitted
   changes" is unactionable when you did not knowingly change anything — in the
   incident the writer was a compose service, not the user. `computeResetBlocker`
@@ -688,7 +702,24 @@ tries to fix.
   recorded anywhere. The four recompute sites now go through one
   `emitResetEligible` helper that logs `reset_eligible=<value> for <id> (<origin>)`
   plus the refusing clause and detail — merged sessions only, so a fleet-wide
-  constant `false` cannot bury the interesting lines.
+  constant `false` cannot bury the interesting lines. A git failure is logged as
+  such rather than collapsing into an unexplained `false`: `computeResetEligibility`
+  keeps the `merged` flag it learned before the throw and carries the error, so the
+  one case the log exists to disambiguate cannot itself go dark.
+- **Cross-agent review (Codex) — three signal-correctness bugs, all fixed:** the
+  watcher-local dedupe described above (which could wedge a client at the opposite
+  value); the starving trailing-edge debounce; and a change that landed *during* an
+  in-flight recompute being dropped — the in-flight result was read from a tree
+  predating it, and nothing was scheduled to correct it, so the watcher now
+  re-runs once the in-flight one settles. Also from that review: a git throw no
+  longer erases its own log line, and the wiring hands back the one
+  max-listener slot its permanent `message` listener consumes (each attached
+  viewer registers up to two, so without it a five-viewer session starts printing
+  a `MaxListenersExceededWarning` that reads like a leak). Accepted as a known
+  cost: a dirty merged session runs two `git status` calls per recompute
+  (`isClean()` then `uncommittedPaths()`). Deriving cleanliness from the path list
+  would collapse them into one, but that changes what the *gate* means by clean,
+  and this phase does not touch the gate.
 
 ## Review notes
 

@@ -287,6 +287,13 @@ export interface ResetEligibility {
   merged: boolean;
   /** On a merged, ineligible session: which clause refused. Null otherwise. */
   blocker: ResetSkip | null;
+  /**
+   * Set when the computation itself failed. The result is still a fail-safe
+   * `eligible: false`, but the *reason* is "git threw", not "a clause refused" —
+   * and that is the ambiguous operational case this whole record exists to
+   * remove, so it must not be swallowed into a bare false.
+   */
+  error?: string;
 }
 
 /**
@@ -299,15 +306,21 @@ export async function computeResetEligibility(
   sessionId: string,
   sessionDir: string,
 ): Promise<ResetEligibility> {
+  // Tracked outside the try so a throw still reports WHICH kind of session it
+  // threw for: a merged session that fails closed on a git error is a reportable
+  // event, and collapsing it into the non-merged `false` would hide it from the
+  // log that exists to explain exactly this.
+  let merged = false;
   try {
     const session = deps.getSession(sessionId);
     if (!session?.mergedAt) return { eligible: false, merged: false, blocker: null }; // cheap-exit before constructing git
+    merged = true;
     const prStatus = deps.getPrStatus(sessionId);
     const git = deps.createGitManager(sessionDir);
     const blocker = await computeResetBlocker(session, prStatus, git);
     return { eligible: blocker === null, merged: true, blocker };
-  } catch {
-    return { eligible: false, merged: false, blocker: null };
+  } catch (err) {
+    return { eligible: false, merged, blocker: null, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -334,8 +347,20 @@ export type ResetEligibleOrigin =
  * tree became dirty after the signal was correct": neither the emitted value nor
  * its reason was written down anywhere. It logs the value, the origin, and (when
  * false) the clause and detail that refused — which for `dirty-tree` now names
- * the paths. Only for MERGED sessions: for everything else the answer is a
- * constant false and logging it would bury the interesting lines.
+ * the paths — or the error, when git failed and the answer is a fail-safe false
+ * rather than a refusal. Only for MERGED sessions: for everything else the answer
+ * is a constant false and logging it would bury the interesting lines.
+ *
+ * **Every caller emits unconditionally, and none of them may suppress a push
+ * against a value it remembers privately.** The client holds ONE value per
+ * session and simply takes whichever message arrived last, so a per-emitter
+ * "I already said false" check reasons about the wrong state: an unconditional
+ * emitter can have overwritten the client with `true` in between, and the
+ * suppressed push is then the only thing that would have corrected it — leaving
+ * exactly the stale-true false promise this feature exists to remove. A
+ * deduplicated variant was written and deleted for that reason; the saving it
+ * bought was one WS message and one log line, never the git work, which happens
+ * before any comparison could.
  *
  * Transient + emit-only (recomputed on every activation), so a bare `emitMessage`
  * is the right transport — nothing to persist. Never throws:
@@ -348,22 +373,14 @@ export async function emitResetEligible(
     sessionDir: string;
     origin: ResetEligibleOrigin;
     emit: (msg: WsServerMessage) => void;
-    /**
-     * planning#341 — the value this caller last pushed. When it equals the freshly
-     * computed one, the push AND its log line are suppressed; the return value
-     * still reports the current value. Only the file-watcher recompute sets it:
-     * it fires repeatedly against an unchanging answer, and only transitions are
-     * news. The one-shot callers (activation, post-turn, merge detection) emit
-     * unconditionally, because a client that just attached has no value at all.
-     */
-    previous?: boolean | null;
   },
 ): Promise<boolean> {
   const { sessionId, sessionDir, origin, emit } = args;
-  const { eligible, merged, blocker } = await computeResetEligibility(deps, sessionId, sessionDir);
-  if (args.previous !== undefined && args.previous === eligible) return eligible;
+  const { eligible, merged, blocker, error } = await computeResetEligibility(deps, sessionId, sessionDir);
   if (merged) {
-    const why = blocker ? `: ${blocker.clause} — ${blocker.detail}` : "";
+    const why = error
+      ? `: computation failed (${error}) — failing closed`
+      : blocker ? `: ${blocker.clause} — ${blocker.detail}` : "";
     console.log(`[pre-turn-reset] reset_eligible=${eligible} for ${sessionId} (${origin})${why}`);
   }
   emit({ type: "reset_eligible", sessionId, eligible });
