@@ -333,6 +333,24 @@ describe("AskUserQuestion", () => {
       expect(screen.queryByText("Auth, Cache, Metrics")).not.toBeInTheDocument();
     });
 
+    it("does not resurrect an option label that appears inside the free text", () => {
+      // Free text "custom, Cache" used to have its trailing "Cache" matched as
+      // a checked option on reload, so the card showed a box the user never
+      // ticked and the answer came back reordered as "Auth, Cache, custom".
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={multiSelectQuestion}
+          onAnswer={vi.fn()}
+          disabled={false}
+          resolvedAnswer="Auth, custom, Cache"
+        />
+      );
+      expect(screen.getByTestId("option-Auth").className).toContain("bg-(--color-accent-subtle)");
+      expect(screen.getByTestId("option-Cache").className).not.toContain("bg-(--color-accent-subtle)");
+      expect(screen.getByText("custom, Cache")).toBeInTheDocument();
+    });
+
     it("restores checked options and free text from persisted history", () => {
       render(
         <AskUserQuestion

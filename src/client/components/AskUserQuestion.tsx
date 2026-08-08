@@ -133,13 +133,25 @@ function deriveAnswersFromResult(
   // matching question; truly free-form answers fall through.
   const used = new Set<number>();
   const remaining: string[] = [];
+  // Once a segment fails to match, everything after it is free text — a live
+  // single-question answer is ", "-joined with the "Other" text appended LAST
+  // (`buildAnswers`), so matching a LATER segment against a label would both
+  // resurrect a checkbox the user never ticked and reorder the answer: free
+  // text "custom, Cache" came back as "Cache, custom" with Cache highlighted.
+  // Scoped to the single-question case because that is the only shape current
+  // code writes here — multi-question content reaches this path only as legacy
+  // history (current writes use the bullet format above), where the greedy
+  // heuristic is still the better guess.
+  const stopAtFreeText = questions.length === 1;
   for (const part of parts) {
     let matched = -1;
-    for (let q = 0; q < questions.length; q++) {
-      if (used.has(q)) continue;
-      if (questions[q].options.some((o) => o.label === part)) {
-        matched = q;
-        break;
+    if (!stopAtFreeText || remaining.length === 0) {
+      for (let q = 0; q < questions.length; q++) {
+        if (used.has(q)) continue;
+        if (questions[q].options.some((o) => o.label === part)) {
+          matched = q;
+          break;
+        }
       }
     }
     if (matched >= 0) {
@@ -218,6 +230,22 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
   const markDictated = useCallback((qIndex: number) => {
     setDictatedOther((prev) => new Set(prev).add(qIndex));
   }, []);
+  /**
+   * Drop the dictated mark when the transcript stops being able to reach the
+   * prompt — the field was emptied, or "Other" was abandoned. Without this the
+   * stale mark collides with the submitted-text match in `submitAnswers`:
+   * dictating "Cache", unticking Other, then picking the PRESET "Cache" answers
+   * with a label that happens to equal the abandoned transcript, and the turn
+   * got a `<dictated_input>` hint for text it never carried.
+   */
+  const clearDictated = useCallback((qIndex: number) => {
+    setDictatedOther((prev) => {
+      if (!prev.has(qIndex)) return prev;
+      const next = new Set(prev);
+      next.delete(qIndex);
+      return next;
+    });
+  }, []);
 
   // Effective submitted answers = local state during the session, OR the
   // server-persisted result on reload. `useMemo` keeps the reference stable
@@ -238,22 +266,17 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
    * only thing needed here is to stay answerable.
    */
   const submitAnswers = useCallback(
-    (answers: Record<string, string>) => {
+    (answers: Record<string, string>, freeTextQuestions: Set<number>) => {
       // docs/144 — flag the turn when a transcript actually reaches the prompt.
-      // Matched against the SUBMITTED text rather than "is this question still
-      // on Other", because `handleOptionClick` submits in the same tick it
-      // clears `usingOther` — the closure here would still see the stale set. A
-      // question dictated into and then abandoned for a preset option answers
-      // with the option label, which is not the free text, so it drops out.
-      //
-      // A multi-select answer is the checked labels with the free text appended
-      // LAST (`buildAnswers`), so the spoken text is either the whole answer or
-      // its final ", "-joined segment — hence the `endsWith`, not a bare `===`.
-      const dictated = Object.entries(answers).some(([k, answer]) => {
-        const spoken = otherTexts.get(Number(k))?.trim();
-        if (!dictatedOther.has(Number(k)) || !spoken) return false;
-        return answer === spoken || answer.endsWith(`, ${spoken}`);
-      });
+      // `freeTextQuestions` is the caller's authoritative list of questions
+      // whose "Other" text landed in `answers`, which is why it's threaded in
+      // rather than re-derived here: `handleOptionClick` submits in the SAME
+      // TICK it clears `usingOther`/`dictatedOther`, so any state this closure
+      // reads is one render stale. The previous fix — matching the transcript
+      // against the submitted text — dodged the staleness but flagged a typed
+      // preset whose label happened to equal an abandoned transcript (dictate
+      // "Cache", abandon Other, pick the preset "Cache").
+      const dictated = [...freeTextQuestions].some((qi) => dictatedOther.has(qi));
       const text = formatAnswerText(questions, answers);
       // Omitted rather than passed as `false`, mirroring the wire shape it ends
       // up in: absent means typed.
@@ -263,7 +286,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
       if (!accepted) return;
       setSubmittedAnswers(answers);
     },
-    [onAnswer, toolUseId, questions, setSubmittedAnswers, dictatedOther, otherTexts],
+    [onAnswer, toolUseId, questions, setSubmittedAnswers, dictatedOther],
   );
 
   /**
@@ -277,24 +300,36 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
    *
    * Shared by `handleSubmit` and the `hasAnyAnswer` gate so the button's enabled
    * state can never disagree with what submitting would actually send.
+   *
+   * Also reports `freeTextQuestions` — the questions whose "Other" text really
+   * made it into an answer — which is what `submitAnswers` needs for the
+   * docs/144 dictation flag. Emitting it from the one place that decides the
+   * answer's content is what keeps the flag honest.
    */
   const buildAnswers = useCallback(() => {
     const answers: Record<string, string> = {};
+    const freeTextQuestions = new Set<number>();
     for (let i = 0; i < questions.length; i++) {
       const isOther = usingOther.has(i);
       const otherText = isOther ? otherTexts.get(i)?.trim() : undefined;
       if (questions[i].multiSelect) {
         const parts = [...(selections.get(i) ?? [])];
-        if (otherText) parts.push(otherText);
+        if (otherText) {
+          parts.push(otherText);
+          freeTextQuestions.add(i);
+        }
         if (parts.length > 0) answers[String(i)] = parts.join(", ");
       } else if (isOther) {
-        if (otherText) answers[String(i)] = otherText;
+        if (otherText) {
+          answers[String(i)] = otherText;
+          freeTextQuestions.add(i);
+        }
       } else {
         const sel = selections.get(i);
         if (sel && sel.size > 0) answers[String(i)] = [...sel].join(", ");
       }
     }
-    return answers;
+    return { answers, freeTextQuestions };
   }, [questions, selections, usingOther, otherTexts]);
 
   const handleOptionClick = useCallback((qIndex: number, label: string, multiSelect: boolean) => {
@@ -310,6 +345,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
         next.delete(qIndex);
         return next;
       });
+      clearDictated(qIndex);
     }
 
     if (multiSelect) {
@@ -327,8 +363,14 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
     } else {
       // Single select: set and submit immediately. The sibling questions come
       // from `buildAnswers`; this question's own entry is overwritten because
-      // the `setUsingOther` above hasn't landed yet in this closure.
-      const answers = { ...buildAnswers(), [String(qIndex)]: label };
+      // the `setUsingOther` above hasn't landed yet in this closure. For the
+      // same reason its free-text contribution is dropped by hand — this
+      // question is answering with a preset label, so whatever was typed or
+      // spoken into its "Other" box is not going anywhere near the prompt.
+      const built = buildAnswers();
+      const answers = { ...built.answers, [String(qIndex)]: label };
+      const freeText = new Set(built.freeTextQuestions);
+      freeText.delete(qIndex);
 
       // If there are multiple questions, just select — don't auto-submit
       if (questions.length > 1) {
@@ -338,10 +380,10 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
           return next;
         });
       } else {
-        submitAnswers(answers);
+        submitAnswers(answers, freeText);
       }
     }
-  }, [disabled, submittedAnswers, buildAnswers, questions, submitAnswers]);
+  }, [disabled, submittedAnswers, buildAnswers, questions, submitAnswers, clearDictated]);
 
   /**
    * "Other" TOGGLES, like every other option. It used to only ever add, so a
@@ -358,6 +400,9 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
       else next.delete(qIndex);
       return next;
     });
+    // Unticking takes the free text out of the answer, so its dictation
+    // provenance goes with it.
+    if (!turningOn) clearDictated(qIndex);
     // Single-select only: "Other" replaces the picked option rather than adding
     // to it, so turning it on clears that question's selection.
     if (turningOn && !questions[qIndex].multiSelect) {
@@ -367,7 +412,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
         return next;
       });
     }
-  }, [disabled, submittedAnswers, questions, usingOther]);
+  }, [disabled, submittedAnswers, questions, usingOther, clearDictated]);
 
   const handleOtherTextChange = useCallback((qIndex: number, text: string) => {
     setOtherTexts((prev) => {
@@ -377,15 +422,8 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
     });
     // docs/144 — the transcript is gone once the field is emptied, so whatever
     // the user types next is typed, not spoken.
-    if (text.trim() === "") {
-      setDictatedOther((prev) => {
-        if (!prev.has(qIndex)) return prev;
-        const next = new Set(prev);
-        next.delete(qIndex);
-        return next;
-      });
-    }
-  }, []);
+    if (text.trim() === "") clearDictated(qIndex);
+  }, [clearDictated]);
 
   // Submit a single-question "Other" answer (Enter key). Mirrors the inline
   // submit that used to live in the textarea's onKeyDown — only the one
@@ -396,16 +434,16 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
     const text = otherTexts.get(qIndex)?.trim();
     if (!text) return;
     const answers: Record<string, string> = { [String(qIndex)]: text };
-    submitAnswers(answers);
+    submitAnswers(answers, new Set([qIndex]));
   }, [disabled, submittedAnswers, otherTexts, submitAnswers]);
 
   const handleSubmit = useCallback(() => {
     if (disabled || submittedAnswers) return;
 
-    const answers = buildAnswers();
+    const { answers, freeTextQuestions } = buildAnswers();
     if (Object.keys(answers).length === 0) return;
 
-    submitAnswers(answers);
+    submitAnswers(answers, freeTextQuestions);
   }, [disabled, submittedAnswers, buildAnswers, submitAnswers]);
 
   // Determine if submit button should be shown (multi-select or multi-question)
@@ -416,7 +454,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
   const showSubmitButton = needsSubmitButton || usingOther.size > 0;
   // Derived from the same collection the submit uses: an empty "Other" box next
   // to two checked options is still an answer, and the button must say so.
-  const hasAnyAnswer = Object.keys(buildAnswers()).length > 0;
+  const hasAnyAnswer = Object.keys(buildAnswers().answers).length > 0;
 
   const isAnswered = !!submittedAnswers;
 
