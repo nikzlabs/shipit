@@ -117,14 +117,19 @@ export interface ModelDef {
   contextWindow: { default: number; byHarness?: Partial<Record<HarnessId, number>> };
 }
 
-export interface BillingModeDef {
-  kind: BillingMode;
+interface ModeCommon {
   endpoints: Partial<Record<ApiStyle, string>>;
   models: ModelDef[];
-  /** What the user supplies for this mode. Pairs with the harness's targets — see below. */
-  credential: CredentialSource;
   retired: RetiredModel[];
 }
+
+/** `kind` is the ONLY discriminator. An earlier shape carried it twice — once here and
+ *  once inside the credential — which let a row say `sub` on one field and `key` on the
+ *  other, and attribution, quota and failover would then disagree about whether a turn
+ *  was metered (reqs 5, 11, 12). */
+export type BillingModeDef =
+  | (ModeCommon & { kind: "key"; credential: KeyCredential })
+  | (ModeCommon & { kind: "sub" });
 
 export interface ServiceDef {
   id: string;
@@ -185,13 +190,15 @@ export type CredentialTarget =
   | { kind: "env"; name: string }
   | { kind: "config-file"; path: string; pointer: string };   // OpenCode-shaped
 
-/** SERVICE side: what the user supplies for this mode, and how ShipIt stores it. */
-export type CredentialSource =
-  | { kind: "key"; storageEnv: string;
-      /** Rare, and the reason this is not purely a harness property: a service may need
-       *  its key in a DIFFERENT variable than the harness's own vendor uses. See below. */
-      targetOverride?: Partial<Record<HarnessId, CredentialTarget>> }
-  | { kind: "sub" };
+/** SERVICE side, key modes only: what the user supplies and how ShipIt stores it.
+ *  A `sub` mode carries no such field — its credential is an account, obtained by that
+ *  vendor's own flow, which is why the union above attaches this to `key` alone. */
+export interface KeyCredential {
+  storageEnv: string;
+  /** Rare, and the reason the target is not purely a harness property: a service may need
+   *  its key in a DIFFERENT variable than the harness's own vendor uses. See below. */
+  targetOverride?: Partial<Record<HarnessId, CredentialTarget>>;
+}
 
 /** HARNESS side: where a credential of each kind lands for THIS CLI, by default. */
 export interface CredentialTargets {
@@ -219,7 +226,7 @@ today**: `setApiKey()` assigns `process.env.ANTHROPIC_API_KEY` and writes nothin
 (`services/settings.ts:367` ✅), where Codex's key *is* persisted in `CredentialData.agentEnv`.
 So the variable name is ✅ and the storage is 🔍 — work phase 2 does, not a fact about today.
 
-`BillingModeDef.credential` is a `CredentialSource`; `HarnessDef.spawn.credential` is a
+A key mode's `credential` is a `KeyCredential`; `HarnessDef.spawn.credential` is a
 `CredentialTargets`. Resolving a turn reads the source for the value and the target for the
 destination — which is exactly the mapping `plan.md`'s "set the credential after the scrub"
 was leaving to the implementer.
@@ -337,9 +344,12 @@ assumes.
 - **The two shipped harnesses take the model by different mechanisms** — a process flag and a
   turn payload — so "set the model" is two implementations.
 - **Neither harness reports a per-turn cost.** Claude Code's `total_cost_usd` is the running
-  total for the *whole resumed conversation*, not the turn — `UsageManager` stores
-  `max(0, current − previous)` as the delta and keeps the raw cumulative to diff against
-  (`usage.ts:115` ✅). An earlier draft's survey cell said "per-turn cost reported", which is
+  total for the *whole resumed conversation*, not the turn — `UsageManager` derives a per-turn
+  figure and keeps the raw cumulative to diff against (`usage.ts:144` ✅). The derivation is
+  piecewise, not a clamped subtraction: `current − previous` when a prior cumulative exists
+  and has not gone backwards, otherwise **`current` itself**, which covers both the first turn
+  of a chain and a reset. (The comment above that code states the clamped form; the code does
+  not implement it. Cited to the implementation.) An earlier draft's survey cell said "per-turn cost reported", which is
   the over-broad ✅ this document's own rules forbid. Codex reports nothing at all: turns
   without dollar telemetry are stored at zero,
   deliberately without estimating (`ws-handlers/agent-listeners.ts:1220` ✅). Req 16 therefore
@@ -402,6 +412,12 @@ review criterion is that the picker offers *exactly* today's models, so these li
 complete rather than illustrative. **Which mode offers which is 🔍** — see the note after
 Anthropic.
 
+**Endpoints and per-model `styles` below are 🔍 throughout**, including on the two
+first-party rows. They look like structure and are not: `styles` decides the whole join and
+the endpoint decides where a turn is sent, and neither can be established from this
+repository — the same reason the harness style rows are 🔍. They are written unmarked inline
+only to keep the declarations readable; this paragraph is the marker.
+
 ```ts
 const A_MSG = "anthropic-messages", O_RESP = "openai-responses", O_CC = "openai-chat-completions";
 
@@ -412,7 +428,7 @@ export const SERVICES = [
     modes: [
       { kind: "sub",                                       // ✅ OAuth accounts exist today
         endpoints: { [A_MSG]: "https://api.anthropic.com" },
-        credential: { kind: "sub" },                       // ✅ OAuth accounts today
+        // `sub` modes carry no credential field    // ✅ OAuth accounts today
         retired: [],
         models: [
           { id: "claude-opus-5",   label: "Opus 5",   styles: [A_MSG], contextWindow: { default: 1_000_000 }, price: PRICE_TODO },
@@ -421,7 +437,7 @@ export const SERVICES = [
         ] },
       { kind: "key",
         endpoints: { [A_MSG]: "https://api.anthropic.com" },
-        credential: { kind: "key", storageEnv: "ANTHROPIC_API_KEY" },  // ✅ name; 🔍 storage
+        credential: { storageEnv: "ANTHROPIC_API_KEY" },    // ✅ name; 🔍 storage
         retired: [],
         models: [
           { id: "claude-opus-5",   label: "Opus 5",   styles: [A_MSG], contextWindow: { default: 1_000_000 }, price: PRICE_TODO },
@@ -450,7 +466,7 @@ export const SERVICES = [
     modes: [
       { kind: "sub",                                       // ✅ ChatGPT account auth today
         endpoints: { [O_RESP]: "https://api.openai.com" },
-        credential: { kind: "sub" },                       // ✅ ~/.codex/auth.json
+        // `sub` modes carry no credential field    // ✅ ~/.codex/auth.json
         retired: [
           // ✅ the id remap `gpt-5.6 → gpt-5.6-sol` is today's normalizeCodexModelId
           // (agent-registry.ts:141). 🔍 the style and the placement under BOTH modes are
@@ -469,7 +485,7 @@ export const SERVICES = [
         ] },                                               // ✅ all eight, in CODEX_MODELS order
       { kind: "key",
         endpoints: { [O_RESP]: "https://api.openai.com", [O_CC]: "https://api.openai.com" },
-        credential: { kind: "key", storageEnv: "OPENAI_API_KEY" }, // ✅ codex/adapter.ts:259
+        credential: { storageEnv: "OPENAI_API_KEY" },       // ✅ codex/adapter.ts:259
         retired: [ /* the same gpt-5.6 entry */ ],
         models: [ /* the same eight; styles gain O_CC — 🔍 which of them the key serves */ ] },
     ],
@@ -488,7 +504,7 @@ export const SERVICES = [
       { kind: "key",                                       // no subscription exists
         endpoints: { [O_CC]: "https://api.deepseek.com", [O_RESP]: "https://api.deepseek.com",
                      [A_MSG]: "https://api.deepseek.com/anthropic" },
-        credential: { kind: "key", storageEnv: "DEEPSEEK_API_KEY" },
+        credential: { storageEnv: "DEEPSEEK_API_KEY" },
         retired: [],
         models: [
           // Only V4 Flash is believed supported under Codex — the founding example of
@@ -529,16 +545,20 @@ dollar figure at all.
 
 ```ts
 export interface ModelPrice {
-  input: number;       // USD per million input tokens
+  input: number;        // USD per million input tokens
   output: number;
-  cacheRead?: number;
-  cacheWrite?: number;
+  /** Required, because ShipIt already records these token classes separately
+   *  (`usage.ts:45` ✅) and an absent rate would silently price them at zero — the
+   *  cache-heavy turn is exactly where that is most wrong. A service with no separate
+   *  cache pricing sets these equal to `input`; `cacheWrite` is ShipIt's `cache_create`. */
+  cacheRead: number;
+  cacheWrite: number;
 }
 
 /** Sentinels for values that have not been checked. Phase 1 replaces every one; a catalogue
  *  test asserts no shipped row still carries either. Negative rather than zero so a forgotten
  *  row is loud — zero is a value that reads as an answer. */
-export const PRICE_TODO: ModelPrice = { input: -1, output: -1 };
+export const PRICE_TODO: ModelPrice = { input: -1, output: -1, cacheRead: -1, cacheWrite: -1 };
 export const CONTEXT_TODO = { default: -1 };
 ```
 

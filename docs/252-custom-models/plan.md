@@ -9,10 +9,10 @@ description: Separate harness from service so a user can run any configured serv
 Implements [`requirements.md`](./requirements.md), which has no open questions.
 
 **The inventory is a separate document:** [`catalogue.md`](./catalogue.md) — every harness
-and service as the TypeScript declarations phase 1 transcribes, plus the filled-in
-third-harness survey for Cursor CLI and OpenCode. This document is the design; that one is
-its contents. Two findings from it are folded in below, because they change shapes described
-here.
+and service as the TypeScript declarations phase 1 transcribes, plus a **first, unverified
+pass** at the third-harness survey for Cursor CLI and OpenCode. This document is the design;
+that one is its contents. Two of that pass's hypotheses are folded in below, because they
+change shapes described here and the shapes are cheaper to choose now than to re-cut later.
 
 **Visual reference — the picker:** [`mockup-picker.html`](./mockup-picker.html) — an
 **interactive** prototype of the two-selector composer (harness, then model). Change the
@@ -30,9 +30,10 @@ its accounts, their order and the routing settings.
 view split by service × billing mode, at session and global scope. Three states: a mixed
 session, a session that cost nothing, and all-sessions with a weekly chart.
 
-**Visual reference — Settings → Harnesses:** [`mockup-harnesses.html`](./mockup-harnesses.html)
-— the derived service×style join, and the background-work setting. Static; the one screen
-where API styles are shown, because explaining the join is its whole purpose.
+**Explanatory artifact — the join, drawn:** [`mockup-harnesses.html`](./mockup-harnesses.html)
+— the derived service×style join, rendered to make it legible **to a reader of this document**.
+It is not a screen that ships; see *No Settings → Harnesses screen* below. The
+background-work setting it also shows (req 9) does ship, wherever settings for it best sit.
 
 ## The idea
 
@@ -70,7 +71,7 @@ that single gap. Resolving it is the real work; DeepSeek is just the first case 
 
 | Concept | Is | Identified by |
 |---|---|---|
-| **Harness** | a CLI to spawn, speaking **one or more** API styles ([the survey found a multi-style one](#what-a-third-harness-could-break)) | `claude`, `codex` |
+| **Harness** | a CLI to spawn, speaking **one or more** API styles ([one candidate appears to speak several](#what-a-third-harness-could-break)) | `claude`, `codex` |
 | **Service** | a catalogue entry: endpoints, API styles, and per **billing mode** the models declared for each | a `serviceId` such as `openrouter` |
 | **Model** | a model id a service offers under one of its billing modes | the triple (serviceId, billingMode, model id) |
 
@@ -315,9 +316,7 @@ has. Establish Codex coverage rather than assuming it.
 per-`(service, billing mode)`, with a mode that reports no quota rendering nothing at all.
 Attribution surfaces the active model, its service and its billing mode — in the surfaces
 that already exist, not in new composer chrome (see below). The usage view splits spend and
-plan usage by `(service, mode)` (req 16), which needs the price table phase 1 carries. The
-Settings → Harnesses screen lands here too, since it is the same join rendered for a
-different question.
+plan usage by `(service, mode)` (req 16), which needs the price table phase 1 carries.
 
 This is the phase most likely to want splitting in two: the quota/attribution half is a
 re-keying of existing machinery, while the cost half (req 16) depends on the price table and
@@ -332,8 +331,9 @@ empty string in containerized production — and the durable, dismissible failur
 
 The largest phase after the first, because it is the one place with no existing seam.
 
-**Phase 8 — Model retirement.** A per-`(service, billing mode)` map from retired model ids to
-their successors, resolved where the session's model is read, generalizing the existing
+**Phase 8 — Model retirement.** Per `(service, billing mode)`, a record of each retired model
+— its id, the styles it was declared under, and a successor per style (`RetiredModel`) —
+resolved where the session's model is read, generalizing the existing
 `normalizeCodexModelId` shim. Small, but it is what lets curation happen without stranding
 sessions, so it should land before the catalogue is trimmed in anger.
 
@@ -377,8 +377,8 @@ the most expensive to fix late: OpenCode is a multi-provider CLI by design, so "
 one style" is exactly the shape it would contradict. If a harness can speak several styles,
 then `(harness, service)` compatibility is a set intersection rather than an equality test —
 a change to every join built on it. Discovering that in phase 1 is a type change;
-discovering it after phase 6 is a re-cut of the catalogue, the picker, the Harnesses screen
-and the usage grouping.
+discovering it after phase 6 is a re-cut of the catalogue, the picker and the usage
+grouping.
 
 **Req 6 is deliberately not on the hook for this one.** It states the rule as an overlap —
 a model is offered when the service and the harness *share* a style — which holds whether a
@@ -517,7 +517,7 @@ credential.
 
 Anthropic and OpenAI are catalogue rows like any other, not special cases (req 5).
 `AgentId` keeps meaning *harness* only, and gains a declared **set** of API styles — a set
-rather than a scalar because the survey found a CLI that appears to speak several (OpenCode),
+rather than a scalar because a survey candidate appears to speak several (OpenCode),
 so the service×harness join is an intersection. An intersection can hold more than one style,
 so the resolved style is **the first of the harness's styles the model also declares**
 ([`catalogue.md`](./catalogue.md)); it is resolved rather than selected, and rides the spawn
@@ -592,8 +592,8 @@ survived, and what did not:
 - **No API style anywhere in the picker.** `anthropic-messages` / `openai-responses` is
   ShipIt's vocabulary for why a join holds; it is not a fact anyone chooses on. Each harness
   row states its **model count** instead, which is the same information in the form the
-  decision needs. Styles stay on Settings → Harnesses, whose entire job is explaining why a
-  service appears under one harness and not another.
+  decision needs. API styles are not shown anywhere in the product at all: explaining why a
+  service appears under one harness and not another is this document's job, not a screen's.
 - **No explanatory footers.** Neither "N more models on Codex" nor "installed at deploy time
   — nothing to add here". The first is covered by the harness rows' counts; the second by the
   absence of an add affordance. A menu that has to narrate itself is the wrong menu.
@@ -625,10 +625,18 @@ DeepSeek key runs the Claude Code harness with no Anthropic account anywhere in 
 system — so `providerAccountManager`'s per-`AgentId` account model has to become a
 per-*service* one, not gain a fallback branch.
 
-**The harness set is a deployment property** (req 14). Nothing in Settings adds, defines
-or removes a harness, and the Harnesses screen in the mockup is read-only for exactly this
-reason. Which harnesses an install *has* is a session-image build input, defaulting to
-Claude Code and Codex.
+**The harness set is a deployment property** (req 14). Nothing in Settings adds, defines or
+removes a harness. Which harnesses an install *has* is a session-image build input, defaulting
+to Claude Code and Codex.
+
+**So there is no Settings → Harnesses screen**, and dropping it is a real scope cut rather
+than a deferral. Nothing in it was required: no requirement asks a user to see API styles, and
+req 14's demands — install-time selection, defaults, and uninstalled harnesses appearing
+nowhere in the picker — are satisfied by the picker and the build, with no read-only page to
+explain them. A screen whose whole content is *why the product looks the way it does* is
+documentation that has been rendered as UI; the audience for the service×style join is
+whoever reads this doc, which is why the mockup stays an explanatory artifact. The
+background-work model setting (req 9) is a separate obligation and does ship.
 
 This is not a new mechanism — `docs/154-cursor-agent-adapter` specified it and was never
 implemented: `INSTALL_CLAUDE_CLI` / `INSTALL_CODEX_CLI` / `INSTALL_CURSOR_CLI` booleans
@@ -691,10 +699,11 @@ does not fail over at all, and the turn stops.
 Review confirmed this is the right axis and that the existing code already half-draws
 it — but found the gate is applied in **one** of the two places that need it. Account
 benching checks the route kind and bails for a reserved route
-(`bootstrap-managers.ts:442`), while the same-turn quota retry does not: it fires on
-`detectHardExhaustion(event.error)` alone (`turn-executor.ts:938`). A key-authenticated
-service answering "quota exceeded" would therefore be retried once on the same bad key,
-which is exactly what req 12 forbids. Both paths need the credential-kind gate.
+(`bootstrap-managers.ts:442`), while the same-turn quota retry has **no billing-mode gate at
+all**: it fires whenever exhaustion is detected, from the error object or, when there is
+none, from the turn's own text (`turn-executor.ts:1032`). A key-authenticated service
+answering "quota exceeded" would therefore be retried once on the same bad key, which is
+exactly what req 12 forbids. Both paths need the gate.
 
 That also means there is no service re-prompt flow to build; an earlier draft proposed
 one. See Appendix A for what has to be *removed* instead.
@@ -811,6 +820,23 @@ scrub, from the *selected model's* service rather than from a model-id prefix.
 
 **Non-turn work** (req 9) — session naming and PR descriptions run on a model the user
 chooses **for that purpose**, resolved independently of whatever the session is using.
+
+**This is the one phase whose execution path does not exist yet, and saying "no existing seam"
+understated it.** The two halves are not merely un-parameterized; they are differently broken.
+Session naming *does* run a model — `session-namer.ts:28` takes an `AgentId` plus a credential
+root and shells out locally — so it needs the resolved triple threaded through, which is
+parameter work. **PR description generation has no agent at all in production**: the
+orchestrator lives outside session containers, so the default text generator returns an empty
+string and the feature degrades silently (`app-di.ts:485`), and the callback that would carry
+a selection has neither model nor harness (`services/github.ts:1511`). Req 9 explicitly calls
+that half a *change*, not a preserved behaviour.
+
+So phase 7 depends on phase 3 in a way the table does not show: the resolver phase 3 builds —
+selection → harness, endpoint, credential, style — has to be **a callable component rather
+than inline spawn code**, and phase 7 is the second caller that proves it. If phase 3 inlines
+it, phase 7 either duplicates it or ends up inventing a second execution path, which is where
+a small feature turns into a subsystem. This is a factoring constraint on phase 3, not new
+machinery, and it is worth stating because it is invisible from phase 3's own scope.
 It is a `(service, billing mode, model)` selection like any other, not a service alone: a
 service does not identify something callable, and the mode is what says whether the work is
 metered. It surfaces as its own setting, and it has a default so the feature works
@@ -870,13 +896,13 @@ explicit setting is also the only version that can be *shown* to the user as bro
 when its service stops working. This is the one place with no existing seam at all, and
 the largest single piece of work here.
 
-**Retiring a catalogue entry** (req 13). Curation means removal is routine, so the
-catalogue carries a map from retired model ids to their successors. A session pinned to a
-retired model resolves through that map at the point the model is read, and runs on the
-successor; the picker offers only current models.
+**Retiring a catalogue entry** (req 13). Curation means removal is routine, so the catalogue
+records each retired model alongside the styles it was declared under and a successor per
+style. A session pinned to a retired model resolves through that record at the point the model
+is read, and runs on the successor; the picker offers only current models.
 
-The map lives **inside a `(service, billing mode)` and maps model id to model id** — it
-crosses neither, and the successor must additionally be runnable on the session's harness.
+The record lives **inside a `(service, billing mode)`** — it crosses neither — and the
+successor must additionally be runnable on the session's harness.
 All three are requirements (req 13) and all three are load-bearing. Because
 `serviceId` is unchanged, the credential, the endpoint and the provider are unchanged, so
 a remap cannot strand a session on a service the user has no credential for. Because the
@@ -930,14 +956,19 @@ Because the session now reports the successor, req 11 makes the remap visible ra
 than silent — the picker and attribution show what is actually running, not what was
 originally chosen.
 
-**Usage** (req 10) is reported per **billing mode of a service**. The existing types are
-partway there but less far than this doc first claimed: the wire shape is **`AgentId` → `routeId` →
-limits** (`usage-limits-types.ts:74`), so it is keyed by provider *and* route, and
-`LimitsProvider`/`LimitsRegistry` are selected by `AgentId` first
-(`agents/types.ts:22`, `limits-registry.ts:39`). An individual snapshot carries a
-`routeId` and its comment does say "quota belongs to the subscription, not the
-provider" — but that is the inner key only. Moving to services touches the map shape
-and the registry, not just `LimitsProvider`.
+**Usage** (req 10) is reported per **billing mode of a service** — but the *credential route*
+stays in the key, and dropping it would be a regression, not a simplification. Today's shape
+is `AgentId → routeId → limits` (`usage-limits-types.ts:36`), and the inner key is
+load-bearing: two connected subscriptions have two independent 5h windows, two independent
+`/api/oauth/usage` results and two independent 429 lockouts, and the limits provider's own
+comment says sharing any of them is the overwrite-and-flicker bug it exists to avoid
+(`claude/limits-provider.ts:85`). Req 12 needs it too — failover has to know *which*
+subscription is exhausted before moving to another.
+
+So the target shape is **`(service, billing mode) → routeId → limits`**: the outer key moves,
+the inner one does not. What changes is `LimitsProvider`/`LimitsRegistry` being selected by
+`AgentId` first (`agents/types.ts:22`, `limits-registry.ts:39`); the per-route granularity
+underneath is preserved as-is.
 
 Note this is two distinct things, and only the first is at issue: **quota telemetry**
 (`SubscriptionLimits` — plan tier, rolling and weekly windows, `usedPct`, `resetAt`,
