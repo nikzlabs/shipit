@@ -14,7 +14,16 @@ credentials, the installed harness set and whether the session has taken a turn,
 selectors react. It is the artifact for the picker decision below; open it and drive it
 rather than reading the description.
 
-**Visual reference — Settings:** [`mockup.html`](./mockup.html) — the Settings **Services** screen
+**Visual reference — Settings, two variants, undecided.**
+[`mockup-services.html`](./mockup-services.html) is **variant B**: an interactive add-flow —
+you start empty, press *Add service*, and pick service → billing mode → credential, each add
+becoming its own row. There is no "Available" block and no grouping by service; the catalogue
+lives in the dialog. Variant A is the catalogue layout inside `mockup.html` below. The
+trade is stated in the design section: B's steady-state screen is only what you configured,
+at the cost of making "which services does ShipIt support?" a dialog away — which matters
+because req 15 turns the shipped catalogue into a promise.
+
+**Visual reference — Settings (variant A):** [`mockup.html`](./mockup.html) — the Settings **Services** screen
 (catalogue rows, credential entry, which rows show a usage indicator), the **Harnesses**
 screen (the derived service×style join, and the background-work setting), and the
 in-session model picker with its attribution. Self-contained static HTML; open it
@@ -410,6 +419,31 @@ Consequence worth stating because it is easy to get backwards: *installed* and
 regardless of credentials, and a harness that was installed still offers only the models
 whose service has a credential (req 8). The picker's filter is the conjunction, and an
 uninstalled harness should be absent rather than shown-and-empty.
+
+**Two Settings layouts are prototyped and neither is chosen.** They differ in what the
+steady-state screen is a list *of*:
+
+- **Variant A** (`mockup.html`) lists the **catalogue**: every service ShipIt knows,
+  split into Connected and Available, with a service's billing modes nested inside its card.
+  "What can I use?" is answered at a glance, and the screen grows with the catalogue whether
+  or not you use any of it.
+- **Variant B** (`mockup-services.html`) lists **your credentials**: one row per thing you
+  added, no Available block, the catalogue surfacing only inside the add dialog. The screen
+  is proportional to your setup rather than to ShipIt's.
+
+Variant B's add dialog is where its argument is strongest: step 2 asks *how do you pay for
+it*, showing "Subscription — 1 model" against "API key — 2 models". The distinction the model
+picker groups on is the one the user makes at add time, rather than one they discover later
+in a nested card. Its cost is req 15's: carrying OpenRouter and Vercel is only worth
+something if people find them, and B makes finding them a click.
+
+B also exposes a counting mismatch worth deciding on rather than discovering in code: a row
+is a **credential**, while a picker group is a **billing mode**, so two Anthropic
+subscriptions are two rows and one group. That is correct — req 12 routes between them and
+the picker must not ask which — and it is right that each row carries its own quota, since
+allowances are per account. The prototype renders the derived grouping beside the list so
+the relationship is visible rather than surprising; whether that panel is a real part of the
+design or scaffolding for the decision is itself open.
 
 **Credential failure branches on credential type, not on the error** (req 12). This is
 the load-bearing simplification: ShipIt does not classify the failure, it looks at how

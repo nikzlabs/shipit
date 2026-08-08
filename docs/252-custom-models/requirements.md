@@ -2,7 +2,9 @@
 
 The design that implements these requirements is in [`plan.md`](./plan.md).
 
-No open questions remain.
+**One open question** — whether reasoning effort needs to say anything about the model. See
+[below](#open-questions). Requirements and design work continue; implementation does not
+start while it is open.
 
 ## Requirements
 
@@ -176,7 +178,34 @@ No open questions remain.
 
 ## Open questions
 
-_None._
+- **Does reasoning effort need to say anything about the model?** Reasoning is currently a
+  property of the **harness**: `AgentCapabilities.reasoning` in `agent-registry.ts` gives
+  Claude Code `low, medium, high, xhigh, max` (`--effort`) and Codex `none, minimal, low,
+  medium, high, xhigh` (`model_reasoning_effort`), each verified against its CLI
+  (docs/217). The vocabularies already differ per harness and neither mentions a model.
+
+  Once a harness can drive another vendor's model, that keying has the same defect as
+  `AgentId` did: whether reasoning is supported at all, and at what granularity, is a
+  property of the **model**, while the accepted flag values are a property of the
+  **harness**. So a user running DeepSeek V4 Flash on Claude Code is offered Claude's
+  five levels for a model that may honour none of them.
+
+  Three ways to answer, in increasing cost:
+
+  1. **Say nothing.** Reasoning stays harness-keyed and the flag is passed through. A
+     model that ignores it is req 1's best-effort territory, exactly like a model that
+     uses tools badly. Cheapest, and consistent with a rule already agreed.
+  2. **Declare support per model** (a boolean), and hide the control when the selected
+     model declares none. Removes the case where ShipIt offers a control that provably
+     does nothing, without building a per-model level map.
+  3. **Declare levels per model** and offer the intersection with the harness's
+     vocabulary. Most honest, most catalogue upkeep — and it is upkeep on the axis req 6
+     already deliberately kept small.
+
+  The agent's recommendation is **(2)**: (1) leaves a visible control that silently does
+  nothing, which is the same class of dishonesty req 8 exists to prevent, while (3) pays
+  per-model maintenance for a distinction users rarely act on. Not decided — reasoning is
+  not mentioned anywhere in these requirements today, so adding it is a scope decision.
 
 ## Resolved questions
 
