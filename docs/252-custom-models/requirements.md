@@ -2,9 +2,7 @@
 
 The design that implements these requirements is in [`plan.md`](./plan.md).
 
-**One open question** — whether reasoning effort needs to say anything about the model. See
-[below](#open-questions). Requirements and design work continue; implementation does not
-start while it is open.
+No open questions remain.
 
 ## Requirements
 
@@ -178,36 +176,27 @@ start while it is open.
 
 ## Open questions
 
-- **Does reasoning effort need to say anything about the model?** Reasoning is currently a
-  property of the **harness**: `AgentCapabilities.reasoning` in `agent-registry.ts` gives
-  Claude Code `low, medium, high, xhigh, max` (`--effort`) and Codex `none, minimal, low,
-  medium, high, xhigh` (`model_reasoning_effort`), each verified against its CLI
-  (docs/217). The vocabularies already differ per harness and neither mentions a model.
-
-  Once a harness can drive another vendor's model, that keying has the same defect as
-  `AgentId` did: whether reasoning is supported at all, and at what granularity, is a
-  property of the **model**, while the accepted flag values are a property of the
-  **harness**. So a user running DeepSeek V4 Flash on Claude Code is offered Claude's
-  five levels for a model that may honour none of them.
-
-  Three ways to answer, in increasing cost:
-
-  1. **Say nothing.** Reasoning stays harness-keyed and the flag is passed through. A
-     model that ignores it is req 1's best-effort territory, exactly like a model that
-     uses tools badly. Cheapest, and consistent with a rule already agreed.
-  2. **Declare support per model** (a boolean), and hide the control when the selected
-     model declares none. Removes the case where ShipIt offers a control that provably
-     does nothing, without building a per-model level map.
-  3. **Declare levels per model** and offer the intersection with the harness's
-     vocabulary. Most honest, most catalogue upkeep — and it is upkeep on the axis req 6
-     already deliberately kept small.
-
-  The agent's recommendation is **(2)**: (1) leaves a visible control that silently does
-  nothing, which is the same class of dishonesty req 8 exists to prevent, while (3) pays
-  per-model maintenance for a distinction users rarely act on. Not decided — reasoning is
-  not mentioned anywhere in these requirements today, so adding it is a scope decision.
+_None._
 
 ## Resolved questions
+
+- 2026-08-08 — Does reasoning effort need to say anything about the model? **Chosen: no —
+  reasoning stays a property of the harness, and this feature adds nothing.** No new
+  requirement: the offered levels are whatever the harness accepts, and a model that ignores
+  them is already covered by req 1's best-effort clause.
+
+  This **overrides the agent's recommendation**, which was to declare per-model support and
+  hide the control when absent. Two arguments defeated it. First, **there is no source for
+  the fact** — it would come from reading around the internet per model, which is exactly
+  the per-model upkeep req 6 kept the catalogue small to avoid. Second and decisive, **the
+  harness is not a transparent pipe**: even a correct per-model claim says nothing about
+  whether *this* harness forwards the setting, so a harness that silently drops it would
+  leave ShipIt asserting support that does nothing. The proposal would have relocated the
+  dishonesty while making it look more precise, not removed it.
+
+  The corollary is that pre-disabling values in the UI is the wrong instinct here: a wrong
+  value is something **the harness can complain about**, and its error is the authoritative
+  answer, where a ShipIt-side guess is not.
 
 - 2026-08-08 — Is a service's billing mode part of what you select, or resolved per turn?
   **Chosen: part of the selection.** A model is identified by `(service, billing mode,
@@ -516,6 +505,13 @@ human, but most of the mechanism did not. What the human actually said, in order
   Claude being selected by default" → req 14, both halves. The human also identified the
   prior unimplemented sketch (`docs/154-cursor-agent-adapter`) that req 14 now supersedes.
 - "Redeploy" → req 14's closing paragraph: the harness set is a property of the deployment.
+- "I would say we support what the harness supports … the harness that we would use, let's
+  say OpenCode, would not actually pass it through … so it would be on the harness level
+  only" → the decision that reasoning effort adds no requirement, against the agent's
+  recommendation to declare it per model.
+- "if the user chooses the wrong value, the harness may complain … it doesn't necessarily
+  need to be disabled in the UI from the get-go" → the corollary that the harness's own
+  error is the authoritative signal, not a ShipIt-side prediction.
 - "if there was also a DeepSeek subscription, it would be a separate block here, right?" and
   "subscriptions, they may provide more restricted model choice" → the billing-mode split
   across reqs 5, 6, 8, 10, 11 and 12. The agent had first answered "no, one block" from how

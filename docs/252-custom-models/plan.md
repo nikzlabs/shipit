@@ -480,6 +480,25 @@ not assert the model will work — that is req 1's best-effort territory — so 
 runtime validation to build and no staleness policy to maintain. A model that stops
 working at its service is a catalogue update in the next ShipIt release.
 
+**Reasoning effort stays on the harness, and the catalogue gains no reasoning field.**
+Worth stating because it looks like an oversight: `AgentCapabilities.reasoning`
+(`agent-registry.ts`) is keyed per `AgentId` — Claude Code's `--effort low…max`, Codex's
+`model_reasoning_effort none…xhigh`, each verified against its CLI (docs/217) — and this
+feature leaves that alone even though it un-keys models from `AgentId`.
+
+The tempting change is to declare per model whether reasoning is supported, and hide the
+control when it is not. It was considered and rejected, for a reason that is easy to miss:
+**the harness is not a transparent pipe for the setting.** Even a correct per-model claim
+says nothing about whether the harness in use forwards it, so a harness that quietly drops
+the flag would leave ShipIt asserting support that does nothing — the same dishonesty,
+relocated and made to look more precise. There is also no maintainable source for the fact,
+which would put per-model upkeep on the axis req 6 shrank the catalogue to avoid.
+
+So the offered levels are the harness's, unnarrowed, and a value the model does not honour
+is req 1's best-effort territory. A value the *harness* rejects is the harness's error to
+raise — the authoritative answer, arriving from the component that actually knows, which is
+strictly better than a ShipIt-side prediction that pre-disables the control.
+
 **Mid-session model switching** (req 4) is a capability question per harness, not a new
 mechanism: the model is already a per-turn spawn argument, and `AgentCapabilities`
 already carries per-harness flags. A switch that crosses *services* additionally
