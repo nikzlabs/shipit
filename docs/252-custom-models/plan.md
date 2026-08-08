@@ -37,9 +37,10 @@ where API styles are shown, because explaining the join is its whole purpose.
 ## The idea
 
 ShipIt integrates **harnesses**, not models. `AgentProcess` spawns a CLI and
-normalizes its event stream; the model is a `--model` argument that CLI forwards to
-an API. So running a different vendor's model does not need a new backend — it needs
-the same CLI pointed at a different endpoint (req 1).
+normalizes its event stream; the model is per-invocation data that CLI forwards to an API —
+a `--model` flag for Claude Code, a field in the JSON-RPC `turn/start` payload for Codex. So
+running a different vendor's model does not need a new backend — it needs the same CLI
+pointed at a different endpoint (req 1).
 
 That is the whole mechanism, and it is why this is cheap. Everything expensive in an
 agent integration — the tool map, the event parsing, skills disclosure, MCP config,
@@ -93,8 +94,8 @@ sides hold sets.
 
 The declaration is not bureaucracy — it is the only honest way to express reality.
 DeepSeek speaks both styles yet supports only `deepseek-v4-flash` under Codex, and
-Codex additionally wants per-model metadata (context window, tool format, reasoning
-settings) beyond a bare id. A purely derived rule would list `deepseek-v4-pro` under
+Codex additionally wants per-model metadata — a context window at minimum — beyond a
+bare id. A purely derived rule would list `deepseek-v4-pro` under
 Codex and let the turn fail. Nothing forbids that at runtime — req 8 is only about
 credentials — so the catalogue is where it has to be prevented, by not listing the pair
 in the first place (req 6).
@@ -271,8 +272,8 @@ empty string in containerized production — and the durable, dismissible failur
 
 The largest phase after the first, because it is the one place with no existing seam.
 
-**Phase 8 — Model retirement.** A per-service map from retired model ids to their
-successors, resolved where the session's model is read, generalizing the existing
+**Phase 8 — Model retirement.** A per-`(service, billing mode)` map from retired model ids to
+their successors, resolved where the session's model is read, generalizing the existing
 `normalizeCodexModelId` shim. Small, but it is what lets curation happen without stranding
 sessions, so it should land before the catalogue is trimmed in anger.
 
@@ -367,13 +368,15 @@ is req 15's question. Req 15 answers it for the launch set: **GLM**, whose integ
 
 *ShipIt ships the catalogue* (req 6): which services exist, which API styles each
 speaks, and per style, which of its models work there plus any metadata that style needs
-(Codex wants context window, tool format and reasoning settings). This must be
+(a context window at minimum). This must be
 a **maintained subset**, not a mirror of everything a service offers (req 6). Only a
 handful of models are worth using for coding at any time, so an aggregator advertising
 400+ models contributes a short curated list rather than 400 rows.
 
-Per-model metadata — Codex's context window, tool format and reasoning settings — is
-simply stated per model, there being few enough of them. The cost is a judgement call
+Per-model metadata — the context window, the display label, the price — is simply stated
+per model, there being few enough of them. **Reasoning is deliberately not among them**: it
+stays keyed to the harness (see the explicit non-change below), so the catalogue carries no
+reasoning field. An earlier draft of this paragraph listed it, contradicting that decision. The cost is a judgement call
 ShipIt owns and revises: which models are worth carrying. A per-style endpoint belongs here too:
 one base URL per service is wrong for a service whose styles live at different paths.
 
@@ -812,16 +815,23 @@ declares its models *per mode* (req 6), so a per-service map would have no way t
 the subscription's successor and the key's successor differ, or that the subscription has
 none at all.
 
-**The harness is the axis this map does not yet carry** (req 13). A model's availability
-depends on the API style too, so a successor declared only under a style the session's
-pinned harness does not speak strands the session exactly as a missing successor would. A
-`(service, mode): old → new` map cannot say "this successor under `anthropic-messages`,
-that one under `openai-responses`". Two shapes work and the choice belongs to whoever builds
-this: key the map per `(service, mode, style)`, or keep it per `(service, mode)` and make
-authoring a successor **fail the catalogue check** unless the successor is declared under at
-least the styles the retired model was. The second is cheaper and states the intent better —
-the map stays one entry, and the invariant is enforced where rows are authored rather than
-where sessions run. Either way the runtime behaviour req 13 specifies is the same.
+**The harness is the third axis, and a bare id→id map cannot carry it** (req 13). A model's
+availability depends on the API style too, so a successor declared only under a style the
+session's pinned harness does not speak strands the session exactly as a missing successor
+would. Two things follow, and an earlier draft of this paragraph had only the first:
+
+1. A `(service, mode): old → new` map cannot express a retirement whose successor **differs
+   by style**.
+2. It cannot even *check* the constraint. The obvious fix — "fail the catalogue check unless
+   the successor is declared under at least the styles the retired model was" — is
+   unenforceable, because by then the retired model is gone from `models` and its styles went
+   with it. There is nothing left to compare against.
+
+So the retirement record must **carry the retired model's styles itself**, alongside a
+successor per style. That is `RetiredModel` in [`catalogue.md`](./catalogue.md), and the
+invariant becomes checkable from the row alone at authoring time. The runtime behaviour req
+13 specifies is unchanged; what changed is that one of the two candidate shapes turned out
+not to work.
 
 **What preserving the mode does not buy is an unchanged rate.** Two models under one
 service's key are priced differently, so a metered session's turns can get cheaper or dearer
@@ -913,7 +923,7 @@ prices applied to another vendor's tokens. Three consequences:
 
 - **"You paid" cannot come from `costUsd`** for anything but the harness's own vendor.
 - **"At API rates" cannot come from it either**, for the same reason.
-- Therefore **ShipIt needs its own price table keyed by `(service, model)`** to compute either
+- Therefore **ShipIt needs its own price table keyed by `(service, billing mode, model)`** to compute either
   figure honestly — which puts per-model pricing into the catalogue, the axis req 6 has
   deliberately kept small. That is a real cost of the usage screen and it should be counted
   against it, not discovered in phase 6.
