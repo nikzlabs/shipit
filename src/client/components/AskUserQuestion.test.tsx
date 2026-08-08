@@ -224,6 +224,148 @@ describe("AskUserQuestion", () => {
       expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Cache" }, "Cache");
     });
 
+    it("keeps the checked options when Other is turned on", () => {
+      // The reported bug: clicking "Other" on a multi-select question blanked
+      // every checked box. "Other" is one more checkbox, not a mode switch.
+      const onAnswer = vi.fn<AnswerFn>(() => true);
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={multiSelectQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+        />
+      );
+      fireEvent.click(screen.getByTestId("option-Auth"));
+      fireEvent.click(screen.getByTestId("option-Cache"));
+      fireEvent.click(screen.getByTestId("option-other"));
+      // Still visibly checked.
+      expect(screen.getByTestId("option-Auth").className).toContain("bg-(--color-accent-subtle)");
+      expect(screen.getByTestId("option-Cache").className).toContain("bg-(--color-accent-subtle)");
+      // And still part of the answer, with the free text appended.
+      fireEvent.change(screen.getByTestId("other-input"), { target: { value: "Metrics" } });
+      fireEvent.click(screen.getByTestId("submit-answer"));
+      expect(onAnswer).toHaveBeenCalledWith(
+        "t1",
+        { "0": "Auth, Cache, Metrics" },
+        "Auth, Cache, Metrics",
+      );
+    });
+
+    it("can still select and deselect options after Other is on", () => {
+      // The second half of the report: with "Other" active, option clicks had
+      // no visible effect, so the card read as frozen.
+      const onAnswer = vi.fn<AnswerFn>(() => true);
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={multiSelectQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+        />
+      );
+      fireEvent.click(screen.getByTestId("option-Auth"));
+      fireEvent.click(screen.getByTestId("option-other"));
+      fireEvent.change(screen.getByTestId("other-input"), { target: { value: "Metrics" } });
+      fireEvent.click(screen.getByTestId("option-Logging")); // add
+      fireEvent.click(screen.getByTestId("option-Auth")); // remove
+      expect(screen.getByTestId("option-Logging").className).toContain("bg-(--color-accent-subtle)");
+      expect(screen.getByTestId("option-Auth").className).not.toContain("bg-(--color-accent-subtle)");
+      fireEvent.click(screen.getByTestId("submit-answer"));
+      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Logging, Metrics" }, "Logging, Metrics");
+    });
+
+    it("toggles Other off again, dropping its text from the answer", () => {
+      // "Other" used to only ever be added, so a mis-click was unrecoverable.
+      const onAnswer = vi.fn<AnswerFn>(() => true);
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={multiSelectQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+        />
+      );
+      fireEvent.click(screen.getByTestId("option-Auth"));
+      fireEvent.click(screen.getByTestId("option-other"));
+      fireEvent.change(screen.getByTestId("other-input"), { target: { value: "Metrics" } });
+      fireEvent.click(screen.getByTestId("option-other")); // untick
+      expect(screen.queryByTestId("other-input")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("submit-answer"));
+      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Auth" }, "Auth");
+    });
+
+    it("submit stays enabled when Other is ticked but empty next to a checked option", () => {
+      const onAnswer = vi.fn<AnswerFn>(() => true);
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={multiSelectQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+        />
+      );
+      fireEvent.click(screen.getByTestId("option-Auth"));
+      fireEvent.click(screen.getByTestId("option-other"));
+      expect(screen.getByTestId("submit-answer")).toBeEnabled();
+    });
+
+    it("highlights every checked option in the answered state", () => {
+      const onAnswer = vi.fn<AnswerFn>(() => true);
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={multiSelectQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+        />
+      );
+      fireEvent.click(screen.getByTestId("option-Auth"));
+      fireEvent.click(screen.getByTestId("option-Cache"));
+      fireEvent.click(screen.getByTestId("option-other"));
+      fireEvent.change(screen.getByTestId("other-input"), { target: { value: "Metrics" } });
+      fireEvent.click(screen.getByTestId("submit-answer"));
+      expect(screen.getByTestId("option-Auth").className).toContain("bg-(--color-accent-subtle)");
+      expect(screen.getByTestId("option-Cache").className).toContain("bg-(--color-accent-subtle)");
+      expect(screen.getByTestId("option-Logging").className).not.toContain("bg-(--color-accent-subtle)");
+      // The free text shows as its own row rather than swallowing the labels.
+      expect(screen.getByText("Metrics")).toBeInTheDocument();
+      expect(screen.queryByText("Auth, Cache, Metrics")).not.toBeInTheDocument();
+    });
+
+    it("does not resurrect an option label that appears inside the free text", () => {
+      // Free text "custom, Cache" used to have its trailing "Cache" matched as
+      // a checked option on reload, so the card showed a box the user never
+      // ticked and the answer came back reordered as "Auth, Cache, custom".
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={multiSelectQuestion}
+          onAnswer={vi.fn()}
+          disabled={false}
+          resolvedAnswer="Auth, custom, Cache"
+        />
+      );
+      expect(screen.getByTestId("option-Auth").className).toContain("bg-(--color-accent-subtle)");
+      expect(screen.getByTestId("option-Cache").className).not.toContain("bg-(--color-accent-subtle)");
+      expect(screen.getByText("custom, Cache")).toBeInTheDocument();
+    });
+
+    it("restores checked options and free text from persisted history", () => {
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={multiSelectQuestion}
+          onAnswer={vi.fn()}
+          disabled={false}
+          resolvedAnswer="Auth, Cache, Metrics"
+        />
+      );
+      expect(screen.getByTestId("option-Auth").className).toContain("bg-(--color-accent-subtle)");
+      expect(screen.getByTestId("option-Cache").className).toContain("bg-(--color-accent-subtle)");
+      expect(screen.getByText("Metrics")).toBeInTheDocument();
+    });
+
     it("submit button is disabled when nothing is selected", () => {
       const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
@@ -304,6 +446,25 @@ describe("AskUserQuestion", () => {
       fireEvent.change(screen.getByTestId("other-input"), { target: { value: "My custom answer" } });
       fireEvent.click(submit);
       expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "My custom answer" }, "My custom answer");
+    });
+
+    it("toggles Other off on a single-select question too", () => {
+      const onAnswer = vi.fn<AnswerFn>(() => true);
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={singleQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+        />
+      );
+      fireEvent.click(screen.getByTestId("option-other"));
+      expect(screen.getByTestId("other-input")).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("option-other"));
+      expect(screen.queryByTestId("other-input")).not.toBeInTheDocument();
+      // Back to the plain state: a preset option auto-submits again.
+      fireEvent.click(screen.getByTestId("option-Redis"));
+      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Redis" }, "Redis");
     });
 
     it("does not submit empty other text on Enter", () => {
