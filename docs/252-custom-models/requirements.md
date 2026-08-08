@@ -8,7 +8,8 @@ does today. So a requirement below is silent about an existing capability when t
 does not change it, and that silence is not permission to drop it. Where a requirement *does*
 describe something that already works, it is because this feature changes it in some way.
 
-No open questions remain.
+One open question is outstanding — see [below](#open-questions). It is a scope question about
+req 16 that review surfaced and the agent should not decide.
 
 ## Requirements
 
@@ -235,7 +236,18 @@ No open questions remain.
 
 ## Open questions
 
-_None._
+- **Does req 16's split have to cover usage recorded *before* this feature existed?** The
+  requirement says the split holds "at session scope and across all sessions", without
+  qualification. Turns recorded today carry a model id, tokens and a cost, and **no service or
+  billing mode** — and for sub-agent turns not even a route — so the attribution simply is not
+  in the data. It cannot be reconstructed afterwards, and guessing would produce a confident,
+  wrong split of real money.
+
+  The design currently puts those rows in a `legacy` group with no service and no mode, which
+  is honest but is not the split req 16 describes. *Agent's recommendation: accept the legacy
+  group and read req 16 as applying to usage recorded from this feature onward — the group
+  drains on its own as old sessions age out.* The alternatives are to hide pre-existing usage
+  from the split view entirely, or to backfill a guess, which the agent would not do.
 
 ## Resolved questions
 

@@ -241,8 +241,13 @@ could break*). It belongs here because this is the phase that freezes the types 
 could invalidate, and nowhere later is cheaper.
 
 **Phase 2 — Credentials and Settings.** Credential storage per `(service, billing mode)`,
+**with several instances per mode where that mode is a string-delivered subscription** — the
+one piece of genuinely new persistence in this design, because a supplied secret today
+occupies a single slot that the next write overwrites (`credential-store.ts:298`), which would
+leave req 12 with nothing to fail over to ([`catalogue.md`](./catalogue.md)) —
 the Settings → Services add-flow ([`mockup-services.html`](./mockup-services.html)), a
-compile-time env-key name per catalogue service, and closing the compose delivery gap so a
+compile-time env-key name per catalogue `(service, billing mode)` — not per service, since
+GLM alone declares two — and closing the compose delivery gap so a
 stored key reaches a compose-backed containerized session. Existing subscription-backed
 vendors keep their current credential path untouched.
 

@@ -1,7 +1,7 @@
 ---
 issue: planning#321
 title: Custom models — harness and service catalogue
-description: The launch inventory of harnesses and services, written as the TypeScript declarations phase 1 transcribes.
+description: Harnesses and services as the TypeScript declarations phase 1 will carry — types settled, first-party rows complete, everything else a marked research checklist.
 ---
 
 # 252 — Harness and service catalogue
@@ -23,7 +23,7 @@ maintained subset is a judgement made when a row is authored.
 **One shape question stays open on purpose**: how a harness fused to its own service (Cursor)
 would be represented, since no requirement commits to that harness and inventing a shape for
 it would be speculative. The other one is closed — `SpawnShape` already carries the
-config-file case for endpoint and credential, and `CredentialTargets.key` is optional so an
+config-file case for endpoint and credential, and `CredentialTargets.string` is optional so an
 OAuth-only CLI narrows the join instead of failing at spawn. Neither of the two shipped
 harnesses is affected by either.
 
@@ -136,9 +136,10 @@ interface ModeCommon {
   endpoints: Partial<Record<ApiStyle, string>>;
   models: ModelDef[];
   retired: RetiredModel[];
-  /** The credential shapes this mode accepts. A LIST, because one mode can hold several
-   *  routes of different shapes — Anthropic's subscription takes both OAuth accounts and an
-   *  env-supplied token, and req 12 fails over between the routes inside a mode. */
+  /** The credential shapes this mode ACCEPTS — not the user's credentials themselves. A list
+   *  because one mode can accept several shapes: Anthropic's subscription takes both OAuth
+   *  accounts and an env-supplied token. The user's actual credentials are *instances* of
+   *  these shapes, and live in storage with their own route ids — see below. */
   credentials: ModeCredential[];
 }
 
@@ -213,9 +214,11 @@ authenticates *differently depending on the billing mode*:
   (`claude/process.ts:28` ✅). **That scrub is local mode only** — it returns immediately
   without a `scopedHome`, and the container worker constructs `ClaudeProcess` with no resolver
   (`session-worker.ts:752` ✅); in container mode the account's credentials arrive by mount
-  instead. `plan.md`'s Appendix A records the same asymmetry. What is general is that a
-  subscription authenticates from an **account root**, not from an environment variable: the
-  env vars are the *reserved-route* path (`local-agent-home.ts:80` ✅).
+  instead. `plan.md`'s Appendix A records the same asymmetry. What is *not* general is the account
+  root: `claude-env-oauth` is a subscription that authenticates from the environment and has
+  no account root at all (`local-agent-home.ts:84` ✅) — which is the whole reason `via`
+  exists. An earlier version of this sentence claimed the opposite, contradicting the type
+  it appears above.
 - **Codex** — a subscription uses `~/.codex/auth.json` and the adapter deletes
   `OPENAI_API_KEY`; key mode uses that variable (`codex/adapter.ts:259` ✅).
 
@@ -277,6 +280,25 @@ So there are **three independent axes**, and each has exactly one owner:
 No code path should read `via` to answer a billing question, and none should read `kind` to
 decide how to authenticate. Tying quota to `via` was an earlier mistake that left GLM's plan —
 a subscription with no login flow — unable to report a quota at all.
+
+### A string-delivered subscription needs many credential instances, not one env slot
+
+This is the one place the design needs storage that does not exist, and it follows directly
+from req 12. A `via: "account"` mode already supports several credentials — that is what
+`ProviderAccount` rows are, and failing over between them is the behaviour req 12 preserves. A
+`via: "string"` mode has no equivalent: today a supplied secret goes into a single named slot
+and writing it overwrites the previous value (`credential-store.ts:298` ✅).
+
+For a **key** mode that is fine — req 12 says keys do not fail over, so one is all it can use.
+For a **subscription** mode delivered as a string it is not: GLM's coding plan is exactly that
+shape, and a user with two of them is precisely the case req 12 exists for. So
+`storageEnv` must be read as **the variable name a credential is materialized into at spawn**,
+not as the place it is stored. Storage is per *instance*, with a route id, the way accounts
+already are — otherwise the second plan overwrites the first and failover has nothing to fail
+over to.
+
+**This is new persisted representation, and the only piece of it in this design.** It cannot
+be reached by re-keying the existing singleton environment map, and it is phase 2's work.
 
 /** HARNESS side: where a credential of each kind lands for THIS CLI, by default. */
 /** Keyed by `via`, NOT by billing `kind` — an earlier version named these `key`/`sub`, which
@@ -653,9 +675,12 @@ Req 16 reports what was spent per service and billing mode, and what subscriptio
 **would have cost at that service's API rates**. For a **redirected** turn — any custom
 service — neither number can come from the harness: `total_cost_usd` is the CLI's own price
 table applied to whatever model *it* thinks it is running, measured in `plan.md` as a constant
-18× on real turns. For a turn on the harness's **own** vendor it is that vendor's own price
-and stays usable, which is what ShipIt bills against today (`claude/adapter.ts:318`,
-`usage.ts:115` ✅); the catalogue table must not regress it. Codex reports no dollar figure at
+18× on real turns. For a turn on the harness's **own** vendor, ShipIt bills against it today — the adapter
+copies `total_cost_usd` through (`claude/adapter.ts:318` ✅) and `UsageManager` deltas it
+(`usage.ts:115` ✅) — but *what it means* there is 🔍: neither citation shows whose price table
+produced it, nor what it represents on a subscription turn where no money moved. The catalogue
+table must not regress today's behaviour, and settling that one cost-source rule is phase 6's
+first task, not an assumption it inherits. Codex reports no dollar figure at
 all either way.
 
 ```ts
