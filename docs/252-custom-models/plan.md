@@ -83,8 +83,7 @@ A model id alone is **not** a global identifier: the same model is reachable thr
 DeepSeek directly and through a gateway like OpenRouter, at different prices and
 possibly different API styles. Whatever the picker persists must therefore carry the
 service identity, or "the selected model's service" cannot be resolved and req 11
-cannot say which service billed a turn. This is a change from the spike, which keyed
-everything off a bare model id.
+cannot say which service billed a turn. This is a change from the spike.
 
 Compatibility is **partly derived, partly declared** (req 6). Speaking a style is
 necessary but not sufficient: a service also declares *which of its models* work under
@@ -103,9 +102,7 @@ in the first place (req 6).
 
 A consequence worth noting, though not a requirement of its own: a harness added later
 picks up every configured service that speaks its style, limited to the models already
-declared for it. Nothing has to enumerate harness×service pairs by hand. This used to be
-stated as a separate requirement; it was deleted as derivable from the offering rule
-above.
+declared for it. Nothing has to enumerate harness×service pairs by hand.
 
 This is also why "should we support OpenAI-compatible providers?" was the wrong
 question. It is not a scope boundary; it is a property of each service, and it decides
@@ -143,8 +140,10 @@ plumbing — with each billing mode declaring its own models per style. Anthropi
 become ordinary catalogue rows, each already carrying both modes.
 
 **The rows themselves are written out in [`catalogue.md`](./catalogue.md)**, including the
-types, so this phase is transcription plus the research each 🔍 marker calls for — not a
-design exercise. That document also settles the format: **TypeScript source, not YAML**,
+types. So this phase is transcription for what the repo already settles, research for each 🔍
+marker, and two open shape questions the survey closes (how a service-fused harness is
+represented; whether a config-file harness needs more of `SpawnShape`). What it is *not* is a
+re-derivation of the axes. That document also settles the format: **TypeScript source, not YAML**,
 because the repo already does this and the existing `CLAUDE_MODELS` shows why (a four-string
 list carrying a forty-line comment about alias resolution that no YAML parser would preserve
 and no test would check).
@@ -157,23 +156,41 @@ custom service, so it is what makes the mode-keyed shape above testable rather t
 theoretical; its subscription is not reachable until phase 2 either, and integrating that
 plan's login and refresh is per-service work req 5 keeps separate from the mechanism.
 
+**Sub-agent defaults are a second persisted model selection, and they are easy to miss.**
+`SubAgentDefaults.model` is a bare `string` keyed by harness (`agent-types.ts:44`), validated
+against `AgentCapabilities.models` (`services/settings.ts:275`), and the sub-agent spawn picks
+its credential route from `subAgentId` *before* reading that default
+(`services/sub-agent.ts:249`). Once the same model id is reachable through two services, that
+string cannot say which — so it would silently resolve to the harness's own vendor, which is
+the exact conflation this feature exists to remove, surviving in a corner. It becomes the
+triple here alongside the session's, migrates by the same rule below, and its picker follows
+the session picker in phase 4. An earlier draft's "the selection becomes the triple
+throughout" quietly did not include it.
+
 **Existing sessions need a billing mode, and the answer is already on disk.** The triple
 needs a third element, and migration must supply it — a choice that decides what a user is
 billed. It does not have to be guessed: sessions already persist **`provider_route_kind`**
 (`"account" | "reserved"`) and **`provider_route_id`** (`database.ts:280`,
 `sessions.ts:321`), columns that exist for exactly this distinction. So:
 
+**Classify by route *id*, not by `provider_route_kind`.** The kind describes where a
+credential is *stored*, not how it is *billed*, and the two do not line up: `claude-env-oauth`
+is a `reserved` route carrying a **subscription** token — quota-bearing, ranked above metered
+billing, and tracked by the limits provider alongside account routes
+(`provider-account-reserved-route.test.ts:92`, `claude/limits-provider.ts:85`).
+
 | Stored route | Migrates to | Why |
 |---|---|---|
-| `account` | `sub` | it ran on a subscription account |
-| `reserved` (`claude-api-key`, `codex-api-key`, `claude-env-oauth`) | `key` | it ran on a metered route |
+| kind `account` (any id) | `sub` | a subscription account |
+| id `claude-env-oauth` | `sub` | a subscription token that happens to arrive by env |
+| id `claude-api-key`, `codex-api-key` | `key` | metered |
 | absent — pre-dates the columns, or no turn yet | `sub` if the service has one, else `key` | the only case with no evidence |
 
 Only the last row is a judgement, and it fails in the safe direction: a session wrongly on
-`sub` stops and says so (req 12), where one wrongly on `key` silently spends money. An earlier
-draft applied that fallback to *every* session, having asserted that a persisted row is just
-`(agentId, model)` — which would have relabelled every existing API-key session as
-subscription-billed, breaking phase 1's own no-behaviour-change criterion and reqs 8 and 11.
+`sub` stops and says so (req 12), where one wrongly on `key` silently spends money. Two
+earlier drafts got this wrong in different ways — the first ignored the columns entirely and
+relabelled every key session as `sub`; the second read `kind` and would have billed
+`claude-env-oauth` subscribers as metered, hiding their quota (reqs 10, 12, 16).
 
 This phase is a refactor with **no behaviour change**: the picker offers exactly the models
 it offers today, now derived from the catalogue rather than from `AGENT_DEFS`. That is the
@@ -260,10 +277,16 @@ that reads them.
 The cost semantics have to be settled here too, and they are not obvious: `costUsd` as
 recorded is already a **delta** ShipIt computes, because Claude Code's `total_cost_usd` is a
 running conversation total rather than a turn cost (`usage.ts:115`). For a custom service that
-delta is the CLI's price table applied to the wrong vendor's tokens (measured below), so what
-phase 3 stores is **tokens plus attribution**, and money is computed from the catalogue's own
-price table at read time. Storing a dollar figure that was never true is what makes history
-unrecoverable.
+delta is the CLI's price table applied to the wrong vendor's tokens (measured below), so it
+cannot be the figure ShipIt reports.
+
+So the row stores **tokens, attribution, and the rate that was applied** — not a price looked
+up later. Computing money at read time from the live catalogue was this doc's first answer and
+it is wrong in two ways that only show up with time: a price edit would silently restate every
+historical "You paid", and a retired model would have no price to look up at all — which the
+already-declared `gpt-5.6` retirement demonstrates. Req 16 asks where money *was* spent, which
+is a fact about the past. Persisting the unit rate alongside the tokens is what makes it one;
+the catalogue then supplies the rate for *new* turns only.
 
 It is also where req 3 becomes observable: the moment a custom model is offered, it is
 offered in the one picker alongside everything else, with no separate surface for a
@@ -374,10 +397,10 @@ is the reason this costs a field rather than a round of re-approval.
 **The third row appears to break too, and differently.** OpenCode's endpoint and credential
 are documented as living in `opencode.json` rather than in flags or environment variables —
 which would mean driving it requires **writing a per-session config file before each spawn**,
-a shape `SpawnShape` carries and no current adapter implements. Its `reasoningEffort` is a config key whose levels come from the
-*provider* rather than the CLI, which is the one place docs/217's harness-keyed reasoning
-model fits badly. Neither is fatal; both are work that would have been discovered inside
-phase 3 otherwise.
+a shape `SpawnShape` carries and no current adapter implements. Its reasoning setting is a
+config key whose levels come from the *provider* rather than the CLI, which is the one place
+docs/217's harness-keyed reasoning model fits badly. Neither is fatal; both are work that
+would otherwise surface inside phase 3.
 
 **Cursor CLI raises a question the table does not ask.** It authenticates to *Cursor's own*
 service with `CURSOR_API_KEY` and selects from Cursor's lineup; if it has no supported
@@ -459,10 +482,8 @@ foreclose them: a service row is already `(endpoints, styles, declared models)`,
 the same shape a user-supplied one would need, so the later feature is a new *source* for
 catalogue rows rather than a new concept. Do not add a mechanism for it now.
 
-**Four distinct identities, which an earlier draft blurred into one.** This doc first
-called a service "a credential + endpoint" and later a ShipIt-owned catalogue row; those
-are different things, and req 12's "another subscription of the same service" only makes
-sense once they are separated:
+**Four distinct identities.** A service is not a credential and not an endpoint; req 12's
+"another subscription of the same service" only makes sense once they are separated:
 
 | Thing | Owner | Example |
 |---|---|---|
@@ -475,12 +496,10 @@ sense once they are separated:
 One catalogue service can therefore hold several credential routes, which is exactly the
 case req 12 fails over between — but only *within* a mode.
 
-**The billing mode is selected; the credential route is not** (req 5). This is the line that
-took a wrong turn once, so it is worth stating plainly. An earlier draft had the mode
-resolved per turn alongside the route, on the grounds that ShipIt's account manager already
-walks subscription accounts before falling back to a metered key. That is how the code
-behaves and it is the wrong basis for the decision — the two modes are not interchangeable
-the way two subscriptions are:
+**The billing mode is selected; the credential route is not** (req 5). Resolving the mode per
+turn — on the grounds that the account manager already walks accounts before falling back to a
+metered key — describes how the code behaves and is the wrong basis for the decision. The two
+modes are not interchangeable the way two subscriptions are:
 
 - **Their model sets can differ.** A plan tier need not include everything the API sells, so
   a merged list offers a model the resolved route cannot serve (req 6).
@@ -1075,10 +1094,17 @@ scrubbed; only the local-mode factory (`app-di.ts:574`) passes one. And
 `resolveLocalAgentHome` (`local-agent-home.ts:82`) returns `undefined` for the reserved
 env routes anyway.
 
-Consequence: a custom credential must **not** reuse an Anthropic variable name, or the
-route works or fails depending on how the install happens to be signed in — a
-difference unrelated to the feature. A distinct name (`DEEPSEEK_API_KEY`) sidesteps it
-entirely, and behaves identically in a container, in local mode, and under dogfood.
+Consequence: **ShipIt's storage name for a custom credential must not be an Anthropic
+variable name**, or the route works or fails depending on how the install happens to be
+signed in — a difference unrelated to the feature. `DEEPSEEK_API_KEY` is the storage name for
+that reason.
+
+That is not the same as saying the *child process* sees `DEEPSEEK_API_KEY`, and an earlier
+draft of this paragraph concluded exactly that ("sidesteps it entirely"). It does not: Claude
+Code reads its own variables and nothing else, so a custom service's value has to be written
+into one of them at spawn time, after the scrub. Storage name and spawn target are two
+different things, and the design keeps them apart deliberately
+([`catalogue.md`](./catalogue.md)).
 
 ### There are two spawn sites, not one
 
