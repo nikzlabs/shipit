@@ -406,13 +406,14 @@ vendor did not write. A vendor's models reached through a gateway, on the other 
 reqs 2 and 6 working exactly as specified. The eligibility check must not acquire a "but
 these are really Anthropic's models" special case to prevent it.
 
-Which *specific* crossings exist depends on styles nobody has verified yet. OpenRouter serves
-an Anthropic Messages endpoint as well as OpenAI-style ones (Appendix A), so Anthropic models
-under **Claude Code** via OpenRouter is certain, while Anthropic models under **Codex** needs
-OpenRouter to speak the Responses API — an open item in
-[`catalogue.md`](./catalogue.md)'s phase-1 checklist. An earlier draft of this paragraph
-asserted the Codex crossing as the example; it is the more striking illustration and the less
-certain fact.
+Which *specific* crossings exist depends on API styles nobody has verified. The spike's notes
+say OpenRouter serves an Anthropic Messages endpoint alongside OpenAI-style ones (Appendix A),
+which would put Anthropic models under **Claude Code** via OpenRouter — but that is a claim
+about a vendor, not about this repository, so it is an item on
+[`catalogue.md`](./catalogue.md)'s phase-1 checklist and not a fact this design may lean on.
+The more striking illustration, Anthropic models under **Codex**, additionally needs
+OpenRouter to speak the Responses API, which nothing here establishes. An earlier draft
+asserted that crossing as the example.
 
 **User-supplied endpoints are deferred, not designed away** (req 15). Nothing here should
 foreclose them: a service row is already `(endpoints, styles, declared models)`, which is
@@ -427,7 +428,7 @@ sense once they are separated:
 | Thing | Owner | Example |
 |---|---|---|
 | `serviceId` | ShipIt catalogue | `openrouter` |
-| **billing mode** | ShipIt catalogue, per service — `sub` or `key`, each declaring its own models | DeepSeek `sub` vs DeepSeek `key` |
+| **billing mode** | ShipIt catalogue, per service — `sub` or `key`, each declaring its own models | GLM `sub` (its coding plan) vs GLM `key` |
 | credential route | the user — one key, or one subscription account, within a mode | a stored key, or `acct_…` |
 | selected model | the session | `(serviceId, billingMode, modelId)` |
 | turn route | resolved per turn from the credential routes **of that mode** | which key/account this turn used |
@@ -457,7 +458,9 @@ them and the user never picks among them. So the picker's grouping key is
 credential.
 
 Anthropic and OpenAI are catalogue rows like any other, not special cases (req 5).
-`AgentId` keeps meaning *harness* only, and gains a declared **set** of API styles — a set rather than a scalar because the survey found a multi-style CLI (OpenCode), so the service×harness join is an intersection.
+`AgentId` keeps meaning *harness* only, and gains a declared **set** of API styles — a set
+rather than a scalar because the survey found a CLI that appears to speak several (OpenCode),
+so the service×harness join is an intersection.
 
 The picker's list for the active harness is then every `(service, billingMode, model)` the
 catalogue declares under that harness's style, filtered to modes with a usable credential
@@ -496,8 +499,10 @@ The split has one real cost and one new interaction, both worth deciding deliber
   on the control that would act on it, and one line per harness in a menu that already lists
   harnesses does not accumulate into clutter.
 - **Switching harness can strand the selected model.** Keep the model when the new harness
-  also offers that exact `(service, billing mode, model)` triple — which is why
-  `deepseek-v4-flash` survives a Claude Code → Codex switch — and otherwise move to the first eligible model and say so.
+  also offers that exact `(service, billing mode, model)` triple — which is what would carry
+  `deepseek-v4-flash` through a Claude Code → Codex switch, *if* DeepSeek turns out to serve
+  it under both harnesses' styles ([`catalogue.md`](./catalogue.md) marks that unverified) —
+  and otherwise move to the first eligible model and say so.
   Landing somewhere else silently would contradict req 11; refusing the switch would make an
   enabled control lie. The combined picker never had this case, because there the harness and
   model moved together by construction.
@@ -684,9 +689,9 @@ That makes three things a harness switch can move — model, billing mode, effor
 composer has to report all of them in one message rather than the last one to be computed.
 
 **Mid-session model switching** (req 4) is a capability question per harness, not a new
-mechanism: the model is already a per-turn spawn argument, and `AgentCapabilities`
-already carries per-harness flags. A switch that crosses *services* additionally
-re-resolves the credential and base URL for the next spawn.
+mechanism: the model is already per-turn data — a spawn flag for Claude Code, a `turn/start`
+field for Codex — and `AgentCapabilities` already carries per-harness flags. A switch that
+crosses *services* additionally re-resolves the credential and base URL for the next spawn.
 
 ShipIt already forces a respawn boundary for a *model* change:
 `releaseResidentOnModelChange` (`resident-model-guard.ts`) kills a resident process
@@ -858,8 +863,8 @@ Because the session now reports the successor, req 11 makes the remap visible ra
 than silent — the picker and attribution show what is actually running, not what was
 originally chosen.
 
-**Usage** (req 10) is reported per service. The existing types are partway there but
-less far than this doc first claimed: the wire shape is **`AgentId` → `routeId` →
+**Usage** (req 10) is reported per **billing mode of a service**. The existing types are
+partway there but less far than this doc first claimed: the wire shape is **`AgentId` → `routeId` →
 limits** (`usage-limits-types.ts:74`), so it is keyed by provider *and* route, and
 `LimitsProvider`/`LimitsRegistry` are selected by `AgentId` first
 (`agents/types.ts:22`, `limits-registry.ts:39`). An individual snapshot carries a
@@ -883,9 +888,9 @@ deliberately out of scope; the data exists, but it is its own feature.
 one way of paying. Once a session can move between a subscription and a metered key — even
 within one service — that total silently adds *money spent* to *tokens already paid for*.
 
-The split is the same axis as everywhere else, and the two DeepSeek rows in the prototype are
-why it has to be the **mode** and not the service: one service, two lines, and merging them
-would attach a price to a row that is mostly free.
+The split is the same axis as everywhere else, and the two **GLM** rows in the prototype are
+why it has to be the **mode** and not the service: one service, two lines — its coding plan
+and its API key — and merging them would attach a price to a row that is mostly free.
 
 Two headline numbers rather than one, because dollars and quota do not sum: **"You paid"**
 totals the metered rows only — the one figure that is money — and plan usage is counted in
