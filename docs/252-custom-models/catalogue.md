@@ -333,26 +333,35 @@ place it is stored. Storage is per *instance*, the way accounts already are:
  *   - `via` distinguishes a login-flow account from a supplied secret, so plural
  *     string-delivered subscriptions (GLM's plan) become expressible.
  *
- *  Everything else is preserved deliberately, because the router already depends on it:
- *  selection filters on `status` and `exhaustedUntil` (`provider-account-manager.ts:648` ✅),
- *  balanced routing reads `lastUsedAt` (`:536` ✅), and hard exhaustion is persisted precisely
- *  so a failed credential is not chosen again (`:788` ✅). Dropping any of them would silently
- *  break req 12's failover. */
+ *  **Every other field is preserved, including the ones that look like clutter.** Selection
+ *  filters on `status` and `exhaustedUntil` (`provider-account-manager.ts:648` ✅), balanced
+ *  routing reads `lastUsedAt` (`:536` ✅), hard exhaustion is persisted precisely so a failed
+ *  credential is not chosen again (`:788` ✅), and duplicate detection and label adoption use
+ *  `externalId` and `labelIsGenerated` (`:443` ✅). An earlier draft dropped four of them while
+ *  claiming to preserve everything; each omission is a silent behaviour change.
+ *
+ *  **No secret on this record.** A `via: "string"` credential's secret lives in the credential
+ *  store keyed by route id, exactly as a `via: "account"` credential's root lives on disk
+ *  keyed by account id — symmetric, and it keeps this type safe to return verbatim through
+ *  Settings, which is what happens today (`services/settings.ts:384` ✅). Putting an optional
+ *  `secret` here would have required a redaction boundary that did not exist, and would have
+ *  typed two impossible states: an account with a secret, and a string route without one. */
 export interface CredentialRoute {
   id: string;                    // the route id, as today
   serviceId: ServiceId;
   billingMode: BillingMode;
   via: "account" | "string";
   label: string;
-  priority: number;              // authoritative order; `isPrimary` stays derived on read
+  labelIsGenerated?: boolean;    // label adoption
+  externalId?: string;           // duplicate-account detection
+  isPrimary: boolean;            // derived on read from `priority`, but on the wire shape
+  priority: number;              // authoritative order
   status: "ready" | "authenticating" | "auth_failed" | "unavailable";
+  capabilities?: ProviderAccountCapabilities;
   lastUsedAt?: number;
   exhaustedUntil?: number | null;
   createdAt: number;
   updatedAt: number;
-  // `via: "string"` only — the secret, stored encrypted and materialized into the mode's
-  // `storageEnv` at spawn. `via: "account"` keeps its credential root on disk as today.
-  secret?: string;
 }
 ```
 
@@ -754,16 +763,24 @@ same document marks unverified.
 Req 16 reports what was spent per service and billing mode, and what subscription usage
 **would have cost at that service's API rates**. For a **redirected** turn — any custom
 service — neither number can come from the harness: `total_cost_usd` is the CLI's own price
-table applied to whatever model *it* thinks it is running. (`plan.md` records what the dogfood
-data does and does not show; it does **not** establish a ratio, and two earlier attempts to
-state one were withdrawn.) For a turn on the harness's **own** vendor, ShipIt bills against it today — the adapter
+figure whose provenance this repository does not establish — the adapter copies the raw field
+through (`claude/adapter.ts:318` ✅) and nothing shows which price table produced it. `plan.md`
+records what the dogfood data does and does not show; two attempts to state a ratio were
+withdrawn, and the design needs neither. For a turn on the harness's **own** vendor, ShipIt bills against it today — the adapter
 copies `total_cost_usd` through (`claude/adapter.ts:318` ✅) and `UsageManager` deltas it
 (`usage.ts:115` ✅) — but *what it means* there is 🔍: neither citation shows whose price table
 produced it, nor what it represents on a subscription turn where no money moved.
 
 **The rule, and it is not "always use the table":** the reported figure comes from the
-catalogue table **except where the turn ran on the harness's own `nativeService`, where
-ShipIt's existing first-party figure is preserved**. `UsageManager` calls its delta "the true session bill" and docs/013 describes
+catalogue table **except where the turn ran on the harness's own `nativeService` *and* the
+harness actually reported a dollar figure — then that figure is preserved**.
+
+Both halves are load-bearing, and an earlier version had only the first. Codex declares
+`nativeService: "openai"` and emits **no cost at all** (`codex-event-handler.ts:611` ✅, stored
+as zero at `ws-handlers/agent-listeners.ts:1198` ✅), so a service-only exception would have
+preserved `$0` for every metered OpenAI turn — reporting real spend as free, in the one column
+req 16 exists to make honest, and contradicting this document's own reason for having a price
+table. "Reported nothing" is not a figure to preserve. `UsageManager` calls its delta "the true session bill" and docs/013 describes
 post-migration turns as exact; the preamble to `requirements.md` makes existing behaviour
 contractual, so replacing a first-party number with a four-rate approximation would be a
 regression this feature is not entitled to make. An earlier version of this paragraph argued

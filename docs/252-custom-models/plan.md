@@ -163,7 +163,19 @@ custom service, so it is what makes the mode-keyed shape above testable rather t
 theoretical; its subscription is not reachable until phase 2 either, and whatever integrating
 that plan turns out to require is per-service work req 5 keeps separate from the mechanism.
 
-**Sub-agent defaults are a second persisted model selection, and they are easy to miss.**
+**There are three persisted model selections, not one, and two of them are easy to miss.**
+The session's is obvious. The other two are not, and both become ambiguous the moment one
+model id can belong to two services:
+
+- **`vibe-model-id` in the browser's local storage** (`client/utils/local-storage.ts:49`) — a
+  bare string, injected into every new session's WebSocket (`hooks/useSessionWebSocket.ts:18`)
+  and used by Quick Capture. It is the seed for a *new* session's model, so an ambiguous value
+  there silently decides what a fresh session bills to. It needs the triple and a migration of
+  its own; a stored bare id resolves to the first service offering it, by the same
+  first-eligible rule req 9's default uses.
+- **Sub-agent defaults**, below.
+
+**Sub-agent defaults are the second, and they are easy to miss.**
 `SubAgentDefaults.model` is a bare `string` keyed by harness (`agent-types.ts:44`), validated
 against `AgentCapabilities.models` (`services/settings.ts:275`), and the sub-agent spawn picks
 its credential route from `subAgentId` *before* reading that default
@@ -230,9 +242,10 @@ recall — it must be checked against each gateway's current documentation when 
 written, not assumed from this doc.
 
 **The catalogue also carries per-model pricing**, because req 16's split cannot be computed
-without it: `costUsd` is the harness's own price table applied to whatever model it thinks it
-is running (measured below), so neither "you paid" nor "at API rates" can come from it for a
-custom service. This is a real widening of what a catalogue row costs to maintain — req 6
+without it: `costUsd`'s provenance is not established by this repository (see below), and for
+a redirected service it is produced by a CLI that was never told which vendor it is talking
+to — while a subscription's "at API rates" figure has no source there at all, since no money
+moved. This is a real widening of what a catalogue row costs to maintain — req 6
 kept the model list short precisely to keep per-model metadata cheap, and prices move more
 often than model lists do. It belongs in phase 1 because it is catalogue data and phase 1 is
 where the catalogue's shape is fixed; only phase 6 consumes it. If the upkeep proves
