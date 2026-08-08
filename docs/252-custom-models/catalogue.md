@@ -18,11 +18,23 @@ is that the picker offers exactly what it offers today.
 
 It is not a finished catalogue and does not claim to be. The 🔍 rows are research first: GLM,
 OpenRouter and Vercel are named with their contents deliberately open, since req 6's
-maintained subset is a judgement made when a row is authored. Two shape questions are open
-too, both waiting on the survey — how a harness fused to its own service (Cursor) would be
-represented at all, and whether a config-file-driven harness (OpenCode) needs more of
-`SpawnShape` than is declared. Phase 1 closes those with the survey's answers; what it should
-not have to do is re-derive the axes. It is also where the
+maintained subset is a judgement made when a row is authored.
+
+**One shape question stays open on purpose**: how a harness fused to its own service (Cursor)
+would be represented, since no requirement commits to that harness and inventing a shape for
+it would be speculative. The other one is closed — `SpawnShape` already carries the
+config-file case for endpoint and credential, and `CredentialTargets.key` is optional so an
+OAuth-only CLI narrows the join instead of failing at spawn. Neither of the two shipped
+harnesses is affected by either.
+
+**The survey stays in this document.** It was asked for, and deleting it to make the launch
+types look more settled would trade a real benefit for a cosmetic one: the whole reason to
+survey now is that these types freeze in phase 1, and a candidate that contradicts them is
+cheaper to hear about before then. Carrying an open question honestly is not the same as
+leaving the design unsettled — the axes are settled, and the survey can only add a variant to
+a union that already has three.
+
+It is also where the
 third-harness survey's rows live; the *consequences* of that survey for the design are in
 `plan.md`'s [What a third harness could break](./plan.md#what-a-third-harness-could-break),
 not repeated here.
@@ -104,7 +116,12 @@ export interface ModelSelection {
 export interface ModelDef {
   id: string;
   label: string;
-  /** Styles this model is usable under, at this service, under this mode (req 6). */
+  /** Styles this model is usable under, at this service, under this mode (req 6).
+   *  INVARIANT: every entry must also be a key of the owning mode's `endpoints`. The types
+   *  cannot express that — `styles` and `endpoints` are independent — so a catalogue test
+   *  enforces it. Without it a row type-checks, joins, and appears in the picker, and then
+   *  cannot be spawned because there is nowhere to send the request: a ShipIt-imposed
+   *  failure of exactly the kind reqs 1 and 6 exist to prevent. */
   styles: ApiStyle[];
   /** ALWAYS the service's API rate. See Pricing — never the incremental cost. */
   price: ModelPrice;
@@ -196,7 +213,12 @@ export type CredentialTarget =
  *  layout, a login method, a quota integration in the limits registry), and those are
  *  currently selected by `AgentId`. This field is what they get selected by instead, and it is
  *  the catalogue-side half of the per-service work req 5 keeps out of the mechanism.
- *  🔍 — the name is settled here; what GLM's implementation needs is phase 2's to find out. */
+ *  🔍 THROUGHOUT — these identifiers do not exist. Today the auth managers and limits
+ *  providers are keyed by `AgentId` ("claude", "codex") in a `Map<AgentId, AgentAuthManager>`
+ *  (`agents/index.ts:39`, `agent-auth-manager.ts:1`). The OAuth *implementations* are real;
+ *  these names are this document's proposal for what replaces `AgentId` as their key. An
+ *  earlier version of this block marked them ✅ on the strength of the implementations
+ *  existing, which is the inference-as-verified-fact the rules above forbid. */
 export type SubIntegrationId = "anthropic-oauth" | "openai-chatgpt" | "zai-plan";
 
 /** SERVICE side, key modes only: what the user supplies and how ShipIt stores it. */
@@ -209,7 +231,10 @@ export interface KeyCredential {
 
 /** HARNESS side: where a credential of each kind lands for THIS CLI, by default. */
 export interface CredentialTargets {
-  key: CredentialTarget;
+  /** Absent ⇒ this harness cannot carry a raw key at all (an OAuth-only CLI). Such a
+   *  harness joins only to subscription modes, narrowing the join rather than failing at
+   *  spawn — which is the survey's "a raw API key can authenticate it" row, expressed. */
+  key?: CredentialTarget;
   sub: { kind: "scoped-home" } | CredentialTarget;
 }
 ```
@@ -447,7 +472,7 @@ export const SERVICES = [
     modes: [
       { kind: "sub",                                       // ✅ OAuth accounts exist today
         endpoints: { [A_MSG]: "https://api.anthropic.com" },
-        integration: "anthropic-oauth",            // ✅ this integration exists
+        integration: "anthropic-oauth",            // 🔍 NAME — the OAuth flow is ✅, the id is new
         retired: [],
         models: [
           { id: "claude-opus-5",   label: "Opus 5",   styles: [A_MSG], contextWindow: { default: 1_000_000 }, price: PRICE_TODO },
@@ -485,7 +510,7 @@ export const SERVICES = [
     modes: [
       { kind: "sub",                                       // ✅ ChatGPT account auth today
         endpoints: { [O_RESP]: "https://api.openai.com" },
-        integration: "openai-chatgpt",             // ✅ ~/.codex/auth.json
+        integration: "openai-chatgpt",             // 🔍 NAME — auth.json is ✅, the id is new
         retired: [
           // ✅ the id remap `gpt-5.6 → gpt-5.6-sol` is today's normalizeCodexModelId
           // (agent-registry.ts:141). 🔍 the style and the placement under BOTH modes are

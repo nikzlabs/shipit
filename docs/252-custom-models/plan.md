@@ -311,7 +311,12 @@ would produce a confidently wrong split of real money. A named bucket the UI can
 age out.
 
 So each new row stores **tokens, attribution, and the rate that was applied** — not a price
-looked up later. Computing money at read time from the live catalogue was this doc's first answer and
+looked up later. Concretely, `RecordedTurn` gains `service_id`, `billing_mode`, the resolved
+style, and the four unit rates in force (`input`, `output`, `cacheRead`, `cacheWrite`), all
+**nullable**. Null is the `legacy` bucket: it needs no extra discriminator and no widening of
+`BillingMode`, which stays `"sub" | "key"` and describes a *selection* rather than a row's
+provenance. A row with a null `service_id` is one written before this existed; the aggregation
+groups it under its own heading and never guesses which service it belonged to. Computing money at read time from the live catalogue was this doc's first answer and
 it is wrong in two ways that only show up with time: a price edit would silently restate every
 historical "You paid", and a retired model would have no price to look up at all — which the
 already-declared `gpt-5.6` retirement demonstrates. Req 16 asks where money *was* spent, which
@@ -750,6 +755,28 @@ per-`AgentId` accounts to per-`(service, billing mode)` credentials, not to inve
 policy — and the existing code's reserved-key-route carve-out is that same billing-mode
 distinction, drawn one level down.
 
+**`authConfigured` is the gate this feature has to dismantle, and it is in six places, not
+one.** `AgentInfo.authConfigured` means *the harness's own vendor is authenticated*, and every
+surface that decides whether a harness is usable reads it: `AgentRegistry.available()`
+(`agent-registry.ts:401`), HTTP agent selection (`services/settings.ts:323`), WS selection
+(`route-registry.ts:1164`), the picker's disabled state (`ModelAgentSelector.tsx:217`),
+onboarding reopening when nothing is authenticated (`App.tsx:353`), and sub-agent spawning
+(`services/sub-agent.ts:208`). Until all six change, a DeepSeek-only user is refused Claude
+Code — which is req 2 failing, in the exact configuration this feature exists to serve.
+
+The replacement is a split, not a rename, and it is what makes the six sites easy to reason
+about individually:
+
+- **A harness is *available* if it is installed.** Nothing about credentials (req 14). This is
+  what `AgentRegistry.available()` and the two selection paths should ask.
+- **A model is *eligible* if its `(service, billing mode)` has a credential** (req 8). This is
+  what the picker and sub-agent spawning should ask, per model rather than per harness.
+
+`authConfigured` then has no meaning to preserve and leaves `AgentInfo`. Onboarding is the one
+site that is not a mechanical substitution: "no harness is authenticated" becomes "no service
+has a credential", which is a different question about a different object, and it is the
+condition that actually blocks a first turn.
+
 **Eligibility** (req 8) moves from `hasAnyAuthForProvider(provider)` to a per-billing-mode
 question: *does the service offering this model have a credential?* With Anthropic as an
 ordinary service, "Claude with no account connected" and "DeepSeek with no key" become
@@ -878,14 +905,21 @@ over the worker HTTP surface that already exists** — that is where the binarie
 credentials are, and CLAUDE.md's orchestrator↔container rule is HTTP-only, never exec. The
 orchestrator resolves the triple and asks a container to run one short prompt.
 
-Which container is the real question, and it has an uncomfortable answer: the natural host is
-the session whose pull request is being described, and **that container may be gone** — idle
-sessions are destroyed, not paused. So the path needs either a container started for the
-purpose or an acceptance that the description is generated while the session is still warm.
-This doc does not settle that, and it should be settled before phase 7 rather than inside it;
-it is the single largest unknown left in these phases, and it is a *lifecycle* question rather
-than a model-selection one. Session naming is unaffected — it already runs a CLI
-(`session-namer.ts:28`) and only needs the resolved triple threaded through.
+Which container, then — and the answer is **the session's own, at the moment the PR is
+created**, which is inside the post-turn flow. That is not a convenience: a PR card is emitted
+after a turn commits, so the container that just ran the turn is alive by construction, and
+the whole dead-container problem disappears rather than being handled. The idle enforcer only
+reclaims after a detach grace period and refuses to kill running agents
+(`idle-enforcer.ts:67`), so generating the description on that path never races it.
+
+The residual case is a PR created outside a turn — a user opening one later, from a session
+long since reclaimed. That is exactly what req 9's fallback describes: the operation still
+completes with a generic description plus a dismissible notice. So it needs no lifecycle
+machinery, only the honesty that it is the degraded path. What this design must *not* do is
+start a container to write a sentence.
+
+Session naming is unaffected — it already runs a CLI (`session-namer.ts:28`) and only needs
+the resolved triple threaded through.
 It is a `(service, billing mode, model)` selection like any other, not a service alone: a
 service does not identify something callable, and the mode is what says whether the work is
 metered. It surfaces as its own setting, and it has a default so the feature works
@@ -1254,23 +1288,19 @@ specifically to keep the CLI string byte-stable for Anthropic's prompt cache. An
 service has its own cache semantics, so cost and latency on its models are not
 comparable to the tuned path, in either direction.
 
-## Appendix B — relationship to the spike
+## Appendix B — the spike, and what it proved
 
-An **experimental spike** was written before this document, to answer "does this work at
-all", and **removed from this branch on 2026-08-05** once it had. It was never an
-implementation of these requirements: it hardcoded a single model id in `CLAUDE_MODELS`,
-hardcoded DeepSeek's endpoint, and made `hasAnyAuthForProvider`/`reservedRouteFor` treat
-a DeepSeek key as a Claude-provider route — an overstatement it accepted deliberately,
-and which req 8 now rules out. It was deleted rather than kept because shipping a
-design alongside an implementation that contradicts it is worse than shipping neither.
-The code is recoverable from this branch's history if anyone wants to re-run the
-experiment.
+An experimental spike ran before this document, to answer "does this work at all", and was
+removed from the branch on 2026-08-05 once it had. **It established that the approach works**:
+a full session ran on DeepSeek V4 Flash through the unmodified Claude Code harness — multi-step
+tool use, correct output, a second dispatched turn — with `providerRouteId: claude-api-key` and
+no backend changes. That is the feasibility evidence behind req 1, and it is why this design
+treats the harness as untouched.
 
-**It did establish that the approach works.** A full session ran on DeepSeek V4 Flash
-through the unmodified Claude Code harness: multi-step tool use, correct output, a
-second dispatched turn, with `providerRouteId: claude-api-key` and no backend
-credential present. That is the evidence req 1 is achievable; everything else about the
-spike is scaffolding.
+It was never an implementation of these requirements: it hardcoded one model id and one
+endpoint, and made `hasAnyAuthForProvider`/`reservedRouteFor` treat a DeepSeek key as a
+Claude-provider route — an overstatement req 8 now rules out. Its findings about *ShipIt's*
+code are in Appendix A; the code itself is recoverable from this branch's history.
 
 ## Appendix C — verifying a service in dogfood
 
