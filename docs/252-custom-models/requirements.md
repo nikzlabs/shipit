@@ -239,7 +239,17 @@ No open questions remain.
 
 ## Open questions
 
-_None._
+- **A subscription session shows a dollar figure today. Req 16 says that figure is not money
+  spent — so what should those surfaces show instead?** Req 16 settles the reporting: plan
+  usage is "shown as a comparison and never as money spent". But ShipIt shows a session's
+  running cost in more places than the usage view — the context dial's trigger and popover, and
+  the usage modal's per-session cost, average per turn, per-turn column and by-spend session
+  ranking. Under req 16 every one of those reads zero for a subscription session, which today
+  is most sessions. The requirement does not say whether that is the intended result, whether
+  those surfaces should show the at-API-rates comparison instead, or whether a running dollar
+  figure stops being the thing they show at all. Answering it may add a requirement about what
+  a session's headline number *is*; it may equally confirm that the existing surfaces simply
+  follow req 16's split with no new requirement.
 
 ## Resolved questions
 

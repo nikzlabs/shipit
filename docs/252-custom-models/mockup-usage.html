@@ -102,6 +102,11 @@
   }
   .pill.sub { border-color: var(--incl-dim); background: var(--incl-bg); color: var(--incl); }
   .pill.key { border-color: var(--paid-dim); background: var(--paid-bg); color: var(--paid); }
+  /* The legacy bucket is deliberately colourless: it is neither of the two things the
+     split names, and tinting it either way would imply an attribution it does not have. */
+  .r.legacy { opacity: 0.72; }
+  .r.legacy .name { color: var(--text-secondary); }
+  .r.legacy .v { color: var(--text-secondary); }
 
   .quota { display: block; margin-top: 5px; width: 130px; margin-left: auto; }
   .quota-bar { display: block; height: 3px; border-radius: 2px; background: var(--bg-elevated); overflow: hidden; }
@@ -188,7 +193,7 @@
       <div class="hl">
         <div class="cap">Metered spend (est.)</div>
         <div class="big paid num">$0.42</div>
-        <div class="why">Metered API keys only. This is money that left your account.</div>
+        <div class="why">Metered API keys only. ShipIt&rsquo;s estimate of what you were charged &mdash; not a bank statement.</div>
       </div>
       <div class="hl-div"></div>
       <div class="hl">
@@ -280,20 +285,40 @@
       branch showing up in a third place.
     </div>
     <div class="note against">
-      <span class="req">open</span><b><code class="k">costUsd</code> cannot supply either
-      figure for a custom service.</b> Verified against the spike&rsquo;s own turns, still in
-      the dogfood database: four turns on <code class="k">deepseek-v4-flash</code> run through
-      Claude Code against a DeepSeek key, recorded at <code class="k">$0.347</code> and
-      <code class="k">$0.694</code> &mdash; roughly <b>18&times;</b> what that many tokens cost
-      at DeepSeek&rsquo;s rates, and the <i>same</i> multiple on both despite very different
-      input/output/cache shapes.
+      <span class="req">req 16</span><b><code class="k">costUsd</code> cannot supply either
+      figure for a custom service.</b> For a redirected turn the harness reports a figure its
+      own price table produced for the model <i>it</i> believes it is running &mdash; and
+      whichever vendor that is, it is not the one that billed. For a subscription turn no money
+      moved at all, so there is nothing for a reported figure to be.
       <div class="callout">
-        A constant ratio across differing shapes is a price table being applied. So
-        <code class="k">total_cost_usd</code> is the CLI pricing the model <i>it</i> thinks it
-        is running &mdash; neither money spent nor a useful notional. Both numbers on this
-        screen therefore need a ShipIt-owned price table keyed by
-        <code class="k">(service, model)</code>, which is per-model catalogue upkeep req 6 has
-        kept small so far. A real cost of this screen, and one to count before building it.
+        Both numbers on this screen therefore need a ShipIt-owned price table keyed by
+        <code class="k">(service, billing mode, model)</code> &mdash; the mode is in the key
+        because one service can price the same model differently under a plan and a key.
+        That is per-model catalogue upkeep req 6 has kept small so far: a real cost of this
+        screen, and one to count before building it.
+        <br><br>
+        An earlier version of this note claimed the dogfood database showed a constant
+        <b>18&times;</b> ratio proving whose price table was applied. It does not &mdash; the
+        rows store tokens and a cost but no vendor rate, so the comparison has no second term.
+        The claim is withdrawn; <code class="k">plan.md</code> records what the data does and
+        does not show. Req 16 needs the price table on its own terms and never needed that
+        proof.
+      </div>
+    </div>
+    <div class="note">
+      <span class="req">req 16</span><b>The legacy group carries its own total and joins
+      neither headline.</b> Pre-feature rows have no service and no billing mode, which is why
+      they are grouped rather than split &mdash; but they also have no <i>known dollar
+      meaning</i>. One may be a cumulative delta, one an acknowledged over-counted
+      pre-migration value, one a Codex zero that means &ldquo;reported nothing&rdquo; rather
+      than &ldquo;cost nothing&rdquo;.
+      <div class="callout">
+        So the group shows what the user has already been shown, labelled as earlier
+        accounting, and is added into neither &ldquo;Metered spend&rdquo; nor &ldquo;at API
+        rates&rdquo; &mdash; it has no persisted rates, so it could not feed the second one
+        even if its provenance were known. It is colourless on purpose: tinting it as plan or
+        metered would assert the very attribution the bucket exists to admit is missing. The
+        group drains on its own as old sessions age out.
       </div>
     </div>
   </div>
@@ -399,6 +424,11 @@
         <div class="who"><span class="name">Vercel AI Gateway</span><span class="pill key">API key</span></div>
         <div class="vol">12 turns</div>
         <div class="amt"><span class="v paid num">$1.30</span><span class="s">metered</span></div>
+      </div>
+      <div class="r legacy">
+        <div class="who"><span class="name">Before ShipIt tracked this</span><span class="pill legacy">Unattributed</span></div>
+        <div class="vol">1,204 turns</div>
+        <div class="amt"><span class="v num">$31.70</span><span class="s">earlier accounting</span></div>
       </div>
     </div>
 

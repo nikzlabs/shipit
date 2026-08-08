@@ -477,9 +477,11 @@ export interface HarnessDef {
   name: string;
   binary: string;
   /** The service this CLI's own vendor provides, when there is one. Declared because the
-   *  cost rule has an exception for it (see Pricing) and an undeclared "everyone knows Claude
-   *  Code means Anthropic" mapping is exactly the harness/service conflation this feature
-   *  removes. Absent for a harness whose vendor sells no models. */
+   *  metered-spend column sources from the harness only on this service (see Pricing), and an
+   *  undeclared "everyone knows Claude Code means Anthropic" mapping is exactly the
+   *  harness/service conflation this feature removes. Absent for a harness whose vendor sells
+   *  no models. Note it does NOT decide the rule on its own — billing mode does; this only
+   *  narrows where the key-mode figure may come from. */
   nativeService?: ServiceId;
   /** A SET, not a scalar — see the survey. The service×harness join is an intersection. */
   styles: ApiStyle[];
@@ -771,28 +773,62 @@ copies `total_cost_usd` through (`claude/adapter.ts:318` ✅) and `UsageManager`
 (`usage.ts:115` ✅) — but *what it means* there is 🔍: neither citation shows whose price table
 produced it, nor what it represents on a subscription turn where no money moved.
 
-**The rule, and it is not "always use the table":** the reported figure comes from the
-catalogue table **except where the turn ran on the harness's own `nativeService` *and* the
-harness actually reported a dollar figure — then that figure is preserved**.
+**The rule: the column decides the source, not the turn.** Req 16 asks for two different
+figures, and they are different *kinds* of thing. Each has exactly one source:
 
-Both halves are load-bearing, and an earlier version had only the first. Codex declares
-`nativeService: "openai"` and emits **no cost at all** (`codex-event-handler.ts:611` ✅, stored
-as zero at `ws-handlers/agent-listeners.ts:1198` ✅), so a service-only exception would have
-preserved `$0` for every metered OpenAI turn — reporting real spend as free, in the one column
-req 16 exists to make honest, and contradicting this document's own reason for having a price
-table. "Reported nothing" is not a figure to preserve. `UsageManager` calls its delta "the true session bill" and docs/013 describes
-post-migration turns as exact; the preamble to `requirements.md` makes existing behaviour
-contractual, so replacing a first-party number with a four-rate approximation would be a
-regression this feature is not entitled to make. An earlier version of this paragraph argued
-for uniformity on the grounds that the column "was already an estimate" — which is unsupported,
-and was reasoning backwards from a preference for one rule.
+| Column | Which rows | Source |
+|---|---|---|
+| **Metered spend** — money that left the account | `billingMode: "key"` only | The harness's own figure when the turn ran on its `nativeService` **and** it reported one; otherwise the persisted rates. |
+| **At API rates** — what plan usage would have cost | `billingMode: "sub"` only | **Always** the persisted rates. Never harness telemetry. |
 
-Two figures computed two ways in one column is a genuine cost, and it is smaller than the
-alternative: the rows are already split by service and mode (req 16), so the two sources never
-share a cell. What remains 🔍 is what a first-party `total_cost_usd` means on a *subscription*
-turn, where no money moved — that one is phase 6's to establish, and it is a narrow question
-about one value rather than an open choice of rule. Codex reports no dollar figure at
-all either way.
+A subscription row contributes **nothing** to metered spend, because no money moved — req 16
+says the comparison is "shown as a comparison and never as money spent". A key row has no
+"at API rates" figure, because for a key row that *is* the spend.
+
+This replaces an earlier rule of the form "the table everywhere **except** the harness's own
+`nativeService`, where the reported figure is preserved". That shape was wrong, and it took
+five review rounds each restating the exception more precisely to see why: the exception was
+keyed on the wrong axis. Keyed on **service**, it reaches all four (native × mode) cells; only
+one of them is a record of real money. The three it should never have touched:
+
+- **Native + subscription** (Claude on an Anthropic plan). The preserved figure describes a
+  turn where nothing was billed. It cannot be metered spend, and it cannot be the "at API
+  rates" comparison either, because nothing establishes it *is* an API-rate valuation. Under
+  the old rule this cell had no honest reading, which is why "what a first-party
+  `total_cost_usd` means on a subscription turn" kept being deferred to phase 6 as a narrow
+  open question. It was not narrow — it was the exception being wrong.
+- **Native + key, harness reports nothing.** Codex declares `nativeService: "openai"` and emits
+  no cost at all (`codex-event-handler.ts:611` ✅, stored as zero at
+  `ws-handlers/agent-listeners.ts:1198` ✅). A service-only exception preserved `$0` for every
+  metered OpenAI turn — real spend reported as free, in the one column req 16 exists to make
+  honest. The previous round patched this by bolting "*and* the harness actually reported a
+  figure" onto the exception; the fix was correct and the shape still wasn't.
+- **Redirected turns**, which the old rule already excluded, but only as a third clause rather
+  than as a consequence of anything.
+
+Keyed on **billing mode**, the exception lands on exactly one cell — native + key + a figure
+present — and that is precisely the cell the existing accuracy claim covers: `UsageManager`
+calls its delta "the true session bill" (`usage.ts:115` ✅) and docs/013 describes
+post-migration turns as exact. The preamble to `requirements.md` makes that existing behaviour
+contractual, so the design is not entitled to replace a genuinely-billed first-party number
+with a four-rate approximation — and now it doesn't have to, without contaminating the other
+three cells to do it. (An earlier version argued the opposite way, for uniformity, on the
+grounds that the column "was already an estimate". That is unsupported and was reasoning
+backwards from a preference for one rule.)
+
+Billing mode is the right axis because it is already the axis that owns money-vs-allowance —
+req 16 splits on it, and this document's three-axes section gives it that job. The rule stops
+being "a general rule with an exception" and becomes "each column has one source", which is
+also what makes the aggregation unambiguous: **"at API rates" always recomputes from the
+persisted rates; "metered spend" sums the stored per-turn figure.** `plan.md` phase 6 states
+that as the aggregation contract.
+
+**One consequence is user-visible and is not a free win.** Today a Claude subscription session
+shows a dollar figure in the context dial and the usage modal (`ContextDial.tsx:216` ✅,
+`UsageModal.tsx:315` ✅). Under this rule that figure is not metered spend, so those surfaces
+change for existing subscription users. Req 16 decides the *reporting* half — plan usage is
+"never money spent" — but not what the dial should show instead. That is an open question in
+`requirements.md`, not something this document settles.
 
 ```ts
 export interface ModelPrice {
@@ -824,6 +860,21 @@ have reported every subscription as free, which is exactly the number it exists 
 
 The sentinel is negative rather than zero so that a forgotten row is loud. The table is keyed
 `(service, mode, model)`, because a service's two modes can price the same model differently.
+
+**A rate is only meaningful against a token count that means the same thing, and the two
+harnesses have not been shown to agree.** Claude's `input_tokens` *excludes* cache: the adapter
+computes occupancy as `input + cache_read + cache_create` (`claude/adapter.ts:292` ✅), which is
+only correct if the three are disjoint. Codex reports `inputTokens` and `cachedInputTokens` as
+sibling fields (`codex-rate-limits.ts:20` ✅) and **nothing in this repository establishes
+whether the first includes the second** 🔍 — that is upstream app-server semantics. If it does,
+then `input × inputRate + cacheRead × cacheReadRate` charges the cached tokens twice, at the
+more expensive rate, on every Codex turn.
+
+This matters more under the new rule than the old one, because Codex reports no dollar figure
+and therefore *always* falls through to the rates. Whoever adds a harness owns establishing its
+token semantics and normalizing to the disjoint convention at the adapter boundary, before the
+counts reach the rate multiplication — the pricing code must be able to assume disjointness
+rather than each reader re-deriving it. `plan.md` phase 3 carries this as a spike.
 
 **The four rates are an approximation, and that is a deliberate reading of req 16.** Real
 published pricing is richer: Anthropic prices 5-minute and 1-hour cache writes differently and

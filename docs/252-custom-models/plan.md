@@ -337,11 +337,44 @@ resolved API style is deliberately *not* stored: req 16 groups by service and mo
 keyed by service/mode/model, and nothing names a reader for historical style — so it would be
 a column and a migration with no consumer.)
 
-The cost semantics have to be settled here too, and they are not obvious: `costUsd` as
-recorded is already a **delta** ShipIt computes, because Claude Code's `total_cost_usd` is a
-running conversation total rather than a turn cost (`usage.ts:115`). For a custom service that
-delta is the CLI's price table applied to the wrong vendor's tokens (measured below), so it
-cannot be the figure ShipIt reports.
+**The cost semantics have to be settled here too, and the phase boundary is where they bite.**
+`cost_usd` as recorded is already a **delta** ShipIt computes, because Claude Code's
+`total_cost_usd` is a running conversation total rather than a turn cost (`usage.ts:115`). For
+a custom service that delta is the CLI's price table applied to the wrong vendor's tokens, so
+it cannot be the figure ShipIt reports.
+
+Phase 3 writes rows; phase 6 reads them; they are separate PRs and each is meant to be
+independently coherent. So phase 3 has to say what `cost_usd` means **in the interval**, while
+the existing readers — which just `SUM(cost_usd)` (`usage.ts:240`) and label it "Cost" — are
+still the only readers. Three ways to get this wrong, all of which ship a wrong number to a
+real user for the length of one PR:
+
+- Leave `cost_usd` as harness telemetry and custom-service sessions keep showing the CLI's
+  price table applied to another vendor's tokens.
+- Put the subscription "at API rates" value in it and the existing `SUM` labels notional plan
+  usage as money spent — the exact conflation req 16 exists to end.
+- Write a catalogue-computed *per-turn* amount through today's `record()` and it gets
+  **delta'd again**: that path treats any non-sub-agent value as cumulative and subtracts the
+  previous one (`usage.ts:134` ✅), so a correct per-turn figure comes out as the difference
+  between two consecutive turns.
+
+So `cost_usd` keeps **one** meaning from phase 3 onward — *money that left the account for this
+turn* — and phase 3 writes it under the final rule from day one: the harness figure for a
+native key turn that reported one, the persisted rates for every other key turn, and **zero for
+a subscription turn**. The existing `SUM(cost_usd)` stays correct under that definition without
+being touched, which is what makes the phase split safe.
+
+That third failure mode also forces a fix rather than a convention: **the cumulative-to-delta
+conversion has to branch on the source of the value, not on `subAgentId`.** Today `record()`
+infers "cumulative" from "not a sub-agent" (`usage.ts:141` ✅) — true only while the sole
+producer is Claude on Anthropic. A rate-derived figure is already per-turn and must not be
+delta'd; the caller knows which it has and the column does not. The signature gains that
+discriminator in this phase.
+
+The visible consequence of the zero: a Claude subscription session's dial and usage modal stop
+showing a dollar figure they show today. That is req 16's decision, not this phase's — but
+*what those surfaces show instead* is an open question in `requirements.md`, and phase 6 owns
+whatever the answer is.
 
 **Rows written before this exists get an explicit `legacy` attribution, and are not
 backfilled.** Req 16's split holds "across all sessions", so old rows need somewhere honest to
@@ -353,11 +386,29 @@ would produce a confidently wrong split of real money. A named bucket the UI can
 age out.
 
 So each new row stores **tokens, attribution, and the rate that was applied** — not a price
-looked up later. The rate comes from the catalogue for every service **except** the
-harness's own vendor, where ShipIt's existing first-party figure is preserved rather than
-replaced by an approximation ([`catalogue.md`](./catalogue.md) settles the rule and records
-what stays open: what that figure means on a subscription turn). Concretely, `RecordedTurn` gains `service_id`, `billing_mode`, and the four unit rates in
-force (`input`, `output`, `cacheRead`, `cacheWrite`).
+looked up later. The rate always comes from the catalogue; which *column* that rate ends up
+feeding is [`catalogue.md`](./catalogue.md)'s rule, keyed on billing mode. Concretely,
+`RecordedTurn` gains `service_id`, `billing_mode`, and the four unit rates in force (`input`,
+`output`, `cacheRead`, `cacheWrite`).
+
+The rates are stored on **every** new row including the native-key rows whose `cost_usd` came
+from the harness, because the two answer different questions: `cost_usd` is what was billed and
+the rates are what the catalogue said at the time. Storing them costs four columns and makes
+the native rows auditable against the table instead of opaque; omitting them would make
+native-key the one row shape that cannot be re-derived.
+
+**Two producer-side gaps this phase has to close, both verified rather than assumed:**
+
+- **The sub-agent writer passes no model and no route.** `record()` is called with
+  `subAgentId`, cache and context fields only (`services/sub-agent.ts:470` ✅), so a sub-agent
+  row today cannot say what it ran on. Phase 3's all-or-nothing `CHECK` would reject it. The
+  writer widens here, in the same phase that adds the constraint — not later.
+- **Codex's token semantics are unestablished, and the rates now always apply to it.** Whether
+  `inputTokens` includes `cachedInputTokens` is upstream app-server behaviour this repo does
+  not pin down 🔍 ([`catalogue.md`](./catalogue.md) has the detail). Claude's are disjoint
+  (`claude/adapter.ts:292` ✅). If Codex's overlap, every Codex turn double-charges the cached
+  tokens at the full input rate. This is a spike in phase 3, and normalization belongs at the
+  adapter boundary so the pricing code can assume disjointness.
 
 **These are all-or-nothing, not independently nullable.** Either every one is present or every
 one is null; there is no such thing as a row that knows its service but not what it was
@@ -408,12 +459,40 @@ Attribution surfaces the active model, its service and its billing mode — in t
 that already exist, not in new composer chrome (see below). The usage view splits spend and
 plan usage by `(service, mode)` (req 16), which needs the price table phase 1 carries.
 
+**The aggregation contract, stated once so an implementer does not have to infer it from the
+mockup:** "at API rates" **recomputes** from each row's persisted rates and tokens; "metered
+spend" **sums** the stored `cost_usd`. The two never read each other's source, and neither
+reads the live catalogue. This follows from [`catalogue.md`](./catalogue.md)'s rule — the
+column decides the source — and it is the thing that makes a retired model's history still
+valuable and a price edit unable to restate the past.
+
+**Legacy rows are excluded from both figures, not just from the split.** Their attribution is
+unknown, which the legacy bucket already handles — but their *dollar* meaning is unknown too,
+and that has not been said. A legacy row's `cost_usd` may be a Claude cumulative delta, or one
+of the acknowledged over-counted pre-migration values (`docs/013`), or a Codex zero that means
+"reported nothing" rather than "cost nothing". Summing those into "metered spend" would put a
+number of unknown provenance into the column req 16 exists to make honest, and they have no
+persisted rates so they cannot contribute to "at API rates" at all. The legacy group therefore
+shows **turn and token counts and its own unqualified dollar total, labelled as pre-feature
+accounting** — carried forward as what the user has already seen, not merged into either new
+figure. The mockup needs a rendered example of this group; it currently has none.
+
+**The inherited cost surfaces need a decision, and the requirements preamble makes it
+mandatory.** This design's mockup covers the headline totals and the weekly chart, but a dollar
+figure computed from `cost_usd` also appears in the context dial's trigger and popover
+(`ContextDial.tsx:216` ✅), and in the usage modal's per-session "Cost", "Avg / turn", per-turn
+column and by-spend session ranking (`UsageModal.tsx:315` ✅, `:321` ✅, `:419` ✅, `:445` ✅).
+Every one of them silently changes meaning the moment `cost_usd` becomes key-only: a
+subscription session reads zero across all of them, and a mixed session's "Avg / turn" divides
+metered spend by a turn count that includes subscription turns. The dial is the sharpest case
+and it is the open question in `requirements.md`; the modal's own surfaces follow whatever that
+answer is, and the by-spend ranking needs an explicit tiebreak once many sessions are legitimately
+$0. None of this is new mechanism — it is the same split applied to the surfaces that already
+exist, which is what "reporting usage is not new; the split is" implies.
+
 This is the phase most likely to want splitting in two: the quota/attribution half is a
 re-keying of existing machinery, while the cost half (req 16) depends on the price table phase
-1 authors. The cost-source rule itself is settled ([`catalogue.md`](./catalogue.md)) — the
-catalogue table everywhere except the harness's own vendor, whose existing figure is
-preserved. The one thing left to establish is what that first-party figure means on a
-subscription turn, and it is narrow enough not to block the split.
+1 authors and on the open question above.
 
 **Phase 7 — Non-turn work.** Session naming and PR descriptions get their own explicitly
 chosen `(service, billing mode, model)`, visible as a setting whose unset state resolves to
@@ -1021,6 +1100,30 @@ PR is one.
 
 Session naming is unaffected — it already runs a CLI (`session-namer.ts:28`) and only needs
 the resolved triple threaded through.
+
+**Non-turn work spends money, and nothing records it.** This phase makes both halves
+user-configurable onto an arbitrary service and billing mode — which means a user can point
+session naming at a metered service and be charged for every session they create, with the
+spend appearing nowhere. Today naming asks for text and discards the telemetry entirely
+(`session-namer.ts:73` ✅ returns a string), and the brokered spawn returns a result whose
+recording happens one level up in the sub-agent service, not in the spawn itself
+(`container-session-runner.ts:455` ✅). So there is no row and no column to put one in.
+
+That collides with req 16 as *displayed*: "where the money went" and a metered-spend total read
+as exhaustive. Two honest options, and this phase picks the first:
+
+- **Record it.** Both paths already flow through the spawn that `services/sub-agent.ts` records
+  against — the recording is at the wrong level, not absent. Naming and PR generation get rows
+  with their own attribution, the same way a `shipit agent run` consult does. The cost is
+  widening the same writer phase 3 already has to widen, plus deciding which session a
+  container-less PR generation attributes to (the session whose PR it is).
+- **Scope the label.** Leave it unrecorded and the usage view says it covers agent turns only.
+
+Recording wins because the alternative writes an asterisk onto the headline number req 16
+exists to make trustworthy, and because the gap grows exactly as this feature succeeds — the
+more services a user configures, the more non-turn spend escapes the total. The second option
+stays written down because it is what should happen if the attribution question turns out
+harder than it looks: an honest narrower claim beats a broad one with a footnote.
 It is a `(service, billing mode, model)` selection like any other, not a service alone: a
 service does not identify something callable, and the mode is what says whether the work is
 metered. It surfaces as its own setting, and it has a default so the feature works
@@ -1246,8 +1349,12 @@ consequences, each from something not in doubt:
   against it, not discovered in phase 6.
 
 The narrower original question — what the figure means for a *subscription* turn on the
-harness's own vendor — is still open and now secondary. The dogfood data cannot answer it,
-because every recorded turn there is key-authenticated.
+harness's own vendor — was carried as open for several rounds and is now **closed by the rule's
+shape rather than by an answer**: under [`catalogue.md`](./catalogue.md)'s billing-mode keying,
+a subscription row never sources its figure from the harness, so what that figure would have
+meant no longer needs establishing. It was the exception being keyed on the wrong axis, not a
+narrow gap. The dogfood data could not have answered it either, since every recorded turn there
+is key-authenticated.
 
 **The known-wrong behaviors** resolve unevenly:
 
