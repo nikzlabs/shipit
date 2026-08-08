@@ -279,6 +279,47 @@ Screenshots from `browser_take_screenshot` are returned as base64 in the MCP too
 
 Note: a 1280x720 PNG screenshot is ~500KB-1MB base64. This flows through the PTY buffer, NDJSON parser, SSE stream, and WebSocket. Verify that no message size limits are hit in practice (e.g., `MAX_TURN_BUFFER` at 1000 events in `container-session-runner.ts`, WebSocket frame size limits).
 
+#### The MCP shrinks the copy it sends — ShipIt puts it back
+
+**Update.** "No new plumbing needed" held only for viewport screenshots. The MCP
+writes the capture to `--output-dir` at full size and then runs the copy bound
+for the message through `scaleImageToFitMessage`, which caps it at 1568px per
+side and ~1.15 megapixels. Measured against `@playwright/mcp` 0.0.78:
+
+| capture | delivered in the message | written to disk |
+|---|---|---|
+| viewport `1280×720` | `1280×720`, 32 KB — under the cap | same |
+| full page `1280×2536` | **`780×1545`**, 1076 KB | `1280×2536`, 704 KB |
+| full page `1280×3160` | **`635×1568`** | `1280×3160`, 766 KB |
+
+So a viewport shot is untouched and a full-page one is quietly reduced to 61% or
+even 39% of its width — "sharp, but not always", as reported. Two things make
+this worth undoing rather than accepting. The cap is a token-budget decision
+aimed at the *model*, and ShipIt renders the same image to a *person*, at 1:1 on
+their display, where it is pure loss. And the shrunk copy is *larger* than the
+original: the scaler is a Catmull-Rom bicubic, which turns the flat colour runs
+a UI screenshot is made of into gradients PNG cannot compress. Resolution and
+bytes both get worse.
+
+`restoreFullResolutionScreenshots` (`session/playwright-screenshot.ts`) swaps the
+image block for the file on disk, at the worker's single agent-event → SSE
+choke point (`agent-controller.ts`). **The model's context is untouched** — it
+already holds the shrunk copy the MCP handed it directly; only the event ShipIt
+persists and renders is rewritten. So the viewer gets full resolution at zero
+token cost, and in the full-page case for fewer bytes than before.
+
+Two deliberate choices, both in that file's docstring: the on-disk file is
+located by the **basename** of the link (tool output is untrusted, and a
+basename cannot traverse), and the read is **synchronous** because that handler's
+event ordering is load-bearing.
+
+Raising the *capture* resolution — `deviceScaleFactor: 2` via the MCP's
+`--config`, so a Retina viewer gets a 2× viewport shot too — is possible and
+deliberately not done here: it only helps if the agent also passes
+`scale: "device"`, and that pushes its own copy through the cap (1464×823 at
+429 KB against today's clean 1280×720 at 32 KB). Sharper for the viewer, worse
+and pricier for the model. Not a trade to make silently.
+
 ### PTY noise from MCP server
 
 The MCP server is a child process of the CLI, running inside the PTY. If it writes to stdout/stderr, output will be mixed into the PTY data stream. The `drainLines()` parser in `claude.ts` treats non-JSON lines as log output (`[claude] non-JSON line:...`), so it won't crash — but it may be noisy. Monitor and suppress if needed.
