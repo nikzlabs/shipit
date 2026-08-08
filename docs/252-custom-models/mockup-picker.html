@@ -158,10 +158,6 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
   }
   .item .check { color: var(--accent); font-size: 12px; }
-  .menu-foot {
-    border-top: 1px solid var(--border-soft); margin-top: 4px;
-    padding: 9px 10px 6px; font-size: 11.5px; color: var(--text-tertiary); line-height: 1.55;
-  }
   .menu-empty { padding: 14px 11px; font-size: 12.5px; color: var(--text-tertiary); line-height: 1.6; }
 
   /* ---- pills ---- */
@@ -172,10 +168,6 @@
   }
   .pill.sub { border-color: #3b3565; background: #1d1a33; color: #b3a9ee; }
   .pill.key { border-color: #2f4a3a; background: #16241c; color: #86c9a3; }
-  .pill.style {
-    border-color: #333; background: #1c1c20; color: var(--text-secondary);
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  }
 
   /* ---- state readout ---- */
   .readout { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
@@ -323,15 +315,17 @@
     </div>
   </div>
   <div class="note">
-    <b>The triggers carry no labels, and usually no service.</b> A product name and a model id
-    do not need the words &ldquo;harness&rdquo; and &ldquo;model&rdquo; in front of them. The
-    service pill is disclosure-on-demand: it appears <i>only</i> when the same model id is
-    offered by more than one credentialed service on this harness — the one case where the id
-    alone cannot say who is billing you, and the reason models are identified by the pair.
+    <b>The picker states what you choose on, and nothing else.</b> No labels on the triggers,
+    no API style, no explanatory footers. Each harness row gives its <b>model count</b> —
+    the same information as the style, in the form the decision actually needs. Styles stay on
+    Settings &rarr; Harnesses, whose entire job is explaining why a service appears under one
+    harness and not another.
     <div class="callout">
-      Give OpenRouter a key while on <code class="k">deepseek-v4-flash</code> and the pill
-      appears; take it away and it goes. In the common case the composer is two words and a
-      model id.
+      The service pill is the one conditional element: it appears <i>only</i> when the same
+      model id is offered by more than one credentialed service on this harness — the single
+      case where the id alone cannot say who is billing you, and the reason models are
+      identified by the pair. Give OpenRouter a key while on
+      <code class="k">deepseek-v4-flash</code> and it appears; take it away and it goes.
     </div>
   </div>
   <div class="note">
@@ -532,8 +526,8 @@ function pickHarness(id) {
     } else {
       state.note = {
         kind: 'warn',
-        text: `${hns(id).name} has no models — no service you hold a credential for speaks `
-            + `<code class="k">${hns(id).style}</code>.`,
+        text: `${hns(id).name} has no models — none of the services you have a key for `
+            + `work with it.`,
       };
     }
   }
@@ -565,20 +559,20 @@ function harnessSelector() {
     const rows = list.map(x => {
       const n = eligible(x.id).length;
       const sel = x.id === state.harness;
+      // No API-style pill. Which wire format a harness speaks is ShipIt's concern, not a
+      // fact you choose on — the model count is. The style stays on Settings → Harnesses,
+      // whose job is explaining why a service appears under one harness and not another.
       return `<div class="item ${sel ? 'sel-row' : ''}" onclick="pickHarness('${x.id}')">
         <span class="grow">${x.name}</span>
-        <span class="pill style">${x.style}</span>
         <span class="check">${sel ? '&#10003;' : ''}</span>
       </div>
       <div style="padding:0 9px 6px 9px;font-size:11px;color:var(--text-tertiary)">
-        ${n ? `${n} model${n === 1 ? '' : 's'} available` : 'no credentialed service speaks this style'}
+        ${n ? `${n} model${n === 1 ? '' : 's'} available` : 'no models — no service you have a key for works with it'}
       </div>`;
     }).join('');
-    menu = `<div class="menu">
-      <div class="menu-label"><span class="grow">Harness</span></div>
-      ${rows}
-      <div class="menu-foot">Installed at deploy time — nothing to add here.</div>
-    </div>`;
+    // No header and no footer: the rows are harnesses, and the absence of an "add"
+    // affordance is what says the set is fixed. A line saying so is clutter.
+    menu = `<div class="menu">${rows}</div>`;
   }
 
   const lock = state.pinned
@@ -605,7 +599,7 @@ function modelSelector() {
     if (!rows.length) {
       inner = `<div class="menu-empty">
         No models. ${state.installed.has(state.harness)
-          ? `No service you hold a credential for speaks <code class="k">${hns(state.harness).style}</code>.`
+          ? `None of the services you have a key for work with ${hns(state.harness).name}.`
           : 'This harness is not installed.'}
       </div>`;
     } else {

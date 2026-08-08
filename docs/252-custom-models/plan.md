@@ -322,13 +322,30 @@ answers it — an API key does not fail over, so ShipIt stops and says so. The s
 changes *where* that surfaces, from a failed turn to a picker state you can see before
 sending.
 
-**The triggers carry no labels, and usually no service.** A product name and a model id do
-not need the words "harness" and "model" in front of them, so the closed composer is
-`Claude Code ▾ | deepseek-v4-flash ▾`. The service pill is **disclosure-on-demand**: it
-appears only when that model id is offered by more than one credentialed service on this
-harness. That is the sole case where the id alone cannot say who is billing you — and it is
-exactly the case the pair identity exists for, so the disambiguation appears precisely when
-the ambiguity is real and costs nothing the rest of the time.
+**The picker states what you choose on, and nothing else.** Everything the split makes
+*expressible* is a candidate for showing, and almost none of it earns composer space. What
+survived, and what did not:
+
+- **No labels on the triggers.** A product name and a model id do not need the words
+  "harness" and "model" in front of them. The closed composer is
+  `Claude Code ▾ | deepseek-v4-flash ▾`.
+- **The service pill is disclosure-on-demand**, appearing only when that model id is offered
+  by more than one credentialed service on this harness. That is the sole case where the id
+  alone cannot say who is billing you — exactly the case the pair identity exists for — so it
+  shows up when the ambiguity is real and costs nothing otherwise.
+- **No API style anywhere in the picker.** `anthropic-messages` / `openai-responses` is
+  ShipIt's vocabulary for why a join holds; it is not a fact anyone chooses on. Each harness
+  row states its **model count** instead, which is the same information in the form the
+  decision needs. Styles stay on Settings → Harnesses, whose entire job is explaining why a
+  service appears under one harness and not another.
+- **No explanatory footers.** Neither "N more models on Codex" nor "installed at deploy time
+  — nothing to add here". The first is covered by the harness rows' counts; the second by the
+  absence of an add affordance. A menu that has to narrate itself is the wrong menu.
+
+The through-line: this feature adds three new axes (harness, service, API style) and the
+temptation is to surface all of them because they are newly nameable. Only the ones a user
+acts on belong in the composer; the rest belong in Settings, where explaining the join *is*
+the screen's purpose.
 
 **Attribution needs no new surface** (req 11). Once the harness and the service are on the
 composer's two triggers, "which model, which service, key or subscription" is already on
