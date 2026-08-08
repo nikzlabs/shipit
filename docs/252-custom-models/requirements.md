@@ -8,7 +8,9 @@ does today. So a requirement below is silent about an existing capability when t
 does not change it, and that silence is not permission to drop it. Where a requirement *does*
 describe something that already works, it is because this feature changes it in some way.
 
-No open questions remain.
+Four open questions are outstanding — see [below](#open-questions). All four are the
+agent's, found by review rather than raised by the human; three of them are consequences
+of the billing-mode decision reaching some requirements and not others.
 
 ## Requirements
 
@@ -204,7 +206,43 @@ No open questions remain.
 
 ## Open questions
 
-_None._
+- **Must a retirement successor stay within the same billing mode?** Req 13 scopes the map
+  to "another model of the same service" and stops there — that wording predates the
+  billing-mode decision, and reqs 5 and 6 have since made a service's model set a property
+  of *each mode*. So a model can be declared under a service's key and not under its
+  subscription, and req 13 as written lets a session on the subscription remap onto a
+  successor the subscription does not offer — which either fails, or moves the session onto
+  metered billing. Req 12 forbids exactly that move for failover ("a spent subscription does
+  not silently start charging a key"), and the reasoning is identical here. *Agent's
+  recommendation: yes — the successor must be offered under the mode in use, making the map
+  per `(service, mode)` rather than per service.* `plan.md` inherits the same gap: it argues
+  a remap is safe because "the credential, the endpoint, the API style and the price are all
+  unchanged", which the billing mode makes untrue.
+
+- **Does req 6's "a harness speaks one API style" hold for a third harness?** The offering
+  rule is built on it, and `plan.md`'s third-harness survey lists it as the assumption most
+  likely to be wrong and most expensive to discover late — OpenCode is multi-provider by
+  design. The requirement currently asserts as fact something the design treats as a risk.
+  *Agent's recommendation: weaken the requirement to the join it actually needs — a model is
+  offered on a harness when the service and the harness share a style — which is true whether
+  a harness speaks one style or several, and leaves the survey free to find out.*
+
+- **Should the launch catalogue name the service that carries the custom subscription?**
+  Req 15's founding argument is that a want has to be stated as catalogue contents or it is
+  unverifiable. Its subscription paragraph then states the want — "at least one custom
+  service with a real subscription" — without naming one, so by req 15's own standard it is
+  the thing req 15 exists to prevent. GLM is named as the intended case in `plan.md` and in
+  the prototypes, which puts a launch-content decision in the design rather than here.
+  *Agent's recommendation: name it in req 15's list, or state explicitly that the choice is
+  deferred and why.*
+
+- **What does non-turn work's setting name, and which harness runs it?** Req 9 says it
+  "names both a service and a model" — written before req 5 made the identity a triple, so
+  it is stale on the billing mode. The larger gap is the harness: running a model means
+  spawning a CLI, a model can be offered on more than one installed harness, and neither req
+  9 nor `plan.md` says which one non-turn work uses. *Agent's recommendation: the setting
+  names `(service, billing mode, model)` like any other selection, and the harness is
+  derived rather than chosen — but the derivation rule needs stating.*
 
 ## Resolved questions
 
