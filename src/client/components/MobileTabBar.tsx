@@ -60,10 +60,12 @@ export function MobileTabBar({
   // highlighted either.
   const chatActive = !contentTabsDisabled && !sidebarOpen && activePanel === "chat";
   const workspaceActive = !contentTabsDisabled && !sidebarOpen && activePanel === "preview";
-  // `shrink-0` on the bar: this is the app's primary navigation and the shell's
-  // bottom child, so it must never give up height to the content above it.
-  // Without it a shell that measures taller than the viewport squeezes the bar
-  // rather than the (already `min-h-0`) content region.
+  // `shrink-0` on the bar: this is the app's primary navigation, so if the
+  // shell's flex children ever ask for more height than the shell has, the bar
+  // must not be the one that gives it up — the content region above it is
+  // already `min-h-0` and is what should absorb the squeeze. (This is flex
+  // hardening only; it does nothing for a shell that is itself taller than the
+  // viewport, which is `useAppViewportHeight`'s job.)
   return (
     <nav
       className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-(--color-border-primary) bg-(--color-bg-primary) px-3 py-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))]"

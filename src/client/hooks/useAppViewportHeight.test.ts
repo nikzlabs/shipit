@@ -10,6 +10,15 @@ function appHeight(): string {
   return document.documentElement.style.getPropertyValue("--app-height");
 }
 
+/** jsdom has no visualViewport; the hook treats a missing one as "no pan, no zoom". */
+function stubVisualViewport(props: { offsetTop: number; scale: number }): void {
+  Object.defineProperty(window, "visualViewport", {
+    value: { ...props, height: window.innerHeight, addEventListener: () => {}, removeEventListener: () => {} },
+    configurable: true,
+    writable: true,
+  });
+}
+
 beforeEach(() => {
   document.documentElement.style.removeProperty("--app-height");
   setInnerHeight(800);
@@ -20,6 +29,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  Reflect.deleteProperty(window, "visualViewport");
   document.body.innerHTML = "";
 });
 
@@ -57,6 +67,27 @@ describe("useAppViewportHeight", () => {
     }
   });
 
+  it("re-measures after the window settles, not only at the instant of the event", () => {
+    // The resume event does not promise the geometry has stopped moving. A
+    // browser that fires `pageshow` and finishes resizing a frame later would
+    // otherwise leave us holding the stale value we set out to replace — and a
+    // pixel snapshot, unlike `dvh`, never corrects itself.
+    vi.useFakeTimers();
+    try {
+      renderHook(() => useAppViewportHeight());
+
+      act(() => { window.dispatchEvent(new Event("pageshow")); });
+      expect(appHeight()).toBe("800px");
+
+      setInnerHeight(650);
+      act(() => { vi.advanceTimersByTime(500); });
+
+      expect(appHeight()).toBe("650px");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps the last good value when the browser reports a zero height mid-resume", () => {
     renderHook(() => useAppViewportHeight());
     setInnerHeight(0);
@@ -78,6 +109,47 @@ describe("useAppViewportHeight", () => {
     renderHook(() => useAppViewportHeight());
 
     expect(scrollTo).toHaveBeenCalledWith(0, 0);
+  });
+
+  it("unparks a visual viewport panned with the root scroll still at zero", () => {
+    // WebKit can offset the visual viewport while `scrollY` stays 0
+    // (webkit.org/b/311821), which strands the tab bar just the same.
+    const scrollTo = vi.fn();
+    window.scrollTo = scrollTo as unknown as typeof window.scrollTo;
+    stubVisualViewport({ offsetTop: 90, scale: 1 });
+
+    renderHook(() => useAppViewportHeight());
+
+    expect(scrollTo).toHaveBeenCalledWith(0, 0);
+  });
+
+  it("leaves a pinch-zoomed viewport where the user panned it", () => {
+    // `visualViewport` fires `resize` on a zoom change, so without this guard
+    // pinching to zoom in would yank the page back to the top.
+    const scrollTo = vi.fn();
+    window.scrollTo = scrollTo as unknown as typeof window.scrollTo;
+    Object.defineProperty(window, "scrollY", { value: 120, configurable: true, writable: true });
+    stubVisualViewport({ offsetTop: 90, scale: 2.5 });
+
+    renderHook(() => useAppViewportHeight());
+
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("leaves the scroll offset alone while a cross-origin preview iframe has focus", () => {
+    // A focused input inside the preview surfaces here only as the iframe
+    // element, so an iframe-shaped activeElement has to count as editable —
+    // otherwise a keyboard-driven resize scrolls the user away mid-typing.
+    const iframe = document.createElement("iframe");
+    document.body.appendChild(iframe);
+    iframe.focus();
+    const scrollTo = vi.fn();
+    window.scrollTo = scrollTo as unknown as typeof window.scrollTo;
+    Object.defineProperty(window, "scrollY", { value: 120, configurable: true, writable: true });
+
+    renderHook(() => useAppViewportHeight());
+
+    expect(scrollTo).not.toHaveBeenCalled();
   });
 
   it("leaves the scroll offset alone while an editable element has focus", () => {

@@ -25,7 +25,15 @@
    `dvh` — which strands the mobile tab bar below the fold with `overflow: hidden`
    and no way to scroll back to it. See that hook for the full reasoning. */
 :root {
-  --app-height: 100dvh;
+  /* `100vh` first so a browser without `dvh` still gets a viewport-sized shell
+     rather than an invalid `height` (which computes to `auto` and lets the
+     document grow past the fold — the very failure this variable exists for). */
+  --app-height: 100vh;
+}
+@supports (height: 100dvh) {
+  :root {
+    --app-height: 100dvh;
+  }
 }
 
 /* ── Shared motion tokens (theme-independent) ── */
