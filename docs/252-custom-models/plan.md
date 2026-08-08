@@ -133,10 +133,13 @@ meaning anything else. The selected model becomes the triple
 plumbing — with each billing mode declaring its own models per style. Anthropic and OpenAI
 become ordinary catalogue rows, each already carrying both modes.
 
-It also authors the launch rows req 15 names: Anthropic, OpenAI, DeepSeek, OpenRouter and
-Vercel AI Gateway. Only Anthropic and OpenAI are reachable at this point — the rest need
-phase 2's credential storage — but they are catalogue data, so they belong to the phase that
-introduces the catalogue.
+It also authors the launch rows req 15 names: Anthropic, OpenAI, DeepSeek, OpenRouter,
+Vercel AI Gateway and GLM. Only Anthropic and OpenAI are reachable at this point — the rest
+need phase 2's credential storage — but they are catalogue data, so they belong to the phase
+that introduces the catalogue. GLM's row is the one that declares **two** billing modes on a
+custom service, so it is what makes the mode-keyed shape above testable rather than
+theoretical; its subscription is not reachable until phase 2 either, and integrating that
+plan's login and refresh is per-service work req 5 keeps separate from the mechanism.
 
 This phase is a refactor with **no behaviour change**: the picker offers exactly the models
 it offers today, now derived from the catalogue rather than from `AGENT_DEFS`. That is the
@@ -253,7 +256,7 @@ what it would cost to be wrong.
 
 | Assumption | Where it lives | If a harness violates it |
 |---|---|---|
-| **A harness speaks exactly one API style** | req 6, the whole service×style join, `AgentId → style` | The join becomes many-to-many and a harness needs a *set* of styles. Cheap now, invasive later. |
+| **A harness speaks exactly one API style** | the service×style join, `AgentId → style` — **not** req 6 | The join becomes many-to-many and a harness needs a *set* of styles. Cheap now, invasive later. |
 | The **model is a per-invocation argument** | spawn shaping, req 4's respawn boundary | A config-file-only CLI needs a per-session config written before each spawn; mid-session switching changes shape. |
 | The **endpoint is overridable per invocation** | spawn shaping, the whole feature | A CLI reading one global config cannot host two sessions on two services at once. |
 | **A raw API key can authenticate it** | req 2, req 5 | An OAuth-only CLI cannot use a key-authenticated service at all, so it offers a narrower catalogue than the join implies. |
@@ -264,9 +267,15 @@ what it would cost to be wrong.
 the most expensive to fix late: OpenCode is a multi-provider CLI by design, so "one harness,
 one style" is exactly the shape it would contradict. If a harness can speak several styles,
 then `(harness, service)` compatibility is a set intersection rather than an equality test —
-a change to req 6's rule and to every join built on it. Discovering that in phase 1 is a
-type change; discovering it after phase 6 is a re-cut of the catalogue, the picker, the
-Harnesses screen and the usage grouping.
+a change to every join built on it. Discovering that in phase 1 is a type change;
+discovering it after phase 6 is a re-cut of the catalogue, the picker, the Harnesses screen
+and the usage grouping.
+
+**Req 6 is deliberately not on the hook for this one.** It states the rule as an overlap —
+a model is offered when the service and the harness *share* a style — which holds whether a
+harness speaks one style or several. So a contradicted first row is a design cost and not a
+requirements change, which is the point of phrasing it that way. The one-style assumption
+survives only in this design's data shapes, which is where a survey can afford to break it.
 
 Note this is a **survey, not an integration**. Nothing here proposes shipping a third
 harness; req 14's install-time selection already covers how one would arrive. The deliverable
@@ -643,15 +652,27 @@ scrub, from the *selected model's* service rather than from a model-id prefix.
 
 **Non-turn work** (req 9) — session naming and PR descriptions run on a model the user
 chooses **for that purpose**, resolved independently of whatever the session is using.
-It is a `(service, model)` selection like any other, not a service alone: a service does
-not identify something callable. It surfaces as its own setting, and it has a default so
-the feature works unconfigured — the setting being *visible* is what stops that default
-from re-creating the hidden dependency this requirement exists to remove.
+It is a `(service, billing mode, model)` selection like any other, not a service alone: a
+service does not identify something callable, and the mode is what says whether the work is
+metered. It surfaces as its own setting, and it has a default so the feature works
+unconfigured — the setting being *visible* is what stops that default from re-creating the
+hidden dependency this requirement exists to remove.
+
+**The harness is derived, not chosen** (req 9). Running a model means spawning a CLI, and
+a model can be offered on more than one installed harness — so something has to pick. It is
+not a second control: the setting stays a model choice like any other (req 3), and non-turn
+work takes the **first installed harness that model is offered on**, in the same catalogue
+ordering the picker uses. The rule is arbitrary and that is acceptable here in a way it
+would not be in a session: the work is a session title and a PR description, the harnesses
+that can run a given model all run it, and req 9's notice already covers the failure. A
+user who cares which harness writes their PR descriptions is not a case this design serves,
+and inventing a control for them would be a worse trade than picking one.
 
 **The default is a rule, not a stored value** (req 9): unset means *the first eligible
-model in the picker's own ordering* — first service, first model — resolved at the point
-non-turn work runs, not frozen at install. Eligible is the same conjunction the picker
-uses: an installed harness (req 14) whose service has a credential (req 8). So the setting
+model in the picker's own ordering* — first service, first billing mode, first model —
+resolved at the point non-turn work runs, not frozen at install. Eligible is the same
+conjunction the picker uses: an installed harness (req 14) whose service has a credential
+for that mode (req 8). So the setting
 has two states, and they are not the same thing: **unset** follows the install, and **set**
 is a pin the user chose and ShipIt does not move. Only the second can go stale, and it is
 the one req 9's notice reports on.
@@ -690,18 +711,28 @@ explicit setting is also the only version that can be *shown* to the user as bro
 when its service stops working. This is the one place with no existing seam at all, and
 the largest single piece of work here.
 
-**Retiring a catalogue entry** (req 13). Curation means removal is routine, so each
-service's catalogue row carries a map from its own retired model ids to their
-successors. A session pinned to a retired model resolves through its service's map at
-the point the model is read, and runs on the successor; the picker offers only current
-models.
+**Retiring a catalogue entry** (req 13). Curation means removal is routine, so the
+catalogue carries a map from retired model ids to their successors. A session pinned to a
+retired model resolves through that map at the point the model is read, and runs on the
+successor; the picker offers only current models.
 
-The map lives **inside a service and maps model id to model id** — it never crosses
-services. That is a requirement (req 13), and it is also what makes the mechanism
-trivial: because `serviceId` is unchanged by a remap, the credential, the endpoint, the
-API style and the price are all unchanged too, so a remap cannot strand a session on a
-service the user has no credential for. Two services retiring the same model id toward
-different successors is still handled — each states its own successor in its own row.
+The map lives **inside a `(service, billing mode)` and maps model id to model id** — it
+crosses neither. Both halves are requirements (req 13) and both are load-bearing. Because
+`serviceId` is unchanged, the credential, the endpoint and the provider are unchanged, so
+a remap cannot strand a session on a service the user has no credential for. Because the
+**mode** is unchanged, what the turn costs is unchanged too — the successor is declared
+under the same mode, so a session running included work cannot be remapped onto metered
+work. That second half is why the map is keyed per mode rather than per service: a service
+declares its models *per mode* (req 6), so a per-service map would have no way to say that
+the subscription's successor and the key's successor differ, or that the subscription has
+none at all. An earlier draft of this section argued the remap was safe because "the price
+is unchanged" while keying the map per service — under billing modes that was simply false.
+
+A mode that retires a model with no successor to offer is a **catalogue mistake**, not a
+runtime case: there is no fallback to the other mode, because that is the silent shift onto
+metered billing req 12 exists to refuse. Two services retiring the same model id toward
+different successors is still handled — each states its own successor in its own row, and
+now each mode does too.
 
 There is precedent to copy rather than a mechanism to invent: `normalizeCodexModelId`
 (`agent-registry.ts:141`) already does exactly this for one model, mapping the retired

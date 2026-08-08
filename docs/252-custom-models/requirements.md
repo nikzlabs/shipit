@@ -8,9 +8,7 @@ does today. So a requirement below is silent about an existing capability when t
 does not change it, and that silence is not permission to drop it. Where a requirement *does*
 describe something that already works, it is because this feature changes it in some way.
 
-Four open questions are outstanding — see [below](#open-questions). All four are the
-agent's, found by review rather than raised by the human; three of them are consequences
-of the billing-mode decision reaching some requirements and not others.
+No open questions remain.
 
 ## Requirements
 
@@ -50,11 +48,15 @@ of the billing-mode decision reaching some requirements and not others.
    So this requirement says a service *may* have a subscription mode; which services
    actually ship one is req 15's question, not this one.
 
-6. A service may speak more than one API style, and a harness speaks one. A model is
-   offered on a harness when the service speaks that harness's style **and** the
-   catalogue declares that model works there **under the billing mode in use** — a
-   service can speak a style without every one of its models being usable under it, and a
-   subscription can include fewer models than the same service's API key.
+6. A service may speak more than one API style. A model is offered on a harness when the
+   service and the harness **share a style** **and** the catalogue declares that model
+   works under that style **under the billing mode in use** — a service can speak a style
+   without every one of its models being usable under it, and a subscription can include
+   fewer models than the same service's API key.
+
+   The rule is stated as an overlap deliberately: it holds whether a harness speaks one
+   API style or several, so discovering that some harness speaks more than one is a
+   design problem and not a change to this requirement.
 
    The catalogue does not mirror everything a service offers. ShipIt lists a
    **maintained subset** — at any moment only a handful of models are worth using for
@@ -86,7 +88,10 @@ of the billing-mode decision reaching some requirements and not others.
 9. The work ShipIt does outside a turn — naming a session, writing a pull-request
    description — runs on a model the user chooses for it, independently of whatever
    model a session is using. It is a model like any other, chosen the same way (req 3),
-   so it names both a service and a model rather than a service alone.
+   so it names a service, a billing mode and a model (req 5) rather than a service alone.
+   Which harness runs it is **derived** from what the install has, not chosen — a model
+   offered on more than one installed harness does not become a second decision for the
+   user to make here.
 
    That choice is **visible in the UI as its own setting**, and it has a default so
    nobody has to configure it before ShipIt works. The default is **derived, not a named
@@ -141,9 +146,13 @@ of the billing-mode decision reaching some requirements and not others.
 13. Models leave the catalogue as ShipIt revises which ones are worth carrying (req 6).
     A session already pinned to a removed model keeps working: each service maps its own
     retired models to their successors, and the session moves onto the successor. A
-    successor is always another model **of the same service** — a retirement never moves
-    a session to a different service, which would change the credential it needs, the
-    price it pays, and who provides it. The session then reports what it is actually
+    successor is always another model **of the same service and the same billing mode** —
+    a retirement never moves a session to a different service, which would change the
+    credential it needs, the price it pays, and who provides it; and it never moves a
+    session across billing modes, which is the same silent shift onto metered billing that
+    req 12 refuses to make on failover. If a mode has no successor to offer, that is a
+    catalogue mistake to fix rather than a case to fall back from. The session then
+    reports what it is actually
     running (req 11) — a remap is never invisible, and never leaves a session unable to
     take a turn.
 
@@ -168,17 +177,22 @@ of the billing-mode decision reaching some requirements and not others.
 
     - **first-party providers** — Anthropic and OpenAI, as ordinary rows (req 7);
     - **at least one direct key-authenticated provider** — DeepSeek is the founding case;
-    - **common gateways** — OpenRouter and Vercel AI Gateway.
+    - **common gateways** — OpenRouter and Vercel AI Gateway;
+    - **at least one custom service carrying a subscription** — GLM, whose coding plan sits
+      alongside an ordinary API key, so a single non-first-party service exercises both
+      billing modes (req 5).
 
     Which API styles each of these speaks, and which of its models are declared under each,
     follows req 6 and is authored per service; this requirement is about the services being
     present, not about what they turn out to offer.
 
-    **Which of them ship a subscription mode is deliberately left open.** Req 5 puts the
-    *mechanism* in scope, but each vendor's subscription is its own integration, so the
-    launch set's subscription coverage is decided per service rather than promised here.
-    Anthropic and OpenAI already have theirs. At least one custom service with a real
-    subscription is wanted, so the mechanism ships exercised rather than theoretical.
+    **Beyond those, which services ship a subscription mode is left open.** Req 5 puts the
+    *mechanism* in scope, but each vendor's subscription is its own integration, so
+    coverage past the minimum above is decided per service rather than promised here.
+    Anthropic and OpenAI already have theirs; GLM is named so the mechanism ships
+    exercised on a custom service rather than only on the two that predate it. What GLM
+    actually speaks, offers and limits is research for when its row is authored — naming it
+    fixes the launch commitment, not its contents.
 
     A gateway is not a new kind of thing. It is a service with a key that reaches many
     upstream vendors, so it needs no mechanism of its own — which is why this is a statement
@@ -206,45 +220,41 @@ of the billing-mode decision reaching some requirements and not others.
 
 ## Open questions
 
-- **Must a retirement successor stay within the same billing mode?** Req 13 scopes the map
-  to "another model of the same service" and stops there — that wording predates the
-  billing-mode decision, and reqs 5 and 6 have since made a service's model set a property
-  of *each mode*. So a model can be declared under a service's key and not under its
-  subscription, and req 13 as written lets a session on the subscription remap onto a
-  successor the subscription does not offer — which either fails, or moves the session onto
-  metered billing. Req 12 forbids exactly that move for failover ("a spent subscription does
-  not silently start charging a key"), and the reasoning is identical here. *Agent's
-  recommendation: yes — the successor must be offered under the mode in use, making the map
-  per `(service, mode)` rather than per service.* `plan.md` inherits the same gap: it argues
-  a remap is safe because "the credential, the endpoint, the API style and the price are all
-  unchanged", which the billing mode makes untrue.
-
-- **Does req 6's "a harness speaks one API style" hold for a third harness?** The offering
-  rule is built on it, and `plan.md`'s third-harness survey lists it as the assumption most
-  likely to be wrong and most expensive to discover late — OpenCode is multi-provider by
-  design. The requirement currently asserts as fact something the design treats as a risk.
-  *Agent's recommendation: weaken the requirement to the join it actually needs — a model is
-  offered on a harness when the service and the harness share a style — which is true whether
-  a harness speaks one style or several, and leaves the survey free to find out.*
-
-- **Should the launch catalogue name the service that carries the custom subscription?**
-  Req 15's founding argument is that a want has to be stated as catalogue contents or it is
-  unverifiable. Its subscription paragraph then states the want — "at least one custom
-  service with a real subscription" — without naming one, so by req 15's own standard it is
-  the thing req 15 exists to prevent. GLM is named as the intended case in `plan.md` and in
-  the prototypes, which puts a launch-content decision in the design rather than here.
-  *Agent's recommendation: name it in req 15's list, or state explicitly that the choice is
-  deferred and why.*
-
-- **What does non-turn work's setting name, and which harness runs it?** Req 9 says it
-  "names both a service and a model" — written before req 5 made the identity a triple, so
-  it is stale on the billing mode. The larger gap is the harness: running a model means
-  spawning a CLI, a model can be offered on more than one installed harness, and neither req
-  9 nor `plan.md` says which one non-turn work uses. *Agent's recommendation: the setting
-  names `(service, billing mode, model)` like any other selection, and the harness is
-  derived rather than chosen — but the derivation rule needs stating.*
+_None._
 
 ## Resolved questions
+
+- 2026-08-08 — Four gaps found by a review pass, answered together. Three are the same
+  failure: the billing-mode decision was applied to reqs 5, 6, 8, 10, 11 and 12 and not to
+  the rest, so the requirements disagreed with each other rather than being incomplete.
+
+  - **Must a retirement successor stay in the same billing mode? Chosen: yes.** Req 13 said
+    "another model of the same service" and stopped, which — once a service's model set
+    became a property of each mode (reqs 5, 6) — allowed a session on a subscription to be
+    remapped onto a model only the key offers. That either fails or starts charging, and
+    req 12 already refuses that exact move on failover. Scoping the map per `(service, mode)`
+    removes the case rather than handling it; a mode with no successor is a catalogue
+    mistake, not a fallback path. Req 13. `plan.md`'s claim that a remap is safe because
+    "the credential, the endpoint, the API style and the price are all unchanged" was
+    untrue under billing modes and is corrected with it.
+  - **Does "a harness speaks one API style" belong in the requirements? Chosen: no — state
+    the overlap instead.** Req 6 asserted it as fact while `plan.md`'s third-harness survey
+    lists it as the assumption most likely wrong and most expensive to fix late (OpenCode is
+    multi-provider). Req 6 now says a model is offered when the service and the harness
+    **share** a style, which is true either way — so if the survey finds a multi-style
+    harness, the design changes and this requirement does not.
+  - **Should the launch catalogue name the subscription-carrying custom service? Chosen:
+    yes — GLM.** Req 15 exists because "ShipIt supports gateways" is unverifiable unless
+    stated as catalogue contents; its own subscription paragraph then wanted "at least one
+    custom service with a real subscription" without naming one, and GLM was named only in
+    `plan.md` and the prototypes. That put a launch-content decision in the design. GLM is
+    now a launch row; what it speaks and offers stays research for when the row is authored.
+  - **What does the non-turn setting name, and which harness runs it? Chosen: the triple,
+    with the harness derived.** Req 9's "a service and a model" predated req 5. The real gap
+    was the harness: running a model means spawning a CLI, and a model can be offered on
+    several installed ones. Deriving it keeps req 9's setting a model choice like any other
+    (req 3) instead of growing a second control that exists nowhere else; the derivation
+    rule is design and lives in `plan.md`.
 
 - 2026-08-08 — Does this feature add subscription modes, or only key modes? **Chosen: the
   mechanism yes, specific vendors case by case.** Review found req 5's scope limit ("this
@@ -635,6 +645,12 @@ human, but most of the mechanism did not. What the human actually said, in order
   derived default, replacing the fixed model an earlier draft assumed. The mechanism is the
   human's sketch and is stated in `plan.md`; the requirement states only the property it
   has to have — a default the install can actually run.
+
+Reqs 6, 9, 13 and 15 were changed on 2026-08-08 from **the agent's** review findings, not
+from anything the human said: the human's contribution was choosing among the options, and
+all four recommendations were taken as offered. They are recorded here rather than in the
+list above because nothing in the transcript prompted them — the trigger was the question
+"any other remaining issues in the requirements?".
 
 Reqs 5, 7 and 9 were corrected on 2026-08-05 after review found they still described
 the *superseded* model in which users authored declarations and added services outright,

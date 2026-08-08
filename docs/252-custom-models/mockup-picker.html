@@ -563,7 +563,7 @@ const routeLabel = k => (k === 'sub' ? 'Subscription' : 'API key');
 const state = {
   creds: new Set(SERVICES.filter(s => s.preset).map(s => s.id)),
   installed: new Set(HARNESSES.filter(h => h.preinstalled).map(h => h.id)),
-  glmSub: false,  // does the GLM coding plan exist?
+  glmSub: false,  // has the user configured GLM's coding plan as well as its key?
   pinned: false,
   harness: 'claude',
   service: 'deepseek',
