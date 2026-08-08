@@ -723,7 +723,14 @@ empty section, and no sentence explaining the absence. Keys do not fail over (re
 there is nothing to order and nothing to spread. The asymmetry between the two card types is
 req 12 rendered.
 
-**Credential failure branches on credential type, not on the error** (req 12). This is
+**Credential failure branches on the billing mode, not on the error — and not on how the
+credential is shaped either** (req 12). The second half is easy to get wrong, because the two
+look alike and this repo already holds a counter-example: `claude-env-oauth` is a
+*subscription* delivered as an environment token, and GLM's coding plan is a *subscription*
+authenticated by an API key. A rule keyed on "is this a key?" would refuse to fail over for
+both, turning a plan outage into a stopped session. `kind` answers the billing questions; the
+credential's `via` answers only where the secret comes from
+([`catalogue.md`](./catalogue.md)). This is
 the load-bearing simplification: ShipIt does not classify the failure, it looks at how
 the failing service is authenticated — a fact it holds statically in the service row.
 A subscription fails over to another subscription *of the same service*; an API key
@@ -905,18 +912,25 @@ over the worker HTTP surface that already exists** — that is where the binarie
 credentials are, and CLAUDE.md's orchestrator↔container rule is HTTP-only, never exec. The
 orchestrator resolves the triple and asks a container to run one short prompt.
 
-Which container, then — and the answer is **the session's own, at the moment the PR is
-created**, which is inside the post-turn flow. That is not a convenience: a PR card is emitted
-after a turn commits, so the container that just ran the turn is alive by construction, and
-the whole dead-container problem disappears rather than being handled. The idle enforcer only
-reclaims after a detach grace period and refuses to kill running agents
-(`idle-enforcer.ts:67`), so generating the description on that path never races it.
+Which container, then — **the session's own, generated inside the post-turn flow**, which is
+where the PR is created and where the container is most likely to still be up.
 
-The residual case is a PR created outside a turn — a user opening one later, from a session
-long since reclaimed. That is exactly what req 9's fallback describes: the operation still
-completes with a generic description plus a dismissible notice. So it needs no lifecycle
-machinery, only the honesty that it is the degraded path. What this design must *not* do is
-start a container to write a sentence.
+**"Most likely" is the honest word, and an earlier draft of this paragraph said "by
+construction", which is false.** The runner is marked not-running *before* post-turn work
+begins — deliberately, to close a reconnect window (`agent-listeners.ts:1330`) — and under
+host memory pressure the idle enforcer drops the grace period to zero and may dispose a
+detached runner that is not `agentBusy` (`idle-enforcer.ts:101`). `agentBusy` covers turns,
+CLI background tasks and sub-agent consults (`session-runner.ts:1460`), and would not cover a
+bare worker-HTTP generation. So the generation has to **hold the same protection a turn
+holds** for its duration. That is the one piece of lifecycle work req 9 requires, it is small,
+and it is real: without it the description is lost precisely on the busiest hosts.
+
+Nor does req 9's fallback excuse the outside-turn case. Req 9 permits a generic description
+when *the chosen service fails* — not when ShipIt reclaimed the container. A PR opened long
+after its session was reclaimed is therefore genuinely unmet by this design, and saying so is
+better than stretching the requirement to cover it. What this design declines to do is start
+a container to write a sentence; whether that is the right trade is a question for whoever
+picks up phase 7, and it is the last open decision in these phases.
 
 Session naming is unaffected — it already runs a CLI (`session-namer.ts:28`) and only needs
 the resolved triple threaded through.
@@ -1135,7 +1149,7 @@ because every recorded turn there is key-authenticated.
   so.
 
   Note what this does *not* require: ShipIt never has to decide whether a given error
-  means "quota spent" or "key is bad". The branch is on the credential type, which is
+  means "quota spent" or "key is bad". The branch is on the billing mode, which is
   known before the turn starts — and it has to be, because the error cannot carry it:
   Claude's matching output is reduced to a payload-free `auth_required` event
   (`process.ts:173`), so the orchestrator already recovers the route separately
