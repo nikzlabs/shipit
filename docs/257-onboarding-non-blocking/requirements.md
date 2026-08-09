@@ -129,7 +129,32 @@ below turns on what is configured or when the flow is finished, it means the har
 
 ## Open questions
 
-_None._
+Both were raised by the cross-backend review of [`plan.md`](./plan.md), which found the
+design could not be completed without them. Neither is answered here; an agent inference
+never closes one.
+
+- **When does the panel go away, given the GitHub step is inside it?** Req 9 defines the
+  panel's presence by the harness half, and the terminology paragraph says "finished" means
+  the harness half — but the *Out of scope* section also says the GitHub step keeps today's
+  behaviour, and today `githubNeeded` alone summons the whole wizard, including for an
+  established user whose token was revoked (`App.tsx:354`). The two cannot both hold now that
+  the panel replaces the conversation instead of covering an empty product. Either (a) the
+  panel's lifetime is the harness half only — a user who connects a service from Settings
+  while step 1 is on screen ends the flow with GitHub unconnected, and a later GitHub loss
+  never re-opens the panel; or (b) the panel also waits on GitHub — which, since it is not
+  dismissible (req 9), leaves it permanently in the conversation view of a user who has a
+  working agent and does not want GitHub, and puts it back over an established user's real
+  chat when a token expires.
+
+- **What should an install upgraded with no credentials see?** Req 9's condition is
+  historical, and no field in the tree records that history — account rows and stored keys are
+  deleted on disconnect (`credential-store.ts:280`), so "completed onboarding, then removed
+  everything" and "never configured anything" are indistinguishable on an install that
+  predates the flag. A user in the first group would get onboarding back, which req 9 forbids.
+  Either accept that for the one upgrade window (the panel blocks nothing, and the ask it
+  makes is the correct one for someone who cannot run a turn), or treat *every* pre-existing
+  install as already-completed (nobody who upgrades ever sees the panel, including a genuinely
+  unconfigured one, who then meets only the disabled composer's placeholder).
 
 ## Resolved questions
 
