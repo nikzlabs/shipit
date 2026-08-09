@@ -11,6 +11,8 @@ import simpleGit from "simple-git";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { SessionInfo, AgentId, SessionMergeWatch } from "../../shared/types.js";
+import type { BillingMode } from "../../shared/catalogue/index.js";
+import { applyModelRetirement } from "../model-retirement.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { SessionContainerManager } from "../session-container.js";
@@ -450,13 +452,40 @@ export async function spawnChildSession(
   // uncoordinatable by construction. `spawnedByTurn` is still passed so
   // `graduateSession` records it (for the per-turn cap) even without a parent.
   const rootSessionId = parent.rootSessionId ?? parentSessionId;
+  // docs/252 — a child inherits the parent's **selection**, not a bare model id.
+  // A bare id re-resolves through the catalogue to whichever mode sorts first, so
+  // a parent on a service's metered key would silently seed its child onto that
+  // service's subscription — the same cross-mode move req 12 refuses on failover
+  // and req 13 refuses on retirement, arriving through the spawn path instead.
+  //
+  // An explicit `opts.model` override is a different choice and inherits
+  // nothing: the same rule the WS seed follows, since a service the caller did
+  // not name must not be attached to a model it did.
+  //
+  // The parent's own retirement is resolved first (against the PARENT's harness,
+  // because it is the parent's row being written), so a child of a session
+  // pinned to a retired model starts on the successor rather than on an id the
+  // catalogue cannot place — which would drop the triple and land the child
+  // wherever a bare id happens to resolve.
+  const inherited = ((): { model?: string; serviceId?: string; billingMode?: BillingMode } => {
+    if (opts.model) return { model: opts.model };
+    applyModelRetirement(sessionManager, parent, parent.agentId ?? defaultAgentId);
+    const fresh = sessionManager.get(parentSessionId) ?? parent;
+    return {
+      ...(fresh.model ? { model: fresh.model } : {}),
+      ...(fresh.serviceId ? { serviceId: fresh.serviceId } : {}),
+      ...(fresh.billingMode ? { billingMode: fresh.billingMode } : {}),
+    };
+  })();
   graduateSession(graduationDeps, {
     sessionId: newSessionId,
     userText: trimmedPrompt,
     agentId: agentOverride ?? parent.agentId ?? defaultAgentId,
     skipBranchRename: true,
     ...(explicitTitle ? { explicitTitle } : {}),
-    ...((opts.model ?? parent.model) ? { model: (opts.model ?? parent.model)! } : {}),
+    ...(inherited.model ? { model: inherited.model } : {}),
+    ...(inherited.serviceId ? { serviceId: inherited.serviceId } : {}),
+    ...(inherited.billingMode ? { billingMode: inherited.billingMode } : {}),
     ...(opts.detached ? {} : { parentSessionId, rootSessionId }),
     ...(opts.spawnedByTurn ? { spawnedByTurn: opts.spawnedByTurn } : {}),
   });

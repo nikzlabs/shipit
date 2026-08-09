@@ -167,10 +167,12 @@ export const SERVICES = [
         endpoints: { [O_RESP]: "https://api.openai.com" },
         quota: "openai-chatgpt-usage",
         credentials: [{ via: "account", login: "openai-chatgpt" }],
-        // The `gpt-5.6 → gpt-5.6-sol` remap is today's `normalizeCodexModelId`
-        // shim, generalized. The shim is mode-blind and style-blind, so its
-        // placement under both modes under `openai-responses` is this
-        // catalogue's reading of it rather than something the shim states.
+        // The `gpt-5.6 → gpt-5.6-sol` remap. It arrived as the hand-written
+        // `normalizeCodexModelId` shim, which was mode-blind and style-blind —
+        // so its placement under both modes under `openai-responses` is this
+        // catalogue's reading of it rather than something the shim stated.
+        // Phase 8 deleted the shim; this row is now the only statement of it,
+        // resolved by `retirementSuccessor` (req 13).
         retired: [{ id: "gpt-5.6", styles: [O_RESP], successors: { [O_RESP]: "gpt-5.6-sol" } }],
         models: [
           { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },

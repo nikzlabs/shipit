@@ -26,6 +26,7 @@ import { isNonFastForwardError } from "./services/git.js";
 import { getErrorMessage } from "./validation.js";
 import { applyShipitConfigChange, setupServiceManager } from "./service-manager-setup.js";
 import { buildAgentRunParams } from "./session-agent-run-params.js";
+import { applyModelRetirement } from "./model-retirement.js";
 import {
   finalizeSessionAgentEnvironment,
   prepareSessionAgentEnvironment,
@@ -341,7 +342,14 @@ export function createRunnerRegistry(
         sseBroadcast,
         broadcastLog: (source: LogSource, text: string) =>
           broadcastLog(runner.sessionId, source, text),
-        getSelectedModel: () => sessionManager.get(runner.sessionId)?.model,
+        // docs/252 phase 8 — the system-turn path reads the row fresh each
+        // turn, so this is where a Fix-CI / child-session / dispatched turn on a
+        // retired model moves onto its successor (req 13). Resolving at the
+        // *source* rather than inside the params build is deliberate: this same
+        // reader feeds usage attribution, so normalizing later would record a
+        // turn against a model that never ran it (req 11).
+        getSelectedModel: () =>
+          applyModelRetirement(sessionManager, sessionManager.get(runner.sessionId), runner.agentId),
         getSelectedReasoning: () => sessionManager.get(runner.sessionId)?.reasoningEffort,
         ...(recordAgentRateLimits ? { recordAgentRateLimits } : {}),
         ...(getSubscriptionLimitsSnapshot ? { getSubscriptionLimitsSnapshot } : {}),
@@ -438,7 +446,7 @@ export function createRunnerRegistry(
               githubAuthManager,
               sessionManager,
               readSystemPrompt: readSystemPrompt ?? (() => Promise.resolve(undefined)),
-              getSelectedModel: () => session?.model,
+              getSelectedModel: () => applyModelRetirement(sessionManager, session, agentId),
               getSelectedReasoning: () => session?.reasoningEffort,
               ...(runParamsPreps ? { runParamsPreps } : {}),
             },

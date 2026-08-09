@@ -12,7 +12,12 @@ import { DEFAULT_SELECTION_MODE } from "../shared/types.js";
 import { DEFAULT_FAILOVER_CUTOFF } from "../shared/types.js";
 import type { VoiceDeliveryMode } from "../shared/types/voice-note-types.js";
 import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js";
-import { nativeServiceForHarness, resolveModelSelection } from "../shared/catalogue/index.js";
+import {
+  nativeServiceForHarness,
+  resolveModelSelection,
+  resolveRetiredModelId,
+  retirementSuccessor,
+} from "../shared/catalogue/index.js";
 
 /**
  * docs/170 — the Linear **credential**, and nothing that identifies a
@@ -162,8 +167,8 @@ export class CredentialStore {
   }
 
   /**
-   * docs/252 — backfill the `(serviceId, billingMode)` half of a sub-agent
-   * default's model selection.
+   * docs/252 — bring a sub-agent default's model selection up to date: backfill
+   * the `(serviceId, billingMode)` half, then move it off a retired model.
    *
    * `SubAgentDefaults.model` is the third persisted model selection and the
    * easiest to miss: the sub-agent spawn picks its credential route from
@@ -176,6 +181,15 @@ export class CredentialStore {
    * before this feature: a harness could reach nothing else. A model id the
    * catalogue cannot place is left alone rather than given an invented service.
    *
+   * **docs/252 phase 8** adds the second half. A sub-agent default is the third
+   * persisted model selection and it strands on a retired model exactly as a
+   * session does — the spawn would forward an id the CLI can no longer run
+   * (req 13). `agentId` IS the harness the sub-agent spawns, which is what makes
+   * the successor check well-defined here. It belongs in this pass rather than in
+   * the getter because a retirement only ever arrives with a new catalogue, i.e.
+   * with a new process: resolving at load covers every retirement exactly once,
+   * where a writing getter would put a synchronous save behind every read.
+   *
    * Runs at load and persists once, so it is a migration rather than a read-time
    * fill — a read-time fill would re-derive on every process and would not
    * survive into the settings payload the UI round-trips.
@@ -185,18 +199,47 @@ export class CredentialStore {
     if (!map) return;
     let changed = false;
     for (const [agentId, defaults] of Object.entries(map)) {
-      if (!defaults.model || defaults.serviceId) continue;
-      const selection = resolveModelSelection(
-        defaults.model,
-        nativeServiceForHarness(agentId as AgentId),
-      );
-      if (!selection) continue;
-      map[agentId] = {
-        ...defaults,
-        serviceId: selection.serviceId,
-        billingMode: selection.billingMode,
-      };
-      changed = true;
+      const modelId = defaults.model;
+      if (!modelId) continue;
+      let next = defaults;
+      // The bias is the agent's own vendor, which is the frozen fact for any
+      // value written before this feature: a harness could reach nothing else. A
+      // model id the catalogue cannot place is left alone rather than given an
+      // invented service — and a RETIRED id is one of those, which is why the
+      // retirement pass below still has a bare-id branch to fall into.
+      if (!next.serviceId) {
+        const selection = resolveModelSelection(
+          modelId,
+          nativeServiceForHarness(agentId as AgentId),
+        );
+        if (selection) {
+          next = { ...next, serviceId: selection.serviceId, billingMode: selection.billingMode };
+        }
+      }
+      const successor =
+        next.serviceId && next.billingMode
+          ? retirementSuccessor(agentId as AgentId, {
+              serviceId: next.serviceId,
+              billingMode: next.billingMode,
+              modelId,
+            })
+          : resolveRetiredModelId(
+              agentId as AgentId,
+              modelId,
+              nativeServiceForHarness(agentId as AgentId),
+            );
+      if (successor) {
+        next = {
+          ...next,
+          model: successor.modelId,
+          serviceId: successor.serviceId,
+          billingMode: successor.billingMode,
+        };
+      }
+      if (next !== defaults) {
+        map[agentId] = next;
+        changed = true;
+      }
     }
     if (changed) this.save();
   }

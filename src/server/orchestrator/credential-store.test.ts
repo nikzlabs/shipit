@@ -159,6 +159,45 @@ describe("CredentialStore", () => {
         });
       });
 
+      // docs/252 phase 8 — a sub-agent default strands on a retired model
+      // exactly as a session does: the spawn would forward an id the CLI can no
+      // longer run (req 13).
+      it("moves a retired model default onto its successor, and persists it", () => {
+        const dir = createTmpDir();
+        fs.writeFileSync(
+          path.join(dir, "shipit-credentials.json"),
+          JSON.stringify({
+            agentSubAgentDefaults: {
+              codex: { model: "gpt-5.6", serviceId: "openai", billingMode: "sub" },
+            },
+          }),
+        );
+        const store = new CredentialStore(dir);
+        expect(store.getAgentSubAgentDefaults("codex")).toEqual({
+          model: "gpt-5.6-sol",
+          serviceId: "openai",
+          billingMode: "sub",
+        });
+        const onDisk = JSON.parse(
+          fs.readFileSync(path.join(dir, "shipit-credentials.json"), "utf-8"),
+        ) as { agentSubAgentDefaults: Record<string, { model?: string }> };
+        expect(onDisk.agentSubAgentDefaults.codex.model).toBe("gpt-5.6-sol");
+      });
+
+      it("resolves a retired default that predates the triple", () => {
+        const dir = createTmpDir();
+        fs.writeFileSync(
+          path.join(dir, "shipit-credentials.json"),
+          JSON.stringify({ agentSubAgentDefaults: { codex: { model: "gpt-5.6" } } }),
+        );
+        // The load-time backfill cannot place a retired id (it is not a current
+        // model of any mode), so the retirement record is what carries it — and
+        // the settings payload must agree with what the spawn will use.
+        expect(new CredentialStore(dir).getAllAgentSubAgentDefaults()).toEqual({
+          codex: { model: "gpt-5.6-sol", serviceId: "openai", billingMode: "sub" },
+        });
+      });
+
       it("drops the identity when the model is cleared", () => {
         const store = new CredentialStore(createTmpDir());
         store.setAgentSubAgentDefaults("claude", { model: "claude-opus-5" });

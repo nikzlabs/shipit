@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { getAuthEnvKey } from "../shared/agent-registry.js";
 import { nativeServiceForHarness, selectionExists } from "../shared/catalogue/index.js";
+import { applyModelRetirement } from "./model-retirement.js";
 import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
 import type { AgentId } from "../shared/types.js";
 import type { WsClientMessage, WsServerMessage, WsLogRecord, LogSource } from "../shared/types.js";
@@ -502,10 +503,22 @@ export async function registerRoutes(
       // carries none (docs/142 Problem C; quick-session regression).
       let perConnectionAgentId: AgentId;
       let selectedModel: string | undefined;
+      // docs/252 phase 8 (req 13) — resolve a retired model to its successor
+      // BEFORE anything else reads the row. Without this the self-heals below
+      // see an id no harness lists and drop the session onto `models[0]`, which
+      // is a model the user never chose and possibly a different price class;
+      // the retirement record is what says where it should actually go. The
+      // harness is the session's own when it has one, since the successor must
+      // be one that harness can run.
+      const sessionModel = applyModelRetirement(
+        sessionManager,
+        session,
+        session.agentId ?? (request.query.agent as AgentId | undefined) ?? defaultAgentId,
+      );
       if (session.agentPinned) {
         perConnectionAgentId = session.agentId ?? defaultAgentId;
         const agentInfo = agentRegistry.get(perConnectionAgentId);
-        selectedModel = session.model ?? agentInfo?.capabilities.models[0];
+        selectedModel = sessionModel ?? agentInfo?.capabilities.models[0];
         // Self-heal an incoherent legacy row whose model the pinned agent can't run.
         if (selectedModel && agentInfo && !agentInfo.capabilities.models.includes(selectedModel)) {
           selectedModel = agentInfo.capabilities.models[0];
@@ -514,7 +527,7 @@ export async function registerRoutes(
         const requestedAgent = request.query.agent as AgentId | undefined;
         const requestedModel = request.query.model;
         perConnectionAgentId = session.agentId ?? requestedAgent ?? defaultAgentId;
-        selectedModel = session.model ?? requestedModel;
+        selectedModel = sessionModel ?? requestedModel;
         // Reconcile agent ↔ model for an as-yet-unpinned (warm) session. They
         // come from INDEPENDENT sources, so they can diverge — most often a
         // stale `agent=codex` riding in alongside the user's real `model=opus`
@@ -544,7 +557,7 @@ export async function registerRoutes(
       if (!session.agentPinned && perConnectionAgentId !== session.agentId) {
         try { sessionManager.setAgentId(sessionId, perConnectionAgentId); } catch { /* ignore */ }
       }
-      if (selectedModel && selectedModel !== session.model) {
+      if (selectedModel && selectedModel !== sessionModel) {
         // docs/252 — persist the SELECTION. The browser's seed carries the
         // service and billing mode alongside `?model=` (its `vibe-model-id` slot
         // holds the full triple), and it is honoured only when it names a row

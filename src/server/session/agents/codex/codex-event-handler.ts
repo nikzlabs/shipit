@@ -36,7 +36,6 @@ import {
   unwrapShellCommand,
   type CodexItem,
 } from "./codex-tool-normalizer.js";
-import { normalizeCodexModelId } from "../../../shared/agent-registry.js";
 
 /** Inbound request (app-server → client) — has BOTH an id and a method. */
 interface JsonRpcServerRequest {
@@ -722,7 +721,15 @@ export class CodexEventHandler {
       this.threadId = resolvedThreadId;
     }
 
-    const model = normalizeCodexModelId(params.model) ?? "gpt-5.6-sol";
+    // docs/252 phase 8 — this used to re-map a retired model id
+    // (`normalizeCodexModelId`). It no longer does, and must not: retirement is
+    // declared per `(service, billing mode)` and two services may offer the same
+    // model id (req 5), so a boundary holding only an id cannot tell whose
+    // retirement applies — it would rewrite a model the session's own service
+    // still serves. The orchestrator resolves and persists the successor before
+    // the turn is built (`applyModelRetirement`), so what arrives here is
+    // already the model the session should run. Forward it verbatim.
+    const model = params.model ?? "gpt-5.6-sol";
 
     // Emit agent_init so the server can track the session
     this.ctx.emitEvent({
