@@ -112,6 +112,31 @@ interface SettingsState {
    * composer at an install that is perfectly runnable.
    */
   canRunTurns: boolean;
+  /**
+   * docs/257 req 9 — when harness onboarding was first completed (ISO), or
+   * `null` for never.
+   *
+   * The onboarding panel's presence is this being `null` (and the GitHub gate
+   * not being up). It is a HISTORICAL fact, computed and persisted server-side:
+   * removing every credential later leaves it set, so the panel does not come
+   * back for a user who is not new. Hydrated from `GET /api/bootstrap` and
+   * pushed on every `agent_list` SSE.
+   */
+  harnessOnboardingCompletedAt: string | null;
+  /**
+   * docs/257 req 5 — a CARD-level notice for one provider's accounts, keyed by
+   * provider.
+   *
+   * Exists because one credential failure legitimately arrives from outside the
+   * card: a refused *duplicate* account comes back as an `agent_auth_failed`
+   * SSE, and the refusal usually deletes the very row a per-row error would
+   * have landed on (docs/150 req 22). It used to be a global toast. Req 5 says
+   * results and errors belong next to the step that produced them, and during
+   * onboarding that step is in the panel — so the event needs somewhere in the
+   * card to land, and a store slot is the only channel an SSE handler has into
+   * a component it does not render.
+   */
+  providerAccountNotices: Partial<Record<AgentId, string>>;
   hasSystemPrompt: boolean;
   systemPromptContent: string;
   /**
@@ -231,6 +256,10 @@ interface SettingsState {
 
   /** docs/257 — replace the server-computed runnable signal. */
   setCanRunTurns: (canRun: boolean) => void;
+  /** docs/257 req 9 — replace the server-persisted onboarding-completed stamp. */
+  setHarnessOnboardingCompletedAt: (at: string | null) => void;
+  /** docs/257 req 5 — set or clear a provider's card-level notice. */
+  setProviderAccountNotice: (provider: AgentId, message: string | null) => void;
   setHasSystemPrompt: (has: boolean) => void;
   setSystemPromptContent: (content: string) => void;
   setMaxIdleContainers: (n: number) => void;
@@ -315,6 +344,8 @@ interface SettingsState {
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   canRunTurns: false,
+  harnessOnboardingCompletedAt: null,
+  providerAccountNotices: {},
   hasSystemPrompt: false,
   systemPromptContent: "",
   permissionMode: "auto",
@@ -355,6 +386,17 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   providerAccountAuthErrors: {},
 
   setCanRunTurns: (canRun) => set({ canRunTurns: canRun }),
+
+  setHarnessOnboardingCompletedAt: (at) => set({ harnessOnboardingCompletedAt: at }),
+
+  setProviderAccountNotice: (provider, message) =>
+    set((state) => ({
+      providerAccountNotices: message === null
+        ? Object.fromEntries(
+            Object.entries(state.providerAccountNotices).filter(([id]) => id !== provider),
+          )
+        : { ...state.providerAccountNotices, [provider]: message },
+    })),
 
   setHasSystemPrompt: (has) => set({ hasSystemPrompt: has }),
 

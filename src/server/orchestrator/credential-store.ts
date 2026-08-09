@@ -183,6 +183,23 @@ interface CredentialData {
    * and never echoed to the browser (status reports configured-or-not).
    */
   voiceWebhook?: { url: string; token: string };
+  /**
+   * docs/257 req 9 — when harness onboarding was first *completed*, as an ISO
+   * timestamp. Absent means "never".
+   *
+   * Req 9 asks a question about the install's **history**, and every other
+   * signal in this file describes the present: disconnecting deletes the
+   * record, so "completed and then removed everything" and "never configured"
+   * are otherwise the same bytes. This field is the only thing that tells them
+   * apart, which is why it is written once and never cleared — a user who sets
+   * ShipIt up and later removes every credential is not a new user and does not
+   * get the onboarding panel back.
+   *
+   * Install-global rather than per-session, and server-side rather than
+   * `localStorage`, so a second browser and a second repository see the same
+   * answer.
+   */
+  harnessOnboardingCompletedAt?: string;
 }
 
 const DEFAULT_CREDENTIALS_DIR = "/credentials";
@@ -511,6 +528,48 @@ export class CredentialStore {
     } catch (err) {
       console.error("[credential-store] Failed to save:", getErrorMessage(err));
     }
+  }
+
+  // ---- Harness onboarding completion (docs/257 req 9) ----
+
+  /** When harness onboarding was first completed, or `undefined` for never. */
+  getHarnessOnboardingCompletedAt(): string | undefined {
+    const value = this.data.harnessOnboardingCompletedAt;
+    return typeof value === "string" && value.length > 0 ? value : undefined;
+  }
+
+  /**
+   * Record that harness onboarding is complete, **only if it is not already**,
+   * and only if the write actually reaches disk. Returns the stamp in force
+   * afterwards, or `undefined` when nothing was recorded.
+   *
+   * **This deliberately does not go through {@link save}.** `save()` catches
+   * write failures and returns normally, which is the right trade for a
+   * preference that can be re-set — but req 9 says the onboarding panel never
+   * comes back, so a stamp that lives only in memory would report "completed"
+   * for the rest of the process, vanish at the next restart, and return the
+   * panel to a user who finished onboarding months earlier. That is a
+   * requirement violation which looks like a bug and has no trace.
+   *
+   * So a failed write is reverted in memory too and reported as *not yet*
+   * completed: the panel staying up one more session is a harmless repeat of a
+   * correct ask, where a silently lost stamp is not.
+   */
+  stampHarnessOnboardingCompleted(at: string): string | undefined {
+    const existing = this.getHarnessOnboardingCompletedAt();
+    if (existing) return existing;
+    this.data.harnessOnboardingCompletedAt = at;
+    try {
+      this.writeToDisk();
+    } catch (err) {
+      delete this.data.harnessOnboardingCompletedAt;
+      console.error(
+        "[credential-store] Failed to record harness onboarding completion:",
+        getErrorMessage(err),
+      );
+      return undefined;
+    }
+    return at;
   }
 
   // ---- Credential routes (docs/252 phase 2) ----

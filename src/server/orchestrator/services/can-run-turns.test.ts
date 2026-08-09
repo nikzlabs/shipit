@@ -74,7 +74,7 @@ describe("buildAgentListPayload", () => {
   it("carries the agent list and the runnable signal together", () => {
     const payload = buildAgentListPayload(registry([
       { id: "claude", installed: true, authConfigured: true },
-    ]));
+    ]), undefined);
     expect(payload.canRunTurns).toBe(true);
     expect(payload.agents).toEqual([
       expect.objectContaining({ id: "claude", installed: true, authConfigured: true }),
@@ -86,7 +86,7 @@ describe("buildAgentListPayload", () => {
     // nothing is connected. The composer must be able to tell these apart.
     const payload = buildAgentListPayload(registry([
       { id: "claude", installed: true, authConfigured: false },
-    ]));
+    ]), undefined);
     expect(payload.canRunTurns).toBe(false);
     expect(payload.agents).toHaveLength(1);
   });
@@ -124,9 +124,18 @@ function stripComments(source: string): string {
 interface Producer {
   /** `relative/path.ts:LINE`, so a failure names the site. */
   where: string;
-  /** The payload expression as written, e.g. `buildAgentListPayload(registry)`. */
+  /** The payload expression as written, e.g. `buildAgentListPayload(registry, store)`. */
   payload: string;
   usesBuilder: boolean;
+  /**
+   * docs/257 phase 2 — the builder's second argument is the credential store,
+   * and the compiler only forces *an* argument. A producer that passes
+   * `undefined` compiles and emits a payload with no
+   * `harnessOnboardingCompletedAt`, which is the same stale-value failure one
+   * step removed: absent means "no news" to the client, so the onboarding panel
+   * would linger over an install that just became runnable.
+   */
+  carriesStore: boolean;
 }
 
 /**
@@ -160,12 +169,12 @@ function agentListProducersIn(rawSource: string, label: string): Producer[] {
       const assigned = local
         ? new RegExp(`\\b(?:const|let|var)\\s+${local}\\s*=\\s*([^;\\n]*)`).exec(source)?.[1] ?? ""
         : "";
+      const call = payload.includes("buildAgentListPayload(") ? payload : assigned;
       found.push({
         where: `${label}:${line}`,
         payload,
-        usesBuilder:
-          payload.includes("buildAgentListPayload(") ||
-          assigned.includes("buildAgentListPayload("),
+        usesBuilder: call.includes("buildAgentListPayload("),
+        carriesStore: /buildAgentListPayload\([^)]*\bcredentialStore\b/.test(call),
       });
     }
   }
@@ -188,16 +197,21 @@ describe("the producer scanner itself", () => {
   const scan = (src: string) => agentListProducersIn(src, "fixture");
 
   it("accepts a compliant broadcast", () => {
-    const found = scan(`sseBroadcast("agent_list", buildAgentListPayload(reg));`);
-    expect(found).toEqual([expect.objectContaining({ usesBuilder: true })]);
+    const found = scan(`sseBroadcast("agent_list", buildAgentListPayload(reg, credentialStore));`);
+    expect(found).toEqual([expect.objectContaining({ usesBuilder: true, carriesStore: true })]);
   });
 
   it("accepts a payload assigned to a local first", () => {
     const found = scan([
-      `const payload = buildAgentListPayload(reg);`,
+      `const payload = buildAgentListPayload(deps.agentRegistry, deps.credentialStore);`,
       `deps.sseBroadcast("agent_list", payload);`,
     ].join("\n"));
-    expect(found).toEqual([expect.objectContaining({ usesBuilder: true })]);
+    expect(found).toEqual([expect.objectContaining({ usesBuilder: true, carriesStore: true })]);
+  });
+
+  it("rejects a builder call that hard-codes `undefined` for the store", () => {
+    const found = scan(`sseBroadcast("agent_list", buildAgentListPayload(reg, undefined));`);
+    expect(found).toEqual([expect.objectContaining({ usesBuilder: true, carriesStore: false })]);
   });
 
   it("rejects a hand-rolled payload, even next to an unrelated builder call", () => {
@@ -241,6 +255,20 @@ describe("agent_list producers all carry canRunTurns", () => {
       offenders,
       "each of these emits `agent_list` without buildAgentListPayload(), so the "
         + "payload has no canRunTurns and a client can be left with a stale truthy one",
+    ).toEqual([]);
+  });
+
+  it("hands every producer the credential store, not `undefined`", () => {
+    // docs/257 phase 2. The compiler forces a second argument; it does not stop
+    // a site passing `undefined` and dropping `harnessOnboardingCompletedAt`.
+    const offenders = agentListProducers()
+      .filter((p) => !p.carriesStore)
+      .map((p) => `${p.where} — ${p.payload}`);
+    expect(
+      offenders,
+      "each of these builds the payload without a credential store, so it carries "
+        + "no harnessOnboardingCompletedAt and the onboarding panel lingers over an "
+        + "install that just became runnable",
     ).toEqual([]);
   });
 

@@ -78,6 +78,46 @@ export function computeCanRunTurns(agentRegistry: AgentRegistry): boolean {
 }
 
 /**
+ * docs/257 req 9 (phase 2) — `canRunTurns` **and** the historical
+ * "has this install ever been set up?" stamp, resolved together.
+ *
+ * The stamp is written here, on the READ path, rather than at each
+ * credential-mutation site. That is a deliberate impurity and it buys two
+ * things a mutation-site stamp does not:
+ *
+ *  - **The migration case.** An install that was already configured before this
+ *    field existed has no stamp and will never mutate a credential again. The
+ *    first settings read after the upgrade finds the flag absent, finds
+ *    `canRunTurns` true, and stamps — so it is "completed" before it renders a
+ *    frame, with no separate migration step. An install upgraded with *no*
+ *    credentials is not stamped and does see the panel; req 9 records that as an
+ *    accepted one-off, because disconnecting deletes the record and so
+ *    "completed, then removed everything" is indistinguishable from "never
+ *    configured" on an install that predates the flag.
+ *  - **It cannot silently un-cover itself.** A mutation-site stamp is a list
+ *    that a newly-added credential path quietly falls off.
+ *
+ * There is deliberately **no second stamp condition** — "also stamp if any
+ * credential record exists" was an agent inference and is withdrawn: req 8 says
+ * onboarding finishes when the install can actually RUN something, not when a
+ * credential has been stored.
+ */
+export function resolveHarnessOnboarding(
+  agentRegistry: AgentRegistry,
+  credentialStore: CredentialStore | undefined,
+): { canRunTurns: boolean; harnessOnboardingCompletedAt?: string } {
+  const canRunTurns = computeCanRunTurns(agentRegistry);
+  const existing = credentialStore?.getHarnessOnboardingCompletedAt();
+  if (existing) return { canRunTurns, harnessOnboardingCompletedAt: existing };
+  if (!canRunTurns || !credentialStore) return { canRunTurns };
+  // `undefined` when the write failed — reported as not-yet-completed, so the
+  // panel repeats a correct ask rather than a lost stamp silently returning it
+  // months later. See `CredentialStore.stampHarnessOnboardingCompleted`.
+  const stamped = credentialStore.stampHarnessOnboardingCompleted(new Date().toISOString());
+  return stamped ? { canRunTurns, harnessOnboardingCompletedAt: stamped } : { canRunTurns };
+}
+
+/**
  * The canonical `agent_list` SSE payload (docs/257).
  *
  * Every producer of that event goes through here so `canRunTurns` cannot be
@@ -87,13 +127,20 @@ export function computeCanRunTurns(agentRegistry: AgentRegistry): boolean {
  * longer run anything. Hand-rolling the agent array had already caused the
  * matching bug once (a drifted inline copy dropped `reasoning`, see
  * `route-registry.ts`), which is why the array comes from `listAgents` too.
+ *
+ * `credentialStore` is a **required** parameter, `undefined` and all — phase 2
+ * puts `harnessOnboardingCompletedAt` on this payload as well, and the site
+ * that matters most is the one where the LAST credential is removed. Making it
+ * required means the compiler names every producer instead of an omission
+ * degrading silently to "no news" on the client.
  */
 export function buildAgentListPayload(
   agentRegistry: AgentRegistry,
-): { agents: AgentInfo[]; canRunTurns: boolean } {
+  credentialStore: CredentialStore | undefined,
+): { agents: AgentInfo[]; canRunTurns: boolean; harnessOnboardingCompletedAt?: string } {
   return {
     agents: listAgents(agentRegistry),
-    canRunTurns: computeCanRunTurns(agentRegistry),
+    ...resolveHarnessOnboarding(agentRegistry, credentialStore),
   };
 }
 
@@ -177,14 +224,15 @@ export async function getGlobalSettings(
         ?? DEFAULT_SELECTION_MODE;
     }
   }
-  // docs/257 req 8 — the install-level "can run something" signal, computed
-  // here rather than re-derived in the browser from `agents` (see
-  // `computeCanRunTurns`).
-  const canRunTurns = computeCanRunTurns(agentRegistry);
+  // docs/257 reqs 8 + 9 — the install-level "can run something" signal and the
+  // historical onboarding stamp, computed here rather than re-derived in the
+  // browser from `agents` (see `resolveHarnessOnboarding`).
+  const { canRunTurns, harnessOnboardingCompletedAt } =
+    resolveHarnessOnboarding(agentRegistry, credentialStore);
   // docs/252 phase 2 — every credential the user holds, in selection order per
   // group. Safe to return verbatim: `CredentialRoute` carries no secret.
   const credentialRoutes = credentialStore ? listCredentialRoutes(credentialStore) : [];
-  return { canRunTurns, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts, credentialRoutes };
+  return { canRunTurns, harnessOnboardingCompletedAt, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts, credentialRoutes };
 }
 
 // ---- Mutation operations ----

@@ -72,7 +72,7 @@ export async function registerBootstrapRoutes(
     // broadcast has to carry `canRunTurns`. Sending the old shape here would
     // leave every other tab with a stale signal and a composer that disagrees
     // with what the server will accept.
-    deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry));
+    deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry, deps.credentialStore));
 
     refreshAgentEnvForAllSessions(deps.serviceManagers ?? new Map<string, ServiceManager>());
     for (const sessionId of deps.runnerRegistry.ids()) {
@@ -405,7 +405,7 @@ export async function registerBootstrapRoutes(
         );
         deps.agentRegistry.refreshAuth(request.params.provider);
         deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
-        deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry));
+        deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry, deps.credentialStore));
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -442,7 +442,7 @@ export async function registerBootstrapRoutes(
         );
         deps.agentRegistry.refreshAuth(request.params.provider);
         deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
-        deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry));
+        deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry, deps.credentialStore));
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -586,7 +586,7 @@ export async function registerBootstrapRoutes(
         // the broadcast: omit it and the composer stays enabled over an install
         // that can no longer run anything, and the server refuses the message
         // the user was still allowed to type.
-        const payload = buildAgentListPayload(deps.agentRegistry);
+        const payload = buildAgentListPayload(deps.agentRegistry, deps.credentialStore);
         deps.sseBroadcast("agent_list", payload);
         deps.sseBroadcast("provider_accounts", { accounts: deps.providerAccountManager.list() });
         // docs/252 phase 2 — signing out removes credentials, so the Services
@@ -647,7 +647,7 @@ export async function registerBootstrapRoutes(
         // docs/257 — same as the Claude sign-out above: the last credential can
         // go here, so the payload carries `canRunTurns`. The hand-rolled agent
         // list this replaced had also drifted from `listAgents` (no `reasoning`).
-        const payload = buildAgentListPayload(deps.agentRegistry);
+        const payload = buildAgentListPayload(deps.agentRegistry, deps.credentialStore);
         deps.sseBroadcast("agent_list", payload);
         deps.sseBroadcast("provider_accounts", { accounts: deps.providerAccountManager.list() });
         // docs/252 phase 2 — see the Claude sign-out above.

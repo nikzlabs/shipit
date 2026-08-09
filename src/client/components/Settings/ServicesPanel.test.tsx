@@ -12,6 +12,7 @@ import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { CredentialRoute } from "../../../server/shared/types.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
+import { useUiStore } from "../../stores/ui-store.js";
 import { ServicesPanel } from "./ServicesPanel.js";
 
 const route = (over: Partial<CredentialRoute> & Pick<CredentialRoute, "id" | "serviceId" | "billingMode" | "via">): CredentialRoute => ({
@@ -41,6 +42,7 @@ beforeEach(() => {
   fetchCalls = [];
   useSettingsStore.getState().setCredentialRoutes([]);
   useSettingsStore.getState().setProviderAccounts([]);
+  useUiStore.getState().setToast(null);
   vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
     fetchCalls.push({
       url,
@@ -211,5 +213,51 @@ describe("ServicesPanel", () => {
     // The Anthropic key is its own `(anthropic, key)` card here, so the
     // accounts card must not offer a second editor for it.
     expect(screen.queryByTestId("provider-toggle-api-key-claude")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * docs/257 req 5 — a credential row reports its own failures, inline.
+ *
+ * Reachable during onboarding and not only after it: between docs/252 phases 2
+ * and 3 a user can add a DeepSeek key from the onboarding panel and get a card
+ * whose `canRunTurns` stays false, so these rows exist while the panel is still
+ * on screen and a toast fired from inside it would land somewhere else.
+ */
+describe("ServicesPanel credential-row errors (docs/257 req 5)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ error: "nope" }),
+      }),
+    );
+  });
+
+  it("reports a failed removal on the row, not as a toast", async () => {
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_1", serviceId: "deepseek", billingMode: "key", via: "string" }),
+    ]);
+    render(<ServicesPanel />);
+    await userEvent.click(screen.getByTestId("credential-remove-cred_1"));
+    await waitFor(() => {
+      expect(screen.getByTestId("credential-error-cred_1")).toBeInTheDocument();
+    });
+    expect(useUiStore.getState().toast).toBeNull();
+  });
+
+  it("reports a failed replacement on the row", async () => {
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_1", serviceId: "deepseek", billingMode: "key", via: "string" }),
+    ]);
+    render(<ServicesPanel />);
+    await userEvent.click(screen.getByTestId("credential-replace-cred_1"));
+    await userEvent.type(screen.getByTestId("credential-replace-input-cred_1"), "sk-new");
+    await userEvent.click(screen.getByTestId("credential-replace-submit-cred_1"));
+    await waitFor(() => {
+      expect(screen.getByTestId("credential-error-cred_1")).toBeInTheDocument();
+    });
+    expect(useUiStore.getState().toast).toBeNull();
   });
 });

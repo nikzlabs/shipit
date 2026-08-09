@@ -20,7 +20,7 @@ import { ServiceError } from "./types.js";
 import type { BootstrapData, GlobalSettings } from "./types.js";
 import type { RuntimeMode } from "../../shared/types.js";
 import { listSessions } from "./session.js";
-import { computeCanRunTurns, listAgents, getGlobalSettings } from "./settings.js";
+import { resolveHarnessOnboarding, listAgents, getGlobalSettings } from "./settings.js";
 import { getGitHubStatus } from "./github.js";
 import { listRepos } from "./repos.js";
 import { sessionCredentialsRoot } from "../session-credentials.js";
@@ -88,12 +88,14 @@ export async function getBootstrapData(deps: {
     getGlobalSettings(deps.agentRegistry, deps.workspaceDir, deps.credentialStore, deps.providerAccountManager).catch((err: unknown): GlobalSettings => {
       console.error("[bootstrap] Failed to get global settings:", err);
       return {
-        // docs/257 req 8 — computed rather than defaulted even in the failure
-        // fallback: it reads the agent registry, which is in memory and did not
-        // fail here, so a hard-coded `false` would disable the composer on a
-        // perfectly runnable install just because the settings file was
-        // unreadable.
-        canRunTurns: computeCanRunTurns(deps.agentRegistry),
+        // docs/257 reqs 8 + 9 — computed rather than defaulted even in the
+        // failure fallback: it reads the agent registry, which is in memory and
+        // did not fail here, so a hard-coded `false` would disable the composer
+        // on a perfectly runnable install just because the settings file was
+        // unreadable. The onboarding stamp rides along for the same reason —
+        // omitting it here would put the panel back over an install that
+        // completed onboarding long ago.
+        ...resolveHarnessOnboarding(deps.agentRegistry, deps.credentialStore),
         gitIdentity: { name: "", email: "" },
         systemPrompt: "",
         agents: listAgents(deps.agentRegistry),

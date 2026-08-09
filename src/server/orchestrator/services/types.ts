@@ -57,6 +57,13 @@ export interface GlobalSettings {
    * gate and the onboarding panel from disagreeing.
    */
   canRunTurns: boolean;
+  /**
+   * docs/257 req 9 — when harness onboarding was first completed (ISO), or
+   * absent for "never". The onboarding panel's presence is `absent && the
+   * GitHub gate is not up`; nothing ever clears it, so removing every
+   * credential later does not bring the panel back.
+   */
+  harnessOnboardingCompletedAt?: string;
   gitIdentity: { name: string; email: string };
   systemPrompt: string;
   agents: AgentInfo[];

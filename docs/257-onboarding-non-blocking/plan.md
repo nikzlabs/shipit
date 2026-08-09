@@ -561,6 +561,19 @@ Two PRs. This is a small feature and does not want more.
 | 1 | Runnable signal + honest composer | 3, 8, 10 | `canRunTurns` on the wire; the composer is genuinely disabled and says why; the starter-prompts predicate exists and is tested. The wizard is untouched. |
 | 2 | The panel | 1, 2, 4, 5, 6, 7, 9 | `harnessOnboardingCompletedAt`; `HarnessOnboardingPanel` in the chat pane; the wizard trimmed to a GitHub-only gate. |
 
+**Both phases have shipped.** Two details of phase 2 landed differently from the sketch above,
+and both are recorded where they belong rather than left to be rediscovered:
+
+- **The stamp's producer guarantee is a compiler guarantee, not a convention.**
+  `buildAgentListPayload`'s credential-store parameter is required (`CredentialStore | undefined`,
+  not optional), so every producer had to be visited by name — which reached two exported helpers
+  in `app-lifecycle.ts` the emit-site list never mentioned, because they take an opts bag rather
+  than a deps object. Phase 1's source-scan guard grew a second assertion for the hole the
+  compiler cannot close: a producer that passes a literal `undefined`.
+- **Card-scoped is not a weaker row-scoped.** Two of the moved toasts genuinely have no row to
+  land on — "Add account" fails before the row exists, and a *successful* disconnect deletes the
+  row its result describes — so the card-level slot is req 5's answer for those, not a shortcut.
+
 Phase 1 is coherent alone: under today's code its predicate is `!noAgentReady`, so it makes
 the existing product honest without changing the flow. Phase 2 is where the dependency on
 docs/252 phase 2 bites (see *Dependency* above). If both land in one PR, nothing is lost —
@@ -570,22 +583,24 @@ the split is about reviewability, not about shipping order.
 
 | File | Change |
 |---|---|
-| `client/components/OnboardingWizard.tsx` | **Trimmed to step 1 and renamed `GitHubGate.tsx`** — same blocking overlay, same `GitHubTokenForm`; step 2, `StepDots`, `initialStep` and the agent props go. |
+| `client/components/GitHubGate.tsx` | **Was `OnboardingWizard.tsx`, trimmed to step 1** — same blocking overlay, same `GitHubTokenForm`; step 2, `StepDots`, `initialStep` and the agent props gone. |
 | `client/AuthOverlay.tsx` | **Kept**, now mounting the gate alone. |
-| `client/components/OnboardingWizard.test.tsx` | Step-1 cases kept as the gate's tests; step-2 cases replaced by the panel's. |
+| `client/components/GitHubGate.test.tsx` | Step-1 cases kept as the gate's tests; step-2 cases replaced by `HarnessOnboardingPanel.test.tsx`. |
 | `client/components/HarnessOnboardingPanel.tsx` | **New.** The panel: lede + the Services surface. No step rail. |
 | `client/App.tsx` | Drop `noAgentReady` (`:354`); `needsOnboarding` becomes `githubNeeded` (`:363`) alone; **keep the latch**, with dismissal firing on GitHub connect rather than "Get Started" (`:2084`). Render the panel in the chat-pane slot (`:1892`), suppressed while the gate is up; widen the composer render gate (`:1982`); pass `disabledReason` (`:1985`). |
 | `client/components/MessageInput/MessageInput.tsx` | `disabledReason` prop: disables the textarea (`:766`), attach (`:780`), paste/drop (`:681`), permission selector (`:820`); hides the mic (`:799`) and skips Quick Capture's hotkey mic auto-arm; renders the textarea empty so a draft cannot hide the placeholder. |
 | `client/components/PermissionModeSelector.tsx` | New `disabled` prop, matching the model and reasoning selectors' existing one. |
 | `client/components/QuickCaptureOverlay.tsx` | Passes `disabledReason` (`:254`) — `disabled` (`:147`) guards submission only, so it alone would leave the input typeable. |
-| `client/utils/chat-runnable.ts` | **New.** `canRunTurns` reader + `starterPromptsAllowed`. |
-| `client/components/Settings/ProviderAccountsCard.tsx` | Inline the global toasts next to the row that produced them — failures (`:105`) and disconnect results (`:253`, `:258`). |
+| `client/utils/chat-runnable.ts` | `canRunTurns` reader + `starterPromptsAllowed` (phase 1), plus `harnessOnboardingPanelVisible` — the panel's three-clause predicate, beside the composer's own. |
+| `client/components/Settings/ProviderAccountsCard.tsx` | Inline the global toasts: **row-scoped** where a row exists, **card-scoped** for "Add account" (which fails before a row exists) and for a *successful* disconnect's result (which deletes the row it describes). |
+| `client/components/Settings/ServicesPanel.tsx` | Its own credential-row toasts (reorder / remove / replace) moved inline too — the same shared surface, the same argument, and reachable from the panel in the phase-2-to-3 window. |
+| `client/stores/settings-store.ts` | `harnessOnboardingCompletedAt`, and `providerAccountNotices` — the card-level slot an SSE handler needs to reach a component it does not render. |
 | `client/hooks/useServerEvents.ts` (duplicate refusal) | `reason: "duplicate"` toasts at `:304` because the refusal deletes the row; needs an in-panel landing place. |
 | *docs/252 phase 2's Services surface* | **No change needed.** The panel renders its card list and opens its "Add a service" dialog as-is. |
-| `server/orchestrator/services/settings.ts` | Compute `canRunTurns`; stamp `harnessOnboardingCompletedAt`. |
+| `server/orchestrator/services/settings.ts` | `resolveHarnessOnboarding` — computes `canRunTurns` and stamps `harnessOnboardingCompletedAt` together, on the read path. `buildAgentListPayload` takes the credential store as a **required** parameter so an omission is a compile error. |
 | `server/orchestrator/services/misc.ts` | Both fields on `BootstrapData.settings` (`:64`). |
 | `server/orchestrator/credential-store.ts` | `harnessOnboardingCompletedAt` on `CredentialData` (`:34`); the stamp's write must be confirmed, not swallowed by `save()` (`:238`). |
-| `server/orchestrator/app-lifecycle.ts`, `api-routes-bootstrap.ts`, `route-registry.ts` | Both fields on the SSE `agent_list` payload at **all ten** emit sites (`:1300`, `:1339`, `:1451`, `:1468`, `:1492`; `:245`, `:282`, `:419`, `:481`; `route-registry.ts:163`), plus a missing broadcast at `api-routes-bootstrap.ts:147`. |
+| `server/orchestrator/app-lifecycle.ts`, `api-routes-bootstrap.ts`, `route-registry.ts`, `bootstrap-managers.ts` | Both fields on the SSE `agent_list` payload at every emit site. Phase 1 routed all eleven producers through `buildAgentListPayload`; phase 2 makes its second parameter required, so the compiler named each one — including the two exported helpers (`markProviderAccountUnauthenticated` / `…Reauthenticated`) whose opts bags had to grow a `credentialStore` field. |
 | `client/hooks/useServerEvents.ts` | Read both fields off the SSE `agent_list` event (`:437`). |
 | `client/utils/session-data.ts`, `client/App.tsx` | Both readers copy named settings fields (`:349`, `:1107`) — the two fields need adding by hand. |
 | `docs/216-onboarding-starter-prompts/checklist.md` | One item: the re-implementation must `&&` in `starterPromptsAllowed`. |

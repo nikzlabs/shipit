@@ -77,9 +77,48 @@ export function starterPromptsAllowed(state: {
   return completed && state.canRunTurns;
 }
 
+/**
+ * docs/257 req 9 — whether the harness-onboarding panel takes the chat pane.
+ *
+ * **Three clauses, and the middle one is the only one about onboarding itself.**
+ *
+ * - `bootstrapLoaded`, because the store's pre-bootstrap default is "never
+ *   completed" — without it a set-up install paints one frame of setup panel
+ *   over its own conversation.
+ * - `harnessOnboardingCompletedAt == null` — the historical condition. Not
+ *   `!canRunTurns`: a user who completed onboarding and later removed every
+ *   credential is not a new user and does not get the panel back (req 9). They
+ *   get the disabled composer's placeholder, which says what to do.
+ * - `!githubGateUp` — **not decoration.** On a fresh install both onboarding
+ *   halves are unfinished at once, so without this clause the panel would mount
+ *   *behind* the GitHub gate's backdrop, and a mid-session token loss would
+ *   stack the gate over a panel that may itself have the add-service dialog
+ *   open. The two are not naturally exclusive; this is what makes them so.
+ */
+export function harnessOnboardingPanelVisible(state: {
+  bootstrapLoaded: boolean;
+  harnessOnboardingCompletedAt: string | null;
+  githubGateUp: boolean;
+}): boolean {
+  if (!state.bootstrapLoaded) return false;
+  if (state.githubGateUp) return false;
+  return state.harnessOnboardingCompletedAt === null;
+}
+
 /** Store-reading wrapper for {@link chatDisabledReason} — the composer's hook. */
 export function useChatDisabledReason(): string | undefined {
   const canRunTurns = useSettingsStore((s) => s.canRunTurns);
   const bootstrapLoaded = useUiStore((s) => s.bootstrapLoaded);
   return chatDisabledReason({ bootstrapLoaded, canRunTurns });
+}
+
+/** Store-reading wrapper for {@link harnessOnboardingPanelVisible}. */
+export function useHarnessOnboardingPanelVisible(githubGateUp: boolean): boolean {
+  const harnessOnboardingCompletedAt = useSettingsStore((s) => s.harnessOnboardingCompletedAt);
+  const bootstrapLoaded = useUiStore((s) => s.bootstrapLoaded);
+  return harnessOnboardingPanelVisible({
+    bootstrapLoaded,
+    harnessOnboardingCompletedAt,
+    githubGateUp,
+  });
 }
