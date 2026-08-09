@@ -17,6 +17,20 @@ import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { AgentId, AutoMergeState } from "../../shared/types.js";
+import type * as InstalledHarnesses from "../../shared/installed-harnesses.js";
+
+type InstalledHarnessesModule = typeof InstalledHarnesses;
+
+/**
+ * docs/252 phase 9 (req 14) — which harnesses this "deployment" has. Empty for
+ * every other test in this file, so they keep the pre-feature behaviour of
+ * "everything in the catalogue is installed".
+ */
+const uninstalledHarnesses = new Set<string>();
+vi.mock("../../shared/installed-harnesses.js", async (importOriginal) => {
+  const actual = await importOriginal<InstalledHarnessesModule>();
+  return { ...actual, isHarnessInstalled: (id: string) => !uninstalledHarnesses.has(id) };
+});
 
 interface FakeRunner {
   running: boolean;
@@ -162,6 +176,7 @@ describe("createHeadlessSession", () => {
   });
 
   afterEach(() => {
+    uninstalledHarnesses.clear();
     dbManager.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });
     if (savedSessionId === undefined) delete process.env.SHIPIT_SESSION_ID;
@@ -254,6 +269,56 @@ describe("createHeadlessSession", () => {
       cwd: path.join(tmpDir, "quick-1", "workspace"),
       encoding: "utf8",
     }).trim()).toBe("quick-tests");
+  });
+
+  // docs/252 phase 9 (req 14) — Quick Capture is the one turn-dispatching path
+  // that does not go through `agentAdmissionError`: it dispatches straight onto
+  // the runner. Its agent comes from a catalogue-wide model lookup or from
+  // caller-supplied text, so a stale browser selection can name a harness this
+  // deployment does not have — and the pin is write-once.
+  it("falls back to the install's default agent when the requested one is not installed", async () => {
+    uninstalledHarnesses.add("claude");
+
+    await createHeadlessSession(
+      sessionManager,
+      registry as unknown as SessionRunnerRegistry,
+      claimService(),
+      {
+        repoUrl: "https://github.com/acme/app.git",
+        prompt: "stale selection",
+        agent: "claude",
+      },
+      "codex",
+      undefined,
+      undefined,
+      undefined,
+      graduationDeps,
+    );
+
+    expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "codex", agentPinned: true });
+    expect(registry.created).toEqual([expect.objectContaining({ agentId: "codex" })]);
+  });
+
+  it("still honours a requested agent the deployment does have", async () => {
+    uninstalledHarnesses.add("codex");
+
+    await createHeadlessSession(
+      sessionManager,
+      registry as unknown as SessionRunnerRegistry,
+      claimService(),
+      {
+        repoUrl: "https://github.com/acme/app.git",
+        prompt: "deliberate pick",
+        agent: "claude",
+      },
+      "claude",
+      undefined,
+      undefined,
+      undefined,
+      graduationDeps,
+    );
+
+    expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "claude" });
   });
 
   it("persists a valid reasoning effort on the session row before the first turn", async () => {

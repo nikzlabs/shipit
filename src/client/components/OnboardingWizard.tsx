@@ -244,30 +244,42 @@ export function OnboardingWizard({
                 </p>
               </div>
 
+              {/*
+                docs/252 phase 9 (req 14) — don't offer to connect an account for a
+                harness this deployment did not install: the credential could never
+                be used, and the harness set is not something the user can change
+                from here. `!== false` rather than a truthiness test so the cards
+                still render while the agent list is loading (the pre-list state is
+                "unknown", not "absent").
+              */}
               <div className="space-y-5">
-                <ProviderAccountsCard
-                  provider="claude"
-                  agent={claudeAgent}
-                  compact
-                  onSubmitApiKey={apiKeySubmitter(onClaudeApiKeySubmit)}
-                />
+                {claudeAgent?.installed !== false && (
+                  <ProviderAccountsCard
+                    provider="claude"
+                    agent={claudeAgent}
+                    compact
+                    onSubmitApiKey={apiKeySubmitter(onClaudeApiKeySubmit)}
+                  />
+                )}
 
-                <ProviderAccountsCard
-                  provider="codex"
-                  agent={codexAgent}
-                  compact
-                  onSubmitApiKey={apiKeySubmitter(onCodexApiKeySubmit)}
-                />
+                {codexAgent?.installed !== false && (
+                  <ProviderAccountsCard
+                    provider="codex"
+                    agent={codexAgent}
+                    compact
+                    onSubmitApiKey={apiKeySubmitter(onCodexApiKeySubmit)}
+                  />
+                )}
 
-                {agents.filter((a) => a.id !== "claude" && a.id !== "codex").map((agent) => (
+                {agents.filter((a) => a.installed && a.id !== "claude" && a.id !== "codex").map((agent) => (
                   <div key={agent.id} className="flex items-center gap-3 p-3 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary)">
                     <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                      !agent.installed ? "bg-(--color-text-tertiary)" : agent.authConfigured ? "bg-(--color-success)" : "bg-(--color-warning)"
+                      agent.authConfigured ? "bg-(--color-success)" : "bg-(--color-warning)"
                     }`} />
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium text-(--color-text-primary)">{agent.name}</p>
                       <p className="text-xs text-(--color-text-secondary)">
-                        {!agent.installed ? "Not installed" : agent.authConfigured ? "Authenticated" : "Needs auth"}
+                        {agent.authConfigured ? "Authenticated" : "Needs auth"}
                       </p>
                     </div>
                   </div>

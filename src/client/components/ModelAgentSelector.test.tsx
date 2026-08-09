@@ -423,3 +423,51 @@ describe("ModelAgentSelector — mid-session model picking", () => {
     expect(screen.getByTestId("model-option-opus").querySelector("svg")).not.toBeNull();
   });
 });
+
+describe("ModelAgentSelector — uninstalled harnesses (docs/252 phase 9, req 14)", () => {
+  const codexOnly: AgentOption[] = [
+    { ...agents[0], installed: false },
+    agents[1],
+  ];
+
+  it("omits a harness this deployment did not install", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelAgentSelector
+        agents={codexOnly}
+        activeAgentId="codex"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        modelInfo={null}
+        hasActiveSession={false}
+      />,
+    );
+    await user.click(screen.getByTestId("model-agent-trigger"));
+
+    // No group header, no rows, no "not installed" tag — it does not exist here.
+    expect(screen.queryByText("Claude Code")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("model-option-opus")).not.toBeInTheDocument();
+    expect(screen.queryByText("not installed")).not.toBeInTheDocument();
+    // The installed one is unaffected.
+    expect(screen.getByTestId("model-option-gpt-5.6-sol")).toBeInTheDocument();
+  });
+
+  it("still shows an installed-but-unauthenticated harness, which is actionable", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelAgentSelector
+        agents={[{ ...agents[0], authConfigured: false }, agents[1]]}
+        activeAgentId="codex"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        modelInfo={null}
+        hasActiveSession={false}
+      />,
+    );
+    await user.click(screen.getByTestId("model-agent-trigger"));
+
+    expect(screen.getByText("Claude Code")).toBeInTheDocument();
+    expect(screen.getByText("needs auth")).toBeInTheDocument();
+    expect(screen.getByTestId("model-option-opus")).toHaveAttribute("aria-disabled", "true");
+  });
+});

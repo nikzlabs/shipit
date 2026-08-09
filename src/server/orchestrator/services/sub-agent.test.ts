@@ -23,6 +23,7 @@ import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { persistTurnInProgress } from "../chat-card-persistence.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
+import type * as InstalledHarnesses from "../../shared/installed-harnesses.js";
 import { SUB_AGENT_TRANSPORT_TIMEOUT_MS } from "../../shared/sub-agent-run.js";
 import { WorkerAbortedError, WorkerTimeoutError } from "../worker-http.js";
 import type { AccountSelection } from "../provider-account-manager.js";
@@ -36,6 +37,19 @@ interface FakeSession {
   agentId?: string;
   agentPinned?: boolean;
 }
+
+/**
+ * docs/252 phase 9 — harnesses this "deployment" declares it does NOT have.
+ * Empty by default: with no declaration nothing is refused for not being
+ * installed, which is the report-less (CI, dev checkout) case.
+ */
+const uninstalledHarnesses = new Set<string>();
+vi.mock("../../shared/installed-harnesses.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof InstalledHarnesses>();
+  return { ...actual, isHarnessInstalled: (id: string) => !uninstalledHarnesses.has(id) };
+});
+
+afterEach(() => uninstalledHarnesses.clear());
 
 function makeDeps(opts: {
   enableSubAgents?: boolean;
@@ -110,7 +124,9 @@ function makeDeps(opts: {
     } as never,
     agentRegistry: {
       refreshAuth: vi.fn(),
-      get: vi.fn(() => (opts.agentKnown === false ? undefined : { name: "Codex", authConfigured: opts.authConfigured ?? true })),
+      get: vi.fn(() => (opts.agentKnown === false
+        ? undefined
+        : { name: "Codex", installed: true, authConfigured: opts.authConfigured ?? true })),
     } as never,
     runnerRegistry: { get: vi.fn(() => (opts.runnerPresent === false ? undefined : runner)) } as never,
     providerAccountManager: { selectAccountForTurn, markAccountExhausted } as never,
@@ -145,6 +161,18 @@ describe("runSubAgent — authorization gates", () => {
   it("rejects an unknown agent (400)", async () => {
     const { deps } = makeDeps({ agentKnown: false });
     await expectServiceError(runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 }), 400);
+  });
+
+  // docs/252 phase 9 (req 14) — a harness this deployment did not install offers
+  // nothing, credentials or not. Checked BEFORE auth: "connect it in Settings"
+  // would be a dead end for a harness that is not here.
+  it("rejects a harness this deployment did not install (400)", async () => {
+    uninstalledHarnesses.add("codex");
+    const { deps, runner } = makeDeps({});
+    const err = await expectServiceError(
+      runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 }), 400);
+    expect(err.message).toMatch(/not installed in this deployment/);
+    expect(runner.spawnSubAgent).not.toHaveBeenCalled();
   });
 
   it("rejects an unauthed agent (400)", async () => {
@@ -878,7 +906,7 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
     const deps = {
       sessionManager: { get: () => ({ id: "s1", agentId: "claude", agentPinned: true }), list: () => [] },
       credentialStore: { getEnableSubAgents: () => true, getAgentSubAgentDefaults: () => ({}) },
-      agentRegistry: { refreshAuth: vi.fn(), get: () => ({ name: "Codex", authConfigured: true }) },
+      agentRegistry: { refreshAuth: vi.fn(), get: () => ({ name: "Codex", installed: true, authConfigured: true }) },
       runnerRegistry: { get: () => runner },
       usageManager: { record: vi.fn(), getSessionUsage: () => null, getSessionTokenTotals: () => null },
       chatHistoryManager,
@@ -999,7 +1027,7 @@ describe("runSubAgent — committing work a consult left after its turn ended (p
     const deps = {
       sessionManager: { get: () => ({ id: "s1", kind: "repo", agentId: "claude", agentPinned: true }), list: () => [] },
       credentialStore: { getEnableSubAgents: () => true, getAgentSubAgentDefaults: () => ({}) },
-      agentRegistry: { refreshAuth: vi.fn(), get: () => ({ name: "Codex", authConfigured: true }) },
+      agentRegistry: { refreshAuth: vi.fn(), get: () => ({ name: "Codex", installed: true, authConfigured: true }) },
       runnerRegistry: { get: () => runner },
       usageManager: { record: vi.fn(), getSessionUsage: () => null, getSessionTokenTotals: () => null },
       chatHistoryManager: { replaceInProgress: vi.fn(), append: vi.fn(), updateSubAgentConsultCard: vi.fn(() => true) },

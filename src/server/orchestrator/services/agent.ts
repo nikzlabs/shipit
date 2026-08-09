@@ -32,7 +32,7 @@ import type { MaterializeRunnerOutcome } from "./materialize-runner.js";
 import { ServiceError } from "./types.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import type { AgentInterfaceProvenance } from "../../shared/agent-interface-sdk/protocol.js";
-import { agentAuthenticationError, isAgentAuthenticated } from "./agent-auth-gate.js";
+import { agentAdmissionError } from "./agent-auth-gate.js";
 
 const PERMISSION_MODES: ReadonlySet<PermissionMode> = new Set<PermissionMode>([
   "auto",
@@ -168,8 +168,12 @@ export async function dispatchAgentMessage(
   //    unauthenticated `send_message` would.
   //
   const activeAgentId = runner.agentId;
-  if (!isAgentAuthenticated(deps.agentRegistry, activeAgentId)) {
-    throw new ServiceError(401, agentAuthenticationError(activeAgentId));
+  // docs/252 phase 9 — also refuses a harness this deployment did not install
+  // (req 14), which is how a dispatched turn on a session pinned to a since-
+  // removed harness fails with a reason instead of a missing binary.
+  const refusal = agentAdmissionError(deps.agentRegistry, activeAgentId);
+  if (refusal) {
+    throw new ServiceError(401, refusal);
   }
 
   // 4. Resolve file attachments + upload refs against the runner's session dir

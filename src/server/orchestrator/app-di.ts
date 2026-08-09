@@ -4,6 +4,7 @@ import path from "node:path";
 import { DatabaseManager } from "../shared/database.js";
 import { GitManager } from "../shared/git.js";
 import { AgentRegistry, isAllowedAgentEnvKey } from "../shared/agent-registry.js";
+import { readInstalledHarnesses } from "../shared/installed-harnesses.js";
 import { RepoGit } from "./repo-git.js";
 import { AuthManager } from "./agents/claude/auth-manager.js";
 import { CodexAuthManager } from "./agents/codex/auth-manager.js";
@@ -440,6 +441,15 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   });
   await agentRegistry.detect();
   const detectedAgents = agentRegistry.list();
+  // docs/252 phase 9 \u2014 say which question was answered. "codex \u2717" means something
+  // different depending on whether this deployment chose not to install it or the
+  // binary is simply absent from a dev checkout's $PATH.
+  const declaredHarnesses = readInstalledHarnesses();
+  console.log(
+    declaredHarnesses
+      ? `[server] Harnesses installed by this deployment: ${declaredHarnesses.join(", ") || "(none)"}`
+      : "[server] No harness install report; falling back to $PATH detection",
+  );
   const installedStr = detectedAgents.map((a) => `${a.binary} ${a.installed ? "\u2713" : "\u2717"}`).join(", ");
   const authStr = detectedAgents.map((a) => `${a.binary} ${a.authConfigured ? "\u2713" : "\u2717"}`).join(", ");
   console.log(`[server] Agent CLIs detected: ${installedStr}`);
@@ -452,7 +462,16 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // children inherit the parent's `agentId`. This value only matters for
   // the seconds between runner construction and the first turn pinning the
   // session \u2014 and for the dogfood-only `generateText` helper.
-  const defaultAgentId: AgentId = deps.defaultAgentId ?? "claude";
+  //
+  // docs/252 phase 9 (req 14) \u2014 still prefer Claude Code, but never name a harness
+  // this deployment did not install: on a Codex-only install the literal "claude"
+  // would seed every fresh runner (and `generateText`) with a CLI that is not
+  // there. The final literal is unreachable in practice \u2014 the installer refuses an
+  // empty selection \u2014 and is kept so the type is satisfied without a throw here.
+  const defaultAgentId: AgentId = deps.defaultAgentId
+    ?? detectedAgents.find((a) => a.id === "claude" && a.installed)?.id
+    ?? detectedAgents.find((a) => a.installed)?.id
+    ?? "claude";
 
   // ---- GitHub auth manager ----
   const githubAuthManager = deps.githubAuthManager ?? new GitHubAuthManager(workspaceDir, credentialStore);

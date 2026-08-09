@@ -18,6 +18,7 @@ import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { SessionContainerManager } from "../session-container.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import { agentIdForModel, getAgentCapabilities, KNOWN_AGENT_IDS } from "../../shared/agent-registry.js";
+import { isHarnessInstalled } from "../../shared/installed-harnesses.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { reconcileRunnerAgent } from "../reconcile-runner-agent.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
@@ -283,6 +284,18 @@ export async function spawnChildSession(
           `Pass --agent ${modelOwner}, or omit --agent to derive it from the model.`,
       );
     }
+  }
+
+  // docs/252 phase 9 (req 14) — the catalogue check above says the harness EXISTS;
+  // this says this deployment INSTALLED it. Checked after the model derivation so
+  // it covers both `--agent claude` and a bare `--model opus` that resolves to it,
+  // and before any disk work, so a spawn onto an absent CLI fails here with a
+  // reason instead of booting a container that dies on its first turn.
+  if (agentOverride && !isHarnessInstalled(agentOverride)) {
+    throw new ServiceError(
+      400,
+      `Agent '${agentOverride}' is not installed in this deployment.`,
+    );
   }
 
   // Quota: per-parent cap on active spawned children. Fail-closed.

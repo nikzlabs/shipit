@@ -268,6 +268,62 @@ else
   esac
 fi
 
+# --- Agent harness selection (docs/252 req 14) ---
+# Which agent CLIs this install has is chosen HERE, at install time, and is a
+# property of the deployment rather than a setting: it is a build arg for both the
+# orchestrator and the session-worker images, so changing it later means editing
+# SHIPIT_HARNESSES in the env file below and re-running deploy.sh. Claude Code and
+# Codex are the default, so accepting it gets today's behaviour.
+#
+# Skipped without a prompt when SHIPIT_HARNESSES is already set (a scripted
+# install: `SHIPIT_HARNESSES=codex bash setup.sh`) or when stdin is not a TTY, so
+# the curl|bash path stays non-interactive.
+SUPPORTED_HARNESSES="claude codex"
+
+persist_shipit_env() {
+  local key="$1" value="$2"
+  mkdir -p "$(dirname "$SHIPIT_ENV_FILE")"
+  touch "$SHIPIT_ENV_FILE"
+  chmod 600 "$SHIPIT_ENV_FILE"
+  if grep -q "^${key}=" "$SHIPIT_ENV_FILE" 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "$SHIPIT_ENV_FILE"
+  else
+    echo "${key}=${value}" >> "$SHIPIT_ENV_FILE"
+  fi
+}
+
+harnesses_valid() {
+  local candidate
+  for candidate in $(printf '%s' "$1" | tr ',' ' '); do
+    case " $SUPPORTED_HARNESSES " in
+      *" $candidate "*) ;;
+      *) return 1 ;;
+    esac
+  done
+  [ -n "$1" ]
+}
+
+if [ -z "${SHIPIT_HARNESSES:-}" ] && [ -t 0 ]; then
+  echo ""
+  echo "==> Agent harnesses"
+  echo "    Which agent CLIs should this install run? They are installed into the"
+  echo "    ShipIt images, so adding one later means re-running this deploy."
+  echo "    Supported: $(echo "$SUPPORTED_HARNESSES" | tr ' ' ',')"
+  echo ""
+  read -rp "  Harnesses to install [claude,codex]: " HARNESS_CHOICE
+  HARNESS_CHOICE="$(printf '%s' "${HARNESS_CHOICE:-claude,codex}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+  if harnesses_valid "$HARNESS_CHOICE"; then
+    persist_shipit_env SHIPIT_HARNESSES "$HARNESS_CHOICE"
+    echo "    Installing harnesses: $HARNESS_CHOICE (SHIPIT_HARNESSES persisted in $SHIPIT_ENV_FILE)."
+  else
+    echo "    '$HARNESS_CHOICE' is not a valid selection; keeping the default (claude,codex)."
+    echo "    Change it later by setting SHIPIT_HARNESSES in $SHIPIT_ENV_FILE and re-running deploy.sh."
+  fi
+elif [ -n "${SHIPIT_HARNESSES:-}" ]; then
+  persist_shipit_env SHIPIT_HARNESSES "$SHIPIT_HARNESSES"
+  echo "==> Agent harnesses: $SHIPIT_HARNESSES (from the environment)."
+fi
+
 # --- Build and start ShipIt (always run - this is the deploy step) ---
 echo "==> Building and starting ShipIt..."
 bash /opt/shipit/deployment/vps/deploy.sh

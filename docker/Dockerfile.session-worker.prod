@@ -118,13 +118,18 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 # cooldown via minimumReleaseAge) and gated on the CLI contract test — not by a
 # deploy-time cache-bust. Bins land on PATH so the bare-name spawns in
 # claude.ts / codex-adapter.ts / session-worker.ts (playwright-mcp) keep working.
+#
+# docs/252 phase 9 (req 14) — WHICH of them get installed is a build input
+# (SHIPIT_HARNESSES, default "claude,codex"), consumed by the shared installer
+# below. The same arg is passed to the ORCHESTRATOR image, which independently
+# installs the same CLIs; both images have to agree, because the orchestrator is
+# what offers a harness in the picker and this image is where turns actually run.
+ARG SHIPIT_HARNESSES=claude,codex
 COPY docker/agent-cli/package.json docker/agent-cli/package-lock.json /opt/agent-cli/
-RUN --mount=type=cache,target=/root/.npm \
-    (cd /opt/agent-cli && npm ci --ignore-scripts && npm rebuild @anthropic-ai/claude-code)
+COPY docker/agent-cli/install-agent-clis.sh /usr/local/bin/install-agent-clis
+RUN chmod 0755 /usr/local/bin/install-agent-clis
+RUN --mount=type=cache,target=/root/.npm install-agent-clis
 ENV PATH="/opt/agent-cli/node_modules/.bin:${PATH}"
-RUN ln -sf /opt/agent-cli/node_modules/.bin/claude /usr/local/bin/claude \
- && ln -sf /opt/agent-cli/node_modules/.bin/codex /usr/local/bin/codex \
- && ln -sf /opt/agent-cli/node_modules/.bin/playwright-mcp /usr/local/bin/playwright-mcp
 
 # Install Chrome and its system dependencies for Playwright MCP browser tools.
 # Playwright MCP now defaults to the `chrome-for-testing` channel, so we install

@@ -6,7 +6,7 @@
  * `isAuthConfigured("codex")` branch table.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentRegistry, ALLOWED_ENV_KEYS, isAllowedAgentEnvKey, getAgentCapabilities } from "./agent-registry.js";
 
 const ORIGINAL_OPENAI_KEY = process.env.OPENAI_API_KEY;
@@ -101,6 +101,57 @@ describe("AgentRegistry / isAuthConfigured('codex')", () => {
     process.env.OPENAI_API_KEY = "sk-only";
     registry.refreshAuth("codex");
     expect(registry.get("codex")?.authConfigured).toBe(true);
+  });
+});
+
+describe("AgentRegistry / installed set (docs/252 phase 9, req 14)", () => {
+  it("takes the declared harness set over a $PATH probe", async () => {
+    // The probe would say both are installed. The deployment says only Codex is,
+    // and the deployment is the fact — the orchestrator must not offer a harness
+    // the session-worker image was built without just because its own container
+    // happens to carry the binary.
+    const checkBinary = vi.fn(() => Promise.resolve(true));
+    const registry = new AgentRegistry({
+      checkBinary,
+      checkClaudeAuth: () => true,
+      checkCodexAuth: () => true,
+      declaredHarnesses: () => ["codex"],
+    });
+    await registry.detect();
+
+    expect(registry.get("claude")?.installed).toBe(false);
+    expect(registry.get("codex")?.installed).toBe(true);
+    expect(registry.available().map((a) => a.id)).toEqual(["codex"]);
+    // No probe at all: the declaration is authoritative, not a hint to confirm.
+    expect(checkBinary).not.toHaveBeenCalled();
+  });
+
+  it("falls back to probing when nothing is declared (a checkout, a test)", async () => {
+    const registry = new AgentRegistry({
+      checkBinary: (binary) => Promise.resolve(binary === "claude"),
+      checkClaudeAuth: () => true,
+      checkCodexAuth: () => true,
+      declaredHarnesses: () => null,
+    });
+    await registry.detect();
+
+    expect(registry.get("claude")?.installed).toBe(true);
+    expect(registry.get("codex")?.installed).toBe(false);
+  });
+
+  it("still lists an uninstalled harness, so callers can say why it is unavailable", async () => {
+    // `list()` is the full set with a flag; the *picker* is what hides the
+    // uninstalled ones. Keeping the row is what lets a spawn gate answer
+    // "not installed in this deployment" instead of "unknown agent".
+    const registry = new AgentRegistry({
+      checkBinary: () => Promise.resolve(true),
+      checkClaudeAuth: () => true,
+      checkCodexAuth: () => true,
+      declaredHarnesses: () => ["codex"],
+    });
+    await registry.detect();
+
+    expect(registry.list().map((a) => a.id).sort()).toEqual(["claude", "codex"]);
   });
 });
 

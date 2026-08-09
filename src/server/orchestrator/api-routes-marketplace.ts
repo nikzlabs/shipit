@@ -20,6 +20,7 @@ import {
   readPluginSkillBody,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
+import { isHarnessInstalled } from "../shared/installed-harnesses.js";
 
 export interface MarketplaceRouteDeps {
   marketplaceStore: MarketplaceStore;
@@ -98,15 +99,22 @@ export async function registerMarketplaceRoutes(
       const pluginName = typeof request.body.pluginName === "string" ? request.body.pluginName : null;
       const repoUrl = typeof request.body.repoUrl === "string" ? request.body.repoUrl.trim() : null;
       const requestedAgentId = typeof request.body.agentId === "string" ? request.body.agentId : null;
+      // docs/252 phase 9 (req 14) — resolve against the INSTALLED agents, not
+      // every agent the catalogue knows: an install session pins the agent it is
+      // given, so accepting a harness this deployment does not have would create
+      // a session whose first turn cannot run.
+      const installedAgents = deps.agentRegistry.list().filter((agent) => isHarnessInstalled(agent.id));
       const agentId = requestedAgentId
-        ? deps.agentRegistry.list().find((agent) => agent.id === requestedAgentId)?.id ?? null
+        ? installedAgents.find((agent) => agent.id === requestedAgentId)?.id ?? null
         : null;
       if (!marketplaceId || !pluginName || !repoUrl) {
         reply.code(400).send({ error: "marketplaceId, pluginName, and repoUrl are required" });
         return;
       }
       if (requestedAgentId !== null && !agentId) {
-        reply.code(400).send({ error: "agentId must be claude or codex" });
+        reply.code(400).send({
+          error: `agentId must be one of: ${installedAgents.map((agent) => agent.id).join(", ")}`,
+        });
         return;
       }
       if (!deps.claimSessionService) {

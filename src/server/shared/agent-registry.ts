@@ -1,9 +1,11 @@
 /**
- * AgentRegistry — runtime detection of installed agent CLIs and auth status.
+ * AgentRegistry — which agent CLIs this install has, and whether their
+ * credentials are configured. Used by the server to expose agent availability to
+ * clients and to validate `set_agent` requests.
  *
- * Checks which agent binaries are on $PATH and whether their credentials
- * are configured. Used by the server to expose agent availability to clients
- * and to validate `set_agent` requests.
+ * docs/252 phase 9 (req 14) — "installed" is the **declared** set when the image
+ * build declared one (`/opt/shipit/agents/installed.json`), and a `which` probe
+ * only when it did not. See `installed-harnesses.ts` for why the declaration wins.
  */
 
 import { execFile } from "node:child_process";
@@ -11,6 +13,7 @@ import { promisify } from "node:util";
 import { EventEmitter } from "node:events";
 import type { AgentId, AgentCapabilities } from "./types/agent-types.js";
 import { HARNESSES, nativeModelIdsForHarness } from "./catalogue/index.js";
+import { readInstalledHarnesses } from "./installed-harnesses.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -223,21 +226,38 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
    */
   private checkCodexAuth: () => boolean;
 
+  /**
+   * docs/252 phase 9 — the harness set this install declares, or `null` when it
+   * declares none (a checkout, a test, a pre-feature image) and `checkBinary` is
+   * the answer instead. Injectable so a test can assert either mode.
+   */
+  private declaredHarnesses: () => AgentId[] | null;
+
   constructor(opts?: {
     checkBinary?: (binary: string) => Promise<boolean>;
     checkClaudeAuth?: () => boolean;
     checkCodexAuth?: () => boolean;
+    declaredHarnesses?: () => AgentId[] | null;
   }) {
     super();
     this.checkBinary = opts?.checkBinary ?? defaultCheckBinary;
     this.checkClaudeAuth = opts?.checkClaudeAuth ?? (() => true);
     this.checkCodexAuth = opts?.checkCodexAuth ?? (() => false);
+    this.declaredHarnesses = opts?.declaredHarnesses ?? (() => readInstalledHarnesses());
   }
 
-  /** Probe the system for installed agent CLIs. */
+  /**
+   * Resolve which agent CLIs this install has.
+   *
+   * Prefers the build's declared set over a `which` probe: the deployment's
+   * harness selection is the fact (req 14), and a probe answers the narrower
+   * question of what happens to be on *this* container's $PATH. Read once here
+   * rather than per harness so one report backs the whole pass.
+   */
   async detect(): Promise<void> {
+    const declared = this.declaredHarnesses();
     for (const def of AGENT_DEFS) {
-      const installed = await this.checkBinary(def.binary);
+      const installed = declared ? declared.includes(def.id) : await this.checkBinary(def.binary);
       const authConfigured = this.isAuthConfigured(def.id);
       this.agents.set(def.id, {
         id: def.id,

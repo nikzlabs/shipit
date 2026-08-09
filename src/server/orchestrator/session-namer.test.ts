@@ -266,4 +266,26 @@ describe("generateSessionName", () => {
     const result = await mod.generateSessionName("x", "claude");
     expect(result?.title.length).toBeLessThanOrEqual(60);
   });
+  // docs/252 phase 9 (req 14) — naming runs on the ORCHESTRATOR's own CLIs, so a
+  // deployment that did not install this harness has nothing to shell out to.
+  it("skips naming for a harness this deployment did not install", async () => {
+    let spawned = false;
+    vi.doMock("../shared/installed-harnesses.js", () => ({
+      isHarnessInstalled: (id: string) => id !== "claude",
+      readInstalledHarnesses: () => ["codex"],
+    }));
+    vi.doMock("node:child_process", () => ({
+      execFile: () => {
+        spawned = true;
+        return { on: () => {}, stdin: { end: () => {} } } as unknown;
+      },
+    }));
+
+    const mod = await import("./session-namer.js");
+    const result = await mod.generateSessionName("hi", "claude");
+
+    expect(result).toBeNull();
+    expect(spawned).toBe(false);
+    vi.doUnmock("../shared/installed-harnesses.js");
+  });
 });

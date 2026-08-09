@@ -2,8 +2,12 @@
  * docs/252 phase 1 — the harnesses ShipIt can run.
  *
  * A harness is an agent CLI plus the adapter that normalizes its event stream.
- * The set is ShipIt's, not a user's (req 14); which harnesses an *install* has
- * becomes a build input in phase 9.
+ * The set is ShipIt's, not a user's (req 14); which harnesses an *install* has is
+ * the `SHIPIT_HARNESSES` build input (phase 9).
+ *
+ * **Adding a row here means adding one to `docker/agent-cli/install-agent-clis.sh`**
+ * — its npm package and its binary — or the image can never install it.
+ * `agent-cli-install.test.ts` fails the build if the two disagree.
  *
  * What is NOT here: Cursor CLI and OpenCode. The survey in
  * `docs/252-custom-models/catalogue.md` records what they appear to need — and

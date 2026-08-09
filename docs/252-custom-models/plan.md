@@ -133,7 +133,7 @@ the design.
 | 6 | Usage, cost and attribution | 10, 11, 16 | You can *see* what you are running and where the money went. (Phase 3 records it.) |
 | 7 | Non-turn work | 9 | Naming and PR descriptions get their own model. |
 | 8 | Model retirement | 13 | Sessions survive a model leaving the catalogue. |
-| 9 | Harness install selection | 14 | Deployments choose their harnesses. |
+| 9 | Harness install selection | 14 | Deployments choose their harnesses. **Landed.** |
 
 **Phase 1 — Catalogue and identities.** The service catalogue as data: `serviceId`, the
 API styles each service speaks, per style the models declared for it plus the metadata
@@ -719,11 +719,94 @@ resolver declines to guess — a missing successor degrades to today's behaviour
 
 **Phase 9 — Harness install selection.** Which harnesses a deployment installs becomes a
 build input, defaulting to Claude Code and Codex. This supersedes the never-implemented
-sketch in `docs/154-cursor-agent-adapter`, which proposed the same mechanism
-(`INSTALL_*_CLI` booleans written to `/opt/shipit/agents/installed.json`) for the same
+sketch in `docs/154-cursor-agent-adapter`, which proposed the same mechanism for the same
 reason. Last because nothing else depends on it, and because it is the phase most likely
 to be deferred — though not for free: req 14 is unmet until it lands, so deferring it is
 a requirement left open rather than a phase skipped.
+
+**Phase 9 has landed**, ahead of phases 2–8. The input is **`SHIPIT_HARNESSES`** (a
+comma-separated list of harness ids, default `claude,codex`) rather than docs/154's
+per-CLI `INSTALL_*_CLI` booleans: one list is one build arg per image whatever the
+catalogue grows to, where a boolean per harness is a new arg — in two Dockerfiles and two
+compose files — for every harness added. The report path is docs/154's,
+`/opt/shipit/agents/installed.json`.
+
+`docker/agent-cli/install-agent-clis.sh` is the single consumer, run by **every** image
+that carries the CLIs (`Dockerfile.prod`, `Dockerfile.session-worker.prod`, and the dev
+and dogfood images). It keeps docs/141's pinned install exactly as it was — one committed
+manifest, `npm ci` against the committed lockfile — and **prunes** the deselected
+harnesses afterwards, because npm cannot omit an arbitrary dependency from `npm ci` and a
+manifest split per CLI would fork the Renovate + contract-test flow docs/141 exists to
+keep single. Pruning is by npm-scope *prefix*: both CLIs ship platform-specific optional
+dependencies (`@anthropic-ai/claude-code-linux-x64`, `@openai/codex-linux-x64`) that an
+exact-name removal would leave behind.
+
+`AgentRegistry.detect()` now reads that report and only falls back to `which` when no
+report exists — a checkout, a unit test, or a pre-feature image. That fallback is why
+`readInstalledHarnesses` returns `null` for "nothing declared" and `[]` for "declared and
+empty": collapsing them would let a missing or corrupt report silently empty the picker on
+every existing deployment. A report that names harnesses and leaves *none* recognizable —
+`{"harnesses":["future-id"]}` — is corruption rather than a choice, since the installer
+refuses an empty selection, so it reads as "nothing declared" too (cross-backend review
+found that hole; the first cut returned `[]` and disabled everything).
+
+What phase 9 found:
+
+- **Gating every *selection* path is not enough, and enumerating them does not converge.**
+  The HTTP `set_agent`, its WS twin and the picker already checked `installed`;
+  `runSubAgent` and `spawnChildSession --agent` did not, and were given the check. But
+  cross-backend review then found four more ways an *effective* agent arrives without
+  passing any selection gate — a session pinned before the harness was dropped, a stale
+  `vibe-agent-id` in a browser, Quick Capture deriving one from the static catalogue, a
+  child inheriting its parent's, a plugin-install session pinning a requested one. That is
+  a list that grows, so the gate that has to hold is **turn admission**:
+  `agentAdmissionError` (`services/agent-auth-gate.ts`) refuses an uninstalled harness at
+  the last point before a CLI is spawned, and both admission callers go through it. The
+  design already named this as "the one that matters most"; phase 9 is where that stopped
+  being about credentials only. It is checked *before* auth, because "sign in to Claude" is
+  a dead end on an install with no Claude Code to sign into.
+
+  Quick Capture is the one path that cannot use it — it dispatches straight onto the
+  runner — and so falls back to the install's default agent with a warning rather than
+  pinning a session, write-once, to a harness that cannot run.
+
+  **Every gate that says "not installed in this deployment" asks the declared set, never
+  `AgentInfo.installed`.** They agree wherever an image build wrote a report, and differ
+  exactly where none did and the flag is a `which` probe. Refusing a *turn* is far
+  stronger than greying a picker row — all `installed` drove before — and a probe miss
+  does not support the claim the message makes: an injected agent factory, a local-mode
+  in-process adapter, or a `$PATH` that differs at spawn time all probe as absent and run
+  fine. CI found this the direct way: the first cut read `installed`, and every dispatch
+  integration test 401'd on a runner with no agent CLIs on `$PATH`. The picker's own
+  filter still reads `installed`, which is the long-standing behaviour for a harness that
+  cannot be found.
+- **"Appears nowhere in the picker" was a real UI change, not a consequence.** An
+  uninstalled harness used to render as a group header tagged *not installed* over a list
+  of disabled rows. That treatment is right for *installed but unauthenticated* — which is
+  actionable, and stays — and wrong for a harness the deployment does not have. Onboarding
+  had the same shape and no longer offers to connect an account for a harness that cannot
+  use it.
+- **Session naming needed an explicit skip.** It shells out to the orchestrator's own CLI,
+  so on an install without that harness it would spawn a missing binary and read the
+  failure back out of stderr. `null` already means "keep the placeholder title", so the
+  skip changes nothing around it.
+- **The set is not enforced across the two images at runtime, and the honest statement of
+  why is narrower than the first draft's.** Both builds take the same arg from one place
+  (the compose files' `${SHIPIT_HARNESSES:-claude,codex}`, fed by the operator env file),
+  so the two *images* cannot disagree within a deploy. **Containers can**: a deploy
+  deliberately does not kill session workers (docs/113), and `getContainerFreshness`
+  compares `SHIPIT_BUILD_ID` — the git SHA — so a redeploy that changes only
+  `SHIPIT_HARNESSES` leaves adopted workers looking current and they are never rotated for
+  it. Adding a harness therefore offers it, in already-resident sessions, on a container
+  whose image predates it; the turn fails on the missing binary until that container
+  rotates. New sessions are unaffected (new container, new image), and removing a harness
+  is safe in the same window because the turn-admission gate refuses it first.
+
+  Left as a documented window rather than fixed, because fixing it means either killing
+  live sessions on a redeploy — the thing docs/113 exists to stop — or making the harness
+  set a second staleness axis for a change that is rare, loud when it bites, and
+  self-healing on the next container rotation. Cross-backend review found this; the first
+  draft claimed the images "cannot disagree" and left the container case unsaid.
 
 ## What a third harness could break
 
@@ -1045,7 +1128,8 @@ implemented: `INSTALL_CLAUDE_CLI` / `INSTALL_CODEX_CLI` / `INSTALL_CURSOR_CLI` b
 consumed by the image build, with the result written to `/opt/shipit/agents/installed.json`
 for `AgentRegistry` to detect. Req 14 adopts that design and supersedes the doc; the parts
 of docs/154 that remain distinct are the Cursor **adapter** itself and its stream parsing,
-which this feature does not touch.
+which this feature does not touch. Phase 9 shipped it as a single `SHIPIT_HARNESSES` list
+rather than a boolean per CLI, and kept the report path — see the phase note above.
 
 Consequence worth stating because it is easy to get backwards: *installed* and
 *credentialed* are different gates. A harness that was not installed offers nothing
