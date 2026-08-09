@@ -9,7 +9,7 @@ import { isPlanDocumentWrite } from "../../../server/shared/transcript-input-pol
 
 // Sub-component imports
 import { ToolUseItem } from "../message-tools.js";
-import { parseMessageSegments, MarkdownContent, CodeBlock } from "../message-markdown.js";
+import { parseMessageSegments, MarkdownContent, CodeBlock, ShipitPointerSessionProvider } from "../message-markdown.js";
 import { getSegmentMatches, HighlightedText } from "../message-highlighting.js";
 import { MessageFileAttachments, MessageImages } from "../message-media.js";
 import { useSessionStore } from "../../stores/session-store.js";
@@ -109,7 +109,19 @@ export function MessageList({
   // `MarkdownContent` memo, this turns the old O(messages × tokens) parse
   // storm into roughly O(frames). WS delivery is untouched, so no message is
   // dropped — only the render cadence is throttled.
-  const messages = useDeferredValue(messagesProp);
+  // docs/258 — the messages and the session they belong to are deferred as ONE
+  // value. Deferring the messages alone would let a click on the outgoing
+  // session's still-painted transcript resolve against the incoming session's
+  // services; paired, `deferred.sessionId` always describes the messages that
+  // are actually on screen.
+  const liveSessionId = useSessionStore((s) => s.sessionId);
+  const deferred = useDeferredValue(
+    useMemo(
+      () => ({ messages: messagesProp, sessionId: liveSessionId }),
+      [messagesProp, liveSessionId],
+    ),
+  );
+  const messages = deferred.messages;
 
   const { containerRef, currentMatchRef } = useMessageScroll(messages, isLoading, currentMatch);
 
@@ -117,7 +129,7 @@ export function MessageList({
   // docs/178 — transient "Compacting…" indicator (emit-only; not persisted).
   // docs/239 — the transcript's owning session; the self merge-watch card's
   // Cancel targets it.
-  const activeSessionId = useSessionStore((s) => s.sessionId);
+  const activeSessionId = liveSessionId;
   const compacting = useSessionStore((s) => s.compacting);
   // docs/144 — transient sub-agent spawn chips (emit-only; not persisted).
   const subAgentSpawns = useSessionStore((s) => s.subAgentSpawns);
@@ -258,6 +270,7 @@ export function MessageList({
   };
 
   return (
+    <ShipitPointerSessionProvider value={deferred.sessionId ?? null}>
     <div
       ref={containerRef}
       className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-2 [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_5rem]"
@@ -384,7 +397,13 @@ export function MessageList({
                 </div>
               )}
               {useMarkdown ? (
-                <MarkdownContent text={msg.text} />
+                // `shipitLinks` — the ONE surface where agent-authored pointers
+                // into the Preview / Present tab are live (docs/258). This text
+                // is the agent's own output; every other `MarkdownContent` call
+                // site renders content ShipIt did not author (PR and issue
+                // bodies, comments, reviews, subagent reports) and must not be
+                // able to present a button that starts a Compose service.
+                <MarkdownContent text={msg.text} shipitLinks />
               ) : hasCodeBlocks ? (
                 segments.map((seg) => {
                   // Key on the segment's character offset, not its array index.
@@ -511,5 +530,6 @@ export function MessageList({
 
       {!isLoading && messages.length > 0 && renderRewindPoint(messages.length, true)}
     </div>
+    </ShipitPointerSessionProvider>
   );
 }

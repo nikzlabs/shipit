@@ -22,7 +22,7 @@ import { Button } from "./ui/button.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { sessionRelativePath } from "../path-utils.js";
 import { usePresentStore } from "../stores/present-store.js";
-import { useUiStore } from "../stores/ui-store.js";
+import { revealWorkspaceTab } from "../utils/reveal-workspace-tab.js";
 import { parseMcpToolName, isPresentTool } from "./tool-names.js";
 import { COMMAND_SUMMARY_CHARS } from "../../server/shared/transcript-input-policy.js";
 import { useLazyToolInput } from "../hooks/useLazyToolInput.js";
@@ -435,9 +435,7 @@ function PresentToolChip({
 }) {
   const focus = () => {
     usePresentStore.getState().focusById(presentId);
-    useUiStore.getState().setRightTab("present");
-    useUiStore.getState().setMobilePanel("preview");
-    useUiStore.getState().setMobileSidebarOpen(false);
+    revealWorkspaceTab("present");
   };
 
   return (

@@ -91,6 +91,18 @@ function withPath(base: string, path?: string | null): string {
   }
 }
 
+/**
+ * Where a freshly created slot should enter: a live agent-authored destination
+ * for this slot if there is one, otherwise the path the page last reported about
+ * itself. Read from the store at slot-creation time, never through a dep.
+ */
+export function desiredPathFor(slotKey: string, sessionId: string | undefined): string | undefined {
+  const state = usePreviewStore.getState();
+  const intent = state.previewLinkIntent;
+  if (intent?.slotKey === slotKey && intent.sessionId === sessionId) return intent.targetPath;
+  return state.previewPaths[slotKey];
+}
+
 export interface UsePreviewHealthPollerParams {
   activeSlotKey: string | null;
   activePort: number;
@@ -205,13 +217,19 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
       // than through a dep so a path reported while we were polling still
       // counts, and so this effect doesn't re-run on every navigation inside
       // an already-created slot.
+      //
+      // An agent-authored pointer waiting on this slot wins over the remembered
+      // path (docs/258): it is where the user just asked to go, and the
+      // remembered path is only where the previous page happened to be. Entering
+      // at the destination is also what makes a pointer to a stopped service
+      // work — the slot is created after the boot, already at the right place.
       const result = computePreviewUrl(
         sessionId ?? "_",
         activePort,
         preview,
         apiHost,
         apiProtocol,
-        usePreviewStore.getState().previewPaths[key],
+        desiredPathFor(key, sessionId),
       );
       if (result) {
         createdSlotsRef.current.add(key);

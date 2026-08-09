@@ -38,11 +38,11 @@ Two URL schemes, written as ordinary markdown links (req 7):
 - **`shipit-present:<file path>`** — the file path is already the artifact's
   identity in the Present carousel, so it needs no new identifier.
 
-Both accept a query string and a fragment, and those two carry the payload:
+Both accept a query string and a fragment:
 
 - The **fragment** names the place inside the destination (req 9).
-- The **query params + fragment** are delivered to the destination page as a
-  `link` event on `window.shipit`, wherever page JavaScript exists (req 11).
+- In the Preview, the **whole address** becomes the URL the page is navigated
+  to, so the query and fragment are what the page reads to react (req 11).
 
 Both are optional. A pointer with neither addresses the destination as a whole,
 which req 5 explicitly permits.
@@ -51,13 +51,14 @@ That is the whole syntax. No new tool, no new card, no new persisted message
 type — a pointer is text in an existing assistant message, so it survives
 history reload for free.
 
-### Why the payload rides the URL
+### Why the address is the whole payload
 
 Req 9 and req 11 could each have grown their own mechanism — a fragment for
 scrolling, a separate structured payload for page JS. They collapse into one:
-the parsed URL *is* the payload. A page that only wants the anchor uses the
-fragment; a page that wants to react uses the same parsed values through the
-SDK. One thing for the agent to author, one thing to document.
+the address the agent wrote *is* the payload. A page that only wants the anchor
+uses the fragment; a page that wants to react reads the same values off its own
+`location`. One thing for the agent to author, one thing to document, and no
+API surface to keep working forever.
 
 ### Choosing the rendered form (req 1)
 
@@ -71,8 +72,8 @@ Two need attention: [REQ-7](shipit-present:/persist/reqs.html#req-7) and
 [Open the failing one](shipit-present:/persist/reqs.html?shipit-render=button#req-7)
 ```
 
-It is stripped before the payload reaches the page, so a page never sees ShipIt's
-own presentation knob among its parameters. The `shipit-` prefix is what makes
+It is stripped from the URL the page is navigated to, so a page never sees
+ShipIt's own presentation knob among its parameters. The `shipit-` prefix is what makes
 that strip safe to state as a rule rather than a special case.
 
 Markdown gives no other place to put this. The link *title* is a tooltip and
@@ -114,13 +115,24 @@ sent — that is how the user sees the service booting instead of a blank pause.
 
 ### Preview (req 2)
 
-1. `parseShipitLink` resolves the href to `{ service, path, params, hash }`.
+1. `parseShipitLink` resolves the href to `{ service, target }` — `target` being
+   the path, query and fragment with `shipit-render` removed.
 2. The service name is matched exactly against `preview-store.services`. No
    declared service by that name, or one with no declared port → req 10 toast.
 3. The click records an **intent** (below) and selects the port.
 4. A live slot is navigated by **assigning the iframe's `src`** to the resolved
-   destination URL.
+   destination URL — unless the page is already there.
 5. A service that is not running is started first (req 12), below.
+
+**"Already there" is decided against the path the page REPORTED, not the slot's
+entry URL.** `previewPaths` is written by the injected script on load and on
+every history change, so it tracks client-side routing; the slot URL is only
+where the page started. Comparing against the entry URL breaks both directions —
+a slot created at `/x` whose app has since routed to `/y` refuses to go back, and
+a slot created at `/` reloads the app on every repeat click. The decision is
+`resolvePointerNavigation`, split out of `PreviewFrame` because the component
+around it (iframe pool, health poller, postMessage bridge) is not testable in
+isolation while the comparison is.
 
 There is no delivery step. The page's reaction (req 11) is the URL it is now
 at — `location.search`, `location.hash`, `hashchange` — so navigating *is* the
@@ -140,7 +152,7 @@ two different facts and must not share a slot.
 So a click records:
 
 ```ts
-{ sessionId, slotKey, service, targetPath, payload, clickId, phase }
+{ sessionId, service, port, slotKey, targetPath, clickId, phase, startedAt }
 ```
 
 - **`sessionId`** — the intent is cancelled on a session switch. It describes a
@@ -148,12 +160,33 @@ So a click records:
 - **`clickId`** — every click gets a fresh one, and **last click wins**. Two
   rapid pointers, especially to different services, resolve to the most recent;
   an earlier intent that has not completed is dropped, not queued.
-- **`phase`** — `starting` | `navigating` | `delivering`, so a click arriving
-  during a boot can wait rather than re-sending a start.
-- Re-clicking the *same* pointer is a new intent with a new `clickId`, and
-  delivers the SDK event again. Clicks are not coalesced: clicking "requirement
-  7" twice means the user asked twice, and a page that highlights on each click
-  should highlight again.
+- **`phase`** — `pending` | `starting` | `navigating`. `starting` means a start
+  is already in flight, so a click arriving during a boot waits rather than
+  sending a second one. (An earlier draft had a `delivering` phase; it went with
+  the SDK channel, since navigating *is* the delivery.)
+- **`startedAt`** — an intent that never resolves is dropped after a TTL. Not a
+  failure detector: without it a service that never starts would leave the
+  destination armed, and selecting that port by hand much later would yank the
+  user somewhere they no longer remember asking for.
+- There is no `payload` field. Once the SDK channel was cut, the parsed query
+  and fragment had no destination other than the URL itself — so `targetPath`
+  carries them and nothing needs to survive alongside it.
+- There is no `phase` field either. The one durable fact the flow needs is
+  *"have we asked this service to start?"*, and it lives in a **ref inside
+  `usePreviewLinkIntent`**, not on the intent. Writing it to the store would
+  re-run the effect with the service status unchanged — still `stopped`, because
+  the server has not answered yet — and the "did the start take?" branch would
+  fire against its own write every time. Keyed by service name, it also survives
+  a second click replacing the intent, which is what stops two rapid clicks on
+  one stopped service from sending two starts.
+
+**Re-clicking the same pointer.** A repeat click re-runs whatever is cheap and
+idempotent — focusing an artifact, scrolling a markdown heading — and never
+reloads or rebuilds a page to do it. A Preview page already at the destination
+is left alone, and a rendered HTML artifact already showing the fragment is not
+remounted. Both would mean discarding state the user's own scripts hold in order
+to repeat something the requirements already say produces nothing (see
+"the page-facing contract" in `requirements.md`).
 
 The desired path is used when creating the slot; the reported path is committed
 to `previewPaths` only after the new document loads, which keeps that map's
@@ -174,11 +207,10 @@ unauthenticated channel, to do something the parent can already do.
 
 ### Present (req 3)
 
-1. `parseShipitLink` resolves the href to `{ filePath, params, hash }`.
+1. `parseShipitLink` resolves the href to `{ filePath, fragment }`.
 2. The artifact with that path is focused. No such artifact → req 10 toast
    naming the path.
-3. The fragment and payload are delivered — by a different mechanism per
-   artifact kind, below.
+3. The fragment is honoured — by a different mechanism per artifact kind, below.
 
 Focusing has to do more than move the carousel index, because three pane states
 can leave a pointer pointing at nothing on screen:
@@ -209,6 +241,15 @@ stopped service: the slot key `sessionId:port` is computable at click time, and
 
 So req 12 adds exactly one thing to the flow: when the resolved service's status
 is not `running` or `starting`, send `{ type: "start_service", name }`.
+
+**`error` counts as "not running".** A service sitting in `error` from some
+earlier attempt of its own is not this pointer's failure, and refusing it would
+leave the user holding a link that can never work again — so it is started like
+any other stopped service. What makes an `error` a req 10 failure is reaching it
+*after* our own start request, which is exactly the distinction the
+start-requested ref draws. A return to `stopped` is deliberately not reported:
+it is also what the service reads as in the moment before the server answers,
+and telling the two apart is the undetectable class req 10 is best-effort about.
 
 `start_service` is a **WebSocket** message and the socket is held by `App`, which
 threads `send` down as props (`PreviewServicesDrawer.tsx:526`). A markdown link
@@ -321,14 +362,13 @@ The cost is stated in `requirements.md`: a repeat click on an identical pointer
 changes no URL and therefore produces no event, and presented artifacts cannot
 react in script at all.
 
-**The scroll cannot fire on receipt**, though. The SDK is injected into `<head>`
-(`RenderedFrame.tsx:56`), so for a Present artifact — where the click is what
-mounts the frame — the link can arrive before the document has parsed and
-`getElementById` returns null. The promised no-JavaScript anchor would silently
-do nothing, which is the whole point for a page with no script. So the SDK
-retains the hash and scrolls on `DOMContentLoaded`, attempting immediately only
-when `readyState` is already past loading. Both orderings need a test; the early
-one is the default case.
+**The scroll cannot fire on receipt**, though. The script is injected into
+`<head>`, so for a Present artifact — where the click is what mounts the frame —
+it runs before the document has parsed and `getElementById` returns null. The
+promised no-JavaScript anchor would silently do nothing, which is the whole point
+for a page with no script. So it defers to `DOMContentLoaded`, running
+immediately only when `readyState` is already past loading. Both orderings need a
+test; the early one is the default case.
 
 ## Unopenable pointers (req 10)
 
@@ -349,11 +389,19 @@ silently doing nothing:
 | The service reached `error` after a start | the service name |
 | No artifact presented from that path | the path |
 | The artifact's content fetch failed | the path |
-| Fragment matched no element / no markdown heading | the fragment |
-| No preview URL can be built for this host (raw-IP host, `usePreviewHealthPoller.ts:43`) | that previews need a wildcard host |
+| No markdown heading matched the fragment | the fragment |
+| The service reached `error` after ShipIt asked it to start | the service name |
+| The resolved destination is not on the preview's origin | that it points outside the preview |
 
 Each names the missing thing, because "couldn't open that" gives the user
 nothing to act on. A *stopped* service is not a failure — it is req 12.
+
+Two rows an earlier draft listed are deliberately absent. A **missing element in
+a rendered HTML artifact** is not observable: the frame is opaque-origin and this
+feature adds no channel back from it, so the injected script's `getElementById`
+miss is invisible to ShipIt. And **a host that cannot carry a preview
+subdomain** (a raw IP) is already explained, better than a toast could, by the
+Preview panel's own empty state — which the click has just revealed.
 
 **What this deliberately does not cover.** A route that loads and shows the app's
 own "not found" screen is indistinguishable from a route that opened correctly;
@@ -392,12 +440,37 @@ only where the text is agent-authored — assistant chat messages
 (`MessageList.tsx:316`). Everywhere else the href falls through to the existing
 branches and renders as it does today.
 
-Mechanically this means a second pair of module-level constants — a components
-map and a `urlTransform` with the schemes enabled — selected by prop. Both must
-stay **module-level**, because `MarkdownContent` is memoised on `text` alone on
-the premise that its plugins and components are stable module constants
-(`message-markdown.tsx:363`); building either per render would silently reinstate
-the O(messages × tokens) re-parse that memo exists to prevent.
+Mechanically this is a second **module-level** components map, selected by a
+`shipitLinks` prop that defaults to off. It must stay module-level, because
+`MarkdownContent` is memoised on the premise that its plugins and components are
+stable module constants; building one per render would silently reinstate the
+O(messages × tokens) re-parse that memo exists to prevent.
+
+`urlTransform` is **not** paired, though an earlier draft assumed it would be.
+It passes both schemes through everywhere, and `MarkdownLink` renders a pointer
+as **plain text** on any surface that did not opt in. Recognising the scheme in
+the transform is what lets that branch tell a pointer apart from an ordinary
+broken link at all — react-markdown's default sanitiser rewrites an unknown
+scheme to `""`, which would have left an untrusted-surface pointer rendering as
+an anchor to nowhere. Passing it through is not what enables it: without the
+opt-in the scheme never reaches the DOM, so there is no href and no handler.
+
+That pass-through is restricted to the **`href`** property, which is the only one
+`MarkdownLink` guards. Unrestricted, `![x](shipit-present:…)` emits a literal
+`<img src="shipit-present:…">` on every surface — inert, but a direct
+contradiction of the invariant above and the sort of gap that grows into a real
+one later.
+
+**A pointer is also scoped to the transcript that rendered it.** `MessageList`
+paints a `useDeferredValue` of the messages, so during a session switch React can
+keep the OUTGOING transcript on screen for a frame or more after the stores have
+moved to the incoming session — and every resolution above reads those stores, so
+a click landing in that window could start a same-named service in a session the
+user never pointed at. The messages and their session id are deferred as one
+value and the id is published through a context that `ShipitPointer` reads;
+a mismatch is ignored silently, because the user clicked a message on its way off
+screen. Context rather than a prop: the components map has to stay a module-level
+constant for the memo to hold.
 
 This is the one finding of the review that is a genuine security hole rather
 than a gap, and it was invisible from the requirements: "the agent can write a
@@ -437,10 +510,11 @@ crossing into a frame, so the parser is a gate, not a formatter:
   `getElementById` / heading matching.
 - The same validated string is what gets stored and what gets navigated to.
   Validating one and using the other is how these bugs happen.
-- `shipit-render` is allowlisted to `link|badge|button` and stripped from **both**
-  the SDK payload and the navigation URL. Stripping only the payload would still
-  leave it visible to the page through `location.search`, contradicting the
-  claim that a page never sees ShipIt's presentation knob.
+- `shipit-render` is allowlisted to `link|badge|button` and stripped from the
+  navigation URL itself, which is the only thing the page can read. The rest of
+  the query survives byte-for-byte: rebuilding it through `URLSearchParams`
+  would re-encode it (`%7E` → `~`, space → `+`) and hand the page a different
+  string than the agent wrote, so the strip is textual.
 - The fragment is JSON-encoded into the injected scroll script, never
   concatenated into it. That script is the only place a pointer's data enters a
   document ShipIt assembles.
@@ -470,12 +544,15 @@ status bar on hover and hand it to the OS protocol handler on middle-click or
 | File | Role |
 |---|---|
 | `src/client/utils/shipit-link.ts` | Scheme constants + `parseShipitLink` |
-| `src/client/utils/open-shipit-link.ts` | The click action: reveal, resolve, navigate/focus, toast |
+| `src/client/utils/open-shipit-link.ts` | The click action: resolve, reveal, record the intent / focus, toast |
+| `src/client/hooks/usePreviewLinkIntent.ts` | Starts a stopped service and selects its port (req 12) |
+| `src/client/utils/reveal-workspace-tab.ts` | Select the tab + flip the mobile panel + close the mobile sidebar |
 | `src/client/components/message-markdown.tsx` | The opt-in renderer capability: scheme-enabled components + `urlTransform`, the `MarkdownLink` branch, its three forms |
 | `src/client/components/MessageList/MessageList.tsx` | Turns the capability on for assistant messages — and nowhere else |
-| `src/client/stores/preview-store.ts` | The navigation intent (session, slot, service, path, payload, clickId, phase) |
+| `src/client/stores/preview-store.ts` | The navigation intent (session, service, port, slot, path, clickId, startedAt) |
+| `src/client/utils/preview-link-navigation.ts` | Navigate / already-there / outside-preview, against the page's reported path |
 | `src/client/App.tsx` | Sends `start_service` for an intent whose service is stopped (req 12) |
-| `src/client/stores/present-store.ts` | `focusByPath`, `pendingLink` |
+| `src/client/stores/present-store.ts` | `focusByPath` (closes the gallery), `linkTarget` |
 | `src/client/components/PreviewFrame/PreviewFrame.tsx` | Navigate the live slot |
 | `src/client/components/PresentPane.tsx` | Scroll a markdown artifact; pass the fragment to the rendered frame |
 | `src/client/components/FileContentView/RenderedFrame.tsx` | Inject the scroll script into an HTML artifact's `srcDoc` |

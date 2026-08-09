@@ -6,6 +6,7 @@ import { ICON_SIZE } from "../../design-tokens.js";
 import { Button } from "../ui/button.js";
 import type { PreviewError } from "../../hooks/usePreviewErrors.js";
 import { usePreviewStore } from "../../stores/preview-store.js";
+import { resolvePointerNavigation } from "../../utils/preview-link-navigation.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { resolvePreviewHost, suggestWildcardHost } from "../../utils/preview-host.js";
 import { StartupSteps } from "../StartupSteps.js";
@@ -376,6 +377,48 @@ export function PreviewFrame({
     }, MAX_AUTH_TIMEOUT_MS);
     return () => clearTimeout(timer);
   }, [activeSlotKey, activeSlotUrl, previewSubdomainUrl, isLocalPreview, refreshKey]);
+
+  // ---- Agent-authored pointers (docs/258) ----
+  // A `shipit-preview://` click records a destination; by the time it reaches
+  // this slot, everything else has already happened (the service is running and
+  // its port is selected). All that is left is to put the frame there.
+  //
+  // Navigation is a plain `src` assignment. An earlier design added a `navigate`
+  // command to the injected preview script, on the belief that a parent cannot
+  // navigate a cross-origin iframe — cross-origin blocks *reading* `location`
+  // and calling `history`, not assigning `src`, which the refresh path above
+  // already does. The command would also have widened an injected listener that
+  // checks neither `event.source` nor origin, to do something the parent can do
+  // directly.
+  const previewLinkIntent = usePreviewStore((s) => s.previewLinkIntent);
+  // eslint-disable-next-line no-restricted-syntax -- navigates a live iframe to an agent-authored destination
+  useEffect(() => {
+    if (!previewLinkIntent || !activeSlotKey || !activeSlotUrl) return;
+    if (previewLinkIntent.slotKey !== activeSlotKey) return;
+    if (previewLinkIntent.sessionId !== sessionId) return;
+    // No slot yet — the health poller creates it *at* the destination, so
+    // there is nothing to do here and nothing to report.
+    const el = iframeRefs.current.get(activeSlotKey);
+    if (!el) return;
+
+    const clearIntent = () =>
+      usePreviewStore.getState().clearPreviewLinkIntent(previewLinkIntent.clickId);
+
+    const outcome = resolvePointerNavigation(
+      previewLinkIntent.targetPath,
+      activeSlotUrl,
+      usePreviewStore.getState().previewPaths[activeSlotKey],
+    );
+    clearIntent();
+
+    if (outcome.kind === "navigate") el.src = outcome.url;
+    else if (outcome.kind === "outside-preview") {
+      useUiStore.getState().setToast({
+        message: "That link can't be opened — it points outside the preview.",
+        variant: "error",
+      });
+    }
+  }, [previewLinkIntent, activeSlotKey, activeSlotUrl, sessionId, iframeRefs]);
 
   // Force-reload the active iframe on refresh click
   const lastRefreshKey = useRef(refreshKey);

@@ -20,4 +20,5 @@ platform capabilities.
 | [skills.md](skills.md) | Skill directory layout — hand-written vs ShipIt-installed, install markers, auto-commit |
 | [design-docs.md](design-docs.md) | Feature docs — frontmatter format, status values, structure |
 | [present.md](present.md) | `present` tool — show throwaway, non-git artifacts (HTML/SVG/markdown/images) in the Present tab without committing them to the workspace |
+| [chat-links.md](chat-links.md) | Clickable pointers in chat — `shipit-preview://<service>/<path>` and `shipit-present:<file>#<fragment>` open a specific place in the user's app or a presented artifact |
 | [bug-filing.md](bug-filing.md) | `report_shipit_bug` tool — file a redacted, consent-gated bug against ShipIt itself under the user's own GitHub identity |

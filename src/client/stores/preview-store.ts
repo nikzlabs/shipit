@@ -15,6 +15,44 @@ export interface ManagedServiceState {
   error?: string;
 }
 
+// ---- Agent-authored preview links (docs/258) ----
+
+/**
+ * A destination a `shipit-preview://` pointer asked for, held until the panel
+ * can actually go there (req 2, req 12).
+ *
+ * **Deliberately not `previewPaths`.** That map means *"the last path this page
+ * reported about itself"* and a live page writes to it at any time through the
+ * injected `path` message (`PreviewFrame.tsx`). A document still on screen
+ * during a pending start or navigation would therefore overwrite the
+ * destination before it was ever used: the queued destination and the observed
+ * location are two different facts and must not share a slot.
+ */
+export interface PreviewLinkIntent {
+  /** The session the click happened in. An intent means nothing in another one. */
+  sessionId: string;
+  /** The Compose service the pointer named, matched exactly against `services`. */
+  service: string;
+  /** The service's declared port — known even while it is stopped. */
+  port: number;
+  /** `sessionId:port`, the iframe-pool slot this destination belongs to. */
+  slotKey: string;
+  /** Absolute path with query and fragment. The page's reaction *is* this URL (req 11). */
+  targetPath: string;
+  /** Fresh per click, and **last click wins** — an incomplete earlier intent is dropped, never queued. */
+  clickId: number;
+  /** `Date.now()` at the click, so an intent that never resolves cannot fire much later. */
+  startedAt: number;
+}
+
+/**
+ * How long an unfulfilled intent stays live. Not a failure detector (req 10 is
+ * best effort): it stops an intent for a service that never starts from firing
+ * minutes later, when the user has since selected that port by hand and would be
+ * yanked to a destination they no longer remember asking for.
+ */
+export const PREVIEW_LINK_INTENT_TTL_MS = 120_000;
+
 // ---- Secrets state (087-reusable-preview-secrets, Phase 2) ----
 
 /** A declared secret aggregated across all services that referenced it. */
@@ -143,6 +181,12 @@ interface PreviewState {
   previewPaths: Record<string, string>;
 
   /**
+   * The destination a `shipit-preview://` pointer is waiting to reach, or `null`
+   * (docs/258). At most one: last click wins. See {@link PreviewLinkIntent}.
+   */
+  previewLinkIntent: PreviewLinkIntent | null;
+
+  /**
    * Whether the Services drawer at the bottom of the Preview tab is expanded
    * (docs/175). A global UI preference (not per-session), persisted to
    * localStorage. Lifted into the store so the PreviewFrame's "View logs"
@@ -198,6 +242,13 @@ interface PreviewState {
   setPreviewPath: (slotKey: string, path: unknown) => void;
   /** Forget every remembered path. Full reset only — see `reset`. */
   clearPreviewPaths: () => void;
+  /** Record where an agent-authored pointer wants the preview to go (docs/258). */
+  setPreviewLinkIntent: (intent: PreviewLinkIntent) => void;
+  /**
+   * Drop the intent. With a `clickId`, only when it still owns the intent — so a
+   * late resolution of a superseded click can't cancel the current one.
+   */
+  clearPreviewLinkIntent: (clickId?: number) => void;
   reset: () => void;
 }
 
@@ -328,6 +379,7 @@ const initialState = {
   previewPaths: loadPreviewPaths(),
   // Ephemeral state — never persisted into a session snapshot.
   previewProxyError: null as PreviewState["previewProxyError"],
+  previewLinkIntent: null as PreviewLinkIntent | null,
 };
 
 export const usePreviewStore = create<PreviewState>((set, get) => ({
@@ -452,11 +504,13 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
 
   restoreSession: (sessionId) => {
     const snap = get().sessionSnapshots[sessionId];
+    // A pointer's destination describes one session and is cancelled by leaving
+    // it (docs/258) — it is never part of the restored snapshot.
     if (snap) {
-      set({ ...snap });
+      set({ ...snap, previewLinkIntent: null });
     } else {
       resetDedupState();
-      set({ ...initialSessionState });
+      set({ ...initialSessionState, previewLinkIntent: null });
     }
   },
 
@@ -501,6 +555,15 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     savePreviewPaths({});
     set({ previewPaths: {} });
   },
+
+  setPreviewLinkIntent: (previewLinkIntent) => set({ previewLinkIntent }),
+
+  clearPreviewLinkIntent: (clickId) =>
+    set((state) => (
+      clickId === undefined || state.previewLinkIntent?.clickId === clickId
+        ? { previewLinkIntent: null }
+        : state
+    )),
 }));
 
 // Re-export DevicePreset type for convenience so consumers don't need to know the source.
