@@ -75,6 +75,19 @@ describe("Integration: mid-session model switching across services (docs/252 pha
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-switch-"));
     credentialStore = createTestCredentialStore(tmpDir);
     credentialStore.setLiveSteering(true);
+    // docs/252 phase 9 — declare BOTH harnesses for this suite rather than
+    // letting the registry probe `$PATH`. The atomicity case below needs the
+    // cross-harness self-heal to be *reachable*, which needs Codex installed —
+    // and whether a CI runner has the CLIs on its `$PATH` is not something a
+    // test about billing should depend on. It failed in CI for exactly that
+    // reason and passed here. `SHIPIT_AGENTS_INSTALL_REPORT` is the seam the
+    // installer and the reader already share, so this pins the *declared* set
+    // the way a real image build does rather than stubbing the registry and
+    // re-deriving its eligibility wiring.
+    savedEnv.SHIPIT_AGENTS_INSTALL_REPORT = process.env.SHIPIT_AGENTS_INSTALL_REPORT;
+    const reportPath = path.join(tmpDir, "installed.json");
+    fs.writeFileSync(reportPath, JSON.stringify({ harnesses: ["claude", "codex"] }));
+    process.env.SHIPIT_AGENTS_INSTALL_REPORT = reportPath;
 
     sessionManager = new SessionManager(dbManager);
 
