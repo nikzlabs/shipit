@@ -99,6 +99,33 @@ the app to lose. Nothing sweeps orphaned draft keys — `saveDraftMessage` only
 removes a key when its own text goes empty — so the stale `new` entry simply
 sits in `localStorage` as a few unread bytes.
 
+## Known limitation: repos whose labels collide
+
+`parseRepoLabel` truncates a repo name at its first dot, so `owner/api.v1` and
+`owner/api.v2` both render as `owner/api` — as does `socketio/socket.io`, which
+becomes `socketio/socket`. This predates docs/259 and already breaks routing:
+`repoLabelToNewPath` builds the route from that label and `App.tsx` resolves it
+back with a `find`, so the second colliding repo's new-session page is
+unreachable today regardless of this feature.
+
+What docs/259 does about it: the picker identifies rows by **URL**, so exactly
+one row is marked current and the other stays switchable. What it does not do:
+the draft key is the slug, so two colliding repos share one new-session draft.
+Fixing that properly means fixing `parseRepoLabel` — an app-wide routing change
+well outside this feature's fence, and pointless in isolation while the route
+itself cannot tell the two apart.
+
+## Accessibility of the sheet
+
+Not using `DialogContent` means not inheriting its focus trap, its
+outside-content hiding, or its Escape handling. The sheet supplies the parts
+that matter for its own shape: `aria-modal`, an Escape listener via
+`useEventListener`, and initial focus moved onto the current repo's row so
+focus does not sit on the obscured bar behind it. It is still not a true focus
+trap — Tab can reach the composer underneath. That trade buys not turning a
+three-row list into a fullscreen takeover on mobile; revisit it if a
+non-fullscreen sheet primitive ever lands.
+
 ## Key files
 
 | File | Change |
@@ -115,7 +142,9 @@ sits in `localStorage` as a few unread bytes.
   before the repo list loads); carries the docs/254 colour and drops it when
   `colorIndex` is undefined; the picker checks the current repo, calls back with
   a different one, and only closes when the current one is re-picked; hidden
-  repos are omitted unless it is the repo the user is in.
+  repos are omitted unless it is the repo the user is in; two repos whose labels
+  collide are still told apart; Escape closes the sheet; focus lands on the
+  current row; the bar meets the 44px touch floor.
 - `MessageInput.test.tsx` — a draft typed under one new-session slug is restored
   after switching to another slug and back (req 4).
 

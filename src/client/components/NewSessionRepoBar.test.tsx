@@ -98,6 +98,42 @@ describe("NewSessionRepoBar", () => {
     expect(screen.queryByRole("dialog", { name: "Choose a repository" })).toBeNull();
   });
 
+  it("distinguishes repos whose labels collide", () => {
+    // `parseRepoLabel` truncates a repo name at its first dot, so `api.v1` and
+    // `api.v2` both render as `owner/api`. Selection is by URL, so exactly one
+    // row is marked current and the other is still switchable — a label
+    // comparison would mark both and then refuse to switch to either.
+    const v1 = mkRepo("https://github.com/owner/api.v1.git");
+    const v2 = mkRepo("https://github.com/owner/api.v2.git", { colorIndex: 12 });
+    const { onSelectRepo } = renderBar({ repoSlug: "owner/api", repo: v1, repos: [v1, v2] });
+
+    const rows = openPicker().getAllByRole("button", { name: /owner\/api/ });
+    expect(rows.filter((r) => r.getAttribute("aria-current") === "true")).toHaveLength(1);
+
+    fireEvent.click(rows[1]);
+    expect(onSelectRepo).toHaveBeenCalledWith(v2.url);
+  });
+
+  it("closes the picker on Escape", () => {
+    // The shared Dialog wrapper supplies Back-button dismissal but no key
+    // handling — that lives in DialogContent, which this sheet doesn't use.
+    renderBar();
+    openPicker();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Choose a repository" })).toBeNull();
+  });
+
+  it("moves focus into the sheet, onto the current repo", () => {
+    renderBar();
+    const current = openPicker().getByRole("button", { name: /owner\/alpha/ });
+    expect(document.activeElement).toBe(current);
+  });
+
+  it("meets the 44px mobile touch floor", () => {
+    renderBar();
+    expect(screen.getByTestId("new-session-repo-bar").className).toContain("min-h-11");
+  });
+
   it("omits hidden repos from the picker", () => {
     // docs/222 — a hidden repo is out of the sidebar, so it stays out of here.
     renderBar({ repos: [ALPHA, mkRepo(BETA.url, { hidden: true })] });

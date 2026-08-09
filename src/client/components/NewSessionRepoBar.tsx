@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { CaretRightIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
+import { useEventListener } from "../hooks/useEventListener.js";
 import { Dialog } from "./ui/dialog.js";
 import { groupBandFill } from "./SessionSidebar/SessionGroup.js";
 import { repoColorVar } from "../../server/shared/repo-colors.js";
@@ -48,6 +49,16 @@ export function NewSessionRepoBar({
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
 
+  // The shared `Dialog` wrapper gives Back-button dismissal but no key handling
+  // (that lives in `DialogContent`, which this sheet deliberately does not use).
+  // Escape is the other way out for anyone on a hardware keyboard.
+  useEventListener(pickerOpen ? window : null, "keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setPickerOpen(false);
+    }
+  });
+
   // docs/254 — `colorIndex` is undefined only for a row written before that
   // migration's backfill. Such a repo gets no edge and no band rather than an
   // arbitrary color, which is the same fallback the sidebar group header takes.
@@ -69,7 +80,11 @@ export function NewSessionRepoBar({
         data-testid="new-session-repo-bar"
         onClick={() => setPickerOpen(true)}
         aria-label={`New session in ${repoSlug} — change repository`}
-        className="flex w-full items-center gap-2 border-b border-(--color-border-primary) bg-(--color-bg-primary) px-3 py-2.5 text-left"
+        aria-haspopup="dialog"
+        aria-expanded={pickerOpen}
+        // `min-h-11` is the app's 44px mobile touch floor (see MicButton) — the
+        // padding alone lands at 41px, which is under it.
+        className="flex min-h-11 w-full items-center gap-2 border-b border-(--color-border-primary) bg-(--color-bg-primary) px-3 py-2.5 text-left"
         style={{
           ...(color
             ? { borderLeftWidth: 3, borderLeftStyle: "solid", borderLeftColor: color, backgroundColor: groupBandFill(color) }
@@ -92,6 +107,7 @@ export function NewSessionRepoBar({
         <Dialog open onOpenChange={(o) => { if (!o) setPickerOpen(false); }}>
           <div
             role="dialog"
+            aria-modal="true"
             aria-label="Choose a repository"
             className="fixed inset-0 z-50 flex flex-col justify-end bg-(--color-bg-overlay)"
             onClick={(e) => {
@@ -102,14 +118,24 @@ export function NewSessionRepoBar({
               <h2 className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-(--color-text-tertiary)">
                 Start this session in
               </h2>
-              {pickable.map((r) => {
+              {pickable.map((r, i) => {
                 const label = parseRepoLabel(r.url);
-                const selected = label === repoSlug;
+                // Identity by URL, not by label. `parseRepoLabel` truncates a
+                // repo name at its first dot (`owner/api.v1` and `owner/api.v2`
+                // both render as `owner/api`), so a label comparison would mark
+                // BOTH rows selected and then refuse to switch to either. The
+                // label is only the fallback for the window before the repo
+                // list has loaded and `repo` is still undefined.
+                const selected = repo ? r.url === repo.url : label === repoSlug;
                 const swatch = r.colorIndex !== undefined ? repoColorVar(r.colorIndex) : undefined;
                 return (
                   <button
                     key={r.url}
                     type="button"
+                    // Move focus into the sheet on open rather than leaving it
+                    // on the now-obscured bar. The selected row is the natural
+                    // landing spot; with nothing resolved yet, the first row is.
+                    autoFocus={selected || (!repo && i === 0)}
                     aria-current={selected ? "true" : undefined}
                     onClick={() => {
                       setPickerOpen(false);
