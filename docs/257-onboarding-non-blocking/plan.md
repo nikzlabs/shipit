@@ -121,6 +121,16 @@ harnesses instead of the active one. docs/252 splits today's `AgentInfo.authConf
 *available* (installed) and *eligible* (the mode has a credential) and predicates the picker
 on the second; `canRunTurns` is the existential over that.
 
+**It agrees with turn admission on the ingredients, and that agreement is inherited rather
+than restated.** docs/252 phase 9 adds an installed-before-authenticated check to
+`agentAdmissionError` (`services/agent-auth-gate.ts`) and, more to the point, redefines what
+`AgentInfo.installed` *means* inside `AgentRegistry`: the harness set the deployment declared
+(`shared/installed-harnesses.ts`), with a `$PATH` probe only where no image build declared one.
+`canRunTurns` reads the same two fields off the same registry, so it follows that redefinition
+with no change — a harness present on `$PATH` but undeclared reads `installed: false` to both,
+and the composer cannot offer a turn the gate then refuses. Verified against phase 9's branch
+(`agent-auth-gate.ts`, `agent-registry.ts:275`), not inferred from its description.
+
 **It is an install-level fact, and it is not per-session turn admission.** Turn admission is
 `isAgentAuthenticated` (`services/agent-auth-gate.ts:22`), consulted by
 `ws-handlers/send-message.ts:44` for the session's *own* harness, and the two can disagree in

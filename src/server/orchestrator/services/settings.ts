@@ -49,7 +49,27 @@ import { revokeSessionProviderCredentials } from "../session-agent-credentials.j
  *
  * It is an install-level fact and deliberately NOT per-session turn admission
  * (`agent-auth-gate.ts`), which answers a different question about the
- * session's *own* harness. The two can legitimately disagree.
+ * session's *own* harness. The two can legitimately disagree — an install with a
+ * working Claude credential and a Codex-pinned session whose Codex credential
+ * was removed can run *something* while that session's next turn is refused.
+ *
+ * **What it must NOT disagree with is the ingredients of turn admission**, and
+ * it does not, because both read the same two registry fields. docs/252 phase 9
+ * adds an installed-before-authenticated check to `agentAdmissionError`, gated
+ * on `AgentInfo.installed` — and redefines what that field MEANS inside
+ * `AgentRegistry`: the harness set the deployment declared
+ * (`installed-harnesses.ts`), with a `$PATH` probe only as the fallback where no
+ * image build declared one. Since this predicate reads the same field from the
+ * same registry, it follows that redefinition with no change here. Verified
+ * against `agent-auth-gate.ts` and `agent-registry.ts` on phase 9's branch
+ * rather than inferred: a harness present on `$PATH` but undeclared reads
+ * `installed: false` to BOTH, so the composer cannot offer a turn the gate then
+ * refuses.
+ *
+ * The predicate is written out rather than delegated to
+ * `AgentRegistry.available()` (which is today the same filter) so it stays
+ * legible at the point docs/252 phase 3 replaces it, and so the tests below pin
+ * the semantics instead of a stand-in's.
  */
 export function computeCanRunTurns(agentRegistry: AgentRegistry): boolean {
   return agentRegistry.list().some((a) => a.installed && a.authConfigured);
