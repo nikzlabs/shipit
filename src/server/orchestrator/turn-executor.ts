@@ -327,6 +327,24 @@ export async function executeAgentTurn(
     resetRunnerTurnState(runner);
   }
 
+  // Identity of the turn these closures belong to, captured AFTER the reset
+  // above bumped it. The `done` handler can fire long after a SUCCESSOR turn
+  // took over the runner (the failover pre-check kills the resident process and
+  // its late exit unwinds while the new turn is already running env-prep) — at
+  // that point the per-turn accumulators and the session's in-progress chat
+  // rows belong to the successor, and this turn's teardown must not write
+  // through them. Concretely: `onInterruptedTurn` finalizes ALL of the
+  // session's in-progress rows from the runner's CURRENT accumulators, so run
+  // stale it flips the successor's freshly-recorded cards (the account-failover
+  // notice) to `in_progress=0`; the successor's next boundary then re-inserts
+  // them from `recordedCards`, and the transcript keeps both copies forever.
+  // Re-captured on a self-wake (see `rearmForSelfWokenTurn`): the wake turn
+  // runs through THESE same closures, so after `agent-listeners` gave it a
+  // fresh epoch the closures adopt it.
+  let thisTurnEpoch = runner?.turnEpoch;
+  const turnIsCurrent = (): boolean =>
+    !runner || thisTurnEpoch === undefined || runner.turnEpoch === thisTurnEpoch;
+
   // docs/179 — persist the user row EXACTLY ONCE across the original attempt and
   // a possible auth-retry re-dispatch. Without a shared guard, the retry would
   // either duplicate the user bubble (resumed session: persisted synchronously
@@ -1109,6 +1127,12 @@ export async function executeAgentTurn(
     streamingPostTurn = null;
     commitPromise = null;
     commitAndPrPromise = null;
+    // The wake turn now owns these closures. `agent-listeners` already gave it
+    // a fresh epoch (its `agent_self_wake` branch runs `resetRunnerTurnState`
+    // before this listener fires); adopt it so the wake turn's own teardown —
+    // e.g. `onInterruptedTurn` after a crash — is not mistaken for a stale
+    // predecessor's.
+    thisTurnEpoch = runner?.turnEpoch;
   };
 
   agent.on("event", async (event: AgentEvent) => {
@@ -1249,6 +1273,10 @@ export async function executeAgentTurn(
         && !receivedResult
         && !sawAuthRequired
         && !(runner?.wasInterrupted ?? false)
+        // Never write into a SUCCESSOR turn's transcript: `emitChatCard` below
+        // records onto the runner's live accumulators, which a stale exit no
+        // longer owns (see `turnIsCurrent`).
+        && turnIsCurrent()
       ) {
         const base = code !== 0
           ? `Agent process exited with code ${code}`
@@ -1288,7 +1316,13 @@ export async function executeAgentTurn(
       // the replay buffer). Skipped on the auth-required path, where the listener
       // already owns the visible row. WS-only: dispatch leaves `onInterruptedTurn`
       // unset and surfaces no-result exits via `onNoResultExit` instead.
-      if (!receivedResult && !sawAuthRequired) {
+      // …and only while this turn still owns the session's in-progress rows.
+      // `onInterruptedTurn` reads the runner's CURRENT accumulators and
+      // finalizes ALL in-progress rows, so run from a stale exit it flips the
+      // successor turn's rows (its env-prep failover notice among them) to
+      // `in_progress=0` — the successor's next boundary then re-inserts the
+      // recorded card as a permanent duplicate.
+      if (!receivedResult && !sawAuthRequired && turnIsCurrent()) {
         // planning#279 — guarded for the same reason as the row above: it rewrites
         // chat-history rows, and its failure must not cost the turn its commit.
         await postTurnStep("finalize-partial-turn", () => input.onInterruptedTurn?.());

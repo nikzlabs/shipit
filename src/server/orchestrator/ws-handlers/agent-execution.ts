@@ -293,6 +293,18 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   ) {
     const resident = runner?.getAgent() ?? null;
     if (resident) {
+      // Drop the previous turn's listeners BEFORE killing — same reason as
+      // `releaseResidentOnSpawnChange`: the kill's late `done`/`error` (an
+      // SSE exit, or an in-flight worker HTTP call rejecting locally on the
+      // proxy) must not re-run that turn's terminal flow. Left attached, a
+      // late local `error` ran the listener teardown against THIS turn's
+      // fresh accumulators and finalized its env-prep failover notice into a
+      // permanent duplicate row.
+      try {
+        resident.removeAllListeners();
+      } catch {
+        // Best-effort: an adapter without listeners is already the state we want.
+      }
       try {
         resident.kill();
       } catch {

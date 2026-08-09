@@ -277,6 +277,19 @@ export function wireAgentListeners(
   // catalogue's as of now and are persisted with the row, so a later price edit
   // cannot restate the past.
   const turnAttributionAtStart = turnAttributionFor(selectionOf(sessionAtTurnStart));
+  // Identity of the turn these listeners were wired for. Wiring always follows
+  // `resetRunnerTurnState` (turn-executor runs the reset before it wires), so
+  // this is the epoch of the turn that owns the runner's accumulators and the
+  // session's in-progress chat rows RIGHT NOW. The `error` handler compares
+  // against the live value before finalizing those rows: a killed resident
+  // process can emit a LOCAL adapter error (an in-flight worker HTTP call
+  // rejecting) long after a successor turn started, and the SSE relay's
+  // runToken guard never sees locally-emitted events — so without this check
+  // the stale error finalized the successor's rows and its recorded cards
+  // (the account-failover notice) came back as permanent duplicates.
+  // Re-captured on `agent_self_wake`, where the SAME wired listeners adopt the
+  // wake turn after handing it a fresh epoch.
+  let wiredTurnEpoch = runner?.turnEpoch;
   // Helper: emit to all viewers via runner. If runner is unexpectedly null
   // (registry lookup failed before any viewer attached), the message has
   // nowhere good to go — log and drop rather than try a per-connection send,
@@ -564,7 +577,12 @@ export function wireAgentListeners(
         // opening is gone from chat history for good — a reload or a session
         // switch shows the turn missing its first half, permanently. See
         // `integration_tests/self-wake-midturn.test.ts`.
-        if (!runner.running) resetRunnerTurnState(runner);
+        if (!runner.running) {
+          resetRunnerTurnState(runner);
+          // The wake turn runs through these SAME listeners; adopt its epoch so
+          // its own crash-path finalize isn't mistaken for a stale turn's.
+          wiredTurnEpoch = runner.turnEpoch;
+        }
         runner.running = true;
         if (turnSessionId) {
           emitToViewers({
@@ -1435,6 +1453,28 @@ export function wireAgentListeners(
     const display = blocked ? err.message : `Agent process error: ${err.message}`;
     console.error(blocked ? "[agent] turn blocked:" : "[agent] process error:", err.message);
     deps.broadcastLog("server", display);
+    // A STALE error — one whose turn a successor has already replaced — must
+    // not run this teardown at all. The block below finalizes the session's
+    // in-progress rows from the runner's CURRENT accumulators, flips
+    // `running`, clears the turn-event buffer and drains the queue; every one
+    // of those now belongs to the successor turn. This shape is real: a
+    // resident process killed by the failover pre-check can reject an
+    // in-flight worker HTTP call and emit `error` LOCALLY (bypassing the SSE
+    // relay's runToken stale guard) while the next turn is inside env-prep —
+    // finalizing here flipped that turn's failover notice to `in_progress=0`,
+    // and its next boundary re-inserted the recorded card as a permanent
+    // duplicate bubble. Settlement of the superseded turn is owned by the
+    // `superseded` event (planning#318), not by this handler.
+    if (
+      runner !== null &&
+      wiredTurnEpoch !== undefined &&
+      runner.turnEpoch !== wiredTurnEpoch
+    ) {
+      console.warn(
+        `[agent] stale process error ignored for ${opts.capturedSessionId} — a newer turn owns the session (${err.message})`,
+      );
+      return;
+    }
     emitToViewers({ type: "error", message: display });
     const turnSessionId = opts.capturedSessionId;
     if (turnSessionId) {
