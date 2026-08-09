@@ -1,7 +1,7 @@
 # Agent-authored links into the Preview and the Present tab — requirements
 
-What the feature must do, in the requester's terms. Design and mechanism will
-live in `plan.md` (not written yet — questions below are open).
+What the feature must do, in the requester's terms. Design and mechanism live in
+[`plan.md`](./plan.md), which is provisional while a question below is open.
 
 ## Context
 
@@ -15,7 +15,10 @@ one requirement — with no way to make that pointer clickable.
 
 ## Requirements
 
-1. The agent can write a link in chat that renders as a link.
+1. The agent can write a clickable pointer in chat, and **chooses how it
+   renders**: as an inline link, as a badge, or as a button. The choice is the
+   agent's per pointer — one message can carry a link in a sentence and a button
+   beneath it.
 2. Clicking it opens the linked destination **in the Preview**.
 3. Clicking it opens the linked destination **in a presented file** (Present tab).
 4. Both destinations are supported by the same feature; neither is a follow-up.
@@ -39,9 +42,22 @@ one requirement — with no way to make that pointer clickable.
 
 ## Open questions
 
-_None._
+- **Where does the "why" appear when a destination is unavailable (req 10)?**
+  Raised by the requester against req 10, which says a dead link explains itself
+  but never said where the explanation lands. Candidates: a transient toast
+  (ShipIt already has one); an inline note next to the clicked pointer in chat,
+  where the user's attention already is; or the destination panel's own empty
+  state, which is where the click promised to take them. Nothing is implemented
+  while this is open.
 
 ## Resolved questions
+
+- **2026-08-09 — Should the agent choose how a pointer renders?** The first
+  draft of req 1 said only "renders as a link". The requester: *"maybe could be
+  parameterized to be rendered as a link, as a badge or as a button"*. Answer:
+  **the agent picks the form per pointer, from link / badge / button**. Recorded
+  in req 1. How the agent expresses that choice is a design question, not a
+  requirement.
 
 - **2026-08-09 — How does the agent author the link?** Offered a markdown link
   with a ShipIt URL scheme, a dedicated card-emitting tool, or both. Answer:
