@@ -50,7 +50,6 @@ import {
 import { Button } from "../ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
-import { useUiStore } from "../../stores/ui-store.js";
 import { ProviderAccountsCard } from "./ProviderAccountsCard.js";
 
 const MODE_LABEL: Record<BillingMode, string> = { sub: "Subscription", key: "API key" };
@@ -86,6 +85,7 @@ function accountProviderFor(service: ServiceDef, billingMode: BillingMode): Agen
 export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] }) {
   const routes = useSettingsStore((s) => s.credentialRoutes);
   const accounts = useSettingsStore((s) => s.providerAccounts);
+  const notices = useSettingsStore((s) => s.providerAccountNotices);
   const [addOpen, setAddOpen] = useState(false);
   /**
    * Modes the user picked in the dialog that have no credential yet.
@@ -100,10 +100,22 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
    */
   const [revealed, setRevealed] = useState<string[]>([]);
 
+  /**
+   * docs/257 req 5 — a card with something to say stays on screen.
+   *
+   * Without this clause, disconnecting the LAST account of a service removed
+   * the account and this filter dropped the card in the same commit — so the
+   * result of that disconnect ("N sessions have no connected account") was
+   * mounted and unmounted together and the user never saw which sessions the
+   * removal had stranded. Found by cross-backend review; the notice being in
+   * the store rather than in the card's own state is what makes rendering it
+   * again possible at all.
+   */
   const configured = catalogueModes().filter(({ service, billingMode }) => {
     const provider = accountProviderFor(service, billingMode);
     return routes.some((r) => r.serviceId === service.id && r.billingMode === billingMode && r.via === "string")
       || (provider !== undefined && accounts.some((a) => a.provider === provider))
+      || (provider !== undefined && notices[provider] !== undefined)
       || revealed.includes(credentialModeKey(service.id, billingMode));
   });
 
@@ -274,6 +286,16 @@ function CredentialRow({ route, order }: { route: CredentialRoute; order?: RowOr
   const [busy, setBusy] = useState(false);
   const [replacing, setReplacing] = useState(false);
   const [value, setValue] = useState("");
+  /**
+   * docs/257 req 5 — reorder / remove / replace failures render on the row that
+   * produced them, not as a global toast.
+   *
+   * Reachable during onboarding, and not only afterwards: between docs/252
+   * phases 2 and 3 a user can add a DeepSeek or OpenRouter key from the
+   * onboarding panel and get a card whose `canRunTurns` stays false, so these
+   * rows exist while the panel is still on screen.
+   */
+  const [error, setError] = useState("");
 
   const move = async (delta: number): Promise<void> => {
     if (!order) return;
@@ -282,6 +304,7 @@ function CredentialRow({ route, order }: { route: CredentialRoute; order?: RowOr
     if (to < 0 || to >= next.length) return;
     [next[order.index], next[to]] = [next[to], next[order.index]];
     setBusy(true);
+    setError("");
     try {
       const res = await fetch(
         `/api/credential-routes/${route.serviceId}/${route.billingMode}/order`,
@@ -295,7 +318,7 @@ function CredentialRow({ route, order }: { route: CredentialRoute; order?: RowOr
       const data = (await res.json()) as { routes: CredentialRoute[] };
       useSettingsStore.getState().setCredentialRoutes(data.routes);
     } catch (err) {
-      useUiStore.getState().setToast({ message: "Failed to reorder the credentials" });
+      setError(err instanceof Error && err.message ? err.message : "Failed to reorder the credentials");
       console.error("[services] credential reorder failed:", err);
     } finally {
       setBusy(false);
@@ -304,13 +327,14 @@ function CredentialRow({ route, order }: { route: CredentialRoute; order?: RowOr
 
   const remove = async (): Promise<void> => {
     setBusy(true);
+    setError("");
     try {
       const res = await fetch(`/api/credential-routes/${route.id}`, { method: "DELETE" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as { routes: CredentialRoute[] };
       useSettingsStore.getState().setCredentialRoutes(data.routes);
     } catch (err) {
-      useUiStore.getState().setToast({ message: "Failed to remove the credential" });
+      setError(err instanceof Error && err.message ? err.message : "Failed to remove the credential");
       console.error("[services] credential delete failed:", err);
     } finally {
       setBusy(false);
@@ -320,6 +344,7 @@ function CredentialRow({ route, order }: { route: CredentialRoute; order?: RowOr
   const replace = async (): Promise<void> => {
     if (!value.trim()) return;
     setBusy(true);
+    setError("");
     try {
       const res = await fetch(`/api/credential-routes/${route.id}`, {
         method: "PATCH",
@@ -332,7 +357,7 @@ function CredentialRow({ route, order }: { route: CredentialRoute; order?: RowOr
       setValue("");
       setReplacing(false);
     } catch (err) {
-      useUiStore.getState().setToast({ message: "Failed to update the credential" });
+      setError(err instanceof Error && err.message ? err.message : "Failed to update the credential");
       console.error("[services] credential update failed:", err);
     } finally {
       setBusy(false);
@@ -394,6 +419,15 @@ function CredentialRow({ route, order }: { route: CredentialRoute; order?: RowOr
           </button>
         </div>
       </div>
+      {error && (
+        <p
+          className="mt-2 text-xs text-(--color-text-error)"
+          role="alert"
+          data-testid={`credential-error-${route.id}`}
+        >
+          {error}
+        </p>
+      )}
       {replacing && (
         <div className="mt-2 flex gap-2">
           <input

@@ -1123,6 +1123,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
       sseBroadcast: (event, data) => events.push({ event, data: data as Record<string, unknown> }),
       credentialsDir: tmp,
       sessionManager,
+      credentialStore,
     });
     return { providerAccountManager, mgr, events, account };
   }
@@ -1288,6 +1289,7 @@ describe("markProviderAccountUnauthenticated", () => {
         providerAccountManager,
         agentRegistry,
         sseBroadcast: (event, data) => events.push({ event, data: data as Record<string, unknown> }),
+        credentialStore,
       });
 
       expect(providerAccountManager.get("claude", account.id)?.status).toBe("auth_failed");
@@ -1342,6 +1344,7 @@ describe("markProviderAccountReauthenticated", () => {
         providerAccountManager,
         agentRegistry,
         sseBroadcast: (event, data) => events.push({ event, data: data as Record<string, unknown> }),
+        credentialStore,
       });
 
       expect(providerAccountManager.get("claude", account.id)?.status).toBe("ready");
@@ -1371,6 +1374,7 @@ describe("markProviderAccountReauthenticated", () => {
         providerAccountManager,
         agentRegistry,
         sseBroadcast: (event, data) => events.push({ event, data: data as Record<string, unknown> }),
+        credentialStore,
       });
 
       expect(refreshAuth).not.toHaveBeenCalled();

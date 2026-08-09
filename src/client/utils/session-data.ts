@@ -89,6 +89,8 @@ interface BootstrapResponse {
   settings: {
     /** docs/257 req 8 — server-computed "this install can run a turn". */
     canRunTurns?: boolean;
+    /** docs/257 req 9 — when harness onboarding was first completed (ISO). */
+    harnessOnboardingCompletedAt?: string;
     gitIdentity: { name: string; email: string };
     systemPrompt: string;
     maxIdleContainers?: number | null;
@@ -380,6 +382,12 @@ export async function loadBootstrapData(): Promise<void> {
   // server old enough to omit the field cannot serve a client new enough to
   // read it.)
   useSettingsStore.getState().setCanRunTurns(data.settings.canRunTurns ?? false);
+  // docs/257 req 9 — `?? null` for the same reason as `?? false` above: this is
+  // the authoritative full snapshot, so an absent field means "never completed"
+  // rather than "no news". The SSE handler, an incremental push, ignores an
+  // absent field instead.
+  useSettingsStore.getState()
+    .setHarnessOnboardingCompletedAt(data.settings.harnessOnboardingCompletedAt ?? null);
   useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
   useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
   if (data.settings.maxIdleContainers !== null && data.settings.maxIdleContainers !== undefined) useSettingsStore.getState().setMaxIdleContainers(data.settings.maxIdleContainers);

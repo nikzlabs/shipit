@@ -1,10 +1,12 @@
 # Checklist
 
-> **Status: phase 1 implemented.** Phase 2 (the panel) is still design-only. All three
-> questions the design raised are answered and receipted.
+> **Status: phases 1 and 2 implemented.** All three questions the design raised are answered
+> and receipted.
 >
-> Phase 2 depends on [`docs/252`](../252-custom-models/plan.md): phases 1–2 to exist, phase 3
-> for req 6 to actually be delivered. See [`plan.md`](./plan.md) → *Dependency on docs/252*.
+> Req 6 is not fully *delivered* until [`docs/252`](../252-custom-models/plan.md) phase 3, where
+> custom services first run a turn: until then a user can add a DeepSeek or OpenRouter key
+> through the panel and watch `canRunTurns` stay false. Expected, not a defect — see
+> [`plan.md`](./plan.md) → *Dependency on docs/252*.
 
 ## Design
 
@@ -53,47 +55,67 @@
 
 ## Phase 2 — the panel (reqs 1, 2, 4, 5, 6, 7, 9)
 
-- [ ] `harnessOnboardingCompletedAt` on `CredentialData`; stamped when the server first sees
-      `canRunTurns === true`; never cleared; no second stamp condition
-- [ ] The stamp's write is **confirmed**, not swallowed — `save()` logs and returns on failure
-      (`credential-store.ts:238`); a failed write reports not-yet-completed
-- [ ] Field on `GlobalSettings` + all ten SSE emit sites
-- [ ] `OnboardingWizard` trimmed to step 1 and renamed `GitHubGate`; `StepDots`, `initialStep`
-      and the agent props removed
-- [ ] `App.tsx`: drop `noAgentReady`; `needsOnboarding` becomes `githubNeeded` alone; **keep the
-      latch** (`onboardingTriggeredRef`, `onboardingDismissed`), with dismissal now firing when
-      GitHub connects instead of on "Get Started"
-- [ ] `HarnessOnboardingPanel`: single-column lede + the Services surface. No step rail
-- [ ] Rendered in the chat-pane slot, replacing **both** `HomeScreen` and the conversation;
-      `showHomeScreen`'s layout effects (`AppLayout.tsx:338`, `:341`, `:313`;
-      `MobileContentPanels.tsx:23`) are deliberately left alone
-- [ ] `App.tsx:1982` composer render gate widened so the composer renders under the panel
-- [ ] Panel visibility is `harnessOnboardingCompletedAt == null` **&& the gate is not up**; not
-      dismissible, no "Get Started"
-- [ ] Panel renders docs/252's Services card list and opens its "Add a service" dialog as-is —
-      no host-agnostic refactor of that surface (req 5, amended)
-- [ ] `ProviderAccountsCard` global toasts moved inline next to their row — failures (`:105`)
-      **and** disconnect results (`:253`, `:258`)
-- [ ] The duplicate-account refusal (`useServerEvents.ts:304`, `reason: "duplicate"`) gets an
-      in-panel landing place — the row it would have used is deleted by the refusal
-- [ ] Gate tests: blocks on `githubNeeded`; closes when GitHub connects; re-gates on the next
-      load; does **not** re-gate mid-load for a user who completed it this load (today's
-      behaviour, unchanged)
-- [ ] Panel tests: yields when the stamp lands; absent once the flag is set even with no
-      credential (req 9); **suppressed while the gate is up**, including a mid-session GitHub
-      loss with the add dialog open
-- [ ] Server tests for the stamp: runnable legacy install is stamped and survives a restart;
-      non-runnable legacy install is not stamped; completion survives removing every credential;
-      a failed write is not reported as completed
-- [ ] Test: the flow itself puts nothing but the add dialog on top of the panel (Settings and
-      add-repo are the user's own overlays and stay reachable — req 1)
-- [ ] Test: in a session, preview / files / terminal / Present are usable beside the panel
-- [ ] `docs/216` checklist item added: the re-implementation must `&&` in
+- [x] `harnessOnboardingCompletedAt` on `CredentialData`; stamped when the server first sees
+      `canRunTurns === true`; never cleared; no second stamp condition — `resolveHarnessOnboarding`
+      in `services/settings.ts`, on the READ path so the migration case needs no separate step
+- [x] The stamp's write is **confirmed**, not swallowed — `stampHarnessOnboardingCompleted`
+      calls `writeToDisk()` directly and reverts the in-memory value on failure, so a lost stamp
+      is reported as not-yet-completed rather than surviving until the next restart
+- [x] Field on `GlobalSettings` + every SSE emit site — `buildAgentListPayload` now takes the
+      credential store as a **required** parameter, so an omission is a compile error rather than
+      a silently stamp-less payload
+- [x] `OnboardingWizard` trimmed to step 1 and renamed `GitHubGate`; `StepDots`, `initialStep`
+      and the agent props removed, along with App's now-unused API-key / refresh handlers
+- [x] `App.tsx`: drop `noAgentReady`; the gate's condition is `githubNeeded` alone; **latch kept**
+      (`onboardingTriggeredRef`, `onboardingDismissed`), with dismissal now firing when GitHub
+      connects instead of on "Get Started"
+- [x] `HarnessOnboardingPanel`: single-column lede + the Services surface. No step rail
+- [x] Rendered in the chat-pane slot, replacing **both** `HomeScreen` and the conversation;
+      `showHomeScreen`'s layout effects are deliberately left alone
+- [x] Composer render gate widened so the composer renders under the panel
+- [x] Panel visibility is `harnessOnboardingCompletedAt == null` **&& the gate is not up**; not
+      dismissible, no "Get Started" — `harnessOnboardingPanelVisible` in `utils/chat-runnable.ts`,
+      beside the composer's own predicate
+- [x] Panel renders docs/252's Services card list and opens its "Add a service" dialog as-is —
+      `ServicesPanel` took no change at all for this
+- [x] `ProviderAccountsCard` global toasts moved inline — row-scoped where a row exists,
+      card-scoped for "Add account" (no row yet) and for a *successful* disconnect's result (the
+      row it describes is gone). `ServicesPanel`'s own credential-row toasts moved too, for the
+      same reason and by the same argument
+- [x] **Card-level notices are durable**, not merely relocated: they live in the store and
+      `ServicesPanel` keeps a card mounted while it has one. Disconnecting the LAST account
+      deletes the card as well as the row, so a notice in component state was mounted and
+      unmounted in the same commit (found by cross-backend review)
+- [x] The selection-mode and cutoff failures moved too. The plan had scoped them out as
+      unreachable during first run; review was right that one card reporting some failures
+      inline and others globally is itself the drift req 7 prevents
+- [x] The duplicate-account refusal (`reason: "duplicate"`) gets an in-panel landing place: a
+      `providerAccountNotices` store slot rendered as a card-level notice, since an SSE handler
+      has no other channel into a component it does not render
+- [x] Gate tests (`GitHubGate.test.tsx`): blocks with a fixed overlay; dismisses when GitHub
+      connects; stays up on a rejected token; carries no step chrome
+- [x] Panel tests: the predicate's four cases (`chat-runnable.test.ts`) — shown when never
+      configured, gone once stamped, still gone for a completed install that removed every
+      credential, and **suppressed while the gate is up**; plus the panel's own shape tests
+- [x] Server tests for the stamp (`harness-onboarding-stamp.test.ts`): runnable legacy install
+      is stamped and survives a restart; non-runnable legacy install is not stamped; completion
+      survives removing every credential; a failed write is not reported as completed
+- [x] Test: the flow itself puts nothing but the add dialog on top of the panel — the panel has
+      no `fixed` element and no backdrop, and opening the add-flow yields exactly one dialog
+- [x] Verified in the live app rather than asserted in a unit test — this is a claim about
+      `AppLayout`'s composition, and a green component suite cannot see a panel mounted behind a
+      backdrop. Screenshots in the PR
+- [x] `docs/216` checklist item added: the re-implementation must `&&` in
       `starterPromptsAllowed`
 
 ## Before done
 
-- [ ] `npm run lint:dev` + `npm run typecheck` clean
-- [ ] Cross-backend review of the implementation diff against every numbered requirement
-- [ ] Visual check in the live app: fresh install, panel in the chat pane, preview and terminal
-      usable beside it in a session
+- [x] `npm run lint:dev` + `npm run typecheck` clean
+- [x] Cross-backend review of the implementation diff against every numbered requirement.
+      Four findings folded in: the durable-notice bug above, the two routing-control toasts, an
+      overstated "compiler guarantee" in the docs (corrected — the required argument and the
+      source scan are two halves of one guard, neither sufficient alone), and the untested gate
+      latch, now extracted to `useGitHubGateLatch` with the row it protects pinned. The fifth,
+      req 6's dependency on docs/252 phase 3, is the known gap recorded above
+- [x] Visual check in the live app: panel in the chat pane with the right panel live beside it,
+      the add dialog as the only thing over it, and the panel absent behind the GitHub gate

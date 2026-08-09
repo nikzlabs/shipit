@@ -258,9 +258,13 @@ describe("Settings - Agent → Claude tab", () => {
     ));
     // No replacement picker — that panel is for the answerable case only.
     expect(screen.queryByTestId("provider-account-replacement-acct-a")).not.toBeInTheDocument();
-    await waitFor(() => expect(useUiStore.getState().toast?.message).toContain(
+    // docs/257 req 5 — this result used to be a global toast. It now renders on
+    // the card, and card-scoped rather than row-scoped because the successful
+    // disconnect deleted the row it is about.
+    await waitFor(() => expect(screen.getByTestId("provider-accounts-notice-claude")).toHaveTextContent(
       "2 session(s) have no connected Claude account",
     ));
+    expect(useUiStore.getState().toast).toBeNull();
     vi.unstubAllGlobals();
   });
 

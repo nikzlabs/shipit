@@ -302,13 +302,20 @@ export function useServerEvents(): void {
         message?: string;
       };
       // docs/150 req 22 — a refused duplicate connect usually DELETES the row
-      // it names, so the per-row error below has nowhere to land. Toast it
-      // first, for every provider, and skip the retry-flavoured copy: retrying
-      // this sign-in would only be refused again.
+      // it names, so the per-row error below has nowhere to land. Skip the
+      // retry-flavoured copy too: retrying this sign-in would only be refused
+      // again.
+      //
+      // docs/257 req 5 — this used to be a global toast, and it is reachable
+      // during onboarding (sign in with an account already connected), so it is
+      // this flow's own credential step failing. It now lands on the provider's
+      // CARD, next to the step that produced it, instead of somewhere else on
+      // screen for a few seconds. It is card-scoped rather than row-scoped for
+      // the same reason it was a toast: the row is gone.
       if (data.reason === "duplicate") {
-        useUiStore.getState().setToast({
+        useSettingsStore.getState().setProviderAccountNotice(data.agentId, {
+          kind: "error",
           message: data.message ?? "That account is already connected.",
-          duration: 12000,
         });
         if (data.accountId) {
           useSettingsStore.getState().setProviderAccountAuth(data.agentId, data.accountId, null);
@@ -462,9 +469,19 @@ export function useServerEvents(): void {
         // the store keeps whatever bootstrap gave it rather than being clobbered
         // with `false`, which would disable the composer on a runnable install.
         canRunTurns?: boolean;
+        // docs/257 req 9 — the install-level onboarding stamp, written the
+        // moment the server first sees a runnable install. Absent means "no
+        // news" (not stamped yet, or an older server), never "cleared" — the
+        // server never clears it, so ignoring an absent field cannot strand a
+        // stale value.
+        harnessOnboardingCompletedAt?: string;
       };
       if (typeof data.canRunTurns === "boolean") {
         useSettingsStore.getState().setCanRunTurns(data.canRunTurns);
+      }
+      if (typeof data.harnessOnboardingCompletedAt === "string") {
+        useSettingsStore.getState()
+          .setHarnessOnboardingCompletedAt(data.harnessOnboardingCompletedAt);
       }
       const agents = data.agents.map((a) => ({
         ...a,

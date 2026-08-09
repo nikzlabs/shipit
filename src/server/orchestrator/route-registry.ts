@@ -54,6 +54,7 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
   const {
     sseClients, sessionManager, runnerRegistry, prStatusPoller,
     githubAuthManager, repoStore, agentRegistry, providerAccountManager, authManagers,
+    credentialStore,
     dockerForStats, limitsRegistry,
     processStartedAt, buildId, version, updateMode,
   } = rt;
@@ -166,7 +167,7 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
     // this snapshot builds the payload with `buildAgentListPayload` rather than
     // wrapping `listAgents` by hand: a reconnecting tab would otherwise clobber
     // a good value with `undefined`.
-    client.write(`event: agent_list\ndata: ${JSON.stringify(buildAgentListPayload(agentRegistry))}\n\n`);
+    client.write(`event: agent_list\ndata: ${JSON.stringify(buildAgentListPayload(agentRegistry, credentialStore))}\n\n`);
     client.write(`event: provider_accounts\ndata: ${JSON.stringify({ accounts: providerAccountManager.list() })}\n\n`);
 
     // In-flight per-agent auth flows — replay each backend's pending payload

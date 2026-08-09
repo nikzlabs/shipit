@@ -599,6 +599,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     githubAuthManager, agentRegistry,
     providerAccountManager,
     sseBroadcast, credentialsDir, sessionManager,
+    // docs/257 — the auth broadcasts wired here carry the harness-onboarding
+    // stamp as well as `canRunTurns`, and these handlers are exactly where a
+    // fresh install first becomes runnable.
+    credentialStore,
     // docs/179 §4 — never let the post-sign-in re-push rewrite credential
     // topology under a live CLI process.
     hasLiveAgent: (sessionId) => sessionHasLiveAgent(runnerRegistry, sessionId),
@@ -663,6 +667,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         providerAccountManager,
         agentRegistry,
         sseBroadcast,
+        credentialStore,
       });
     });
     // Recovery counterpart: when a revoked account's token rotates back to
@@ -675,6 +680,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         providerAccountManager,
         agentRegistry,
         sseBroadcast,
+        credentialStore,
       });
     });
     // Rearm immediately on a fresh sign-in. `wireEventHandlers` also listens
@@ -706,6 +712,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         providerAccountManager,
         agentRegistry,
         sseBroadcast,
+        credentialStore,
       });
     });
     // Recovery counterpart (mirrors the Claude wiring above): a background
@@ -719,6 +726,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         providerAccountManager,
         agentRegistry,
         sseBroadcast,
+        credentialStore,
       });
     });
     authManagers.get("codex")?.on("complete", () => {

@@ -213,6 +213,15 @@ export interface WsAgentListMessage {
    * than clobbering a good one with `undefined`.
    */
   canRunTurns?: boolean;
+  /**
+   * docs/257 req 9 — when harness onboarding was first completed (ISO), or
+   * absent. Rides the same channel and for the same reason as `canRunTurns`:
+   * the stamp is written the moment the server first observes a runnable
+   * install, which is exactly when this event fires. Absent means "no news"
+   * (either not stamped yet, or an older server) — the client leaves its value
+   * alone, which is safe because the stamp is never cleared.
+   */
+  harnessOnboardingCompletedAt?: string;
 }
 
 /** Server → Client: the agent was interrupted by user. */

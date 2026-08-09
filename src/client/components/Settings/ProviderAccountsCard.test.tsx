@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor, within, act } from "@testing-library/react";
 import { ProviderAccountsCard } from "./ProviderAccountsCard.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
@@ -78,6 +78,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   useSettingsStore.getState().setProviderAccounts([]);
+  useSettingsStore.setState({ providerAccountNotices: {} });
 });
 
 describe("ProviderAccountsCard failover cutoffs", () => {
@@ -203,12 +204,113 @@ describe("ProviderAccountsCard failover cutoffs", () => {
       expect(useSettingsStore.getState().failoverCutoffs[CLAUDE_ROUTING_KEY]).toEqual({ session: 90, weekly: 90 }),
     );
     await waitFor(() => expect(input.value).toBe("90"));
-    expect(useUiStore.getState().toast?.message).toContain("failover cutoff");
+    // docs/257 req 5 — the rollback reports itself on the card, not as a global
+    // toast. The notice lives in the store precisely because this save can be
+    // flushed from an unmount cleanup, after the component's state is gone.
+    expect(screen.getByTestId("provider-accounts-notice-claude")).toHaveTextContent("failover cutoff");
+    expect(useUiStore.getState().toast).toBeNull();
   });
 
   it("hides the cutoff controls when only one account is connected", () => {
     useSettingsStore.getState().setProviderAccounts([account("a", true)]);
     renderCard();
     expect(screen.queryByTestId("failover-cutoffs-claude")).toBeNull();
+  });
+});
+
+/**
+ * docs/257 req 5 — results and errors render next to the step that produced
+ * them, not as a toast somewhere else on screen.
+ *
+ * Moved in the shared component for BOTH hosts rather than branched on
+ * onboarding: a second error-presentation path through the one component req 7
+ * exists to keep single is precisely the drift req 7 forbids, and a toast is a
+ * global side effect that cannot be scoped to its host anyway.
+ *
+ * Every case here asserts the absence of a toast as well as the presence of the
+ * inline notice — "we also render it inline" would pass a presence-only test.
+ */
+describe("ProviderAccountsCard inline results and errors (docs/257 req 5)", () => {
+  /** Fail every request with a server-supplied message. */
+  function installFailingFetch(message: string) {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(new Response(JSON.stringify({ error: message }), { status: 500 })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("reports a failed 'Add account' on the card, because no row exists yet", async () => {
+    installFailingFetch("GitHub says no");
+    renderCard();
+
+    fireEvent.click(screen.getByTestId("provider-account-add-claude"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("provider-accounts-notice-claude")).toHaveTextContent("GitHub says no");
+    });
+    expect(useUiStore.getState().toast).toBeNull();
+  });
+
+  it("reports a failed disconnect on the row it belongs to", async () => {
+    installFailingFetch("that session is running");
+    renderCard();
+
+    // "Disconnect" is the third ghost button on each row.
+    const row = screen.getByTestId("provider-account-row-a");
+    fireEvent.click(within(row).getByText("Disconnect"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("provider-account-notice-a")).toHaveTextContent("that session is running");
+    });
+    expect(useUiStore.getState().toast).toBeNull();
+  });
+
+  it("reports a SUCCESSFUL disconnect's result on the card — the row is gone", async () => {
+    // The results half of req 5, and the reason it is card-scoped rather than
+    // row-scoped: a successful disconnect deletes the row its result describes.
+    vi.stubGlobal("fetch", vi.fn(() =>
+      Promise.resolve(new Response(
+        JSON.stringify({ accounts: [account("b", true)], switchedSessionIds: ["s1", "s2"] }),
+        { status: 200 },
+      )),
+    ));
+    renderCard();
+
+    const row = screen.getByTestId("provider-account-row-a");
+    fireEvent.click(within(row).getByText("Disconnect"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("provider-accounts-notice-claude"))
+        .toHaveTextContent("Moved 2 session(s) to the replacement account.");
+    });
+    expect(useUiStore.getState().toast).toBeNull();
+  });
+
+  it("gives the duplicate-account refusal a landing place on the card", () => {
+    // The one credential failure that arrives from OUTSIDE the card: it comes
+    // as an `agent_auth_failed` SSE, and the refusal deletes the row a per-row
+    // error would have used (docs/150 req 22). It was a global toast.
+    renderCard();
+    act(() => {
+      useSettingsStore.getState().setProviderAccountNotice("claude", {
+        kind: "error",
+        message: "That account is already connected.",
+      });
+    });
+
+    const notice = screen.getByTestId("provider-accounts-notice-claude");
+    expect(notice).toHaveTextContent("That account is already connected.");
+
+    fireEvent.click(screen.getByTestId("provider-accounts-notice-claude-dismiss"));
+    expect(screen.queryByTestId("provider-accounts-notice-claude")).toBeNull();
+  });
+
+  it("scopes an external notice to its own provider", () => {
+    render(<ProviderAccountsCard provider="codex" agent={undefined} />);
+    act(() => {
+      useSettingsStore.getState().setProviderAccountNotice("claude", { kind: "error", message: "Claude's problem" });
+    });
+    expect(screen.queryByTestId("provider-accounts-notice-codex")).toBeNull();
   });
 });

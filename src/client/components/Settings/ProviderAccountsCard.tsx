@@ -3,15 +3,14 @@
 // handler can observe.
 // eslint-disable-next-line no-restricted-imports -- unmount flush, see above
 import { useEffect, useRef, useState } from "react";
-import { CaretDownIcon, CaretUpIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, CaretUpIcon, XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
 import type { AgentId, ProviderAccount } from "../../../server/shared/types.js";
 import { credentialModeKey } from "../../../server/shared/types/domain-types/credential-route.js";
 import { nativeServiceForHarness } from "../../../server/shared/catalogue/index.js";
 import { Button } from "../ui/button.js";
-import { useUiStore } from "../../stores/ui-store.js";
-import type { ClaudeAuthDiagnostics } from "../../stores/settings-store.js";
+import type { ClaudeAuthDiagnostics, ProviderAccountNotice } from "../../stores/settings-store.js";
 import {
   useSettingsStore,
   providerAccountAuthKey,
@@ -41,6 +40,41 @@ const apiKeyCopy: Record<AgentId, { label: string; placeholder: string; prefix: 
   claude: { label: "Anthropic API key", placeholder: "sk-ant-...", prefix: "sk-ant-" },
   codex: { label: "OpenAI API key", placeholder: "sk-...", prefix: "sk-" },
 };
+
+function NoticeLine({
+  notice,
+  onDismiss,
+  testId,
+}: {
+  notice: ProviderAccountNotice;
+  /** Present on card-level notices, which have no row to disappear with. */
+  onDismiss?: () => void;
+  testId: string;
+}) {
+  return (
+    <div
+      className={`flex items-start justify-between gap-2 rounded-md border px-2 py-1.5 text-xs ${
+        notice.kind === "error"
+          ? "border-(--color-error) text-(--color-error)"
+          : "border-(--color-border-secondary) text-(--color-text-secondary)"
+      }`}
+      role={notice.kind === "error" ? "alert" : "status"}
+      data-testid={testId}
+    >
+      <span className="min-w-0">{notice.message}</span>
+      {onDismiss && (
+        <button
+          onClick={onDismiss}
+          aria-label="Dismiss"
+          className="shrink-0 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
+          data-testid={`${testId}-dismiss`}
+        >
+          <XIcon size={ICON_SIZE.XS} />
+        </button>
+      )}
+    </div>
+  );
+}
 
 /**
  * The **single** subscription connect surface (docs/150 req 16) — rendered by
@@ -114,6 +148,32 @@ export function ProviderAccountsCard({
   const [clearing, setClearing] = useState(false);
   const [pendingDisconnect, setPendingDisconnect] = useState<{ accountId: string; message: string } | null>(null);
   const [replacementChoice, setReplacementChoice] = useState("");
+  /**
+   * docs/257 req 5 — where a result or a failure lands.
+   *
+   * This card used to report add, rename, reorder, disconnect, connect, cancel
+   * and code submission through a global `toast()`, and a *successful*
+   * disconnect reported "moved N sessions" the same way. Req 5 says both halves
+   * belong next to the step that produced them: an error that appears somewhere
+   * else on screen and then disappears defeats the point of a setup panel whose
+   * whole job is to keep the ask in front of the user.
+   *
+   * Moved for BOTH hosts rather than branching on one: an onboarding-only error
+   * path through the single component req 7 exists to keep single is exactly the
+   * drift req 7 forbids — and a toast is a global side effect fired from inside
+   * a panel, so it cannot be scoped to its host anyway.
+   *
+   * Row-scoped where a row exists, card-scoped where it does not: "Add account"
+   * fails before there is a row, and a *successful* disconnect deletes the row
+   * its result describes.
+   */
+  const [rowNotices, setRowNotices] = useState<Record<string, ProviderAccountNotice>>({});
+  /**
+   * Card-level notices live in the store, not here. See the store field: each
+   * one outlives either this component or the row it is about.
+   */
+  const cardNotice = useSettingsStore((s) => s.providerAccountNotices[provider]);
+  const setCardNotice = useSettingsStore((s) => s.setProviderAccountNotice);
 
   const name = providerNames[provider];
 
@@ -125,8 +185,24 @@ export function ProviderAccountsCard({
   const otherReadyAccounts = (excludeId: string) =>
     accounts.filter((account) => account.id !== excludeId && account.status === "ready");
 
-  const toast = (err: unknown, fallback: string) => {
-    useUiStore.getState().setToast({ message: err instanceof Error ? err.message : fallback });
+  const messageOf = (err: unknown, fallback: string): string =>
+    err instanceof Error && err.message ? err.message : fallback;
+
+  /** Post a failure on one account's row, replacing whatever was there. */
+  const failRow = (accountId: string, err: unknown, fallback: string): void => {
+    setRowNotices((current) => ({
+      ...current,
+      [accountId]: { kind: "error", message: messageOf(err, fallback) },
+    }));
+  };
+
+  /** Drop a row's notice — called as each action starts, so none goes stale. */
+  const clearRow = (accountId: string): void => {
+    setRowNotices((current) => {
+      if (!(accountId in current)) return current;
+      const { [accountId]: _cleared, ...rest } = current;
+      return rest;
+    });
   };
 
   const request = async <T,>(url: string, init?: RequestInit): Promise<T> => {
@@ -161,6 +237,7 @@ export function ProviderAccountsCard({
    */
   const addAccount = async () => {
     setAdding(true);
+    setCardNotice(provider, null);
     try {
       const known = new Set(accounts.map((account) => account.id));
       const result = await request<{ accounts: ProviderAccount[] }>("/api/provider-accounts", {
@@ -173,7 +250,8 @@ export function ProviderAccountsCard({
       );
       if (created) await startLogin(created.id);
     } catch (err) {
-      toast(err, "Failed to add account");
+      // Card-scoped: this fails before a row exists to hang it on.
+      setCardNotice(provider, { kind: "error", message: messageOf(err, "Failed to add account") });
     } finally {
       setAdding(false);
     }
@@ -183,6 +261,7 @@ export function ProviderAccountsCard({
     const label = (draftLabels[account.id] ?? account.label).trim();
     if (!label || label === account.label) return;
     setSavingId(account.id);
+    clearRow(account.id);
     try {
       const result = await request<{ accounts: ProviderAccount[] }>(`/api/provider-accounts/${provider}/${account.id}`, {
         method: "PATCH",
@@ -193,7 +272,7 @@ export function ProviderAccountsCard({
         Object.entries(current).filter(([id]) => id !== account.id),
       ));
     } catch (err) {
-      toast(err, "Failed to rename account");
+      failRow(account.id, err, "Failed to rename account");
     } finally {
       setSavingId(null);
     }
@@ -202,13 +281,14 @@ export function ProviderAccountsCard({
   const makePrimary = async (account: ProviderAccount) => {
     if (account.isPrimary) return;
     setSavingId(account.id);
+    clearRow(account.id);
     try {
       const result = await request<{ accounts: ProviderAccount[] }>(`/api/provider-accounts/${provider}/${account.id}/primary`, {
         method: "POST",
       });
       setProviderAccounts(result.accounts);
     } catch (err) {
-      toast(err, "Failed to update primary account");
+      failRow(account.id, err, "Failed to update primary account");
     } finally {
       setSavingId(null);
     }
@@ -229,6 +309,7 @@ export function ProviderAccountsCard({
     const next = [...ids];
     next.splice(to, 0, ...next.splice(from, 1));
     setSavingId(account.id);
+    clearRow(account.id);
     try {
       const result = await request<{ accounts: ProviderAccount[] }>(`/api/provider-accounts/${provider}/order`, {
         method: "PUT",
@@ -236,7 +317,7 @@ export function ProviderAccountsCard({
       });
       setProviderAccounts(result.accounts);
     } catch (err) {
-      toast(err, "Failed to reorder accounts");
+      failRow(account.id, err, "Failed to reorder accounts");
     } finally {
       setSavingId(null);
     }
@@ -259,6 +340,8 @@ export function ProviderAccountsCard({
    */
   const disconnect = async (account: ProviderAccount, replacementAccountId?: string) => {
     setSavingId(account.id);
+    clearRow(account.id);
+    setCardNotice(provider, null);
     try {
       const query = replacementAccountId
         ? `?replacementAccountId=${encodeURIComponent(replacementAccountId)}`
@@ -273,13 +356,17 @@ export function ProviderAccountsCard({
       );
       setProviderAccounts(result.accounts);
       setPendingDisconnect(null);
+      // Card-scoped, and not by preference: a successful disconnect deletes the
+      // row this result is about, so there is no row left to render it on.
       const stranded = result.strandedSessionIds?.length ?? 0;
       if (result.switchedSessionIds.length > 0) {
-        useUiStore.getState().setToast({
+        setCardNotice(provider, {
+          kind: "info",
           message: `Moved ${result.switchedSessionIds.length} session(s) to the replacement account.`,
         });
       } else if (stranded > 0) {
-        useUiStore.getState().setToast({
+        setCardNotice(provider, {
+          kind: "info",
           message: `Disconnected. ${stranded} session(s) have no connected ${name} account — connect one before their next turn.`,
         });
       }
@@ -292,7 +379,7 @@ export function ProviderAccountsCard({
         setPendingDisconnect({ accountId: account.id, message });
         setReplacementChoice(movable[0]?.id ?? "");
       } else {
-        toast(err, "Failed to disconnect account");
+        failRow(account.id, err, "Failed to disconnect account");
       }
     } finally {
       setSavingId(null);
@@ -301,10 +388,12 @@ export function ProviderAccountsCard({
 
   const connect = async (account: ProviderAccount) => {
     setSavingId(account.id);
+    clearRow(account.id);
+    setCardNotice(provider, null);
     try {
       await startLogin(account.id);
     } catch (err) {
-      toast(err, "Failed to start sign-in");
+      failRow(account.id, err, "Failed to start sign-in");
     } finally {
       setSavingId(null);
     }
@@ -312,11 +401,12 @@ export function ProviderAccountsCard({
 
   const cancelLogin = async (account: ProviderAccount) => {
     setSavingId(account.id);
+    clearRow(account.id);
     try {
       await request(`/api/provider-accounts/${provider}/${account.id}/login/cancel`, { method: "POST" });
       setProviderAccountAuth(provider, account.id, null);
     } catch (err) {
-      toast(err, "Failed to cancel sign-in");
+      failRow(account.id, err, "Failed to cancel sign-in");
     } finally {
       setSavingId(null);
     }
@@ -326,13 +416,14 @@ export function ProviderAccountsCard({
     const code = authCodes[account.id]?.trim();
     if (!code) return;
     setSavingId(account.id);
+    clearRow(account.id);
     try {
       await request(`/api/provider-accounts/${provider}/${account.id}/login/code`, {
         method: "POST",
         body: JSON.stringify({ code }),
       });
     } catch (err) {
-      toast(err, "Failed to submit authorization code");
+      failRow(account.id, err, "Failed to submit authorization code");
     } finally {
       setSavingId(null);
     }
@@ -423,6 +514,14 @@ export function ProviderAccountsCard({
           {adding ? "Adding..." : "Add account"}
         </Button>
       </div>
+
+      {cardNotice && (
+        <NoticeLine
+          notice={cardNotice}
+          onDismiss={() => setCardNotice(provider, null)}
+          testId={`provider-accounts-notice-${provider}`}
+        />
+      )}
 
       {accounts.length === 0 ? (
         <div
@@ -540,6 +639,13 @@ export function ProviderAccountsCard({
                   <p className="text-xs text-(--color-error)" data-testid={`provider-account-error-${account.id}`}>
                     {authError}
                   </p>
+                )}
+
+                {rowNotices[account.id] && (
+                  <NoticeLine
+                    notice={rowNotices[account.id]}
+                    testId={`provider-account-notice-${account.id}`}
+                  />
                 )}
 
                 {pendingDisconnect?.accountId === account.id && (
@@ -754,7 +860,16 @@ function SelectionModeControl({ provider, name }: { provider: AgentId; name: str
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
     } catch (err) {
       useSettingsStore.getState().setAccountSelectionMode(routingKeyFor(provider), previous);
-      useUiStore.getState().setToast({ message: `Failed to update ${name} account order` });
+      // docs/257 req 5 — inline, like every other failure this card reports.
+      // Cross-backend review was right that leaving these two as toasts made
+      // one card report some failures inline and others globally, which is the
+      // drift req 7 exists to prevent; and the argument for moving the rest
+      // ("a toast fired from inside a panel cannot be scoped to its host")
+      // applies here verbatim. Card-scoped because the control is card-scoped.
+      useSettingsStore.getState().setProviderAccountNotice(provider, {
+        kind: "error",
+        message: `Failed to update ${name} account order`,
+      });
       console.error("[settings] account selection mode save failed:", err);
     } finally {
       setSaving(false);
@@ -838,7 +953,14 @@ async function saveCutoff(
     if (now[key] === value) {
       useSettingsStore.getState().setFailoverCutoffs(routingKeyFor(provider), { ...now, [key]: before[key] });
     }
-    useUiStore.getState().setToast({ message: `Failed to update ${name} failover cutoff` });
+    // docs/257 req 5. This one is the clearest case for a STORE-held notice
+    // rather than component state: `saveCutoff` is deliberately a module-level
+    // function over the store because it is called from an unmount cleanup,
+    // where the component's state and its setters are already gone.
+    useSettingsStore.getState().setProviderAccountNotice(provider, {
+      kind: "error",
+      message: `Failed to update ${name} failover cutoff`,
+    });
     console.error("[settings] failover cutoff save failed:", err);
   }
 }

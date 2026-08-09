@@ -78,6 +78,7 @@ import { SearchBar } from "./components/SearchBar.js";
 import { ConnectionBanner } from "./components/ConnectionBanner.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
 import { HomeScreen } from "./components/HomeScreen.js";
+import { HarnessOnboardingPanel } from "./components/HarnessOnboardingPanel.js";
 import { AddRepoDialog } from "./components/AddRepoDialog.js";
 import { AllSessionsDialog } from "./components/AllSessionsDialog.js";
 import { NewRepoDialog } from "./components/NewRepoDialog.js";
@@ -150,7 +151,8 @@ import { buildIssueSeedPrompt } from "../server/shared/issue-ref.js";
 import { sendUserMessage } from "./utils/send-user-message.js";
 import { buildReleaseConfirmMessage } from "./utils/release-confirm-message.js";
 import { isAgentMessagingBlocked } from "./utils/agent-messaging-trust.js";
-import { useChatDisabledReason } from "./utils/chat-runnable.js";
+import { useChatDisabledReason, useHarnessOnboardingPanelVisible } from "./utils/chat-runnable.js";
+import { useGitHubGateLatch } from "./hooks/useGitHubGateLatch.js";
 import type { SendCommentsPayload } from "./components/FilePreviewModal.js";
 
 export default function App() {
@@ -354,30 +356,31 @@ export default function App() {
     liveSteering &&
     (agentList.find((a) => a.id === activeAgentId)?.supportsSteering ?? false);
 
-  const noAgentReady =
-    agentList.length > 0 &&
-    !agentList.some((a) => a.installed && a.authConfigured);
-  // GitHub is the only onboarding door — the manual git-identity / sandbox
-  // fallback was removed, so gate step 1 on GitHub auth rather than git
-  // identity. A user with a legacy/manual identity (set in Settings) but no
+  // GitHub is the only blocking door left (docs/257). The manual git-identity /
+  // sandbox fallback was removed, so gate on GitHub auth rather than git
+  // identity: a user with a legacy/manual identity (set in Settings) but no
   // GitHub token must still pass Connect-GitHub. Gate on `bootstrapLoaded` so
-  // the default `githubStatus.authenticated: false` can't flash the wizard
-  // before the real status arrives from bootstrap.
+  // the default `githubStatus.authenticated: false` can't flash the gate before
+  // the real status arrives from bootstrap.
+  //
+  // docs/257 — the harness half is NOT here any more. `noAgentReady` used to
+  // join this disjunction and summon the wizard; connecting a harness is now
+  // `HarnessOnboardingPanel`, in the conversation view, covering nothing.
   const githubNeeded = bootstrapLoaded && !githubStatus.authenticated;
-  const needsOnboarding = githubNeeded || noAgentReady;
-  // Latch: once onboarding is triggered, it stays active until the user
-  // clicks "Get Started". This prevents the dialog from closing reactively
-  // when e.g. Claude auth completes and noAgentReady flips to false mid-wizard.
-  const onboardingTriggeredRef = useRef(false);
-  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
+  // The trigger latch stays, and it is not caution — it is what "the GitHub step
+  // is unchanged" costs. See `useGitHubGateLatch`, which owns and tests the one
+  // row where it differs from a direct `githubNeeded` gate. Dismissal now fires
+  // when GitHub connects, the same shape as before: the old step 1 advanced
+  // rather than closing only because a second step was waiting behind it.
+  const { showGitHubGate, dismiss: dismissGitHubGate } = useGitHubGateLatch(githubNeeded);
   // docs/211 — sandbox create is in flight; disables the dialog controls. The
   // dialog itself is rendered once here (not in SessionSidebar) so the empty
   // HomeScreen can open it on mobile, where the sidebar unmounts when closed.
   const [creatingSandbox, setCreatingSandbox] = useState(false);
-  if (needsOnboarding && !onboardingTriggeredRef.current) {
-    onboardingTriggeredRef.current = true;
-  }
-  const showOnboarding = onboardingTriggeredRef.current && !onboardingDismissed;
+  // docs/257 req 9 — the historical condition, plus the explicit exclusion that
+  // keeps the panel from mounting behind the gate's backdrop. See
+  // `utils/chat-runnable.ts`.
+  const showHarnessOnboarding = useHarnessOnboardingPanelVisible(showGitHubGate);
 
   // ── Non-store hooks ──
   const { fraction, isDragging, onMouseDown, onTouchStart, containerRef } =
@@ -1120,6 +1123,8 @@ export default function App() {
           settings: {
             /** docs/257 req 8 — server-computed "this install can run a turn". */
             canRunTurns?: boolean;
+            /** docs/257 req 9 — when harness onboarding was first completed (ISO). */
+            harnessOnboardingCompletedAt?: string;
             gitIdentity: { name: string; email: string };
             systemPrompt: string;
             agents: AgentOption[];
@@ -1148,6 +1153,12 @@ export default function App() {
         // composer reading a value this refetch never refreshed.
         if (data.settings.canRunTurns !== undefined)
           {useSettingsStore.getState().setCanRunTurns(data.settings.canRunTurns);}
+        // docs/257 req 9 — same reasoning as `canRunTurns` above: a named-field
+        // reader has to list the field or opening Settings leaves the panel
+        // reading a value this refetch never refreshed. `?? null` because this
+        // is a full settings read.
+        useSettingsStore.getState()
+          .setHarnessOnboardingCompletedAt(data.settings.harnessOnboardingCompletedAt ?? null);
         useSettingsStore
           .getState()
           .setSystemPromptContent(data.settings.systemPrompt);
@@ -1944,7 +1955,25 @@ export default function App() {
           </div>
         </div>
       )}
-      {showHomeScreen ? (
+      {/* docs/257 reqs 1, 2, 9 — the setup panel takes the chat pane, and it
+          replaces BOTH branches of this ternary rather than only the
+          conversation: on a fresh install with no repositories the branch that
+          renders is `HomeScreen`, so replacing only the conversation would mean
+          the brand-new user this feature exists for never sees the panel until
+          they have created a session. `HomeScreen`'s only affordance is
+          add-repo, which stays reachable from the sidebar and the repo switcher
+          (and returns intact the moment the flow finishes).
+
+          `showHomeScreen`'s LAYOUT effects are deliberately left alone: on the
+          home route there is no session, so the preview / files / Present /
+          terminal panes are suppressed because they would be empty, not because
+          onboarding is unfinished. Forcing them to render beside the panel would
+          be a layout change no requirement asks for. In a session — the state
+          req 1 describes — the panel replaces only the conversation and every
+          one of those panes is live beside it. */}
+      {showHarnessOnboarding ? (
+        <HarnessOnboardingPanel agentList={agentList} />
+      ) : showHomeScreen ? (
         <HomeScreen
           onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)}
           githubAuthenticated={githubStatus.authenticated}
@@ -2034,7 +2063,11 @@ export default function App() {
       {agentMessagingBlocked && (!showHomeScreen || showNewSessionView) && (
         <RepoTrustNotice repoUrl={currentRepoUrl} />
       )}
-      {(!showHomeScreen || showNewSessionView) && (
+      {/* docs/257 req 3 — the composer renders under the panel too. Left as it
+          was, a first-run user on the home route would meet the panel with no
+          composer beneath it and therefore no placeholder saying why chat is
+          unavailable, which is the one state req 3 was written for. */}
+      {(showHarnessOnboarding || !showHomeScreen || showNewSessionView) && (
         <MessageInput
           onSend={handleSend}
           disabled={
@@ -2099,9 +2132,7 @@ export default function App() {
     <TooltipProvider delayDuration={300}>
       <div className="flex flex-col h-(--app-height) bg-(--color-bg-primary) text-(--color-text-primary)">
         <AuthOverlayContainer
-          showOnboarding={showOnboarding}
-          githubNeeded={githubNeeded}
-          agentList={agentList}
+          showGitHubGate={showGitHubGate}
           onGitHubTokenSubmit={async (token: string) => {
             const result = await useSettingsStore
               .getState()
@@ -2112,38 +2143,8 @@ export default function App() {
             }
             return false;
           }}
-          onClaudeApiKeySubmit={async (key: string) => {
-            try {
-              await apiPost("/api/auth/api-key", { key });
-              const data = await apiGet<{ agents: AgentOption[] }>(
-                "/api/bootstrap",
-              );
-              useUiStore.getState().setAgentList(data.agents);
-              return true;
-            } catch {
-              return false;
-            }
-          }}
-          onCodexApiKeySubmit={async (key: string) => {
-            try {
-              const result = await apiPost<{ agents: AgentOption[] }>(
-                `/api/agents/codex/env`,
-                { key: "OPENAI_API_KEY", value: key },
-              );
-              useUiStore.getState().setAgentList(result.agents);
-              return true;
-            } catch {
-              return false;
-            }
-          }}
-          onRefreshAgents={async () => {
-            const data = await apiGet<{ agents: AgentOption[] }>(
-              "/api/bootstrap",
-            );
-            useUiStore.getState().setAgentList(data.agents);
-          }}
           onComplete={() => {
-            setOnboardingDismissed(true);
+            dismissGitHubGate();
             if (gitIdentityNeeded)
               {useGitStore.getState().setIdentityNeeded(false);}
           }}

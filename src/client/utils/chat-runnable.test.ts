@@ -1,11 +1,12 @@
 /**
- * docs/257 reqs 3 and 10 — the two predicates the composer and the starter
- * prompts share.
+ * docs/257 reqs 3, 9 and 10 — the predicates the composer, the onboarding panel
+ * and the starter prompts share.
  */
 
 import { describe, it, expect } from "vitest";
 import {
   chatDisabledReason,
+  harnessOnboardingPanelVisible,
   starterPromptsAllowed,
   NO_RUNNABLE_SERVICE_REASON,
 } from "./chat-runnable.js";
@@ -68,5 +69,45 @@ describe("starterPromptsAllowed (req 10)", () => {
       harnessOnboardingCompletedAt: undefined,
       canRunTurns: true,
     })).toBe(false);
+  });
+});
+
+describe("harnessOnboardingPanelVisible (req 9)", () => {
+  const base = { bootstrapLoaded: true, harnessOnboardingCompletedAt: null, githubGateUp: false };
+
+  it("shows the panel when nothing was ever configured", () => {
+    expect(harnessOnboardingPanelVisible(base)).toBe(true);
+  });
+
+  it("is suppressed while the GitHub gate is up", () => {
+    // Not decoration: on a fresh install BOTH halves are unfinished at once, so
+    // without this clause the panel mounts behind the gate's backdrop. An
+    // earlier draft asserted the two were never on screen together and shipped
+    // no clause producing it.
+    expect(harnessOnboardingPanelVisible({ ...base, githubGateUp: true })).toBe(false);
+  });
+
+  it("never returns once onboarding has been completed", () => {
+    expect(harnessOnboardingPanelVisible({
+      ...base,
+      harnessOnboardingCompletedAt: "2026-08-09T10:00:00.000Z",
+    })).toBe(false);
+  });
+
+  it("stays away for a completed install that later removed every credential", () => {
+    // The condition is HISTORICAL. Such a user is not a new user: they get the
+    // disabled composer's placeholder, and Settings is where they undo what
+    // they did there.
+    expect(harnessOnboardingPanelVisible({
+      ...base,
+      harnessOnboardingCompletedAt: "2026-08-09T10:00:00.000Z",
+    })).toBe(false);
+  });
+
+  it("shows nothing before bootstrap has answered", () => {
+    // The store's pre-bootstrap default is "never completed", so without this a
+    // set-up install would paint one frame of setup panel over its own
+    // conversation.
+    expect(harnessOnboardingPanelVisible({ ...base, bootstrapLoaded: false })).toBe(false);
   });
 });

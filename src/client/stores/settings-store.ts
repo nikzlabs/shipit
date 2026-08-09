@@ -97,6 +97,18 @@ export const EMPTY_CLAUDE_AUTH_DIAGNOSTICS: ClaudeAuthDiagnostics = Object.freez
 
 const MAX_CLAUDE_AUTH_DIAGNOSTIC_ENTRIES = 200;
 
+/**
+ * docs/257 req 5 — an inline result or failure on a provider's accounts card.
+ *
+ * Two kinds, because req 5 moves both halves of what used to be a toast: a
+ * failure to report, and the *result* of a successful disconnect ("moved N
+ * sessions", "N sessions have no connected account").
+ */
+export interface ProviderAccountNotice {
+  kind: "error" | "info";
+  message: string;
+}
+
 interface SettingsState {
   /**
    * docs/257 req 8 — whether this install can actually run a turn, as computed
@@ -112,6 +124,38 @@ interface SettingsState {
    * composer at an install that is perfectly runnable.
    */
   canRunTurns: boolean;
+  /**
+   * docs/257 req 9 — when harness onboarding was first completed (ISO), or
+   * `null` for never.
+   *
+   * The onboarding panel's presence is this being `null` (and the GitHub gate
+   * not being up). It is a HISTORICAL fact, computed and persisted server-side:
+   * removing every credential later leaves it set, so the panel does not come
+   * back for a user who is not new. Hydrated from `GET /api/bootstrap` and
+   * pushed on every `agent_list` SSE.
+   */
+  harnessOnboardingCompletedAt: string | null;
+  /**
+   * docs/257 req 5 — a CARD-level result or failure for one provider's
+   * accounts, keyed by provider.
+   *
+   * **In the store rather than in component state, because every notice that
+   * lands here outlives the thing that produced it.** Three cases, and each one
+   * would be lost in local state:
+   *
+   *  - A refused *duplicate* account arrives as an `agent_auth_failed` SSE, and
+   *    a handler outside React has no other channel into a component it does
+   *    not render (docs/150 req 22).
+   *  - A **successful** disconnect of the LAST account removes the account, and
+   *    `ServicesPanel` then stops rendering that service's card entirely — so a
+   *    notice held in the card's own state unmounts in the same commit that
+   *    sets it, and the user never learns which sessions were stranded. The
+   *    panel keeps a card mounted while it has a notice to show, which is what
+   *    makes this durable rather than merely relocated.
+   *  - A failover cutoff is flushed from an **unmount cleanup**, where the
+   *    component's state and setters are already gone.
+   */
+  providerAccountNotices: Partial<Record<AgentId, ProviderAccountNotice>>;
   hasSystemPrompt: boolean;
   systemPromptContent: string;
   /**
@@ -231,6 +275,10 @@ interface SettingsState {
 
   /** docs/257 — replace the server-computed runnable signal. */
   setCanRunTurns: (canRun: boolean) => void;
+  /** docs/257 req 9 — replace the server-persisted onboarding-completed stamp. */
+  setHarnessOnboardingCompletedAt: (at: string | null) => void;
+  /** docs/257 req 5 — set or clear a provider's card-level notice. */
+  setProviderAccountNotice: (provider: AgentId, notice: ProviderAccountNotice | null) => void;
   setHasSystemPrompt: (has: boolean) => void;
   setSystemPromptContent: (content: string) => void;
   setMaxIdleContainers: (n: number) => void;
@@ -315,6 +363,8 @@ interface SettingsState {
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   canRunTurns: false,
+  harnessOnboardingCompletedAt: null,
+  providerAccountNotices: {},
   hasSystemPrompt: false,
   systemPromptContent: "",
   permissionMode: "auto",
@@ -355,6 +405,17 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   providerAccountAuthErrors: {},
 
   setCanRunTurns: (canRun) => set({ canRunTurns: canRun }),
+
+  setHarnessOnboardingCompletedAt: (at) => set({ harnessOnboardingCompletedAt: at }),
+
+  setProviderAccountNotice: (provider, notice) =>
+    set((state) => ({
+      providerAccountNotices: notice === null
+        ? Object.fromEntries(
+            Object.entries(state.providerAccountNotices).filter(([id]) => id !== provider),
+          )
+        : { ...state.providerAccountNotices, [provider]: notice },
+    })),
 
   setHasSystemPrompt: (has) => set({ hasSystemPrompt: has }),
 

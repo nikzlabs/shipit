@@ -1280,6 +1280,15 @@ export interface EventWiringDeps {
    * disturb.
    */
   hasLiveAgent?: (sessionId: string) => boolean;
+  /**
+   * docs/257 — the `agent_list` broadcasts below carry the harness-onboarding
+   * stamp as well as `canRunTurns`, and `buildAgentListPayload` reads it from
+   * here. Declared as `CredentialStore | undefined` rather than optional on
+   * purpose: an omission must be a compiler error at the call site, not a
+   * silently stamp-less payload emitted from the very handlers that make an
+   * install runnable for the first time.
+   */
+  credentialStore: CredentialStore | undefined;
 }
 
 export function markProviderAccountUnauthenticated(opts: {
@@ -1288,8 +1297,10 @@ export function markProviderAccountUnauthenticated(opts: {
   providerAccountManager: ProviderAccountManager;
   agentRegistry: AgentRegistry;
   sseBroadcast: (event: string, data: unknown) => void;
+  /** docs/257 — see {@link EventWiringDeps.credentialStore}. */
+  credentialStore: CredentialStore | undefined;
 }): void {
-  const { agentId, accountId, providerAccountManager, agentRegistry, sseBroadcast } = opts;
+  const { agentId, accountId, providerAccountManager, agentRegistry, sseBroadcast, credentialStore } = opts;
   try {
     providerAccountManager.setAccountStatus(agentId, accountId, "auth_failed");
   } catch (err) {
@@ -1297,7 +1308,7 @@ export function markProviderAccountUnauthenticated(opts: {
   }
   agentRegistry.refreshAuth(agentId);
   sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
-  sseBroadcast("agent_list", buildAgentListPayload(agentRegistry));
+  sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore));
 }
 
 /**
@@ -1324,8 +1335,10 @@ export function markProviderAccountReauthenticated(opts: {
   providerAccountManager: ProviderAccountManager;
   agentRegistry: AgentRegistry;
   sseBroadcast: (event: string, data: unknown) => void;
+  /** docs/257 — see {@link EventWiringDeps.credentialStore}. */
+  credentialStore: CredentialStore | undefined;
 }): void {
-  const { agentId, accountId, providerAccountManager, agentRegistry, sseBroadcast } = opts;
+  const { agentId, accountId, providerAccountManager, agentRegistry, sseBroadcast, credentialStore } = opts;
   const current = providerAccountManager.get(agentId, accountId);
   if (!current || current.status === "ready") return;
   try {
@@ -1336,12 +1349,12 @@ export function markProviderAccountReauthenticated(opts: {
   }
   agentRegistry.refreshAuth(agentId);
   sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
-  sseBroadcast("agent_list", buildAgentListPayload(agentRegistry));
+  sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore));
 }
 
 /** Wire auth event handlers. */
 export function wireEventHandlers(eventDeps: EventWiringDeps): void {
-  const { authManagers, githubAuthManager, agentRegistry, providerAccountManager, sseBroadcast, credentialsDir, sessionManager, hasLiveAgent } = eventDeps;
+  const { authManagers, githubAuthManager, agentRegistry, providerAccountManager, sseBroadcast, credentialsDir, sessionManager, hasLiveAgent, credentialStore } = eventDeps;
 
   /**
    * A3 (docs/142): after a Claude/Codex re-auth, force the fresh source token
@@ -1441,7 +1454,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
             reason: "duplicate",
             message: refusal,
           });
-          sseBroadcast("agent_list", buildAgentListPayload(agentRegistry));
+          sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore));
           sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
           return;
         }
@@ -1458,7 +1471,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
       agentRegistry.refreshAuth(agentId);
       repushTokenToPinnedSessions(agentId, accountId);
       sseBroadcast("agent_auth_complete", { agentId, ...(accountId ? { accountId } : {}) });
-      sseBroadcast("agent_list", buildAgentListPayload(agentRegistry));
+      sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore));
       sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
     });
 
@@ -1482,7 +1495,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
         ...(payload?.message ? { message: payload.message } : {}),
       });
       agentRegistry.refreshAuth(agentId);
-      sseBroadcast("agent_list", buildAgentListPayload(agentRegistry));
+      sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore));
     });
   }
 
