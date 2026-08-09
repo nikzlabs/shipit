@@ -267,6 +267,26 @@ GLM alone declares two — and closing the compose delivery gap so a
 stored key reaches a compose-backed containerized session. Existing subscription-backed
 vendors keep their current credential path untouched.
 
+**This phase breaks first-run onboarding, and that has to be said out loud rather than
+discovered.** `OnboardingWizard`'s second step is hard-coded to exactly two providers — it
+renders `ProviderAccountsCard` for `provider="claude"` and `provider="codex"` and lists every
+other agent as read-only status
+(`OnboardingWizard.tsx:249` ✅, `:256` ✅) — and it is the gate in front of the whole product
+(`AuthOverlay.tsx:43` ✅). That is the same `AgentId` keying this phase removes, on the one
+screen a user cannot skip. Req 8 sharpens it: a model is selectable only when its billing mode
+has a credential, so on a fresh install the wizard decides whether *anything* is selectable at
+all.
+
+The **redesign** of that flow is a separate feature with its own requirements, because it is a
+first-run experience question rather than a data-model one and it reaches things this design
+has no opinion about. What belongs *here* is only the interim: this phase must leave onboarding
+able to connect at least one credential and reach a runnable model. The cheapest honest version
+is to keep the two cards and re-point them at `(anthropic, sub)` and `(openai, sub)`
+explicitly, which preserves today's behaviour under the new keying without pretending to be the
+final design. Getting this wrong is the same failure mode as the phase 3 / phase 6 `cost_usd`
+interval below — a phase that is coherent in isolation and ships a broken product for the
+length of one PR.
+
 It also **re-keys the routing settings** from per-`AgentId` to per-`(service, mode)`. The
 real names, which an earlier draft of this paragraph got wrong: **`accountSelectionMode`**
 (`"strict" | "balanced"`, default `strict`) and **`failoverCutoffs`** (`{ session, weekly }`,
