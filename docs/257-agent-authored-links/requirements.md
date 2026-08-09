@@ -24,23 +24,54 @@ one requirement — with no way to make that pointer clickable.
 6. The feature is generic. It serves apps the *user* built (the requirements
    manager is one example), so it must not be tied to any ShipIt-owned domain
    such as issues, files, or PRs.
+7. The agent authors a link as an **ordinary markdown link** whose address is a
+   ShipIt URL scheme. No new tool call, and a link can sit anywhere prose can.
+8. A Preview destination is addressed by **path plus the service name**. A port
+   is never required of the agent.
+9. A Present destination is addressed by the artifact's **file path plus a URL
+   fragment**; the fragment is what names the place inside it.
+10. A link whose destination is unavailable **stays clickable** and, on click,
+    says why instead of doing nothing.
+11. A link can also **deliver a message to the destination page**, observable by
+    that page's own JavaScript, so the page can respond to the click itself —
+    highlight the item, open a drawer, switch a filter — rather than only being
+    scrolled to an anchor. This applies to both destinations (req 2, req 3).
 
 ## Open questions
 
-- **How does the agent author the link?** A plain markdown link with a ShipIt
-  URL scheme (`[REQ-7](shipit-preview:/requirements/7)`), or a dedicated tool
-  that emits a card?
-- **How is a Preview destination addressed?** Path only (resolved against the
-  preview the user is on), or path plus an explicit port/service?
-- **How is a Present destination addressed, and what identifies a place inside
-  it?** The artifact's file path is its identity today; pointing *inside* it
-  needs something more (a URL fragment, most likely).
-- **What happens when the destination is not available** — the artifact was
-  never presented, or no preview is running?
+_None._
 
 ## Resolved questions
 
-_None yet._
+- **2026-08-09 — How does the agent author the link?** Offered a markdown link
+  with a ShipIt URL scheme, a dedicated card-emitting tool, or both. Answer:
+  **the markdown link**. Recorded as req 7; the card tool was not adopted.
+
+- **2026-08-09 — How is a Preview destination addressed?** Offered path-only
+  against the current preview, path plus optional port/service, or a full
+  preview URL. Answer: **path plus the service name — "port shouldn't be
+  needed"**. Recorded as req 8: the agent names a service, never a port, and
+  ShipIt resolves the port itself.
+
+- **2026-08-09 — How does a link point inside a presented artifact?** Offered
+  file path plus URL fragment, file path only, or fragment plus a structured
+  SDK message to the artifact. Answer: **file path plus URL fragment**.
+  Recorded as req 9.
+
+- **2026-08-09 — Should a link also message the destination page?** The
+  question above offered an SDK-message variant as an alternative to the
+  fragment and it was not chosen; the requester then asked for it explicitly
+  ("I like the idea to also allow sending a message to the page that would be
+  handled by JS, add as a requirement"). Answer: **both**. Recorded as req 11 —
+  additive to req 9, not a replacement, and it covers the Preview as well as
+  presented artifacts.
+
+- **2026-08-09 — What happens when the destination is unavailable?** Offered
+  degrading to plain text, staying clickable and explaining on click, or
+  recovering the target on click. Answer: **stay clickable, show why on
+  click**. Recorded as req 10 — deliberately unlike the issue badges, which go
+  plain text, because the agent authored this link on purpose and a silently
+  vanished link would read as a bug.
 
 ## Non-requirements
 
