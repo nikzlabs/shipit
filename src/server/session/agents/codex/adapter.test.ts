@@ -805,6 +805,58 @@ describe("CodexAdapter", () => {
     expect((resultEvent as any).error).toBeUndefined();
   });
 
+  // planning#341 — the case the phase-3 test above did not carry, which is how
+  // the defect survived: `cacheWriteInputTokens` is a detail of `inputTokens`
+  // just as `cachedInputTokens` is, so it must come out of the input class too.
+  // Left in, `costFromRates` bills those tokens at the ordinary input rate AND
+  // again at the write rate (1.25× input on OpenAI's GPT-5.6 family), with no
+  // harness dollar figure to mask it. Verified against codex-cli 0.146.0, which
+  // passes the Responses `input_tokens` total through untouched.
+  it("takes cache-written tokens out of the input class as well as the cached ones", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("thread/tokenUsage/updated", {
+      tokenUsage: {
+        total: {
+          inputTokens: 1000,
+          outputTokens: 42,
+          cachedInputTokens: 800,
+          cacheWriteInputTokens: 50,
+        },
+      },
+    });
+    fakeProc.sendNotification("turn/completed", { turn: { id: "t", status: "completed" } });
+
+    await vi.waitFor(() => {
+      expect(events.some((e) => e.type === "agent_result")).toBe(true);
+    });
+
+    const resultEvent = events.find((e) => e.type === "agent_result");
+    // 1000 - 800 - 50, and the three input classes still sum back to the total.
+    expect(resultEvent).toMatchObject({
+      tokens: { input: 150, output: 42, cacheRead: 800, cacheWrite: 50 },
+    });
+  });
+
+  // Reported nothing and consumed zero are different facts, and a present-but-
+  // empty rollup is the first. An all-zero `tokens` block prices to $0 through
+  // the catalogue's rates and asserts a Codex turn was free.
+  it("emits no tokens for a usage rollup with no numbers in it", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("thread/tokenUsage/updated", { tokenUsage: { total: {} } });
+    fakeProc.sendNotification("turn/completed", { turn: { id: "t", status: "completed" } });
+
+    await vi.waitFor(() => {
+      expect(events.some((e) => e.type === "agent_result")).toBe(true);
+    });
+
+    const resultEvent = events.find((e) => e.type === "agent_result");
+    expect((resultEvent as { tokens?: unknown }).tokens).toBeUndefined();
+  });
+
   it("maps account/rateLimits/updated to an agent_rate_limits event", async () => {
     await createAndInit("Hello");
     events.length = 0;

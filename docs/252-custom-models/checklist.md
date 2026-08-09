@@ -155,12 +155,19 @@ table — a phase is checked off when its PR has merged.
 - [x] Settings → Services → **Background work**: the visible setting, with the derived
       default labelled and the derived harness shown as a fact rather than a control
 - [x] Cross-backend review — nine findings, eight fixed (see `plan.md`)
-- [ ] **Codex-harness non-turn work spends money and records no usage row.** `codex exec`
-      reports no telemetry through the orchestrator's shell-out, and an all-zero row priced
-      from the catalogue's rates would assert "this was free" — a wrong number rather than a
-      missing one. Closing it means either measuring `codex exec --json`'s event stream
-      (unverified here) or narrowing req 16's label. **Phase 6** owns the usage view and the
-      decision.
+- [x] **Codex-harness non-turn work records its usage row** (planning#341). Closed by
+      measurement, not by narrowing req 16: `codex exec --json`'s `turn.completed` carries the
+      turn's `usage` (verified against codex-cli 0.146.0 on a local Responses recorder), so the
+      naming shell-out parses it instead of discarding stdout's prose. `input_tokens` includes
+      `cached_input_tokens` there as it does on the app server, so the subtraction moved to
+      `shared/codex-token-usage.ts` and both boundaries read one rule. Codex still reports no
+      dollar figure — `costReported` stays false and the rates apply, as for a Codex turn.
+      Cross-backend review found two defects fixed with it: `cache_write_input_tokens` is a
+      detail of the input total too, so leaving it inside `input` billed those tokens twice
+      (pre-existing on the turn path since phase 3), and a present-but-empty usage block priced
+      to $0 instead of counting as no telemetry. A third — naming that resolves **no** target at
+      all reports tokens nobody records — is pre-existing, harness-independent and a
+      requirements question; filed as `planning#343` rather than answered here.
 
 ## Phases 8 and 9
 

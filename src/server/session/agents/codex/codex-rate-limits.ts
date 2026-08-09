@@ -21,8 +21,9 @@ export interface CodexTokenUsage {
    * **`inputTokens` INCLUDES `cachedInputTokens`** — measured against
    * codex-cli 0.146.0, not inferred. The adapter subtracts one from the other
    * before emitting `agent_result` so ShipIt's own token classes stay disjoint,
-   * as Claude's already are; see `codex-event-handler.ts`. Nothing downstream
-   * should re-derive that.
+   * as Claude's already are; the rule is `disjointCodexTokens`
+   * (`shared/codex-token-usage.ts`), shared with the orchestrator's `codex exec
+   * --json` reader. Nothing downstream should re-derive that.
    */
   total?: {
     inputTokens?: number;
