@@ -164,9 +164,32 @@ check; the second needs the intent to notice that its service reached `error`.
 The drawer keeps showing what it always showed — this adds the toast the click
 promised, it does not move compose diagnostics.
 
-### Present rendering
+### Present rendering — two different mechanisms, by artifact kind
 
-A presented artifact renders from `srcDoc` in an opaque-origin iframe, so the
+Only *rendered HTML* runs inside a frame with the SDK (`PresentPane.tsx:80`).
+Markdown takes a different path entirely, and that is what makes req 9's
+markdown support cheap:
+
+- **Markdown** renders in ShipIt's **own DOM** (`MarkdownReviewView` →
+  `MarkdownSelectionComments`), not in an iframe. So the pane scrolls to the
+  fragment itself: query the rendered container for `h1`–`h6`, slugify each
+  heading's text, scroll the match into view. No SDK, no postMessage, no
+  handshake timing.
+
+  It deliberately does **not** add `id` attributes in the markdown renderer.
+  That renderer is shared with chat, PR bodies and docs, so slugging headings
+  there would change every markdown surface in the app to serve one pane. Text
+  matching at click time is confined to the Present pane and needs no
+  dependency (`rehype-slug` would be a new one, and the dependency policy makes
+  that a deliberate act, not a convenience).
+
+- **Rendered HTML** goes through the SDK, below.
+
+- **Everything else** — SVG, images, the source view — is focused and nothing
+  more. There is no place inside an image to address, and saying so in req 9 is
+  better than inventing a behaviour nobody asked for.
+
+A presented HTML artifact renders from `srcDoc` in an opaque-origin iframe, so the
 parent cannot set `location.hash` on it and a fragment in the frame URL would do
 nothing. The fragment therefore arrives *as data* and the SDK does the scroll —
 which is the same delivery req 11 needs, so the Present side has exactly one

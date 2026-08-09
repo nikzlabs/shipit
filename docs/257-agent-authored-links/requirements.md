@@ -32,30 +32,46 @@ one requirement — with no way to make that pointer clickable.
 8. A Preview destination is addressed by **path plus the service name**. A port
    is never required of the agent.
 9. A Present destination is addressed by the artifact's **file path plus a URL
-   fragment**; the fragment is what names the place inside it.
+   fragment**; the fragment is what names the place inside it. This works for
+   **rendered HTML and for markdown** artifacts. Other kinds — SVG, images, the
+   source view of any artifact — are opened by the pointer but have no inner
+   place to address.
 10. A pointer that cannot be opened — for **any** reason — **stays clickable**
     and, on click, says why instead of doing nothing. The explanation appears as
     a **toast**, the same way for both destinations.
 11. A link can also **deliver a message to the destination page**, observable by
     that page's own JavaScript, so the page can respond to the click itself —
     highlight the item, open a drawer, switch a filter — rather than only being
-    scrolled to an anchor. This applies to both destinations (req 2, req 3).
+    scrolled to an anchor. This applies wherever the destination runs page
+    JavaScript: the Preview (req 2) and rendered HTML artifacts (req 3). A
+    markdown artifact has no scripts of its own, so req 9's scroll is all it
+    gets.
 12. If the pointer names a service that is **not running, ShipIt starts it
     first** and then opens the destination. A stopped service is not by itself a
     reason to report a pointer as unopenable (req 10); a start that *fails* is.
 
 ## Open questions
 
-- **Do reqs 3, 9 and 11 apply to presented artifacts that are not HTML?** The
-  Present tab also shows SVG, markdown, images, a source view of any artifact,
-  and a thumbnail gallery. Only *rendered HTML* has a channel into the page
-  (`PresentPane.tsx:80`), so on the other kinds a pointer could focus the
-  artifact but could neither scroll to a place inside it (req 9) nor tell it
-  about the click (req 11) — unless ShipIt does the scrolling itself, which is
-  possible for markdown (it renders those headings) but not for an image.
-  Raised by the cross-backend review. Nothing is implemented while this is open.
+_None._
 
 ## Resolved questions
+
+- **2026-08-09 — Do reqs 3, 9 and 11 apply to presented artifacts that are not
+  HTML?** Raised by the cross-backend review: only rendered HTML has a channel
+  into the page (`PresentPane.tsx:80`), so other kinds could be focused but not
+  scrolled-into or messaged. Offered HTML-only, or per-kind behaviour. Answer:
+  *"also markdown, links should work there. But if it is complicated,
+  html-only"*. It is not complicated — markdown renders in ShipIt's own DOM, so
+  the scroll needs no SDK — so **markdown is in**, recorded in req 9. Page
+  messaging (req 11) stays where page JavaScript exists, which markdown has
+  none of.
+
+- **2026-08-09 — Must a pointer always address a specific place, or is that
+  optional?** The first draft of req 5 turned the requester's example ("here is
+  the item that needs attention") into a universal rule, which also forbade
+  pointing at an app as a whole. Flagged as an agent inference by both the agent
+  and the cross-backend review. Answer: *"yes, it is optional"*. Req 5 states a
+  capability, not a restriction.
 
 - **2026-08-09 — Should a click start a stopped service?** The design had
   recorded the opposite as a non-goal, on the agent's own reasoning that a click

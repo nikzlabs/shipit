@@ -13,12 +13,14 @@
 - [ ] `present-store` — `focusByPath` + `pendingLink`
 - [ ] `PreviewFrame` — navigate the live slot by assigning `src`, deliver the
       link on the next handshake
-- [ ] `PresentPane` — deliver the link to the artifact frame
+- [ ] `PresentPane` — deliver the link to a rendered-HTML artifact frame
+- [ ] `PresentPane` — markdown fragment scroll by heading-text match, in
+      ShipIt's own DOM (req 9)
 - [ ] SDK `bootstrap.ts` — `window.shipit.links` with replay, fragment scroll
       deferred to `DOMContentLoaded` (req 9, req 11)
 - [ ] Agent-facing docs (`chat-links.md`, SDK doc, system prompt)
 - [ ] Tests: parse + rejection cases, click action, store additions, branch
       order vs repo-file links, markdown render of all three forms, SDK link
-      replay, early and late fragment delivery
+      replay, early and late fragment delivery, markdown heading-match scroll
 - [ ] `lint:dev` + `typecheck` clean
 - [ ] Cross-backend review of the implementation
