@@ -37,18 +37,13 @@
 - [ ] Delivery switches source view to rendered, and waits for content + frame
 - [ ] Markdown fragment scroll: Present-only container ref, the tested slug
       algorithm, first-match-wins
-- [ ] HTML delivery to the artifact frame
-
-## SDK
-
-- [ ] `window.shipit.links.subscribe` with replay; no public `links.current`
-- [ ] Payload is `{ params, hash }`
-- [ ] Fragment scroll deferred to `DOMContentLoaded`
+- [ ] HTML fragment: scroll script injected into the `srcDoc`, fragment
+      JSON-encoded, scroll on `DOMContentLoaded`
 
 ## Docs
 
-- [ ] `src/server/shipit-docs/chat-links.md`
-- [ ] `src/server/shipit-docs/agent-interface-sdk.md` — the `links` surface
+- [ ] `src/server/shipit-docs/chat-links.md` — including that a Preview page
+      reads its own URL and ShipIt adds no API
 - [ ] `src/server/orchestrator/prompts/live-preview.md` — respecting the
       prompt-cache contract (render once at module load)
 
@@ -62,8 +57,7 @@
 - [ ] Re-click and rapid-click semantics
 - [ ] Gallery open, source view, content-fetch failure
 - [ ] Missing markdown heading and missing HTML fragment
-- [ ] SDK link replay; early and late fragment delivery
-- [ ] Wrong source/origin rejected on delivery
+- [ ] Injected scroll script: fragment with quotes/backslashes cannot break out
 
 ## Quality
 

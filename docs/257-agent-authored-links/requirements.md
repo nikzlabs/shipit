@@ -37,62 +37,34 @@ one requirement — with no way to make that pointer clickable.
 10. A pointer that cannot be opened — for **any** reason — **stays clickable**
     and, on click, says why instead of doing nothing. The explanation appears as
     a **toast**, the same way for both destinations.
-11. A link can also **deliver a message to the destination page**, observable by
-    that page's own JavaScript, so the page can respond to the click itself —
-    highlight the item, open a drawer, switch a filter — rather than only being
-    scrolled to an anchor. This applies wherever the destination runs page
-    JavaScript: the Preview (req 2) and rendered HTML artifacts (req 3). A
-    markdown artifact has no scripts of its own, so req 9's scroll is all it
-    gets.
+11. A pointer can also make the destination page **react** in its own
+    JavaScript — highlight the item, open a drawer, switch a filter — rather
+    than only being scrolled to an anchor. This applies to the **Preview**
+    (req 2), where the page reacts by reading the query parameters and fragment
+    from its own URL. ShipIt adds no API for this. A presented artifact (req 3)
+    cannot react this way and is not expected to; anything that elaborate
+    belongs in a preview service, not a single page.
 12. If the pointer names a service that is **not running, ShipIt starts it
     first** and then opens the destination. A stopped service is not by itself a
     reason to report a pointer as unopenable (req 10); a start that *fails* is.
 
-## The page-facing API
+## The page-facing contract
 
-What a user's page can code against. This is a **public contract** — once
-documented, artifacts and apps are written against it and it cannot be
-withdrawn — so it lives here with the requirements rather than inside the
-design.
+What a user's page can rely on. It is deliberately small, and **ShipIt adds no
+API of its own** — no `window.shipit` surface, no new SDK.
 
-Where the destination has a real URL (the Preview), the payload is **the URL
-itself**: a page reads `location.search` and `location.hash` and listens for
-`hashchange`, with no ShipIt-specific API involved.
+- **In the Preview**, a pointer navigates the page to the URL the agent wrote,
+  so the payload is the URL: the page reads `location.search` and
+  `location.hash` and listens for `hashchange`. Standard web APIs, nothing
+  ShipIt-specific to learn (req 11).
+- **In a presented artifact**, ShipIt scrolls to the fragment itself (req 9).
+  The page is not told anything and cannot react in script.
 
-A presented HTML artifact has no URL to read — it is mounted from `srcDoc` in a
-sandboxed, opaque-origin frame — so there it arrives through the SDK:
-
-```ts
-await window.shipit?.ready;
-window.shipit.links.subscribe((link) => {
-  // link.params — the query parameters the agent wrote
-  // link.hash   — the fragment, without its "#"
-  highlightRequirement(link.params.item);
-});
-```
-
-- `subscribe` replays the latest link if one already arrived, fires on each new
-  one, and returns an unsubscribe function. The replay matters because clicking
-  a pointer is usually what *mounts* the artifact: a page cannot know whether it
-  subscribed before or after the link was delivered, and neither ordering may
-  drop it.
-- There is no synchronous `links.current`. A link is an event, not a state to
-  poll, and a synchronous read invites exactly the race replay exists to remove.
-- The payload is `{ params, hash }` and nothing more.
-
-Whether the Preview *also* gets the SDK channel is open, below.
+The one thing this cannot express is a **repeat click on the same pointer**:
+identical URL, so no navigation and no event. Accepted — a page that needs to
+respond to every click is a page that should be a preview service.
 
 ## Open questions
-
-- **Does the Preview need the SDK link channel at all, or is the URL enough?**
-  A preview pointer navigates the frame to the authored URL, so page JS can read
-  `location.search` / `location.hash` and listen for `hashchange` — standard web
-  APIs, nothing to learn. The SDK channel would add exactly one thing the URL
-  cannot express: **a repeat click on an identical pointer**, which changes no
-  URL and so fires no event. Dropping it also removes the deliver-on-handshake
-  machinery from the Preview flow. Presented HTML needs the SDK either way,
-  since a `srcDoc` frame has no URL. Raised by the requester ("do we actually
-  need a special API? The page JS could use the location API, no?").
 
 - **Which failures must req 10's toast cover?** Req 10 currently says "for any
   reason", and ShipIt cannot honour that literally. Some failures it can
@@ -105,6 +77,17 @@ Whether the Preview *also* gets the SDK channel is open, below.
   review. Nothing is implemented while this is open.
 
 ## Resolved questions
+
+- **2026-08-09 — Does the feature need a ShipIt API for page reaction, or is the
+  URL enough?** The requester: *"do we actually need a special API? The page JS
+  could use the location API, no?"* — then, once told that a presented artifact
+  is mounted from `srcDoc` and has no URL to read: *"drop the API, the presented
+  artifacts wouldn't be able to react with JS. I think it is fair, this
+  capability is for more complicated cases that should be in a more permanent
+  preview service, not a single page."* Answer: **no ShipIt API at all.** Req 11
+  is now Preview-only and carried by the page's own URL; presented artifacts
+  scroll (req 9) but do not react. The planned `window.shipit.links` surface is
+  cut entirely, so the Agent Interface SDK is unchanged by this feature.
 
 - **2026-08-09 — Do reqs 3, 9 and 11 apply to presented artifacts that are not
   HTML?** Raised by the cross-backend review: only rendered HTML has a channel

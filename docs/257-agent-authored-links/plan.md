@@ -120,10 +120,11 @@ sent — that is how the user sees the service booting instead of a blank pause.
 3. The click records an **intent** (below) and selects the port.
 4. A live slot is navigated by **assigning the iframe's `src`** to the resolved
    destination URL.
-5. The link event is delivered to the page (req 11) — immediately when no
-   navigation was needed, otherwise on the next SDK handshake from that slot,
-   since navigating tears down the old `window.shipit`.
-6. A service that is not running is started first (req 12), below.
+5. A service that is not running is started first (req 12), below.
+
+There is no delivery step. The page's reaction (req 11) is the URL it is now
+at — `location.search`, `location.hash`, `hashchange` — so navigating *is* the
+delivery. This is why the Preview needs nothing from the Agent Interface SDK.
 
 #### The intent, and why it is not `previewPaths`
 
@@ -272,41 +273,53 @@ markdown support cheap:
   dependency (`rehype-slug` would be one, and the dependency policy makes that a
   deliberate act rather than a convenience).
 
-- **Rendered HTML** goes through the SDK. The artifact renders from `srcDoc` in
-  an opaque-origin iframe, so the parent cannot set `location.hash` on it and a
-  fragment in the frame URL would do nothing. The fragment therefore arrives *as
-  data* and the SDK does the scroll — the same delivery req 11 needs, so the
-  HTML path carries both requirements on one channel.
+- **Rendered HTML** gets a **scroll script injected into the `srcDoc`**, the way
+  the CSP meta already is (`RenderedFrame.tsx:56`). The artifact is mounted from
+  `srcDoc` with `sandbox="allow-scripts"` and no `allow-same-origin`
+  (`RenderedFrame.tsx:88`), so its document URL is `about:srcdoc` on an opaque
+  origin: there is no `location.hash` to set and no fragment the parent can
+  navigate it to. With no API (req 11) there is also no channel to send one
+  over — so the fragment is baked in when the frame is built:
+
+  ```html
+  <script>addEventListener("DOMContentLoaded",function(){
+    var el=document.getElementById(FRAGMENT); if(el)el.scrollIntoView();
+  })</script>
+  ```
+
+  The fragment is JSON-encoded into that string, never concatenated raw. A
+  changed fragment re-renders the `srcDoc`, which remounts the frame — acceptable
+  because a pointer click is a deliberate "show me this", and it keeps the whole
+  mechanism to one injected script with no message passing, no handshake, and no
+  public surface.
 
 - **Everything else** — SVG, images — is focused and nothing more. There is no
   place inside an image to address. This is a design consequence of req 9
   naming HTML and markdown, not a requirement of its own: the human answered
   "also markdown", and nobody asked what an anchor into a PNG would mean.
 
-## The `links` SDK channel
+## No SDK changes
 
-The **surface** is specified in `requirements.md` → *The page-facing API*; it is
-a public contract, so it is not restated here. This section is the mechanism
-behind it.
+An earlier design added `window.shipit.links` — a subscribe/replay channel
+delivering `{ params, hash }` to both surfaces. It is **cut entirely**; the Agent
+Interface SDK is untouched by this feature.
 
-The channel exists for one reason: a presented HTML artifact is mounted from
-`srcDoc` with `sandbox="allow-scripts"` and no `allow-same-origin`
-(`RenderedFrame.tsx:88`), so its document URL is `about:srcdoc` on an opaque
-origin. There is no query string or fragment to write, and the parent cannot
-navigate it to one. Everything the URL would have carried has to arrive as data.
+The reasoning that removed it is worth keeping, because it is what makes the
+rest small. The Preview never needed it: a pointer navigates the page to the
+authored URL, so `location` already carries the payload, and a page reacting to
+`hashchange` is using the platform rather than a ShipIt API. That left presented
+HTML as the channel's only justification — and the requester judged that a
+single presented page reacting in script is the wrong shape for the capability
+anyway ("that should be in a more permanent preview service").
 
-Delivery reuses the existing host→page envelope (`source: "shipit-preview"`),
-alongside `visibility` and `agent_message_result`, and the SDK keeps the latest
-link privately so `subscribe` can replay it.
+What went with it: the deliver-on-handshake machinery in the Preview flow, the
+replay semantics, the opaque-origin `postMessage` delivery and its
+confidentiality caveat, a public API surface to document and never break, and
+the `bootstrap.ts` changes. What survives is one injected scroll script.
 
-**Why replay is required, stated correctly.** It is *not* that `ready` provably
-precedes page scripts — `postMessage` delivery is asynchronous, so later artifact
-scripts may well run before the parent's reply arrives. The guarantee that
-matters is weaker and sufficient: a subscriber may register either before or
-after delivery, and neither ordering may drop the event.
-
-The SDK also scrolls to `document.getElementById(hash)` itself, so a plain
-anchor works with no page code at all (req 9).
+The cost is stated in `requirements.md`: a repeat click on an identical pointer
+changes no URL and therefore produces no event, and presented artifacts cannot
+react in script at all.
 
 **The scroll cannot fire on receipt**, though. The SDK is injected into `<head>`
 (`RenderedFrame.tsx:56`), so for a Present artifact — where the click is what
@@ -429,20 +442,15 @@ crossing into a frame, so the parser is a gate, not a formatter:
   the SDK payload and the navigation URL. Stripping only the payload would still
   leave it visible to the page through `location.search`, contradicting the
   claim that a page never sees ShipIt's presentation knob.
-- Preview frames get an **exact** `targetOrigin`, as the visibility messages
-  already do (`PreviewFrame.tsx:252`), addressed by matching the source slot.
+- The fragment is JSON-encoded into the injected scroll script, never
+  concatenated into it. That script is the only place a pointer's data enters a
+  document ShipIt assembles.
 
-**The Present payload is explicitly non-secret.** A presented artifact is
-opaque-origin, so `"*"` is the only target that can be expressed. The existing
-`event.source` and locked-`parentOrigin` checks protect *inbound* messages and
-do **not** make outbound wildcard delivery confidential: a frame can post
-`ready`, navigate itself, and leave the same `WindowProxy` pointing at a
-different document by the time the reply lands. The honest resolution is to
-declare the limit rather than paper over it — a link payload is a fragment and
-query parameters the agent wrote into a chat message the user can already read,
-so there is nothing in it to leak. A document-bound `MessageChannel` would close
-the gap and is the answer *if* the payload ever carries anything sensitive;
-building it now would be mechanism protecting data that does not exist.
+**No cross-frame message carries pointer data.** Cutting the SDK channel removed
+the whole outbound-delivery question with it: nothing is posted into the preview
+frame, and nothing is posted into an opaque-origin artifact frame. The existing
+inbound checks (`event.source`, the SDK's locked `parentOrigin`) are untouched
+and unrelied-upon by this feature.
 
 ## Branch order in `MarkdownLink`
 
@@ -469,9 +477,9 @@ status bar on hover and hand it to the OS protocol handler on middle-click or
 | `src/client/stores/preview-store.ts` | The navigation intent (session, slot, service, path, payload, clickId, phase) |
 | `src/client/App.tsx` | Sends `start_service` for an intent whose service is stopped (req 12) |
 | `src/client/stores/present-store.ts` | `focusByPath`, `pendingLink` |
-| `src/client/components/PreviewFrame/PreviewFrame.tsx` | Navigate the live slot, deliver on handshake |
-| `src/client/components/PresentPane.tsx` | Deliver to an HTML artifact's frame; scroll a markdown artifact |
-| `src/server/shared/agent-interface-sdk/bootstrap.ts` | `window.shipit.links` + the deferred fragment scroll |
+| `src/client/components/PreviewFrame/PreviewFrame.tsx` | Navigate the live slot |
+| `src/client/components/PresentPane.tsx` | Scroll a markdown artifact; pass the fragment to the rendered frame |
+| `src/client/components/FileContentView/RenderedFrame.tsx` | Inject the scroll script into an HTML artifact's `srcDoc` |
 | `src/server/shipit-docs/chat-links.md` | Agent-facing reference |
 
 ## Non-goals
