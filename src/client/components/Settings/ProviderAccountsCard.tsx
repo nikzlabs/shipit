@@ -77,7 +77,8 @@ export function ProviderAccountsCard({
 }: {
   provider: AgentId;
   agent: AgentOption | undefined;
-  onSubmitApiKey: (key: string) => Promise<void> | void;
+  /** Only reached through the API-key disclosure, so optional alongside it. */
+  onSubmitApiKey?: (key: string) => Promise<void> | void;
   onClearApiKey?: () => Promise<void> | void;
   /**
    * Density-only variant for the onboarding modal, which stacks two of these
@@ -348,7 +349,7 @@ export function ProviderAccountsCard({
     setApiKeySaving(true);
     setApiKeyError("");
     try {
-      await onSubmitApiKey(trimmed);
+      await onSubmitApiKey?.(trimmed);
       setApiKey("");
     } catch {
       setApiKeyError("Failed to set API key.");

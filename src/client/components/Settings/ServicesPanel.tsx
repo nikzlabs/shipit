@@ -184,7 +184,6 @@ function ServiceModeCard({
       <ProviderAccountsCard
         provider={provider}
         agent={agentList.find((a) => a.id === provider)}
-        onSubmitApiKey={() => {}}
         showApiKeyFallback={false}
       />
     )}
@@ -439,11 +438,11 @@ function AddServiceDialog({
               <button
                 key={s.id}
                 onClick={() => pickService(s)}
-                className="flex w-full items-center justify-between rounded-md border border-(--color-border-secondary) px-2.5 py-2 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-hover)"
+                className="flex w-full items-center justify-between gap-3 rounded-md border border-(--color-border-secondary) px-2.5 py-2 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-hover)"
                 data-testid={`add-service-option-${s.id}`}
               >
-                <span>{s.name}</span>
-                <span className="text-(--color-text-tertiary)">
+                <span className="truncate">{s.name}</span>
+                <span className="shrink-0 text-(--color-text-tertiary)">
                   {s.modes.map((m) => MODE_LABEL[m.kind]).join(" · ")}
                 </span>
               </button>
@@ -460,11 +459,11 @@ function AddServiceDialog({
               <button
                 key={m.kind}
                 onClick={() => setBillingMode(m.kind)}
-                className="flex w-full items-center justify-between rounded-md border border-(--color-border-secondary) px-2.5 py-2 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-hover)"
+                className="flex w-full items-center justify-between gap-3 rounded-md border border-(--color-border-secondary) px-2.5 py-2 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-hover)"
                 data-testid={`add-service-mode-${m.kind}`}
               >
-                <span>{MODE_LABEL[m.kind]}</span>
-                <span className="text-(--color-text-tertiary)">
+                <span className="truncate">{MODE_LABEL[m.kind]}</span>
+                <span className="shrink-0 text-(--color-text-tertiary)">
                   {m.models.length} model{m.models.length === 1 ? "" : "s"}
                 </span>
               </button>

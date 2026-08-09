@@ -7,14 +7,13 @@
  * path.
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CredentialStore } from "../credential-store.js";
 import { ServiceError } from "./types.js";
 import {
-  configuredCredentialModes,
   createStringCredential,
   deleteCredentialRoute,
   listCredentialRoutes,
@@ -170,17 +169,6 @@ describe("upsertSingleStringCredential", () => {
   });
 });
 
-describe("configuredCredentialModes", () => {
-  it("names each (service, mode) that holds a usable credential", () => {
-    createStringCredential(store, { serviceId: "deepseek", billingMode: "key", secret: "k" });
-    store.upsertProviderAccount({
-      id: "acct_1", provider: "claude", label: "Work", isPrimary: false,
-      status: "ready", createdAt: 1, updatedAt: 1,
-    });
-    expect(configuredCredentialModes(store).sort()).toEqual(["anthropic:sub", "deepseek:key"]);
-  });
-});
-
 describe("collectServiceCredentialEnv", () => {
   it("materializes each mode's first credential under its catalogue storageEnv", () => {
     createStringCredential(store, { serviceId: "deepseek", billingMode: "key", secret: "sk-ds" });
@@ -206,5 +194,51 @@ describe("collectServiceCredentialEnv", () => {
       status: "ready", createdAt: 1, updatedAt: 1,
     });
     expect(collectServiceCredentialEnv(store)).toEqual({});
+  });
+});
+
+describe("process.env is kept in step with what a mode delivers", () => {
+  // Load-bearing because `reservedRouteFor` and `AgentRegistry.isAuthConfigured`
+  // answer from `process.env`: a revoked credential that stays there is one the
+  // orchestrator keeps counting as authentication until a restart.
+  const ENV = "DEEPSEEK_API_KEY";
+  const PLAN_ENV = "ZAI_CODING_PLAN_KEY";
+  // `vi.unstubAllEnvs` restores absence as absence, which a hand-rolled
+  // save/restore cannot do without a dynamic delete.
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it("sets it on create, replaces it on update, and clears it on delete", () => {
+    const { route } = createStringCredential(store, {
+      serviceId: "deepseek", billingMode: "key", secret: "sk-one",
+    });
+    expect(process.env[ENV]).toBe("sk-one");
+
+    updateStringCredential(store, route.id, { secret: "sk-two" });
+    expect(process.env[ENV]).toBe("sk-two");
+
+    deleteCredentialRoute(store, route.id);
+    expect(process.env[ENV]).toBeUndefined();
+  });
+
+  it("leaves a value the deployment set alone when a credential is removed", () => {
+    // Boot seeding never overwrites a name that is already present, so a
+    // deployment-set value is not ours to clear.
+    vi.stubEnv(ENV, "deployment-supplied");
+    const { route } = createStringCredential(store, {
+      serviceId: "deepseek", billingMode: "key", secret: "sk-user",
+    });
+    // The user's credential does take precedence while it exists...
+    expect(process.env[ENV]).toBe("sk-user");
+    vi.stubEnv(ENV, "deployment-supplied");
+    deleteCredentialRoute(store, route.id);
+    expect(process.env[ENV]).toBe("deployment-supplied");
+  });
+
+  it("follows a reorder, because the first credential is the delivered one", () => {
+    const a = createStringCredential(store, { serviceId: "zai", billingMode: "sub", secret: "plan-a" }).route;
+    const b = createStringCredential(store, { serviceId: "zai", billingMode: "sub", secret: "plan-b" }).route;
+    expect(process.env[PLAN_ENV]).toBe("plan-a");
+    reorderCredentialRoutes(store, "zai", "sub", [b.id, a.id]);
+    expect(process.env[PLAN_ENV]).toBe("plan-b");
   });
 });

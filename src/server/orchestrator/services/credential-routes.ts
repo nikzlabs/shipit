@@ -27,7 +27,6 @@
 
 import { randomUUID } from "node:crypto";
 import {
-  credentialModeKey,
   orderCredentialRoutes,
   type CredentialBillingMode,
   type CredentialRoute,
@@ -38,10 +37,12 @@ import {
   getService,
   modeAllowsMultipleCredentials,
   modeCredentialFor,
+  storageEnvFor,
   type BillingModeDef,
   type ServiceDef,
 } from "../../shared/catalogue/index.js";
 import type { CredentialStore } from "../credential-store.js";
+import { collectServiceCredentialEnv } from "../secret-resolver.js";
 import { ServiceError } from "./types.js";
 
 /** The label ShipIt gives a credential the user did not name. */
@@ -165,6 +166,7 @@ export function createStringCredential(
   };
   credentialStore.upsertCredentialRoute(route);
   credentialStore.setCredentialSecret(route.id, secret);
+  syncProcessEnvForMode(credentialStore, service.id, billingMode, undefined);
   return { route, routes: listCredentialRoutes(credentialStore) };
 }
 
@@ -204,6 +206,7 @@ export function updateStringCredential(
   patch: { label?: string; secret?: string },
 ): { route: CredentialRoute; routes: CredentialRoute[] } {
   const route = requireStringRoute(credentialStore, routeId);
+  const before = deliveredValueFor(credentialStore, route.serviceId, route.billingMode);
   let next = route;
   if (patch.label !== undefined) {
     const label = normalizeLabel(patch.label);
@@ -219,10 +222,60 @@ export function updateStringCredential(
     next = { ...next, status: "ready" };
   }
   credentialStore.upsertCredentialRoute(next);
+  syncProcessEnvForMode(credentialStore, route.serviceId, route.billingMode, before);
   return {
     route: credentialStore.getCredentialRoute(routeId) ?? next,
     routes: listCredentialRoutes(credentialStore),
   };
+}
+
+
+/**
+ * Keep the orchestrator's own `process.env` in step with what a mode now
+ * delivers.
+ *
+ * Load-bearing, and easy to miss because it is not delivery to the *session*:
+ * `reservedRouteFor` and `AgentRegistry.isAuthConfigured` answer from
+ * `process.env`, and `app-di` seeds it from the stored routes at boot. Without
+ * this, removing a key would stop delivering it to every session and leave the
+ * orchestrator still reporting the provider as authenticated until a restart —
+ * a credential the user revoked, still counted.
+ *
+ * **Only ever touches a value this process put there.** A variable the
+ * *deployment* set is never overwritten (boot seeding skips a name that is
+ * already present) and is therefore never equal to what we would clear, so it
+ * survives a credential being removed. That asymmetry is the point: the user
+ * owns their stored credentials, and the deployment owns its environment.
+ *
+ * Phase 3 should retire this along with the env probes it exists to feed.
+ */
+function syncProcessEnvForMode(
+  credentialStore: CredentialStore,
+  serviceId: string,
+  billingMode: CredentialBillingMode,
+  deliveredBefore: string | undefined,
+): void {
+  const envName = storageEnvFor(serviceId, billingMode);
+  if (!envName) return;
+  const deliveredNow = collectServiceCredentialEnv(credentialStore)[envName];
+  if (deliveredNow !== undefined) {
+    process.env[envName] = deliveredNow;
+    return;
+  }
+  if (deliveredBefore !== undefined && process.env[envName] === deliveredBefore) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- keyed by a catalogue storageEnv name
+    delete process.env[envName];
+  }
+}
+
+/** What a mode delivers right now, for {@link syncProcessEnvForMode}'s before/after comparison. */
+function deliveredValueFor(
+  credentialStore: CredentialStore,
+  serviceId: string,
+  billingMode: CredentialBillingMode,
+): string | undefined {
+  const envName = storageEnvFor(serviceId, billingMode);
+  return envName ? collectServiceCredentialEnv(credentialStore)[envName] : undefined;
 }
 
 /**
@@ -237,8 +290,10 @@ export function deleteCredentialRoute(
   credentialStore: CredentialStore,
   routeId: string,
 ): { routes: CredentialRoute[] } {
-  requireStringRoute(credentialStore, routeId);
+  const route = requireStringRoute(credentialStore, routeId);
+  const before = deliveredValueFor(credentialStore, route.serviceId, route.billingMode);
   credentialStore.deleteCredentialRoute(routeId);
+  syncProcessEnvForMode(credentialStore, route.serviceId, route.billingMode, before);
   return { routes: listCredentialRoutes(credentialStore) };
 }
 
@@ -269,30 +324,15 @@ export function reorderCredentialRoutes(
   if (ids.length !== known.size || ids.some((id) => !known.has(id))) {
     throw new ServiceError(400, "Credential order must list every credential for this service and mode exactly once");
   }
+  const before = deliveredValueFor(credentialStore, serviceId, mode);
   ids.forEach((id, index) => {
     const route = group.find((r) => r.id === id)!;
     credentialStore.upsertCredentialRoute({ ...route, priority: index });
   });
+  // Reordering changes which credential is delivered first, so it changes what
+  // the environment holds — the same fact the delivery test pins.
+  syncProcessEnvForMode(credentialStore, serviceId, mode, before);
   return { routes: listCredentialRoutes(credentialStore) };
-}
-
-/**
- * The `(service, billing mode)` pairs that currently hold a usable credential.
- *
- * Phase 3's eligibility predicate (req 8) is a *different* question — it also
- * asks whether the harness can carry the credential's shape — and must not be
- * built by widening this one. This answers only "has the user configured
- * anything here", which is what Settings renders and what the add-flow needs to
- * know to show a service as already configured.
- */
-export function configuredCredentialModes(credentialStore: CredentialStore): string[] {
-  const out: string[] = [];
-  for (const route of credentialStore.listCredentialRoutes()) {
-    if (route.via === "string" && !credentialStore.getCredentialSecret(route.id)) continue;
-    const key = credentialModeKey(route.serviceId, route.billingMode);
-    if (!out.includes(key)) out.push(key);
-  }
-  return out;
 }
 
 function requireStringRoute(credentialStore: CredentialStore, routeId: string): CredentialRoute {

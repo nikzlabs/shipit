@@ -442,13 +442,19 @@ does.
   being delivered from the old slot after the user removes the credential. The
   asymmetry the phase description names is closed in that direction: Anthropic's
   key now persists.
-- **`process.env` is still load-bearing and must keep being seeded.**
-  `reservedRouteFor` and `AgentRegistry.isAuthConfigured` probe the environment,
-  so a key that lives only in the route store would persist correctly and report
-  the provider as unauthenticated. `app-di` seeds `process.env` from the stored
-  routes at boot, and the two writers assign it on write. **Phase 3 should remove
-  that coupling rather than inherit it** — those probes are exactly the
-  per-`AgentId` eligibility it replaces.
+- **`process.env` is still load-bearing, and keeping it seeded is not enough —
+  it has to be kept in *step*.** `reservedRouteFor` and
+  `AgentRegistry.isAuthConfigured` probe the environment, so a key living only
+  in the route store would persist correctly and report the provider as
+  unauthenticated. `app-di` seeds it from the stored routes at boot. The half
+  that is easy to miss is the other direction: without a matching *clear*,
+  removing a credential stops delivering it to every session and leaves the
+  orchestrator still counting it as authentication until a restart — a revoked
+  credential that still authenticates. Every credential mutation now syncs the
+  mode's variable, and only ever touches a value this process put there, so a
+  deployment-set variable survives. **Phase 3 should retire the whole coupling
+  rather than inherit it** — those probes are exactly the per-`AgentId`
+  eligibility it replaces.
 - **The compose gap needed a wider pipe *and* a propagation step.**
   `collectAccountAgentEnv` (MCP secrets + service credentials) replaces the
   `mcp__*`-only loader on both delivery paths, which is the gap Appendix A
