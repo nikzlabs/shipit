@@ -528,6 +528,29 @@ describe("MessageInput", () => {
       expect(textarea.value).toBe("hello world");
     });
 
+    it("keeps each repo's new-session draft separate (docs/259 req 4)", () => {
+      // App.tsx keys the new-session view on `new:{slug}` rather than a single
+      // "new", so switching repos from the new-session repo bar swaps the
+      // composer text instead of carrying one repo's draft into another.
+      const { rerender } = render(
+        <MessageInput onSend={vi.fn()} disabled={false} focusKey="new:owner/alpha" />,
+      );
+      const textarea = screen.getByPlaceholderText(
+        "Describe what to build... (type @ to attach files)",
+      ) as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "fix the alpha crash" } });
+
+      // Switch to another repo's new-session view: alpha's text must not follow.
+      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="new:owner/beta" />);
+      expect(textarea.value).toBe("");
+      fireEvent.change(textarea, { target: { value: "beta readme" } });
+
+      // Switch back: alpha's own draft is restored, not beta's.
+      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="new:owner/alpha" />);
+      expect(textarea.value).toBe("fix the alpha crash");
+      expect(localStorage.getItem("shipit-draft-message:new:owner/beta")).toBe("beta readme");
+    });
+
     it("does not load or save drafts on the overlay surface", () => {
       // Pre-seed a draft under the overlay's historical key — if the overlay
       // ever ran the persistence path it would pick this up and prefill the

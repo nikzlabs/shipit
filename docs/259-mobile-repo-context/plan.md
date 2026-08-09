@@ -40,8 +40,11 @@ It is one full-width `<button>`:
   colour means one thing across the app. Both are dropped when
   `repo.colorIndex` is undefined (a row older than the docs/254 backfill), which
   is the same fallback `SessionGroup` takes.
-- **"New session in ⟨owner/repo⟩"** — `parseRepoLabel`, matching the sidebar and
-  the quick-capture picker's wording.
+- **"New session in ⟨owner/repo⟩"**, matching the quick-capture picker's
+  wording. The label comes from the route **slug**, not from the resolved repo
+  record, so the bar names the repo on its very first frame instead of flashing
+  empty while the repo list loads. (They are the same string once resolved —
+  `newSessionRepoUrl` is found by matching `parseRepoLabel` against that slug.)
 - **A trailing caret**, and tapping anywhere opens the repo picker.
 
 Mobile only (req 6 is about the screen, and the desktop already answers the
@@ -50,14 +53,23 @@ unchanged.
 
 ### 2. The picker (req 3)
 
-A bottom sheet listing every non-hidden repo with its colour swatch, the current
-one checkmarked. Picking one calls the existing `handleNewSessionForRepo`, which
+A bottom sheet listing every repo with its colour swatch, the current one
+checkmarked. Picking one calls the existing `handleNewSessionForRepo`, which
 already resets state and navigates to that repo's `/new` — so switching repo is
-the path the tab bar's `+` already takes, not a new mechanism.
+the path the tab bar's `+` already takes, not a new mechanism. Re-picking the
+**current** repo only closes the sheet: re-claiming the session the user is
+already in would reset the view and take the draft they just typed with it.
 
-`StartSessionButton`'s dropdown picker (docs/236) is deliberately **not** reused:
-it is a desktop split-button whose caret half opens a `DropdownMenu`, and the
-whole point of this bar is one large mobile tap target.
+Hidden repos (docs/222) are out of the list, since they are out of the sidebar —
+except the repo the user is currently in, which is listed and checked even when
+hidden, or the picker would claim they are somewhere they are not.
+
+The sheet layout is bespoke inside the shared `Dialog` wrapper, which is what
+`QuickCaptureOverlay` already does: the wrapper buys Back-button dismissal, and
+`DialogContent` is fullscreen on mobile — a whole screen for a three-row repo
+list. `StartSessionButton`'s dropdown picker (docs/236) is not reused either; it
+is a desktop split-button whose caret half opens a `DropdownMenu`, and the point
+here is one large mobile tap target.
 
 ### 3. Per-repo drafts (req 4)
 
@@ -87,19 +99,56 @@ the app to lose. Nothing sweeps orphaned draft keys — `saveDraftMessage` only
 removes a key when its own text goes empty — so the stale `new` entry simply
 sits in `localStorage` as a few unread bytes.
 
+## Known limitation: repos whose labels collide
+
+`parseRepoLabel` truncates a repo name at its first dot, so `owner/api.v1` and
+`owner/api.v2` both render as `owner/api` — as does `socketio/socket.io`, which
+becomes `socketio/socket`. This predates docs/259 and already breaks routing:
+`repoLabelToNewPath` builds the route from that label and `App.tsx` resolves it
+back with a `find`, so the second colliding repo's new-session page is
+unreachable today regardless of this feature.
+
+What docs/259 does about it: the picker identifies rows by **URL**, so exactly
+one row is marked current and the other stays switchable. What it does not do:
+the draft key is the slug, so two colliding repos share one new-session draft.
+Fixing that properly means fixing `parseRepoLabel` — an app-wide routing change
+well outside this feature's fence, and pointless in isolation while the route
+itself cannot tell the two apart.
+
+## Accessibility of the sheet
+
+Not using `DialogContent` means not inheriting its focus trap, its
+outside-content hiding, or its Escape handling. The sheet supplies the parts
+that matter for its own shape: `aria-modal`, an Escape listener via
+`useEventListener`, and initial focus moved onto the current repo's row so
+focus does not sit on the obscured bar behind it. It is still not a true focus
+trap — Tab can reach the composer underneath. That trade buys not turning a
+three-row list into a fullscreen takeover on mobile; revisit it if a
+non-fullscreen sheet primitive ever lands.
+
 ## Key files
 
 | File | Change |
 |---|---|
 | `client/components/NewSessionRepoBar.tsx` | New. The bar + its repo sheet. |
-| `client/components/SessionSidebar/SessionGroup.tsx` | Export `groupEdgeStyle` beside the already-exported `groupBandFill`. |
 | `client/App.tsx` | Render the bar in the PR-card slot; per-repo `messageInputFocusKey`. |
+
+`SessionGroup.tsx` is untouched: `groupBandFill` is already exported, and the
+3px edge is three inline style properties, not worth exporting a helper for.
 
 ## Tests
 
-- `NewSessionRepoBar.test.tsx` — renders the repo label; no colour treatment
-  when `colorIndex` is undefined; picking a repo calls back with its URL.
-- `App`-level: the bar renders only when `showNewSessionView && isMobile`, and
-  never alongside the PR lifecycle card.
+- `NewSessionRepoBar.test.tsx` — names the repo (including from the slug alone,
+  before the repo list loads); carries the docs/254 colour and drops it when
+  `colorIndex` is undefined; the picker checks the current repo, calls back with
+  a different one, and only closes when the current one is re-picked; hidden
+  repos are omitted unless it is the repo the user is in; two repos whose labels
+  collide are still told apart; Escape closes the sheet; focus lands on the
+  current row; the bar meets the 44px touch floor.
 - `MessageInput.test.tsx` — a draft typed under one new-session slug is restored
   after switching to another slug and back (req 4).
+
+The gating (`showNewSessionView && isMobile`, never alongside the PR lifecycle
+card) is a two-clause condition in `App.tsx` rather than component logic, and
+`App` has no render-level test harness to hang an assertion on. It is verified in
+the dogfood instance at a mobile viewport instead.
