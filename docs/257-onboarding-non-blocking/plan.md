@@ -1,7 +1,7 @@
 ---
 issue: planning#335
 title: Non-blocking onboarding
-description: Harness onboarding stops being a blocking modal and becomes an inline, modal-free panel in the conversation view, so a new user can see and use ShipIt before connecting anything.
+description: Harness onboarding stops being a blocking modal over the product and becomes an inline panel in the conversation view, so a new user can see and use ShipIt before connecting anything.
 ---
 
 # Non-blocking onboarding — design
@@ -240,9 +240,9 @@ fall out for free rather than needing the `hidden md:flex` the hero uses today.
 
 ### The steps (req 4)
 
-The panel's own step is one — **Add a service**, the docs/252 Services surface hosted inline
-(below), complete when `canRunTurns`. Its internal sequence is that surface's: choose a
-service, then a billing mode, then supply the credential.
+The panel's own step is one — **Add a service**, the docs/252 Services surface (below),
+complete when `canRunTurns`. Its internal sequence is that surface's, inside its dialog: choose
+a service, then a billing mode, then supply the credential.
 
 The rail above it carries **two** entries, the first being **GitHub, already done**. That is
 always true by construction — the gate guarantees it — and it is there for req 4: a first-run
@@ -281,19 +281,29 @@ provider cards onto the Settings component after a user's first account was bein
 different code than their second, and today's wizard is that collapse
 (`OnboardingWizard.tsx:114–127`).
 
-The one adjustment docs/252 phase 2 must make for this to be possible: **its add-flow has to be
-host-agnostic.** In the Settings mockup the catalogue lives in an "Add a service" *dialog*
-inside the Settings modal
-([`mockup-services.html`](../252-custom-models/mockup-services.html)). Req 5 forbids a modal
-here. So the flow is authored as a component that renders its steps in whatever container it
-is given, and the dialog becomes the *host* Settings picks — not part of the flow. The panel
-hosts the identical component inline as step 2. No behaviour is duplicated; only the container
-differs.
+**docs/252 phase 2 needs no adjustment at all.** Its Settings → Services surface is a list of
+configured `(service, billing mode)` cards plus an "Add a service" **dialog** carrying the
+catalogue ([`mockup-services.html`](../252-custom-models/mockup-services.html)). The panel
+renders that list, and its "Add a service" button opens that same dialog (req 5, amended
+2026-08-09). Reuse is therefore whole-surface: same list, same button, same dialog, same steps
+inside it.
+
+An earlier draft of this section required phase 2 to re-author the add-flow **host-agnostically**
+— steps rendered into whatever container they were given, with the dialog demoted to a host
+Settings happens to pick — so that the panel could render the same steps inline under the
+then-stricter req 5. That is deleted. It was a refactor bought to avoid a dialog nobody
+objected to, and it made the reuse *less* literal, not more: two containers, two layout paths,
+and a component whose shape existed only for onboarding.
 
 Density may differ and that is already the established pattern: `ProviderAccountsCard` takes a
 `compact` prop for exactly this reason and its docstring is explicit that it changes "how much
 prose sits above" the rows and nothing else (`ProviderAccountsCard.tsx:60–73`). The Services
 surface gets the same treatment if it needs it.
+
+**One dialog, never two.** The panel is not a modal, so the add dialog is the only thing on top
+at any moment — which is what req 5 now asks for, and what the "two modals at once" complaint
+it came from was actually about. The GitHub gate cannot overlap it either: the gate has already
+passed before the panel exists.
 
 The link out to a provider's own sign-in page stays a link (`ProviderAccountsCard.tsx:476`) —
 req 5 names it as the one thing that legitimately leaves the panel, and CLAUDE.md §3 puts
@@ -454,7 +464,7 @@ the split is about reviewability, not about shipping order.
 | `client/components/QuickCaptureOverlay.tsx` | Its own `disabled` (`:147`) gates on `canRunTurns` too — it renders the same composer. |
 | `client/utils/chat-runnable.ts` | **New.** `canRunTurns` reader + `starterPromptsAllowed`. |
 | `client/components/Settings/ProviderAccountsCard.tsx` | Inline the global toasts next to the row that produced them — failures (`:105`) and disconnect results (`:253`, `:258`). |
-| *docs/252 phase 2's Services surface* | Must be host-agnostic — the add-flow renders in a given container; Settings supplies the dialog. |
+| *docs/252 phase 2's Services surface* | **No change needed.** The panel renders its card list and opens its "Add a service" dialog as-is. |
 | `server/orchestrator/services/settings.ts` | Compute `canRunTurns`; stamp `harnessOnboardingCompletedAt`. |
 | `server/orchestrator/services/misc.ts` | Both fields on `BootstrapData.settings` (`:64`). |
 | `server/orchestrator/credential-store.ts` | `harnessOnboardingCompletedAt` on `CredentialData` (`:34`). |
@@ -493,7 +503,7 @@ not belong in `requirements.md`, and none of these is promoted there.
 |---|---|
 | Exact placeholder wording (req 3) | "Add a service to start chatting" — no location, verb/noun matched to Settings → Services. |
 | How "the install can actually run something" is computed (req 8) | `canRunTurns`: at least one eligible model on an installed harness, computed server-side by the picker's predicate. Install-level, deliberately not per-session turn admission. |
-| Whether behavioural identity with Settings is literal reuse (req 7) | Yes — the panel hosts the same component; docs/252's add-flow becomes host-agnostic so Settings' dialog is a container, not part of the flow. |
+| Whether behavioural identity with Settings is literal reuse (req 7) | Yes, whole-surface — same card list, same "Add a service" dialog, same steps inside it. docs/252 phase 2 needs no change. |
 | Where results and errors go, given the surface uses toasts (req 5) | Inline in the shared component for both hosts, rather than an onboarding-only branch. |
 | How far "disabled as a whole" reaches (req 3) | The whole input cluster, an empty textarea so the reason is always legible, and Quick Capture as well as the main composer. |
 | Whether the panel replaces `HomeScreen` too | Yes — req 9's "wherever they are"; add-repo stays reachable from the sidebar and the repo switcher. |

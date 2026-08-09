@@ -57,12 +57,15 @@ below turns on what is configured or when the flow is finished, it means the har
    order, with a sense of what is done and what remains. Removing the blocking behaviour does
    not mean scattering the setup across the app for the user to find.
 
-5. **No modals in harness onboarding.** Every step is resolved in place, in the panel. Today
-   two modals can be visible at once, which is confusing and busy; the fix is not to ration
-   them but to stop using them here. Nothing in this flow opens anything on top of anything
-   else.
+5. **The panel is not a modal, and at most one thing is ever on top of it.** Today two modals
+   can be visible at once, which is confusing and busy. The panel itself never covers the
+   product (req 1), and the flow never stacks one thing over another.
 
-   The one thing that legitimately leaves the panel is a provider's own sign-in page, which
+   **Adding a service opens a dialog** — the same "Add a service" dialog Settings uses. That
+   is the one dialog this flow has, and nothing else in it opens anything on top of anything
+   else. Every other step is resolved in place, in the panel.
+
+   The other thing that legitimately leaves the panel is a provider's own sign-in page, which
    ShipIt does not own and cannot host. That is a link out, not a modal.
 
    **Results and errors render inside the panel too**, next to the step that produced them —
@@ -145,6 +148,16 @@ below turns on what is configured or when the flow is finished, it means the har
 _None._
 
 ## Resolved questions
+
+- 2026-08-09 — Does adding a service open a dialog? **Chosen: yes — "Add a service" is a
+  dialog, in onboarding exactly as in Settings.** This reverses part of the earlier "no modals
+  in harness onboarding at all" answer below, and is a deliberate amendment rather than a
+  reinterpretation of it. What that answer was reacting to was *two modals at once*; a panel
+  that is not a modal, with one dialog over it, is one. It also makes req 7 more literal rather
+  than less: `plan.md` had been about to require docs/252 phase 2 to re-author its add-flow
+  host-agnostically so the panel could render the same steps inline, which is refactoring work
+  bought purely to avoid a dialog nobody objected to. Req 5 rewritten around "at most one thing
+  on top" instead of "nothing on top".
 
 - 2026-08-09 — When does the panel go away, given the GitHub step is inside it? **Chosen:
   the GitHub part of onboarding does not change at all — the UI stays blocked until GitHub is

@@ -49,8 +49,8 @@
 - [ ] `App.tsx:1982` composer render gate widened so the composer renders under the panel
 - [ ] Panel visibility is `harnessOnboardingCompletedAt == null` alone; not dismissible, no
       "Get Started"
-- [ ] docs/252's Services add-flow made host-agnostic; Settings supplies the dialog, the panel
-      hosts it inline (no modal in the flow — req 5)
+- [ ] Panel renders docs/252's Services card list and opens its "Add a service" dialog as-is —
+      no host-agnostic refactor of that surface (req 5, amended)
 - [ ] `ProviderAccountsCard` global toasts moved inline next to their row — failures (`:105`)
       **and** disconnect results (`:253`, `:258`)
 - [ ] Delete `noAgentReady` / `needsOnboarding` / the onboarding latch in `App.tsx`; keep
@@ -59,7 +59,8 @@
       on a later loss (today's behaviour, unchanged)
 - [ ] Panel tests: yields when `canRunTurns` flips; absent once the flag is set even with no
       credential (req 9); never on screen at the same time as the gate
-- [ ] Test: nothing in the harness panel renders a modal (req 5)
+- [ ] Test: the add dialog is the only thing ever on top of the panel, and the panel itself is
+      never a modal (req 5)
 - [ ] Test: the rest of the app is reachable while the panel is up (req 1)
 - [ ] `docs/216` checklist item added: the re-implementation must `&&` in
       `starterPromptsAllowed`
