@@ -46,8 +46,8 @@ export class ProviderRouteUnavailableError extends Error {
   readonly provider: AgentId;
   readonly failure: AccountSelectionFailure;
 
-  constructor(provider: AgentId, failure: AccountSelectionFailure) {
-    super(describeAccountSelectionFailure(provider, failure));
+  constructor(provider: AgentId, failure: AccountSelectionFailure, subject?: string) {
+    super(describeAccountSelectionFailure(provider, failure, subject));
     this.name = "ProviderRouteUnavailableError";
     this.provider = provider;
     this.failure = failure;
@@ -74,8 +74,17 @@ export function isTurnBlockingFailure(failure: AccountSelectionFailure): boolean
 export function describeAccountSelectionFailure(
   provider: AgentId,
   failure: AccountSelectionFailure,
+  /**
+   * docs/252 phase 5 — what ran out, when it is not the harness's own vendor.
+   * Once a subscription can belong to any catalogue service, "every connected
+   * Claude account is out of quota" is simply the wrong sentence for a spent GLM
+   * coding plan running on the Claude harness. The caller supplies the service's
+   * name because it is the one that knows the selection; absent, the harness
+   * label is the pre-feature answer and stays correct for the first-party case.
+   */
+  subject?: string,
 ): string {
-  const label = PROVIDER_LABEL[provider] ?? provider;
+  const label = subject ?? PROVIDER_LABEL[provider] ?? provider;
   switch (failure.reason) {
     case "all_exhausted": {
       // ISO, matching the existing quota message in
@@ -86,13 +95,24 @@ export function describeAccountSelectionFailure(
       const resets = when
         ? `The earliest window resets at ${when}.`
         : `None of them reported when its window resets.`;
+      // "account" is the right noun only for a login-flow subscription. A
+      // supplied-key subscription has credentials, and they are added in
+      // Settings → Services rather than connected.
+      if (subject) {
+        return (
+          `Every ${subject} credential is out of quota. ${resets} ` +
+          `Send this message again once quota is back, or add another ${subject} credential in Settings → Services.`
+        );
+      }
       return (
         `Every connected ${label} account is out of quota. ${resets} ` +
         `Send this message again once quota is back, or connect another ${label} account in Settings.`
       );
     }
     case "auth_required":
-      return `No ${label} account is connected. Connect one in Settings to run this turn.`;
+      return subject
+        ? `No ${subject} credential is configured. Add one in Settings → Services to run this turn.`
+        : `No ${label} account is connected. Connect one in Settings to run this turn.`;
   }
 }
 
@@ -104,9 +124,13 @@ export function describeAccountSelectionFailure(
 export function routeFromSelection(
   provider: AgentId,
   selection: AccountSelection,
+  /** See {@link describeAccountSelectionFailure}'s `subject`. */
+  subject?: string,
 ): ProviderRoute | undefined {
   if (selection.ok) return selection.route;
-  if (isTurnBlockingFailure(selection)) throw new ProviderRouteUnavailableError(provider, selection);
+  if (isTurnBlockingFailure(selection)) {
+    throw new ProviderRouteUnavailableError(provider, selection, subject);
+  }
   return undefined;
 }
 

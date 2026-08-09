@@ -44,6 +44,7 @@ import { AGENT_ENV_FILE, sessionStateDirForWorkspace } from "./session-state-dir
 import type { CredentialRoute, SecretRequirement } from "../shared/types/domain-types.js";
 import {
   credentialModeKey,
+  credentialRouteEnvName,
   orderCredentialRoutes,
   parseCredentialModeKey,
 } from "../shared/types/domain-types.js";
@@ -347,6 +348,23 @@ export function collectMcpAgentEnv(
  * `CredentialTargets`, and writing the value into it is phase 3's spawn
  * shaping. A CLI seeing `DEEPSEEK_API_KEY` in its environment and ignoring it
  * is the expected state until then.
+ *
+ * **docs/252 phase 5 — each credential also gets a name of its own.** The group
+ * name can only carry one of a subscription's credentials, which was fine while
+ * nothing could choose a different one. Failover is exactly that (req 12): a
+ * session moved onto the second GLM key would otherwise keep authenticating with
+ * the first, since that is the only one in the environment — the turn billed to
+ * a credential ShipIt had just benched, and attributed to another. So every
+ * stored credential is additionally materialized under
+ * {@link credentialRouteEnvName}, and spawn shaping reads the pinned route's own
+ * variable. The group name is left exactly as it was, because a session with no
+ * pinned route (and every eligibility probe) still reads it.
+ *
+ * The cost is that a session's environment holds every credential of a service
+ * rather than one. They are all the same user's, for the same service, and the
+ * environment already carried every *mode* and every *service* the user has
+ * configured — so this widens what a compromised session container can reach
+ * within one service's subscription, and nothing beyond it.
  */
 export function collectServiceCredentialEnv(
   credentialStore: Pick<CredentialStore, "listCredentialRoutes" | "getCredentialSecret">,
@@ -357,6 +375,8 @@ export function collectServiceCredentialEnv(
     if (route.via !== "string") continue;
     const key = credentialModeKey(route.serviceId, route.billingMode);
     byMode.set(key, [...(byMode.get(key) ?? []), route]);
+    const secret = credentialStore.getCredentialSecret(route.id);
+    if (secret) out[credentialRouteEnvName(route.id)] = secret;
   }
   for (const [key, routes] of byMode) {
     const parsed = parseCredentialModeKey(key);

@@ -38,12 +38,18 @@ import {
   resolveSpawnShaping,
   storageEnvFor,
 } from "../shared/catalogue/index.js";
-import { orderCredentialRoutes } from "../shared/types/domain-types/credential-route.js";
+import type { CredentialRoute } from "../shared/types/domain-types/credential-route.js";
+import {
+  credentialRouteEnvName,
+  isStoredCredentialRouteId,
+  orderCredentialRoutes,
+} from "../shared/types/domain-types/credential-route.js";
+import type { AccountSelectionMode } from "../shared/types/domain-types/provider.js";
 
 /** The `CredentialStore` surface this module reads. Narrow so tests can fake it. */
 export type ServiceRoutingCredentialSource = Pick<
   CredentialStore,
-  "listCredentialRoutes" | "getCredentialSecret"
+  "listCredentialRoutes" | "getCredentialSecret" | "getSelectionMode"
 >;
 
 /**
@@ -142,6 +148,8 @@ export interface SelectRouteDeps {
   credentialStore: ServiceRoutingCredentialSource;
   providerAccountManager?: Pick<ProviderAccountManager, "selectAccountForTurn">;
   env?: NodeJS.ProcessEnv;
+  /** Injected clock, so a benched-credential test does not have to wait one out. */
+  now?: () => number;
 }
 
 /**
@@ -192,45 +200,144 @@ export function selectRouteForSelection(
     // resolved below, against THIS mode's own variable.
     if (selected.ok && selected.route.kind === "account") return selected;
     // `all_exhausted` is returned unchanged rather than falling through to this
-    // mode's env-delivered credential. Every connected subscription being spent
-    // is exactly the state req 12 says to stop on, and today's behaviour already
-    // stops there; widening it to a same-mode string credential is a failover
-    // decision and belongs to phase 5, which owns that policy end to end.
+    // mode's env-delivered credential. **Phase 5 owns this decision and has
+    // taken it: no fall-through.** Every connected subscription being spent is
+    // exactly the state req 12 says to stop on, and the env-delivered token is
+    // not evidence of a subscription that is still good — it carries no row, so
+    // ShipIt tracks no quota for it and could neither bench it after it failed
+    // nor tell the user which credential the turn ended up on. Rolling onto it
+    // would replace req 13's "the earliest window resets at X" with a second
+    // failure and a worse message. Reaching a same-mode string credential from a
+    // spent account set is a hop ShipIt cannot see the far side of, so it does
+    // not make it.
     if (!selected.ok && selected.reason === "all_exhausted") return selected;
   }
 
-  const route = stringRouteFor(harnessId, selection, deps);
-  return route ? { ok: true, route } : { ok: false, reason: "auth_required" };
+  return stringSelectionFor(harnessId, selection, deps);
 }
 
 /**
- * The string-delivered credential of this `(service, mode)`, as a route.
+ * The string-delivered credential of this `(service, mode)` a turn should
+ * authenticate with — **and, for a subscription, which of them** (docs/252
+ * phase 5, req 12).
  *
- * Stored routes first, in the user's own order, then the deployment's
- * environment. Choosing *among* several stored credentials of one mode is req
- * 12's failover and belongs to phase 5; taking the first in order is what
- * delivery already does, so the turn authenticates with the credential the
- * worker was actually handed rather than a different one.
+ * Phase 2 made a subscription able to hold several string credentials and phase
+ * 3 delivered the first in order, which is where it stopped: a second GLM key
+ * was stored and unreachable. This is the walk that makes it reachable, and it
+ * is deliberately the same shape as `ProviderAccountManager.selectAccountForTurn`
+ * rather than a second policy:
+ *
+ *   - **`sub`** — skip credentials benched by {@link
+ *     CredentialStore.markCredentialRouteExhausted}, in the user's own order
+ *     (or least-recently-used under `balanced`). When every stored credential is
+ *     benched the answer is `all_exhausted` with the earliest reset, which is
+ *     req 12's "no subscription left to fail over to: stop and say so".
+ *   - **`key`** — the first in order, always. A key has no window to exhaust and
+ *     never fails over, so it never asks which of them is healthy — and the one
+ *     it names has to be the one delivery hands the worker, or the turn would be
+ *     attributed to a credential it did not authenticate with.
+ *
+ * The deployment's environment is the last resort **only when nothing is
+ * stored**, which is exactly what phase 3 did. It is not a failover target: it
+ * carries no row, so it can be neither benched nor ordered, and rolling onto it
+ * because the stored credentials are spent would be a hop ShipIt could never
+ * undo or explain.
  */
-function stringRouteFor(
+function stringSelectionFor(
   harnessId: AgentId,
   selection: ModelSelection,
   deps: SelectRouteDeps,
-): ProviderRoute | null {
-  if (!harnessCanCarry(harnessId, { ...selection, via: "string" })) return null;
-  const stored = orderCredentialRoutes(
-    deps.credentialStore
-      .listCredentialRoutes(selection.serviceId, selection.billingMode)
-      .filter((route) => route.via === "string" && deps.credentialStore.getCredentialSecret(route.id)),
-  );
-  const first = stored[0];
-  if (first) return { kind: "reserved", id: first.id };
+): AccountSelection {
+  if (!harnessCanCarry(harnessId, { ...selection, via: "string" })) {
+    return { ok: false, reason: "auth_required" };
+  }
+  const stored = deps.credentialStore
+    .listCredentialRoutes(selection.serviceId, selection.billingMode)
+    .filter((route) => route.via === "string" && deps.credentialStore.getCredentialSecret(route.id));
+
+  if (stored.length > 0) {
+    if (selection.billingMode !== "sub") {
+      return { ok: true, route: { kind: "reserved", id: orderCredentialRoutes(stored)[0].id } };
+    }
+    const now = deps.now?.() ?? Date.now();
+    const ordered = orderStringCredentials(
+      stored,
+      deps.credentialStore.getSelectionMode(selection.serviceId, selection.billingMode),
+    );
+    const next = ordered.find((route) => !isBenched(route.exhaustedUntil, now));
+    if (next) return { ok: true, route: { kind: "reserved", id: next.id } };
+    const benched = stored
+      .map((route) => route.exhaustedUntil)
+      .filter((until): until is number => typeof until === "number" && until > now);
+    return {
+      ok: false,
+      reason: "all_exhausted",
+      earliestResetAt: benched.length > 0 ? new Date(Math.min(...benched)).toISOString() : null,
+    };
+  }
+
   const storageEnv = storageEnvFor(selection.serviceId, selection.billingMode);
   const fromEnv = storageEnv ? (deps.env ?? process.env)[storageEnv] : undefined;
   if (storageEnv && typeof fromEnv === "string" && fromEnv.trim().length > 0) {
-    return { kind: "reserved", id: envRouteIdFor(storageEnv) };
+    return { ok: true, route: { kind: "reserved", id: envRouteIdFor(storageEnv) } };
   }
-  return null;
+  return { ok: false, reason: "auth_required" };
+}
+
+function isBenched(exhaustedUntil: number | null | undefined, now: number): boolean {
+  return typeof exhaustedUntil === "number" && exhaustedUntil > now;
+}
+
+/**
+ * The user's fallback order, or least-recently-used under `balanced` — the
+ * string-credential twin of `orderForSelectionMode`, and the reason phase 2's
+ * *Use in order / Spread across accounts* control now does something for a
+ * string-delivered subscription.
+ */
+function orderStringCredentials(
+  routes: readonly CredentialRoute[],
+  mode: AccountSelectionMode,
+): CredentialRoute[] {
+  const ordered = orderCredentialRoutes(routes);
+  if (mode !== "balanced") return ordered;
+  return [...ordered].sort((a, b) => (a.lastUsedAt ?? 0) - (b.lastUsedAt ?? 0));
+}
+
+/**
+ * Stamp the credential a turn resolved onto, so `balanced` has something to
+ * sort by. A no-op for an account route (docs/150's `markAccountUsed` owns
+ * those) and for an env-delivered one, which has no row to stamp.
+ */
+export function markCredentialRouteUsed(
+  credentialStore: Pick<CredentialStore, "markCredentialRouteUsed">,
+  route: ProviderRoute | undefined,
+): void {
+  if (route?.kind !== "reserved") return;
+  credentialStore.markCredentialRouteUsed(route.id);
+}
+
+/**
+ * docs/252 phase 5 — is the credential this session is **already pinned to** no
+ * longer able to run a turn?
+ *
+ * The string-delivered twin of `sessionNeedsAccountFailover`, and it answers
+ * only about subscriptions: a `key` route is never benched (req 12), and an
+ * env-delivered credential has no row, so neither can report unusable here. A
+ * pinned row that has been *deleted* is handled separately at env prep — that is
+ * a removal, not an exhaustion, and it re-pins rather than failing over.
+ */
+export function sessionNeedsCredentialFailover(
+  session:
+    | Pick<SessionInfo, "providerRouteKind" | "providerRouteId">
+    | undefined,
+  credentialStore: Pick<CredentialStore, "getCredentialRoute"> | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (!session || !credentialStore) return false;
+  if (session.providerRouteKind !== "reserved" || !session.providerRouteId) return false;
+  const route = credentialStore.getCredentialRoute(session.providerRouteId);
+  if (route?.billingMode !== "sub") return false;
+  return isBenched(route.exhaustedUntil, now);
 }
 
 // ---- Spawn shaping ---------------------------------------------------------
@@ -279,7 +386,18 @@ export function serviceRoutingForSelection(
     billingMode: shaping.billingMode,
     style: shaping.style,
     baseUrl: shaping.endpoint.url,
-    credentialSourceEnv: shaping.credential.sourceEnv,
+    // docs/252 phase 5 — read the PINNED credential's own variable when the turn
+    // is pinned to a stored one. The catalogue's `storageEnv` names the group,
+    // and delivery puts the group's first credential there; once req 12's
+    // failover can move a session onto the second, sourcing from the group name
+    // would authenticate with the credential ShipIt had just benched while
+    // attributing the turn to the one it moved to. An env-delivered credential
+    // has no row and no id, so it keeps the group name — which is the only name
+    // it has ever had.
+    credentialSourceEnv:
+      route?.kind === "reserved" && isStoredCredentialRouteId(route.id)
+        ? credentialRouteEnvName(route.id)
+        : shaping.credential.sourceEnv,
     credentialTarget: shaping.credential.target,
   };
 }

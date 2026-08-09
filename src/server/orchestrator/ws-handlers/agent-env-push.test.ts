@@ -210,6 +210,11 @@ describe("revoked service credentials never ride a stale compose snapshot", () =
     });
     expect(selectAgentEnvForPush({ serviceManager, credentialStore })).toEqual({
       DEEPSEEK_API_KEY: "sk-live",
+      // docs/252 phase 5 — the per-credential name is merged back in when the
+      // snapshot lacks it, because spawn shaping SOURCES from it: a snapshot
+      // taken before those names existed would make a shaped turn find no
+      // credential at all.
+      SHIPIT_CREDENTIAL_CRED_1: "sk-live",
     });
   });
 

@@ -22,7 +22,7 @@ import { detectAndReArmMergedSession, detectAndReArmResetSession } from "../serv
 import { reactToReleaseMarkers } from "../services/release-flow.js";
 import { executeAgentTurn } from "../turn-executor.js";
 import { releaseResidentOnSpawnChange } from "../resident-spawn-guard.js";
-import { desiredSpawnIdentity } from "../service-routing.js";
+import { desiredSpawnIdentity, sessionNeedsCredentialFailover } from "../service-routing.js";
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "../prompt-assembly.js";
 
 // docs/149 — re-export so existing `selectAgentEnvForPush` consumers (unit
@@ -280,12 +280,16 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // here, before it can be captured; env-prep still owns the switch itself,
   // and with no resident agent the turn simply spawns a fresh one against the
   // new account's credentials.
+  //
+  // docs/252 phase 5 — and the same for a benched string-delivered subscription
+  // credential. A resident process read its key from the environment at spawn
+  // and never re-reads, so a session failing over to another GLM key would keep
+  // spending the one that just ran out.
+  const failoverSession = capturedSessionId ? ctx.sessionManager.get(capturedSessionId) : undefined;
   if (
     useStreaming &&
-    sessionNeedsAccountFailover(
-      capturedSessionId ? ctx.sessionManager.get(capturedSessionId) : undefined,
-      ctx.providerAccountManager,
-    )
+    (sessionNeedsAccountFailover(failoverSession, ctx.providerAccountManager)
+      || sessionNeedsCredentialFailover(failoverSession, ctx.credentialStore))
   ) {
     const resident = runner?.getAgent() ?? null;
     if (resident) {

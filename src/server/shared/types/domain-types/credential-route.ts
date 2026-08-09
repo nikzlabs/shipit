@@ -109,6 +109,36 @@ export function orderCredentialRoutes<T extends { priority?: number; isPrimary: 
     .map((entry, index) => ({ ...entry.route, isPrimary: index === 0 }));
 }
 
+/**
+ * The environment variable one **specific** stored credential is materialized
+ * under (docs/252 phase 5).
+ *
+ * A mode's `storageEnv` names the *group*, so it can only ever carry one of the
+ * group's credentials — phase 2 delivered the first in order and said so. That
+ * was sufficient while nothing could pick a different one; req 12's failover is
+ * exactly a reason to pick a different one, and without a per-credential name
+ * the session would authenticate with the benched key while attributing the
+ * turn to the one it failed over to.
+ *
+ * So every stored string credential is delivered under both names: the group's,
+ * unchanged, and this one. Spawn shaping then reads the pinned route's own
+ * variable when there is one, and the group's otherwise — which is what an
+ * environment-delivered credential (no row, no id) still has.
+ *
+ * The prefix is ShipIt's own namespace rather than a catalogue name, so it can
+ * never collide with a variable a harness or a repo's compose file reads.
+ */
+export const CREDENTIAL_ROUTE_ENV_PREFIX = "SHIPIT_CREDENTIAL_";
+
+/** True for a route id the credential store owns (as opposed to a legacy env route). */
+export function isStoredCredentialRouteId(routeId: string): boolean {
+  return routeId.startsWith("cred_");
+}
+
+export function credentialRouteEnvName(routeId: string): string {
+  return CREDENTIAL_ROUTE_ENV_PREFIX + routeId.toUpperCase().replace(/[^A-Z0-9_]/g, "_");
+}
+
 /** Inverse of {@link credentialModeKey}; `undefined` for anything else. */
 export function parseCredentialModeKey(
   key: string,

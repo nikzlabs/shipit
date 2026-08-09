@@ -430,27 +430,50 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
 
   /**
    * docs/150 req 7 — the provider failed a turn saying the subscription is
-   * spent. Stamp the account that turn ran on, so the router stops choosing it
-   * and the session fails over on its next turn.
+   * spent. Stamp the credential that turn ran on, so the router stops choosing
+   * it and the session fails over on its next turn.
    *
    * Resolved here for the same reason `recordAgentRateLimits` is: this is the
-   * one place that knows how a session maps to a provider account. Only a
-   * *pinned account* route is stamped — an unpinned session has no account to
-   * blame, and a reserved env/API-key route is metered billing with no
-   * subscription window to exhaust (req 12).
+   * one place that knows how a session maps to a stored credential.
+   *
+   * **docs/252 phase 5 — two shapes of subscription, one rule.** A subscription
+   * is not always an account: GLM's coding plan is a subscription authenticated
+   * by a supplied key, and phase 2 made a mode able to hold several of them. So
+   * this stamps either shape and branches on the **billing mode**, never on how
+   * the credential is delivered. What is still never stamped is a metered key —
+   * it has no subscription window to exhaust and req 12 forbids failing it over
+   * — and neither is an unpinned session, which has no credential to blame, nor
+   * an env-delivered one, which has no row to carry the stamp.
+   *
+   * The name is unchanged deliberately: it is still "bench the credential this
+   * session's turns are billed to", asked at ~6 call sites, and re-keying them
+   * would be churn without a behaviour change.
    */
   const markSessionAccountExhausted = (sessionId: string, until: number): void => {
     const session = sessionManager.get(sessionId);
-    if (!session?.agentId || session.providerRouteKind !== "account" || !session.providerRouteId) return;
-    const marked = providerAccountManager?.markAccountExhausted(
-      session.agentId,
-      session.providerRouteId,
-      until,
-    );
-    if (marked) {
+    if (!session?.providerRouteId) return;
+    if (session.providerRouteKind === "account") {
+      if (!session.agentId) return;
+      const marked = providerAccountManager?.markAccountExhausted(
+        session.agentId,
+        session.providerRouteId,
+        until,
+      );
+      if (marked) {
+        console.log(
+          `[quota] ${session.agentId} account ${session.providerRouteId} reported exhausted by session `
+          + `${sessionId}; benched until ${new Date(until).toISOString()}`,
+        );
+      }
+      return;
+    }
+    // `markCredentialRouteExhausted` is what refuses a `key` route, so the rule
+    // lives with the store rather than being re-stated per caller.
+    const benched = credentialStore.markCredentialRouteExhausted(session.providerRouteId, until);
+    if (benched) {
       console.log(
-        `[quota] ${session.agentId} account ${session.providerRouteId} reported exhausted by session `
-        + `${sessionId}; benched until ${new Date(until).toISOString()}`,
+        `[quota] ${benched.serviceId}:${benched.billingMode} credential ${benched.id} reported exhausted `
+        + `by session ${sessionId}; benched until ${new Date(until).toISOString()}`,
       );
     }
   };

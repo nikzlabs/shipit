@@ -5,9 +5,11 @@ import {
   listConfiguredCredentials,
   selectRouteForSelection,
   serviceRoutingForSelection,
+  sessionNeedsCredentialFailover,
   sessionSpawnIdentity,
 } from "./service-routing.js";
 import type { CredentialRoute } from "../shared/types/domain-types/credential-route.js";
+import type { AccountSelectionMode } from "../shared/types/domain-types/provider.js";
 import type { AccountSelection } from "./provider-account-manager.js";
 import type { SessionInfo } from "../shared/types.js";
 
@@ -24,7 +26,11 @@ function route(over: Partial<CredentialRoute> & Pick<CredentialRoute, "id" | "se
   } as CredentialRoute;
 }
 
-function store(routes: CredentialRoute[], secrets: Record<string, string> = {}) {
+function store(
+  routes: CredentialRoute[],
+  secrets: Record<string, string> = {},
+  selectionMode: AccountSelectionMode = "strict",
+) {
   return {
     listCredentialRoutes: (serviceId?: string, billingMode?: string) =>
       routes.filter(
@@ -33,6 +39,8 @@ function store(routes: CredentialRoute[], secrets: Record<string, string> = {}) 
           && (billingMode === undefined || r.billingMode === billingMode),
       ),
     getCredentialSecret: (id: string) => secrets[id],
+    getSelectionMode: () => selectionMode,
+    getCredentialRoute: (id: string) => routes.find((r) => r.id === id),
   };
 }
 
@@ -180,6 +188,154 @@ describe("selectRouteForSelection — scoped to the SELECTED billing mode", () =
   });
 });
 
+// docs/252 phase 5, req 12 — the gap phase 2 left open: a subscription can hold
+// several string credentials and nothing could choose between them, so the
+// second was stored and unreachable.
+describe("string-delivered subscription failover", () => {
+  const NOW = 1_000_000;
+  const glm = { serviceId: "zai", billingMode: "sub", modelId: "glm-5.2[1m]" } as const;
+  const sub = (id: string, over: Partial<CredentialRoute> = {}): CredentialRoute =>
+    route({ id, serviceId: "zai", billingMode: "sub", priority: 0, ...over });
+
+  const pick = (
+    routes: CredentialRoute[],
+    secrets: Record<string, string>,
+    selectionMode: AccountSelectionMode = "strict",
+  ) =>
+    selectRouteForSelection("claude", glm, {
+      credentialStore: store(routes, secrets, selectionMode),
+      env: {} as NodeJS.ProcessEnv,
+      now: () => NOW,
+    });
+
+  it("moves to the next credential when the first is benched", () => {
+    const selected = pick(
+      [
+        sub("cred_a", { priority: 0, exhaustedUntil: NOW + 60_000 }),
+        sub("cred_b", { priority: 1 }),
+      ],
+      { cred_a: "k1", cred_b: "k2" },
+    );
+    expect(selected).toEqual({ ok: true, route: { kind: "reserved", id: "cred_b" } });
+  });
+
+  it("stops with `all_exhausted` and the earliest reset when every one is benched", () => {
+    // req 12 — "when no subscription is left to fail over to, ShipIt stops and
+    // says so, exactly as it does for a key".
+    const selected = pick(
+      [
+        sub("cred_a", { priority: 0, exhaustedUntil: NOW + 90_000 }),
+        sub("cred_b", { priority: 1, exhaustedUntil: NOW + 30_000 }),
+      ],
+      { cred_a: "k1", cred_b: "k2" },
+    );
+    expect(selected).toEqual({
+      ok: false,
+      reason: "all_exhausted",
+      earliestResetAt: new Date(NOW + 30_000).toISOString(),
+    });
+  });
+
+  it("does not roll onto the deployment's env credential when the stored ones are spent", () => {
+    // The env credential carries no row, so ShipIt tracks no quota for it and
+    // could neither bench it after it failed nor name it in the transcript.
+    // Rolling onto it would replace req 13's reset time with a second failure.
+    const selected = selectRouteForSelection("claude", glm, {
+      credentialStore: store([sub("cred_a", { exhaustedUntil: NOW + 60_000 })], { cred_a: "k1" }),
+      env: { ZAI_CODING_PLAN_KEY: "from-env" } as NodeJS.ProcessEnv,
+      now: () => NOW,
+    });
+    expect(selected).toMatchObject({ ok: false, reason: "all_exhausted" });
+  });
+
+  it("takes the least recently used credential under `balanced`", () => {
+    const selected = pick(
+      [
+        sub("cred_a", { priority: 0, lastUsedAt: 900 }),
+        sub("cred_b", { priority: 1, lastUsedAt: 100 }),
+      ],
+      { cred_a: "k1", cred_b: "k2" },
+      "balanced",
+    );
+    expect(selected).toEqual({ ok: true, route: { kind: "reserved", id: "cred_b" } });
+  });
+
+  it("ignores a lapsed bench", () => {
+    const selected = pick(
+      [sub("cred_a", { priority: 0, exhaustedUntil: NOW - 1 }), sub("cred_b", { priority: 1 })],
+      { cred_a: "k1", cred_b: "k2" },
+    );
+    expect(selected).toEqual({ ok: true, route: { kind: "reserved", id: "cred_a" } });
+  });
+
+  it("never skips a benched API KEY — a key has no window and does not fail over", () => {
+    // Nothing benches a `key` route today (`markCredentialRouteExhausted`
+    // refuses), but the selection walk must not depend on that: req 12 says a
+    // key is used until the user replaces it, and moving off one would be the
+    // silent hop onto a second metered credential the requirement refuses.
+    const selected = selectRouteForSelection(
+      "claude",
+      { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
+      {
+        credentialStore: store(
+          [
+            route({ id: "cred_a", serviceId: "deepseek", priority: 0, exhaustedUntil: NOW + 60_000 }),
+            route({ id: "cred_b", serviceId: "deepseek", priority: 1 }),
+          ],
+          { cred_a: "k1", cred_b: "k2" },
+        ),
+        env: {} as NodeJS.ProcessEnv,
+        now: () => NOW,
+      },
+    );
+    expect(selected).toEqual({ ok: true, route: { kind: "reserved", id: "cred_a" } });
+  });
+});
+
+describe("sessionNeedsCredentialFailover", () => {
+  const NOW = 1_000_000;
+
+  it("is true for a pinned subscription credential that is benched", () => {
+    const benched = route({
+      id: "cred_a",
+      serviceId: "zai",
+      billingMode: "sub",
+      exhaustedUntil: NOW + 1,
+    });
+    expect(
+      sessionNeedsCredentialFailover(
+        { providerRouteKind: "reserved", providerRouteId: "cred_a" },
+        store([benched]),
+        NOW,
+      ),
+    ).toBe(true);
+  });
+
+  it("is false for a key, an account, and an unpinned session", () => {
+    const keyRoute = route({
+      id: "cred_k",
+      serviceId: "deepseek",
+      billingMode: "key",
+      exhaustedUntil: NOW + 1,
+    });
+    expect(
+      sessionNeedsCredentialFailover(
+        { providerRouteKind: "reserved", providerRouteId: "cred_k" },
+        store([keyRoute]),
+        NOW,
+      ),
+    ).toBe(false);
+    expect(
+      sessionNeedsCredentialFailover(
+        { providerRouteKind: "account", providerRouteId: "acct_1" },
+        store([]),
+        NOW,
+      ),
+    ).toBe(false);
+    expect(sessionNeedsCredentialFailover({}, store([]), NOW)).toBe(false);
+  });
+});
+
 describe("envRouteIdFor", () => {
   it("keeps ShipIt's historical ids so pinned sessions are not orphaned", () => {
     expect(envRouteIdFor("ANTHROPIC_AUTH_TOKEN")).toBe("claude-env-oauth");
@@ -202,9 +358,25 @@ describe("serviceRoutingForSelection", () => {
       billingMode: "key",
       style: "anthropic-messages",
       baseUrl: "https://api.deepseek.com/anthropic",
-      credentialSourceEnv: "DEEPSEEK_API_KEY",
+      // docs/252 phase 5 — a STORED credential is sourced from its own variable,
+      // not from the mode's group name. The group name carries the group's first
+      // credential, so once failover can move a session onto the second, sourcing
+      // from the group would authenticate with the one ShipIt had just benched.
+      credentialSourceEnv: "SHIPIT_CREDENTIAL_CRED_DS",
       credentialTarget: { kind: "env", name: "ANTHROPIC_API_KEY" },
     });
+  });
+
+  it("keeps the mode's group variable for an ENV-delivered credential", () => {
+    // It has no row and no id of its own, so the catalogue's `storageEnv` is the
+    // only name it has ever had.
+    expect(
+      serviceRoutingForSelection(
+        "claude",
+        { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
+        { kind: "reserved", id: "env:DEEPSEEK_API_KEY" },
+      ),
+    ).toMatchObject({ credentialSourceEnv: "DEEPSEEK_API_KEY" });
   });
 
   it("leaves an account-delivered credential alone", () => {

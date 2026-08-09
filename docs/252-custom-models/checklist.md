@@ -1,7 +1,7 @@
 ---
 issue: planning#321
 title: Custom models — implementation checklist
-description: Per-phase build steps for docs/252. Phases 1, 2, 3, 8 and 9 are done.
+description: Per-phase build steps for docs/252. Phases 1, 2, 3, 5, 8 and 9 are done.
 ---
 
 # 252 — Custom models: checklist
@@ -35,13 +35,28 @@ table — a phase is checked off when its PR has merged.
 - [ ] GLM's `zai-plan-usage` quota reader — needs phase 6's per-`(service, mode)` quota
       machinery to report into, so req 15 is unmet on quota until then
 
-## Phase 5 — Credential-failure policy (carried from phase 2)
+## Phase 5 — Credential-failure policy
 
-- [ ] Routing controls for a **string-backed** subscription group. `zai:sub` already
-      carries cutoffs and a selection mode in the settings payload; the controls live
-      inside `ProviderAccountsCard` keyed by provider and need extracting. Deferred
-      because they do nothing until failover is real for these credentials — the
-      fallback *order*, which does change delivery today, already ships.
+- [x] `credential-failure-policy.ts` — req 12's branch, asked by every gate
+- [x] The `auth_required` handler stops a key-authenticated turn instead of entering
+      vendor re-auth: no token heal, no refresher nudge, no "sign in" copy
+- [x] The same-turn quota retry gated on the billing mode, as account benching already was
+- [x] Codex coverage established and closed — a `turn/start` quota rejection arrives as an
+      adapter `error`, which neither the retry nor the exhaustion stamp watched
+- [x] Benching widened to a string-delivered subscription credential; a metered key refused
+- [x] Which of a subscription's string credentials a turn takes — order, selection mode,
+      benched skipped, `all_exhausted` when none is left
+- [x] An already-pinned session moves off a spent credential and the move is **persisted**
+      (which phase 3's stale-route drop asserted and did not do)
+- [x] Per-credential env delivery, so the credential a turn authenticates with is the one
+      it is attributed to
+- [x] Routing controls for a **string-backed** subscription group — the selection mode, on
+      the card. Carried from phase 2.
+- [x] Cross-backend review, findings applied (see `plan.md`)
+- [ ] **Failover cutoffs** for a string-backed subscription. A cutoff is a percentage of a
+      reported quota and nothing reports one for these credentials until phase 6 builds
+      `zai-plan-usage`, so the control would be inert. Belongs with the quota reader,
+      not with failover.
 
 ## Phase 3 — Spawn shaping and eligibility
 
@@ -61,9 +76,10 @@ table — a phase is checked off when its PR has merged.
       machinery — the quota-aware walk, cutoffs, benching, failover — is keyed by `AgentId`
       and phase 3 delegates to it rather than reimplementing it. Retiring the projection
       means re-keying that machinery, which is **phase 6**'s work (`(service, mode) → route`).
-- [ ] Replace the first-credential delivery within one mode. Delivery hands the worker the
-      first credential in order and the turn now authenticates with exactly that one, so the
-      two agree; choosing a *different* one is req 12's failover and belongs to **phase 5**.
+- [x] Replace the first-credential delivery within one mode. Closed in **phase 5**: every
+      stored credential is delivered under a name of its own and spawn shaping sources the
+      pinned route's, so choosing a different one no longer means authenticating with the
+      group's first.
 - [ ] The **sub-agent defaults** picker still has no service axis. Its list is
       credential-filtered, and the service layer now tells the store which `(service, mode)`
       the id was chosen from, so a key-only install no longer stores an unreachable `sub`
@@ -76,6 +92,8 @@ table — a phase is checked off when its PR has merged.
       one eligible model" — which is the part req 2 needed; the rename across its six call
       sites is churn with no behaviour change and was not taken.
 
-## Phases 4–9
+## Phases 4, 6, 7
 
-Not started. See [`plan.md`](./plan.md)'s phase table.
+Not started. See [`plan.md`](./plan.md)'s phase table. (Phases 8 and 9 have landed; their
+notes are in `plan.md` rather than here, since both landed ahead of this checklist's
+per-phase sections.)

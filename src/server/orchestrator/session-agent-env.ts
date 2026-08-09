@@ -54,7 +54,11 @@ import { agentHome } from "../shared/agent-home.js";
 import type { ProviderAccountManager, ProviderRoute } from "./provider-account-manager.js";
 import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 import { routeFromSelection } from "./provider-route-preflight.js";
-import { selectRouteForSelection } from "./service-routing.js";
+import {
+  markCredentialRouteUsed,
+  selectRouteForSelection,
+  sessionNeedsCredentialFailover,
+} from "./service-routing.js";
 import type { ModelSelection } from "../shared/catalogue/index.js";
 import { failoverNotice, failoverPinnedSession } from "./services/provider-account-switch.js";
 import { emitNoticeInTurn } from "./chat-card-persistence.js";
@@ -62,7 +66,12 @@ import { ensureCodexHomeInitialized } from "./agents/codex/home-init.js";
 import { ensureLocalAgentOpsHost } from "./local-agent-ops.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { collectAccountAgentEnv, collectServiceCredentialEnv } from "./secret-resolver.js";
-import { credentialStorageEnvNames } from "../shared/catalogue/index.js";
+import {
+  credentialStorageEnvNames,
+  getService,
+  nativeServiceForHarness,
+} from "../shared/catalogue/index.js";
+import { CREDENTIAL_ROUTE_ENV_PREFIX } from "../shared/types/domain-types/credential-route.js";
 import { buildConversationReplay } from "./services/replay.js";
 import { getErrorMessage } from "./validation.js";
 
@@ -231,7 +240,7 @@ export function selectAgentEnvForPush(input: {
   credentialStore: AccountAgentEnvSource;
 }): Record<string, string> {
   if (input.serviceManager) {
-    return withRevokedCredentialsDropped(
+    return withServiceCredentialsReconciled(
       input.serviceManager.getSecretsSnapshot(),
       input.credentialStore,
     );
@@ -243,15 +252,16 @@ export function selectAgentEnvForPush(input: {
 }
 
 /**
- * Drop from a compose snapshot any service credential the store no longer
- * holds.
+ * Reconcile a compose snapshot against the credential store, in both
+ * directions.
  *
- * The snapshot is only as fresh as the last successful `syncSecrets()`, and
- * that pass **returns early** when the repo's compose file is missing or
- * unparsable (`service-manager.ts`). Without this, revoking a credential on a
- * session whose compose file happens to be broken re-pushes the stale snapshot
- * and the worker keeps the revoked key — indefinitely, until some later parse
- * succeeds. Revocation must not depend on the user's YAML being valid.
+ * **Dropping.** The snapshot is only as fresh as the last successful
+ * `syncSecrets()`, and that pass **returns early** when the repo's compose file
+ * is missing or unparsable (`service-manager.ts`). Without this, revoking a
+ * credential on a session whose compose file happens to be broken re-pushes the
+ * stale snapshot and the worker keeps the revoked key — indefinitely, until some
+ * later parse succeeds. Revocation must not depend on the user's YAML being
+ * valid.
  *
  * Narrow on purpose, in both directions. Only names the **catalogue** claims as
  * a `storageEnv` are candidates, and only those the compose file does **not**
@@ -259,8 +269,24 @@ export function selectAgentEnvForPush(input: {
  * `agent: true` secret is exercising the documented per-repo override, and that
  * value is its own, not a stale copy of the user's. What is left is exactly the
  * set that could only have come from the account-level loader.
+ *
+ * **Overwriting (docs/252 phase 5).** The same staleness cuts the other way for
+ * the per-credential names, and there it is not merely a delayed revocation —
+ * spawn shaping now *sources* the pinned credential from its own variable, so a
+ * snapshot taken before those names existed makes a shaped turn find no
+ * credential and raise `auth_required`. Every session already holding a compose
+ * stack would have been in that state on the deploy that shipped this.
+ *
+ * The store therefore **wins outright** for `SHIPIT_CREDENTIAL_*`, rather than
+ * only filling a gap: filling gaps alone would keep pushing the *old* secret
+ * after a rotation, since the name is present in the stale snapshot and a broken
+ * compose file means no sync ever replaces it — a revoked key delivered
+ * indefinitely, which is the exact failure the dropping half exists to prevent.
+ * Safe for exactly this prefix and no wider: it is ShipIt's own namespace, so
+ * unlike a catalogue `storageEnv` a compose file cannot legitimately be
+ * declaring its own value under it.
  */
-function withRevokedCredentialsDropped(
+function withServiceCredentialsReconciled(
   snapshot: { agentValues: Record<string, string>; declared: { name: string }[] },
   credentialStore: AccountAgentEnvSource,
 ): Record<string, string> {
@@ -268,11 +294,20 @@ function withRevokedCredentialsDropped(
   const declaredByCompose = new Set(snapshot.declared.map((d) => d.name));
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(snapshot.agentValues)) {
-    const isCatalogueCredential = credentialStorageEnvNames().includes(name);
+    // docs/252 phase 5 — the per-credential names are ShipIt's own namespace, so
+    // they are candidates on the same terms as the catalogue's group names. A
+    // deleted credential leaves a stale `SHIPIT_CREDENTIAL_*` in the snapshot
+    // exactly as it used to leave a stale group name, and a snapshot is only as
+    // fresh as the last successful sync.
+    const isCatalogueCredential =
+      credentialStorageEnvNames().includes(name) || name.startsWith(CREDENTIAL_ROUTE_ENV_PREFIX);
     if (isCatalogueCredential && !declaredByCompose.has(name) && delivered[name] === undefined) {
       continue;
     }
     out[name] = value;
+  }
+  for (const [name, value] of Object.entries(delivered)) {
+    if (name.startsWith(CREDENTIAL_ROUTE_ENV_PREFIX)) out[name] = value;
   }
   return out;
 }
@@ -367,10 +402,18 @@ export interface PrepareSessionAgentEnvironmentResult {
  * Resolve the provider route for a turn that has not pinned one yet.
  *
  * With `enforce`, throws {@link ProviderRouteUnavailableError} when no
- * connected account can serve the turn (docs/150 req 13). Returns
- * `undefined` — today's behavior — when there is no router wired at all
- * (tests, local runtime), when the only problem is that nothing is signed in
- * (which has its own UX), or when this call isn't the turn's own preflight.
+ * credential of the selected `(service, billing mode)` can serve the turn
+ * (docs/150 req 13). Returns `undefined` when the only problem is that nothing
+ * is signed in (which has its own UX), or when this call isn't the turn's own
+ * preflight.
+ *
+ * **docs/252 phase 5 — no longer gated on there being an account manager.** The
+ * early return predated a world in which a credential could live anywhere but
+ * `ProviderAccountManager`, and it makes a GLM-only install — no accounts at
+ * all — resolve no route, pin nothing, and get no failover. `selectRouteForSelection`
+ * already answers correctly without one; a session with no selection still
+ * reaches `auth_required` and so still resolves `undefined`, which is what kept
+ * the pre-feature behaviour.
  */
 function selectRouteForNewTurn(
   agentId: AgentId,
@@ -379,16 +422,29 @@ function selectRouteForNewTurn(
   enforce: boolean,
 ): ProviderRoute | undefined {
   const manager = deps.providerAccountManager;
-  if (!manager) return undefined;
   // docs/252 phase 3 — scoped to the SELECTED `(service, billing mode)`. Asking
   // one question per `AgentId` could answer with a credential belonging to a
   // different mode entirely, which is how an included turn became a metered one.
   const selection = selectRouteForSelection(agentId, modelSelectionOf(session), {
     credentialStore: deps.credentialStore,
-    providerAccountManager: manager,
+    ...(manager ? { providerAccountManager: manager } : {}),
   });
   if (!enforce) return selection.ok ? selection.route : undefined;
-  return routeFromSelection(agentId, selection);
+  return routeFromSelection(agentId, selection, blockedSubjectFor(agentId, session));
+}
+
+/**
+ * What to name in a blocked-turn message, when the selected service is not the
+ * harness's own vendor.
+ *
+ * `undefined` for the first-party case, which keeps req 13's existing sentence
+ * byte-identical — "Every connected Claude account is out of quota" is right
+ * there and wrong for a spent GLM coding plan running on the same harness.
+ */
+function blockedSubjectFor(agentId: AgentId, session: SessionInfo): string | undefined {
+  const serviceId = session.serviceId;
+  if (!serviceId || serviceId === nativeServiceForHarness(agentId)) return undefined;
+  return getService(serviceId)?.name ?? serviceId;
 }
 
 /** The session's persisted triple, or `undefined` when it holds no complete one. */
@@ -487,14 +543,35 @@ export async function prepareSessionAgentEnvironment(
     pinnedRoute?.kind === "reserved"
     && pinnedRoute.id.startsWith("cred_")
     && !deps.credentialStore.getCredentialRoute(pinnedRoute.id);
+  // docs/252 phase 5, req 12 — the string-delivered twin of the account
+  // failover above. A subscription authenticated by a supplied key (GLM's
+  // coding plan) is benched by `markSessionAccountExhausted` exactly as an
+  // account is, so a session pinned to the spent one has to move to another
+  // credential of the SAME `(service, mode)` before its next turn. Gated on the
+  // same flag as the account path: this repoints a session, which a pre-turn
+  // warm-up must not do.
+  const pinnedIsBenched =
+    (args.enforceAccountRouting ?? false)
+    && sessionNeedsCredentialFailover(routedSession, deps.credentialStore);
+  const dropPinnedRoute = pinnedIsStale || pinnedIsBenched;
   const selectedRoute =
-    pinnedRoute && !pinnedIsStale
+    pinnedRoute && !dropPinnedRoute
       ? pinnedRoute
       : selectRouteForNewTurn(agentId, routedSession, deps, args.enforceAccountRouting ?? false);
-  if (pinnedIsStale) {
-    console.log(
-      `[env-prep] ${sessionId} dropped pinned route ${pinnedRoute?.id ?? "?"} — its credential was removed`,
-    );
+  if (dropPinnedRoute) {
+    const why = pinnedIsStale ? "its credential was removed" : "its credential is out of quota";
+    console.log(`[env-prep] ${sessionId} dropped pinned route ${pinnedRoute?.id ?? "?"} — ${why}`);
+  }
+  // Persist the move. The first-turn branch below pins only when the session has
+  // never been pinned, so without this an already-pinned session kept naming the
+  // dead or benched credential on its row: every later turn would re-resolve the
+  // same way (correct) while `usage_turns` and the spawn identity recorded a
+  // credential the turn did not authenticate with (req 11). Phase 3's stale-drop
+  // asserted this re-pinning; it did not happen.
+  const credentialMoved =
+    dropPinnedRoute && pinnedRoute && selectedRoute && selectedRoute.id !== pinnedRoute.id;
+  if (credentialMoved && selectedRoute) {
+    deps.sessionManager.setProviderRoute(sessionId, selectedRoute.kind, selectedRoute.id);
   }
 
   // docs/150 req 21 — stamp the account this turn actually resolved onto, which
@@ -506,12 +583,30 @@ export async function prepareSessionAgentEnvironment(
   if (selectedRoute?.kind === "account" && deps.providerAccountManager) {
     deps.providerAccountManager.markAccountUsed(agentId, selectedRoute.id);
   }
+  // docs/252 phase 5 — the same stamp for a string-delivered credential, which
+  // is what makes `balanced` mean anything for a subscription authenticated by a
+  // key. A no-op for an env-delivered route, which has no row to stamp.
+  markCredentialRouteUsed(deps.credentialStore, selectedRoute);
 
   // req 11 — say it in the session, where the user is already looking, and
   // persist it: a switch the transcript forgets on reload is not a record.
   const chatHistory = deps.chatHistoryManager;
   if (failover && runner && chatHistory) {
     emitNoticeInTurn(runner, sessionId, failoverNotice(failover), chatHistory);
+  }
+  // The same sentence for the same event, one credential shape over: the wording
+  // is `failoverNotice`'s `exhausted` case, and it says the user's own labels
+  // because "moved from cred_9f3e… to cred_1b77…" tells them nothing about which
+  // credential is now paying.
+  if (pinnedIsBenched && credentialMoved && selectedRoute && pinnedRoute && runner && chatHistory) {
+    const label = (routeId: string): string =>
+      deps.credentialStore.getCredentialRoute(routeId)?.label ?? routeId;
+    emitNoticeInTurn(
+      runner,
+      sessionId,
+      `${label(pinnedRoute.id)} is out of quota — continuing this session on ${label(selectedRoute.id)}.`,
+      chatHistory,
+    );
   }
 
   // One line per preparation recording the decisions that shaped it: which

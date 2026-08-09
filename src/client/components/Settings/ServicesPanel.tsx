@@ -259,6 +259,19 @@ function ServiceModeCard({
         ))}
       </div>
 
+      {/* docs/252 phase 5 — the routing control phase 2 had nowhere to put.
+          Only with two or more credentials: with one there is nowhere to fail
+          over to, so the setting could never do anything. An API-key card never
+          reaches here (`modeAllowsMultipleCredentials` is false for `key`),
+          which is req 12 rendered — keys do not fail over, so there is nothing
+          to order and nothing to spread. */}
+      {multiple && stringRoutes.length > 1 && (
+        <CredentialSelectionModeControl
+          service={service}
+          billingMode={billingMode}
+        />
+      )}
+
       <div className="flex flex-wrap gap-1">
         {modelIds(service, billingMode).map((id) => (
           <span
@@ -272,6 +285,97 @@ function ServiceModeCard({
     </div>
     )}
     </>
+  );
+}
+
+/**
+ * docs/150 req 21 / docs/252 phase 5 — how a string-delivered subscription's
+ * credentials relate to each other.
+ *
+ * The same setting `ProviderAccountsCard` offers an account-backed subscription,
+ * re-keyed onto `(service, billing mode)` — which is where phase 2 already
+ * stored it, with no control able to reach it. It does something as of phase 5:
+ * `strict` takes the user's own fallback order, `balanced` takes the
+ * least-recently-used credential, and both now skip a credential ShipIt has
+ * benched (req 12).
+ *
+ * **The cutoffs are deliberately absent, and that is not an oversight.** A
+ * cutoff is a percentage of a reported quota, and nothing reports one for a
+ * string-delivered subscription until phase 6 builds its quota reader — so the
+ * control would set a number that can never fire. Shipping it disabled or inert
+ * would be the dishonesty req 10 refuses for the usage indicator, one surface
+ * over.
+ */
+function CredentialSelectionModeControl({
+  service,
+  billingMode,
+}: {
+  service: ServiceDef;
+  billingMode: BillingMode;
+}) {
+  const key = credentialModeKey(service.id, billingMode);
+  const stored = useSettingsStore((s) => s.accountSelectionMode[key]);
+  const mode = stored ?? "strict";
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const save = async (next: "strict" | "balanced"): Promise<void> => {
+    if (next === mode) return;
+    const previous = mode;
+    useSettingsStore.getState().setAccountSelectionMode(key, next);
+    setSaving(true);
+    setError("");
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountSelectionMode: { [key]: next } }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      useSettingsStore.getState().setAccountSelectionMode(key, previous);
+      setError("Failed to update the credential order");
+      console.error("[services] credential selection mode save failed:", err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const option = (value: "strict" | "balanced", label: string, hint: string) => (
+    <label className="flex items-start gap-2 text-xs cursor-pointer">
+      <input
+        type="radio"
+        name={`credential-selection-mode-${key}`}
+        checked={mode === value}
+        disabled={saving}
+        onChange={() => void save(value)}
+        aria-label={`${service.name} credential selection: ${label}`}
+        className="mt-0.5 accent-(--color-accent)"
+        data-testid={`credential-selection-mode-${key}-${value}`}
+      />
+      <span>
+        <span className="text-(--color-text-secondary)">{label}</span>
+        <span className="block text-(--color-text-tertiary)">{hint}</span>
+      </span>
+    </label>
+  );
+
+  return (
+    <div className="space-y-2" data-testid={`credential-selection-mode-${key}`}>
+      {option(
+        "strict",
+        "Use in order",
+        "New sessions start on the first credential with quota left. Best when they differ — a bigger plan first, a smaller one as backup.",
+      )}
+      {option(
+        "balanced",
+        "Spread across credentials",
+        "New sessions go to whichever credential has been used least, so quota drains evenly. Best when they are equivalent.",
+      )}
+      {error && (
+        <p className="text-xs text-(--color-text-error)" role="alert">{error}</p>
+      )}
+    </div>
   );
 }
 

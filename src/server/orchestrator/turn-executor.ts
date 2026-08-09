@@ -32,7 +32,10 @@ import { createAgentStderrTail } from "./agent-stderr-tail.js";
 import {
   detectHardExhaustion,
   detectHardExhaustionInTurnText,
+  exhaustionLockoutUntil,
 } from "./ws-handlers/agent-rate-limits.js";
+import { stopsOnCredentialFailure } from "./credential-failure-policy.js";
+import { ProviderRouteUnavailableError } from "./provider-route-preflight.js";
 import { resetRunnerTurnState } from "./session-runner.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
@@ -518,6 +521,26 @@ export async function executeAgentTurn(
   // the listener, so the retry's fresh in-progress turn appends below it rather
   // than colliding with it — the transcript reads as attempt, notice, retry.
   let quotaRetryInProgress = false;
+
+  /**
+   * docs/252 phase 5, req 12 — the gate account benching already had and this
+   * retry did not.
+   *
+   * The retry fires on *detected exhaustion*, from the error object or the
+   * turn's own text, with no idea what the failing turn was billed to. On a
+   * metered key there is nothing to fail over to — `selectRouteForSelection`
+   * resolves the same key again — so the turn would be re-run in full against
+   * the credential that just refused it, repeating every side effect the first
+   * attempt had. Req 12: keys do not fail over; ShipIt stops and says so, which
+   * here means letting the turn retire with the provider's own error.
+   *
+   * Read at the moment of failure rather than captured at turn start: this turn
+   * may have pinned its route during env-prep, which is what puts the billing
+   * mode on the session row in the first place.
+   */
+  const quotaRetryAllowed = (): boolean =>
+    !stopsOnCredentialFailure(deps.listenerDeps.sessionManager.get(sessionId));
+
   const retryOnNextAccount = async (): Promise<void> => {
     console.log(
       `[turn] ${agentId} reported quota exhaustion for ${sessionId}; `
@@ -547,6 +570,87 @@ export async function executeAgentTurn(
     });
   };
 
+  /**
+   * docs/252 phase 5 — the same failover, reached from an adapter-level `error`.
+   *
+   * Codex reports a spent subscription by refusing `turn/start`, and a rejected
+   * JSON-RPC request becomes an `error` rather than the `agent_result` the
+   * branch below watches — so on that path req 14's same-turn failover and
+   * req 7's exhaustion stamp both never fired. Verified by reading
+   * `codex/adapter.ts` (`initializeAndRun(...).catch(err => emit("error"))`)
+   * rather than inferred from Claude's shape.
+   *
+   * Stamping happens here rather than in `agent-listeners`, which only stamps on
+   * `agent_result`: without it the retry would re-select the same spent
+   * credential and the hop would be wasted. It is `markSessionAccountExhausted`
+   * that decides whether the failing route is stampable at all — a metered key
+   * has no window to bench (req 12).
+   *
+   * Synchronous by contract: the listener needs the answer before it starts
+   * tearing the turn down, so the re-dispatch is fired and not awaited.
+   *
+   * **Returning `true` claims a turn nobody else will finish**, which is what
+   * makes both failure modes below load-bearing rather than defensive. The
+   * listener has surrendered its terminal cleanup and the dead process's `done`
+   * stands down on `quotaRetryInProgress`, so if the retry never happens the turn
+   * sits with `running` true, its edits uncommitted and no viewer told anything
+   * — CLAUDE.md's "every terminal path runs the commit", broken by a path that
+   * looks terminal and is not. So: anything that can throw runs BEFORE the claim
+   * and un-claims by returning `false`, and a rejection after the claim runs the
+   * same teardown `recoverAuth` runs on a failed heal. Found by cross-backend
+   * review.
+   */
+  const willRetryOnQuotaError = (err: Error): boolean => {
+    // A turn blocked by the router is not a turn that ran out mid-flight — it is
+    // req 13 already having decided there is nowhere to go. Retrying would loop.
+    if (err instanceof ProviderRouteUnavailableError) return false;
+    if (!quotaRetryAllowed()) return false;
+    const exhausted = detectHardExhaustion(err.message);
+    if (!exhausted) return false;
+    try {
+      deps.listenerDeps.markSessionAccountExhausted?.(sessionId, exhaustionLockoutUntil(exhausted));
+      // Finalize what the first attempt already streamed, BEFORE the retry resets
+      // every per-turn accumulator. The `agent_result` path gets this for free —
+      // `wireAgentListeners` runs its own handler first and has already persisted
+      // and finalized by the time the quota branch is reached — but this gate runs
+      // at the TOP of the listener's error handler, ahead of the persistence it is
+      // standing the listener down from. Without it a retry that fails before
+      // producing output rebuilds history from empty groups and deletes the
+      // transcript the user already saw, which is the hazard `recoverAuth`
+      // documents one recovery over.
+      if (runner) {
+        const firstAttemptMessages = buildTurnMessages(
+          runner.chatMessageGroups,
+          runner.steeredMessages ?? [],
+          runner.recordedCards ?? [],
+          { inProgress: false },
+        );
+        if (firstAttemptMessages.length > 0) {
+          deps.listenerDeps.chatHistoryManager.replaceInProgress(sessionId, firstAttemptMessages);
+          deps.listenerDeps.chatHistoryManager.finalizeInProgress(sessionId);
+        }
+      }
+    } catch (prepErr) {
+      // Nothing has been claimed yet, so the cheapest correct answer is to let
+      // the listener finish the turn exactly as it would have without us.
+      console.error("[turn] quota-retry preparation failed; leaving the turn to the error path:", prepErr);
+      return false;
+    }
+    quotaRetryInProgress = true;
+    // Fire-and-forget: the listener's gate is synchronous, so the re-dispatch
+    // cannot be awaited here.
+    void retryOnNextAccount().catch(async (retryErr: unknown) => {
+      console.error("[turn] quota retry from the error path failed:", retryErr);
+      // The claim is now a lie — run the teardown the listener would have.
+      if (runner) runner.running = false;
+      await postTurnStep("drain", tryDrain);
+      await postTurnStep("commit", runCommitAndPr);
+      await postTurnStep("finished", emitFinishedIfIdle);
+      finishTurn();
+    });
+    return true;
+  };
+
   // Surface the user message. Dispatch emits a `system_user_message` bubble (no
   // client-side optimistic bubble to dedupe against); WS skips the echo.
   if (input.emitUserEcho) {
@@ -574,6 +678,9 @@ export async function executeAgentTurn(
     // `recoverAuth` to heal + re-dispatch. Omitted when this turn can't recover
     // (already a retry, or no healer) so the listener keeps the legacy flow.
     ...(canRecoverAuth ? { willRecoverAuth, recoverAuth } : {}),
+    // docs/252 phase 5 — the adapter-`error` twin of the `agent_result` quota
+    // branch below. Omitted on a retry so one hop stays one hop.
+    ...(input.isQuotaRetry ? {} : { willRetryOnQuotaError }),
     // eslint-disable-next-line no-restricted-syntax -- Claude-only CLI stderr/--resume recovery (docs/155)
     ...(!recoveryRetryUsed && agentId === "claude" ? { recoverMissingConversation } : {}),
     ...(input.permissionMode !== undefined ? { requestedPermissionMode: input.permissionMode } : {}),
@@ -1030,7 +1137,7 @@ export async function executeAgentTurn(
     // structurally invisible. `turnSummary` is this turn's own (it is cleared
     // by `resetRunnerTurnState` at turn start) and is already populated:
     // `wireAgentListeners` runs first and assigns it from `agent_assistant`.
-    if (!input.isQuotaRetry) {
+    if (!input.isQuotaRetry && quotaRetryAllowed()) {
       const exhausted = event.error
         ? detectHardExhaustion(event.error)
         : detectHardExhaustionInTurnText(runner?.turnSummary);

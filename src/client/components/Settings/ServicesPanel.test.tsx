@@ -163,6 +163,33 @@ describe("ServicesPanel", () => {
     });
   });
 
+  // docs/252 phase 5 — phase 2 stored this setting per `(service, mode)` with no
+  // control able to reach it, and it did nothing until failover was real.
+  it("offers the selection mode on a subscription holding several credentials", async () => {
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_1", serviceId: "zai", billingMode: "sub", via: "string", priority: 0, isPrimary: true }),
+      route({ id: "cred_2", serviceId: "zai", billingMode: "sub", via: "string", priority: 1 }),
+    ]);
+    render(<ServicesPanel />);
+    await userEvent.click(screen.getByTestId("credential-selection-mode-zai:sub-balanced"));
+    await waitFor(() => {
+      const put = fetchCalls.find((c) => c.url === "/api/settings");
+      expect(put?.body).toEqual({ accountSelectionMode: { "zai:sub": "balanced" } });
+    });
+  });
+
+  it("offers no selection mode on an API-key card, nor on a lone credential", () => {
+    // req 12 rendered: keys do not fail over, so there is nothing to order and
+    // nothing to spread — and with one credential there is nowhere to go.
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_k", serviceId: "deepseek", billingMode: "key", via: "string" }),
+      route({ id: "cred_1", serviceId: "zai", billingMode: "sub", via: "string" }),
+    ]);
+    render(<ServicesPanel />);
+    expect(screen.queryByTestId("credential-selection-mode-deepseek:key")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("credential-selection-mode-zai:sub")).not.toBeInTheDocument();
+  });
+
   it("offers no ordering where a mode holds one credential", () => {
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "cred_1", serviceId: "deepseek", billingMode: "key", via: "string" }),
