@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { AgentId, CredentialRoute, PermissionMode, FileContextRef, ProviderAccount, SubAgentDefaults } from "../../server/shared/types.js";
+import type { AgentId, CredentialRoute, PermissionMode, FileContextRef, SubAgentDefaults } from "../../server/shared/types.js";
 import {
   getSavedNotifyOnFinish, saveNotifyOnFinish,
   getSavedSoundOnFinish, saveSoundOnFinish,
@@ -257,7 +257,7 @@ interface SettingsState {
    * serialization guard, so a row can only render its own attempt's output.
    */
   claudeAuthDiagnostics: Record<string, ClaudeAuthDiagnostics>;
-  providerAccounts: ProviderAccount[];
+  providerAccounts: CredentialRoute[];
   /**
    * docs/252 phase 2 — every credential the user holds, keyed by
    * `(serviceId, billingMode)` and in selection order within each group.
@@ -353,7 +353,7 @@ interface SettingsState {
     status: "complete" | "failed",
     message?: string,
   ) => void;
-  setProviderAccounts: (accounts: ProviderAccount[]) => void;
+  setProviderAccounts: (accounts: CredentialRoute[]) => void;
   setCredentialRoutes: (routes: CredentialRoute[]) => void;
   /** docs/252 phase 7 — apply a `/api/settings` response's non-turn fields. */
   setNonTurnModel: (

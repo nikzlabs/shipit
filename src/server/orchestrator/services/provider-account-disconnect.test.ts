@@ -75,29 +75,29 @@ describe("deleteProviderAccount", () => {
   });
 
   it("disconnects an account no session is pinned to", () => {
-    const a = accounts.create("claude", "A");
-    accounts.setAccountStatus("claude", a.id, "ready");
+    const a = accounts.create("anthropic", "A");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
 
     const result = deleteProviderAccount(accounts, sessions, registry(), "claude", a.id, {
       credentialsDir: root,
     });
 
     expect(result.switchedSessionIds).toEqual([]);
-    expect(accounts.list("claude")).toEqual([]);
+    expect(accounts.list("anthropic")).toEqual([]);
   });
 
   it("asks for a replacement, naming the usable ones, instead of stranding pinned sessions", () => {
-    const a = accounts.create("claude", "A");
-    const b = accounts.create("claude", "B");
-    accounts.setAccountStatus("claude", a.id, "ready");
-    accounts.setAccountStatus("claude", b.id, "ready");
+    const a = accounts.create("anthropic", "A");
+    const b = accounts.create("anthropic", "B");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
+    accounts.setAccountStatus("anthropic", b.id, "ready");
     pinSession("s1", a.id);
 
     expect(() => deleteProviderAccount(accounts, sessions, registry(), "claude", a.id, {
       credentialsDir: root,
     })).toThrow(new RegExp(`1 session\\(s\\).*${b.id}`));
     // Nothing was deleted — the account is still there to retry against.
-    expect(accounts.list("claude").map((x) => x.id)).toContain(a.id);
+    expect(accounts.list("anthropic").map((x) => x.id)).toContain(a.id);
   });
 
   /**
@@ -107,8 +107,8 @@ describe("deleteProviderAccount", () => {
    * to disconnect another.
    */
   it("disconnects the last account even with sessions pinned to it, reporting them", () => {
-    const a = accounts.create("claude", "A");
-    accounts.setAccountStatus("claude", a.id, "ready");
+    const a = accounts.create("anthropic", "A");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
     pinSession("s1", a.id);
     pinSession("s2", a.id);
 
@@ -116,14 +116,14 @@ describe("deleteProviderAccount", () => {
       credentialsDir: root,
     });
 
-    expect(accounts.list("claude")).toEqual([]);
+    expect(accounts.list("anthropic")).toEqual([]);
     expect(result.switchedSessionIds).toEqual([]);
     expect(result.strandedSessionIds.sort()).toEqual(["s1", "s2"]);
     // The route is left pointing at the gone account rather than rewritten: it
     // reads unusable, which is what makes `failoverPinnedSession` re-route and
     // re-provision the session once another account is connected.
     expect(sessions.get("s1")?.providerRouteId).toBe(a.id);
-    expect(accounts.isRouteUsableForTurn("claude", { kind: "account", id: a.id })).toBe(false);
+    expect(accounts.isRouteUsableForTurn("anthropic", { kind: "account", id: a.id })).toBe(false);
   });
 
   /**
@@ -134,8 +134,8 @@ describe("deleteProviderAccount", () => {
    * go on spending the account. Found by cross-agent review of this change.
    */
   it("takes the account away from the sessions, not just the row", () => {
-    const a = accounts.create("claude", "A");
-    accounts.setAccountStatus("claude", a.id, "ready");
+    const a = accounts.create("anthropic", "A");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
     seedAccount(a.id, "token-a");
     pinSession("s1", a.id);
     seedSessionCredentials("s1", "token-a");
@@ -150,8 +150,8 @@ describe("deleteProviderAccount", () => {
   });
 
   it("keeps the conversation when it revokes the credentials", () => {
-    const a = accounts.create("claude", "A");
-    accounts.setAccountStatus("claude", a.id, "ready");
+    const a = accounts.create("anthropic", "A");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
     pinSession("s1", a.id);
     seedSessionCredentials("s1", "token-a");
     // Claude's resume file — deleting this is what would strand the user
@@ -167,12 +167,12 @@ describe("deleteProviderAccount", () => {
   });
 
   it("disconnects when the only other account is not connected yet", () => {
-    const a = accounts.create("claude", "A");
-    const b = accounts.create("claude", "B");
-    accounts.setAccountStatus("claude", a.id, "ready");
+    const a = accounts.create("anthropic", "A");
+    const b = accounts.create("anthropic", "B");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
     // B exists but never finished signing in, so it is not somewhere a pinned
     // session can be moved to — same dead end as having no second account.
-    accounts.setAccountStatus("claude", b.id, "auth_failed");
+    accounts.setAccountStatus("anthropic", b.id, "auth_failed");
     pinSession("s1", a.id);
 
     const result = deleteProviderAccount(accounts, sessions, registry(), "claude", a.id, {
@@ -180,27 +180,27 @@ describe("deleteProviderAccount", () => {
     });
 
     expect(result.strandedSessionIds).toEqual(["s1"]);
-    expect(accounts.list("claude").map((x) => x.id)).toEqual([b.id]);
+    expect(accounts.list("anthropic").map((x) => x.id)).toEqual([b.id]);
   });
 
   it("still asks rather than stranding when a replacement does exist", () => {
-    const a = accounts.create("claude", "A");
-    const b = accounts.create("claude", "B");
-    accounts.setAccountStatus("claude", a.id, "ready");
-    accounts.setAccountStatus("claude", b.id, "ready");
+    const a = accounts.create("anthropic", "A");
+    const b = accounts.create("anthropic", "B");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
+    accounts.setAccountStatus("anthropic", b.id, "ready");
     pinSession("s1", a.id);
 
     expect(() => deleteProviderAccount(accounts, sessions, registry(), "claude", a.id, {
       credentialsDir: root,
     })).toThrow(/Choose a replacement account/);
-    expect(accounts.list("claude").map((x) => x.id)).toContain(a.id);
+    expect(accounts.list("anthropic").map((x) => x.id)).toContain(a.id);
   });
 
   it("moves every pinned session to the replacement, then disconnects", () => {
-    const a = accounts.create("claude", "A");
-    const b = accounts.create("claude", "B");
-    accounts.setAccountStatus("claude", a.id, "ready");
-    accounts.setAccountStatus("claude", b.id, "ready");
+    const a = accounts.create("anthropic", "A");
+    const b = accounts.create("anthropic", "B");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
+    accounts.setAccountStatus("anthropic", b.id, "ready");
     seedAccount(a.id, "token-a");
     seedAccount(b.id, "token-b");
     pinSession("s1", a.id);
@@ -217,7 +217,7 @@ describe("deleteProviderAccount", () => {
     expect(sessions.get("s1")?.providerRouteId).toBe(b.id);
     expect(sessions.get("s2")?.providerRouteId).toBe(b.id);
     expect(sessions.get("s3")?.providerRouteId).toBe(b.id);
-    expect(accounts.list("claude").map((x) => x.id)).toEqual([b.id]);
+    expect(accounts.list("anthropic").map((x) => x.id)).toEqual([b.id]);
     // The moved sessions really did get B's credentials on disk.
     expect(
       fs.readFileSync(path.join(root, "sessions", "s1", ".claude", ".credentials.json"), "utf-8"),
@@ -225,10 +225,10 @@ describe("deleteProviderAccount", () => {
   });
 
   it("refuses while a pinned session is running, replacement or not", () => {
-    const a = accounts.create("claude", "A");
-    const b = accounts.create("claude", "B");
-    accounts.setAccountStatus("claude", a.id, "ready");
-    accounts.setAccountStatus("claude", b.id, "ready");
+    const a = accounts.create("anthropic", "A");
+    const b = accounts.create("anthropic", "B");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
+    accounts.setAccountStatus("anthropic", b.id, "ready");
     seedAccount(b.id, "token-b");
     pinSession("s1", a.id);
     runningSessionIds.add("s1");
@@ -246,20 +246,20 @@ describe("deleteProviderAccount", () => {
    * Naming the sessions is what makes it a wait rather than a dead end.
    */
   it("still refuses a running pinned session on the last account, naming it", () => {
-    const a = accounts.create("claude", "A");
-    accounts.setAccountStatus("claude", a.id, "ready");
+    const a = accounts.create("anthropic", "A");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
     pinSession("s1", a.id);
     runningSessionIds.add("s1");
 
     expect(() => deleteProviderAccount(accounts, sessions, registry(), "claude", a.id, {
       credentialsDir: root,
     })).toThrow(/"s1".*Let the turn finish or stop it/s);
-    expect(accounts.list("claude").map((x) => x.id)).toEqual([a.id]);
+    expect(accounts.list("anthropic").map((x) => x.id)).toEqual([a.id]);
   });
 
   it("rejects a replacement that is the account being disconnected", () => {
-    const a = accounts.create("claude", "A");
-    accounts.setAccountStatus("claude", a.id, "ready");
+    const a = accounts.create("anthropic", "A");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
     pinSession("s1", a.id);
 
     expect(() => deleteProviderAccount(accounts, sessions, registry(), "claude", a.id, {
@@ -269,8 +269,8 @@ describe("deleteProviderAccount", () => {
   });
 
   it("ignores archived sessions when deciding whether anything is pinned", () => {
-    const a = accounts.create("claude", "A");
-    accounts.setAccountStatus("claude", a.id, "ready");
+    const a = accounts.create("anthropic", "A");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
     pinSession("s1", a.id);
     sessions.archive("s1");
 
@@ -279,6 +279,6 @@ describe("deleteProviderAccount", () => {
     });
 
     expect(result.switchedSessionIds).toEqual([]);
-    expect(accounts.list("claude")).toEqual([]);
+    expect(accounts.list("anthropic")).toEqual([]);
   });
 });

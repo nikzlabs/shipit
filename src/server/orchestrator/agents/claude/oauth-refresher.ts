@@ -32,7 +32,7 @@ import { EventEmitter } from "node:events";
 import { spawn as nodeSpawn } from "node:child_process";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { killChild } from "../../../shared/kill-child.js";
-import type { AgentId, ProviderAccount } from "../../../shared/types.js";
+import type { AgentId } from "../../../shared/types.js";
 import type { ProviderAccountManager } from "../../provider-account-manager.js";
 import type { RuntimeMode } from "../../app-di.js";
 
@@ -241,7 +241,7 @@ export class ClaudeOAuthRefresher extends EventEmitter {
       console.log("[claude-oauth-refresh] skipping start: runtimeMode != containerized");
       return;
     }
-    for (const account of this.deps.providerAccountManager.list("claude")) {
+    for (const account of this.deps.providerAccountManager.list("anthropic")) {
       this.scheduleAccount(account.id);
     }
   }
@@ -280,7 +280,7 @@ export class ClaudeOAuthRefresher extends EventEmitter {
     if (accountId) {
       return [await this.runTickForAccount(accountId)];
     }
-    const accounts = this.deps.providerAccountManager.list("claude");
+    const accounts = this.deps.providerAccountManager.list("anthropic");
     return Promise.all(accounts.map((a) => this.runTickForAccount(a.id)));
   }
 
@@ -319,7 +319,7 @@ export class ClaudeOAuthRefresher extends EventEmitter {
     if (this.deps.runtimeMode !== "containerized") return true;
     const force = opts?.force ?? false;
     if (accountId) return this.ensureFreshOne(accountId, force);
-    const accounts = this.deps.providerAccountManager.list("claude");
+    const accounts = this.deps.providerAccountManager.list("anthropic");
     if (accounts.length === 0) return true;
     const results = await Promise.all(accounts.map((a) => this.ensureFreshOne(a.id, force)));
     return results.every(Boolean);
@@ -860,5 +860,3 @@ export class ClaudeOAuthRefresher extends EventEmitter {
   }
 }
 
-/** Re-export account type for convenience in wiring code. */
-export type { ProviderAccount };

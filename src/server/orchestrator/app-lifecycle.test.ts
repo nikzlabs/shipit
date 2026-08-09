@@ -1111,7 +1111,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-wire-auth-"));
     const credentialStore = new CredentialStore(tmp);
     const providerAccountManager = new ProviderAccountManager({ credentialsDir: tmp, credentialStore });
-    const account = providerAccountManager.create("claude", "Work");
+    const account = providerAccountManager.create("anthropic", "Work");
     const sessionManager = new SessionManager(createTestDatabaseManager());
     const mgr = new FakeAuthManager();
     const events: { event: string; data: Record<string, unknown> }[] = [];
@@ -1137,7 +1137,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     mgr.activeAccountId = account.id;
     mgr.emit("complete");
 
-    expect(providerAccountManager.get("claude", account.id)?.status).toBe("ready");
+    expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("ready");
     const complete = events.find((e) => e.event === "agent_auth_complete");
     expect(complete?.data).toMatchObject({ agentId: "claude", accountId: account.id });
   });
@@ -1166,14 +1166,14 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     mgr.activeAccountId = account.id;
     mgr.emit("complete");
 
-    const second = providerAccountManager.create("claude");
+    const second = providerAccountManager.create("anthropic");
     writeClaudeSignIn(providerAccountManager, second.id, "uuid-1", "dev@example.com");
     mgr.activeAccountId = second.id;
     mgr.emit("complete");
 
     // No "connected" signal for the refused flow, and no second row.
     expect(events.filter((e) => e.event === "agent_auth_complete")).toHaveLength(1);
-    expect(providerAccountManager.list("claude").map((a) => a.id)).toEqual([account.id]);
+    expect(providerAccountManager.list("anthropic").map((a) => a.id)).toEqual([account.id]);
     const failed = events.filter((e) => e.event === "agent_auth_failed").at(-1);
     expect(failed?.data).toMatchObject({ agentId: "claude", accountId: second.id, reason: "duplicate" });
     expect(String(failed?.data.message)).toContain("already connected");
@@ -1184,7 +1184,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     mgr.activeAccountId = account.id;
     mgr.emit("failed", { reason: "error" });
 
-    expect(providerAccountManager.get("claude", account.id)?.status).toBe("auth_failed");
+    expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("auth_failed");
     const failed = events.find((e) => e.event === "agent_auth_failed");
     expect(failed?.data).toMatchObject({ agentId: "claude", accountId: account.id, reason: "error" });
   });
@@ -1239,7 +1239,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
   // branch used to.
   it("a completion with no account scope marks nothing and invents no accountId", () => {
     const { mgr, events, providerAccountManager } = setup();
-    const before = providerAccountManager.list("claude").map((a) => a.id);
+    const before = providerAccountManager.list("anthropic").map((a) => a.id);
     mgr.activeAccountId = null;
 
     mgr.emit("complete");
@@ -1249,8 +1249,8 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     expect(complete?.data.accountId).toBeUndefined();
     // No row invented (the old `else` called migrateDefaultAccounts here) and
     // none flipped to ready off an unattributable completion.
-    expect(providerAccountManager.list("claude").map((a) => a.id)).toEqual(before);
-    expect(providerAccountManager.list("claude").every((a) => a.status !== "ready")).toBe(true);
+    expect(providerAccountManager.list("anthropic").map((a) => a.id)).toEqual(before);
+    expect(providerAccountManager.list("anthropic").every((a) => a.status !== "ready")).toBe(true);
   });
 });
 
@@ -1260,8 +1260,8 @@ describe("markProviderAccountUnauthenticated", () => {
     try {
       const credentialStore = new CredentialStore(tmp);
       const providerAccountManager = new ProviderAccountManager({ credentialsDir: tmp, credentialStore });
-      const account = providerAccountManager.create("claude", "Work");
-      providerAccountManager.setAccountStatus("claude", account.id, "ready");
+      const account = providerAccountManager.create("anthropic", "Work");
+      providerAccountManager.setAccountStatus("anthropic", account.id, "ready");
       let authConfigured = true;
       const refreshAuth = vi.fn(() => { authConfigured = false; });
       const agentRegistry = {
@@ -1292,7 +1292,7 @@ describe("markProviderAccountUnauthenticated", () => {
         credentialStore,
       });
 
-      expect(providerAccountManager.get("claude", account.id)?.status).toBe("auth_failed");
+      expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("auth_failed");
       expect(refreshAuth).toHaveBeenCalledWith("claude");
       expect(events.find((e) => e.event === "provider_accounts")?.data.accounts)
         .toEqual(expect.arrayContaining([expect.objectContaining({ id: account.id, status: "auth_failed" })]));
@@ -1333,8 +1333,8 @@ describe("markProviderAccountReauthenticated", () => {
     try {
       const credentialStore = new CredentialStore(tmp);
       const providerAccountManager = new ProviderAccountManager({ credentialsDir: tmp, credentialStore });
-      const account = providerAccountManager.create("claude", "Work");
-      providerAccountManager.setAccountStatus("claude", account.id, "auth_failed");
+      const account = providerAccountManager.create("anthropic", "Work");
+      providerAccountManager.setAccountStatus("anthropic", account.id, "auth_failed");
       const { agentRegistry, refreshAuth } = buildRegistry(false);
       const events: { event: string; data: Record<string, unknown> }[] = [];
 
@@ -1347,7 +1347,7 @@ describe("markProviderAccountReauthenticated", () => {
         credentialStore,
       });
 
-      expect(providerAccountManager.get("claude", account.id)?.status).toBe("ready");
+      expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("ready");
       expect(refreshAuth).toHaveBeenCalledWith("claude");
       expect(events.find((e) => e.event === "provider_accounts")?.data.accounts)
         .toEqual(expect.arrayContaining([expect.objectContaining({ id: account.id, status: "ready" })]));
@@ -1363,8 +1363,8 @@ describe("markProviderAccountReauthenticated", () => {
     try {
       const credentialStore = new CredentialStore(tmp);
       const providerAccountManager = new ProviderAccountManager({ credentialsDir: tmp, credentialStore });
-      const account = providerAccountManager.create("claude", "Work");
-      providerAccountManager.setAccountStatus("claude", account.id, "ready");
+      const account = providerAccountManager.create("anthropic", "Work");
+      providerAccountManager.setAccountStatus("anthropic", account.id, "ready");
       const { agentRegistry, refreshAuth } = buildRegistry(true);
       const events: { event: string; data: Record<string, unknown> }[] = [];
 

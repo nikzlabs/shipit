@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CredentialStore } from "./credential-store.js";
-import { ProviderAccountManager } from "./provider-account-manager.js";
+import { accountServiceForHarness, ProviderAccountManager } from "./provider-account-manager.js";
 import type { AgentAuthManager, AgentAuthStartOptions, AgentAuthScopeOptions } from "./agent-auth-manager.js";
 import type { AgentId } from "../shared/types.js";
 
@@ -79,10 +79,10 @@ describe("ProviderAccountManager", () => {
     const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
     mgr.migrateDefaultAccounts();
 
-    const account = mgr.getPrimary("claude");
+    const account = mgr.getPrimary("anthropic");
     expect(account).toMatchObject({
       id: "claude-default",
-      provider: "claude",
+      serviceId: "anthropic", billingMode: "sub", via: "account",
       isPrimary: true,
       status: "ready",
     });
@@ -106,8 +106,8 @@ describe("ProviderAccountManager", () => {
     fs.symlinkSync(path.join(accountRoot, ".claude"), path.join(root, ".claude"));
     fs.symlinkSync(path.join(accountRoot, ".claude.json"), path.join(root, ".claude.json"));
     const now = Date.now();
-    store.upsertProviderAccount({
-      id: "claude-default", provider: "claude", label: "Primary Anthropic account",
+    store.upsertCredentialRoute({
+      id: "claude-default", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Primary Anthropic account",
       isPrimary: true, status: "ready", createdAt: now, updatedAt: now,
     });
 
@@ -131,8 +131,8 @@ describe("ProviderAccountManager", () => {
     const now = Date.now();
     // A pre-existing row makes `migrateProviderDefault` bail, so only the alias
     // sweep runs over this directory.
-    store.upsertProviderAccount({
-      id: "acct_other", provider: "codex", label: "Work",
+    store.upsertCredentialRoute({
+      id: "acct_other", serviceId: "openai", billingMode: "sub", via: "account", label: "Work",
       isPrimary: true, status: "ready", createdAt: now, updatedAt: now,
     });
 
@@ -149,8 +149,8 @@ describe("ProviderAccountManager", () => {
       fs.mkdirSync(path.join(elsewhere, "creds"), { recursive: true });
       fs.symlinkSync(path.join(elsewhere, "creds"), path.join(root, ".codex"));
       const now = Date.now();
-      store.upsertProviderAccount({
-        id: "acct_other", provider: "codex", label: "Work",
+      store.upsertCredentialRoute({
+        id: "acct_other", serviceId: "openai", billingMode: "sub", via: "account", label: "Work",
         isPrimary: true, status: "ready", createdAt: now, updatedAt: now,
       });
 
@@ -193,7 +193,7 @@ describe("ProviderAccountManager", () => {
       expect(fs.readFileSync(path.join(root, ".claude.json"), "utf8"))
         .toBe('{"conversation":"live"}');
       // And no phantom account was registered against the untouched dir.
-      expect(mgr.getPrimary("claude")).toBeUndefined();
+      expect(mgr.getPrimary("anthropic")).toBeUndefined();
       expect(fs.existsSync(path.join(root, "provider-accounts", "claude", "claude-default")))
         .toBe(false);
     });
@@ -205,7 +205,7 @@ describe("ProviderAccountManager", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
       mgr.migrateDefaultAccounts();
 
-      expect(mgr.getPrimary("claude")).toBeDefined();
+      expect(mgr.getPrimary("anthropic")).toBeDefined();
       const moved = path.join(
         root, "provider-accounts", "claude", "claude-default", ".claude", ".credentials.json",
       );
@@ -259,8 +259,8 @@ describe("ProviderAccountManager", () => {
       boot();
       const second = boot();
 
-      expect(second.list("claude")).toEqual([]);
-      expect(second.list("codex")).toEqual([]);
+      expect(second.list("anthropic")).toEqual([]);
+      expect(second.list("openai")).toEqual([]);
       expect(second.hasAnyAuthForProvider("claude")).toBe(false);
       expect(second.hasAnyAuthForProvider("codex")).toBe(false);
     });
@@ -279,15 +279,15 @@ describe("ProviderAccountManager", () => {
       fs.writeFileSync(path.join(root, ".claude", ".credentials.json"), '{"accessToken":"live"}');
 
       const first = boot();
-      expect(first.list("claude").map((a) => a.id)).toEqual(["claude-default"]);
+      expect(first.list("anthropic").map((a) => a.id)).toEqual(["claude-default"]);
       // The migrated install keeps its placeholder: `/root/.claude` is an
       // image-level symlink to this path.
       expect(fs.readdirSync(path.join(root, ".claude"))).toEqual([]);
 
-      first.delete("claude", "claude-default");
+      first.delete("anthropic", "claude-default");
       const second = boot();
 
-      expect(second.list("claude")).toEqual([]);
+      expect(second.list("anthropic")).toEqual([]);
     });
 
     // CLI config written through the image-level `/root/.claude.json` symlink is
@@ -295,7 +295,7 @@ describe("ProviderAccountManager", () => {
     it("does not migrate CLI config with no credentials beside it", () => {
       fs.writeFileSync(path.join(root, ".claude.json"), '{"theme":"dark"}');
 
-      expect(boot().list("claude")).toEqual([]);
+      expect(boot().list("anthropic")).toEqual([]);
       // Untouched: it is the CLI's config, and nothing has claimed it.
       expect(fs.existsSync(path.join(root, ".claude.json"))).toBe(true);
     });
@@ -304,8 +304,31 @@ describe("ProviderAccountManager", () => {
       fs.mkdirSync(path.join(root, ".codex"), { recursive: true });
       fs.writeFileSync(path.join(root, ".codex", "auth.json"), "");
 
-      expect(boot().list("codex")).toEqual([]);
+      expect(boot().list("openai")).toEqual([]);
     });
+  });
+
+  /**
+   * planning#342 — the manager's row verbs are keyed by **catalogue service**,
+   * and a harness id is a bare string too, so `list("claude")` compiles.
+   *
+   * Pinned because it is the one transposition the compiler cannot catch, and
+   * because its symptom is silence: an empty list reads as "no accounts
+   * connected", which is a perfectly ordinary state. `accountServiceForHarness`
+   * is the conversion every caller holding an `AgentId` must go through.
+   */
+  it("answers a harness id with nothing — the axis is the service", () => {
+    const now = Date.now();
+    store.upsertCredentialRoute({
+      id: "acct_1",
+      serviceId: "anthropic", billingMode: "sub", via: "account",
+      label: "Work", isPrimary: false, status: "ready", createdAt: now, updatedAt: now,
+    });
+    const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+
+    expect(mgr.list("claude")).toEqual([]);
+    expect(mgr.list(accountServiceForHarness("claude")).map((a) => a.id)).toEqual(["acct_1"]);
+    expect(accountServiceForHarness("codex")).toBe("openai");
   });
 
   it("does not create an account when only reserved env auth exists", () => {
@@ -314,17 +337,17 @@ describe("ProviderAccountManager", () => {
     const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
     mgr.migrateDefaultAccounts();
 
-    expect(mgr.list("claude")).toEqual([]);
+    expect(mgr.list("anthropic")).toEqual([]);
     expect(mgr.hasAnyAuthForProvider("claude")).toBe(true);
-    expect(mgr.selectRouteForTurn("claude")).toEqual({ kind: "reserved", id: "claude-env-oauth" });
+    expect(mgr.selectRouteForTurn("anthropic")).toEqual({ kind: "reserved", id: "claude-env-oauth" });
   });
 
   it("selects the primary stored account before API-key fallbacks", () => {
     process.env.OPENAI_API_KEY = "sk-test";
     const now = Date.now();
-    store.upsertProviderAccount({
+    store.upsertCredentialRoute({
       id: "codex-default",
-      provider: "codex",
+      serviceId: "openai", billingMode: "sub", via: "account",
       label: "Primary ChatGPT account",
       isPrimary: true,
       status: "ready",
@@ -335,23 +358,23 @@ describe("ProviderAccountManager", () => {
     const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
 
     expect(mgr.hasAnyAuthForProvider("codex")).toBe(true);
-    expect(mgr.selectRouteForTurn("codex")).toEqual({ kind: "account", id: "codex-default" });
+    expect(mgr.selectRouteForTurn("openai")).toEqual({ kind: "account", id: "codex-default" });
   });
 
   it("falls back to a healthy secondary account when the primary's auth failed", () => {
     const now = Date.now();
-    store.upsertProviderAccount({
-      id: "acct_primary", provider: "claude", label: "Personal",
+    store.upsertCredentialRoute({
+      id: "acct_primary", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Personal",
       isPrimary: true, status: "auth_failed", createdAt: now, updatedAt: now,
     });
-    store.upsertProviderAccount({
-      id: "acct_secondary", provider: "claude", label: "Work",
+    store.upsertCredentialRoute({
+      id: "acct_secondary", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work",
       isPrimary: false, status: "ready", createdAt: now, updatedAt: now,
     });
 
     const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
 
-    expect(mgr.selectRouteForTurn("claude")).toEqual({ kind: "account", id: "acct_secondary" });
+    expect(mgr.selectRouteForTurn("anthropic")).toEqual({ kind: "account", id: "acct_secondary" });
   });
 
   it("prefers a healthy secondary account over the API-key fallback (docs/150 req 12)", () => {
@@ -359,42 +382,42 @@ describe("ProviderAccountManager", () => {
     // billing just because the *primary* row is broken.
     process.env.ANTHROPIC_API_KEY = "sk-test";
     const now = Date.now();
-    store.upsertProviderAccount({
-      id: "acct_primary", provider: "claude", label: "Personal",
+    store.upsertCredentialRoute({
+      id: "acct_primary", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Personal",
       isPrimary: true, status: "auth_failed", createdAt: now, updatedAt: now,
     });
-    store.upsertProviderAccount({
-      id: "acct_secondary", provider: "claude", label: "Work",
+    store.upsertCredentialRoute({
+      id: "acct_secondary", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work",
       isPrimary: false, status: "ready", createdAt: now, updatedAt: now,
     });
 
     const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
 
-    expect(mgr.selectRouteForTurn("claude")).toEqual({ kind: "account", id: "acct_secondary" });
+    expect(mgr.selectRouteForTurn("anthropic")).toEqual({ kind: "account", id: "acct_secondary" });
   });
 
   it("still falls back to a reserved route when no stored account is usable", () => {
     process.env.ANTHROPIC_API_KEY = "sk-test";
     const now = Date.now();
-    store.upsertProviderAccount({
-      id: "acct_primary", provider: "claude", label: "Personal",
+    store.upsertCredentialRoute({
+      id: "acct_primary", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Personal",
       isPrimary: true, status: "auth_failed", createdAt: now, updatedAt: now,
     });
-    store.upsertProviderAccount({
-      id: "acct_secondary", provider: "claude", label: "Work",
+    store.upsertCredentialRoute({
+      id: "acct_secondary", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work",
       isPrimary: false, status: "unavailable", createdAt: now, updatedAt: now,
     });
 
     const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
 
-    expect(mgr.selectRouteForTurn("claude")).toEqual({ kind: "reserved", id: "claude-api-key" });
+    expect(mgr.selectRouteForTurn("anthropic")).toEqual({ kind: "reserved", id: "claude-api-key" });
   });
 
   it("does not count unavailable or failed stored accounts as configured", () => {
     const now = Date.now();
-    store.upsertProviderAccount({
+    store.upsertCredentialRoute({
       id: "claude-default",
-      provider: "claude",
+      serviceId: "anthropic", billingMode: "sub", via: "account",
       label: "Primary Anthropic account",
       isPrimary: true,
       status: "auth_failed",
@@ -408,32 +431,32 @@ describe("ProviderAccountManager", () => {
 
     process.env.ANTHROPIC_AUTH_TOKEN = "env-token";
     expect(mgr.hasAnyAuthForProvider("claude")).toBe(true);
-    expect(mgr.selectRouteForTurn("claude")).toEqual({ kind: "reserved", id: "claude-env-oauth" });
+    expect(mgr.selectRouteForTurn("anthropic")).toEqual({ kind: "reserved", id: "claude-env-oauth" });
   });
 
   describe("generated account labels", () => {
     it("names the first account after the provider and numbers the rest", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
 
-      expect(mgr.create("claude").label).toBe("Claude");
-      expect(mgr.create("claude").label).toBe("Claude2");
-      expect(mgr.create("claude").label).toBe("Claude3");
+      expect(mgr.create("anthropic").label).toBe("Claude");
+      expect(mgr.create("anthropic").label).toBe("Claude2");
+      expect(mgr.create("anthropic").label).toBe("Claude3");
       // Numbering is per provider — Codex starts over at its own name.
-      expect(mgr.create("codex").label).toBe("Codex");
-      expect(mgr.create("codex").label).toBe("Codex2");
+      expect(mgr.create("openai").label).toBe("Codex");
+      expect(mgr.create("openai").label).toBe("Codex2");
     });
 
     it("skips labels already taken, including user-typed ones", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      const first = mgr.create("claude", "Work");
-      mgr.rename("claude", first.id, "Claude");
+      const first = mgr.create("anthropic", "Work");
+      mgr.rename("anthropic", first.id, "Claude");
 
-      expect(mgr.create("claude").label).toBe("Claude2");
+      expect(mgr.create("anthropic").label).toBe("Claude2");
     });
 
     it("leaves a supplied label alone", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      expect(mgr.create("claude", "Work").label).toBe("Work");
+      expect(mgr.create("anthropic", "Work").label).toBe("Work");
     });
   });
 
@@ -443,16 +466,16 @@ describe("ProviderAccountManager", () => {
       const claude = new FakeAuthManager("claude");
       const codex = new FakeAuthManager("codex");
       mgr.attachAuthManagers(new Map([["claude", claude], ["codex", codex]]));
-      const account = mgr.create("claude", "Work");
+      const account = mgr.create("anthropic", "Work");
       return { mgr, claude, codex, account };
     }
 
     it("startAccountAuth marks the row authenticating and drives the manager with the account credential root", () => {
       const { mgr, claude, account } = setup();
-      const result = mgr.startAccountAuth("claude", account.id);
+      const result = mgr.startAccountAuth("anthropic", account.id);
 
       expect(result.status).toBe("authenticating");
-      expect(mgr.get("claude", account.id)?.status).toBe("authenticating");
+      expect(mgr.get("anthropic", account.id)?.status).toBe("authenticating");
       expect(claude.startCalls).toHaveLength(1);
       expect(claude.startCalls[0]).toEqual({
         accountId: account.id,
@@ -462,23 +485,23 @@ describe("ProviderAccountManager", () => {
 
     it("cancelAccountAuth resets status from the on-disk credential check", () => {
       const { mgr, claude, account } = setup();
-      mgr.startAccountAuth("claude", account.id);
+      mgr.startAccountAuth("anthropic", account.id);
 
       claude.configured = false;
-      expect(mgr.cancelAccountAuth("claude", account.id).status).toBe("unavailable");
+      expect(mgr.cancelAccountAuth("anthropic", account.id).status).toBe("unavailable");
       expect(claude.cancelCalls).toBe(1);
 
-      mgr.startAccountAuth("claude", account.id);
+      mgr.startAccountAuth("anthropic", account.id);
       claude.configured = true;
-      expect(mgr.cancelAccountAuth("claude", account.id).status).toBe("ready");
+      expect(mgr.cancelAccountAuth("anthropic", account.id).status).toBe("ready");
     });
 
     it("submitAccountCode delegates to the manager's submitCode", () => {
       const { mgr, claude, account } = setup();
       // The code only means anything against a live challenge, so the flow has
       // to be running — submitting into nothing is its own case below.
-      mgr.startAccountAuth("claude", account.id);
-      mgr.submitAccountCode("claude", account.id, "abc-123");
+      mgr.startAccountAuth("anthropic", account.id);
+      mgr.submitAccountCode("anthropic", account.id, "abc-123");
       expect(claude.codeCalls).toEqual(["abc-123"]);
     });
 
@@ -487,42 +510,42 @@ describe("ProviderAccountManager", () => {
     describe("two accounts of the same provider signing in at once", () => {
       it("refuses a second sign-in while another account owns the flow", () => {
         const { mgr, claude, account } = setup();
-        const second = mgr.create("claude", "Work");
-        mgr.startAccountAuth("claude", account.id);
+        const second = mgr.create("anthropic", "Work");
+        mgr.startAccountAuth("anthropic", account.id);
 
-        expect(() => mgr.startAccountAuth("claude", second.id)).toThrow(/already signing in/i);
+        expect(() => mgr.startAccountAuth("anthropic", second.id)).toThrow(/already signing in/i);
         // The refusal must leave BOTH rows honest: the first still owns the
         // live flow, and the second was never moved to `authenticating`.
         expect(claude.getActiveAccountId()).toBe(account.id);
-        expect(mgr.get("claude", second.id)?.status).not.toBe("authenticating");
+        expect(mgr.get("anthropic", second.id)?.status).not.toBe("authenticating");
         expect(claude.startCalls).toHaveLength(1);
       });
 
       it("re-starting the SAME account's sign-in is allowed (retry on its own row)", () => {
         const { mgr, claude, account } = setup();
-        mgr.startAccountAuth("claude", account.id);
-        expect(() => mgr.startAccountAuth("claude", account.id)).not.toThrow();
+        mgr.startAccountAuth("anthropic", account.id);
+        expect(() => mgr.startAccountAuth("anthropic", account.id)).not.toThrow();
         expect(claude.startCalls).toHaveLength(2);
       });
 
       it("cancelling one row does not kill another row's in-flight sign-in", () => {
         const { mgr, claude, account } = setup();
-        const second = mgr.create("claude", "Work");
-        mgr.startAccountAuth("claude", account.id);
+        const second = mgr.create("anthropic", "Work");
+        mgr.startAccountAuth("anthropic", account.id);
 
-        mgr.cancelAccountAuth("claude", second.id);
+        mgr.cancelAccountAuth("anthropic", second.id);
 
         // The live flow survives — previously this cancelled it while only
         // resetting `second`, stranding the first row on `authenticating`.
         expect(claude.cancelCalls).toBe(0);
         expect(claude.getActiveAccountId()).toBe(account.id);
-        expect(mgr.get("claude", account.id)?.status).toBe("authenticating");
+        expect(mgr.get("anthropic", account.id)?.status).toBe("authenticating");
       });
 
       it("cancelling the owning row does kill the flow", () => {
         const { mgr, claude, account } = setup();
-        mgr.startAccountAuth("claude", account.id);
-        mgr.cancelAccountAuth("claude", account.id);
+        mgr.startAccountAuth("anthropic", account.id);
+        mgr.cancelAccountAuth("anthropic", account.id);
         expect(claude.cancelCalls).toBe(1);
         expect(claude.getActiveAccountId()).toBeNull();
       });
@@ -533,24 +556,24 @@ describe("ProviderAccountManager", () => {
       // sign-in for the provider.
       it("deleting the row that owns the flow releases the provider", () => {
         const { mgr, claude, account } = setup();
-        mgr.startAccountAuth("claude", account.id);
+        mgr.startAccountAuth("anthropic", account.id);
         expect(claude.getActiveAccountId()).toBe(account.id);
 
-        mgr.delete("claude", account.id);
+        mgr.delete("anthropic", account.id);
 
         expect(claude.cancelCalls).toBe(1);
         expect(claude.getActiveAccountId()).toBeNull();
         // And a fresh account can sign in rather than hitting a phantom owner.
-        const replacement = mgr.create("claude", "Replacement");
-        expect(() => mgr.startAccountAuth("claude", replacement.id)).not.toThrow();
+        const replacement = mgr.create("anthropic", "Replacement");
+        expect(() => mgr.startAccountAuth("anthropic", replacement.id)).not.toThrow();
       });
 
       it("deleting an unrelated row leaves the in-flight sign-in alone", () => {
         const { mgr, claude, account } = setup();
-        const second = mgr.create("claude", "Work");
-        mgr.startAccountAuth("claude", account.id);
+        const second = mgr.create("anthropic", "Work");
+        mgr.startAccountAuth("anthropic", account.id);
 
-        mgr.delete("claude", second.id);
+        mgr.delete("anthropic", second.id);
 
         expect(claude.cancelCalls).toBe(0);
         expect(claude.getActiveAccountId()).toBe(account.id);
@@ -562,47 +585,47 @@ describe("ProviderAccountManager", () => {
         const { mgr, claude, account } = setup();
         claude.startShouldThrow = new Error("spawn ENOENT");
 
-        expect(() => mgr.startAccountAuth("claude", account.id)).toThrow(/spawn ENOENT/);
+        expect(() => mgr.startAccountAuth("anthropic", account.id)).toThrow(/spawn ENOENT/);
 
-        expect(mgr.get("claude", account.id)?.status).toBe("unavailable");
+        expect(mgr.get("anthropic", account.id)?.status).toBe("unavailable");
         // ...and the provider is still usable by anyone else.
-        const second = mgr.create("claude", "Work");
+        const second = mgr.create("anthropic", "Work");
         claude.startShouldThrow = null;
-        expect(() => mgr.startAccountAuth("claude", second.id)).not.toThrow();
+        expect(() => mgr.startAccountAuth("anthropic", second.id)).not.toThrow();
       });
 
       it("refuses a pasted code when no sign-in is running at all", () => {
         const { mgr, claude, account } = setup();
         // Timed out, cancelled, or lost to a restart. Previously the manager
         // logged and dropped it while the endpoint answered 200.
-        expect(() => mgr.submitAccountCode("claude", account.id, "abc-123")).toThrow(/no longer running/i);
+        expect(() => mgr.submitAccountCode("anthropic", account.id, "abc-123")).toThrow(/no longer running/i);
         expect(claude.codeCalls).toEqual([]);
       });
 
       it("refuses a code pasted on a row that does not own the flow", () => {
         const { mgr, claude, account } = setup();
-        const second = mgr.create("claude", "Work");
-        mgr.startAccountAuth("claude", account.id);
+        const second = mgr.create("anthropic", "Work");
+        mgr.startAccountAuth("anthropic", account.id);
 
         // The code belongs to the challenge that issued it; submitting it here
         // would authenticate the wrong account.
-        expect(() => mgr.submitAccountCode("claude", second.id, "abc-123")).toThrow(/already signing in/i);
+        expect(() => mgr.submitAccountCode("anthropic", second.id, "abc-123")).toThrow(/already signing in/i);
         expect(claude.codeCalls).toEqual([]);
       });
     });
 
     it("submitAccountCode throws when the provider flow has no code step", () => {
       const { mgr, codex, account } = setup();
-      const codexAccount = mgr.create("codex", "Personal");
+      const codexAccount = mgr.create("openai", "Personal");
       (codex as { submitCode?: unknown }).submitCode = undefined;
-      expect(() => mgr.submitAccountCode("codex", codexAccount.id, "x")).toThrow(/no code-submission step/i);
+      expect(() => mgr.submitAccountCode("openai", codexAccount.id, "x")).toThrow(/no code-submission step/i);
       expect(account).toBeDefined();
     });
 
     it("signOutAccount removes the account credentials and marks the row unavailable", () => {
       const { mgr, claude, account } = setup();
-      mgr.setAccountStatus("claude", account.id, "ready");
-      const result = mgr.signOutAccount("claude", account.id);
+      mgr.setAccountStatus("anthropic", account.id, "ready");
+      const result = mgr.signOutAccount("anthropic", account.id);
       expect(result.status).toBe("unavailable");
       expect(claude.signOutCalls[0]).toEqual({
         credentialDir: mgr.resolveCredentialRoot("claude", account.id),
@@ -618,7 +641,7 @@ describe("ProviderAccountManager", () => {
      */
     it("signOutProvider erases every account's credentials, not just the migrated default", () => {
       const { mgr, claude, account } = setup();
-      const second = mgr.create("claude", "Work");
+      const second = mgr.create("anthropic", "Work");
       for (const id of [account.id, second.id]) {
         const dir = path.join(mgr.resolveCredentialRoot("claude", id), ".claude");
         fs.mkdirSync(dir, { recursive: true });
@@ -627,7 +650,7 @@ describe("ProviderAccountManager", () => {
 
       mgr.signOutProvider("claude");
 
-      expect(mgr.list("claude")).toEqual([]);
+      expect(mgr.list("anthropic")).toEqual([]);
       for (const id of [account.id, second.id]) {
         expect(fs.existsSync(mgr.resolveCredentialRoot("claude", id))).toBe(false);
       }
@@ -637,7 +660,7 @@ describe("ProviderAccountManager", () => {
 
     it("signOutProvider ends an in-flight login on an account it is deleting", () => {
       const { mgr, claude, account } = setup();
-      mgr.startAccountAuth("claude", account.id);
+      mgr.startAccountAuth("anthropic", account.id);
       expect(claude.getActiveAccountId()).toBe(account.id);
 
       mgr.signOutProvider("claude");
@@ -647,8 +670,8 @@ describe("ProviderAccountManager", () => {
 
     it("scoped-auth methods throw a clear error when no auth managers are wired", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      const account = mgr.create("claude");
-      expect(() => mgr.startAccountAuth("claude", account.id)).toThrow(/no auth manager wired/i);
+      const account = mgr.create("anthropic");
+      expect(() => mgr.startAccountAuth("anthropic", account.id)).toThrow(/no auth manager wired/i);
     });
   });
 
@@ -661,60 +684,60 @@ describe("ProviderAccountManager", () => {
   describe("markAccountExhausted (docs/150 req 7)", () => {
     it("benches the account so the router stops choosing it", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      const a = mgr.create("claude", "A");
-      const b = mgr.create("claude", "B");
-      mgr.setAccountStatus("claude", a.id, "ready");
-      mgr.setAccountStatus("claude", b.id, "ready");
+      const a = mgr.create("anthropic", "A");
+      const b = mgr.create("anthropic", "B");
+      mgr.setAccountStatus("anthropic", a.id, "ready");
+      mgr.setAccountStatus("anthropic", b.id, "ready");
       // No quota snapshot at all — the stamp is the only signal there is.
-      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: a.id } });
+      expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a.id } });
 
       const until = Date.now() + 3_600_000;
-      mgr.markAccountExhausted("claude", a.id, until);
+      mgr.markAccountExhausted("anthropic", a.id, until);
 
-      expect(mgr.isRouteUsableForTurn("claude", { kind: "account", id: a.id })).toBe(false);
-      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: b.id } });
+      expect(mgr.isRouteUsableForTurn("anthropic", { kind: "account", id: a.id })).toBe(false);
+      expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: b.id } });
     });
 
     it("persists across manager instances (a restart must not un-bench it)", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      const a = mgr.create("claude", "A");
-      mgr.setAccountStatus("claude", a.id, "ready");
+      const a = mgr.create("anthropic", "A");
+      mgr.setAccountStatus("anthropic", a.id, "ready");
       const until = Date.now() + 3_600_000;
-      mgr.markAccountExhausted("claude", a.id, until);
+      mgr.markAccountExhausted("anthropic", a.id, until);
 
       const reloaded = new ProviderAccountManager({
         credentialsDir: root,
         credentialStore: new CredentialStore(root),
       });
-      expect(reloaded.isRouteUsableForTurn("claude", { kind: "account", id: a.id })).toBe(false);
+      expect(reloaded.isRouteUsableForTurn("anthropic", { kind: "account", id: a.id })).toBe(false);
     });
 
     it("expires on its own, so a lockout can never outlive its reset", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      const a = mgr.create("claude", "A");
-      mgr.setAccountStatus("claude", a.id, "ready");
-      mgr.markAccountExhausted("claude", a.id, Date.now() - 1_000);
+      const a = mgr.create("anthropic", "A");
+      mgr.setAccountStatus("anthropic", a.id, "ready");
+      mgr.markAccountExhausted("anthropic", a.id, Date.now() - 1_000);
 
-      expect(mgr.isRouteUsableForTurn("claude", { kind: "account", id: a.id })).toBe(true);
+      expect(mgr.isRouteUsableForTurn("anthropic", { kind: "account", id: a.id })).toBe(true);
     });
 
     // A later failure carrying a vaguer reset must not shorten a lockout the
     // provider already told us the true end of.
     it("only ever extends an existing lockout", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      const a = mgr.create("claude", "A");
-      mgr.setAccountStatus("claude", a.id, "ready");
+      const a = mgr.create("anthropic", "A");
+      mgr.setAccountStatus("anthropic", a.id, "ready");
       const far = Date.now() + 7_200_000;
-      mgr.markAccountExhausted("claude", a.id, far);
-      mgr.markAccountExhausted("claude", a.id, Date.now() + 60_000);
+      mgr.markAccountExhausted("anthropic", a.id, far);
+      mgr.markAccountExhausted("anthropic", a.id, Date.now() + 60_000);
 
-      expect(mgr.get("claude", a.id)?.exhaustedUntil).toBe(far);
+      expect(mgr.get("anthropic", a.id)?.exhaustedUntil).toBe(far);
     });
 
     it("ignores an unknown account rather than inventing a row", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      expect(mgr.markAccountExhausted("claude", "acct_nope", Date.now() + 1000)).toBeNull();
-      expect(mgr.list("claude")).toEqual([]);
+      expect(mgr.markAccountExhausted("anthropic", "acct_nope", Date.now() + 1000)).toBeNull();
+      expect(mgr.list("anthropic")).toEqual([]);
     });
   });
 
@@ -727,8 +750,8 @@ describe("ProviderAccountManager", () => {
     function threeReady(): { mgr: ProviderAccountManager; ids: string[] } {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
       const ids = ["A", "B", "C"].map((label) => {
-        const account = mgr.create("claude", label);
-        mgr.setAccountStatus("claude", account.id, "ready");
+        const account = mgr.create("anthropic", label);
+        mgr.setAccountStatus("anthropic", account.id, "ready");
         return account.id;
       });
       return { mgr, ids };
@@ -736,10 +759,10 @@ describe("ProviderAccountManager", () => {
 
     it("selects in the user's order, not creation order", () => {
       const { mgr, ids } = threeReady();
-      mgr.reorder("claude", [ids[2]!, ids[0]!, ids[1]!]);
+      mgr.reorder("anthropic", [ids[2]!, ids[0]!, ids[1]!]);
 
-      expect(mgr.accountsInSelectionOrder("claude").map((a) => a.id)).toEqual([ids[2], ids[0], ids[1]]);
-      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: ids[2] } });
+      expect(mgr.accountsInSelectionOrder("anthropic").map((a) => a.id)).toEqual([ids[2], ids[0], ids[1]]);
+      expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: ids[2] } });
     });
 
     // The bug the reorder buttons actually had: `reorder` wrote `priority`
@@ -752,63 +775,63 @@ describe("ProviderAccountManager", () => {
     // was the one accessor that was always right.
     it("exposes the user's order through list(), which is what the client renders", () => {
       const { mgr, ids } = threeReady();
-      mgr.reorder("claude", [ids[2]!, ids[0]!, ids[1]!]);
+      mgr.reorder("anthropic", [ids[2]!, ids[0]!, ids[1]!]);
 
-      expect(mgr.list("claude").map((a) => a.id)).toEqual([ids[2], ids[0], ids[1]]);
+      expect(mgr.list("anthropic").map((a) => a.id)).toEqual([ids[2], ids[0], ids[1]]);
       // And through the all-providers form the SSE broadcast uses.
-      expect(mgr.list().filter((a) => a.provider === "claude").map((a) => a.id))
+      expect(mgr.list().filter((a) => a.serviceId === "anthropic").map((a) => a.id))
         .toEqual([ids[2], ids[0], ids[1]]);
     });
 
     it("survives a restart", () => {
       const { mgr, ids } = threeReady();
-      mgr.reorder("claude", [ids[1]!, ids[2]!, ids[0]!]);
+      mgr.reorder("anthropic", [ids[1]!, ids[2]!, ids[0]!]);
 
       const reloaded = new ProviderAccountManager({
         credentialsDir: root,
         credentialStore: new CredentialStore(root),
       });
-      expect(reloaded.accountsInSelectionOrder("claude").map((a) => a.id)).toEqual([ids[1], ids[2], ids[0]]);
+      expect(reloaded.accountsInSelectionOrder("anthropic").map((a) => a.id)).toEqual([ids[1], ids[2], ids[0]]);
     });
 
     // Otherwise connecting an account would silently change which subscription
     // existing work runs on.
     it("appends a newly connected account rather than inserting it", () => {
       const { mgr, ids } = threeReady();
-      mgr.reorder("claude", [ids[2]!, ids[0]!, ids[1]!]);
-      const fresh = mgr.create("claude", "D");
-      mgr.setAccountStatus("claude", fresh.id, "ready");
+      mgr.reorder("anthropic", [ids[2]!, ids[0]!, ids[1]!]);
+      const fresh = mgr.create("anthropic", "D");
+      mgr.setAccountStatus("anthropic", fresh.id, "ready");
 
-      expect(mgr.accountsInSelectionOrder("claude").map((a) => a.id)).toEqual([ids[2], ids[0], ids[1], fresh.id]);
-      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: ids[2] } });
+      expect(mgr.accountsInSelectionOrder("anthropic").map((a) => a.id)).toEqual([ids[2], ids[0], ids[1], fresh.id]);
+      expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: ids[2] } });
     });
 
     it("keeps isPrimary in step with position 0 so the two cannot disagree", () => {
       const { mgr, ids } = threeReady();
-      mgr.reorder("claude", [ids[1]!, ids[0]!, ids[2]!]);
+      mgr.reorder("anthropic", [ids[1]!, ids[0]!, ids[2]!]);
 
-      expect(mgr.get("claude", ids[1]!)?.isPrimary).toBe(true);
-      expect(mgr.get("claude", ids[0]!)?.isPrimary).toBe(false);
-      expect(mgr.getPrimary("claude")?.id).toBe(ids[1]);
+      expect(mgr.get("anthropic", ids[1]!)?.isPrimary).toBe(true);
+      expect(mgr.get("anthropic", ids[0]!)?.isPrimary).toBe(false);
+      expect(mgr.getPrimary("anthropic")?.id).toBe(ids[1]);
     });
 
     it("promotes to the front via makePrimary without disturbing the rest", () => {
       const { mgr, ids } = threeReady();
-      mgr.reorder("claude", [ids[0]!, ids[1]!, ids[2]!]);
-      mgr.makePrimary("claude", ids[2]!);
+      mgr.reorder("anthropic", [ids[0]!, ids[1]!, ids[2]!]);
+      mgr.makePrimary("anthropic", ids[2]!);
 
-      expect(mgr.accountsInSelectionOrder("claude").map((a) => a.id)).toEqual([ids[2], ids[0], ids[1]]);
+      expect(mgr.accountsInSelectionOrder("anthropic").map((a) => a.id)).toEqual([ids[2], ids[0], ids[1]]);
     });
 
     // A stale client — one whose list predates an account added in another tab
     // — must fail loudly rather than quietly demoting the account it never saw.
     it("rejects a partial, duplicated, or foreign order", () => {
       const { mgr, ids } = threeReady();
-      expect(() => mgr.reorder("claude", [ids[0]!, ids[1]!])).toThrow(/exactly once/);
-      expect(() => mgr.reorder("claude", [ids[0]!, ids[0]!, ids[1]!])).toThrow(/duplicates/);
-      expect(() => mgr.reorder("claude", [ids[0]!, ids[1]!, "acct_nope"])).toThrow(/exactly once/);
+      expect(() => mgr.reorder("anthropic", [ids[0]!, ids[1]!])).toThrow(/exactly once/);
+      expect(() => mgr.reorder("anthropic", [ids[0]!, ids[0]!, ids[1]!])).toThrow(/duplicates/);
+      expect(() => mgr.reorder("anthropic", [ids[0]!, ids[1]!, "acct_nope"])).toThrow(/exactly once/);
       // Nothing was written on any of the rejected calls.
-      expect(mgr.accountsInSelectionOrder("claude").map((a) => a.id)).toEqual(ids);
+      expect(mgr.accountsInSelectionOrder("anthropic").map((a) => a.id)).toEqual(ids);
     });
 
     // Rows written before `priority` existed must keep behaving exactly as they
@@ -817,9 +840,9 @@ describe("ProviderAccountManager", () => {
     // one-time backfill, so the guarantee is asserted against the backfill.
     const stripPriority = (mgr: ProviderAccountManager, ids: string[], primaryId: string): void => {
       for (const id of ids) {
-        const account = mgr.get("claude", id)!;
+        const account = mgr.get("anthropic", id)!;
         const { priority: _dropped, ...legacy } = account;
-        store.upsertProviderAccount({ ...legacy, isPrimary: id === primaryId });
+        store.upsertCredentialRoute({ ...legacy, isPrimary: id === primaryId });
       }
     };
 
@@ -830,47 +853,49 @@ describe("ProviderAccountManager", () => {
       mgr.backfillPriority();
 
       // Same order the old primary-then-stored-order rule produced.
-      expect(mgr.list("claude").map((a) => a.id)).toEqual([ids[1], ids[0], ids[2]]);
-      expect(mgr.list("claude").map((a) => a.priority)).toEqual([0, 1, 2]);
+      expect(mgr.list("anthropic").map((a) => a.id)).toEqual([ids[1], ids[0], ids[2]]);
+      expect(mgr.list("anthropic").map((a) => a.priority)).toEqual([0, 1, 2]);
       // And it is now recorded, so the legacy rule is never needed again.
-      expect(store.listProviderAccounts("claude").every((a) => typeof a.priority === "number")).toBe(true);
+      expect(
+        store.listCredentialRoutes("anthropic", "sub").every((a) => typeof a.priority === "number"),
+      ).toBe(true);
     });
 
     it("backfill is idempotent and does not disturb an explicit order", () => {
       const { mgr, ids } = threeReady();
-      mgr.reorder("claude", [ids[2]!, ids[0]!, ids[1]!]);
+      mgr.reorder("anthropic", [ids[2]!, ids[0]!, ids[1]!]);
 
       mgr.backfillPriority();
       mgr.backfillPriority();
 
-      expect(mgr.list("claude").map((a) => a.id)).toEqual([ids[2], ids[0], ids[1]]);
+      expect(mgr.list("anthropic").map((a) => a.id)).toEqual([ids[2], ids[0], ids[1]]);
     });
 
     // req 19 — one fact, one field. `isPrimary` is position 0, always.
     it("derives isPrimary from position rather than the stored flag", () => {
       const { mgr, ids } = threeReady();
       // Poison the stored flag: claim the LAST row is primary.
-      const last = mgr.get("claude", ids[2]!)!;
-      store.upsertProviderAccount({ ...last, isPrimary: true });
+      const last = mgr.get("anthropic", ids[2]!)!;
+      store.upsertCredentialRoute({ ...last, isPrimary: true });
 
-      const rows = mgr.list("claude");
+      const rows = mgr.list("anthropic");
       expect(rows.map((a) => a.isPrimary)).toEqual([true, false, false]);
       expect(rows[0]!.id).toBe(ids[0]);
       // Every accessor agrees — a caller must not get a different answer
       // depending on which one it reached for.
-      expect(mgr.get("claude", ids[0]!)?.isPrimary).toBe(true);
-      expect(mgr.get("claude", ids[2]!)?.isPrimary).toBe(false);
-      expect(mgr.getPrimary("claude")?.id).toBe(ids[0]);
+      expect(mgr.get("anthropic", ids[0]!)?.isPrimary).toBe(true);
+      expect(mgr.get("anthropic", ids[2]!)?.isPrimary).toBe(false);
+      expect(mgr.getPrimary("anthropic")?.id).toBe(ids[0]);
     });
 
     it("moves the primary badge with the order", () => {
       const { mgr, ids } = threeReady();
-      expect(mgr.getPrimary("claude")?.id).toBe(ids[0]);
+      expect(mgr.getPrimary("anthropic")?.id).toBe(ids[0]);
 
-      mgr.makePrimary("claude", ids[2]!);
+      mgr.makePrimary("anthropic", ids[2]!);
 
-      expect(mgr.getPrimary("claude")?.id).toBe(ids[2]);
-      expect(mgr.list("claude").map((a) => a.isPrimary)).toEqual([true, false, false]);
+      expect(mgr.getPrimary("anthropic")?.id).toBe(ids[2]);
+      expect(mgr.list("anthropic").map((a) => a.isPrimary)).toEqual([true, false, false]);
     });
   });
 
@@ -896,10 +921,10 @@ describe("ProviderAccountManager", () => {
 
     function twoReadyAccounts(): { a: string; b: string } {
       const seed = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      const a = seed.create("claude", "A");
-      const b = seed.create("claude", "B");
-      seed.setAccountStatus("claude", a.id, "ready");
-      seed.setAccountStatus("claude", b.id, "ready");
+      const a = seed.create("anthropic", "A");
+      const b = seed.create("anthropic", "B");
+      seed.setAccountStatus("anthropic", a.id, "ready");
+      seed.setAccountStatus("anthropic", b.id, "ready");
       return { a: a.id, b: b.id };
     }
 
@@ -911,14 +936,14 @@ describe("ProviderAccountManager", () => {
       const { a, b } = twoReadyAccounts();
       const mgr = mgrWith({ [a]: { session: win(92) }, [b]: { session: win(10) } });
 
-      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: b } });
+      expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: b } });
     });
 
     it("moves new work off an account past the weekly cutoff too (req 4)", () => {
       const { a, b } = twoReadyAccounts();
       const mgr = mgrWith({ [a]: { session: win(10), weekly: win(95) }, [b]: { session: win(10) } });
 
-      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: b } });
+      expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: b } });
     });
 
     // The whole point of the three-tier split. At 92% an account still has 8%
@@ -927,14 +952,14 @@ describe("ProviderAccountManager", () => {
       const { a, b } = twoReadyAccounts();
       const mgr = mgrWith({ [a]: { session: win(92) }, [b]: { session: win(97) } });
 
-      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: a } });
+      expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
     });
 
     it("still reports all_exhausted when accounts are genuinely spent, not merely over cutoff", () => {
       const { a, b } = twoReadyAccounts();
       const mgr = mgrWith({ [a]: { session: win(100) }, [b]: { session: win(100) } });
 
-      expect(mgr.selectAccountForTurn("claude")).toMatchObject({ ok: false, reason: "all_exhausted" });
+      expect(mgr.selectAccountForTurn("anthropic")).toMatchObject({ ok: false, reason: "all_exhausted" });
     });
 
     it("honours a configured cutoff instead of the default", () => {
@@ -942,7 +967,7 @@ describe("ProviderAccountManager", () => {
       store.setFailoverCutoffs("anthropic", "sub", { session: 50 });
       const mgr = mgrWith({ [a]: { session: win(60) }, [b]: { session: win(10) } });
 
-      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: b } });
+      expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: b } });
     });
 
     // Claude reports usedPct only above a warning threshold, so silence must
@@ -951,7 +976,7 @@ describe("ProviderAccountManager", () => {
       const { a } = twoReadyAccounts();
       const mgr = mgrWith({ [a]: { session: win(null) } });
 
-      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: a } });
+      expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
     });
 
     describe("isRouteUsableForTurn", () => {
@@ -959,7 +984,7 @@ describe("ProviderAccountManager", () => {
         const { a, b } = twoReadyAccounts();
         const mgr = mgrWith({ [a]: { session: win(92) }, [b]: { session: win(10) } });
 
-        expect(mgr.isRouteUsableForTurn("claude", { kind: "account", id: a })).toBe(false);
+        expect(mgr.isRouteUsableForTurn("anthropic", { kind: "account", id: a })).toBe(false);
       });
 
       // Without this, `failoverPinnedSession` would hand the session a
@@ -969,15 +994,15 @@ describe("ProviderAccountManager", () => {
         const { a, b } = twoReadyAccounts();
         const mgr = mgrWith({ [a]: { session: win(92) }, [b]: { session: win(97) } });
 
-        expect(mgr.isRouteUsableForTurn("claude", { kind: "account", id: a })).toBe(true);
-        expect(mgr.isRouteUsableForTurn("claude", { kind: "account", id: b })).toBe(true);
+        expect(mgr.isRouteUsableForTurn("anthropic", { kind: "account", id: a })).toBe(true);
+        expect(mgr.isRouteUsableForTurn("anthropic", { kind: "account", id: b })).toBe(true);
       });
 
       it("still reports a genuinely spent account as unusable", () => {
         const { a, b } = twoReadyAccounts();
         const mgr = mgrWith({ [a]: { session: win(100) }, [b]: { session: win(100) } });
 
-        expect(mgr.isRouteUsableForTurn("claude", { kind: "account", id: a })).toBe(false);
+        expect(mgr.isRouteUsableForTurn("anthropic", { kind: "account", id: a })).toBe(false);
       });
     });
 
@@ -989,27 +1014,27 @@ describe("ProviderAccountManager", () => {
         const overCutoff = mgrWith({ [a]: { session: win(92) }, [b]: { session: win(10) } });
         const spent = mgrWith({ [a]: { session: win(100) }, [b]: { session: win(10) } });
 
-        expect(overCutoff.classifyRouteForTurn("claude", { kind: "account", id: a })).toBe("over_cutoff");
-        expect(spent.classifyRouteForTurn("claude", { kind: "account", id: a })).toBe("exhausted");
+        expect(overCutoff.classifyRouteForTurn("anthropic", { kind: "account", id: a })).toBe("over_cutoff");
+        expect(spent.classifyRouteForTurn("anthropic", { kind: "account", id: a })).toBe("exhausted");
       });
 
       it("reports a disconnected or signed-out account as unavailable, not out of quota", () => {
         const { a } = twoReadyAccounts();
         const mgr = mgrWith({});
-        mgr.setAccountStatus("claude", a, "auth_failed");
+        mgr.setAccountStatus("anthropic", a, "auth_failed");
 
-        expect(mgr.classifyRouteForTurn("claude", { kind: "account", id: a })).toBe("unavailable");
-        expect(mgr.classifyRouteForTurn("claude", { kind: "account", id: "acct_gone" })).toBe("unavailable");
+        expect(mgr.classifyRouteForTurn("anthropic", { kind: "account", id: a })).toBe("unavailable");
+        expect(mgr.classifyRouteForTurn("anthropic", { kind: "account", id: "acct_gone" })).toBe("unavailable");
       });
 
       it("agrees with isRouteUsableForTurn — null exactly when usable", () => {
         const { a, b } = twoReadyAccounts();
         const mgr = mgrWith({ [a]: { session: win(10) }, [b]: { session: win(10) } });
 
-        expect(mgr.classifyRouteForTurn("claude", { kind: "account", id: a })).toBeNull();
-        expect(mgr.isRouteUsableForTurn("claude", { kind: "account", id: a })).toBe(true);
+        expect(mgr.classifyRouteForTurn("anthropic", { kind: "account", id: a })).toBeNull();
+        expect(mgr.isRouteUsableForTurn("anthropic", { kind: "account", id: a })).toBe(true);
         // A reserved route has no subscription window to leave (req 12).
-        expect(mgr.classifyRouteForTurn("claude", { kind: "reserved", id: "claude-api-key" })).toBeNull();
+        expect(mgr.classifyRouteForTurn("anthropic", { kind: "reserved", id: "claude-api-key" })).toBeNull();
       });
     });
   });
@@ -1031,17 +1056,17 @@ describe("ProviderAccountManager", () => {
 
     it("skips an exhausted account and picks the next one with quota", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      const a = mgr.create("claude", "A");
-      const b = mgr.create("claude", "B");
-      mgr.setAccountStatus("claude", a.id, READY);
-      mgr.setAccountStatus("claude", b.id, READY);
+      const a = mgr.create("anthropic", "A");
+      const b = mgr.create("anthropic", "B");
+      mgr.setAccountStatus("anthropic", a.id, READY);
+      mgr.setAccountStatus("anthropic", b.id, READY);
 
       const quota = withLimits(root, store, {
         [a.id]: { session: { usedPct: 100, resetAt: new Date(Date.now() + 3_600_000).toISOString() } },
         [b.id]: { session: { usedPct: 20, resetAt: new Date(Date.now() + 3_600_000).toISOString() } },
       });
 
-      expect(quota.selectAccountForTurn("claude")).toEqual({
+      expect(quota.selectAccountForTurn("anthropic")).toEqual({
         ok: true,
         route: { kind: "account", id: b.id },
       });
@@ -1049,10 +1074,10 @@ describe("ProviderAccountManager", () => {
 
     it("reports all_exhausted with the soonest reset when every account is spent (req 13)", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      const a = mgr.create("claude", "A");
-      const b = mgr.create("claude", "B");
-      mgr.setAccountStatus("claude", a.id, READY);
-      mgr.setAccountStatus("claude", b.id, READY);
+      const a = mgr.create("anthropic", "A");
+      const b = mgr.create("anthropic", "B");
+      mgr.setAccountStatus("anthropic", a.id, READY);
+      mgr.setAccountStatus("anthropic", b.id, READY);
 
       const later = new Date(Date.now() + 7_200_000).toISOString();
       const sooner = new Date(Date.now() + 1_800_000).toISOString();
@@ -1061,7 +1086,7 @@ describe("ProviderAccountManager", () => {
         [b.id]: { session: { usedPct: 100, resetAt: sooner } },
       });
 
-      expect(quota.selectAccountForTurn("claude")).toEqual({
+      expect(quota.selectAccountForTurn("anthropic")).toEqual({
         ok: false,
         reason: "all_exhausted",
         earliestResetAt: sooner,
@@ -1071,27 +1096,27 @@ describe("ProviderAccountManager", () => {
     it("never fails over onto metered API billing (req 12)", () => {
       process.env.ANTHROPIC_API_KEY = "sk-ant-test";
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      const a = mgr.create("claude", "A");
-      mgr.setAccountStatus("claude", a.id, READY);
+      const a = mgr.create("anthropic", "A");
+      mgr.setAccountStatus("anthropic", a.id, READY);
       const quota = withLimits(root, store, {
         [a.id]: { session: { usedPct: 100, resetAt: new Date(Date.now() + 3_600_000).toISOString() } },
       });
 
       // The reserved API-key route exists, but an exhausted *subscription* must
       // not silently spend pay-as-you-go money.
-      const selection = quota.selectAccountForTurn("claude");
+      const selection = quota.selectAccountForTurn("anthropic");
       expect(selection.ok).toBe(false);
     });
 
     it("treats unknown quota as usable rather than locking out a fresh account", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      const a = mgr.create("claude", "A");
-      mgr.setAccountStatus("claude", a.id, READY);
+      const a = mgr.create("anthropic", "A");
+      mgr.setAccountStatus("anthropic", a.id, READY);
       // Claude reports no usedPct below its warning threshold; Codex reports
       // nothing until a turn has run.
       const quota = withLimits(root, store, { [a.id]: { session: { usedPct: null, resetAt: "x" } } });
 
-      expect(quota.selectAccountForTurn("claude")).toEqual({
+      expect(quota.selectAccountForTurn("anthropic")).toEqual({
         ok: true,
         route: { kind: "account", id: a.id },
       });
@@ -1099,23 +1124,23 @@ describe("ProviderAccountManager", () => {
 
     it("ignores an exhausted window whose reset has already passed", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      const a = mgr.create("claude", "A");
-      mgr.setAccountStatus("claude", a.id, READY);
+      const a = mgr.create("anthropic", "A");
+      mgr.setAccountStatus("anthropic", a.id, READY);
       const quota = withLimits(root, store, {
         [a.id]: { session: { usedPct: 100, resetAt: new Date(Date.now() - 60_000).toISOString() } },
       });
 
-      expect(quota.selectAccountForTurn("claude").ok).toBe(true);
+      expect(quota.selectAccountForTurn("anthropic").ok).toBe(true);
     });
 
     it("excludes a route that already failed this turn (req 14)", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      const a = mgr.create("claude", "A");
-      const b = mgr.create("claude", "B");
-      mgr.setAccountStatus("claude", a.id, READY);
-      mgr.setAccountStatus("claude", b.id, READY);
+      const a = mgr.create("anthropic", "A");
+      const b = mgr.create("anthropic", "B");
+      mgr.setAccountStatus("anthropic", a.id, READY);
+      mgr.setAccountStatus("anthropic", b.id, READY);
 
-      expect(mgr.selectAccountForTurn("claude", { exclude: [a.id] })).toEqual({
+      expect(mgr.selectAccountForTurn("anthropic", { exclude: [a.id] })).toEqual({
         ok: true,
         route: { kind: "account", id: b.id },
       });
@@ -1125,22 +1150,22 @@ describe("ProviderAccountManager", () => {
 
     it("reports auth_required when nothing is connected", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: false, reason: "auth_required" });
+      expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: false, reason: "auth_required" });
     });
 
     it("keeps a persisted exhaustedUntil out of the running until it lapses (req 7)", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      const a = mgr.create("claude", "A");
-      const b = mgr.create("claude", "B");
-      mgr.setAccountStatus("claude", a.id, READY);
-      mgr.setAccountStatus("claude", b.id, READY);
+      const a = mgr.create("anthropic", "A");
+      const b = mgr.create("anthropic", "B");
+      mgr.setAccountStatus("anthropic", a.id, READY);
+      mgr.setAccountStatus("anthropic", b.id, READY);
       // Hard exhaustion reported mid-turn, before any new snapshot arrives.
-      store.upsertProviderAccount({
-        ...mgr.list("claude").find((x) => x.id === a.id)!,
+      store.upsertCredentialRoute({
+        ...mgr.list("anthropic").find((x) => x.id === a.id)!,
         exhaustedUntil: Date.now() + 3_600_000,
       });
 
-      expect(mgr.selectAccountForTurn("claude")).toEqual({
+      expect(mgr.selectAccountForTurn("anthropic")).toEqual({
         ok: true,
         route: { kind: "account", id: b.id },
       });

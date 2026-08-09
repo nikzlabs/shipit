@@ -49,7 +49,7 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
    */
   const cleanupCredentialRoot = (): string | undefined => {
     try {
-      const route = deps.providerAccountManager?.selectRouteForTurn("claude");
+      const route = deps.providerAccountManager?.selectRouteForTurn("anthropic");
       if (route?.kind !== "account") return undefined;
       return deps.providerAccountManager?.resolveCredentialRoot("claude", route.id);
     } catch {

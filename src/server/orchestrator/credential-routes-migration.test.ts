@@ -73,21 +73,21 @@ describe("providerAccounts → credentialRoutes", () => {
     });
   });
 
-  it("round-trips through the ProviderAccount projection the docs/150 code reads", () => {
+  it("lands an account row as a via:\"account\" credential of its vendor's subscription", () => {
     const store = new CredentialStore(seed({
       providerAccounts: { claude: [account("acct_1", { externalId: "anthropic-xyz" })] },
     }));
-    const [projected] = store.listProviderAccounts("claude");
-    expect(projected).toMatchObject({ id: "acct_1", provider: "claude", externalId: "anthropic-xyz" });
-    expect(store.listProviderAccounts("codex")).toEqual([]);
+    const [migrated] = store.listCredentialRoutes("anthropic", "sub");
+    expect(migrated).toMatchObject({ id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", externalId: "anthropic-xyz" });
+    expect(store.listCredentialRoutes("openai", "sub")).toEqual([]);
   });
 
   it("runs once — a later boot cannot resurrect an account the user disconnected", () => {
     const dir = seed({ providerAccounts: { claude: [account("acct_1")] } });
-    new CredentialStore(dir).deleteProviderAccount("claude", "acct_1");
+    new CredentialStore(dir).deleteCredentialRoute("acct_1");
     // The legacy blob is still on disk (it is the downgrade path) and must NOT
     // be re-imported: `credentialRoutes` being present is what marks it done.
-    expect(new CredentialStore(dir).listProviderAccounts("claude")).toEqual([]);
+    expect(new CredentialStore(dir).listCredentialRoutes("anthropic", "sub")).toEqual([]);
   });
 });
 

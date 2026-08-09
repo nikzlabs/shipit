@@ -601,10 +601,10 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
         payload: { provider: "claude", label: "Work Anthropic" },
       });
       expect(created.statusCode).toBe(200);
-      const createdBody = created.json() as { account: { id: string; label: string; isPrimary: boolean }; accounts: { provider: string }[] };
+      const createdBody = created.json() as { account: { id: string; label: string; isPrimary: boolean }; accounts: { serviceId: string }[] };
       expect(createdBody.account.label).toBe("Work Anthropic");
       expect(createdBody.account.isPrimary).toBe(true);
-      expect(createdBody.accounts.filter((account) => account.provider === "claude")).toHaveLength(1);
+      expect(createdBody.accounts.filter((account) => account.serviceId === "anthropic")).toHaveLength(1);
 
       const accountId = createdBody.account.id;
       const renamed = await app.inject({
@@ -636,8 +636,8 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
         url: `/api/provider-accounts/claude/${accountId}`,
       });
       expect(deleted.statusCode).toBe(200);
-      expect((deleted.json() as { accounts: { provider: string; id: string }[] }).accounts
-        .filter((account) => account.provider === "claude")
+      expect((deleted.json() as { accounts: { serviceId: string; id: string }[] }).accounts
+        .filter((account) => account.serviceId === "anthropic")
         .map((account) => account.id)).toEqual([secondId]);
     });
 
@@ -715,8 +715,8 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       const c = await mk("Account C");
 
       const claudeIds = (payload: unknown): string[] =>
-        (payload as { accounts: { id: string; provider: string }[] }).accounts
-          .filter((row) => row.provider === "claude")
+        (payload as { accounts: { id: string; serviceId: string }[] }).accounts
+          .filter((row) => row.serviceId === "anthropic")
           .map((row) => row.id);
 
       // Creation order to start with.
@@ -930,8 +930,8 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     // `services/provider-signout.test.ts`.
     it("still signs out with an idle pinned session, revoking its copy and leaving it to re-route", async () => {
       const now = Date.now();
-      credentialStore.upsertProviderAccount({
-        id: "acct_gone", provider: "claude", label: "Gone", isPrimary: true,
+      credentialStore.upsertCredentialRoute({
+        id: "acct_gone", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Gone", isPrimary: true,
         priority: 0, status: "ready", createdAt: now, updatedAt: now,
       });
       await createSession("signout-2", "Idle pinned session");
@@ -960,8 +960,8 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     it("erases the on-disk credentials of every connected account, not just the first", async () => {
       const now = Date.now();
       const accountDirs = ["claude-default", "acct_work"].map((id, index) => {
-        credentialStore.upsertProviderAccount({
-          id, provider: "claude", label: id, isPrimary: index === 0,
+        credentialStore.upsertCredentialRoute({
+          id, serviceId: "anthropic", billingMode: "sub", via: "account", label: id, isPrimary: index === 0,
           priority: index, status: "ready", createdAt: now, updatedAt: now,
         });
         const dir = path.join(tmpDir, "provider-accounts", "claude", id, ".claude");
@@ -972,7 +972,7 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
 
       expect((await app.inject({ method: "DELETE", url: "/api/auth/api-key" })).statusCode).toBe(200);
 
-      expect(credentialStore.listProviderAccounts("claude")).toEqual([]);
+      expect(credentialStore.listCredentialRoutes("anthropic", "sub")).toEqual([]);
       for (const dir of accountDirs) {
         expect(fs.existsSync(dir)).toBe(false);
       }

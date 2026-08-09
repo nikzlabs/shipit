@@ -127,48 +127,48 @@ describe("connect-time identity policy (req 22)", () => {
   }
 
   it("records the external id and adopts the reported email as the label", () => {
-    const account = accounts.create("claude");
+    const account = accounts.create("anthropic");
     expect(account.label).toBe("Claude");
     writeClaudeSignIn(account.id, "uuid-1", "dev@example.com");
 
     expect(refuseIfAlreadyConnected("claude", account.id, accounts)).toBeNull();
 
-    const stored = accounts.get("claude", account.id);
+    const stored = accounts.get("anthropic", account.id);
     expect(stored?.externalId).toBe("uuid-1");
     expect(stored?.label).toBe("dev@example.com");
   });
 
   it("leaves a user-typed label alone", () => {
-    const account = accounts.create("claude");
-    accounts.rename("claude", account.id, "Work");
+    const account = accounts.create("anthropic");
+    accounts.rename("anthropic", account.id, "Work");
     writeClaudeSignIn(account.id, "uuid-1", "dev@example.com");
 
     refuseIfAlreadyConnected("claude", account.id, accounts);
 
-    expect(accounts.get("claude", account.id)?.label).toBe("Work");
-    expect(accounts.get("claude", account.id)?.externalId).toBe("uuid-1");
+    expect(accounts.get("anthropic", account.id)?.label).toBe("Work");
+    expect(accounts.get("anthropic", account.id)?.externalId).toBe("uuid-1");
   });
 
   it("degrades to the generated label when the CLI reports no identity", () => {
     // An older CLI, or an env-only route. The connect must still succeed —
     // refusing everything ShipIt cannot identify would make such an install
     // unable to connect any account at all.
-    const account = accounts.create("claude");
+    const account = accounts.create("anthropic");
 
     expect(refuseIfAlreadyConnected("claude", account.id, accounts)).toBeNull();
 
-    const stored = accounts.get("claude", account.id);
+    const stored = accounts.get("anthropic", account.id);
     expect(stored?.label).toBe("Claude");
     expect(stored?.externalId).toBeUndefined();
   });
 
   it("refuses a second connect resolving to an existing external id, and removes the new row", () => {
-    const first = accounts.create("claude");
+    const first = accounts.create("anthropic");
     writeClaudeSignIn(first.id, "uuid-1", "dev@example.com");
     refuseIfAlreadyConnected("claude", first.id, accounts);
-    accounts.setAccountStatus("claude", first.id, "ready");
+    accounts.setAccountStatus("anthropic", first.id, "ready");
 
-    const second = accounts.create("claude");
+    const second = accounts.create("anthropic");
     writeClaudeSignIn(second.id, "uuid-1", "dev@example.com");
 
     const message = refuseIfAlreadyConnected("claude", second.id, accounts);
@@ -176,10 +176,10 @@ describe("connect-time identity policy (req 22)", () => {
     expect(message).toContain("already connected");
     expect(message).toContain("dev@example.com");
     // req 22 — no second row for the same account...
-    expect(accounts.list("claude")).toHaveLength(1);
-    expect(accounts.get("claude", second.id)).toBeUndefined();
+    expect(accounts.list("anthropic")).toHaveLength(1);
+    expect(accounts.get("anthropic", second.id)).toBeUndefined();
     // ...and the existing row is untouched: same id, same status, same label.
-    const kept = accounts.get("claude", first.id);
+    const kept = accounts.get("anthropic", first.id);
     expect(kept?.status).toBe("ready");
     expect(kept?.label).toBe("dev@example.com");
     expect(fs.existsSync(path.join(accounts.resolveCredentialRoot("claude", first.id), ".claude.json"))).toBe(true);
@@ -190,16 +190,16 @@ describe("connect-time identity policy (req 22)", () => {
     // re-connecting is no longer a repair path, so the row's OWN Reconnect
     // action has to keep working. It resolves to the same external id the row
     // already holds, which is a self-match and must not be refused.
-    const account = accounts.create("claude");
+    const account = accounts.create("anthropic");
     writeClaudeSignIn(account.id, "uuid-1", "dev@example.com");
     refuseIfAlreadyConnected("claude", account.id, accounts);
-    accounts.setAccountStatus("claude", account.id, "auth_failed");
+    accounts.setAccountStatus("anthropic", account.id, "auth_failed");
 
     writeClaudeSignIn(account.id, "uuid-1", "dev@example.com");
     expect(refuseIfAlreadyConnected("claude", account.id, accounts)).toBeNull();
 
-    expect(accounts.list("claude")).toHaveLength(1);
-    expect(accounts.get("claude", account.id)?.externalId).toBe("uuid-1");
+    expect(accounts.list("anthropic")).toHaveLength(1);
+    expect(accounts.get("anthropic", account.id)?.externalId).toBe("uuid-1");
   });
 
   it("keeps an established row when a DIFFERENT account is signed into it", () => {
@@ -207,22 +207,22 @@ describe("connect-time identity policy (req 22)", () => {
     // position, a name, and possibly pinned sessions. Deleting it because the
     // user picked the wrong account in the browser would take all of that with
     // it, so the row survives — credential-less and `auth_failed`.
-    const first = accounts.create("claude");
+    const first = accounts.create("anthropic");
     writeClaudeSignIn(first.id, "uuid-1", "first@example.com");
     refuseIfAlreadyConnected("claude", first.id, accounts);
 
-    const second = accounts.create("claude");
+    const second = accounts.create("anthropic");
     writeClaudeSignIn(second.id, "uuid-2", "second@example.com");
     refuseIfAlreadyConnected("claude", second.id, accounts);
-    accounts.setAccountStatus("claude", second.id, "ready");
+    accounts.setAccountStatus("anthropic", second.id, "ready");
 
     // Now the user re-connects the second row but signs in as the FIRST account.
     writeClaudeSignIn(second.id, "uuid-1", "first@example.com");
     const message = refuseIfAlreadyConnected("claude", second.id, accounts);
 
     expect(message).toContain('already connected as "first@example.com"');
-    expect(accounts.list("claude")).toHaveLength(2);
-    const kept = accounts.get("claude", second.id);
+    expect(accounts.list("anthropic")).toHaveLength(2);
+    const kept = accounts.get("anthropic", second.id);
     expect(kept?.status).toBe("auth_failed");
     expect(kept?.externalId).toBe("uuid-2");
     // The credentials that would have made it a working duplicate are gone.

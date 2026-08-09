@@ -5,6 +5,18 @@ issue: planning#58
 
 # 150 — Multiple provider subscriptions and quota failover
 
+> **The type this document is written in no longer exists.** docs/252 replaced
+> `ProviderAccount` with `CredentialRoute` — keyed by `(serviceId, billingMode)`
+> rather than by `provider: AgentId` — and planning#342 deleted the projection
+> that had kept both shapes alive. Read every `ProviderAccount` below as the
+> `via: "account"` rows of a service's `sub` mode, and every `provider: AgentId`
+> key on the router as a `serviceId` (`claude` → `anthropic`, `codex` →
+> `openai`). The **behaviour** this document describes — the fallback order,
+> the cutoffs, benching, failover, req 12's refusal to cross into metered
+> billing — is unchanged and still lives in `provider-account-manager.ts`.
+> `docs/252-custom-models/plan.md` → *Retiring the `ProviderAccount` projection*
+> has the mapping.
+
 ## Every provider-authenticated run (requirement 20)
 
 The account router is an execution invariant, not only a session-turn feature.

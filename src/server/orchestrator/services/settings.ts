@@ -6,10 +6,10 @@
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
-import type { AccountSelectionMode, AgentId, FailoverCutoffs, ProviderAccount, SubAgentDefaultsPatch } from "../../shared/types.js";
+import type { AccountSelectionMode, AgentId, CredentialRoute, FailoverCutoffs, SubAgentDefaultsPatch } from "../../shared/types.js";
 import { credentialModeKey, DEFAULT_FAILOVER_CUTOFF, DEFAULT_SELECTION_MODE, parseCredentialModeKey } from "../../shared/types.js";
 import type { BillingMode } from "../../shared/catalogue/index.js";
-import { allServices, credentialModeForStorageEnv, getMode, getModel, getService } from "../../shared/catalogue/index.js";
+import { allServices, credentialModeForStorageEnv, getMode, getModel, getService, nativeServiceForHarness } from "../../shared/catalogue/index.js";
 import { harnessForNonTurnSelection, resolveNonTurnModel } from "../non-turn-model.js";
 import { listConfiguredCredentials } from "../service-routing.js";
 import { listCredentialRoutes, upsertSingleStringCredential } from "./credential-routes.js";
@@ -211,7 +211,13 @@ export async function getGlobalSettings(
   const agentSystemInstructions = previewAgent
     ? buildAgentSystemInstructions({ agentId: previewAgent.id })
     : "";
-  const providerAccounts = providerAccountManager?.list() ?? credentialStore?.listProviderAccounts() ?? [];
+  // The account-delivered credentials, in selection order. This used to fall
+  // back to a store-level projection when no manager was wired; planning#342
+  // deleted that projection, and the fallback with it. Nothing loses a payload:
+  // `ApiDeps.providerAccountManager` is required, so the only caller that can
+  // omit one is a test seam (`services/misc.ts`), where the honest answer to
+  // "which accounts?" with no router is none.
+  const providerAccounts = providerAccountManager?.list() ?? [];
   const voiceDeliveryMode = credentialStore?.getVoiceDeliveryMode() ?? "native";
   const voiceWebhookConfigured = !!credentialStore?.getVoiceWebhook();
   // docs/150 reqs 4-6 / req 21, re-keyed by docs/252 phase 2 — the routing
@@ -673,7 +679,7 @@ export function clearApiKey(credentialStore: CredentialStore): void {
 
 // ---- Provider account management (docs/150) ----
 
-export function listProviderAccounts(providerAccountManager: ProviderAccountManager): { accounts: ProviderAccount[] } {
+export function listProviderAccounts(providerAccountManager: ProviderAccountManager): { accounts: CredentialRoute[] } {
   return { accounts: providerAccountManager.list() };
 }
 
@@ -681,9 +687,9 @@ export function createProviderAccount(
   providerAccountManager: ProviderAccountManager,
   provider: AgentId,
   label?: string,
-): { account: ProviderAccount; accounts: ProviderAccount[] } {
-  validateProvider(provider);
-  const account = providerAccountManager.create(provider, label);
+): { account: CredentialRoute; accounts: CredentialRoute[] } {
+  const serviceId = requireAccountService(provider);
+  const account = providerAccountManager.create(serviceId, label);
   return { account, accounts: providerAccountManager.list() };
 }
 
@@ -692,11 +698,11 @@ export function renameProviderAccount(
   provider: AgentId,
   accountId: string,
   label: string,
-): { account: ProviderAccount; accounts: ProviderAccount[] } {
-  validateProvider(provider);
+): { account: CredentialRoute; accounts: CredentialRoute[] } {
+  const serviceId = requireAccountService(provider);
   validateAccountId(accountId);
   try {
-    const account = providerAccountManager.rename(provider, accountId, label);
+    const account = providerAccountManager.rename(serviceId, accountId, label);
     return { account, accounts: providerAccountManager.list() };
   } catch (err) {
     throw providerAccountServiceError(err);
@@ -707,11 +713,11 @@ export function makePrimaryProviderAccount(
   providerAccountManager: ProviderAccountManager,
   provider: AgentId,
   accountId: string,
-): { account: ProviderAccount; accounts: ProviderAccount[] } {
-  validateProvider(provider);
+): { account: CredentialRoute; accounts: CredentialRoute[] } {
+  const serviceId = requireAccountService(provider);
   validateAccountId(accountId);
   try {
-    const account = providerAccountManager.makePrimary(provider, accountId);
+    const account = providerAccountManager.makePrimary(serviceId, accountId);
     return { account, accounts: providerAccountManager.list() };
   } catch (err) {
     throw providerAccountServiceError(err);
@@ -730,14 +736,14 @@ export function reorderProviderAccounts(
   providerAccountManager: ProviderAccountManager,
   provider: AgentId,
   accountIds: unknown,
-): { accounts: ProviderAccount[] } {
-  validateProvider(provider);
+): { accounts: CredentialRoute[] } {
+  const serviceId = requireAccountService(provider);
   if (!Array.isArray(accountIds) || accountIds.some((id) => typeof id !== "string" || !id)) {
     throw new ServiceError(400, "accountIds must be an array of account ids");
   }
   for (const id of accountIds as string[]) validateAccountId(id);
   try {
-    providerAccountManager.reorder(provider, accountIds as string[]);
+    providerAccountManager.reorder(serviceId, accountIds as string[]);
     return { accounts: providerAccountManager.list() };
   } catch (err) {
     throw providerAccountServiceError(err);
@@ -915,10 +921,12 @@ export function signOutProvider(
   provider: AgentId,
   opts: { credentialsDir?: string } = {},
 ): void {
-  validateProvider(provider);
+  const serviceId = requireAccountService(provider);
   assertNoRunningPinnedSessions(sessionManager, runnerRegistry, provider);
 
-  const signedOut = new Set(providerAccountManager.list(provider).map((account) => account.id));
+  const signedOut = new Set(
+    providerAccountManager.list(serviceId).map((account) => account.id),
+  );
   const pinned = sessionManager
     .listAll()
     .filter((session) =>
@@ -947,8 +955,8 @@ export function deleteProviderAccount(
   provider: AgentId,
   accountId: string,
   opts: { credentialsDir?: string; replacementAccountId?: string } = {},
-): { accounts: ProviderAccount[]; switchedSessionIds: string[]; strandedSessionIds: string[] } {
-  validateProvider(provider);
+): { accounts: CredentialRoute[]; switchedSessionIds: string[]; strandedSessionIds: string[] } {
+  const serviceId = requireAccountService(provider);
   validateAccountId(accountId);
   const pinned = sessionManager
     .listAll()
@@ -977,7 +985,7 @@ export function deleteProviderAccount(
   if (pinned.length > 0) {
     const { replacementAccountId, credentialsDir } = opts;
     const usable = providerAccountManager
-      .list(provider)
+      .list(serviceId)
       .filter((account) => account.id !== accountId && account.status === "ready")
       .map((account) => account.id);
     if (!replacementAccountId || !credentialsDir) {
@@ -1017,7 +1025,7 @@ export function deleteProviderAccount(
   }
 
   try {
-    providerAccountManager.delete(provider, accountId);
+    providerAccountManager.delete(serviceId, accountId);
     return { accounts: providerAccountManager.list(), switchedSessionIds, strandedSessionIds };
   } catch (err) {
     throw providerAccountServiceError(err);
@@ -1035,11 +1043,11 @@ export function startProviderAccountLogin(
   providerAccountManager: ProviderAccountManager,
   provider: AgentId,
   accountId: string,
-): { account: ProviderAccount; accounts: ProviderAccount[] } {
-  validateProvider(provider);
+): { account: CredentialRoute; accounts: CredentialRoute[] } {
+  const serviceId = requireAccountService(provider);
   validateAccountId(accountId);
   try {
-    const account = providerAccountManager.startAccountAuth(provider, accountId);
+    const account = providerAccountManager.startAccountAuth(serviceId, accountId);
     return { account, accounts: providerAccountManager.list() };
   } catch (err) {
     throw providerAccountServiceError(err);
@@ -1051,11 +1059,11 @@ export function cancelProviderAccountLogin(
   providerAccountManager: ProviderAccountManager,
   provider: AgentId,
   accountId: string,
-): { account: ProviderAccount; accounts: ProviderAccount[] } {
-  validateProvider(provider);
+): { account: CredentialRoute; accounts: CredentialRoute[] } {
+  const serviceId = requireAccountService(provider);
   validateAccountId(accountId);
   try {
-    const account = providerAccountManager.cancelAccountAuth(provider, accountId);
+    const account = providerAccountManager.cancelAccountAuth(serviceId, accountId);
     return { account, accounts: providerAccountManager.list() };
   } catch (err) {
     throw providerAccountServiceError(err);
@@ -1069,12 +1077,12 @@ export function submitProviderAccountCode(
   accountId: string,
   code: string,
 ): void {
-  validateProvider(provider);
+  const serviceId = requireAccountService(provider);
   validateAccountId(accountId);
   const trimmed = typeof code === "string" ? code.trim() : "";
   if (!trimmed) throw new ServiceError(400, "Authorization code cannot be empty");
   try {
-    providerAccountManager.submitAccountCode(provider, accountId, trimmed);
+    providerAccountManager.submitAccountCode(serviceId, accountId, trimmed);
   } catch (err) {
     throw providerAccountServiceError(err);
   }
@@ -1102,10 +1110,21 @@ function requireSubscriptionModeKey(key: string): { serviceId: string; billingMo
   return { serviceId: parsed.serviceId, billingMode: "sub" };
 }
 
-function validateProvider(provider: AgentId): void {
+/**
+ * Validate the `:provider` path segment **and** convert it to the service the
+ * account rows are keyed by (planning#342).
+ *
+ * The two steps are one function so no call site can do the first and forget
+ * the second: `ProviderAccountManager`'s row verbs take a `serviceId` string,
+ * and a harness id passed there compiles and silently matches nothing.
+ */
+function requireAccountService(provider: AgentId): string {
   if (provider !== "claude" && provider !== "codex") {
     throw new ServiceError(400, "Unknown provider");
   }
+  const serviceId = nativeServiceForHarness(provider);
+  if (!serviceId) throw new ServiceError(400, "Unknown provider");
+  return serviceId;
 }
 
 function validateAccountId(accountId: string): void {

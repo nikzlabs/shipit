@@ -18,6 +18,7 @@ import { buildAgentRuntime } from "./agents/index.js";
 import { LimitsRegistry } from "./limits-registry.js";
 import { limitsModeKey } from "../shared/types/usage-limits-types.js";
 import { credentialOwnerForRouteId } from "./service-routing.js";
+import { accountServiceForHarness } from "./provider-account-manager.js";
 import {
   setupContainerManager,
   buildRunnerFactory,
@@ -491,7 +492,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     if (session.providerRouteKind === "account") {
       if (!session.agentId) return;
       const marked = providerAccountManager?.markAccountExhausted(
-        session.agentId,
+        // The row is keyed by the account's service; the session names a
+        // harness (planning#342). An account route always belongs to the
+        // harness's own vendor — that is what `via: "account"` means — so the
+        // conversion is total, not a guess.
+        accountServiceForHarness(session.agentId),
         session.providerRouteId,
         until,
       );
@@ -860,7 +865,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     // both: re-deriving one would name a different credential, and req 10 files
     // the snapshot against whatever owns the route.
     const pinned = sessionId ? sessionManager.get(sessionId)?.providerRouteId : undefined;
-    const routeId = explicitRouteId ?? pinned ?? providerAccountManager?.selectRouteForTurn(agentId)?.id;
+    const routeId = explicitRouteId ?? pinned
+      ?? providerAccountManager?.selectRouteForTurn(accountServiceForHarness(agentId))?.id;
     // No resolvable route means we cannot say whose quota this is; recording it
     // under a guess would attribute one subscription's usage to another.
     if (!routeId) return;

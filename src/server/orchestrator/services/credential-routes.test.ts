@@ -130,8 +130,8 @@ describe("updateStringCredential", () => {
   });
 
   it("refuses to edit an account-backed credential", () => {
-    store.upsertProviderAccount({
-      id: "acct_1", provider: "claude", label: "Work", isPrimary: false,
+    store.upsertCredentialRoute({
+      id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: false,
       status: "ready", createdAt: 1, updatedAt: 1,
     });
     expect(() => updateStringCredential(store, "acct_1", { label: "x" })).toThrow(/connected account/);
@@ -214,8 +214,8 @@ describe("collectServiceCredentialEnv", () => {
   });
 
   it("delivers nothing for an account-backed credential", () => {
-    store.upsertProviderAccount({
-      id: "acct_1", provider: "claude", label: "Work", isPrimary: false,
+    store.upsertCredentialRoute({
+      id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: false,
       status: "ready", createdAt: 1, updatedAt: 1,
     });
     expect(collectServiceCredentialEnv(store)).toEqual({});

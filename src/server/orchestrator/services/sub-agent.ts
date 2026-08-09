@@ -40,6 +40,7 @@ import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { isHarnessInstalled } from "../../shared/installed-harnesses.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
+import { accountServiceForHarness } from "../provider-account-manager.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { UsageManager } from "../usage.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
@@ -277,9 +278,10 @@ export async function runSubAgent(
   // docs/252 phase 3 — that default is a `(service, billing mode, model)`
   // selection (phase 1 widened it), and it is read HERE, before the route, for
   // the reason the whole phase exists: the route belongs to the selected mode.
-  // Asking `selectAccountForTurn(subAgentId)` first would resolve an Anthropic
-  // account for a consult whose default model is a DeepSeek one, and the spawn
-  // would then be shaped — or not shaped — against the wrong credential.
+  // Asking the router for the harness's own vendor first would resolve an
+  // Anthropic account for a consult whose default model is a DeepSeek one, and
+  // the spawn would then be shaped — or not shaped — against the wrong
+  // credential.
   const { reasoningEffort, model, serviceId, billingMode } =
     deps.credentialStore.getAgentSubAgentDefaults(subAgentId);
   // An UNSET default is not an absence of a selection — it means "the harness's
@@ -474,12 +476,21 @@ export async function runSubAgent(
     let exhausted = detectExhaustion(result);
     while (exhausted && accountId && deps.providerAccountManager) {
       const failedAccountId = accountId;
+      // planning#342 — bench and re-select within the group the failing
+      // credential actually belongs to, read from the row itself rather than
+      // from the harness. Deriving it from `subAgentId` would ask about the
+      // harness's own vendor, which is a different question the moment a
+      // consult's default model names another service's subscription — and it
+      // would bench nothing while offering a fallback from the wrong group.
+      const subAgentService =
+        deps.credentialStore.getCredentialRoute(failedAccountId)?.serviceId
+        ?? accountServiceForHarness(subAgentId);
       deps.providerAccountManager.markAccountExhausted(
-        subAgentId,
+        subAgentService,
         failedAccountId,
         exhaustionLockoutUntil(exhausted),
       );
-      const fallback = deps.providerAccountManager.selectAccountForTurn(subAgentId, {
+      const fallback = deps.providerAccountManager.selectAccountForTurn(subAgentService, {
         exclude: [...attemptedAccountIds],
       });
       if (!fallback.ok) {

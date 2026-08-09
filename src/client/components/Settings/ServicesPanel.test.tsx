@@ -234,7 +234,7 @@ describe("ServicesPanel", () => {
       route({ id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", createdAt: now, updatedAt: now }),
     ]);
     useSettingsStore.getState().setProviderAccounts([
-      { id: "acct_1", provider: "claude", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
     render(<ServicesPanel agentList={[claudeAgent]} />);
     expect(screen.getByTestId("provider-accounts-card-claude")).toBeInTheDocument();
@@ -306,7 +306,7 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
       route({ id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", createdAt: now, updatedAt: now }),
     ]);
     useSettingsStore.getState().setProviderAccounts([
-      { id: "acct_1", provider: "claude", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
     // The server disconnects and reports what it stranded (docs/150 req 23).
     vi.stubGlobal("fetch", () =>

@@ -68,10 +68,10 @@ describe("switchSessionProviderAccount", () => {
   });
 
   it("carries the Claude conversation across the switch and replaces the credentials", () => {
-    const a = accounts.create("claude", "Account A");
-    const b = accounts.create("claude", "Account B");
-    accounts.setAccountStatus("claude", a.id, "ready");
-    accounts.setAccountStatus("claude", b.id, "ready");
+    const a = accounts.create("anthropic", "Account A");
+    const b = accounts.create("anthropic", "Account B");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
+    accounts.setAccountStatus("anthropic", b.id, "ready");
     seedAccount("claude", a.id, "token-a");
     seedAccount("claude", b.id, "token-b");
 
@@ -109,10 +109,10 @@ describe("switchSessionProviderAccount", () => {
   });
 
   it("carries a Codex rollout across the switch", () => {
-    const a = accounts.create("codex", "Codex A");
-    const b = accounts.create("codex", "Codex B");
-    accounts.setAccountStatus("codex", a.id, "ready");
-    accounts.setAccountStatus("codex", b.id, "ready");
+    const a = accounts.create("openai", "Codex A");
+    const b = accounts.create("openai", "Codex B");
+    accounts.setAccountStatus("openai", a.id, "ready");
+    accounts.setAccountStatus("openai", b.id, "ready");
     seedAccount("codex", a.id, "codex-a");
     seedAccount("codex", b.id, "codex-b");
 
@@ -132,10 +132,10 @@ describe("switchSessionProviderAccount", () => {
   });
 
   it("kills a live agent so it cannot keep spending the outgoing account's token", () => {
-    const a = accounts.create("claude", "A");
-    const b = accounts.create("claude", "B");
-    accounts.setAccountStatus("claude", a.id, "ready");
-    accounts.setAccountStatus("claude", b.id, "ready");
+    const a = accounts.create("anthropic", "A");
+    const b = accounts.create("anthropic", "B");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
+    accounts.setAccountStatus("anthropic", b.id, "ready");
     seedAccount("claude", a.id, "token-a");
     seedAccount("claude", b.id, "token-b");
     sessions.setAgentId(SESSION, "claude");
@@ -157,10 +157,10 @@ describe("switchSessionProviderAccount", () => {
   });
 
   it("still rewrites credentials when killing an already-dead agent throws", () => {
-    const a = accounts.create("claude", "A");
-    const b = accounts.create("claude", "B");
-    accounts.setAccountStatus("claude", a.id, "ready");
-    accounts.setAccountStatus("claude", b.id, "ready");
+    const a = accounts.create("anthropic", "A");
+    const b = accounts.create("anthropic", "B");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
+    accounts.setAccountStatus("anthropic", b.id, "ready");
     seedAccount("claude", a.id, "token-a");
     seedAccount("claude", b.id, "token-b");
     sessions.setAgentId(SESSION, "claude");
@@ -179,10 +179,10 @@ describe("switchSessionProviderAccount", () => {
   });
 
   it("refuses to switch mid-turn rather than yanking credentials from under it", () => {
-    const a = accounts.create("claude", "A");
-    const b = accounts.create("claude", "B");
-    accounts.setAccountStatus("claude", a.id, "ready");
-    accounts.setAccountStatus("claude", b.id, "ready");
+    const a = accounts.create("anthropic", "A");
+    const b = accounts.create("anthropic", "B");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
+    accounts.setAccountStatus("anthropic", b.id, "ready");
     seedAccount("claude", b.id, "token-b");
     sessions.setAgentId(SESSION, "claude");
     sessions.setProviderRoute(SESSION, "account", a.id);
@@ -195,10 +195,10 @@ describe("switchSessionProviderAccount", () => {
   });
 
   it("refuses an account that is not usable", () => {
-    const a = accounts.create("claude", "A");
-    const b = accounts.create("claude", "B");
-    accounts.setAccountStatus("claude", a.id, "ready");
-    accounts.setAccountStatus("claude", b.id, "auth_failed");
+    const a = accounts.create("anthropic", "A");
+    const b = accounts.create("anthropic", "B");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
+    accounts.setAccountStatus("anthropic", b.id, "auth_failed");
     sessions.setAgentId(SESSION, "claude");
     sessions.setProviderRoute(SESSION, "account", a.id);
 
@@ -207,10 +207,10 @@ describe("switchSessionProviderAccount", () => {
   });
 
   it("refuses an account belonging to the other provider", () => {
-    const claudeA = accounts.create("claude", "A");
-    const codexB = accounts.create("codex", "B");
-    accounts.setAccountStatus("claude", claudeA.id, "ready");
-    accounts.setAccountStatus("codex", codexB.id, "ready");
+    const claudeA = accounts.create("anthropic", "A");
+    const codexB = accounts.create("openai", "B");
+    accounts.setAccountStatus("anthropic", claudeA.id, "ready");
+    accounts.setAccountStatus("openai", codexB.id, "ready");
     sessions.setAgentId(SESSION, "claude");
     sessions.setProviderRoute(SESSION, "account", claudeA.id);
 
@@ -220,8 +220,8 @@ describe("switchSessionProviderAccount", () => {
   });
 
   it("is a no-op when the session is already on the target account", () => {
-    const a = accounts.create("claude", "A");
-    accounts.setAccountStatus("claude", a.id, "ready");
+    const a = accounts.create("anthropic", "A");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
     sessions.setAgentId(SESSION, "claude");
     sessions.setProviderRoute(SESSION, "account", a.id);
 
@@ -301,10 +301,10 @@ describe("failoverPinnedSession", () => {
 
   /** Two ready Claude accounts, session pinned to the first, mid-conversation. */
   function pinnedToExhaustedPrimary(): { a: string; b: string } {
-    const a = accounts.create("claude", "Work");
-    const b = accounts.create("claude", "Personal");
-    accounts.setAccountStatus("claude", a.id, "ready");
-    accounts.setAccountStatus("claude", b.id, "ready");
+    const a = accounts.create("anthropic", "Work");
+    const b = accounts.create("anthropic", "Personal");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
+    accounts.setAccountStatus("anthropic", b.id, "ready");
     seedClaudeAccount(a.id, "token-a");
     seedClaudeAccount(b.id, "token-b");
 
@@ -364,10 +364,10 @@ describe("failoverPinnedSession", () => {
     }
 
     function twoAccountsPinnedToFirst(): { a: string; b: string } {
-      const a = accounts.create("claude", "Work");
-      const b = accounts.create("claude", "Personal");
-      accounts.setAccountStatus("claude", a.id, "ready");
-      accounts.setAccountStatus("claude", b.id, "ready");
+      const a = accounts.create("anthropic", "Work");
+      const b = accounts.create("anthropic", "Personal");
+      accounts.setAccountStatus("anthropic", a.id, "ready");
+      accounts.setAccountStatus("anthropic", b.id, "ready");
       seedClaudeAccount(a.id, "token-a");
       seedClaudeAccount(b.id, "token-b");
       sessions.setAgentId(SESSION, "claude");
@@ -403,7 +403,7 @@ describe("failoverPinnedSession", () => {
     // reaches the same state. Neither ran out of anything.
     it("reports an account that lost its sign-in as unavailable", () => {
       const { a, b } = twoAccountsPinnedToFirst();
-      accounts.setAccountStatus("claude", a, "auth_failed");
+      accounts.setAccountStatus("anthropic", a, "auth_failed");
       limits = { "anthropic:sub": { [b]: used(10) } };
 
       const moved = failoverPinnedSession(SESSION, deps());
@@ -416,9 +416,9 @@ describe("failoverPinnedSession", () => {
   });
 
   it("does nothing while the pinned account still has quota", () => {
-    const a = accounts.create("claude", "Work");
-    accounts.create("claude", "Personal");
-    accounts.setAccountStatus("claude", a.id, "ready");
+    const a = accounts.create("anthropic", "Work");
+    accounts.create("anthropic", "Personal");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
     seedClaudeAccount(a.id, "token-a");
     sessions.setAgentId(SESSION, "claude");
     sessions.setProviderRoute(SESSION, "account", a.id);
@@ -432,23 +432,23 @@ describe("failoverPinnedSession", () => {
   // healthily pinned to a secondary. Eligibility is asked about the pinned
   // route, not derived from the router's preference.
   it("leaves a healthy session pinned to a NON-primary account alone", () => {
-    const a = accounts.create("claude", "Work");
-    const b = accounts.create("claude", "Personal");
-    accounts.setAccountStatus("claude", a.id, "ready");
-    accounts.setAccountStatus("claude", b.id, "ready");
+    const a = accounts.create("anthropic", "Work");
+    const b = accounts.create("anthropic", "Personal");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
+    accounts.setAccountStatus("anthropic", b.id, "ready");
     seedClaudeAccount(a.id, "token-a");
     seedClaudeAccount(b.id, "token-b");
     sessions.setAgentId(SESSION, "claude");
     sessions.setProviderRoute(SESSION, "account", b.id);
 
-    expect(accounts.getPrimary("claude")?.id).toBe(a.id);
+    expect(accounts.getPrimary("anthropic")?.id).toBe(a.id);
     expect(failoverPinnedSession(SESSION, deps())).toBeNull();
     expect(sessions.get(SESSION)?.providerRouteId).toBe(b.id);
   });
 
   it("fails the turn with the earliest reset when the only account is spent (reqs 8 + 13)", () => {
-    const a = accounts.create("claude", "Work");
-    accounts.setAccountStatus("claude", a.id, "ready");
+    const a = accounts.create("anthropic", "Work");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
     seedClaudeAccount(a.id, "token-a");
     sessions.setAgentId(SESSION, "claude");
     sessions.setProviderRoute(SESSION, "account", a.id);
@@ -462,8 +462,8 @@ describe("failoverPinnedSession", () => {
 
   // req 12 — a spent subscription must never roll onto pay-as-you-go billing.
   it("does not move an exhausted session onto the metered API-key route", () => {
-    const a = accounts.create("claude", "Work");
-    accounts.setAccountStatus("claude", a.id, "ready");
+    const a = accounts.create("anthropic", "Work");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
     seedClaudeAccount(a.id, "token-a");
     sessions.setAgentId(SESSION, "claude");
     sessions.setProviderRoute(SESSION, "account", a.id);

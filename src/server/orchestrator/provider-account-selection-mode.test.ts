@@ -17,12 +17,12 @@ import os from "node:os";
 import path from "node:path";
 import { CredentialStore } from "./credential-store.js";
 import { ProviderAccountManager, orderForSelectionMode } from "./provider-account-manager.js";
-import type { ProviderAccount, SubscriptionLimitsMap } from "../shared/types.js";
+import type { CredentialRoute, SubscriptionLimitsMap } from "../shared/types.js";
 
-function account(id: string, lastUsedAt?: number): ProviderAccount {
+function account(id: string, lastUsedAt?: number): CredentialRoute {
   return {
     id,
-    provider: "claude",
+    serviceId: "anthropic", billingMode: "sub", via: "account",
     label: id,
     isPrimary: false,
     status: "ready",
@@ -85,10 +85,10 @@ describe("selectAccountForTurn — selection mode (req 21)", () => {
 
   /** Two ready accounts in a known priority order, neither ever used. */
   function twoAccounts(mgr: ProviderAccountManager): [string, string] {
-    const a = mgr.create("claude", "First");
-    const b = mgr.create("claude", "Second");
-    mgr.setAccountStatus("claude", a.id, "ready");
-    mgr.setAccountStatus("claude", b.id, "ready");
+    const a = mgr.create("anthropic", "First");
+    const b = mgr.create("anthropic", "Second");
+    mgr.setAccountStatus("anthropic", a.id, "ready");
+    mgr.setAccountStatus("anthropic", b.id, "ready");
     return [a.id, b.id];
   }
 
@@ -119,10 +119,10 @@ describe("selectAccountForTurn — selection mode (req 21)", () => {
     // way `prepareSessionAgentEnvironment` does.
     const picks: string[] = [];
     for (let i = 0; i < 3; i++) {
-      const sel = mgr.selectAccountForTurn("claude");
+      const sel = mgr.selectAccountForTurn("anthropic");
       if (!sel.ok) throw new Error("expected a route");
       picks.push(sel.route.id);
-      mgr.markAccountUsed("claude", sel.route.id);
+      mgr.markAccountUsed("anthropic", sel.route.id);
     }
 
     expect(picks).toEqual([first, first, first]);
@@ -135,10 +135,10 @@ describe("selectAccountForTurn — selection mode (req 21)", () => {
 
     const picks: string[] = [];
     for (let i = 0; i < 4; i++) {
-      const sel = mgr.selectAccountForTurn("claude");
+      const sel = mgr.selectAccountForTurn("anthropic");
       if (!sel.ok) throw new Error("expected a route");
       picks.push(sel.route.id);
-      mgr.markAccountUsed("claude", sel.route.id);
+      mgr.markAccountUsed("anthropic", sel.route.id);
     }
 
     // Alternating is the observable consequence; the point is that no account
@@ -153,10 +153,10 @@ describe("selectAccountForTurn — selection mode (req 21)", () => {
     const [first, second] = twoAccounts(mgr);
     // Make the LRU account the exhausted one, so a mode that ignored
     // eligibility would pick exactly the wrong row.
-    mgr.markAccountUsed("claude", second);
-    mgr.markAccountExhausted("claude", first, resetAt);
+    mgr.markAccountUsed("anthropic", second);
+    mgr.markAccountExhausted("anthropic", first, resetAt);
 
-    const sel = mgr.selectAccountForTurn("claude");
+    const sel = mgr.selectAccountForTurn("anthropic");
 
     expect(sel.ok).toBe(true);
     if (sel.ok) expect(sel.route.id).toBe(second);
@@ -174,7 +174,7 @@ describe("selectAccountForTurn — selection mode (req 21)", () => {
       const mgr = manager();
       const [first, second] = twoAccounts(mgr);
 
-      const sel = mgr.selectAccountForTurn("claude", { exclude: [first] });
+      const sel = mgr.selectAccountForTurn("anthropic", { exclude: [first] });
 
       expect(sel.ok).toBe(true);
       if (sel.ok) expect(sel.route.id, `mode=${mode}`).toBe(second);
@@ -190,10 +190,10 @@ describe("selectAccountForTurn — selection mode (req 21)", () => {
       store.setSelectionMode("anthropic", "sub", mode);
       const mgr = manager();
       const [first, second] = twoAccounts(mgr);
-      mgr.markAccountExhausted("claude", first, resetAt);
-      mgr.markAccountExhausted("claude", second, resetAt);
+      mgr.markAccountExhausted("anthropic", first, resetAt);
+      mgr.markAccountExhausted("anthropic", second, resetAt);
 
-      const sel = mgr.selectAccountForTurn("claude");
+      const sel = mgr.selectAccountForTurn("anthropic");
 
       expect(sel.ok, `mode=${mode}`).toBe(false);
       if (!sel.ok) expect(sel.reason).toBe("all_exhausted");
@@ -226,14 +226,14 @@ describe("markAccountUsed", () => {
 
   it("stamps the account and persists it", () => {
     const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-    const acct = mgr.create("claude", "First");
+    const acct = mgr.create("anthropic", "First");
 
     // The field exists on the type but nothing wrote it before req 21, so this
     // assertion is what keeps `balanced` from silently degrading to a no-op
     // sort over `undefined`.
-    expect(mgr.get("claude", acct.id)?.lastUsedAt).toBeUndefined();
-    mgr.markAccountUsed("claude", acct.id);
-    expect(mgr.get("claude", acct.id)?.lastUsedAt).toBeGreaterThan(0);
+    expect(mgr.get("anthropic", acct.id)?.lastUsedAt).toBeUndefined();
+    mgr.markAccountUsed("anthropic", acct.id);
+    expect(mgr.get("anthropic", acct.id)?.lastUsedAt).toBeGreaterThan(0);
 
     // Survives a reload: the sort key has to outlive the process, or a restart
     // would re-cluster every new session onto the same account.
@@ -241,7 +241,7 @@ describe("markAccountUsed", () => {
       credentialsDir: root,
       credentialStore: new CredentialStore(root),
     });
-    expect(reloaded.get("claude", acct.id)?.lastUsedAt).toBeGreaterThan(0);
+    expect(reloaded.get("anthropic", acct.id)?.lastUsedAt).toBeGreaterThan(0);
   });
 
   it("separates stamps made within the same millisecond", () => {
@@ -251,14 +251,14 @@ describe("markAccountUsed", () => {
     // was chosen over ranking by polled quota, so losing it here would remove
     // the justification for the design.
     const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-    const a = mgr.create("claude", "First");
-    const b = mgr.create("claude", "Second");
+    const a = mgr.create("anthropic", "First");
+    const b = mgr.create("anthropic", "Second");
 
-    mgr.markAccountUsed("claude", a.id);
-    mgr.markAccountUsed("claude", b.id);
+    mgr.markAccountUsed("anthropic", a.id);
+    mgr.markAccountUsed("anthropic", b.id);
 
-    const stampA = mgr.get("claude", a.id)?.lastUsedAt ?? 0;
-    const stampB = mgr.get("claude", b.id)?.lastUsedAt ?? 0;
+    const stampA = mgr.get("anthropic", a.id)?.lastUsedAt ?? 0;
+    const stampB = mgr.get("anthropic", b.id)?.lastUsedAt ?? 0;
     expect(stampB).toBeGreaterThan(stampA);
   });
 
@@ -266,6 +266,6 @@ describe("markAccountUsed", () => {
     // Deleted mid-turn. Failing a turn over a bookkeeping write would be worse
     // than a stale sort key.
     const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-    expect(() => mgr.markAccountUsed("claude", "gone")).not.toThrow();
+    expect(() => mgr.markAccountUsed("anthropic", "gone")).not.toThrow();
   });
 });

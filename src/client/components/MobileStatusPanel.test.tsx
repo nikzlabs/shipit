@@ -97,7 +97,7 @@ describe("MobileStatusPanel", () => {
   it("shows and refreshes a connected account that has no usage snapshot yet", async () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
-      { id: "acct-quiet", provider: "claude", label: "Quiet account", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-quiet", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Quiet account", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
 
     render(

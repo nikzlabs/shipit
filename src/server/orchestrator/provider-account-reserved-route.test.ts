@@ -47,22 +47,22 @@ describe("reserved routes never become subscription accounts (req 12)", () => {
     mgr.migrateDefaultAccounts();
 
     // The route is available...
-    const sel = mgr.selectAccountForTurn("claude");
+    const sel = mgr.selectAccountForTurn("anthropic");
     expect(sel.ok).toBe(true);
     if (sel.ok) expect(sel.route).toEqual({ kind: "reserved", id: "claude-api-key" });
 
     // ...but nothing appears in the account list, so no UI row, no priority
     // position, and nothing for failover to select as a subscription.
-    expect(mgr.list("claude")).toHaveLength(0);
+    expect(mgr.list("anthropic")).toHaveLength(0);
   });
 
   it("prefers a subscription account over the API key when both exist", () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
     const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-    const acct = mgr.create("claude", "Subscription");
-    mgr.setAccountStatus("claude", acct.id, "ready");
+    const acct = mgr.create("anthropic", "Subscription");
+    mgr.setAccountStatus("anthropic", acct.id, "ready");
 
-    const sel = mgr.selectAccountForTurn("claude");
+    const sel = mgr.selectAccountForTurn("anthropic");
 
     expect(sel.ok).toBe(true);
     if (sel.ok) expect(sel.route).toEqual({ kind: "account", id: acct.id });
@@ -75,11 +75,11 @@ describe("reserved routes never become subscription accounts (req 12)", () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
     const resetAt = Date.now() + 45 * 60 * 1000;
     const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-    const acct = mgr.create("claude", "Subscription");
-    mgr.setAccountStatus("claude", acct.id, "ready");
-    mgr.markAccountExhausted("claude", acct.id, resetAt);
+    const acct = mgr.create("anthropic", "Subscription");
+    mgr.setAccountStatus("anthropic", acct.id, "ready");
+    mgr.markAccountExhausted("anthropic", acct.id, resetAt);
 
-    const sel = mgr.selectAccountForTurn("claude");
+    const sel = mgr.selectAccountForTurn("anthropic");
 
     expect(sel.ok).toBe(false);
     if (!sel.ok && sel.reason === "all_exhausted") {
@@ -96,7 +96,7 @@ describe("reserved routes never become subscription accounts (req 12)", () => {
     process.env.ANTHROPIC_AUTH_TOKEN = "oauth-token";
     const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
 
-    const sel = mgr.selectAccountForTurn("claude");
+    const sel = mgr.selectAccountForTurn("anthropic");
 
     expect(sel.ok).toBe(true);
     if (sel.ok) expect(sel.route.id).toBe("claude-env-oauth");
@@ -105,7 +105,7 @@ describe("reserved routes never become subscription accounts (req 12)", () => {
   it("reports auth_required when there is neither an account nor a reserved route", () => {
     const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
 
-    const sel = mgr.selectAccountForTurn("claude");
+    const sel = mgr.selectAccountForTurn("anthropic");
 
     expect(sel.ok).toBe(false);
     if (!sel.ok) expect(sel.reason).toBe("auth_required");

@@ -41,7 +41,7 @@ import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { AgentId } from "../../shared/types.js";
 import { generateSessionName, type SessionNameResult } from "../session-namer.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
-import { providerAccountCredentialRoot } from "../provider-account-manager.js";
+import { accountServiceForHarness, providerAccountCredentialRoot } from "../provider-account-manager.js";
 import { getErrorMessage } from "../validation.js";
 import { isTitleLockedAgainst } from "./session-title.js";
 import { nativeServiceForHarness, selectionExists } from "../../shared/catalogue/index.js";
@@ -340,7 +340,7 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
   // singleton path, which is what those routes legitimately use.
   const namingRoute = target
     ? target.route
-    : (providerAccountManager?.selectRouteForTurn(namingHarness) ?? null);
+    : (providerAccountManager?.selectRouteForTurn(accountServiceForHarness(namingHarness)) ?? null);
   const namingAccountId = namingRoute?.kind === "account" ? namingRoute.id : undefined;
   const namingCredentialRoot = namingAccountId && credentialsDir
     ? providerAccountCredentialRoot(credentialsDir, namingHarness, namingAccountId)

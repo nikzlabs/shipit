@@ -39,6 +39,7 @@ import type {
 } from "./agents/claude/auth-diagnostics.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
+import { accountServiceForHarness } from "./provider-account-manager.js";
 import type { LocalAgentFactory } from "./local-agent-home.js";
 import { resolveLocalAgentHome } from "./local-agent-home.js";
 import type { LocalAgentMcpDeps } from "./local-agent-mcp.js";
@@ -1302,7 +1303,7 @@ export function markProviderAccountUnauthenticated(opts: {
 }): void {
   const { agentId, accountId, providerAccountManager, agentRegistry, sseBroadcast, credentialStore } = opts;
   try {
-    providerAccountManager.setAccountStatus(agentId, accountId, "auth_failed");
+    providerAccountManager.setAccountStatus(accountServiceForHarness(agentId), accountId, "auth_failed");
   } catch (err) {
     console.error(`[auth] failed to mark account ${accountId} auth_failed:`, err);
   }
@@ -1339,10 +1340,10 @@ export function markProviderAccountReauthenticated(opts: {
   credentialStore: CredentialStore | undefined;
 }): void {
   const { agentId, accountId, providerAccountManager, agentRegistry, sseBroadcast, credentialStore } = opts;
-  const current = providerAccountManager.get(agentId, accountId);
+  const current = providerAccountManager.get(accountServiceForHarness(agentId), accountId);
   if (!current || current.status === "ready") return;
   try {
-    providerAccountManager.setAccountStatus(agentId, accountId, "ready");
+    providerAccountManager.setAccountStatus(accountServiceForHarness(agentId), accountId, "ready");
   } catch (err) {
     console.error(`[auth] failed to mark account ${accountId} ready:`, err);
     return;
@@ -1461,7 +1462,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
         // A scoped login finished: flip the row to `ready` and re-push the
         // fresh token only into sessions pinned to this account.
         try {
-          providerAccountManager.setAccountStatus(agentId, accountId, "ready");
+          providerAccountManager.setAccountStatus(accountServiceForHarness(agentId), accountId, "ready");
         } catch (err) {
           console.error(`[auth] failed to mark account ${accountId} ready:`, err);
         }
@@ -1482,7 +1483,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
         // docs/150 — record the scoped failure on the row so Settings shows
         // "auth failed" instead of a stuck "authenticating" spinner.
         try {
-          providerAccountManager.setAccountStatus(agentId, accountId, "auth_failed");
+          providerAccountManager.setAccountStatus(accountServiceForHarness(agentId), accountId, "auth_failed");
         } catch (err) {
           console.error(`[auth] failed to mark account ${accountId} auth_failed:`, err);
         }

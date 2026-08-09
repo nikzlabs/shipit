@@ -53,6 +53,7 @@ import type { AgentId, SessionInfo } from "../../shared/types.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { ProviderAccountManager, RouteUnusableReason } from "../provider-account-manager.js";
+import { accountServiceForHarness } from "../provider-account-manager.js";
 import { provisionProviderAccountCredentials } from "../session-agent-credentials.js";
 import { routeFromSelection } from "../provider-route-preflight.js";
 import { ServiceError } from "./types.js";
@@ -92,7 +93,10 @@ export function sessionNeedsAccountFailover(
   if (!session || !providerAccountManager) return false;
   const { agentId, providerRouteKind, providerRouteId } = session;
   if (!agentId || providerRouteKind !== "account" || !providerRouteId) return false;
-  return !providerAccountManager.isRouteUsableForTurn(agentId, { kind: "account", id: providerRouteId });
+  return !providerAccountManager.isRouteUsableForTurn(accountServiceForHarness(agentId), {
+    kind: "account",
+    id: providerRouteId,
+  });
 }
 
 export interface SwitchSessionProviderAccountDeps {
@@ -135,7 +139,7 @@ export function switchSessionProviderAccount(
   if (!provider) throw new ServiceError(409, "Session has no pinned agent to switch");
 
   const target = deps.providerAccountManager
-    .list(provider)
+    .list(accountServiceForHarness(provider))
     .find((account) => account.id === toAccountId);
   if (!target) {
     throw new ServiceError(404, `No ${provider} account ${toAccountId}`);
@@ -282,7 +286,7 @@ export function failoverPinnedSession(
   // the check above, and claiming "out of quota" on a contradiction is the
   // failure mode this reason exists to avoid.
   const reason =
-    deps.providerAccountManager.classifyRouteForTurn(provider, {
+    deps.providerAccountManager.classifyRouteForTurn(accountServiceForHarness(provider), {
       kind: "account",
       id: fromAccountId,
     }) ?? "unavailable";
@@ -293,7 +297,7 @@ export function failoverPinnedSession(
   // here, which is what makes req 13 apply to existing sessions too.
   const next = routeFromSelection(
     provider,
-    deps.providerAccountManager.selectAccountForTurn(provider),
+    deps.providerAccountManager.selectAccountForTurn(accountServiceForHarness(provider)),
   );
   // A reserved route is not a failover target (req 12), and re-selecting the
   // same account would mean the router disagrees with `isRouteUsableForTurn` —
@@ -304,7 +308,7 @@ export function failoverPinnedSession(
   deps.sessionManager.setProviderRoute(sessionId, "account", next.id);
 
   const accountLabel = (id: string): string =>
-    deps.providerAccountManager.get(provider, id)?.label ?? id;
+    deps.providerAccountManager.get(accountServiceForHarness(provider), id)?.label ?? id;
   return {
     provider,
     fromAccountId,

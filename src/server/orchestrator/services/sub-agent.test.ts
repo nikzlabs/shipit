@@ -121,6 +121,11 @@ function makeDeps(opts: {
     credentialStore: {
       getEnableSubAgents: () => opts.enableSubAgents ?? true,
       getAgentSubAgentDefaults: () => opts.subAgentDefaults ?? {},
+      // planning#342 — benching reads the failing row's own service rather than
+      // deriving one from the harness, so the fake has to answer for the
+      // account ids these tests fail over between.
+      getCredentialRoute: (routeId: string) =>
+        (routeId.startsWith("acct-") ? { id: routeId, serviceId: "openai" } : undefined),
     } as never,
     agentRegistry: {
       refreshAuth: vi.fn(),
@@ -407,7 +412,7 @@ describe("runSubAgent — happy path", () => {
   it("selects a healthy subscription account proactively for a one-shot run", async () => {
     const { deps, runner, selectAccountForTurn } = makeDeps({});
     await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
-    expect(selectAccountForTurn).toHaveBeenCalledWith("codex");
+    expect(selectAccountForTurn).toHaveBeenCalledWith("openai");
     expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
   });
 
@@ -420,8 +425,8 @@ describe("runSubAgent — happy path", () => {
       ],
     });
     const result = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
-    expect(markAccountExhausted).toHaveBeenCalledWith("codex", "acct-primary", Date.parse(resetAt));
-    expect(selectAccountForTurn).toHaveBeenLastCalledWith("codex", { exclude: ["acct-primary"] });
+    expect(markAccountExhausted).toHaveBeenCalledWith("openai", "acct-primary", Date.parse(resetAt));
+    expect(selectAccountForTurn).toHaveBeenLastCalledWith("openai", { exclude: ["acct-primary"] });
     expect(runner.spawnSubAgent).toHaveBeenCalledTimes(2);
     expect(result.text).toBe("review complete");
   });
@@ -461,7 +466,7 @@ describe("runSubAgent — happy path", () => {
 
     expect(runner.spawnSubAgent).toHaveBeenCalledTimes(3);
     expect(markAccountExhausted).toHaveBeenCalledTimes(2);
-    expect(selectAccountForTurn).toHaveBeenNthCalledWith(3, "codex", {
+    expect(selectAccountForTurn).toHaveBeenNthCalledWith(3, "openai", {
       exclude: ["acct-primary", "acct-secondary"],
     });
     expect(result.text).toBe("third account worked");
