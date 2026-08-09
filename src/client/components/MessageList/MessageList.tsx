@@ -1,5 +1,6 @@
 import { Fragment, useMemo, useDeferredValue } from "react";
-import { TodoPanel, type TodoItem } from "../TodoPanel.js";
+import { TodoPanel } from "../TodoPanel.js";
+import { isTaskListTool } from "../../../server/shared/task-list-tools.js";
 import { CircleNotchIcon } from "@phosphor-icons/react";
 import type { SearchMatch } from "../../hooks/useSearch.js";
 import { buildVisualElements } from "../visual-elements.js";
@@ -168,18 +169,6 @@ export function MessageList({
     return map;
   }, [messages, voicePlaybackEnabled]);
 
-  const lastTodoWriteId = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const tools = messages[i].toolUse;
-      if (tools) {
-        for (let j = tools.length - 1; j >= 0; j--) {
-          if (tools[j].name === "TodoWrite") return tools[j].id;
-        }
-      }
-    }
-    return null;
-  }, [messages]);
-
   // Find plan content for ExitPlanMode tools by searching backward for a Write
   // tool that wrote to a .claude/plans/ path and extracting the file content.
   //
@@ -281,6 +270,21 @@ export function MessageList({
           or other panels. */}
       <ChatQuoteReply containerRef={containerRef} />
       {buildVisualElements(messages).map((el) => {
+        // ── The agent's to-do list, folded from its task calls (task-list.ts) ──
+        if (el.kind === "task-panel") {
+          return (
+            // A constant key, not one derived from `messageIndex`: there is only
+            // ever one panel, and it moves down the transcript as the list
+            // changes. Keying on its position would remount it on every move
+            // and reset the scroll of a list taller than `max-h-48`.
+            <div key="task-panel" className="flex justify-start">
+              <div className="max-w-2xl">
+                <TodoPanel tasks={el.tasks} />
+              </div>
+            </div>
+          );
+        }
+
         // ── Tool-derived elements: grouped tool calls, standalone subagents,
         //    and standalone tools (ExitPlanMode / AskUserQuestion / present) ──
         if (el.kind === "tool-group" || el.kind === "subagent" || el.kind === "standalone-tool") {
@@ -327,10 +331,10 @@ export function MessageList({
         const segments = parseMessageSegments(msg.text);
         const hasCodeBlocks = segments.some((s) => s.type === "code");
         const useMarkdown = msg.role === "assistant" && !msg.isError && !msg.notice;
-        const latestTodoTool = msg.toolUse?.find((t) => t.name === "TodoWrite" && t.id === lastTodoWriteId);
-        // Hide the bubble when it would be empty (no text/images/files
-        // and every tool is a TodoWrite, which renders as null inside the bubble)
-        const hasVisibleTools = !hideTools && msg.toolUse?.some((t) => t.name !== "TodoWrite");
+        // Hide the bubble when it would be empty (no text/images/files and every
+        // tool is a task-list call, which renders as null inside the bubble —
+        // the task panel draws those)
+        const hasVisibleTools = !hideTools && msg.toolUse?.some((t) => !isTaskListTool(t.name));
         const hideBubble = !msg.text && !msg.images?.length && !msg.files?.length && !hasVisibleTools && !!msg.toolUse?.length;
 
         return (
@@ -490,13 +494,6 @@ export function MessageList({
               )}
             </div>
             </div>
-            )}
-            {latestTodoTool && Array.isArray(latestTodoTool.input.todos) && (
-              <div className="flex justify-start">
-                <div className="max-w-2xl">
-                  <TodoPanel todos={latestTodoTool.input.todos as TodoItem[]} />
-                </div>
-              </div>
             )}
           </Fragment>
         );

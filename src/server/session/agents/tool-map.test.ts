@@ -1,7 +1,21 @@
 import { describe, it, expect } from "vitest";
 import { canonicalizeTool, agentToolName } from "./tool-map.js";
+import { CLAUDE_TOOL_NAMES, CODEX_TOOL_NAMES } from "../../shared/agent-tool-names.js";
 
 describe("canonicalizeTool", () => {
+  // A tool the CLI advertises but this map has never heard of degrades in
+  // silence: no canonical name, so no activity label and no special renderer,
+  // just the generic fallback. That is how the TodoWrite → Task* rename went
+  // unnoticed. This makes the two lists prove they agree.
+  it("has a canonical name for every advertised tool", () => {
+    for (const name of CLAUDE_TOOL_NAMES) {
+      expect(canonicalizeTool("claude", name), `claude tool ${name}`).not.toBeNull();
+    }
+    for (const name of CODEX_TOOL_NAMES) {
+      expect(canonicalizeTool("codex", name), `codex tool ${name}`).not.toBeNull();
+    }
+  });
+
   it("maps Claude CLI tool names to canonical names", () => {
     expect(canonicalizeTool("claude", "Agent")).toBe("agent");
     expect(canonicalizeTool("claude", "Read")).toBe("file_read");
@@ -26,6 +40,11 @@ describe("canonicalizeTool", () => {
     expect(canonicalizeTool("claude", "PushNotification")).toBe("notification");
     expect(canonicalizeTool("claude", "Skill")).toBe("skill");
     expect(canonicalizeTool("claude", "TaskCreate")).toBe("task");
+    expect(canonicalizeTool("claude", "TaskUpdate")).toBe("task");
+    expect(canonicalizeTool("claude", "TaskList")).toBe("task");
+    expect(canonicalizeTool("claude", "TaskGet")).toBe("task");
+    expect(canonicalizeTool("claude", "TaskStop")).toBe("task");
+    expect(canonicalizeTool("claude", "TaskOutput")).toBe("task");
     expect(canonicalizeTool("claude", "TodoWrite")).toBe("todo");
     expect(canonicalizeTool("claude", "ToolSearch")).toBe("tool_search");
     expect(canonicalizeTool("claude", "Workflow")).toBe("workflow");

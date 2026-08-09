@@ -1,127 +1,139 @@
+---
+issue: planning#337
+title: "045: The agent's to-do list in the transcript"
+description: The task panel — how the agent's to-do list is folded out of its tool calls and drawn inline.
+---
 
-# 045: TodoWrite Tool Display
+# 045: The agent's to-do list in the transcript
 
 ## Problem
 
-When Claude uses the `TodoWrite` tool to track tasks during a session, the call falls through to a generic one-liner ("Using TodoWrite...") in the message list. The user cannot see the task list Claude is maintaining.
+The agent maintains a to-do list while it works. Without a renderer for it, each
+call falls through to the generic one-line tool summary and the raw tool-call
+modal, and the user cannot see the list at all.
 
 ## Design
 
-Render TodoWrite calls **inline in the message list**, at their natural position in the conversation. Only the **most recent** TodoWrite renders as a full task panel — all earlier ones collapse to a compact one-liner ("Updated task list"). This gives the user a persistent view of the current task state without a floating panel disconnected from the conversation flow.
+Draw the list **inline in the message list**, at the point where it last
+changed. There is at most one panel in the transcript, so the user has a
+persistent view of the current state without a floating panel disconnected from
+the conversation.
 
-### Why inline, not a floating panel
+### Two tool models, one panel
 
-- The todo list appears exactly where it was last updated — the user sees it in context
-- No new layout regions or z-index management
-- Follows the existing pattern where tools (Edit, Write, AskUserQuestion) render inline with special UI
-- "At most one visible" is enforced by only expanding the last TodoWrite
+The CLI has changed how it exposes the list, and the panel supports both.
 
-### No new store needed
+| | `TodoWrite` (CLI ≤ 2.1.219) | `TaskCreate` / `TaskUpdate` (CLI 2.1.220+) |
+|---|---|---|
+| Shape | **Declarative** — every call carries the whole list in `input.todos` | **Incremental** — a create adds one task, an update patches one task by id |
+| Task id | none (positional) | assigned by the CLI, returned in the **tool result** (`Task #1 created successfully: …`) |
+| To draw the list | read the latest call | fold the whole call sequence |
 
-The `TodoWrite` input (`todos` array) is already persisted in the message's `toolUse` blocks, which survive chat history load, thread fork/switch, and session resume. We derive which TodoWrite is "latest" at render time by scanning the messages array — no separate state to keep in sync.
+`TodoWrite` is still supported. Sessions persisted before the rename have it in
+their history, and dropping it would blank their panel on reload.
 
-## Implementation
+`TaskList` and `TaskGet` are read-only. They render as nothing — the panel
+already shows what they would report — but they never move the panel.
 
-### 1. `src/client/components/TodoPanel.tsx` (new, ~50 lines)
+**`TaskStop` and `TaskOutput` are not to-do list tools.** They share the prefix
+and act on a *background* task (a shell, an agent, a remote session), so they
+stay ordinary tool lines with their own activity labels.
 
-A pure presentational component that renders a todo list from a `todos` array:
+### The list is derived, never stored
 
-```typescript
-interface TodoItem {
-  content: string;
-  status: "pending" | "in_progress" | "completed";
-  activeForm: string;
-}
+`foldTaskList` (`client/components/task-list.ts`) replays the calls in
+`messages` on every render. The calls already survive a history load, a fork, a
+thread switch and a session resume, so a store holding the folded list would
+only be a second copy to keep in sync with them.
 
-function TodoPanel({ todos }: { todos: TodoItem[] }) { ... }
-```
+The fold is pure and total, which is what makes the mid-turn case work: a
+`TaskCreate` whose result has not arrived yet gets a provisional
+`pending-<toolUseId>` key and settles onto its real id the moment the result
+lands, with no state to migrate.
 
-Visual design:
-- Header: "Tasks" + "X/Y completed" progress counter
-- Each item shows a status icon + label:
-  - `completed` — green checkmark, strikethrough, shows `content`
-  - `in_progress` — blue spinner (reuse `tool-spinner` CSS class), shows `activeForm`
-  - `pending` — gray circle, shows `content`
-- `max-h-48 overflow-y-auto` to cap height for long lists
-- Styled with existing dark-mode classes (`bg-gray-900`, `border-gray-700`, `text-xs`)
+Two cases the fold handles deliberately:
 
-### 2. `src/client/components/MessageList.tsx` (edit)
+- **A create still streaming in** has no `subject` yet. It is skipped, so the
+  panel never shows an unlabelled row; the next render folds it in.
+- **An update naming a task whose create is gone** (compaction dropped it) is
+  adopted when the update carries a `subject`, and ignored when it doesn't —
+  an id alone would render as a blank line.
 
-**2a. Compute the last TodoWrite tool ID.**
+### The panel is its own visual element
 
-In the `MessageList` component body, add a `useMemo` that scans `messages` in reverse to find the `id` of the last `TodoWrite` tool_use block:
+`buildVisualElements` emits `{ kind: "task-panel", tasks, messageIndex }` after
+the message holding the last list-changing call.
 
-```typescript
-const lastTodoWriteId = useMemo(() => {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const tools = messages[i].toolUse;
-    if (tools) {
-      for (let j = tools.length - 1; j >= 0; j--) {
-        if (tools[j].name === "TodoWrite") return tools[j].id;
-      }
-    }
-  }
-  return null;
-}, [messages]);
-```
+It has to be a top-level element rather than something a message bubble draws.
+The calls carry no text, so the anchoring message usually produces no bubble;
+and when it also holds an ordinary tool it produces a *tool-group* instead. The
+old `TodoWrite` renderer anchored to the bubble and disappeared in exactly those
+cases.
 
-Pass `lastTodoWriteId` down to `ToolUseItem`.
+### Keeping the panel intact after a reload
 
-**2b. Render TodoWrite in `ToolUseItem`.**
+The panel draws its rows with no click behind it, so the keys it reads must
+survive the docs/244 wire projection — otherwise the panel is right live and
+loses its rows on the next history load.
 
-Add a case after the `AskUserQuestion` block (line 100) and before the generic fallback (line 102):
+`inputKeyTreatment` keeps `taskId`, `subject`, `activeForm` and `status` on the
+task tools (`TASK_LIST_SUMMARY_KEYS`). It is a **key set, not a whole-input
+exemption**: `description` is the one long field these tools carry, the panel
+never draws it, and keeping bodies like that off the wire is what docs/244
+exists for.
 
-```typescript
-if (tool.name === "TodoWrite" && Array.isArray(tool.input.todos)) {
-  if (tool.id === lastTodoWriteId) {
-    return <TodoPanel todos={tool.input.todos as TodoItem[]} />;
-  }
-  // Older TodoWrite — compact one-liner
-  return (
-    <div className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 rounded px-2 py-1 font-mono">
-      Updated task list
-    </div>
-  );
-}
-```
+These calls render as the panel and nothing else, so — unlike every other
+`drop` in that policy — there is no tool line to click and no modal behind
+them. `description` is dropped with no UI that fetches it back. Nothing
+displayed it before either, so nothing is lost; but it makes adding a field to
+the panel two edits, the renderer and the key set. The value stays on disk for
+a future detail view.
 
-### 3. `src/client/components/StreamingIndicator.tsx` (edit, +3 lines)
+**`TaskCreate`'s RESULT matters too, and for a different reason.** The CLI
+assigns the task id and returns it only there. So `TaskCreate` is a member of
+`rendersResultContentInline` (`transcript-slice-tools.ts`): without it the
+projection empties the result on the serve path, the task stays stranded on its
+provisional key, and every later `TaskUpdate` misses it. Only the head of that
+string is needed, so the ordinary slice suffices — it is not a
+`WHOLE_RESULT_TOOL_NAMES` member.
 
-Add a case to `activityFromTool()`:
+### A rejected call changes nothing
 
-```typescript
-case "TodoWrite":
-  return { label: "Updating tasks...", tool: toolName };
-```
+The fold skips any call whose result carries `isError`. Applying them
+optimistically left a phantom row behind a denied `TaskCreate`, and showed a
+failed completion or delete as though it had worked.
 
-### 4. Tests
+## Key files
 
-**`src/client/components/TodoPanel.test.tsx`** (new):
-- Renders nothing / empty state when todos is empty
-- Renders items with correct status indicators
-- Shows progress counter ("2/5 completed")
-- Uses `activeForm` for in_progress, `content` for others
-- Strikethrough on completed items
+| File | Role |
+|---|---|
+| `src/server/shared/task-list-tools.ts` | `TASK_LIST_TOOL_NAMES` / `isTaskListTool` / `TASK_LIST_SUMMARY_KEYS` — one definition, read by both the client renderers and the server projection |
+| `src/client/components/task-list.ts` | `foldTaskList` — rebuilds the list from the call sequence |
+| `src/client/components/TodoPanel.tsx` | the panel; presentational, never reads a tool call |
+| `src/client/components/visual-elements.ts` | emits the `task-panel` element; keeps the task tools out of the clipped tool group |
+| `src/client/components/MessageList/MessageList.tsx` | renders the element |
+| `src/client/components/message-tools.tsx` | returns `null` for a task-list call — the panel draws it |
+| `src/server/shared/transcript-input-policy.ts` | keeps the keys the panel reads on the wire |
+| `src/client/components/StreamingIndicator.tsx` | activity labels |
+| `src/server/session/agents/claude/tool-map.ts` | canonical `task` / `todo` names |
 
-**`src/client/components/MessageList.test.tsx`** (edit — add cases):
-- TodoWrite renders full panel for the latest call
-- TodoWrite renders compact one-liner for older calls
-- Only one full panel when multiple TodoWrite calls exist
+## Why the rename went unnoticed
 
-## Files
+Nothing failed when the CLI replaced the tool. Every renderer matched on the
+literal string `TodoWrite`, so the panel silently stopped rendering and the new
+calls degraded to the generic fallback — a working-looking transcript with a
+missing feature.
 
-| File | Action |
-|------|--------|
-| `src/client/components/TodoPanel.tsx` | Create |
-| `src/client/components/MessageList.tsx` | Edit — add `lastTodoWriteId` memo + TodoWrite case in `ToolUseItem` |
-| `src/client/components/StreamingIndicator.tsx` | Edit — add activity label |
-| `src/client/components/TodoPanel.test.tsx` | Create |
+The first guard against a repeat is in `tool-map.test.ts`: every name in
+`CLAUDE_TOOL_NAMES` / `CODEX_TOOL_NAMES` must have a canonical mapping. It
+catches a name that was added to the advertised list but wired to nothing. It
+does **not** catch a name the CLI added and we never listed — that needs a check
+against what the CLI actually advertises at runtime.
 
 ## Verification
 
-1. `npm run typecheck` — no errors
-2. `npm test` — all tests pass
-3. Manual: trigger a TodoWrite → full panel renders inline at that position
-4. Manual: trigger a second TodoWrite → first collapses to one-liner, second shows full panel
-5. Manual: switch sessions/threads → correct TodoWrite state shown from history
-6. Manual: session with no TodoWrite → nothing extra rendered
+1. `npm run typecheck`, `npm run lint:dev`
+2. `npx vitest run src/client/components src/server/shared/transcript-input-policy.test.ts src/server/session/agents/tool-map.test.ts`
+3. Manual: ask the agent for a multi-step job → the panel appears and updates in place as tasks move to in-progress and completed
+4. Manual: reload the page → the panel renders the same rows from history
+5. Manual: a session recorded before CLI 2.1.220 → its `TodoWrite` panel still renders

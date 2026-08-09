@@ -25,6 +25,7 @@ import { usePresentStore } from "../stores/present-store.js";
 import { revealWorkspaceTab } from "../utils/reveal-workspace-tab.js";
 import { parseMcpToolName, isPresentTool } from "./tool-names.js";
 import { COMMAND_SUMMARY_CHARS } from "../../server/shared/transcript-input-policy.js";
+import { isTaskListTool } from "../../server/shared/task-list-tools.js";
 import { useLazyToolInput } from "../hooks/useLazyToolInput.js";
 import type { ToolUseBlock, ToolResultBlock } from "./MessageList.js";
 
@@ -180,8 +181,11 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
     );
   }
 
-  if (tool.name === "TodoWrite") {
-    return null; // latest is rendered outside the bubble; older ones are hidden
+  // The to-do list tools (TodoWrite, TaskCreate, TaskUpdate, TaskList, TaskGet)
+  // are drawn by the task panel outside the bubble, folded across all of them —
+  // so each individual call renders nothing here.
+  if (isTaskListTool(tool.name)) {
+    return null;
   }
 
   const presentResult = parsePresentToolResult(tool, result);

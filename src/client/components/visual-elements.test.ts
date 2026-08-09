@@ -215,8 +215,78 @@ describe("buildVisualElements", () => {
       expect(elements[1]).toMatchObject({ kind: "message", index: 1, hideTools: false });
     });
 
-    it("STANDALONE_TOOLS contains exactly AskUserQuestion, TodoWrite, EnterPlanMode, and ExitPlanMode", () => {
-      expect(STANDALONE_TOOLS).toEqual(new Set(["AskUserQuestion", "TodoWrite", "EnterPlanMode", "ExitPlanMode"]));
+    it("STANDALONE_TOOLS contains the plan/question tools plus every to-do list tool", () => {
+      expect(STANDALONE_TOOLS).toEqual(new Set([
+        "AskUserQuestion",
+        "EnterPlanMode",
+        "ExitPlanMode",
+        // Never groupable: the panel draws them, so a clipped tool group would
+        // scroll away calls that already render as nothing.
+        "TodoWrite",
+        "TaskCreate",
+        "TaskUpdate",
+        "TaskList",
+        "TaskGet",
+      ]));
+    });
+
+    it("leaves the background-task tools groupable — they are not to-do list tools", () => {
+      // TaskStop / TaskOutput share the prefix and act on a running shell or
+      // agent, so they stay ordinary tool lines.
+      expect(STANDALONE_TOOLS.has("TaskStop")).toBe(false);
+      expect(STANDALONE_TOOLS.has("TaskOutput")).toBe(false);
+    });
+
+    it("emits the task panel as its own element, after the anchoring message", () => {
+      const elements = buildVisualElements([
+        toolMsg([tool("t1", "TaskCreate", { subject: "Do the thing" })], {
+          results: [{ toolUseId: "t1", content: "Task #1 created successfully: Do the thing" }],
+        }),
+      ]);
+      const panel = elements.find((el) => el.kind === "task-panel");
+      expect(panel).toMatchObject({ kind: "task-panel", messageIndex: 0 });
+      if (panel?.kind === "task-panel") {
+        expect(panel.tasks).toEqual([{ id: "1", subject: "Do the thing", status: "pending" }]);
+      }
+    });
+
+    it("emits the panel even when the anchoring message also carries an ordinary tool", () => {
+      // The regression this element kind exists for: with the panel anchored to
+      // a message bubble, a TaskCreate sharing its message with a Bash produced
+      // a tool-group and no bubble — so the panel disappeared.
+      const elements = buildVisualElements([
+        toolMsg([tool("t1", "Bash", { command: "ls" }), tool("t2", "TaskCreate", { subject: "Do it" })]),
+      ]);
+      expect(elements.map((el) => el.kind)).toEqual(["tool-group", "task-panel"]);
+    });
+
+    it("emits exactly one panel however many task calls there are", () => {
+      const elements = buildVisualElements([
+        toolMsg([tool("t1", "TaskCreate", { subject: "One" })]),
+        toolMsg([tool("t2", "TaskCreate", { subject: "Two" })]),
+        toolMsg([tool("t3", "TaskUpdate", { taskId: "pending-t1", status: "completed" })]),
+      ]);
+      const panels = elements.filter((el) => el.kind === "task-panel");
+      expect(panels).toHaveLength(1);
+      expect(panels[0]).toMatchObject({ messageIndex: 2 });
+    });
+
+    it("hides the bubble's tools when a task call shares its message with a subagent", () => {
+      // Otherwise the subagent draws twice — a generic tool line in the bubble
+      // plus its own card — because the task call kept the bubble's tools visible.
+      const elements = buildVisualElements([
+        toolMsg([
+          tool("t1", "TaskCreate", { subject: "Do it" }),
+          tool("t2", "Agent", { description: "Investigate" }),
+        ]),
+      ]);
+      expect(elements[0]).toMatchObject({ kind: "message", index: 0, hideTools: true });
+      expect(elements.map((el) => el.kind)).toEqual(["message", "subagent", "task-panel"]);
+    });
+
+    it("emits no panel when the list is empty", () => {
+      const elements = buildVisualElements([toolMsg([tool("t1", "TodoWrite", { todos: [] })])]);
+      expect(elements.some((el) => el.kind === "task-panel")).toBe(false);
     });
 
     it("SUBAGENT_TOOLS contains exactly Task, Skill, and Agent", () => {

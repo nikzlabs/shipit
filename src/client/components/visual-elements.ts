@@ -1,8 +1,17 @@
 import type { ChatMessage, ToolUseBlock, ToolResultBlock } from "./MessageList.js";
 import { isPresentTool } from "./tool-names.js";
+import { TASK_LIST_TOOL_NAMES, isTaskListTool } from "../../server/shared/task-list-tools.js";
+import { foldTaskList, type TaskItem } from "./task-list.js";
 
 // Tools that render as standalone items outside the grouped container
-export const STANDALONE_TOOLS = new Set(["AskUserQuestion", "TodoWrite", "EnterPlanMode", "ExitPlanMode"]);
+export const STANDALONE_TOOLS = new Set([
+  "AskUserQuestion",
+  "EnterPlanMode",
+  "ExitPlanMode",
+  // The task-list tools draw nothing on their own — the panel draws them — so
+  // they must never be folded into the clipped tool group either.
+  ...TASK_LIST_TOOL_NAMES,
+]);
 
 // Tools extracted into their own top-level visual elements (not grouped, not inside message bubbles)
 //
@@ -102,7 +111,8 @@ export type VisualElement =
   | { kind: "message"; index: number; hideTools: boolean }
   | { kind: "tool-group"; items: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean }[]; streaming: boolean; messageIndices: number[] }
   | { kind: "subagent"; tool: ToolUseBlock; streaming: boolean; messageIndex: number }
-  | { kind: "standalone-tool"; tool: ToolUseBlock; result?: ToolResultBlock; streaming: boolean; messageIndex: number };
+  | { kind: "standalone-tool"; tool: ToolUseBlock; result?: ToolResultBlock; streaming: boolean; messageIndex: number }
+  | { kind: "task-panel"; tasks: TaskItem[]; messageIndex: number };
 
 /**
  * Build a flat list of visual elements from messages.
@@ -112,6 +122,12 @@ export type VisualElement =
  */
 export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
   const elements: VisualElement[] = [];
+  // The task panel is its own element, not something a message bubble draws.
+  // It has to be: the calls that build it carry no text, so the message holding
+  // the last one often produces no bubble at all — and when it also holds an
+  // ordinary tool it produces a tool-group instead. Anchoring the panel to a
+  // bubble made it vanish in exactly those cases.
+  const taskList = foldTaskList(messages);
   let toolAccum: { tool: ToolUseBlock; result?: ToolResultBlock }[] = [];
   let toolMsgIndices: number[] = [];
   let lastToolMsgStreaming = false;
@@ -165,7 +181,7 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
       // tools would change the rendering from tool-group → message bubble, causing
       // the tool-group to disappear and the dialog to jump.
       const extractableStandalone = nonSubagentTools.filter(
-        (t) => isStandaloneTool(t.name) && t.name !== "TodoWrite",
+        (t) => isStandaloneTool(t.name) && !isTaskListTool(t.name),
       );
       if (extractableStandalone.length > 0) {
         flushTools();
@@ -181,9 +197,10 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
       // and no visible text content, extract them as standalone elements instead
       // of rendering an empty bubble. This handles history-loaded messages where
       // ExitPlanMode was persisted in a separate message group from the plan text.
-      // Exclude TodoWrite-only messages — those render via lastTodoWriteId in the bubble.
+      // Exclude the task-list tools — the panel draws those, so extracting them
+      // here would put an empty standalone element beside it.
       const extractableStandalone = nonSubagentTools.filter(
-        (t) => isStandaloneTool(t.name) && t.name !== "TodoWrite",
+        (t) => isStandaloneTool(t.name) && !isTaskListTool(t.name),
       );
       const standaloneOnly = msg.role === "assistant" && !hasVisibleContent
         && extractableStandalone.length > 0
@@ -194,8 +211,12 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
           elements.push({ kind: "standalone-tool", tool, result, streaming: !!msg.streaming, messageIndex: i });
         }
       } else {
-        // Hide tools in the bubble when the only tools are subagent tools (rendered separately)
-        const hideSubagentOnly = subagentTools.length > 0 && nonSubagentTools.length === 0;
+        // Hide tools in the bubble when nothing left in it would draw anything:
+        // the subagent tools render as their own elements, and the task-list
+        // tools render as the panel. Leaving them visible drew the subagent
+        // twice — once as a generic tool line in the bubble, once as its card.
+        const hideSubagentOnly = subagentTools.length > 0
+          && nonSubagentTools.every((t) => isTaskListTool(t.name));
         elements.push({ kind: "message", index: i, hideTools: hideSubagentOnly });
       }
     } else {
@@ -208,6 +229,14 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
     // `toolResults` for the nested-tree view (109).
     for (const tool of subagentTools) {
       elements.push({ kind: "subagent", tool, streaming: !!msg.streaming, messageIndex: i });
+    }
+
+    // The panel goes where the list last changed, after that message's own
+    // tools. A read-only `TaskList`/`TaskGet` doesn't move it, so re-checking
+    // the list mid-turn leaves the panel where the user last saw it.
+    if (i === taskList?.anchorIndex && taskList.tasks.length > 0) {
+      flushTools();
+      elements.push({ kind: "task-panel", tasks: taskList.tasks, messageIndex: i });
     }
   }
 

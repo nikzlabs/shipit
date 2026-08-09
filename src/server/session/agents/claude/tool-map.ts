@@ -35,12 +35,17 @@ export const CLAUDE_TOOL_MAP: Record<string, CanonicalTool> = {
   SendMessage: "agent",
   ShareOnboardingGuide: "file_write",
   Skill: "skill",
+  // The to-do list tools that replaced TodoWrite (CLI 2.1.220). TodoWrite stays
+  // mapped for sessions persisted before the change.
   TaskCreate: "task",
   TaskGet: "task",
   TaskList: "task",
-  TaskStop: "task",
   TaskUpdate: "task",
   TodoWrite: "todo",
+  // Background-task tools. Same prefix, different subsystem — they act on a
+  // running shell/agent, not on the to-do list.
+  TaskOutput: "task",
+  TaskStop: "task",
   ToolSearch: "tool_search",
   WaitForMcpServers: "mcp",
   Workflow: "workflow",

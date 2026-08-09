@@ -82,6 +82,21 @@ describe("projectToolResult", () => {
     expect(projected.truncated).toBeUndefined();
   });
 
+  it("keeps a TaskCreate result — it carries the id the task panel folds on", () => {
+    // The CLI assigns the task id and returns it ONLY here. Emptying this body
+    // strands the task on its provisional key, so every later TaskUpdate misses
+    // it and the panel stops tracking the list after a reload.
+    const content = `Task #7 created successfully: ${"long subject ".repeat(30)}`;
+    const projected = projectToolResult("s1", { toolUseId: "t1", content }, "TaskCreate");
+    expect(projected.content).toBe(content);
+    expect(projected.truncated).toBeUndefined();
+    // Only the head is needed, so it is NOT exempt from slicing — a huge body
+    // still gets bounded, and the `Task #N` prefix survives that.
+    const huge = projectToolResult("s1", { toolUseId: "t2", content: `Task #7 created\n${bigOutput}` }, "TaskCreate");
+    expect(huge.truncated).toBe(true);
+    expect(huge.content.startsWith("Task #7 created")).toBe(true);
+  });
+
   it("still slices a long result for `present`, whose id survives the head", () => {
     // The counter-case that keeps the exemption narrow: `present` also reads
     // result content inline, but only an artifact id out of the head of a

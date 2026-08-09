@@ -135,7 +135,7 @@ The main stores (partial — `ls src/client/stores/` for the full set, currently
 - **`QueueIndicator`** — shows queued message count
 - **`ToolResult`** — renders individual tool results (file diffs, bash output)
 - **`DiffBlock`** — syntax-highlighted diff display
-- **`TodoPanel`** — displays Claude's TodoWrite output
+- **`TodoPanel`** — the agent's to-do list, folded from its task calls by `task-list.ts` (docs/045)
 - **`AskUserQuestion`** — renders permission/question prompts from Claude
 
 ### Right Panel
