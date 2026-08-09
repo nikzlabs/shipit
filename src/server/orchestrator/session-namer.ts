@@ -7,6 +7,7 @@ import {
   codexProviderArgs,
   scrubHarnessEnvCredentials,
 } from "../shared/spawn-routing.js";
+import { disjointCodexTokens } from "../shared/codex-token-usage.js";
 import { ensureCodexHomeInitialized } from "./agents/codex/home-init.js";
 
 export interface SessionName {
@@ -195,13 +196,30 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
       // We run from /tmp (a one-shot prompt unrelated to any repo). Codex >=0.130
       // refuses `exec` outside a trusted git repo unless this flag is passed.
       //
+      // `--json` for the same reason Claude gets `--output-format json`
+      // (planning#341): plain `codex exec` prints prose and nothing else, so a
+      // naming run on a metered service spent real money and wrote no usage row
+      // — the one hole left in req 16's split. The JSONL's `turn.completed`
+      // carries the turn's `usage`; verified against codex-cli 0.146.0, which is
+      // the version `docker/agent-cli` pins.
+      //
       // The provider block goes ahead of the prompt, in the same `-c` position
       // the turn path writes it (`shared/spawn-routing.ts`) — Codex resolves an
       // endpoint through a NAMED provider entry, not a base-URL flag.
-      const args = ["exec", "--skip-git-repo-check", ...codexProviderArgs(serviceRouting)];
+      const args = ["exec", "--json", "--skip-git-repo-check", ...codexProviderArgs(serviceRouting)];
       if (model) args.push("--model", model);
       args.push(prompt);
-      return callCli("codex", args, target);
+      const raw = await callCli("codex", args, target);
+      if (raw.text === null) return raw;
+      const parsed = parseCodexJsonl(raw.text);
+      const failure = parsed.failure ? { failure: parsed.failure } : {};
+      if (!parsed.usage) return { ...raw, text: parsed.text, ...failure };
+      // Codex's `turn.completed` carries no duration, so the wall clock stands.
+      return {
+        text: parsed.text,
+        usage: { ...parsed.usage, durationMs: raw.usage?.durationMs ?? 0 },
+        ...failure,
+      };
     }
   }
 }
@@ -250,6 +268,105 @@ function parseClaudeJson(stdout: string): { text: string | null; usage?: Session
   } catch {
     return { text: stdout };
   }
+}
+
+/**
+ * `codex exec --json`'s JSONL stream, reduced to the three things naming needs.
+ *
+ * Measured against codex-cli 0.146.0 driving a local Responses recorder — the
+ * same method phase 3 used for spawn shaping. One run prints, in order:
+ *
+ * ```
+ * {"type":"thread.started","thread_id":"…"}
+ * {"type":"item.completed","item":{"type":"error","message":"Model metadata …"}}
+ * {"type":"turn.started"}
+ * {"type":"item.completed","item":{"type":"agent_message","text":"…"}}
+ * {"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":800,
+ *   "cache_write_input_tokens":0,"output_tokens":42,"reasoning_output_tokens":7}}
+ * ```
+ *
+ * Three things that shape the parse, all of them observed rather than assumed:
+ *
+ *  - **`input_tokens` includes `cached_input_tokens`** — same overlap the app
+ *    server reports, so the same `disjointCodexTokens` splits it. Recording the
+ *    raw pair would charge every cached token twice at the input rate, and
+ *    Codex reports no dollar figure that would mask the error.
+ *  - **`output_tokens` already includes `reasoning_output_tokens`**, which is
+ *    reported alongside as a breakdown. ShipIt carries the total and drops the
+ *    breakdown; adding them would double-count reasoning.
+ *  - **An `error` item is not necessarily fatal.** The run above emitted one
+ *    ("Model metadata … not found") and then completed normally. So an error
+ *    message becomes the failure detail only when no agent message arrived.
+ *
+ * Best-effort, exactly like {@link parseClaudeJson}: a stream this does not
+ * recognize leaves the raw stdout as the text, which the slug regex then reads
+ * as it read plain `codex exec` output before.
+ */
+export function parseCodexJsonl(stdout: string): {
+  text: string | null;
+  usage?: SessionNameUsage;
+  failure?: string;
+} {
+  const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  let sawEvent = false;
+  let text: string | null = null;
+  let errorMessage: string | undefined;
+  let usage: SessionNameUsage | undefined;
+
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    let event: { type?: unknown; item?: unknown; usage?: unknown; error?: unknown };
+    try {
+      event = JSON.parse(trimmed) as typeof event;
+    } catch {
+      continue;
+    }
+    if (typeof event.type !== "string") continue;
+    sawEvent = true;
+
+    if (event.type === "item.completed") {
+      const item = event.item as { type?: unknown; text?: unknown; message?: unknown } | undefined;
+      // Last agent message wins — the naming prompt asks for one, but a run
+      // that somehow produces two should be judged on what it finished saying.
+      if (item?.type === "agent_message" && typeof item.text === "string") text = item.text;
+      if (item?.type === "error" && typeof item.message === "string") errorMessage = item.message;
+      continue;
+    }
+    if (event.type === "turn.completed") {
+      const reported = event.usage as Record<string, unknown> | undefined;
+      if (!reported) continue;
+      const tokens = disjointCodexTokens({
+        inputTokens: num(reported.input_tokens),
+        outputTokens: num(reported.output_tokens),
+        cachedInputTokens: num(reported.cached_input_tokens),
+        cacheWriteInputTokens: num(reported.cache_write_input_tokens),
+      });
+      if (!tokens) continue;
+      usage = {
+        // Filled in by the caller from the wall clock; `turn.completed` has none.
+        durationMs: 0,
+        inputTokens: tokens.input,
+        outputTokens: tokens.output,
+        ...(tokens.cacheRead !== undefined ? { cacheReadTokens: tokens.cacheRead } : {}),
+        ...(tokens.cacheWrite !== undefined ? { cacheCreateTokens: tokens.cacheWrite } : {}),
+      };
+      continue;
+    }
+    if (event.type === "turn.failed") {
+      const err = event.error as { message?: unknown } | undefined;
+      if (typeof err?.message === "string") errorMessage = err.message;
+    }
+  }
+
+  // Nothing recognizable on stdout: treat it as the prose the pre-`--json`
+  // spawn produced rather than declaring the run a failure.
+  if (!sawEvent) return { text: stdout };
+  return {
+    text,
+    ...(usage ? { usage } : {}),
+    ...(text === null && errorMessage ? { failure: errorMessage } : {}),
+  };
 }
 
 /**

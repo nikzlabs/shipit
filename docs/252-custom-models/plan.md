@@ -1348,19 +1348,42 @@ resolves it:
 No notice fires for the second case, deliberately: nothing failed, and a notice would appear on
 every session of a half-configured install while naming nothing the user can act on.
 
-**One finding is recorded rather than fixed, and it is a real gap.** `recordNonTurnUsage` writes
-nothing when the harness reported no telemetry — and `codex exec` reports none through this path,
-so **naming on a metered OpenAI key spends money and records no row**. The reviewer is right that
-this collides with req 16's split reading as exhaustive. It is not fixed here because both
-available answers are wrong in different directions: an all-zero row priced through the
-catalogue's rates asserts "this was free", which is a *wrong* number rather than a missing one,
-and the only way to get Codex's real figures is to parse `codex exec --json`'s event stream —
-whose shape could not be verified in this environment, and shipping an unverified parser in front
-of session naming risks breaking naming outright on every Codex install to fix a metric. The
-honest status is that **phase 7 records Claude-harness non-turn work and not Codex-harness
-non-turn work**; closing it is a checklist item against phase 6, which owns the usage view and can
-either carry the measurement or narrow the label ("this covers agent turns", the plan's own
-second option above).
+**One finding was recorded rather than fixed, and it is now closed by measurement**
+(planning#341). `recordNonTurnUsage` writes nothing when the harness reported no telemetry, and
+plain `codex exec` reports none — so **naming on a metered OpenAI key spent money and recorded no
+row**, which collides with req 16's split reading as exhaustive. Phase 7 left it open because the
+two available answers were wrong in different directions: an all-zero row priced through the
+catalogue's rates asserts "this was free", a *wrong* number rather than a missing one, and the
+alternative — parsing `codex exec --json` — rested on an event shape nobody had verified, so
+shipping the parser risked breaking naming outright on every Codex install to fix a metric.
+
+**The shape is now verified, so the measurement is the answer and req 16's label stands
+unamended.** Against codex-cli 0.146.0 (the version `docker/agent-cli` pins) driving a local
+Responses recorder — phase 3's method — `codex exec --json` prints JSONL whose `turn.completed`
+carries the turn's `usage`, and whose `item.completed`/`agent_message` carries the text naming was
+already scraping off stdout:
+
+```
+{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":800,
+  "cache_write_input_tokens":0,"output_tokens":42,"reasoning_output_tokens":7}}
+```
+
+Three things that shape the parser, all observed rather than assumed. **`input_tokens` includes
+`cached_input_tokens`** — the same overlap the app server reports, so the same subtraction
+applies; that rule now lives in `shared/codex-token-usage.ts` rather than in the adapter, because
+this made the orchestrator a second reader of the same figures under different key names and a
+second implementation is how the two boundaries come to disagree. **`output_tokens` already
+includes `reasoning_output_tokens`**, which is reported alongside as a breakdown, so carrying both
+would double-count reasoning. And **an `error` item is not necessarily fatal** — an unknown model
+id emits one and the turn then completes normally — so an error message becomes the failure detail
+only when no agent message arrived. A stream the parser does not recognize degrades to reading
+stdout as prose, which is exactly the pre-`--json` behaviour, so an unexpected CLI never costs
+naming its title to gain a metric.
+
+Codex still reports **no dollar figure**, which is unchanged and correct: `costReported` stays
+false and the row prices from the catalogue's rates, exactly as a Codex *turn* does. What is
+closed is the token gap, on both halves — the naming shell-out through this parser, and PR
+descriptions through `spawnSubAgent`, which already carried the app server's figures.
 
 **One shape carried over from the sub-agent path deliberately.** The usage row is written with
 `subAgentId` set to the **derived harness**. It is what the row is — a one-shot spawn of that

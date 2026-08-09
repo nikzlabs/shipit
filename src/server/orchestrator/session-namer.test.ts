@@ -101,6 +101,10 @@ describe("generateSessionName", () => {
           expect(file).toBe("codex");
           expect(args[0]).toBe("exec");
           expect(args).toContain("--skip-git-repo-check");
+          // planning#341 — the JSONL stream, so a naming run's tokens can be
+          // recorded rather than vanishing (req 16). Bare prose on stdout, as
+          // mocked below, still names: the parser degrades to reading it as text.
+          expect(args).toContain("--json");
           expect(args[args.length - 1]).toContain("Add a login page");
           setImmediate(() => {
             cb(null, '{"slug": "add-login", "title": "Add Login Page"}\n', "");
@@ -431,6 +435,117 @@ describe("generateSessionName", () => {
     const result = await mod.generateSessionName("hi", { harnessId: "claude" });
 
     expect(result.name).toEqual({ slug: "bare", title: "Bare" });
+  });
+
+  // planning#341 — the gap this closes. `codex exec` printed prose and nothing
+  // else, so a naming run on a metered service spent money and wrote no usage
+  // row. The JSONL's `turn.completed` carries the figures; the shapes below are
+  // verbatim from codex-cli 0.146.0 driving a local Responses recorder.
+  describe("codex exec --json telemetry", () => {
+    const mockCodex = (stdout: string): void => {
+      vi.doMock("node:child_process", () => ({
+        execFile: (
+          _file: string,
+          _args: string[],
+          _opts: unknown,
+          cb: (err: Error | null, stdout: string, stderr: string) => void,
+        ) => {
+          setImmediate(() => cb(null, stdout, ""));
+          return { on: () => {}, stdin: { end: () => {} } } as unknown;
+        },
+      }));
+    };
+
+    it("parses the agent message and the turn's usage from the JSONL stream", async () => {
+      mockCodex([
+        '{"type":"thread.started","thread_id":"019fe844"}',
+        '{"type":"turn.started"}',
+        '{"type":"item.completed","item":{"id":"item_1","type":"agent_message",'
+        + '"text":"{\\"slug\\": \\"add-login\\", \\"title\\": \\"Add Login Page\\"}"}}',
+        '{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":800,'
+        + '"cache_write_input_tokens":5,"output_tokens":42,"reasoning_output_tokens":7}}',
+      ].join("\n"));
+
+      const mod = await import("./session-namer.js");
+      const result = await mod.generateSessionName("Add a login page", { harnessId: "codex" });
+
+      expect(result.name).toEqual({ slug: "add-login", title: "Add Login Page" });
+      // `input_tokens` INCLUDES `cached_input_tokens`, so input is 1000 - 800.
+      // Recording the raw pair charges the cached tokens twice at the input
+      // rate, and Codex reports no dollar figure that would mask it.
+      expect(result.usage).toEqual({
+        durationMs: expect.any(Number),
+        inputTokens: 200,
+        outputTokens: 42,
+        cacheReadTokens: 800,
+        cacheCreateTokens: 5,
+      });
+      // Codex reports no dollar figure. Absent, not zero — a $0 here would be
+      // priced as free instead of priced from the catalogue's rates.
+      expect(result.usage?.costUsd).toBeUndefined();
+    });
+
+    it("still reports the usage when the title does not parse", async () => {
+      // The tokens were consumed either way, which is exactly why
+      // `graduate-session` records usage outside the `name === null` branch.
+      mockCodex([
+        '{"type":"item.completed","item":{"type":"agent_message","text":"Sorry, I cannot."}}',
+        '{"type":"turn.completed","usage":{"input_tokens":300,"output_tokens":9}}',
+      ].join("\n"));
+
+      const mod = await import("./session-namer.js");
+      const result = await mod.generateSessionName("hi", { harnessId: "codex" });
+
+      expect(result.name).toBeNull();
+      expect(result.usage).toMatchObject({ inputTokens: 300, outputTokens: 9 });
+    });
+
+    it("treats an error item as the failure detail only when no message arrived", async () => {
+      mockCodex([
+        '{"type":"item.completed","item":{"type":"error","message":"stream disconnected"}}',
+      ].join("\n"));
+
+      const mod = await import("./session-namer.js");
+      const result = await mod.generateSessionName("hi", { harnessId: "codex" });
+
+      expect(result.name).toBeNull();
+      expect(result.failure).toBe("stream disconnected");
+      expect(result.usage?.inputTokens).toBeUndefined();
+      expect(result.usage?.costUsd).toBeUndefined();
+    });
+
+    it("names normally when a non-fatal error item precedes a completed turn", async () => {
+      // Observed on the real CLI: an unknown model id emits an `error` item
+      // ("Model metadata … not found") and the turn then completes normally.
+      mockCodex([
+        '{"type":"item.completed","item":{"type":"error","message":"Model metadata not found."}}',
+        '{"type":"item.completed","item":{"type":"agent_message",'
+        + '"text":"{\\"slug\\": \\"ok\\", \\"title\\": \\"Ok\\"}"}}',
+        '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}',
+      ].join("\n"));
+
+      const mod = await import("./session-namer.js");
+      const result = await mod.generateSessionName("hi", { harnessId: "codex" });
+
+      expect(result.name).toEqual({ slug: "ok", title: "Ok" });
+      expect(result.failure).toBeUndefined();
+    });
+
+    it("reports no tokens and no cost when the stream carries no usage at all", async () => {
+      // The distinction the whole issue turns on: no telemetry is not free.
+      // What survives is the wall clock, which `recordNonTurnUsage` reads as
+      // nothing to record rather than as a $0 run.
+      mockCodex('{"type":"item.completed","item":{"type":"agent_message",'
+        + '"text":"{\\"slug\\": \\"s\\", \\"title\\": \\"T\\"}"}}');
+
+      const mod = await import("./session-namer.js");
+      const result = await mod.generateSessionName("hi", { harnessId: "codex" });
+
+      expect(result.name).toEqual({ slug: "s", title: "T" });
+      expect(result.usage?.inputTokens).toBeUndefined();
+      expect(result.usage?.outputTokens).toBeUndefined();
+      expect(result.usage?.costUsd).toBeUndefined();
+    });
   });
 
   // docs/150 / docs/252 — a run scoped to a provider-account root must not
