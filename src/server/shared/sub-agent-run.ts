@@ -15,7 +15,7 @@
  * credentials, or the registry. Wiring those is the caller's job.
  */
 
-import type { AgentProcess, AgentRunParams, AgentEvent, AgentId } from "./types.js";
+import type { AgentProcess, AgentRunParams, AgentEvent, AgentId, ServiceRouting } from "./types.js";
 
 /**
  * Default wall-clock cap on a single sub-agent run.
@@ -77,6 +77,14 @@ export interface SubAgentRunOptions {
   cwd: string;
   /** Optional model alias/id; defaults to the adapter's default model. */
   model?: string;
+  /**
+   * docs/252 phase 3 — base URL + credential for the selected model's service.
+   * A consult is a `(service, billing mode, model)` selection like any other
+   * (the invoked agent's own sub-agent defaults), so it needs the same shaping
+   * a primary turn does — otherwise a consult on a custom service would run
+   * against the harness's own vendor.
+   */
+  serviceRouting?: ServiceRouting;
   /** docs/217 — reasoning effort for the sub-agent (the invoked agent's global default). */
   reasoningEffort?: string;
   /** Wall-clock cap in ms. Defaults to {@link DEFAULT_SUB_AGENT_TIMEOUT_MS}. */
@@ -95,6 +103,13 @@ export interface SubAgentRunResult {
   truncated: boolean;
   durationMs: number;
   costUsd: number;
+  /**
+   * docs/252 phase 3 — true when the harness reported a dollar figure. Distinct
+   * from `costUsd > 0`: a harness that reports nothing (Codex) leaves this
+   * false, and the cost rule must price such a turn from the catalogue's rates
+   * rather than record it as free.
+   */
+  costReported?: boolean;
   /**
    * Turn-wide token totals from the sub-agent's `agent_result` (docs/144 usage
    * attribution). Carried so the consult's usage is recorded with the same
@@ -139,6 +154,8 @@ export interface SubAgentSpawnRequest {
   /** The caller's recursion depth (0 for a primary). The worker stamps depth+1. */
   depth: number;
   model?: string;
+  /** docs/252 phase 3 — base URL + credential for the sub-agent model's service. */
+  serviceRouting?: ServiceRouting;
   /** docs/217 — reasoning effort for the sub-agent (the invoked agent's global default). */
   reasoningEffort?: string;
   timeoutMs?: number;
@@ -189,6 +206,12 @@ export function runAgentToCompletion(
   const completedMessages: string[] = [];
   let lastFullText = "";
   let costUsd = 0;
+  // docs/252 phase 3 — whether the harness reported a dollar figure AT ALL,
+  // which `costUsd` alone cannot say: it starts at 0 and Codex reports nothing,
+  // so "reported nothing" and "cost nothing" are the same value. Reading the
+  // zero as a real figure is what recorded every metered OpenAI consult as free,
+  // in the one column req 16 exists to make honest.
+  let costReported = false;
   let reportedDurationMs: number | undefined;
   let inputTokens: number | undefined;
   let outputTokens: number | undefined;
@@ -230,6 +253,7 @@ export function runAgentToCompletion(
           truncated,
           durationMs: reportedDurationMs ?? Math.max(0, Date.now() - startedAtMs),
           costUsd,
+          costReported,
           ...(inputTokens !== undefined ? { inputTokens } : {}),
           ...(outputTokens !== undefined ? { outputTokens } : {}),
           ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
@@ -265,7 +289,10 @@ export function runAgentToCompletion(
             lastFullText = text;
           }
         } else if (event.type === "agent_result") {
-          if (event.cost?.totalUsd) costUsd = event.cost.totalUsd;
+          if (event.cost?.totalUsd !== undefined) {
+            costUsd = event.cost.totalUsd;
+            costReported = true;
+          }
           if (typeof event.durationMs === "number") reportedDurationMs = event.durationMs;
           if (event.tokens) {
             inputTokens = event.tokens.input;
@@ -298,6 +325,7 @@ export function buildSubAgentRunParams(opts: SubAgentRunOptions): AgentRunParams
     prompt: opts.prompt,
     cwd: opts.cwd,
     ...(opts.model !== undefined ? { model: opts.model } : {}),
+    ...(opts.serviceRouting !== undefined ? { serviceRouting: opts.serviceRouting } : {}),
     ...(opts.reasoningEffort !== undefined ? { reasoningEffort: opts.reasoningEffort } : {}),
   };
 }

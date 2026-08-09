@@ -5,7 +5,7 @@
 
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
-import { getAuthEnvKey, isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
+import { isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
 import type { AccountSelectionMode, AgentId, FailoverCutoffs, ProviderAccount, SubAgentDefaultsPatch } from "../../shared/types.js";
 import { credentialModeKey, DEFAULT_FAILOVER_CUTOFF, DEFAULT_SELECTION_MODE, parseCredentialModeKey } from "../../shared/types.js";
 import { allServices, credentialModeForStorageEnv, getMode, getService } from "../../shared/catalogue/index.js";
@@ -160,6 +160,7 @@ export function listAgents(agentRegistry: AgentRegistry): AgentInfo[] {
     installed: a.installed,
     authConfigured: a.authConfigured,
     models: a.capabilities.models,
+    eligibleModels: a.eligibleModels,
     supportsReview: a.capabilities.supportsReview,
     supportsSteering: a.capabilities.supportsSteering,
     supportsCompaction: a.capabilities.supportsCompaction,
@@ -431,7 +432,18 @@ export async function saveGlobalSettings(
             throw new ServiceError(400, `Invalid model "${value}" for ${info.name}`);
           }
         }
-        credentialStore.setAgentSubAgentDefaults(agentId, { model: value ?? null });
+        // docs/252 phase 3 — say which `(service, mode)` this id was chosen
+        // FROM. The picker still offers bare ids (a service axis there follows
+        // the session picker in phase 4), and without a hint the store resolves
+        // to the first mode of the harness's own vendor — `sub` for Anthropic —
+        // so on a key-only install every consult on that default then failed.
+        // The eligible set is the answer, and it is right here.
+        const chosen = value ? info.eligibleModels?.find((m) => m.modelId === value) : undefined;
+        credentialStore.setAgentSubAgentDefaults(
+          agentId,
+          { model: value ?? null },
+          chosen ? { serviceId: chosen.serviceId, billingMode: chosen.billingMode } : undefined,
+        );
       }
     }
   }
@@ -480,9 +492,16 @@ export function setAgent(
   const info = agentRegistry.get(agentId);
   if (!info) throw new ServiceError(400, `Unknown agent: ${agentId}`);
   if (!info.installed) throw new ServiceError(400, `${info.name} CLI is not installed in this environment`);
+  // docs/252 phase 3 — `authConfigured` now means "this harness has at least
+  // one model it can run" (req 8), so the message names that condition rather
+  // than one vendor's environment variable: on an install whose only credential
+  // is a DeepSeek key, "OPENAI_API_KEY is not set" would be both true and beside
+  // the point.
   if (!info.authConfigured) {
-    const envKey = getAuthEnvKey(agentId);
-    throw new ServiceError(400, `${envKey ?? "API key"} is not set. Add it in Settings → Agents.`);
+    throw new ServiceError(
+      400,
+      `${info.name} has no models available. Add a credential for a service it can reach in Settings → Services.`,
+    );
   }
   return { agentId };
 }

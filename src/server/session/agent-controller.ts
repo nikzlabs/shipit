@@ -15,7 +15,7 @@ import type {
   AgentEvent,
   AgentId,
 } from "./agents/agent-process.js";
-import type { PermissionMode, WorkerAgentStartBody, WorkerAgentStatus } from "../shared/types.js";
+import type { PermissionMode, ServiceRouting, WorkerAgentStartBody, WorkerAgentStatus } from "../shared/types.js";
 import type { PermissionBroker } from "./permission-broker.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
@@ -219,10 +219,10 @@ export class AgentController {
     // and the per-turn cap; the worker just runs the adapter. Two CLI processes
     // are alive during the spawn window (the primary, blocked on the caller's
     // `shipit agent` shell call, and this sub-agent).
-    app.post<{ Body: { agentId: AgentId; prompt: string; spawnId: string; depth?: number; model?: string; reasoningEffort?: string; timeoutMs?: number; maxOutputChars?: number } }>(
+    app.post<{ Body: { agentId: AgentId; prompt: string; spawnId: string; depth?: number; model?: string; serviceRouting?: ServiceRouting; reasoningEffort?: string; timeoutMs?: number; maxOutputChars?: number } }>(
       "/agent/spawn",
       async (request, reply) => {
-        const { agentId, prompt, spawnId, depth, model, reasoningEffort, timeoutMs, maxOutputChars } = request.body ?? {};
+        const { agentId, prompt, spawnId, depth, model, serviceRouting, reasoningEffort, timeoutMs, maxOutputChars } = request.body ?? {};
         if (!agentId || typeof prompt !== "string" || !spawnId) {
           console.warn("[sub-agent] worker rejected spawn: agentId, prompt, and spawnId are required");
           return reply.code(400).send({ error: "agentId, prompt, and spawnId are required" });
@@ -246,6 +246,9 @@ export class AgentController {
           prompt,
           cwd: this.deps.workspaceDir,
           ...(model !== undefined ? { model } : {}),
+          // docs/252 phase 3 — a consult runs on its own selection, so it needs
+          // the same base-URL/credential shaping a primary turn gets.
+          ...(serviceRouting !== undefined ? { serviceRouting } : {}),
           ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
           ...(timeoutMs !== undefined ? { timeoutMs } : {}),
           ...(maxOutputChars !== undefined ? { maxOutputChars } : {}),

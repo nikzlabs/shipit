@@ -32,6 +32,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { resolveTurnCost, turnAttributionFor } from "../turn-attribution.js";
+import { selectRouteForSelection, serviceRoutingForSelection } from "../service-routing.js";
 import type { AgentId, SubAgentConsultCard, WsServerMessage } from "../../shared/types.js";
 import type { SessionManager } from "../sessions.js";
 import type { CredentialStore } from "../credential-store.js";
@@ -260,10 +262,53 @@ export async function runSubAgent(
   }
   runner.subAgentSpawnsThisTurn += 1;
 
-  // §4 — resolve the sub-agent's provider-account route exactly as the primary
-  // turn path does, so a multi-account user provisions from the freshest account
+  // docs/217 — a sub-agent runs with the invoked agent's OWN global defaults
+  // (reasoning effort + model, set on its Settings tab), independent of the
+  // caller's session composer value. Resolved per spawn so a Settings change
+  // applies next time. An unset model lets the adapter pick `models[0]`.
+  //
+  // docs/252 phase 3 — that default is a `(service, billing mode, model)`
+  // selection (phase 1 widened it), and it is read HERE, before the route, for
+  // the reason the whole phase exists: the route belongs to the selected mode.
+  // Asking `selectAccountForTurn(subAgentId)` first would resolve an Anthropic
+  // account for a consult whose default model is a DeepSeek one, and the spawn
+  // would then be shaped — or not shaped — against the wrong credential.
+  const { reasoningEffort, model, serviceId, billingMode } =
+    deps.credentialStore.getAgentSubAgentDefaults(subAgentId);
+  // An UNSET default is not an absence of a selection — it means "the harness's
+  // own first model", which is what the adapter falls back to (`models[0]`). So
+  // resolve it to the first ELIGIBLE entry rather than leaving the consult
+  // selectionless, which had two consequences the phase plan rules out: every
+  // such consult wrote an unattributed `legacy` row forever (legacy is supposed
+  // to mean "before ShipIt tracked this"), and on an install whose only
+  // credential is a custom service's the spawn fell back to native-vendor
+  // routing and refused a consult the harness could perfectly well have run.
+  const fallbackModel = info.eligibleModels?.[0];
+  const subSelection =
+    model && serviceId && billingMode
+      ? { serviceId, billingMode, modelId: model }
+      : !model && fallbackModel
+        ? {
+            serviceId: fallbackModel.serviceId,
+            billingMode: fallbackModel.billingMode,
+            modelId: fallbackModel.modelId,
+          }
+        : undefined;
+  const subAttribution = turnAttributionFor(subSelection);
+  // What the spawn actually runs. The resolved triple when there is one, else
+  // the bare default (an install whose stored default predates the triple), else
+  // nothing — which lets the adapter pick its own first model, exactly as before.
+  const spawnModel = subSelection?.modelId ?? model;
+
+  // §4 — resolve the sub-agent's credential route exactly as the primary turn
+  // path does, so a multi-account user provisions from the freshest account
   // root rather than the stale flat root.
-  const selection = deps.providerAccountManager?.selectAccountForTurn(subAgentId);
+  const selection = deps.providerAccountManager
+    ? selectRouteForSelection(subAgentId, subSelection, {
+        credentialStore: deps.credentialStore,
+        providerAccountManager: deps.providerAccountManager,
+      })
+    : undefined;
   if (selection && !selection.ok) {
     if (selection.reason === "all_exhausted") {
       throw rejectSpawn(sessionId, subAgentId, 429, "all_accounts_exhausted",
@@ -301,11 +346,11 @@ export async function runSubAgent(
   // the pending card below is the durable one.
   runner.emitMessage({ type: "sub_agent_spawn", sessionId, spawnId, subAgentId });
 
-  // docs/217 — a sub-agent runs with the invoked agent's OWN global defaults
-  // (reasoning effort + model, set on its Settings tab), independent of the
-  // caller's session composer value. Resolved per spawn so a Settings change
-  // applies next time. An unset model lets the adapter pick `models[0]`.
-  const { reasoningEffort, model } = deps.credentialStore.getAgentSubAgentDefaults(subAgentId);
+  // docs/252 phase 3 — with the route now scoped to the sub-agent's own
+  // selection, this says whether the consult needs shaping: an account-delivered
+  // credential is the CLI's own login and is left alone, a string-delivered one
+  // is materialized and the endpoint set alongside it.
+  const subServiceRouting = serviceRoutingForSelection(subAgentId, subSelection, route);
 
   console.log(
     `[sub-agent] accepted session=${sessionId} spawn=${spawnId} card=${cardId} agent=${subAgentId} `
@@ -391,7 +436,12 @@ export async function runSubAgent(
       spawnId,
       depth,
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-      ...(model !== undefined ? { model } : {}),
+      // The RESOLVED model, so what runs and what is recorded are the same by
+      // construction. Letting the adapter fall back to its own `models[0]`
+      // instead would run the catalogue join's first entry, which on an install
+      // with no first-party credential is a model this install cannot run.
+      ...(spawnModel !== undefined ? { model: spawnModel } : {}),
+      ...(subServiceRouting !== undefined ? { serviceRouting: subServiceRouting } : {}),
     });
     let result = await spawn();
 
@@ -477,14 +527,43 @@ export async function runSubAgent(
       result.inputTokens !== undefined ||
       result.outputTokens !== undefined;
     if (hasUsage) {
+      // docs/252 phase 3 — the sub-agent writer used to pass neither model nor
+      // route, so a consult's row could not say what it ran on at all. It now
+      // carries the same attribution a primary turn does, and its cost goes
+      // through the same billing-mode rule: a consult on a subscription spent no
+      // money, and one on a metered key that reported no figure is priced from
+      // the persisted rates rather than recorded as free.
+      //
+      // `reportedCostSource: "per-turn"` is what a one-shot spawn's figure
+      // already is — this states it rather than leaving `record()` to infer it
+      // from `subAgentId`, which is the inference phase 3a's discriminator
+      // exists to replace.
+      const consultCost = resolveTurnCost({
+        harnessId: subAgentId,
+        attribution: subAttribution,
+        // Not `result.costUsd`: that starts at zero and Codex reports no dollar
+        // figure at all, so passing it would tell the rule "the harness reported
+        // $0" and record every metered OpenAI consult as free.
+        reportedCostUsd: result.costReported ? result.costUsd : undefined,
+        reportedCostSource: "per-turn",
+        tokens: {
+          input: result.inputTokens,
+          output: result.outputTokens,
+          cacheRead: result.cacheReadTokens,
+          cacheWrite: result.cacheCreateTokens,
+        },
+      });
       deps.usageManager.record(
         sessionId,
-        result.costUsd,
+        consultCost.costUsd,
         result.durationMs,
         result.inputTokens,
         result.outputTokens,
         {
           subAgentId,
+          costSource: consultCost.costSource,
+          ...(spawnModel !== undefined ? { model: spawnModel } : {}),
+          ...(subAttribution ? { attribution: subAttribution } : {}),
           ...(result.cacheReadTokens !== undefined ? { cacheRead: result.cacheReadTokens } : {}),
           ...(result.cacheCreateTokens !== undefined ? { cacheCreate: result.cacheCreateTokens } : {}),
           ...(result.contextTokens !== undefined ? { contextTokens: result.contextTokens } : {}),

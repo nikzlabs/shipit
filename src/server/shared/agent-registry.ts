@@ -12,10 +12,13 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { EventEmitter } from "node:events";
 import type { AgentId, AgentCapabilities } from "./types/agent-types.js";
+import type { BillingMode } from "./catalogue/types.js";
 import {
   HARNESSES,
+  catalogueModelIdsForHarness,
   credentialStorageEnvNames,
-  nativeModelIdsForHarness,
+  eligibleEntriesForHarness,
+  type ConfiguredCredential,
 } from "./catalogue/index.js";
 import { readInstalledHarnesses } from "./installed-harnesses.js";
 
@@ -27,30 +30,30 @@ const execFileAsync = promisify(execFile);
 export { CLAUDE_TOOL_NAMES, CODEX_TOOL_NAMES } from "./agent-tool-names.js";
 
 /**
- * docs/252 phase 1 — the model lists are DERIVED from the service catalogue.
+ * docs/252 — the model lists are DERIVED from the service catalogue.
  *
  * They used to be hand-kept arrays here, which is the `AgentId` conflation this
  * feature removes: a harness is a CLI to spawn, and which models exist is a
- * property of the *service*. `nativeModelIdsForHarness` returns the models the
- * harness's own vendor's service declares, de-duplicated across billing modes
- * and in catalogue order.
+ * property of the *service*.
  *
- * **Restricted to the native service on purpose.** The catalogue also carries
- * DeepSeek, the gateways and GLM, and the join would offer them here — but
- * there is no way to give them a credential (phase 2) or route a turn to them
- * (phase 3) yet, so phase 1 narrows to `nativeService` and nothing user-visible
- * moves. `catalogue.test.ts` pins both lists against what shipped before the
- * catalogue existed. Phase 3 replaces both with the credential-filtered join.
+ * **The whole join, not just the harness's own vendor.** Phase 1 narrowed these
+ * to `nativeService` because nothing could yet give a custom service a
+ * credential or route a turn to one; phase 3 can, so the narrowing goes. These
+ * are the *catalogue's* answer — what this CLI could speak to — and are used
+ * where no credential question is being asked: the worker-side adapter's static
+ * capability block and {@link agentIdForModel}. What the picker offers is the
+ * CREDENTIAL-FILTERED subset, computed per install in {@link AgentRegistry}.
  *
  * Order still matters exactly as it did: `models[0]` is the default a fresh
  * install runs with (the server's connect-time fallback and the client picker's
- * `activeAgent?.models[0]` both resolve to the first entry), so the ordering
- * *within* a mode in `catalogue/services.ts` is what decides it.
+ * first-model fallback both resolve to the first entry), so the ordering
+ * *within* a mode in `catalogue/services.ts` is what decides it — and the
+ * first-party services still sort first, so no default moved.
  */
-export const CLAUDE_MODELS = nativeModelIdsForHarness("claude");
+export const CLAUDE_MODELS = catalogueModelIdsForHarness("claude");
 
-/** See {@link CLAUDE_MODELS} — derived from the `openai` service's rows. */
-export const CODEX_MODELS = nativeModelIdsForHarness("codex");
+/** See {@link CLAUDE_MODELS} — the same join for the `codex` harness. */
+export const CODEX_MODELS = catalogueModelIdsForHarness("codex");
 
 // docs/252 phase 8 — `normalizeCodexModelId` lived here: a shim that mapped the
 // retired unsuffixed GPT-5.6 slug onto Sol for one service, one style and one
@@ -62,13 +65,52 @@ export const CODEX_MODELS = nativeModelIdsForHarness("codex");
 // see the note beside `retirementSuccessor` for why an id alone cannot say whose
 // retirement applies.
 
+/**
+ * docs/252 phase 3 (req 8) — one model the picker may offer, as the identity it
+ * is actually selected by.
+ *
+ * The entry is the **triple**, not a model id: the same id is reachable through
+ * a vendor directly and through a gateway, and through two modes of one service,
+ * at different prices — so an id alone cannot say who is billing you (req 11).
+ * `serviceName` and `label` ride along because the picker groups on the service
+ * and the client has no catalogue of its own to look them up in.
+ */
+export interface EligibleModel {
+  serviceId: string;
+  serviceName: string;
+  billingMode: BillingMode;
+  modelId: string;
+  label: string;
+}
+
 export interface AgentInfo {
   id: AgentId;
   name: string;
   binary: string;
   installed: boolean;
+  /**
+   * docs/252 phase 3 — **"this harness has at least one model it can run"**,
+   * which is the same question as before for a first-party install and a
+   * different one for req 2's case: a user whose only credential is a DeepSeek
+   * key now has Claude Code configured, with no Anthropic account anywhere.
+   *
+   * The field keeps its name because it is still the gate every "can this
+   * harness take a turn" site asks (`agent-auth-gate.ts`, `set_agent`, the
+   * sub-agent spawn), and renaming it across those sites is churn without a
+   * behaviour change. What moved is what it MEANS: a per-`AgentId` credential
+   * probe became the per-model rule of req 8, evaluated over the harness's own
+   * eligible set. `AgentRegistry.available()` is unchanged and still the
+   * conjunction with `installed` (req 14).
+   */
   authConfigured: boolean;
   capabilities: AgentCapabilities;
+  /**
+   * The credential-filtered join for this install, in catalogue order (req 8).
+   * `capabilities.models` is this list's model ids, de-duplicated — kept because
+   * many call sites still speak bare ids, and exactly consistent with this
+   * because both are derived from it.
+   */
+  eligibleModels: EligibleModel[];
 }
 
 /**
@@ -95,7 +137,7 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
             },
           }
         : {}),
-      models: nativeModelIdsForHarness(harness.id),
+      models: catalogueModelIdsForHarness(harness.id),
     },
   }));
 
@@ -248,17 +290,32 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
    */
   private declaredHarnesses: () => AgentId[] | null;
 
+  /**
+   * docs/252 phase 3 (req 8) — the credentials the user has configured, as
+   * eligibility sees them. Injected rather than read here because this module is
+   * `shared/` and the credential store is the orchestrator's; the wiring site is
+   * `app-di.ts`.
+   *
+   * Absent ⇒ **fall back to the account probes**, which is what a worker-side or
+   * test registry has. Returning an empty list instead would be worse than
+   * wrong: it would report every harness unconfigured and empty every model
+   * list, in the two contexts least able to notice.
+   */
+  private listCredentials: (() => ConfiguredCredential[]) | undefined;
+
   constructor(opts?: {
     checkBinary?: (binary: string) => Promise<boolean>;
     checkClaudeAuth?: () => boolean;
     checkCodexAuth?: () => boolean;
     declaredHarnesses?: () => AgentId[] | null;
+    listCredentials?: () => ConfiguredCredential[];
   }) {
     super();
     this.checkBinary = opts?.checkBinary ?? defaultCheckBinary;
     this.checkClaudeAuth = opts?.checkClaudeAuth ?? (() => true);
     this.checkCodexAuth = opts?.checkCodexAuth ?? (() => false);
     this.declaredHarnesses = opts?.declaredHarnesses ?? (() => readInstalledHarnesses());
+    this.listCredentials = opts?.listCredentials;
   }
 
   /**
@@ -273,14 +330,15 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
     const declared = this.declaredHarnesses();
     for (const def of AGENT_DEFS) {
       const installed = declared ? declared.includes(def.id) : await this.checkBinary(def.binary);
-      const authConfigured = this.isAuthConfigured(def.id);
+      const eligibleModels = this.computeEligibleModels(def.id);
       this.agents.set(def.id, {
         id: def.id,
         name: def.name,
         binary: def.binary,
         installed,
-        authConfigured,
-        capabilities: def.capabilities,
+        authConfigured: this.isAuthConfigured(def.id, eligibleModels),
+        capabilities: this.capabilitiesFor(def, eligibleModels),
+        eligibleModels,
       });
     }
   }
@@ -300,21 +358,110 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
     return this.list().filter((a) => a.installed && a.authConfigured);
   }
 
-  /** Re-check auth status for a specific agent. */
+  /**
+   * Re-check auth status for a specific agent.
+   *
+   * docs/252 phase 3 — this now also recomputes the eligible model set, because
+   * the two answer the same question at different granularities. Every
+   * credential write already calls this (phase 2 wired it so a saved key made
+   * its agent selectable), so the picker's rows follow a credential change
+   * without a second notification path.
+   */
   refreshAuth(id: AgentId): void {
     const info = this.agents.get(id);
-    if (info) {
-      const wasConfigured = info.authConfigured;
-      info.authConfigured = this.isAuthConfigured(id);
-      // docs/144 — emit on a configured → not-configured edge so the sub-agent
-      // service can sweep cross-agent creds left over from a spawn.
-      if (wasConfigured && !info.authConfigured) {
-        this.emit("sign-out", id);
-      }
+    if (!info) return;
+    const def = AGENT_DEFS.find((d) => d.id === id);
+    const wasConfigured = info.authConfigured;
+    info.eligibleModels = this.computeEligibleModels(id);
+    info.authConfigured = this.isAuthConfigured(id, info.eligibleModels);
+    if (def) info.capabilities = this.capabilitiesFor(def, info.eligibleModels);
+    // docs/144 — emit on a configured → not-configured edge so the sub-agent
+    // service can sweep cross-agent creds left over from a spawn.
+    if (wasConfigured && !info.authConfigured) {
+      this.emit("sign-out", id);
     }
   }
 
-  private isAuthConfigured(id: AgentId): boolean {
+  /**
+   * req 8, evaluated for this install: the catalogue join narrowed to the modes
+   * holding a credential this harness can carry.
+   *
+   * Empty when no credential source is wired — see {@link listCredentials} for
+   * why that is not the same as "nothing is eligible", and
+   * {@link isAuthConfigured} for how the probe fallback covers it.
+   */
+  private computeEligibleModels(id: AgentId): EligibleModel[] {
+    const configured = this.listCredentials?.();
+    if (!configured) return [];
+    const credentials = [...configured, ...this.probedCredentialsFor(id)];
+    return eligibleEntriesForHarness(id, credentials).map((entry) => ({
+      serviceId: entry.selection.serviceId,
+      serviceName: entry.service.name,
+      billingMode: entry.selection.billingMode,
+      modelId: entry.model.id,
+      label: entry.model.label,
+    }));
+  }
+
+  /**
+   * The legacy per-`AgentId` auth probe, translated into the one credential it
+   * can be describing: **an account of this harness's own vendor's
+   * subscription**.
+   *
+   * This is the residue of `checkClaudeAuth` / `checkCodexAuth`, and it is
+   * additive — it can only ever widen a harness's eligible set, never narrow
+   * one, so req 2's DeepSeek-only install is unaffected by it. What it is for is
+   * the **injected auth manager** the DI boundary keeps as an auth source for
+   * tests and custom runtimes that do not persist provider-account rows.
+   *
+   * **The probes must report account-shaped evidence only**, and the wiring in
+   * `app-di.ts` narrows them for exactly that reason. `hasAnyAuthForProvider`
+   * also answers true for a bare `ANTHROPIC_API_KEY` — translating that into a
+   * subscription credential would offer a "Subscription" row on a key-only
+   * install and fail `auth_required` the moment it was chosen. An env-delivered
+   * key needs no translation: `listConfiguredCredentials` already reads it, as
+   * the credential of its own mode.
+   *
+   * Translating rather than short-circuiting is what keeps ONE rule: eligibility
+   * is a question about credentials, so a legacy credential becomes a credential
+   * rather than a second way to answer "is this harness configured". The
+   * alternative — OR-ing the probe into `authConfigured` — would report a
+   * harness runnable while its picker had no rows, which is the state req 8
+   * exists to prevent.
+   */
+  private probedCredentialsFor(id: AgentId): ConfiguredCredential[] {
+    const nativeService = HARNESSES.find((h) => h.id === id)?.nativeService;
+    if (!nativeService) return [];
+    const probed = id === "claude" ? this.checkClaudeAuth() : id === "codex" ? this.checkCodexAuth() : false;
+    if (!probed) return [];
+    return [{ serviceId: nativeService, billingMode: "sub", via: "account" }];
+  }
+
+  /** `capabilities`, with `models` narrowed to what this install can actually run. */
+  private capabilitiesFor(
+    def: (typeof AGENT_DEFS)[number],
+    eligibleModels: EligibleModel[],
+  ): AgentCapabilities {
+    if (!this.listCredentials) return def.capabilities;
+    const ids: string[] = [];
+    for (const model of eligibleModels) {
+      if (!ids.includes(model.modelId)) ids.push(model.modelId);
+    }
+    return { ...def.capabilities, models: ids };
+  }
+
+  /**
+   * docs/252 phase 3 — "can this harness run anything here?", answered from the
+   * per-model rule (req 8) when a credential source is wired.
+   *
+   * That is the whole of req 2: a DeepSeek key makes Claude Code configured, and
+   * a lapsed Anthropic subscription with no key makes it not — one rule, no
+   * vendor special-cased. The probes below survive only as the fallback for a
+   * registry with no credential source (a worker, a unit test); they are the
+   * pre-feature behaviour and are per-`AgentId` by construction.
+   */
+  private isAuthConfigured(id: AgentId, eligibleModels: EligibleModel[]): boolean {
+    if (this.listCredentials) return eligibleModels.length > 0;
     if (id === "claude") {
       return this.checkClaudeAuth();
     }

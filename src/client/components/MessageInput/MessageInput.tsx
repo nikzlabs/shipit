@@ -8,7 +8,7 @@ import { PlusIcon, StopIcon, ArrowUpIcon, GitBranchIcon, CheckIcon } from "@phos
 import { ICON_SIZE } from "../../design-tokens.js";
 import { usePrStore } from "../../stores/pr-store.js";
 import { PermissionModeSelector } from "../PermissionModeSelector.js";
-import { ModelAgentSelector } from "../ModelAgentSelector.js";
+import { HarnessSelector, ModelSelector } from "../ModelPicker.js";
 import { ReasoningSelector } from "../ReasoningSelector.js";
 import { FileAutoComplete } from "../FileAutoComplete.js";
 import { SkillAutoComplete, type SlashCommand } from "../SkillAutoComplete.js";
@@ -28,7 +28,7 @@ import { useMessageDraft } from "./hooks/useMessageDraft.js";
 import { useUploadBackend } from "./hooks/useUploadBackend.js";
 import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo, UploadRef } from "../../../server/shared/types.js";
 import type { UploadItem } from "../../hooks/useFileUpload.js";
-import type { AgentOption } from "../../agent-types.js";
+import type { AgentOption, EligibleModelOption } from "../../agent-types.js";
 import type { ModelInfo } from "../../utils/model-info.js";
 
 /** Render a hotkey string like "ctrl+shift+space" as "Ctrl+Shift+Space" for tooltips. */
@@ -144,7 +144,7 @@ export function MessageInput({
   agents?: AgentOption[];
   activeAgentId?: AgentId;
   onAgentChange?: (agentId: AgentId) => void;
-  onModelChange?: (model: string) => void;
+  onModelChange?: (selection: EligibleModelOption) => void;
   /** docs/217 — per-session reasoning effort change; `null` clears to default. */
   onReasoningChange?: (effort: string | null) => void;
   /** docs/217 — the active session's persisted reasoning effort, if any. */
@@ -919,13 +919,26 @@ export function MessageInput({
               </div>
             )}
 
-            {/* Model / agent selector */}
+            {/* docs/252 phase 3 — harness and model are two controls, not one
+                grouped dropdown. The harness is irreversible once the session
+                pins it and the model is not, so the asymmetry is structural
+                rather than a lock badge inside a menu. */}
             {onAgentChange && (
-              <div className="flex items-center shrink-0" style={{ order: isMobile ? 40 : 60 }}>
-                <ModelAgentSelector
+              <div className="flex items-center shrink-0" style={{ order: isMobile ? 39 : 59 }}>
+                <HarnessSelector
                   agents={agents}
                   activeAgentId={activeAgentId}
                   onAgentChange={onAgentChange}
+                  hasActiveSession={hasActiveSession}
+                  disabled={disabled || isLoading}
+                />
+              </div>
+            )}
+            {onAgentChange && (
+              <div className="flex items-center shrink-0" style={{ order: isMobile ? 40 : 60 }}>
+                <ModelSelector
+                  agents={agents}
+                  activeAgentId={activeAgentId}
                   onModelChange={onModelChange}
                   modelInfo={modelInfo ?? null}
                   hasActiveSession={hasActiveSession}

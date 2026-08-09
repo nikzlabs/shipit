@@ -17,7 +17,19 @@ import type { AgentEvent } from "../agent-process.js";
  * API call (real context-window occupancy — see AgentResultEvent.contextTokens).
  */
 export interface CodexTokenUsage {
-  total?: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number };
+  /**
+   * **`inputTokens` INCLUDES `cachedInputTokens`** — measured against
+   * codex-cli 0.146.0, not inferred. The adapter subtracts one from the other
+   * before emitting `agent_result` so ShipIt's own token classes stay disjoint,
+   * as Claude's already are; see `codex-event-handler.ts`. Nothing downstream
+   * should re-derive that.
+   */
+  total?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+    cacheWriteInputTokens?: number;
+  };
   last?: { totalTokens?: number };
   modelContextWindow?: number;
 }

@@ -126,7 +126,23 @@ function makeDeps(opts: {
       refreshAuth: vi.fn(),
       get: vi.fn(() => (opts.agentKnown === false
         ? undefined
-        : { name: "Codex", installed: true, authConfigured: opts.authConfigured ?? true })),
+        : {
+            name: "Codex",
+            installed: true,
+            authConfigured: opts.authConfigured ?? true,
+            // docs/252 phase 3 — a real registry entry carries the eligible set,
+            // and an UNSET sub-agent default resolves to its first entry rather
+            // than leaving the consult selectionless.
+            eligibleModels: [
+              {
+                serviceId: "openai",
+                serviceName: "OpenAI",
+                billingMode: "sub",
+                modelId: "gpt-5.6-sol",
+                label: "GPT-5.6 Sol",
+              },
+            ],
+          })),
     } as never,
     runnerRegistry: { get: vi.fn(() => (opts.runnerPresent === false ? undefined : runner)) } as never,
     providerAccountManager: { selectAccountForTurn, markAccountExhausted } as never,
@@ -216,8 +232,25 @@ describe("runSubAgent — happy path", () => {
     );
     // usage attributed to the sub-agent, not the pinned agent — now WITH the
     // sub-agent's token breakdown (docs/144), not undefined/undefined.
-    expect(record).toHaveBeenCalledWith("s1", 0.03, 4200, 1000, 200, {
+    //
+    // docs/252 phase 3 — and with an explicit cost SOURCE plus full attribution.
+    // A one-shot consult's figure is already this run's own, which `record()`
+    // previously inferred from `subAgentId` being set; the discriminator states
+    // it instead, so a rate-derived figure and a harness running total can
+    // coexist. The attribution is present even though this fixture sets NO
+    // sub-agent default: an unset default means "the harness's first model", so
+    // it resolves to the first eligible entry rather than writing a `legacy`
+    // row — which is supposed to mean "before ShipIt tracked this", not "this
+    // install never opened the Settings tab".
+    // The cost is ZERO, not the consult's reported 0.03: the resolved selection
+    // is a SUBSCRIPTION, and a subscription turn spends no money (req 16). The
+    // rates ride along in `attribution` so phase 6 can still say what it would
+    // have cost at API rates.
+    expect(record).toHaveBeenCalledWith("s1", 0, 4200, 1000, 200, {
       subAgentId: "codex",
+      costSource: "per-turn",
+      model: "gpt-5.6-sol",
+      attribution: expect.objectContaining({ serviceId: "openai", billingMode: "sub" }),
       contextTokens: 1200,
     });
     // transient running spinner, the DURABLE pending card (planning#280), the live
@@ -334,7 +367,12 @@ describe("runSubAgent — happy path", () => {
     const calls = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } }).mock.calls;
     const arg = calls[0][0];
     expect(arg).not.toHaveProperty("reasoningEffort");
-    expect(arg).not.toHaveProperty("model");
+    // docs/252 phase 3 — the MODEL is no longer omitted. An unset default means
+    // "the harness's own first model", and leaving it out made the adapter pick
+    // that from the whole catalogue join — which on an install with no
+    // first-party credential is a model it cannot run. Resolving it here also
+    // makes what runs and what is recorded the same by construction.
+    expect(arg.model).toBe("gpt-5.6-sol");
   });
 
   it("forwards a carried-back rate-limit snapshot into the sub-agent's limits provider", async () => {

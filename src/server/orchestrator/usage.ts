@@ -112,6 +112,21 @@ export interface RecordedTurn {
   costSource?: TurnCostSource;
   /** Absent = a `legacy` row: written before ShipIt tracked where money went. */
   attribution?: TurnAttribution;
+  /**
+   * docs/252 phase 3 — the harness's running conversation total, when it
+   * reported one, on a turn whose `cost_usd` did **not** come from it.
+   *
+   * Without this the delta chain breaks the moment a session's turns stop
+   * sourcing their cost from the harness. A session on a subscription records
+   * `cost_usd: 0` and, under the plain rule, no snapshot at all; switch it to
+   * the same service's metered key and the first key turn finds no prior
+   * cumulative, so the CLI's running total — which still covers every earlier
+   * subscription turn of the same resumed conversation — is recorded as that one
+   * turn's cost. The chain is about continuity of the harness's own number, so
+   * the snapshot is stored whenever that number exists, independently of which
+   * figure the column took.
+   */
+  cumulativeSnapshot?: number;
 }
 
 /** The trailing bag of `record()` — everything `RecordedTurn` holds that the positional parameters don't. */
@@ -227,7 +242,11 @@ export class UsageManager {
     const costSource: TurnCostSource =
       extra?.costSource ?? (extra?.subAgentId !== undefined ? "per-turn" : "cumulative");
     let perTurnCost = costUsd;
-    let cumulative: number | null = null;
+    // See {@link RecordedTurn.cumulativeSnapshot}: a per-turn row still carries
+    // the harness's running total forward when it reported one, so a later
+    // cumulative turn of the same conversation diffs against a live baseline
+    // rather than treating the whole conversation as one turn.
+    let cumulative: number | null = extra?.cumulativeSnapshot ?? null;
     if (costSource === "cumulative") {
       cumulative = costUsd;
       const prev = this.stmtLastCumulative.get(sessionId, extra?.subAgentId ?? null) as

@@ -24,7 +24,11 @@ import {
   isContextSentinel,
   isPriceSentinel,
   modesOfferingModel,
-  nativeModelIdsForHarness,
+  catalogueModelIdsForHarness,
+  eligibleEntriesForHarness,
+  harnessCanCarry,
+  isSelectionEligible,
+  resolveSpawnShaping,
   parseSelection,
   resolveEndpoint,
   resolveModelSelection,
@@ -372,21 +376,19 @@ describe("harnesses", () => {
   });
 });
 
-describe("phase-1 parity: the picker offers exactly what it offers today", () => {
-  // This is phase 1's stated review criterion. These two lists are what
-  // `AGENT_DEFS[].capabilities.models` held as hand-kept constants before the
-  // catalogue existed; if either moves, something user-visible moved.
-  it("Claude Code's native model list is unchanged", () => {
-    expect(nativeModelIdsForHarness("claude")).toEqual([
+describe("the harness\u00d7service join", () => {
+  // Phase 1 narrowed these lists to the harness's own vendor because nothing
+  // could yet credential a custom service; phase 3 removes the narrowing, so
+  // what is pinned now is the ORDER — `models[0]` is the default a fresh install
+  // runs with, and the first-party services still sort first.
+  it("leads with the harness's own vendor, in the order the picker had", () => {
+    expect(catalogueModelIdsForHarness("claude").slice(0, 4)).toEqual([
       "claude-opus-5",
       "claude-sonnet-5",
       "haiku",
       "claude-fable-5",
     ]);
-  });
-
-  it("Codex's native model list is unchanged", () => {
-    expect(nativeModelIdsForHarness("codex")).toEqual([
+    expect(catalogueModelIdsForHarness("codex").slice(0, 8)).toEqual([
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
@@ -396,6 +398,97 @@ describe("phase-1 parity: the picker offers exactly what it offers today", () =>
       "gpt-5.3-codex",
       "gpt-5.2",
     ]);
+  });
+
+  it("reaches services the harness shares a style with, and no others", () => {
+    // DeepSeek serves Anthropic-Messages and OpenAI chat-completions, and Codex
+    // 0.146.0 speaks ONLY the Responses API (a provider declaring
+    // `wire_api = "chat"` is rejected outright — phase 3 measured this), so
+    // DeepSeek reaches Claude Code and not Codex. Vercel documents a Responses
+    // surface, so it is what reaches Codex today.
+    expect(catalogueModelIdsForHarness("claude")).toContain("deepseek-v4-flash");
+    expect(catalogueModelIdsForHarness("codex")).not.toContain("deepseek-v4-flash");
+    expect(catalogueModelIdsForHarness("codex")).toContain("openai/gpt-5.6-sol");
+    expect(catalogueModelIdsForHarness("claude")).toContain("anthropic/claude-opus-5");
+    expect(catalogueModelIdsForHarness("codex")).not.toContain("anthropic/claude-opus-5");
+  });
+});
+
+describe("eligibility (req 8)", () => {
+  const deepseekKey = { serviceId: "deepseek", billingMode: "key" as const, via: "string" as const };
+  const anthropicAccount = {
+    serviceId: "anthropic",
+    billingMode: "sub" as const,
+    via: "account" as const,
+  };
+
+  it("offers nothing at all when no credential is configured", () => {
+    expect(eligibleEntriesForHarness("claude", [])).toEqual([]);
+    expect(eligibleEntriesForHarness("codex", [])).toEqual([]);
+  });
+
+  it("req 2: a DeepSeek key alone makes Claude Code runnable, with no Anthropic row", () => {
+    const entries = eligibleEntriesForHarness("claude", [deepseekKey]);
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.every((e) => e.selection.serviceId === "deepseek")).toBe(true);
+    expect(
+      isSelectionEligible(
+        "claude",
+        { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" },
+        [deepseekKey],
+      ),
+    ).toBe(false);
+  });
+
+  it("correlates the CONFIGURED route's shape with what the harness can carry", () => {
+    // The bug this exists to prevent: Anthropic's subscription accepts BOTH an
+    // account and a string, so testing "the mode has a credential" and "the
+    // harness supports one of the mode's shapes" independently both pass for a
+    // key-only harness holding only an account — and the model is offered and
+    // cannot authenticate. Asked over the route, the account is not carryable by
+    // a harness with no account target.
+    expect(harnessCanCarry("claude", anthropicAccount)).toBe(true);
+    expect(
+      harnessCanCarry("claude", { serviceId: "deepseek", billingMode: "key", via: "account" }),
+    ).toBe(false);
+  });
+});
+
+describe("spawn shaping", () => {
+  it("materializes DeepSeek's key into Claude Code's own variable, at DeepSeek's endpoint", () => {
+    const shaping = resolveSpawnShaping("claude", {
+      serviceId: "deepseek",
+      billingMode: "key",
+      modelId: "deepseek-v4-flash",
+    });
+    expect(shaping?.style).toBe("anthropic-messages");
+    expect(shaping?.endpoint.url).toBe("https://api.deepseek.com/anthropic");
+    expect(shaping?.credential).toEqual({
+      sourceEnv: "DEEPSEEK_API_KEY",
+      target: { kind: "env", name: "ANTHROPIC_API_KEY" },
+    });
+  });
+
+  it("honours a mode's targetOverride — GLM's plan is a bearer token, not an x-api-key", () => {
+    const shaping = resolveSpawnShaping("claude", {
+      serviceId: "zai",
+      billingMode: "sub",
+      modelId: "glm-5.2[1m]",
+    });
+    expect(shaping?.credential).toEqual({
+      sourceEnv: "ZAI_CODING_PLAN_KEY",
+      target: { kind: "env", name: "ANTHROPIC_AUTH_TOKEN" },
+    });
+  });
+
+  it("has nothing to shape for a selection the harness shares no style with", () => {
+    expect(
+      resolveSpawnShaping("codex", {
+        serviceId: "openrouter",
+        billingMode: "key",
+        modelId: "anthropic/claude-opus-5",
+      }),
+    ).toBeUndefined();
   });
 
   it("keeps the first-frame context windows the old table reported", () => {

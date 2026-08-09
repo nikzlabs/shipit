@@ -24,7 +24,7 @@ import type { SessionManager } from "./sessions.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { ServiceManager } from "./service-manager.js";
-import type { AgentId } from "../shared/types.js";
+import type { AgentId, SessionInfo } from "../shared/types.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import {
   ensureLocalWorkspaceTrust,
@@ -54,6 +54,8 @@ import { agentHome } from "../shared/agent-home.js";
 import type { ProviderAccountManager, ProviderRoute } from "./provider-account-manager.js";
 import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 import { routeFromSelection } from "./provider-route-preflight.js";
+import { selectRouteForSelection } from "./service-routing.js";
+import type { ModelSelection } from "../shared/catalogue/index.js";
 import { failoverNotice, failoverPinnedSession } from "./services/provider-account-switch.js";
 import { emitNoticeInTurn } from "./chat-card-persistence.js";
 import { ensureCodexHomeInitialized } from "./agents/codex/home-init.js";
@@ -372,14 +374,31 @@ export interface PrepareSessionAgentEnvironmentResult {
  */
 function selectRouteForNewTurn(
   agentId: AgentId,
+  session: SessionInfo,
   deps: SessionAgentEnvDeps,
   enforce: boolean,
 ): ProviderRoute | undefined {
   const manager = deps.providerAccountManager;
   if (!manager) return undefined;
-  const selection = manager.selectAccountForTurn(agentId);
+  // docs/252 phase 3 — scoped to the SELECTED `(service, billing mode)`. Asking
+  // one question per `AgentId` could answer with a credential belonging to a
+  // different mode entirely, which is how an included turn became a metered one.
+  const selection = selectRouteForSelection(agentId, modelSelectionOf(session), {
+    credentialStore: deps.credentialStore,
+    providerAccountManager: manager,
+  });
   if (!enforce) return selection.ok ? selection.route : undefined;
   return routeFromSelection(agentId, selection);
+}
+
+/** The session's persisted triple, or `undefined` when it holds no complete one. */
+function modelSelectionOf(session: SessionInfo): ModelSelection | undefined {
+  if (!session.model || !session.serviceId || !session.billingMode) return undefined;
+  return {
+    serviceId: session.serviceId,
+    billingMode: session.billingMode,
+    modelId: session.model,
+  };
 }
 
 export async function prepareSessionAgentEnvironment(
@@ -452,10 +471,31 @@ export async function prepareSessionAgentEnvironment(
   // pinned to a route yet this is the decision point, so it is also the last
   // moment a turn can be stopped *before* pinning and credential provisioning
   // make it look like it ran on an account.
-  const selectedRoute =
+  const pinnedRoute =
     routedSession.providerRouteKind && routedSession.providerRouteId
       ? { kind: routedSession.providerRouteKind, id: routedSession.providerRouteId }
-      : selectRouteForNewTurn(agentId, deps, args.enforceAccountRouting ?? false);
+      : undefined;
+  // docs/252 phase 3 — a pinned STRING credential that has since been deleted is
+  // not a route any more. Reusing it unconditionally (which is what this branch
+  // did) left the session attributing its turns to a credential that no longer
+  // exists while delivery handed the CLI whichever one of that mode's remains
+  // sorts first — the attribution and the authentication naming different
+  // credentials. Dropping it re-pins on this very turn, through the resolution
+  // below. Account routes are excluded: their own machinery owns benching and
+  // status, and a missing account is docs/150's case, not this one.
+  const pinnedIsStale =
+    pinnedRoute?.kind === "reserved"
+    && pinnedRoute.id.startsWith("cred_")
+    && !deps.credentialStore.getCredentialRoute(pinnedRoute.id);
+  const selectedRoute =
+    pinnedRoute && !pinnedIsStale
+      ? pinnedRoute
+      : selectRouteForNewTurn(agentId, routedSession, deps, args.enforceAccountRouting ?? false);
+  if (pinnedIsStale) {
+    console.log(
+      `[env-prep] ${sessionId} dropped pinned route ${pinnedRoute?.id ?? "?"} — its credential was removed`,
+    );
+  }
 
   // docs/150 req 21 — stamp the account this turn actually resolved onto, which
   // is what `balanced` sorts by. Here rather than inside `selectAccountForTurn`

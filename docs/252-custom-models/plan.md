@@ -127,7 +127,7 @@ the design.
 |---|---|---|---|
 | 1 | Catalogue and identities | 5, 6, 7, 15 | The data model, its launch rows and prices. No user-visible change. |
 | 2 | Credentials and Settings | 5, 7, 15 | You can save a service key. It does nothing yet. |
-| 3 | Spawn shaping and eligibility | 1, 2, 3, 8, 11, 16 | **A session runs on a custom service.** Turns record what billed them, and respawn on a service change. |
+| 3 | Spawn shaping and eligibility | 1, 2, 3, 8, 11, 16 | **A session runs on a custom service.** Turns record what billed them, and respawn on a service change. **Landed.** |
 | 4 | In-session switching | 4 | The picker acts mid-session, across services. |
 | 5 | Credential-failure policy | 12 | Correct behaviour when a credential dies. |
 | 6 | Usage, cost and attribution | 10, 11, 16 | You can *see* what you are running and where the money went. (Phase 3 records it.) |
@@ -294,16 +294,16 @@ anticipate, recorded here because three of them change what a later phase has to
   the premise was a stale comment, and the receipt in `requirements.md` records the closure.
 
   **The `$` icon it drives is therefore telling users something untrue, and removing it is a
-  user-visible change phase 1 forbids.** It is left exactly as it is here and belongs to
-  **phase 3**, which is where the picker is rebuilt and where deleting a hand-kept per-model
-  set is a deletion rather than a behaviour change. Noted because the set now has no fact
-  behind it, which is the state in which something quietly acquires a new justification.
+  user-visible change phase 1 forbids.** It was left exactly as it was there and deleted in
+  **phase 3**, with the rest of `ModelAgentSelector`, where rebuilding the picker made removing
+  a hand-kept per-model set a deletion rather than a behaviour change.
 - **`capabilities.models` is derived from the harness's `nativeService`, not from the
   join.** The join would put DeepSeek and the gateways in the picker immediately, with no
   way to give them a credential (phase 2) or route a turn to them (phase 3) — a
   user-visible change, which phase 1's review criterion forbids. `nativeModelIdsForHarness`
-  is the temporary narrowing and **phase 3 deletes it**, replacing it with the
-  credential-filtered join.
+  was the temporary narrowing and **phase 3 deleted it**: `catalogueModelIdsForHarness` is the
+  whole join (what the harness *could* speak to), and the credential-filtered subset is
+  `eligibleEntriesForHarness`, computed per install.
 - **OpenRouter reaches Claude Code and not Codex.** Its Anthropic-Messages surface is
   documented; nothing establishes that it serves the Responses API, so no OpenRouter row
   declares `openai-responses`. Vercel documents both, so its rows reach both harnesses.
@@ -609,8 +609,9 @@ were isolation, which is the class of thing CLAUDE.md's "verify an inherited gua
 source" warns about — the guarantee was asserted in a docstring the code did not provide.
 
 What is still phase 3's: the producers. Spawn shaping supplies the attribution, and the
-sub-agent writer — which passes neither model nor route today (`services/sub-agent.ts:470`) —
-widens with it. Phase 6 remains the only reader.
+sub-agent writer — which passed neither model nor route — widens with it. Phase 6 remains the
+only reader. **Both landed with the rest of phase 3**; the rule they share is
+`turn-attribution.ts`, in one place precisely so the two writers cannot disagree.
 
 **The cost semantics have to be settled here too, and the phase boundary is where they bite.**
 `cost_usd` as recorded is already a **delta** ShipIt computes, because Claude Code's
@@ -679,11 +680,13 @@ native-key the one row shape that cannot be re-derived.
   row today cannot say what it ran on. Phase 3's all-or-nothing `CHECK` would reject it. The
   writer widens here, in the same phase that adds the constraint — not later.
 - **Codex's token semantics are unestablished, and the rates now always apply to it.** Whether
-  `inputTokens` includes `cachedInputTokens` is upstream app-server behaviour this repo does
-  not pin down 🔍 ([`catalogue.md`](./catalogue.md) has the detail). Claude's are disjoint
-  (`claude/adapter.ts:292` ✅). If Codex's overlap, every Codex turn double-charges the cached
-  tokens at the full input rate. This is a spike in phase 3, and normalization belongs at the
-  adapter boundary so the pricing code can assume disjointness.
+  `inputTokens` includes `cachedInputTokens` is upstream app-server behaviour this repo did
+  not pin down ([`catalogue.md`](./catalogue.md) has the detail). Claude's are disjoint
+  (`claude/adapter.ts:292` ✅). **Phase 3's spike measured it: they OVERLAP** — fed
+  `input_tokens: 1000` with `cached_tokens: 800`, the app-server reports both unchanged — so
+  every Codex turn would have double-charged the cached tokens at the full input rate.
+  Normalized at the adapter boundary, as this paragraph required, so the pricing code can
+  assume disjointness.
 
 **These are all-or-nothing, not independently nullable.** Either every one is present or every
 one is null; there is no such thing as a row that knows its service but not what it was
@@ -714,8 +717,153 @@ the Claude Code harness takes a turn, with no Anthropic credential anywhere. The
 already established this works (Appendix B); this is the version that follows the
 requirements.
 
-**Phase 4 — In-session switching.** The resident process's identity was already widened in
-phase 3 — to the whole spawn-relevant tuple: harness, service, billing mode, API style,
+**Phase 3 has landed.** The resolver is `resolveSpawnShaping` (`catalogue/index.ts`, pure) plus
+`service-routing.ts` (orchestrator), which is the callable component this document asked for
+rather than inline spawn code — phase 7 is its second caller. It answers three questions and
+nothing else: which credentials this install holds (`listConfiguredCredentials`), which one a
+turn authenticates with (`selectRouteForSelection`), and what the resident process was spawned
+as (`sessionSpawnIdentity`). Eligibility itself is in the catalogue, stated over configured
+routes; `turn-attribution.ts` is the cost rule; `ModelPicker.tsx` is the split composer.
+
+**What the survey finally measured.** Every 🔍 on the two shipped harnesses is now closed, and
+one of the answers was wrong in the catalogue rather than merely unverified. Measured against
+the real binaries (CLI 2.1.220, codex-cli 0.146.0) driving a local HTTP recorder:
+
+- **Claude Code** honours `ANTHROPIC_BASE_URL` and issues `POST <base>/v1/messages?beta=true`,
+  so a service's base URL must not carry the `/v1`. `--model` is forwarded verbatim, except
+  that the CLI **consumes its own `[1m]` suffix** — `glm-5.2[1m]` arrives at the service as
+  `glm-5.2`. `ANTHROPIC_API_KEY` becomes an `x-api-key` header and `ANTHROPIC_AUTH_TOKEN` an
+  `Authorization: Bearer` one, which is what `targetOverride` exists for and why GLM needs it.
+- **Codex's `endpoint` declaration was wrong.** `model_provider` names a block in
+  `model_providers`, not a base URL: `-c model_provider=<url>` fails with "Model provider `…`
+  not found". The seam is a whole provider block — `name`, `base_url`, `wire_api`, `env_key` —
+  plus `model_provider` pointing at it (`codex/spawn-shaping.ts`). Codex appends `/responses`
+  to `base_url`, so the OpenAI rows' Responses endpoints gained the `/v1` they were missing.
+- **Codex speaks Responses and nothing else.** A provider declaring `wire_api = "chat"` is
+  rejected outright. So `openai-chat-completions` is unreachable from Codex however a service
+  declares it, and DeepSeek — which serves Anthropic-Messages and chat-completions — reaches
+  Claude Code and **not** Codex. An earlier reading of this design assumed the opposite.
+- **Codex's `inputTokens` INCLUDES `cachedInputTokens`**, where Claude's are disjoint. Fed a
+  response reporting `input_tokens: 1000` with `cached_tokens: 800`, the app-server reports
+  both figures unchanged. Left alone that double-charges every cached token at the full input
+  rate on every Codex turn — and the rates now *always* apply to Codex, which reports no dollar
+  figure. Normalized at the adapter boundary (`codex-event-handler.ts`) so the pricing code can
+  assume disjointness rather than each reader re-deriving it. The app-server also reports
+  `cacheWriteInputTokens`, which ShipIt now carries.
+
+**What phase 3 found.** Six things, three of which change what a later phase does.
+
+- **Eligibility could not be asked of the registry's existing question.** `authConfigured` was
+  a per-`AgentId` credential probe; it is now "this harness has at least one eligible model",
+  computed from the catalogue join narrowed by the configured routes. The field keeps its name
+  because it is still the gate every "can this harness take a turn" site asks, and renaming it
+  across those sites is churn without a behaviour change — but `AgentInfo` gained
+  `eligibleModels`, the triples the picker actually renders, and that is what the wire carries.
+  The design's "`authConfigured` leaves `AgentInfo`" is therefore **not** done; what is done is
+  the part that mattered, which is what it means.
+- **The eligibility inputs are two sources, and the second is easy to forget.** A
+  deployment-supplied `ANTHROPIC_API_KEY` has no row in the credential store — phase 2 is
+  explicit that ShipIt only ever touches a value it put there — so a rule reading the store
+  alone reports that install as having no credential and empties its picker.
+  `listConfiguredCredentials` reads both.
+- **Route selection was leaking across billing modes, and phase 1 predicted it.**
+  `selectAccountForTurn` ends with a mode-blind reserved fallback, so a session selecting
+  Anthropic's *subscription* landed on `claude-api-key` whenever no account was connected — an
+  included turn quietly becoming a metered one, which is the shift req 12 refuses, arriving
+  through routing rather than through failover. The account walk's answer is now taken only
+  when it names an account; the env-delivered case resolves against the selected mode's own
+  variable. `all_exhausted` is returned unchanged rather than falling through to the same
+  mode's string credential — that is a failover decision and **phase 5 owns it**.
+- **Choosing among a mode's several string credentials is still phase 5's.** Delivery hands the
+  worker the first in order and the turn authenticates with exactly that one, so the two agree;
+  what does not exist yet is a reason to pick a different one, which is req 12's failover.
+  Phase 2's note that "req 12's second GLM key is stored and unreachable" therefore still
+  stands after this phase.
+- **The sub-agent's route had to be resolved from the sub-agent's own selection, not from its
+  `AgentId`.** `runSubAgent` asked `selectAccountForTurn(subAgentId)` before reading the
+  sub-agent defaults, so a consult whose default model is a custom service's resolved an
+  Anthropic account and was then shaped — or not shaped — against the wrong credential. The
+  defaults are now read first and the route derived from them.
+- **Shaping fixes an existing first-party bug on the way past.** A session on Anthropic's
+  `claude-env-oauth` route — a *subscription* delivered as an environment token — used to spawn
+  with both `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` present whenever the install had
+  both, and the CLI prefers the key. The turn therefore ran on metered billing while the router
+  believed it was on the subscription. Shaping clears every Anthropic credential variable and
+  sets exactly the one the selected mode names, so the selection decides which credential wins
+  rather than the CLI's preference order.
+- **Zeroing a subscription turn's cost breaks the delta chain, and nothing named that.**
+  `cost_usd` for a subscription turn is now zero, so under the plain rule those rows store no
+  cumulative snapshot either — while the CLI's `total_cost_usd` keeps rising across the whole
+  resumed conversation. Switch such a session onto the same service's metered key (which req 12
+  exists to make possible) and the first key turn finds no baseline and records the ENTIRE
+  conversation as one turn's spend. `RecordedTurn.cumulativeSnapshot` carries the harness's
+  running total forward on any turn that did not take its cost from it, so the chain is about
+  continuity of the harness's own number and the column is about money. Two guards in
+  `usage.test.ts`.
+- **A subscription session's dollar figure goes to zero in this phase**, on the dial and in the
+  usage modal, because that figure was never money. That is req 16's decision and this phase
+  writes it from day one so the existing `SUM(cost_usd)` stays correct without being touched;
+  **what those surfaces show instead** — the at-API-rates estimate, labelled — is settled in
+  `requirements.md` and is phase 6's to build. It is the one user-visible regression this phase
+  ships knowingly.
+
+**What the cross-backend review changed.** Codex reviewed the branch under CLAUDE.md's rule
+and returned nine findings; all nine held up on checking, and eight are fixed here. Three are
+worth reading as a group, because they are the same mistake in three places: **a zero, an
+absent status and a bare id were each read as more than they said.**
+
+- **A consult on a metered key was recorded as free.** `SubAgentRunResult.costUsd` starts at
+  `0` and is assigned only on a reported figure, so "the harness reported nothing" and "the
+  turn cost nothing" were the same value — and Codex reports nothing. The producer forwarded
+  that zero as a harness figure, which the native-key branch then honoured. This is the exact
+  trap the pricing rule is written to avoid, walked into at the one site the rule's own
+  docstring does not sit next to. `costReported` now carries the distinction.
+- **An API key was translated into a subscription that does not exist.** The legacy auth
+  probes are turned into an *account* credential of the harness's native service, and
+  `hasAnyAuthForProvider` answers true for a bare `ANTHROPIC_API_KEY` — so a key-only install
+  offered a "Subscription" row that failed `auth_required` when chosen. The probes are narrowed
+  at the DI boundary to account-shaped evidence; an env key needs no translation, because
+  `listConfiguredCredentials` already reads it as the credential of its own mode.
+- **An unfinished account login counted as a credential.** An account row exists from the
+  moment a login starts and a cancelled one stays `unavailable`, while routing accepts only
+  `ready` or `authenticating`. Eligibility now asks the same question routing does — otherwise
+  the picker promises something the router will not do.
+
+Two more were real and are fixed:
+
+- **A rotated or deleted credential survived in a resident process.** Phase 2's propagation
+  updates the worker's *environment*; a CLI already running in it read its credential at spawn
+  and never re-reads. So rotating a key in place kept the old one — the route id does not
+  change, so neither does the spawn identity — and *deleting* one left it authenticating turns
+  for the rest of that process's life, defeating the revocation phase 2 built. Every credential
+  write now releases resident agents that are not mid-turn
+  (`releaseResidentForCredentialChange`), so revocation takes effect at the next spawn
+  boundary. A runner mid-turn is skipped deliberately: killing it would abort work the user is
+  waiting on to shorten a window that closes at the end of that turn anyway. Separately, a
+  pinned route whose stored credential has been *deleted* is dropped at env prep, so the
+  session re-pins instead of attributing turns to a credential that no longer exists while
+  delivery hands the CLI a different one.
+- **New-session ingress accepted a catalogue-valid but ineligible triple.** The browser slot
+  outlives a credential change, so a triple written while a subscription was connected still
+  names a real row after it goes away. Gated at the slot's shared *source* on the client
+  (`isSelectionEligibleForAgent`) so both readers ask, with the WS seed refusing to trust it
+  server-side as well.
+
+Three were narrower and are also fixed: Claude spawning a redirected turn with no credential
+in the environment (it now raises `auth_required` as Codex already did); an **unset** sub-agent
+default writing an unattributed `legacy` row forever *and* falling back to native-vendor
+routing on an install that has no first-party credential (it resolves to the first eligible
+entry, which is what "the harness's own first model" means); and the sub-agent defaults picker
+storing an unreachable `sub` triple on a key-only install, because the store re-resolved a bare
+id to the first mode of the biased service — the service layer now passes the mode the id was
+chosen *from*.
+
+**One finding is recorded rather than fixed**, because it is pre-existing rather than
+introduced: the new-session picker reads the globally-active session for its *harness* display,
+as the pre-split picker did. The half this phase did introduce — reading only the saved bare id
+and so highlighting the wrong `(service, mode)` — is fixed.
+
+**Phase 4 — In-session switching.** The resident process's identity was widened in phase 3 — to the whole spawn-relevant tuple: harness, service, billing mode, API style,
 endpoint, credential route, model — because phase 3 is where a same-id/different-service
 switch first becomes reachable. Phase 4 is only the mid-session *interaction* on top of it:
 the picker acting on a live session, across services rather than just within one.
@@ -1130,9 +1278,10 @@ service provides it (req 3). A vendor's own models must not get a separate surfa
 privileged position in this one — that is the same rule as "Anthropic is a catalogue row
 like any other", seen from the UI side.
 
-**Two selectors, not one: harness and model separate** ([prototype](./mockup-picker.html)).
-Today `ModelAgentSelector` is a single dropdown whose group headers are *harnesses*, because
-harness and provider are the same thing. Once they are separated, that grouping is wrong
+**Two selectors, not one: harness and model separate** ([prototype](./mockup-picker.html);
+shipped in phase 3 as `ModelPicker.tsx`'s `HarnessSelector` and `ModelSelector`).
+`ModelAgentSelector` was a single dropdown whose group headers were *harnesses*, because
+harness and provider were the same thing. Once they are separated, that grouping is wrong
 twice over: the group header is needed for the **service** — which is what the credential,
 the price, the billing pill and the usage indicator all hang off — and the harness stops
 being a group at all. It becomes an axis that selects *which* list you are looking at.
@@ -1209,8 +1358,8 @@ reason.
 
 What still needs doing is smaller than a new surface: `UsageModal` already shows a **Model**
 stat (`UsageModal.tsx`), and that is the established home for "what actually ran" — a
-comment in `ModelAgentSelector.tsx` already names it as such, having moved live-model display
-there once. Service and billing kind join it there. Attribution is then two places with
+comment in the picker (now `ModelPicker.tsx`) already names it as such, having moved
+live-model display there once. Service and billing kind join it there. Attribution is then two places with
 distinct jobs: the picker answers *what will run next*, the usage modal answers *what did
 run* — which is the same split the selector's precedence rules already maintain between the
 persisted selection and the CLI's last-reported model.
@@ -1347,7 +1496,7 @@ Four kinds of site, all reading `AgentInfo.authConfigured` or its derivatives:
 
 - **Availability** — `AgentRegistry.available()` (`agent-registry.ts:401`).
 - **Selection** — HTTP (`services/settings.ts:323`), WS (`route-registry.ts:1164`), the
-  picker's disabled state (`ModelAgentSelector.tsx:217`), the client's automatic redirect to
+  picker's disabled state (now `ModelPicker.tsx`), the client's automatic redirect to
   an authenticated agent (`client/utils/resolve-authed-selection.ts:27`).
 - **Turn admission** — `isAgentAuthenticated` (`services/agent-auth-gate.ts:22`), consulted by
   both `send-message.ts:44` and `services/agent.ts:35`. **This is the one that matters most
@@ -1665,7 +1814,7 @@ phase-8 notes above.
 normalization.** The precedent this generalizes, `normalizeCodexModelId`, rewrites the model
 only at the turn boundary (`agent-registry.ts:136`) and leaves the persisted row alone — and
 the picker deliberately gives the *persisted* model precedence over the live one the CLI
-reports (`ModelAgentSelector.tsx:121`). Transcribing the shim's shape would therefore run the
+reports (now `ModelPicker.tsx`'s `ModelSelector`). Transcribing the shim's shape would therefore run the
 successor while continuing to display the retired id, which is exactly the invisible remap
 reqs 11 and 13 forbid. Resolving through the record and persisting the result makes the
 picker and attribution agree with what is running, without a second precedence rule.
@@ -1821,10 +1970,13 @@ is key-authenticated.
 | `orchestrator/session-agent-env.ts` | `selectAgentEnvForPush` — credential delivery to a container |
 | `orchestrator/local-agent-home.ts` | `resolveLocalAgentHome` — why reserved routes are unscoped |
 | `shared/model-windows.ts` | First-frame context window |
-| `client/components/ModelAgentSelector.tsx` | Picker, `METERED_MODELS` — the hand-kept metered set, now stale (its one model bills against the plan) and deleted in phase 3 |
+| `client/components/ModelPicker.tsx` | The split picker: `HarnessSelector` + `ModelSelector`, model rows grouped by `(service, billing mode)`. Replaced `ModelAgentSelector`, whose hand-kept `METERED_MODELS` set went with it |
 | `shared/types/usage-limits-types.ts` | `SubscriptionLimits` — already keyed by `routeId` |
 | `orchestrator/agents/*/limits-provider.ts` | Per-`AgentId` today; becomes per service (req 10) |
 | `orchestrator/usage.ts` | `RecordedTurn` — token/cost accounting, distinct from quota |
+| `orchestrator/service-routing.ts` | The resolver: configured credentials, per-mode turn routing, the spawn identity. Phase 7's second caller |
+| `orchestrator/turn-attribution.ts` | The `cost_usd` rule, shared by both usage writers |
+| `session/agents/codex/spawn-shaping.ts` | Codex's `model_providers` block — the only way to redirect that CLI |
 | `orchestrator/session-namer.ts` | Non-turn spawn with no service seam (req 9) |
 
 ## Appendix A — findings from the spike

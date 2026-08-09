@@ -1,7 +1,7 @@
 ---
 issue: planning#321
 title: Custom models — implementation checklist
-description: Per-phase build steps for docs/252. Phases 1 and 2 are done.
+description: Per-phase build steps for docs/252. Phases 1, 2, 3, 8 and 9 are done.
 ---
 
 # 252 — Custom models: checklist
@@ -45,14 +45,36 @@ table — a phase is checked off when its PR has merged.
 
 ## Phase 3 — Spawn shaping and eligibility
 
-- [ ] Base URL + credential at both spawn sites, after the scrub
-- [ ] Eligibility per `(service, billing mode)` credential, replacing `hasAnyAuthForProvider`
-- [ ] Resident spawn identity widened to the whole spawn-relevant tuple
-- [ ] `UsageRow` gains `service_id`, `billing_mode` and the four unit rates
-- [ ] `cost_usd` written under its final rule from day one
-- [ ] Sub-agent usage writer widened; Codex token semantics established
-- [ ] Delete `nativeModelIdsForHarness` and the `ProviderAccount` projection
-- [ ] Replace phase 2's first-credential delivery with per-turn resolution
+- [x] Base URL + credential at both Claude spawn sites, after the scrub
+- [x] Codex pointed at a service through a written `model_providers` block
+- [x] The resolver as a callable component (`service-routing.ts`), for phase 7's second caller
+- [x] Eligibility per `(service, billing mode)` credential, replacing `hasAnyAuthForProvider`
+- [x] Turn routing scoped to the selected mode, closing the `sub` → `claude-api-key` leak
+- [x] Resident spawn identity widened to the whole spawn-relevant tuple
+- [x] `UsageRow` gains `service_id`, `billing_mode` and the four unit rates *(landed early — see `plan.md`)*
+- [x] `cost_usd` written under its final rule from day one, by both producers
+- [x] Sub-agent usage writer widened; Codex token semantics measured and normalized
+- [x] Composer picker split into harness and model, model rows grouped by service
+- [x] Delete `nativeModelIdsForHarness` and the hand-kept `METERED_MODELS` set
+- [x] Cross-backend review — nine findings, eight fixed (see `plan.md`)
+- [ ] Delete the `ProviderAccount` projection. Still load-bearing: the docs/150 account
+      machinery — the quota-aware walk, cutoffs, benching, failover — is keyed by `AgentId`
+      and phase 3 delegates to it rather than reimplementing it. Retiring the projection
+      means re-keying that machinery, which is **phase 6**'s work (`(service, mode) → route`).
+- [ ] Replace the first-credential delivery within one mode. Delivery hands the worker the
+      first credential in order and the turn now authenticates with exactly that one, so the
+      two agree; choosing a *different* one is req 12's failover and belongs to **phase 5**.
+- [ ] The **sub-agent defaults** picker still has no service axis. Its list is
+      credential-filtered, and the service layer now tells the store which `(service, mode)`
+      the id was chosen from, so a key-only install no longer stores an unreachable `sub`
+      triple. What it still cannot express is a deliberate choice *between* two services
+      offering the same id, which follows the session picker in **phase 4**.
+- [ ] The new-session picker reads the globally-active session for its **harness** display.
+      Pre-existing (the combined picker did the same); found by review and recorded rather
+      than fixed here, since untangling it is composer work with no bearing on billing.
+- [ ] `authConfigured` leaves `AgentInfo`. Its MEANING moved here — "this harness has at least
+      one eligible model" — which is the part req 2 needed; the rename across its six call
+      sites is churn with no behaviour change and was not taken.
 
 ## Phases 4–9
 

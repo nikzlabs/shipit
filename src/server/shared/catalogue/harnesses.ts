@@ -27,21 +27,29 @@ export const HARNESSES = [
     name: "Claude Code",
     binary: "claude",
     nativeService: "anthropic",
-    // 🔍 UNVERIFIED. The repo proves ShipIt drives a *local* `claude` binary; it
-    // cannot show what wire format that binary speaks to an endpoint ShipIt has
-    // never pointed it at. Phase 3 establishes this empirically — it is the
-    // first thing that phase should check, since the whole join rests on it.
+    // VERIFIED (phase 3, CLI 2.1.220, against a local HTTP recorder). Pointed at
+    // an arbitrary `ANTHROPIC_BASE_URL` the CLI issues
+    // `POST <base>/v1/messages?beta=true` with an Anthropic Messages body — so a
+    // service's base URL must NOT carry the `/v1`, which is why DeepSeek's is
+    // `…/anthropic` and OpenRouter's `…/api`.
     styles: ["anthropic-messages"],
     spawn: {
       credential: {
         // `ANTHROPIC_API_KEY`, not `ANTHROPIC_AUTH_TOKEN`: the repo distinguishes
         // them as two different reserved routes (`claude-api-key` vs
-        // `claude-env-oauth`) and `setApiKey()` writes the former.
+        // `claude-env-oauth`) and `setApiKey()` writes the former. Verified at
+        // the wire in the same run: `ANTHROPIC_API_KEY` becomes an `x-api-key`
+        // header and `ANTHROPIC_AUTH_TOKEN` an `Authorization: Bearer` one, which
+        // is exactly why `targetOverride` exists and why GLM needs it.
         string: { kind: "env", name: "ANTHROPIC_API_KEY" },
         account: { kind: "scoped-home" },
       },
+      // Verified: `--model` is forwarded VERBATIM into the request body. The one
+      // exception is the CLI's own `[1m]` suffix, which it consumes to select the
+      // long-context variant and strips before sending (`glm-5.2[1m]` arrives as
+      // `glm-5.2`) — so the suffix in GLM's row is a Claude-Code instruction, not
+      // an id the service ever sees.
       model: { kind: "flag", flag: "--model" },
-      // 🔍 No base-URL seam exists in the adapter today; phase 3 writes it.
       endpoint: { kind: "env", name: "ANTHROPIC_BASE_URL" },
     },
     capabilities: {
@@ -76,9 +84,11 @@ export const HARNESSES = [
     name: "Codex",
     binary: "codex",
     nativeService: "openai",
-    // 🔍 UNVERIFIED, and Codex is the case in point: ShipIt speaks JSON-RPC to
-    // `codex app-server`, which says nothing about whether an arbitrary provider
-    // gets driven through the Responses API.
+    // VERIFIED (phase 3, codex-cli 0.146.0, against a local HTTP recorder).
+    // Responses is the ONLY style this CLI still speaks: a provider declaring
+    // `wire_api = "chat"` is rejected outright with "set `wire_api =
+    // \"responses\"` in your provider config", so `openai-chat-completions`
+    // could not be added to this set even if a service offered it.
     styles: ["openai-responses"],
     spawn: {
       credential: {
@@ -86,8 +96,15 @@ export const HARNESSES = [
         account: { kind: "scoped-home" },
       },
       model: { kind: "turn-payload", field: "model" },
-      // 🔍 No provider config is written today; phase 3 writes this seam.
-      endpoint: { kind: "config", key: "model_provider.base_url" },
+      // Verified: `model_provider` names a block in `model_providers`, it is not
+      // a base URL of its own (`-c model_provider=<url>` fails with "Model
+      // provider `…` not found"). So the seam is a whole provider block —
+      // `name`, `base_url`, `wire_api`, `env_key` — plus `model_provider`
+      // pointing at it, which `codex/spawn-shaping.ts` writes. The key here is
+      // the base-URL field WITHIN that block; the block's id is the adapter's.
+      // Codex appends `/responses` to `base_url`, so a Responses base URL
+      // carries its own `/v1` where an Anthropic one does not.
+      endpoint: { kind: "config", key: "base_url" },
     },
     capabilities: {
       supportsResume: true,

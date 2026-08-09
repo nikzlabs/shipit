@@ -7,6 +7,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { isSelectionEligibleForAgent } from "../agent-types.js";
 import { startQuickSessionInBackground } from "../stores/actions/session-actions.js";
 import {
   getSavedAgentId,
@@ -16,6 +17,7 @@ import {
   getSavedReasoning,
   saveAgentId,
   saveModelId,
+  saveModelSelection,
   saveQuickSessionRepo,
 } from "../utils/local-storage.js";
 import { agentIdForModel } from "../utils/agent-for-model.js";
@@ -179,7 +181,17 @@ export function QuickCaptureOverlay({
       // two services offer is a coin flip over who gets billed. Only sent when
       // the saved selection is for THIS model — an explicit picker change since
       // the seed was read is a different choice and must not inherit its service.
-      ...(selectedModel && savedSelection?.modelId === selectedModel
+      //
+      // docs/252 phase 3 — and only when that saved selection is still
+      // ELIGIBLE. The slot outlives a credential change: a triple written while
+      // a subscription was connected still names a real catalogue row after the
+      // subscription goes away, so sending it would pin a fresh session to a
+      // mode with no credential and fail its first turn. Dropping the pair falls
+      // back to server-side resolution of the bare id, which lands on a mode
+      // that does have one.
+      ...(selectedModel
+        && savedSelection?.modelId === selectedModel
+        && isSelectionEligibleForAgent(agentList, selectedAgentId, savedSelection)
         ? { serviceId: savedSelection.serviceId, billingMode: savedSelection.billingMode }
         : {}),
       ...(reasoning ? { reasoning } : {}),
@@ -295,9 +307,21 @@ export function QuickCaptureOverlay({
               saveAgentId(agentId);
               useUiStore.getState().setActiveAgentId(agentId);
             }}
-            onModelChange={(model) => {
-              saveModelId(model);
-              setSelectedModel(model);
+            onModelChange={(selection) => {
+              // docs/252 phase 3 — the picker now hands over the whole triple.
+              // Quick Capture stores it verbatim rather than the bare id it used
+              // to: dropping the service here is what let a fresh session
+              // re-resolve to whichever service sorts first (a phase-1 finding).
+              if (selection.serviceId) {
+                saveModelSelection({
+                  serviceId: selection.serviceId,
+                  billingMode: selection.billingMode,
+                  modelId: selection.modelId,
+                });
+              } else {
+                saveModelId(selection.modelId);
+              }
+              setSelectedModel(selection.modelId);
               // Reasoning is per-agent; a model switch can change the agent, so
               // drop the explicit pick and let the new agent's seed take over.
               setSelectedReasoning(undefined);

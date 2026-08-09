@@ -42,6 +42,7 @@ import {
   PLAYWRIGHT_MCP_COMMAND,
 } from "../playwright-mcp.js";
 import { CODEX_MODELS, CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
+import { codexProviderArgs } from "./spawn-shaping.js";
 import type { AgentHomeResolver } from "../../../shared/agent-home.js";
 import { codexHome } from "../../../shared/agent-home.js";
 import { CodexRateLimits } from "./codex-rate-limits.js";
@@ -256,6 +257,14 @@ export class CodexAdapter
       env.CODEX_HOME = this.codexConfigDir();
     }
 
+    // docs/252 phase 3 — a SHAPED turn runs against the selected model's
+    // service, so neither auth path below applies to it: `auth.json`
+    // authenticates OpenAI and nothing else, and the env key is whatever the
+    // catalogue named for this service. Resolved FIRST, and everything below
+    // gated on `shaped`, because otherwise the `hasFileAuth` branch would delete
+    // the very key this turn authenticates with — or, with a ChatGPT login
+    // present, hand a DeepSeek turn an OpenAI credential.
+    //
     // Auth resolution — see docs/119-codex-subscription-auth/plan.md.
     //
     // Two modes:
@@ -276,10 +285,39 @@ export class CodexAdapter
     // a scoped account with no `auth.json` is an unusable account, and saying
     // so (`auth_required`) is honest, where quietly billing the orchestrator's
     // Platform key would look like the account had worked.
-    const hasFileAuth = this.hasFileAuth(this.codexConfigDir());
-    const hasEnvAuth = !scopedHome && !!env.OPENAI_API_KEY;
+    const routing = params.serviceRouting;
+    const providerArgs = codexProviderArgs(routing);
+    const shaped = routing !== undefined && providerArgs.length > 0;
+    if (shaped && routing) {
+      const secret = env[routing.credentialSourceEnv];
+      if (routing.credentialTarget.kind === "env") {
+        if (secret) env[routing.credentialTarget.name] = secret;
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- the key is a catalogue-declared variable name, not caller input.
+        else delete env[routing.credentialTarget.name];
+      }
+      if (!secret) {
+        this.emit("auth_required");
+        return;
+      }
+      this.emit(
+        "log",
+        "codex",
+        `service routing: ${routing.serviceId}/${routing.billingMode} -> ${routing.baseUrl}`,
+      );
+    } else if (routing) {
+      // The catalogue named a service this CLI cannot be pointed at (a style it
+      // does not speak, or a credential shape it cannot carry). Running against
+      // OpenAI instead would bill the wrong account, so stop and say so.
+      this.emit("error", new Error(
+        `Codex cannot be pointed at ${routing.serviceId} over ${routing.style}.`,
+      ));
+      return;
+    }
 
-    if (!hasFileAuth && !hasEnvAuth) {
+    const hasFileAuth = !shaped && this.hasFileAuth(this.codexConfigDir());
+    const hasEnvAuth = !shaped && !scopedHome && !!env.OPENAI_API_KEY;
+
+    if (!shaped && !hasFileAuth && !hasEnvAuth) {
       this.emit("auth_required");
       return;
     }
@@ -287,7 +325,7 @@ export class CodexAdapter
     if (hasFileAuth) {
       delete env.OPENAI_API_KEY;
       this.emit("log", "codex", "using ChatGPT subscription (~/.codex/auth.json)");
-    } else {
+    } else if (!shaped) {
       this.emit("log", "codex", "using OPENAI_API_KEY (Platform API billing)");
     }
 
@@ -295,10 +333,13 @@ export class CodexAdapter
     // it rides a `-c model_reasoning_effort=…` global override placed BEFORE the
     // `app-server` subcommand. Omitted entirely when unset so Codex uses its own
     // default. The value is validated server-side against the agent's option set
-    // before it reaches here.
-    const args = params.reasoningEffort
-      ? ["-c", `model_reasoning_effort=${params.reasoningEffort}`, "app-server"]
-      : ["app-server"];
+    // before it reaches here. docs/252 phase 3 — the provider block rides the
+    // same position, for the same reason.
+    const args = [
+      ...(params.reasoningEffort ? ["-c", `model_reasoning_effort=${params.reasoningEffort}`] : []),
+      ...providerArgs,
+      "app-server",
+    ];
 
     this.emit("log", "codex", `spawning: codex ${args.join(" ")} | cwd: ${cwd}`);
 

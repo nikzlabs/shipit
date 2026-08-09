@@ -5,6 +5,7 @@ import { DatabaseManager } from "../shared/database.js";
 import { GitManager } from "../shared/git.js";
 import { AgentRegistry, isAllowedAgentEnvKey } from "../shared/agent-registry.js";
 import { readInstalledHarnesses } from "../shared/installed-harnesses.js";
+import { listConfiguredCredentials } from "./service-routing.js";
 import { collectServiceCredentialEnv } from "./secret-resolver.js";
 import { RepoGit } from "./repo-git.js";
 import { AuthManager } from "./agents/claude/auth-manager.js";
@@ -436,16 +437,29 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
 
   // ---- Agent registry ----
   const agentRegistry = deps.agentRegistry ?? new AgentRegistry({
+    // docs/252 phase 3 (req 8) — the credential question is now asked per MODEL,
+    // over the credentials this install actually holds. Supplying this is what
+    // switches the registry off the two per-`AgentId` probes below; they survive
+    // as the fallback for a registry with no credential source (a session
+    // worker, a unit test), which is the pre-feature behaviour.
+    listCredentials: () => listConfiguredCredentials(credentialStore),
+    // docs/252 phase 3 — these probes are now translated into an ACCOUNT
+    // credential of the harness's own vendor (`probedCredentialsFor`), so they
+    // must report only account-shaped evidence. `hasAnyAuthForProvider` is the
+    // wrong question here: it also answers true for a bare `ANTHROPIC_API_KEY`
+    // or `OPENAI_API_KEY`, which would translate a metered key into a
+    // subscription that does not exist — offering a "Subscription" row on a
+    // key-only install and failing `auth_required` when it is chosen.
+    //
+    // Nothing is lost by narrowing: an env-delivered key is already a
+    // credential of its own mode through `listConfiguredCredentials`, which
+    // reads the same variables. What is left here is the residue that store
+    // cannot see — a connected account, and the injected auth manager tests and
+    // custom runtimes rely on.
     checkClaudeAuth: () =>
-      providerAccountManager.hasAnyAuthForProvider("claude")
-      // Explicit dependency injection is itself an auth source for tests and
-      // custom runtimes that do not persist provider-account rows. Production
-      // never takes this branch: its AuthManager is built below rather than
-      // supplied through AppDeps. Keeping the fallback at the DI boundary
-      // preserves those fixtures without reintroducing the legacy singleton
-      // gate in either turn-ingress path.
+      providerAccountManager.list("claude").some((a) => a.status === "ready")
       || (deps.authManager?.authenticated ?? false),
-    checkCodexAuth: () => providerAccountManager.hasAnyAuthForProvider("codex"),
+    checkCodexAuth: () => providerAccountManager.list("codex").some((a) => a.status === "ready"),
   });
   await agentRegistry.detect();
   const detectedAgents = agentRegistry.list();

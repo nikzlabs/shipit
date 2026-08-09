@@ -402,6 +402,8 @@ export class ClaudeAdapter
         ?.filter((s) => s.enabled)
         .map((s) => s.name),
       model: params.model,
+      // docs/252 phase 3 — base URL + credential for the selected model's service.
+      serviceRouting: params.serviceRouting,
       reasoningEffort: params.reasoningEffort,
       settingsPath: params.settingsPath,
       autoCreatePr: params.autoCreatePr,

@@ -164,7 +164,12 @@ export const SERVICES = [
     modes: [
       {
         kind: "sub",
-        endpoints: { [O_RESP]: "https://api.openai.com" },
+        // Phase 3 correction, measured rather than assumed: Codex appends
+        // `/responses` to a provider's `base_url`, so the Responses base URL
+        // carries the `/v1`. (The Anthropic style is the other way round —
+        // Claude Code appends `/v1/messages` — which is why the two families of
+        // base URL below look inconsistent and are not.)
+        endpoints: { [O_RESP]: "https://api.openai.com/v1" },
         quota: "openai-chatgpt-usage",
         credentials: [{ via: "account", login: "openai-chatgpt" }],
         // The `gpt-5.6 → gpt-5.6-sol` remap. It arrived as the hand-written
@@ -187,7 +192,8 @@ export const SERVICES = [
       },
       {
         kind: "key",
-        endpoints: { [O_RESP]: "https://api.openai.com", [O_CC]: "https://api.openai.com" },
+        // See the `sub` mode above for why the Responses base URL carries `/v1`.
+        endpoints: { [O_RESP]: "https://api.openai.com/v1", [O_CC]: "https://api.openai.com/v1" },
         credentials: [{ via: "string", storageEnv: "OPENAI_API_KEY" }],
         retired: [{ id: "gpt-5.6", styles: [O_RESP], successors: { [O_RESP]: "gpt-5.6-sol" } }],
         models: [

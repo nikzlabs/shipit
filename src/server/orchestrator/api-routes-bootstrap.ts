@@ -4,6 +4,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
+import { releaseResidentForCredentialChange } from "./resident-spawn-guard.js";
 import type { AgentId, SubAgentDefaultsPatch } from "../shared/types.js";
 import type { ApiDeps } from "./api-routes.js";
 import type { ServiceManager } from "./service-manager.js";
@@ -77,6 +78,13 @@ export async function registerBootstrapRoutes(
     refreshAgentEnvForAllSessions(deps.serviceManagers ?? new Map<string, ServiceManager>());
     for (const sessionId of deps.runnerRegistry.ids()) {
       const runner = deps.runnerRegistry.get(sessionId);
+      // docs/252 phase 3 — pushing the new environment is not enough for a
+      // session with a RESIDENT CLI: that process read its credential at spawn
+      // and never re-reads it, so a rotated key stayed old and a deleted one
+      // kept working. Released here so the next turn respawns on what the store
+      // now holds; a runner mid-turn is skipped rather than having its work
+      // aborted.
+      releaseResidentForCredentialChange(deps.runnerRegistry.get(sessionId));
       if (!isAgentSecretsCapable(runner)) continue;
       void runner
         .tryPushAgentSecrets(

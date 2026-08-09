@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
-import { ClaudeProcess, StreamingClaudeProcess } from "./process.js";
+import { ClaudeProcess, StreamingClaudeProcess, applyServiceRouting } from "./process.js";
+import type { ServiceRouting } from "../../../shared/types.js";
 import { agentHome } from "../../../shared/agent-home.js";
 
 // Mock node-pty
@@ -1522,5 +1523,93 @@ describe("StreamingClaudeProcess", () => {
       });
       expect(modes).toEqual(["auto", "default"]);
     });
+  });
+});
+
+describe("service routing (docs/252 phase 3)", () => {
+  const routing: ServiceRouting = {
+    serviceId: "deepseek",
+    serviceName: "DeepSeek",
+    billingMode: "key",
+    style: "anthropic-messages",
+    baseUrl: "https://api.deepseek.com/anthropic",
+    credentialSourceEnv: "DEEPSEEK_API_KEY",
+    credentialTarget: { kind: "env", name: "ANTHROPIC_API_KEY" },
+  };
+
+  it("materializes the service's secret into the harness's own variable", () => {
+    const env: Record<string, string> = { DEEPSEEK_API_KEY: "sk-ds" };
+    expect(applyServiceRouting(env, routing)).toEqual({ credentialDelivered: true });
+    expect(env.ANTHROPIC_API_KEY).toBe("sk-ds");
+    expect(env.ANTHROPIC_BASE_URL).toBe("https://api.deepseek.com/anthropic");
+  });
+
+  it("clears EVERY Anthropic credential variable before setting one", () => {
+    // `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are not interchangeable at
+    // the wire (an `x-api-key` header versus a bearer token) and the CLI prefers
+    // the key, so a stale one left behind is how a GLM turn would authenticate
+    // with an Anthropic key against GLM's endpoint.
+    const env: Record<string, string> = {
+      ANTHROPIC_API_KEY: "sk-ant",
+      ANTHROPIC_AUTH_TOKEN: "tok-ant",
+      ZAI_CODING_PLAN_KEY: "sk-zai",
+    };
+    applyServiceRouting(env, {
+      ...routing,
+      serviceId: "zai",
+      credentialSourceEnv: "ZAI_CODING_PLAN_KEY",
+      credentialTarget: { kind: "env", name: "ANTHROPIC_AUTH_TOKEN" },
+    });
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe("sk-zai");
+  });
+
+  it("reports a missing secret rather than falling back to whatever was there", () => {
+    const env: Record<string, string> = { ANTHROPIC_API_KEY: "sk-ant" };
+    expect(applyServiceRouting(env, routing)).toEqual({ credentialDelivered: false });
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
+  it("refuses to spawn a redirected turn with no credential, as Codex does", () => {
+    // Spawning anyway turns ShipIt's structured `auth_required` into a raw
+    // provider 401 the user has to interpret. Reachable when a credential
+    // write's secrets push failed or timed out (both fail open) between the
+    // pick and the turn.
+    const mockProc = createMockPty();
+    mockPtySpawn.mockReturnValue(mockProc as never);
+    mockPtySpawn.mockClear();
+    delete process.env.DEEPSEEK_API_KEY;
+    const proc = new ClaudeProcess();
+    const authRequired = vi.fn();
+    proc.on("auth_required", authRequired);
+    proc.run({ prompt: "hi", cwd: "/workspace", serviceRouting: routing });
+    expect(authRequired).toHaveBeenCalledTimes(1);
+    expect(mockPtySpawn).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op when there is nothing to shape", () => {
+    const env: Record<string, string> = { ANTHROPIC_API_KEY: "sk-ant" };
+    applyServiceRouting(env, undefined);
+    expect(env).toEqual({ ANTHROPIC_API_KEY: "sk-ant" });
+  });
+
+  it("runs AFTER the scoped-home scrub at the real spawn site, not before", () => {
+    // The ordering is load-bearing, not incidental: the scrub deletes the very
+    // variables the shaping writes, so shaping first would produce a spawn with
+    // an endpoint and no credential — a redirected turn that 401s. Driven
+    // through the real spawn rather than the helper so it pins the CALL ORDER.
+    const mockProc = createMockPty();
+    mockPtySpawn.mockReturnValue(mockProc as never);
+    process.env.DEEPSEEK_API_KEY = "sk-ds";
+    mockPtySpawn.mockClear();
+    try {
+      const proc = new ClaudeProcess(() => "/credentials/provider-accounts/claude/acct_1");
+      proc.run({ prompt: "hi", cwd: "/workspace", serviceRouting: routing });
+      const env = mockPtySpawn.mock.calls[0][2]?.env as Record<string, string>;
+      expect(env.ANTHROPIC_API_KEY).toBe("sk-ds");
+      expect(env.ANTHROPIC_BASE_URL).toBe("https://api.deepseek.com/anthropic");
+    } finally {
+      delete process.env.DEEPSEEK_API_KEY;
+    }
   });
 });

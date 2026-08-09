@@ -1,4 +1,5 @@
 import type { AgentId, AgentEvent, AgentReasoningCapability } from "../agent-types.js";
+import type { EligibleModel } from "../../agent-registry.js";
 import type { PermissionMode } from "../attachment-types.js";
 // Type-only edge into the orchestrator so the snapshot and `GET /history`
 // share ONE definition of a transcript row (the client renders both through
@@ -181,6 +182,12 @@ export interface WsAgentListMessage {
     installed: boolean;
     authConfigured: boolean;
     models: string[];
+    /**
+     * docs/252 phase 3 (req 8) — the models this install can run on this
+     * harness, each as its `(service, billing mode, model)` triple. The picker
+     * reads this; `models` above is the same list's ids.
+     */
+    eligibleModels: EligibleModel[];
     /**
      * Whether the agent backend can run the chat-native AI review flow
      * (docs/125-chat-native-ai-review). Drives whether the "Ask agent to

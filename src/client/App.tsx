@@ -107,7 +107,7 @@ import { SecretBlockBanner } from "./components/SecretBlockBanner.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentStatusBar } from "./components/AgentStatusBar.js";
 import { StaleContainerBanner } from "./components/StaleContainerBanner.js";
-import type { AgentOption } from "./agent-types.js";
+import type { AgentOption, EligibleModelOption } from "./agent-types.js";
 import type {
   AgentId,
   DocEntry,
@@ -138,7 +138,7 @@ import {
   repoLabelToNewPath,
   parseNewSessionSlug,
 } from "./utils/repo-label.js";
-import { saveAgentId, saveModelId } from "./utils/local-storage.js";
+import { saveAgentId, saveModelId, saveModelSelection } from "./utils/local-storage.js";
 import {
   siblingsOf,
   orderSiblingsForTabs,
@@ -1510,10 +1510,29 @@ export default function App() {
     [send],
   );
 
+  // docs/252 phase 3 — the picker sends the whole `(service, billing mode,
+  // model)` selection. A bare id was ambiguous the moment two services could
+  // offer the same one: the server would re-resolve it to whichever service
+  // sorts first, which is the silent mis-billing req 11 exists to prevent. The
+  // browser's own seed slot stores the triple for the same reason.
   const handleModelChange = useCallback(
-    (model: string) => {
-      saveModelId(model);
-      send({ type: "set_model", model });
+    (selection: EligibleModelOption) => {
+      if (selection.serviceId) {
+        saveModelSelection({
+          serviceId: selection.serviceId,
+          billingMode: selection.billingMode,
+          modelId: selection.modelId,
+        });
+      } else {
+        saveModelId(selection.modelId);
+      }
+      send({
+        type: "set_model",
+        model: selection.modelId,
+        ...(selection.serviceId
+          ? { serviceId: selection.serviceId, billingMode: selection.billingMode }
+          : {}),
+      });
     },
     [send],
   );

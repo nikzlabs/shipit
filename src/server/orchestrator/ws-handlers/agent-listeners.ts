@@ -1,4 +1,5 @@
 import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage, PermissionMode, LogSource } from "../../shared/types.js";
+import { resolveTurnCost, selectionOf, turnAttributionFor } from "../turn-attribution.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
@@ -244,6 +245,15 @@ export function wireAgentListeners(
   // `agent_result` to attach the model to per-turn usage so the dial can
   // re-target context window when the user switches models mid-session.
   let turnModel: string | undefined = deps.getSelectedModel();
+  // docs/252 phase 3 (req 16) — who is billing this turn, captured at turn
+  // START alongside the model, for the same reason: the session's selection can
+  // move under a running turn (`set_model` between the spawn and the result),
+  // and a turn must be recorded against what actually ran it. The rates are the
+  // catalogue's as of now and are persisted with the row, so a later price edit
+  // cannot restate the past.
+  const turnAttributionAtStart = turnAttributionFor(
+    selectionOf(deps.sessionManager.get(opts.capturedSessionId)),
+  );
   // Helper: emit to all viewers via runner. If runner is unexpectedly null
   // (registry lookup failed before any viewer attached), the message has
   // nowhere good to go — log and drop rather than try a per-connection send,
@@ -1228,9 +1238,31 @@ export function wireAgentListeners(
         // `perTurnUsage.costUsd`) into a per-turn delta and returns it; reflect
         // that delta back onto the live emit so `turn_usage_update` shows the
         // same figure the DB will rehydrate, not the cumulative snapshot.
+        // docs/252 phase 3 — `cost_usd` means money that left the account, and
+        // the rule keys on the BILLING MODE (`turn-attribution.ts`). The
+        // harness's own figure is passed as what it is — possibly absent, which
+        // is not the same as zero: Codex reports no dollar figure at all, and
+        // reading that as "free" is what made metered OpenAI turns cost nothing.
+        // The turn-start capture is preferred, but a session created BY this
+        // turn (`isNewSession`) has no row to read at wire time — so fall back
+        // to reading it now rather than recording that first turn as `legacy`.
+        const turnAttribution =
+          turnAttributionAtStart
+          ?? turnAttributionFor(selectionOf(deps.sessionManager.get(usageSessionId)));
+        const resolvedCost = resolveTurnCost({
+          harnessId: agent.agentId,
+          attribution: turnAttribution,
+          reportedCostUsd: event.cost?.totalUsd,
+          tokens: {
+            input: event.tokens?.input,
+            output: event.tokens?.output,
+            cacheRead: event.tokens?.cacheRead,
+            cacheWrite: event.tokens?.cacheWrite,
+          },
+        });
         perTurnUsage.costUsd = deps.usageManager.record(
           usageSessionId,
-          perTurnUsage.costUsd,
+          resolvedCost.costUsd,
           event.durationMs ?? 0,
           event.tokens?.input,
           event.tokens?.output,
@@ -1239,6 +1271,14 @@ export function wireAgentListeners(
             cacheCreate: event.tokens?.cacheWrite,
             model: turnModel,
             contextTokens: event.contextTokens,
+            costSource: resolvedCost.costSource,
+            // Carry the harness's running total forward even on a turn that did
+            // not take its cost from it, so the delta chain stays continuous
+            // across a billing-mode switch within one conversation.
+            ...(event.cost?.totalUsd !== undefined
+              ? { cumulativeSnapshot: event.cost.totalUsd }
+              : {}),
+            ...(turnAttribution ? { attribution: turnAttribution } : {}),
           },
         );
         const sessionUsage = deps.usageManager.getSessionUsage(usageSessionId);

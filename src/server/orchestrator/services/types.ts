@@ -4,6 +4,7 @@
 
 import type { AgentId, PermissionMode } from "../../shared/types.js";
 import type { AgentReasoningCapability, SubAgentDefaults } from "../../shared/types/agent-types.js";
+import type { EligibleModel } from "../../shared/agent-registry.js";
 import type { AccountSelectionMode, CredentialRoute, FailoverCutoffs, ProviderAccount, SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
 
@@ -15,6 +16,14 @@ export interface AgentInfo {
   installed: boolean;
   authConfigured: boolean;
   models: string[];
+  /**
+   * docs/252 phase 3 (req 8) — the models this install can actually run on this
+   * harness, each as the `(service, billing mode, model)` triple it is selected
+   * by. `models` above is this list's ids, kept for the call sites that still
+   * speak bare ids; the picker reads this one, because an id alone cannot say
+   * which service is billing the turn (req 11).
+   */
+  eligibleModels: EligibleModel[];
   /**
    * Whether the agent backend can run the chat-native AI review flow
    * (docs/125-chat-native-ai-review). The client uses this to gate the

@@ -467,7 +467,7 @@ export type SpawnShape = {
   /** How the endpoint is overridden. `none` means the harness offers no way. */
   endpoint:
     | { kind: "env"; name: string }                         // Claude: ANTHROPIC_BASE_URL
-    | { kind: "config"; key: string }                       // Codex: -c <key>=<url>
+    | { kind: "config"; key: string }                       // Codex: the base-URL field of a written provider block
     | { kind: "config-file"; path: string; pointer: string } // OpenCode: a written file
     | { kind: "none" };                                     // no override offered
 };
@@ -862,19 +862,21 @@ The sentinel is negative rather than zero so that a forgotten row is loud. The t
 `(service, mode, model)`, because a service's two modes can price the same model differently.
 
 **A rate is only meaningful against a token count that means the same thing, and the two
-harnesses have not been shown to agree.** Claude's `input_tokens` *excludes* cache: the adapter
-computes occupancy as `input + cache_read + cache_create` (`claude/adapter.ts:292` ✅), which is
-only correct if the three are disjoint. Codex reports `inputTokens` and `cachedInputTokens` as
-sibling fields (`codex-rate-limits.ts:20` ✅) and **nothing in this repository establishes
-whether the first includes the second** 🔍 — that is upstream app-server semantics. If it does,
-then `input × inputRate + cacheRead × cacheReadRate` charges the cached tokens twice, at the
-more expensive rate, on every Codex turn.
+harnesses did not agree.** Claude's `input_tokens` *excludes* cache: the adapter computes
+occupancy as `input + cache_read + cache_create` (`claude/adapter.ts:292` ✅), which is only
+correct if the three are disjoint. Codex reports `inputTokens` and `cachedInputTokens` as
+sibling fields (`codex-rate-limits.ts:20` ✅), and phase 3 **measured** what the relationship
+between them is rather than leaving it as upstream semantics nobody had checked: driving
+`codex app-server` against a recorder that returned `input_tokens: 1000` with
+`cached_tokens: 800`, it reported `inputTokens: 1000` and `cachedInputTokens: 800`. **They
+overlap.** Left alone, `input × inputRate + cacheRead × cacheReadRate` charges the cached
+tokens twice, at the more expensive rate, on every Codex turn.
 
-This matters more under the new rule than the old one, because Codex reports no dollar figure
-and therefore *always* falls through to the rates. Whoever adds a harness owns establishing its
-token semantics and normalizing to the disjoint convention at the adapter boundary, before the
-counts reach the rate multiplication — the pricing code must be able to assume disjointness
-rather than each reader re-deriving it. `plan.md` phase 3 carries this as a spike.
+That mattered more under the new rule than the old one, because Codex reports no dollar figure
+and therefore *always* falls through to the rates. Phase 3 normalizes at the **adapter
+boundary** (`codex-event-handler.ts`) — subtracting the cached count from the input one before
+the event leaves the harness — so the pricing code can assume disjointness rather than each
+reader re-deriving it. Whoever adds a harness owns the same obligation for it.
 
 **The four rates are an approximation, and that is a deliberate reading of req 16.** Real
 published pricing is richer: Anthropic prices 5-minute and 1-hour cache writes differently and
@@ -902,8 +904,14 @@ the thing to drop is req 16's cost figures rather than to scatter a second price
 
 Every 🔍, but these change the *shape* rather than the contents:
 
-1. **What wire format does each harness actually speak to a redirected endpoint?** 🔍 for all
-   four candidates, and the whole join rests on it.
+1. **What wire format does each harness actually speak to a redirected endpoint?** **Answered
+   for the two shipped harnesses in phase 3, by measurement** (CLI 2.1.220, codex-cli 0.146.0,
+   against a local HTTP recorder): Claude Code speaks Anthropic Messages at
+   `<ANTHROPIC_BASE_URL>/v1/messages`, and Codex speaks the Responses API at
+   `<base_url>/responses` — and **only** that, since a provider declaring `wire_api = "chat"`
+   is rejected outright. Still 🔍 for the two survey candidates. The Codex answer corrected a
+   catalogue row: `model_provider` names a block in `model_providers`, so the seam is a whole
+   provider block rather than a `model_provider.base_url` key; see `plan.md`'s phase-3 notes.
 2. **Does Cursor CLI support a base-URL override?** If not it is a fused `(harness, service)`
    pair rather than a harness.
 3. **Does driving OpenCode mean writing a per-session `opencode.json`?** If so, `SpawnShape`

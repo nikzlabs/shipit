@@ -24,7 +24,8 @@
 
 import type { AgentId, AgentProcess, FileAttachment, ImageAttachment } from "../shared/types.js";
 import { executeAgentTurn } from "./turn-executor.js";
-import { releaseResidentOnModelChange } from "./resident-model-guard.js";
+import { releaseResidentOnSpawnChange } from "./resident-spawn-guard.js";
+import { desiredSpawnIdentity } from "./service-routing.js";
 import { buildTurnMessages, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { resolveFileAttachments, resolveUploadRefs, formatFileContext } from "./validation.js";
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "./prompt-assembly.js";
@@ -276,12 +277,16 @@ export async function runDispatchedTurn(
     // resident process. Only the FIRST attempt can reuse; a no-result retry
     // always spawns fresh (the resident ref was cleared by the `done` handler
     // when the process exited without a result).
-    // Same model-drift release the WS path performs: a resident process runs
-    // the model it was spawned with, so reusing one after the session's model
-    // changed would run the old model behind the user's back. Dispatch reads
-    // the session's persisted model, which is what its run-params use too.
+    // Same spawn-drift release the WS path performs: a resident process runs the
+    // model, endpoint and credential it was spawned with, so reusing one after
+    // the session's selection changed would run the old ones behind the user's
+    // back. Both paths derive the identity from the session row, which is what
+    // their run params read too.
     if (!opts.systemTurn) {
-      releaseResidentOnModelChange(runner, deps.listenerDeps.getSelectedModel());
+      releaseResidentOnSpawnChange(
+        runner,
+        desiredSpawnIdentity(deps.listenerDeps.sessionManager, runner.sessionId, agentId),
+      );
     }
     const resident =
       !opts.systemTurn && attempt === 0 && runner.isStreamingActive ? runner.getAgent() : null;
