@@ -1226,7 +1226,7 @@ Two more were real and are fixed:
   Anthropic subscription quota. `recordAgentRateLimits` gained an explicit `routeId` and the
   consult passes its own.
 
-**Not in this phase, and still open:** GLM's `zai-plan-usage` quota reader. Phase 2 deferred it
+**Not in this phase, and still open:** GLM's `zai-plan-usage` quota reader (**planning#339**). Phase 2 deferred it
 for want of somewhere to report into; that place now exists (a provider declares its
 `(serviceId, billingMode)` and the registry indexes on it), so the reader is an addition rather
 than a change. Req 15 stays unmet on GLM's quota until it lands.

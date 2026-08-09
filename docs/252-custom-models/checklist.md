@@ -32,9 +32,10 @@ table — a phase is checked off when its PR has merged.
 - [x] One writer per credential — `setApiKey` and `set_agent_env` write through
 - [x] Onboarding still connects a credential and reaches a runnable model
 - [x] Cross-backend review, findings applied (see `plan.md`)
-- [ ] GLM's `zai-plan-usage` quota reader. **Unblocked by phase 6** — a provider now
-      declares its own `(serviceId, billingMode)` and the registry indexes on it, so this
-      is an addition rather than a change. Req 15 stays unmet on quota until it lands.
+- [ ] GLM's `zai-plan-usage` quota reader — tracked as **planning#339**. **Unblocked by
+      phase 6** — a provider now declares its own `(serviceId, billingMode)` and the registry
+      indexes on it, so this is an addition rather than a change. Req 15 stays unmet on
+      quota until it lands.
 
 ## Phase 5 — Credential-failure policy
 
@@ -56,8 +57,8 @@ table — a phase is checked off when its PR has merged.
 - [x] Cross-backend review, findings applied (see `plan.md`)
 - [ ] **Failover cutoffs** for a string-backed subscription. A cutoff is a percentage of a
       reported quota and nothing reports one for these credentials until phase 6 builds
-      `zai-plan-usage`, so the control would be inert. Belongs with the quota reader,
-      not with failover.
+      `zai-plan-usage`, so the control would be inert. Belongs with the quota reader
+      (**planning#339**), not with failover.
 
 ## Phase 3 — Spawn shaping and eligibility
 
