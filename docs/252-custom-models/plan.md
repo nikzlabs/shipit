@@ -128,7 +128,7 @@ the design.
 | 1 | Catalogue and identities | 5, 6, 7, 15 | The data model, its launch rows and prices. No user-visible change. |
 | 2 | Credentials and Settings | 5, 7, 15 | You can save a service key. It does nothing yet. |
 | 3 | Spawn shaping and eligibility | 1, 2, 3, 8, 11, 16 | **A session runs on a custom service.** Turns record what billed them, and respawn on a service change. **Landed.** |
-| 4 | In-session switching | 4 | The picker acts mid-session, across services. |
+| 4 | In-session switching | 4 | The picker acts mid-session, across services. **Landed.** |
 | 5 | Credential-failure policy | 12 | Correct behaviour when a credential dies. **Landed.** |
 | 6 | Usage, cost and attribution | 10, 11, 16 | You can *see* what you are running and where the money went. (Phase 3 records it.) |
 | 7 | Non-turn work | 9 | Naming and PR descriptions get their own model. **Landed.** |
@@ -868,6 +868,64 @@ endpoint, credential route, model — because phase 3 is where a same-id/differe
 switch first becomes reachable. Phase 4 is only the mid-session *interaction* on top of it:
 the picker acting on a live session, across services rather than just within one.
 
+**Phase 4 has landed.** The rules are `model-switch.ts` (pure: what a `set_model` /
+`set_agent` may do to a live session, and what the user is told), applied in
+`route-registry.ts`'s two handlers and confirmed to the client by a new
+`model_selection_changed` message. The end-to-end proof is
+`integration_tests/model-service-switch.test.ts`, which switches a resident session between
+**OpenRouter and Vercel on the same model id** — the two catalogue rows that share
+`anthropic/claude-opus-5` — and asserts the respawn, the new endpoint and the re-pinned
+credential route.
+
+**What phase 4 found.** The mechanism was phase 3's and held; every defect was in the
+interaction on top of it, and three of the four are the same mistake — **something still
+keyed on the model id after the id stopped identifying anything.**
+
+- **An explicit triple was honoured or *re-resolved*, never refused.** Phase 3 checked the
+  triple and, when it failed, fell through to bare-id resolution — correct for a client that
+  sent no triple, and silently wrong for one that sent a triple ShipIt would not honour. The
+  bare id re-resolves to whichever service sorts first among those offering it, so picking
+  Opus on Vercel with no Vercel key moved the session to **OpenRouter** and billed it; picking
+  Anthropic's *metered key* on a subscription-only install moved it onto the **subscription** —
+  the same cross-mode shift req 12 refuses on failover, arriving through the picker. It is now
+  refused, which is safe precisely because the picker only ever offers eligible rows: reaching
+  it means the client's list is stale, and the honest answer to a stale list is to say so.
+- **The optimistic pick was a model id, so a same-id switch showed no change.** The composer
+  highlights the picked row before the server answers, keyed on the id — and a cross-service
+  switch keeps the id. The checkmark and the disambiguating pill both stayed on the group the
+  user had just left, with nothing to correct them: **nothing refreshed the session list after
+  a selection change.** The pick is now the whole triple, and `model_selection_changed`
+  carries the server's authoritative answer back so the two converge instead of drifting.
+- **A harness switch conformed a bare id, so it could keep a `(service, mode)` the new harness
+  cannot reach.** The id list is credential-narrowed, so this was never an eligibility hole —
+  it is that two harnesses can both offer `anthropic/claude-opus-5` while only one reaches it
+  through the service the session is pinned to. The test is now the triple against the new
+  harness's eligible set, which is the same question the picker asks.
+- **A switch moved three things and reported none of them.** The model, its billing group and
+  the reasoning effort are computed in three places, and the design's "one message rather than
+  the last one to be computed" had no implementation. `describeSelectionMove` renders all three
+  as one sentence, delivered as a **toast** — feedback on a control the user just operated, so
+  it is deliberately not transcript content: the state it reports is the composer's own and is
+  re-read from the session row on every load.
+
+Two things phase 4 deliberately did **not** change. The confirmation is **per-connection**,
+like the sibling `error`, rather than broadcast through the runner: `emitMessage` buffers into
+the turn-event log, and replaying a stale selection to a reconnecting viewer would clobber a
+newer one. Other viewers converge on their next session-list refresh, exactly as before. And
+the composer's model control stays **disabled while a turn runs**, so a mid-turn switch is not
+reachable from the UI; the turn-start capture of the usage attribution
+(`agent-listeners.ts`) already covers the paths where it is.
+
+**The third persisted selection caught up here too.** The sub-agent defaults picker was the
+last surface still speaking bare model ids — phase 3 narrowed its *list* to what the install
+can run and left the ambiguity, so a deliberate choice between two services offering the same
+id was inexpressible and the server guessed. It now offers one `<optgroup>` per
+`(service, billing mode)` and sends the triple, which `saveGlobalSettings` validates against
+the harness's eligible set rather than trusting. An **empty** eligible set still means "no
+credential source is wired" (a worker, a unit test), not "nothing is eligible" — that is what
+`capabilities.models` itself falls back to, so the check follows it rather than refusing every
+write.
+
 **Phase 5 — Credential-failure policy.** Branch on the **billing mode** of the failing
 selection rather than on the error text, and never on how its credential is delivered. Two gates, not one: the auth-error
 interception must not drag a key-authenticated service into vendor re-auth, and the
@@ -1567,7 +1625,10 @@ The split has one real cost and one new interaction, both worth deciding deliber
   and otherwise move to the first eligible model and say so.
   Landing somewhere else silently would contradict req 11; refusing the switch would make an
   enabled control lie. The combined picker never had this case, because there the harness and
-  model moved together by construction.
+  model moved together by construction. **Phase 4 shipped this** as
+  `conformSelectionToAgent` — and note the test is the *triple*, not the model id: two
+  harnesses can offer the same id while only one reaches it through the service the session
+  is pinned to.
 
 A third case looks new and is not: removing a service's credential mid-session strands the
 selection with no successor to move to (req 13's map never crosses services). Req 12 already
@@ -1820,6 +1881,8 @@ reasoning block at all shows no control rather than an empty one.
 
 That makes three things a harness switch can move — model, billing mode, effort — and the
 composer has to report all of them in one message rather than the last one to be computed.
+**Phase 4 shipped that message** (`describeSelectionMove`, delivered as a toast on
+`model_selection_changed`); until then all three moved silently.
 
 **Mid-session model switching** (req 4) is not a new mechanism: the model is already per-turn
 data — a spawn flag for Claude Code, a `turn/start` field for Codex — so both shipped
@@ -1828,6 +1891,8 @@ therefore carried by **no flag today**, deliberately: a capability with one poss
 noise, and `AgentCapabilities` gains one only if a candidate turns up that fixes its model at
 process start. A switch that
 crosses *services* additionally re-resolves the credential and base URL for the next spawn.
+**Phase 4 is the interaction on top of the rest of this section** — `model-switch.ts` for what
+a switch may do to a live session, and `model_selection_changed` for what the user is told.
 
 ShipIt already forces a respawn boundary for a *model* change:
 `releaseResidentOnModelChange` (`resident-model-guard.ts`) kills a resident process

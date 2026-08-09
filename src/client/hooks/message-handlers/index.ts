@@ -47,6 +47,7 @@ import { handleMcpServerStatus } from "./mcp-server-status.js";
 import { handleMessageQueued } from "./message-queued.js";
 import { handleMessageSteered } from "./message-steered.js";
 import { handleModelInfo } from "./model-info.js";
+import { handleModelSelectionChanged } from "./model-selection-changed.js";
 import { handlePrLifecycleUpdate } from "./pr-lifecycle-update.js";
 import { handlePrNotableFiles } from "./pr-notable-files.js";
 import { handleResetEligible } from "./reset-eligible.js";
@@ -167,6 +168,7 @@ export const messageHandlers: MessageHandlerMap = {
   message_queued: handleMessageQueued,
   message_steered: handleMessageSteered,
   model_info: handleModelInfo,
+  model_selection_changed: handleModelSelectionChanged,
   pr_lifecycle_update: handlePrLifecycleUpdate,
   pr_notable_files: handlePrNotableFiles,
   reset_eligible: handleResetEligible,

@@ -127,6 +127,45 @@ export interface WsModelInfo {
   contextWindowTokens: number;
 }
 
+// ---- Model selection (docs/252 phase 4, req 4) ----
+
+/**
+ * Server → Client: the session's authoritative model selection after a
+ * `set_model` / `set_agent`, and — when the server moved something the user did
+ * not pick — one sentence saying what.
+ *
+ * Two jobs, and both need the server's answer rather than the client's guess:
+ *
+ *  - **Converge the picker.** The client picks optimistically by triple, and
+ *    the server may resolve a bare id, refuse an explicit one, or conform a
+ *    selection to a newly chosen harness. Without a confirmation the composer's
+ *    checkmark can sit on a `(service, mode)` the session is not on — invisible
+ *    when the two share a model id, which is precisely the case this feature
+ *    creates.
+ *  - **Say what moved** (`model-switch.ts`). A harness switch can move the
+ *    model, the billing group and the reasoning effort at once; `notice` names
+ *    all of them in one sentence.
+ *
+ * Transient by design — it reports the outcome of a control the user just
+ * operated, so it renders as a toast and is NOT transcript content: the state
+ * it describes is the composer's own, re-read from the session row on every
+ * load. Sent to the connection that acted, like the sibling `error`.
+ */
+export interface WsModelSelectionChanged {
+  type: "model_selection_changed";
+  /** The session this selection belongs to; a viewer on another one ignores it. */
+  sessionId: string;
+  agentId: AgentId;
+  /** The persisted triple, or null when the session holds no resolvable one. */
+  selection: { serviceId: string; billingMode: "sub" | "key"; modelId: string } | null;
+  /** The persisted model id — set even when `selection` is null (an unplaceable id). */
+  modelId: string | null;
+  /** docs/217 — the session's reasoning effort after the change; null ⇒ CLI default. */
+  reasoningEffort: string | null;
+  /** Present only when the server moved something the user did not pick. */
+  notice?: string;
+}
+
 // ---- Prompt queuing messages ----
 
 /** Server → Client: a message was queued because Claude is busy. */
