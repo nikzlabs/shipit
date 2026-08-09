@@ -100,7 +100,15 @@ export async function handleSendMessage(
   // admission used by dispatch(), before steering, attachment reads, warm
   // graduation, persistence, or process mutation.
   if (runnerForQueue) runnerForQueue.assertCanDispatch();
-  if (runnerForQueue?.running) {
+  // planning#338 — `systemTurnInProgress` counts as busy even while `running` is
+  // false: a system FLOW (the rebase driver) holds the session between its own
+  // turns — the executor clears `running` at `agent_result`, and the driver
+  // keeps running git (stage / `rebase --continue` / force-push) after each
+  // resolution turn settles. A message started in that gap displaced the
+  // resolution agent's slot in production and stranded the workspace
+  // mid-rebase. The dispatch fall-through below enqueues it instead; the flow
+  // releases the queue when it settles.
+  if (runnerForQueue?.running || runnerForQueue?.systemTurnInProgress) {
     // Verify with the worker that an agent is actually running. The local
     // `running` flag can get stranded `true` if the orchestrator missed a
     // terminal SSE event (drop mid-turn, container restart, /agent/kill
@@ -116,7 +124,7 @@ export async function handleSendMessage(
     // queues this message behind the entry that was there first (steering and
     // `/compact` both fall through to the queue: the released turn has no
     // resident streaming process yet).
-    if (actuallyRunning || runnerForQueue.running) {
+    if (actuallyRunning || runnerForQueue.running || runnerForQueue.systemTurnInProgress) {
       // docs/178 — `/compact` while a turn is in flight: trigger compaction on
       // the resident live process (streaming Claude injects `/compact`; live
       // Codex sends `thread/compact/start`) rather than queuing the literal text.

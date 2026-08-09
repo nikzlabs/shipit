@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { queuedMessageToDispatchOptions, startQueuedMessage } from "./queue-drain.js";
+import { queuedMessageToDispatchOptions, releaseQueuedTurn, startQueuedMessage } from "./queue-drain.js";
 import { toQueuedMessage } from "./session-runner.js";
 import type { AgentDispatchOptions, QueuedMessage, SessionRunnerInterface } from "./session-runner.js";
 import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
@@ -97,5 +97,57 @@ describe("queue drain routing (planning#257)", () => {
       expect(restored[key], `field "${key}" was dropped by the queue round-trip`).toEqual(opts[key]);
     }
     expect(restored.execution).toBe("dispatched");
+  });
+});
+
+describe("releaseQueuedTurn (planning#338)", () => {
+  /** Minimal runner surface `releaseQueuedTurn` touches. */
+  function fakeReleaseRunner(opts: {
+    running?: boolean;
+    systemTurnInProgress?: boolean;
+    queueLength?: number;
+  }) {
+    const dispatched: AgentDispatchOptions[] = [];
+    let dequeues = 0;
+    const runner = {
+      sessionId: "s1",
+      running: opts.running ?? false,
+      systemTurnInProgress: opts.systemTurnInProgress ?? false,
+      queueLength: opts.queueLength ?? 0,
+      canRunDispatchedTurn: true,
+      dequeue: () => {
+        dequeues++;
+        return toQueuedMessage(testDispatch({ text: "queued user msg", execution: "dispatched" }));
+      },
+      getQueueSnapshot: () => [],
+      emitMessage: () => {},
+      dispatch: (o: AgentDispatchOptions) => { dispatched.push(o); },
+    } as unknown as SessionRunnerInterface;
+    return { runner, dispatched, dequeueCount: () => dequeues };
+  }
+
+  it("refuses to release while a system flow holds the session between its own turns", () => {
+    // The rebase driver clears `running` when each resolution turn settles but
+    // keeps running git against the workspace — releasing a user turn into
+    // that window is how a production session stranded mid-rebase.
+    const { runner, dispatched, dequeueCount } = fakeReleaseRunner({
+      running: false,
+      systemTurnInProgress: true,
+      queueLength: 1,
+    });
+    expect(releaseQueuedTurn(runner)).toBe(false);
+    expect(dispatched).toEqual([]);
+    expect(dequeueCount()).toBe(0);
+  });
+
+  it("releases the head of the queue once the flow has released its hold", () => {
+    const { runner, dispatched } = fakeReleaseRunner({
+      running: false,
+      systemTurnInProgress: false,
+      queueLength: 1,
+    });
+    expect(releaseQueuedTurn(runner)).toBe(true);
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0]?.text).toBe("queued user msg");
   });
 });

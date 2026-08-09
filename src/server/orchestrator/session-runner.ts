@@ -421,6 +421,16 @@ export function dispatchOnRunner(
   // turn).
   if (!deps) return enqueueAndReport();
 
+  // planning#338 — `systemTurnInProgress` with `running` false is a system FLOW (the
+  // rebase driver) holding the session between its own turns: the executor's
+  // `tryDrain` clears `running` at `agent_result`, and the driver keeps running
+  // git (stage, `rebase --continue`, force-push, the next resolution turn)
+  // after each turn settles. Starting a non-system turn in that window
+  // displaces the flow's agent slot and strands the workspace mid-rebase — the
+  // planning#338 production incident. Enqueue instead; the flow releases the queue
+  // when it settles. The flow's OWN dispatches carry `systemTurn` and pass.
+  if (runner.systemTurnInProgress && !opts.systemTurn) return enqueueAndReport();
+
   // Flip running=true synchronously BEFORE scheduling the async dispatched
   // turn. Without this, the microtask gap between `void runDispatchedTurn(...)`
   // and the executor's own `runner.running = true` is a window where a
