@@ -79,9 +79,15 @@ function setSessionState(session: SessionInfo | undefined) {
   });
 }
 
+/** Reset the "server answered" counter so one test's echo can't clear another's pick. */
+function resetSelectionEcho() {
+  useSessionStore.setState({ modelSelectionEcho: {} });
+}
+
 beforeEach(() => {
   localStorage.removeItem("vibe-model-id");
   setSessionState(undefined);
+  resetSelectionEcho();
 });
 
 describe("HarnessSelector", () => {
@@ -210,6 +216,37 @@ describe("ModelSelector", () => {
     expect(checked).toHaveLength(1);
   });
 
+  it("checks exactly one row when nothing has pinned a group yet", async () => {
+    // A brand-new session with no saved pick: the model falls back to the first
+    // row, so the group has to fall back the same way. Resolving only the model
+    // is what the live UI showed — the trigger's pill naming one service while a
+    // checkmark sat on every row sharing the id.
+    const user = userEvent.setup();
+    render(
+      <ModelSelector agents={agents} activeAgentId="claude" modelInfo={null} onModelChange={vi.fn()} />,
+    );
+    await user.click(screen.getByTestId("model-trigger"));
+    const rows = screen.getAllByTestId("model-option-claude-sonnet-5");
+    expect(rows.filter((r) => r.className.includes("color-accent-subtle"))).toHaveLength(1);
+    expect(rows[0]!.className).toContain("color-accent-subtle");
+  });
+
+  it("drops a saved seed the displayed harness cannot run", () => {
+    // The slot is global and the harness is not. Switching harness on the
+    // new-session composer used to leave the trigger naming the PREVIOUS
+    // harness's model — a model this one cannot run, and one the server has
+    // already moved away from, so the composer contradicted its own notice.
+    localStorage.setItem("vibe-model-id", "anthropic:sub:claude-sonnet-5");
+    render(<ModelSelector agents={agents} activeAgentId="codex" modelInfo={null} />);
+    expect(screen.getByTestId("model-trigger")).toHaveTextContent("GPT-5.6 Sol");
+  });
+
+  it("still honours a saved seed the displayed harness does offer", () => {
+    localStorage.setItem("vibe-model-id", "deepseek:key:deepseek-v4-flash");
+    render(<ModelSelector agents={agents} activeAgentId="claude" modelInfo={null} />);
+    expect(screen.getByTestId("model-trigger")).toHaveTextContent("V4 Flash");
+  });
+
   it("falls back to one unnamed group when the payload predates eligibleModels", async () => {
     const user = userEvent.setup();
     const legacy: AgentOption[] = [{ ...agents[0], eligibleModels: undefined }];
@@ -236,5 +273,110 @@ describe("ModelSelector", () => {
     await user.click(screen.getByTestId("model-trigger"));
     await user.click(screen.getByTestId("model-option-deepseek-v4-flash"));
     expect(screen.getByTestId("model-trigger")).toHaveTextContent("V4 Flash");
+  });
+
+  it("moves the checkmark on a switch that changes only the billing group", async () => {
+    // docs/252 phase 4 — the optimistic pick is the whole TRIPLE. A mid-session
+    // switch across services (or across one service's two modes) routinely keeps
+    // the model id, so an id-keyed pending pick showed no change at all: the
+    // checkmark stayed on the group the user had just left until an unrelated
+    // session-list refresh happened to arrive.
+    const user = userEvent.setup();
+    setSessionState(
+      makeSession({ model: "claude-sonnet-5", serviceId: "anthropic", billingMode: "sub" }),
+    );
+    render(
+      <ModelSelector
+        agents={agents}
+        activeAgentId="claude"
+        modelInfo={null}
+        hasActiveSession
+        onModelChange={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByTestId("model-trigger"));
+    // Two rows share this id — the subscription first, the key second.
+    const rows = screen.getAllByTestId("model-option-claude-sonnet-5");
+    expect(rows[0]!.className).toContain("color-accent-subtle");
+    await user.click(rows[1]!);
+
+    // The trigger's disambiguating pill is the visible half of the same fact.
+    expect(screen.getByTestId("model-trigger-service")).toHaveTextContent("API key");
+    await user.click(screen.getByTestId("model-trigger"));
+    const after = screen.getAllByTestId("model-option-claude-sonnet-5");
+    expect(after[1]!.className).toContain("color-accent-subtle");
+    expect(after[0]!.className).not.toContain("color-accent-subtle");
+  });
+
+  it("really drops the optimistic pick once the row catches up, rather than lingering", async () => {
+    // Asserting the pill before and after a MATCHING confirmation proves nothing
+    // — it reads the same either way, so the test passes even if the pending
+    // pick is never cleared (cross-backend review caught exactly that). The
+    // honest check is to move the row somewhere the pending pick would mask,
+    // and see the picker follow.
+    const user = userEvent.setup();
+    const render1 = (session: SessionInfo) => {
+      setSessionState(session);
+      return (
+        <ModelSelector
+          agents={agents}
+          activeAgentId="claude"
+          modelInfo={null}
+          hasActiveSession
+          onModelChange={vi.fn()}
+        />
+      );
+    };
+    const { rerender } = render(
+      render1(makeSession({ model: "claude-sonnet-5", serviceId: "anthropic", billingMode: "sub" })),
+    );
+    await user.click(screen.getByTestId("model-trigger"));
+    await user.click(screen.getAllByTestId("model-option-claude-sonnet-5")[1]!);
+    expect(screen.getByTestId("model-trigger-service")).toHaveTextContent("API key");
+
+    // The server confirms; the session row catches up with the whole triple.
+    rerender(
+      render1(makeSession({ model: "claude-sonnet-5", serviceId: "anthropic", billingMode: "key" })),
+    );
+    // Now move the row to a DIFFERENT model. A pending pick that survived would
+    // still be winning the precedence and the trigger would read "Sonnet 5".
+    rerender(
+      render1(makeSession({ model: "deepseek-v4-flash", serviceId: "deepseek", billingMode: "key" })),
+    );
+    expect(screen.getByTestId("model-trigger")).toHaveTextContent("V4 Flash");
+  });
+
+  it("snaps back when the server REFUSES the pick and the row therefore never changes", async () => {
+    // The pick that cannot clear itself: the server refused it, so the session
+    // row is exactly what it was, and — because a cross-service pick keeps the
+    // model id — nothing else on screen moves either. Without a separate "the
+    // server answered" signal the trigger claims a service the session is not on
+    // for as long as the tab stays open. Cross-backend review found this.
+    const user = userEvent.setup();
+    const session = makeSession({
+      model: "claude-sonnet-5",
+      serviceId: "anthropic",
+      billingMode: "sub",
+    });
+    setSessionState(session);
+    const view = (
+      <ModelSelector
+        agents={agents}
+        activeAgentId="claude"
+        modelInfo={null}
+        hasActiveSession
+        onModelChange={vi.fn()}
+      />
+    );
+    const { rerender } = render(view);
+    await user.click(screen.getByTestId("model-trigger"));
+    await user.click(screen.getAllByTestId("model-option-claude-sonnet-5")[1]!);
+    expect(screen.getByTestId("model-trigger-service")).toHaveTextContent("API key");
+
+    // The refusal: the row is untouched, and the only thing that arrives is the
+    // server's answer.
+    useSessionStore.getState().bumpModelSelectionEcho(session.id);
+    rerender(view);
+    expect(screen.getByTestId("model-trigger-service")).toHaveTextContent("Subscription");
   });
 });

@@ -69,6 +69,18 @@ interface SessionState {
   selectedRepoUrl: string | null;
   creatingRepo: boolean;
   sessions: SessionInfo[];
+  /**
+   * docs/252 phase 4 — how many times the server has answered a selection change
+   * for a session, keyed by session id.
+   *
+   * The composer picks OPTIMISTICALLY, and the obvious clear signal — "the
+   * session row now matches my pick" — cannot fire when the server REFUSED the
+   * pick, because the row is then exactly what it was. Without a separate
+   * signal the picker sits on a selection the session is not on, indefinitely
+   * and invisibly (a same-id cross-service pick changes nothing else on screen).
+   * A counter says "the server has answered", which is true of both outcomes.
+   */
+  modelSelectionEcho: Record<string, number>;
   activeRunnerSessions: Set<string>;
   /** docs/193 (Thread C) — sessions blocked awaiting a permission answer. */
   awaitingPermissionSessions: Set<string>;
@@ -196,6 +208,8 @@ interface SessionState {
   setSessions: (
     sessions: SessionInfo[] | ((prev: SessionInfo[]) => SessionInfo[]),
   ) => void;
+  /** docs/252 phase 4 — record that the server answered this session's selection. */
+  bumpModelSelectionEcho: (sessionId: string) => void;
   /**
    * docs/186 — pause / resume the auto-fix-CI loop for a single session.
    * Optimistically flips `autoFixCiPaused` on the session record, POSTs the
@@ -336,6 +350,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessionId: undefined,
   ...initialResettableState,
   sessions: [] as SessionInfo[],
+  modelSelectionEcho: {},
   activeRunnerSessions: new Set<string>(),
   awaitingPermissionSessions: new Set<string>(),
   backgroundTaskSessions: new Map<string, string[]>(),
@@ -398,6 +413,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => ({
       sessions:
         typeof sessions === "function" ? sessions(state.sessions) : sessions,
+    })),
+
+  bumpModelSelectionEcho: (sessionId) =>
+    set((state) => ({
+      modelSelectionEcho: {
+        ...state.modelSelectionEcho,
+        [sessionId]: (state.modelSelectionEcho[sessionId] ?? 0) + 1,
+      },
     })),
 
   setAutoFixCiPaused: async (sessionId, paused) => {

@@ -254,10 +254,21 @@ export function ModelSelector({
   hasActiveSession = false,
   disabled,
 }: ModelSelectorProps) {
-  const [pendingModel, setPendingModel] = useState<string | undefined>(undefined);
+  // docs/252 phase 4 — the optimistic pick is the whole TRIPLE, not a model id.
+  // A mid-session switch across services routinely keeps the id (the same model
+  // is reachable direct and through a gateway), so an id-keyed pending pick
+  // showed no change at all: the trigger label and the checkmark both stayed on
+  // the service the user had just moved away from, until an unrelated
+  // session-list refresh happened to arrive. The server's
+  // `model_selection_changed` confirmation is what clears it.
+  const [pendingSelection, setPendingSelection] = useState<EligibleModelOption | undefined>(
+    undefined,
+  );
 
   const sessionId = useSessionStore((s) => s.sessionId);
   const pendingSessionRef = useRef<string | undefined>(sessionId);
+  const pendingEchoRef = useRef<number>(0);
+  const selectionEcho = useSessionStore((s) => (sessionId ? (s.modelSelectionEcho[sessionId] ?? 0) : 0));
   const sessions = useSessionStore((s) => s.sessions);
   const currentSession = sessionId ? sessions.find((s) => s.id === sessionId) : undefined;
   const sessionModel = currentSession?.model;
@@ -275,9 +286,31 @@ export function ModelSelector({
   // the picker would show the subscription row while the session billed the key.
   const savedSelection = getSavedModelSelection();
   const savedModel = savedSelection?.modelId ?? getSavedModelId();
-  const seededModel = hasActiveSession ? undefined : savedModel;
-  const pendingModelForCurrentSession =
-    pendingSessionRef.current === sessionId ? pendingModel : undefined;
+  // docs/252 phase 4 — the seed is honoured only when the harness on display
+  // actually offers it. The slot is global and the harness is not, so switching
+  // harness on the new-session composer left the trigger naming the PREVIOUS
+  // harness's model: a model that harness cannot run, and — once the server
+  // reports what it moved the selection to — a trigger that contradicts its own
+  // notice. Dropping it falls through to the first eligible row, which is what
+  // the server chose.
+  const seededRow =
+    !hasActiveSession && savedSelection
+      ? rows.find(
+          (r) =>
+            r.serviceId === savedSelection.serviceId
+            && r.billingMode === savedSelection.billingMode
+            && r.modelId === savedSelection.modelId,
+        )
+      : undefined;
+  const seededModel =
+    hasActiveSession || !savedModel
+      ? undefined
+      : savedSelection
+        ? seededRow?.modelId
+        : (rows.some((r) => r.modelId === savedModel) ? savedModel : undefined);
+  const pendingForCurrentSession =
+    pendingSessionRef.current === sessionId ? pendingSelection : undefined;
+  const pendingModelForCurrentSession = pendingForCurrentSession?.modelId;
 
   // The raw model id the CLI reported running this turn. `modelInfo` is global
   // UI state, so it is trusted only when the reported model belongs to the
@@ -318,12 +351,25 @@ export function ModelSelector({
 
   // The service/mode the session actually persisted, so a duplicated model id
   // highlights the row it was chosen from rather than every row sharing the id.
+  // The optimistic pick outranks it for the same reason it outranks the model:
+  // a same-id cross-service switch changes ONLY this, so reading the session row
+  // first would leave the checkmark on the group the user just left.
+  const chosenGroupKey =
+    pendingForCurrentSession?.serviceId
+      ? `${pendingForCurrentSession.serviceId}:${pendingForCurrentSession.billingMode}`
+      : hasActiveSession && currentSession?.serviceId && currentSession.billingMode
+        ? `${currentSession.serviceId}:${currentSession.billingMode}`
+        : seededRow
+          ? seededRow.groupKey
+          : undefined;
+
+  // Nothing has pinned a group yet — a brand-new session with no saved pick, so
+  // the model itself fell back to `rows[0]`. Resolve the group the same way, to
+  // the FIRST row offering that id, because the alternative is what the live UI
+  // showed: the trigger's pill naming one service while a checkmark sat on
+  // every row sharing the id. One answer, read by both.
   const selectedGroupKey =
-    hasActiveSession && currentSession?.serviceId && currentSession.billingMode
-      ? `${currentSession.serviceId}:${currentSession.billingMode}`
-      : !hasActiveSession && savedSelection
-        ? `${savedSelection.serviceId}:${savedSelection.billingMode}`
-        : undefined;
+    chosenGroupKey ?? rows.find((r) => r.modelId === selectedModel)?.groupKey;
 
   const displayName = formatModelName(displayedModel ?? "");
   const displayedRow = rows.find(
@@ -335,27 +381,47 @@ export function ModelSelector({
   const handleModelSelect = useCallback(
     (row: ModelRow) => {
       pendingSessionRef.current = sessionId;
-      setPendingModel(row.modelId);
-      onModelChange?.({
+      pendingEchoRef.current = selectionEcho;
+      const selection: EligibleModelOption = {
         serviceId: row.serviceId,
         serviceName: row.serviceName,
         billingMode: row.billingMode,
         modelId: row.modelId,
         label: row.label,
-      });
+      };
+      setPendingSelection(selection);
+      onModelChange?.(selection);
     },
-    [onModelChange, sessionId],
+    [onModelChange, sessionId, selectionEcho],
   );
 
-  // Drop the optimistic pending pick once the session record catches up with it
-  // — from then on `sessionModel` drives both the label and the checkmark. Keep
-  // the CLI-confirmation clear as the escape hatch for a pick the server never
-  // persisted, so a stale pending pick can't outlive a turn.
+  // Drop the optimistic pending pick once the server has ANSWERED — which is a
+  // different question from "the row now matches", and the difference is the
+  // whole point: a REFUSED pick leaves the row exactly as it was, so a
+  // match-only rule would leave the trigger and the checkmark claiming a service
+  // the session is not on, indefinitely and invisibly (a same-id cross-service
+  // pick changes nothing else on screen). The echo counter says the server
+  // answered, whichever way it answered.
+  //
+  // The row-match clear stays as the fast path for a confirmation that arrives
+  // as a session-list refresh rather than as our own echo, and it compares the
+  // whole triple: a same-id cross-service pick would otherwise clear on the
+  // model alone and snap the checkmark back to the old group. The
+  // CLI-confirmation clear stays as the escape hatch for a pick the server never
+  // answered at all, so a stale pending pick can't outlive a turn.
   const prevLiveRef = useRef(liveModel);
-  if (pendingModel && sessionModel === pendingModel) {
-    setPendingModel(undefined);
-  } else if (liveModel && liveModel !== prevLiveRef.current) {
-    setPendingModel(undefined);
+  const sessionMatchesPending =
+    !!pendingSelection
+    && sessionModel === pendingSelection.modelId
+    && (!pendingSelection.serviceId
+      || (currentSession?.serviceId === pendingSelection.serviceId
+        && currentSession.billingMode === pendingSelection.billingMode));
+  if (pendingSelection && selectionEcho > pendingEchoRef.current) {
+    setPendingSelection(undefined);
+  } else if (sessionMatchesPending) {
+    setPendingSelection(undefined);
+  } else if (pendingSelection && liveModel && liveModel !== prevLiveRef.current) {
+    setPendingSelection(undefined);
   }
   prevLiveRef.current = liveModel;
 

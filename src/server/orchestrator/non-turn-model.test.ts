@@ -36,6 +36,9 @@ function storeWith(routes: CredentialRoute[], pinned?: ModelSelection) {
           && (billingMode === undefined || r.billingMode === billingMode),
       ),
     getCredentialSecret: (id: string) => (routes.some((r) => r.id === id) ? "sk-test" : undefined),
+    // Phase 5 widened `ServiceRoutingCredentialSource` with the selection mode;
+    // nothing here reads it, so the stub returns the store's own default.
+    getSelectionMode: () => "strict" as const,
   };
 }
 

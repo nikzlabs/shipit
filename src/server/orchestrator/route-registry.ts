@@ -1,6 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { nativeServiceForHarness, selectionExists } from "../shared/catalogue/index.js";
 import { applyModelRetirement } from "./model-retirement.js";
+import {
+  conformSelectionToAgent,
+  describeSelectionMove,
+  modelSelectionFrom,
+  selectionFrom,
+  verifyExplicitSelection,
+} from "./model-switch.js";
 import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
 import type { AgentId } from "../shared/types.js";
 import type { WsClientMessage, WsServerMessage, WsLogRecord, LogSource } from "../shared/types.js";
@@ -661,6 +668,44 @@ export async function registerRoutes(
         });
       };
 
+      /**
+       * docs/252 phase 4 (req 4) — confirm the session's authoritative selection
+       * after a `set_model` / `set_agent`, with `notice` set only when the
+       * server moved something the user did not pick.
+       *
+       * Read back from the session row rather than echoed from the request: the
+       * row is what the next turn's spawn identity and usage attribution are
+       * derived from, so echoing the request would let the composer show a
+       * selection the turn will not use.
+       *
+       * Per-connection, like the sibling `error`: it is feedback on a control
+       * THIS connection just operated. Deliberately not `runner.emitMessage` —
+       * that buffers into the turn-event log, and replaying a stale selection to
+       * a reconnecting viewer would clobber a newer one. Other viewers converge
+       * on their next session-list refresh, unchanged from before.
+       */
+      const sendSelectionChanged = (agentId: AgentId, notice?: string): void => {
+        const session = activeAppSessionId ? sessionManager.get(activeAppSessionId) : undefined;
+        // No session row to report on — nothing was persisted, so there is no
+        // authoritative selection to converge the picker onto. A notice still
+        // has to reach the user rather than being swallowed, so it degrades to
+        // the plain error path.
+        if (!activeAppSessionId || !session) {
+          if (notice) send({ type: "error", message: notice });
+          return;
+        }
+        const selection = selectionFrom(session);
+        send({
+          type: "model_selection_changed",
+          sessionId: activeAppSessionId,
+          agentId,
+          selection: selection ?? null,
+          modelId: session.model ?? null,
+          reasoningEffort: session.reasoningEffort ?? null,
+          ...(notice ? { notice } : {}),
+        });
+      };
+
       const onContainerStarted = (sid: string) => {
         if (sid === activeAppSessionId) sendContainerFreshness(sid);
       };
@@ -1237,35 +1282,40 @@ export async function registerRoutes(
               return;
             }
             ctx.setActiveAgentId(agentId);
-            // Conform the model to the new agent. The AgentPicker switches the
-            // agent without touching the model, so without this a Codex →
-            // Claude switch would leave a "gpt-5.5" model selected and the next
-            // turn would spawn `claude --model gpt-5.5` and fail. Fall back to
-            // the new agent's default model when the current one isn't in its
-            // lineup.
+            // Conform the model and the reasoning effort to the new agent. The
+            // harness picker switches the harness without touching either, so
+            // without this a Codex → Claude switch would leave a "gpt-5.5"
+            // model selected and the next turn would spawn
+            // `claude --model gpt-5.5` and fail.
             //
-            // docs/252 phase 3 — the fallback is the new harness's first
-            // ELIGIBLE entry and is persisted as the whole triple. Re-resolving
-            // a bare id here would pick whichever service sorts first, which
-            // need not be one this install has a credential for (req 8) — the
-            // same cross-mode drift phase 8 closed on the child-spawn path.
-            const currentModel = ctx.getSelectedModel();
-            if (currentModel && !info.capabilities.models.includes(currentModel)) {
-              const fallback = info.eligibleModels[0];
-              ctx.setSelectedModel(fallback?.modelId);
-              if (activeAppSessionId && fallback) {
-                sessionManager.setModelSelection(activeAppSessionId, {
-                  serviceId: fallback.serviceId,
-                  billingMode: fallback.billingMode,
-                  modelId: fallback.modelId,
-                });
+            // docs/252 phase 4 — the test is the whole TRIPLE against the new
+            // harness's ELIGIBLE set, not a bare id against its catalogue join.
+            // The join says nothing about credentials and nothing about which
+            // service the session is on, so an id-only test kept a
+            // `(service, mode)` the new harness cannot authenticate with — a
+            // selection the picker will not even show. `model-switch.ts` holds
+            // the rule and the sentence that reports it.
+            const currentReasoning = ctx.getSelectedReasoning();
+            const move = conformSelectionToAgent({
+              agent: info,
+              current: selectionFrom(
+                activeAppSessionId ? sessionManager.get(activeAppSessionId) : undefined,
+              ),
+              currentModelId: ctx.getSelectedModel(),
+              currentReasoning,
+            });
+            if (move.selection) {
+              ctx.setSelectedModel(move.selection.modelId);
+              if (activeAppSessionId) {
+                sessionManager.setModelSelection(activeAppSessionId, move.selection);
               }
             }
             // docs/217 — reasoning is per-agent; a stale value from the previous
             // agent can't apply to the new one. Drop it (back to default) when it
-            // isn't in the new agent's option set.
-            const currentReasoning = ctx.getSelectedReasoning();
-            if (currentReasoning && !info.capabilities.reasoning?.options.some((o) => o.value === currentReasoning)) {
+            // isn't in the new agent's option set — reset rather than mapped to
+            // a neighbouring level, because a shared level NAME is not a promise
+            // of shared semantics and omitting the flag is always valid.
+            if (move.reasoningCleared) {
               ctx.setSelectedReasoning(undefined);
               if (activeAppSessionId) {
                 sessionManager.setReasoning(activeAppSessionId, null);
@@ -1276,97 +1326,131 @@ export async function registerRoutes(
             if (activeAppSessionId) {
               sessionManager.setAgentId(activeAppSessionId, agentId);
             }
+            const movedTo = move.selection
+              ? info.eligibleModels.find(
+                  (m) =>
+                    m.serviceId === move.selection!.serviceId
+                    && m.billingMode === move.selection!.billingMode
+                    && m.modelId === move.selection!.modelId,
+                )
+              : undefined;
+            sendSelectionChanged(
+              agentId,
+              describeSelectionMove({
+                agentName: info.name,
+                move,
+                ...(movedTo
+                  ? {
+                      movedTo: {
+                        label: movedTo.label,
+                        serviceName: movedTo.serviceName,
+                        billingMode: movedTo.billingMode,
+                      },
+                    }
+                  : {}),
+              }),
+            );
             return;
           }
           case "set_model": {
             const currentAgentId = ctx.getActiveAgentId();
             const activeAgent = agentRegistry.get(currentAgentId);
-            /** req 8, asked of the harness that will actually run the turn. */
-            const isEligibleHere = (selection: ModelSelection): boolean =>
-              (agentRegistry.get(ctx.getActiveAgentId())?.eligibleModels ?? []).some(
-                (m) =>
-                  m.serviceId === selection.serviceId
-                  && m.billingMode === selection.billingMode
-                  && m.modelId === selection.modelId,
-              );
-            if (activeAgent && !activeAgent.capabilities.models.includes(msg.model)) {
-              // The model isn't in the current agent's lineup. The grouped
-              // model picker switches agent + model together by firing
-              // `set_agent` then `set_model`, so this fires whenever the user
-              // crosses an agent boundary (e.g. Codex → Opus). Rather than
-              // depend on `set_agent` having already landed — which it may not
-              // have, if its auth/install guard bailed or the two messages
-              // raced — make `set_model` self-healing: if an installed+authed
-              // agent owns this model, switch to it here. Only error when no
-              // available agent can run the model.
-              const owner = agentRegistry.available().find(
-                (a) => a.capabilities.models.includes(msg.model),
-              );
-              if (!owner) {
-                send({ type: "error", message: `Model "${msg.model}" is not available for ${activeAgent.name}` });
-                return;
+            // docs/252 phase 4 — **decide everything before mutating anything.**
+            // This handler can self-switch the harness (below), and cross-backend
+            // review found the refusal downstream of that: a request refused for
+            // its triple had already moved the session to the other harness and
+            // reset its reasoning, so "refused" left the session changed in two
+            // ways the user did not ask for. Resolve the harness that WOULD run
+            // this model first, verify against it, and only then write.
+            const modelOwner =
+              activeAgent && !activeAgent.capabilities.models.includes(msg.model)
+                ? agentRegistry.available().find((a) => a.capabilities.models.includes(msg.model))
+                : activeAgent;
+            if (activeAgent && !modelOwner) {
+              send({ type: "error", message: `Model "${msg.model}" is not available for ${activeAgent.name}` });
+              return;
+            }
+            // docs/252 — persist the SELECTION, not just the model id: a bare id
+            // cannot say which service is billing the turn (req 11), because the
+            // same id is reachable through a vendor directly, through a gateway,
+            // and through two modes of one service.
+            //
+            // docs/252 phase 4 — an explicit triple is honoured or REFUSED, never
+            // re-resolved. Phase 3 fell through to bare-id resolution when the
+            // triple was not eligible, which silently landed the session on
+            // whichever *other* service offers the same id — the user picks
+            // Vercel, has no Vercel key, and gets billed to OpenRouter. The
+            // fall-through survives only for a client that sent NEITHER field (an
+            // older browser, Quick Capture), where a bare id is all there is;
+            // exactly one field is an incoherent request, not a legacy one, and
+            // `modelSelectionFrom` refuses it rather than dropping the half it
+            // was given. See `model-switch.ts`.
+            const verdict = verifyExplicitSelection(
+              modelOwner,
+              modelSelectionFrom(msg.model, msg.serviceId, msg.billingMode),
+            );
+            if (verdict && !verdict.ok) {
+              // Reported as a notice on the authoritative selection, not as an
+              // `error`: the session did not change, so the picker has to be told
+              // to drop its optimistic pick — and an `error` renders an assistant
+              // bubble that is never persisted, which is transcript content that
+              // vanishes on reload.
+              sendSelectionChanged(ctx.getActiveAgentId(), verdict.message);
+              return;
+            }
+            if (activeAgent && modelOwner && modelOwner.id !== currentAgentId) {
+              // The model isn't in the current agent's lineup. The picker
+              // switches harness + model together by firing `set_agent` then
+              // `set_model`, so this fires whenever the user crosses a harness
+              // boundary (e.g. Codex → Opus). Rather than depend on `set_agent`
+              // having already landed — which it may not have, if its
+              // auth/install guard bailed or the two messages raced — make
+              // `set_model` self-healing and switch to the owner here.
+              //
+              // docs/138 — after the session has taken its first turn the agent
+              // is pinned for life (per-agent credential isolation). The model
+              // can still move freely within the pinned agent's lineup, but a
+              // cross-agent model is rejected here rather than triggering the
+              // silent auto-switch the unpinned flow uses. The UI mirrors this
+              // by hiding cross-harness rows; this branch is the authoritative
+              // guard.
+              if (activeAppSessionId) {
+                const pinnedSession = sessionManager.get(activeAppSessionId);
+                if (pinnedSession?.agentPinned) {
+                  send({
+                    type: "error",
+                    message: `This session is locked to ${activeAgent.name}. Model "${msg.model}" requires ${modelOwner.name}, which can't be selected after the first message. Switch models within ${activeAgent.name} instead.`,
+                  });
+                  return;
+                }
               }
-              if (owner.id !== currentAgentId) {
-                // docs/138 — after the session has taken its first turn the
-                // agent is pinned for life (per-agent credential isolation).
-                // The model can still move freely within the pinned agent's
-                // lineup, but a cross-agent model is rejected here rather
-                // than triggering the silent auto-switch the unpinned flow
-                // uses. The UI mirrors this by greying out cross-agent rows
-                // in the picker; this branch is the authoritative guard.
+              ctx.setActiveAgentId(modelOwner.id);
+              if (activeAppSessionId) {
+                sessionManager.setAgentId(activeAppSessionId, modelOwner.id);
+              }
+              // docs/217 — `set_model` can cross an agent boundary on its own
+              // (the picker fires set_agent + set_model, but they can race or
+              // set_agent's guard can bail, and QuickCapture sends set_model
+              // alone). Reasoning is per-agent, so self-heal it here too —
+              // otherwise a stale Claude `max` could ride a Codex spawn as
+              // `-c model_reasoning_effort=max`. Mirrors the set_agent path.
+              const currentReasoning = ctx.getSelectedReasoning();
+              if (currentReasoning && !modelOwner.capabilities.reasoning?.options.some((o) => o.value === currentReasoning)) {
+                ctx.setSelectedReasoning(undefined);
                 if (activeAppSessionId) {
-                  const pinnedSession = sessionManager.get(activeAppSessionId);
-                  if (pinnedSession?.agentPinned) {
-                    send({
-                      type: "error",
-                      message: `This session is locked to ${activeAgent.name}. Model "${msg.model}" requires ${owner.name}, which can't be selected after the first message. Switch models within ${activeAgent.name} instead.`,
-                    });
-                    return;
-                  }
-                }
-                ctx.setActiveAgentId(owner.id);
-                if (activeAppSessionId) {
-                  sessionManager.setAgentId(activeAppSessionId, owner.id);
-                }
-                // docs/217 — `set_model` can cross an agent boundary on its own
-                // (the picker fires set_agent + set_model, but they can race or
-                // set_agent's guard can bail, and QuickCapture sends set_model
-                // alone). Reasoning is per-agent, so self-heal it here too —
-                // otherwise a stale Claude `max` could ride a Codex spawn as
-                // `-c model_reasoning_effort=max`. Mirrors the set_agent path.
-                const currentReasoning = ctx.getSelectedReasoning();
-                if (currentReasoning && !owner.capabilities.reasoning?.options.some((o) => o.value === currentReasoning)) {
-                  ctx.setSelectedReasoning(undefined);
-                  if (activeAppSessionId) {
-                    sessionManager.setReasoning(activeAppSessionId, null);
-                  }
+                  sessionManager.setReasoning(activeAppSessionId, null);
                 }
               }
             }
             ctx.setSelectedModel(msg.model);
             // Persist to session metadata so it survives reconnects and warm pool.
-            //
-            // docs/252 — persist the SELECTION, not just the model id. The client
-            // does not send a service or mode yet (the picker has no service axis
-            // until phase 3), so the pair is resolved from the catalogue, biased
-            // toward the harness's own vendor so a first-party id cannot land on
-            // a gateway that happens to list the same string. An explicit pair,
-            // once the client sends one, is honoured verbatim when the catalogue
-            // contains the row and ignored when it does not — a client must not
-            // be able to invent a service.
             if (activeAppSessionId) {
-              const explicit =
-                msg.serviceId && msg.billingMode
-                  ? { serviceId: msg.serviceId, billingMode: msg.billingMode, modelId: msg.model }
-                  : undefined;
-              // docs/252 phase 3 — an explicit triple must additionally be
-              // ELIGIBLE on this harness (req 8). `selectionExists` alone only
-              // says the catalogue carries the row, so a client could otherwise
-              // select a service this install has no credential for and get a
-              // turn that fails at the endpoint.
-              if (explicit && selectionExists(explicit) && isEligibleHere(explicit)) {
-                sessionManager.setModelSelection(activeAppSessionId, explicit);
+              if (verdict?.ok) {
+                sessionManager.setModelSelection(activeAppSessionId, verdict.selection);
               } else {
+                // No triple sent. Resolve the id from the catalogue, biased
+                // toward the harness's own vendor so a first-party id cannot
+                // land on a gateway that happens to list the same string.
                 sessionManager.setModel(
                   activeAppSessionId,
                   msg.model,
@@ -1374,6 +1458,12 @@ export async function registerRoutes(
                 );
               }
             }
+            // Confirm what the session now actually holds. The client picks
+            // optimistically by triple and the server may have resolved a bare
+            // id to a different `(service, mode)` than the picker highlighted —
+            // invisible when the two share a model id, which is exactly the case
+            // this feature creates. No notice: the user asked for this one.
+            sendSelectionChanged(ctx.getActiveAgentId());
             return;
           }
           case "set_reasoning": {

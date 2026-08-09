@@ -8,6 +8,7 @@ import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
 import type { AccountSelectionMode, AgentId, FailoverCutoffs, ProviderAccount, SubAgentDefaultsPatch } from "../../shared/types.js";
 import { credentialModeKey, DEFAULT_FAILOVER_CUTOFF, DEFAULT_SELECTION_MODE, parseCredentialModeKey } from "../../shared/types.js";
+import type { BillingMode } from "../../shared/catalogue/index.js";
 import { allServices, credentialModeForStorageEnv, getMode, getModel, getService } from "../../shared/catalogue/index.js";
 import { harnessForNonTurnSelection, resolveNonTurnModel } from "../non-turn-model.js";
 import { listConfiguredCredentials } from "../service-routing.js";
@@ -463,23 +464,59 @@ export async function saveGlobalSettings(
       }
       if ("model" in patch) {
         const value = patch.model;
+        // docs/252 phase 4 — validate the whole TRIPLE, not a bare id.
+        // `serviceId`/`billingMode` are what let the user express a deliberate
+        // choice BETWEEN two services offering the same id (req 5); phase 3 had
+        // the server guess from the id alone, which could only ever produce one
+        // of the two. Validated rather than trusted: an unmatched triple is
+        // refused, so a client still cannot invent a service or name one with
+        // no credential (req 8).
+        //
+        // An EMPTY eligible set means "no credential source is wired" (a test
+        // registry, a worker, a custom runtime), not "nothing is eligible" —
+        // `capabilities.models` falls back to the static definition in exactly
+        // that case, so the check follows it rather than refusing everything.
+        //
+        // The two fields are independently optional on the wire, so **exactly
+        // one** of them has to be refused rather than read as "no pair": reading
+        // it that way throws away the half that WAS sent and resolves the bare
+        // id, which is the mis-billing this rule exists to prevent arriving
+        // through a malformed request instead of a stale one. Only *neither*
+        // field is the legacy shape.
+        const eligible = info.eligibleModels ?? [];
+        let chosen: { serviceId: string; billingMode: BillingMode } | undefined;
         if (value !== null && value !== undefined) {
-          if (!info.capabilities.models.includes(value)) {
-            throw new ServiceError(400, `Invalid model "${value}" for ${info.name}`);
+          if (!patch.serviceId !== !patch.billingMode) {
+            throw new ServiceError(
+              400,
+              "A sub-agent model must name both a service and a billing mode, or neither.",
+            );
+          }
+          if (eligible.length === 0) {
+            if (!info.capabilities.models.includes(value)) {
+              throw new ServiceError(400, `Invalid model "${value}" for ${info.name}`);
+            }
+          } else {
+            const match =
+              patch.serviceId && patch.billingMode
+                ? eligible.find(
+                    (m) =>
+                      m.serviceId === patch.serviceId
+                      && m.billingMode === patch.billingMode
+                      && m.modelId === value,
+                  )
+                : eligible.find((m) => m.modelId === value);
+            if (!match) {
+              const where = patch.serviceId ? ` on ${patch.serviceId}` : "";
+              throw new ServiceError(
+                400,
+                `${info.name} cannot run "${value}"${where} — no service offering it has a credential this harness can use.`,
+              );
+            }
+            chosen = { serviceId: match.serviceId, billingMode: match.billingMode };
           }
         }
-        // docs/252 phase 3 — say which `(service, mode)` this id was chosen
-        // FROM. The picker still offers bare ids (a service axis there follows
-        // the session picker in phase 4), and without a hint the store resolves
-        // to the first mode of the harness's own vendor — `sub` for Anthropic —
-        // so on a key-only install every consult on that default then failed.
-        // The eligible set is the answer, and it is right here.
-        const chosen = value ? info.eligibleModels?.find((m) => m.modelId === value) : undefined;
-        credentialStore.setAgentSubAgentDefaults(
-          agentId,
-          { model: value ?? null },
-          chosen ? { serviceId: chosen.serviceId, billingMode: chosen.billingMode } : undefined,
-        );
+        credentialStore.setAgentSubAgentDefaults(agentId, { model: value ?? null }, chosen);
       }
     }
   }

@@ -70,15 +70,24 @@ export interface SubAgentDefaults {
  * clears it (reverting to the backend's native default); `undefined`/absent
  * leaves it unchanged.
  *
- * docs/252 — `serviceId`/`billingMode` are deliberately NOT here. They are part
- * of the model's identity, not controls of their own, so the store re-resolves
- * them on a `model` write and drops them on a `model` clear. Making them
- * patchable is what would let a client store a triple naming a row that does not
- * exist.
+ * docs/252 phase 4 — `serviceId`/`billingMode` ride WITH `model` and are never
+ * patched on their own: they say which service the id was chosen from, which is
+ * a question only the user can answer once two services offer the same id
+ * (req 5). Phase 3 left them out entirely and had the server guess, which meant
+ * a deliberate choice between two services could not be expressed at all.
+ *
+ * They are still not free-form. The server validates the whole triple against
+ * the harness's ELIGIBLE set before storing it, so a client cannot invent a
+ * service, name one the install has no credential for, or write a row the
+ * catalogue does not carry. Sent without them, `model` resolves as it did
+ * before.
  */
 export interface SubAgentDefaultsPatch {
   reasoningEffort?: string | null;
   model?: string | null;
+  /** Only read alongside a non-null `model`; both must be present or neither. */
+  serviceId?: string;
+  billingMode?: BillingMode;
 }
 
 export interface AgentCapabilities {

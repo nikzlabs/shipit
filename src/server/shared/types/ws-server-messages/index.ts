@@ -26,6 +26,7 @@ import type {
   WsSubAgentSpawn,
   WsSubagentReportUpdate,
   WsModelInfo,
+  WsModelSelectionChanged,
   WsMessageQueued,
   WsQueueUpdated,
   WsMessageSteered,
@@ -202,6 +203,7 @@ export type WsServerMessage =
   | WsGitHubSearchResults
   | WsPrStatus
   | WsModelInfo
+  | WsModelSelectionChanged
   | WsTerminalOutput
   | WsTerminalExit
   | WsTerminalReconnecting

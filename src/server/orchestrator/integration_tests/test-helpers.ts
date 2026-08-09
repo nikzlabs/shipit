@@ -752,6 +752,13 @@ export class FakeClaudeProcess extends EventEmitter {
   public lastModel: string | undefined;
   public lastMcpServers: unknown[] | undefined;
   public lastAutoCreatePr: boolean | undefined;
+  /**
+   * docs/252 phase 4 — the `ServiceRouting` this spawn was shaped with: which
+   * service the turn goes to, at which endpoint, on which credential variable.
+   * A mid-session switch across services keeps the model id, so `lastModel`
+   * alone cannot tell a switched spawn from a reused one.
+   */
+  public lastServiceRouting: { serviceId: string; billingMode: string; baseUrl: string } | undefined;
   public killed = false;
   public interrupted = false;
   public stdinData: string[] = [];
@@ -806,6 +813,7 @@ export class FakeClaudeProcess extends EventEmitter {
     mcpServers?: unknown[];
     autoCreatePr?: boolean;
     compact?: boolean;
+    serviceRouting?: { serviceId: string; billingMode: string; baseUrl: string };
   }) {
     this.runCalled = true;
     this.lastCompact = params.compact;
@@ -820,6 +828,7 @@ export class FakeClaudeProcess extends EventEmitter {
     this.lastModel = params.model;
     this.lastMcpServers = params.mcpServers;
     this.lastAutoCreatePr = params.autoCreatePr;
+    this.lastServiceRouting = params.serviceRouting;
   }
 
   kill() {

@@ -106,13 +106,24 @@ export async function buildAgentRunParams(
     (s) => s.enabled,
   );
   const replay = deps.sessionManager.consumeConversationReplay(sessionId);
-  const selectedModel = deps.getSelectedModel();
   const reasoningEffort = deps.getSelectedReasoning?.();
   // docs/128 / docs/211 — read the server-authoritative session kind
   // synchronously, in the pre-`await` DB block (same ordering rule as the reads
   // above), so the ops overlay in the system prompt can't be lost to a mid-build
   // DB close.
   const sessionInfo = deps.sessionManager.get(sessionId);
+  // docs/252 phase 4 — **the model and the shaping come from ONE source.**
+  // `getSelectedModel` is per-CONNECTION on the user path, while the service,
+  // billing mode and credential below are read from the session row. With two
+  // viewers on one session, a switch in tab A leaves tab B's closure holding the
+  // previous model — so a turn sent from B spawned model X against service Y's
+  // endpoint and credential, and the resident process was then stamped with Y's
+  // identity (`turn-executor.ts`) even though it was spawned with X, so a later
+  // switch back to X reused it. The row is the authoritative answer to "what
+  // will this session run next" and is what every other reader already uses;
+  // the connection's value survives only as the fallback for a session that has
+  // no row model yet. Cross-backend review found this.
+  const selectedModel = sessionInfo?.model ?? deps.getSelectedModel();
   // docs/252 phase 3 — where this turn's model lives, and what authenticates it.
   // Read here with the other synchronous DB reads (the pre-`await` ordering rule
   // above). The credential route is already pinned: env prep runs before this

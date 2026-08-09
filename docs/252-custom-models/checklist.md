@@ -1,7 +1,7 @@
 ---
 issue: planning#321
 title: Custom models — implementation checklist
-description: Per-phase build steps for docs/252. Phases 1, 2, 3, 5, 7, 8 and 9 are done.
+description: Per-phase build steps for docs/252. Phases 1, 2, 3, 4, 5, 7, 8 and 9 are done.
 ---
 
 # 252 — Custom models: checklist
@@ -83,17 +83,33 @@ table — a phase is checked off when its PR has merged.
       stored credential is delivered under a name of its own and spawn shaping sources the
       pinned route's, so choosing a different one no longer means authenticating with the
       group's first.
-- [ ] The **sub-agent defaults** picker still has no service axis. Its list is
-      credential-filtered, and the service layer now tells the store which `(service, mode)`
-      the id was chosen from, so a key-only install no longer stores an unreachable `sub`
-      triple. What it still cannot express is a deliberate choice *between* two services
-      offering the same id, which follows the session picker in **phase 4**.
+- [x] The **sub-agent defaults** picker gains its service axis *(done in phase 4)*
 - [ ] The new-session picker reads the globally-active session for its **harness** display.
       Pre-existing (the combined picker did the same); found by review and recorded rather
       than fixed here, since untangling it is composer work with no bearing on billing.
 - [ ] `authConfigured` leaves `AgentInfo`. Its MEANING moved here — "this harness has at least
       one eligible model" — which is the part req 2 needed; the rename across its six call
       sites is churn with no behaviour change and was not taken.
+
+## Phase 4 — In-session switching
+
+- [x] An explicit `(service, mode, model)` triple is honoured or **refused**, never
+      re-resolved to a bare id (`model-switch.ts`)
+- [x] A harness switch conforms the whole triple against the new harness's eligible set
+- [x] One sentence reports everything a switch moved — model, billing group, reasoning effort
+- [x] `model_selection_changed` — the server's authoritative selection, applied to the
+      session store and toasted when the server moved or refused something
+- [x] The composer's optimistic pick becomes the triple, so a same-id cross-service switch
+      moves the checkmark and the disambiguating pill — and is dropped when the server
+      answers, refusal included
+- [x] The model a turn spawns with comes from the session row, not from a per-connection
+      selection a second viewer can hold stale
+- [x] A saved seed the displayed harness cannot run is dropped rather than shown
+- [x] Sub-agent defaults picker gains the service axis; the triple is validated server-side
+- [x] Co-located tests, plus an integration switch between two services on ONE model id
+- [x] Driven in the real UI (the dogfood instance, OpenRouter ↔ Vercel on
+      `anthropic/claude-opus-5`) — which is where two of the client defects were found
+- [x] Cross-backend review — six findings, all fixed (see `plan.md`)
 
 ## Phase 7 — Non-turn work
 
@@ -126,7 +142,7 @@ table — a phase is checked off when its PR has merged.
       (unverified here) or narrowing req 16's label. **Phase 6** owns the usage view and the
       decision.
 
-## Phases 4 and 6
+## Phase 6
 
 Not started. See [`plan.md`](./plan.md)'s phase table. (Phases 8 and 9 have landed; their
 notes are in `plan.md` rather than here, since both landed ahead of this checklist's
