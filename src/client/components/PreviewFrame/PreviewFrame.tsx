@@ -377,6 +377,55 @@ export function PreviewFrame({
     return () => clearTimeout(timer);
   }, [activeSlotKey, activeSlotUrl, previewSubdomainUrl, isLocalPreview, refreshKey]);
 
+  // ---- Agent-authored pointers (docs/258) ----
+  // A `shipit-preview://` click records a destination; by the time it reaches
+  // this slot, everything else has already happened (the service is running and
+  // its port is selected). All that is left is to put the frame there.
+  //
+  // Navigation is a plain `src` assignment. An earlier design added a `navigate`
+  // command to the injected preview script, on the belief that a parent cannot
+  // navigate a cross-origin iframe — cross-origin blocks *reading* `location`
+  // and calling `history`, not assigning `src`, which the refresh path above
+  // already does. The command would also have widened an injected listener that
+  // checks neither `event.source` nor origin, to do something the parent can do
+  // directly.
+  const previewLinkIntent = usePreviewStore((s) => s.previewLinkIntent);
+  // eslint-disable-next-line no-restricted-syntax -- navigates a live iframe to an agent-authored destination
+  useEffect(() => {
+    if (!previewLinkIntent || !activeSlotKey || !activeSlotUrl) return;
+    if (previewLinkIntent.slotKey !== activeSlotKey) return;
+    if (previewLinkIntent.sessionId !== sessionId) return;
+    // No slot yet — the health poller creates it *at* the destination, so
+    // there is nothing to do here and nothing to report.
+    const el = iframeRefs.current.get(activeSlotKey);
+    if (!el) return;
+
+    const clearIntent = () =>
+      usePreviewStore.getState().clearPreviewLinkIntent(previewLinkIntent.clickId);
+
+    let destination: string;
+    try {
+      const resolved = new URL(previewLinkIntent.targetPath, activeSlotUrl);
+      // The parser already rejected everything that could escape the origin;
+      // this re-checks the resolved value rather than inheriting that guarantee,
+      // because what follows is an iframe navigation.
+      if (resolved.origin !== new URL(activeSlotUrl).origin) throw new Error("cross-origin");
+      destination = resolved.href;
+    } catch {
+      clearIntent();
+      useUiStore.getState().setToast({
+        message: "That link can't be opened — it points outside the preview.",
+        variant: "error",
+      });
+      return;
+    }
+
+    // The slot was created at the destination (a first visit, or a service that
+    // was just started) — re-assigning would reload the page we just loaded.
+    if (activeSlotUrl !== destination) el.src = destination;
+    clearIntent();
+  }, [previewLinkIntent, activeSlotKey, activeSlotUrl, sessionId, iframeRefs]);
+
   // Force-reload the active iframe on refresh click
   const lastRefreshKey = useRef(refreshKey);
   // eslint-disable-next-line no-restricted-syntax -- existing usage

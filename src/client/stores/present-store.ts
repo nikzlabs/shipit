@@ -77,6 +77,24 @@ interface PresentationMeta {
   createdAt: string;
 }
 
+/**
+ * A place inside a presented artifact that a `shipit-present:` pointer asked to
+ * be shown (docs/258 req 9). Held in the store rather than passed as a prop
+ * because `PresentPane` is only mounted while its tab is selected — the click
+ * reveals the tab and the pane picks this up on mount.
+ */
+export interface PresentLinkTarget {
+  presentId: string;
+  /** Element id (HTML) or heading slug (markdown). Absent addresses the artifact as a whole. */
+  fragment?: string;
+  /**
+   * Fresh per click. Clicks are deliberately **not** coalesced: clicking the
+   * same pointer twice means the user asked twice, so this changes even when
+   * everything else is identical, and re-runs the scroll.
+   */
+  clickId: number;
+}
+
 interface PresentState {
   presentations: Presentation[];
   activePresentIndex: number;
@@ -88,6 +106,8 @@ interface PresentState {
   unseenCount: number;
   /** True while the thumbnail gallery (all artifacts) is shown instead of one. */
   galleryOpen: boolean;
+  /** Where an agent-authored pointer wants the pane to look (docs/258), or `null`. */
+  linkTarget: PresentLinkTarget | null;
 
   /** Apply a `present_content` WS message (metadata). */
   addOrReplace: (p: PresentationMeta) => void;
@@ -108,6 +128,17 @@ interface PresentState {
   setGalleryOpen: (open: boolean) => void;
   /** Focus a specific presentation by id. Returns false when it is not loaded. */
   focusById: (presentId: string) => boolean;
+  /**
+   * Focus the artifact presented from `filePath` and, unlike `focusById`, close
+   * the gallery — with the grid open there is no rendered artifact on screen at
+   * all, so a pointer would land on nothing (docs/258). Returns the entry, or
+   * `null` when no artifact has been presented from that path.
+   */
+  focusByPath: (filePath: string) => Presentation | null;
+  /** Record the place a pointer asked for. Cleared by `reset` / a full clear. */
+  setLinkTarget: (target: PresentLinkTarget) => void;
+  /** Drop the target once it has been honoured (or become unreachable). */
+  clearLinkTarget: (clickId?: number) => void;
   /** Mark the user as having seen current presentations (clears the badge). */
   markSeen: () => void;
   /** Drop everything — used on session switch by `resetSessionState`. */
@@ -119,7 +150,17 @@ const initialState = {
   activePresentIndex: 0,
   unseenCount: 0,
   galleryOpen: false,
+  linkTarget: null as PresentLinkTarget | null,
 };
+
+/**
+ * The form a presented artifact's path is matched in. The agent may write
+ * `./docs/x.md` or `docs/x.md` for the same file, and `parseShipitLink`
+ * normalises the pointer the same way, so both sides meet here.
+ */
+function normalizeArtifactPath(filePath: string): string {
+  return filePath.startsWith("./") ? filePath.slice(2) : filePath;
+}
 
 /** Build a metadata entry (no content yet). */
 function toEntry(p: PresentationMeta, content?: string): Presentation {
@@ -211,7 +252,7 @@ export const usePresentStore = create<PresentState>((set) => ({
       if (presentId === undefined) {
         const sessionId = useSessionStore.getState().sessionId;
         if (sessionId && lastViewedBySession.delete(sessionId)) persistLastViewed();
-        return { presentations: [], activePresentIndex: 0, unseenCount: 0, galleryOpen: false };
+        return { presentations: [], activePresentIndex: 0, unseenCount: 0, galleryOpen: false, linkTarget: null };
       }
       const idx = s.presentations.findIndex((p) => p.presentId === presentId);
       if (idx < 0) return s;
@@ -244,6 +285,25 @@ export const usePresentStore = create<PresentState>((set) => ({
     set({ activePresentIndex: idx, unseenCount: 0 });
     return true;
   },
+
+  // Return type annotated (like `getSnapshot` in preview-store): the body reads
+  // `usePresentStore.getState()`, so leaving it inferred makes the store's type
+  // depend on its own initializer.
+  focusByPath: (filePath): Presentation | null => {
+    const presentations: Presentation[] = usePresentStore.getState().presentations;
+    const idx = presentations.findIndex((p) => normalizeArtifactPath(p.filePath) === filePath);
+    if (idx < 0) return null;
+    rememberActive(presentations[idx].presentId);
+    set({ activePresentIndex: idx, unseenCount: 0, galleryOpen: false });
+    return presentations[idx];
+  },
+
+  setLinkTarget: (linkTarget) => set({ linkTarget }),
+
+  clearLinkTarget: (clickId) =>
+    set((s) => (
+      clickId === undefined || s.linkTarget?.clickId === clickId ? { linkTarget: null } : s
+    )),
 
   markSeen: () => set({ unseenCount: 0 }),
 

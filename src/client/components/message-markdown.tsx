@@ -13,6 +13,8 @@ import { parseRepoFileLink } from "../utils/repo-file-link.js";
 import { parseTrackerIssueLink } from "../utils/tracker-link.js";
 import { remarkLinkifyPaths } from "../utils/linkify-paths.js";
 import { remarkLinkifyIssues, ISSUE_LINK_SCHEME } from "../utils/linkify-issues.js";
+import { parseShipitLink, isShipitLinkHref, type ShipitLink } from "../utils/shipit-link.js";
+import { openShipitLink } from "../utils/open-shipit-link.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { toTrackerDestinations, trackerDestinations, useIssuesStore } from "../stores/issues-store.js";
@@ -105,8 +107,80 @@ function IssueBadge({ token, children }: { token: string; children?: React.React
 }
 
 /**
+ * An agent-authored pointer into the user's own app or a presented artifact
+ * (docs/258). All three forms — inline link, badge, block button — parse,
+ * resolve and click **identically**; the form the agent picked selects styling
+ * and nothing else, so this is presentation only.
+ *
+ * None of them carries a real `href`. A custom-protocol href would put
+ * `shipit-present:…` in the status bar on hover and hand it to the OS protocol
+ * handler on middle-click or "open in new tab" — the same reason the repo-file
+ * branch drops its href. `role="button"` + `tabIndex` restore the keyboard
+ * affordance that removing it takes away.
+ *
+ * A pointer that cannot be opened still renders and still accepts a click: it
+ * explains itself in a toast (req 10). That is deliberately unlike `IssueBadge`,
+ * which degrades to plain text — issue references are pattern-matched out of
+ * ordinary prose and may not be references at all, whereas the agent wrote this
+ * pointer on purpose, so hiding it would misreport intent as a rendering choice.
+ */
+function ShipitPointer({ link, title, children }: {
+  link: ShipitLink;
+  title?: string;
+  children?: React.ReactNode;
+}) {
+  const open = () => openShipitLink(link);
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    open();
+  };
+  const shared = { role: "button", tabIndex: 0, title, onClick: open, onKeyDown } as const;
+
+  if (link.render === "button") {
+    return (
+      <span
+        {...shared}
+        className="not-prose inline-flex items-center gap-1.5 my-1 rounded-md px-3 py-1.5 text-sm font-medium border border-(--color-accent)/40 bg-(--color-accent)/10 text-(--color-accent) hover:bg-(--color-accent)/20 transition-colors cursor-pointer"
+      >
+        {children}
+      </span>
+    );
+  }
+
+  if (link.render === "badge") {
+    // Same line-box discipline as `IssueBadge`: `text-[0.85em]` with
+    // `leading-none` and only horizontal padding, so a badge reads as a pill
+    // without pushing prose lines apart.
+    return (
+      <span
+        {...shared}
+        className="not-prose inline-flex items-center align-middle rounded px-1 text-[0.85em] font-medium leading-none border border-(--color-accent)/30 bg-(--color-accent)/10 text-(--color-accent) hover:bg-(--color-accent)/20 transition-colors cursor-pointer"
+      >
+        {children}
+      </span>
+    );
+  }
+
+  // The `a` element still picks up prose link styling without an href —
+  // Tailwind Typography targets the bare `a` selector.
+  return (
+    <a {...shared} className="cursor-pointer">
+      {children}
+    </a>
+  );
+}
+
+/**
  * Renders a markdown link. Branches, in priority order:
  *
+ *  0. **Agent-authored ShipIt pointers** (`shipit-preview://`,
+ *     `shipit-present:`), and **only when the surface enabled them** — see
+ *     `MarkdownContent`'s `shipitLinks` prop. Ordered ahead of everything else
+ *     because `shipit-present:/persist/x.html` has no `://`, so
+ *     `parseRepoFileLink` would happily read it as a repo path and open a file
+ *     preview. Same class of collision as the tracker-URL branch, which is
+ *     ordered ahead of repo files for exactly this reason.
  *  1. **Bare issue references** (`shipit-issue:TOKEN`, minted by
  *     `remarkLinkifyIssues` — a bare key or a docs/248 name form) render as an
  *     inline {@link IssueBadge} that opens the in-app Issues viewer.
@@ -141,11 +215,23 @@ function MarkdownLink({
   href,
   title,
   children,
+  shipitLinks = false,
 }: {
   href?: string;
   title?: string;
   children?: React.ReactNode;
+  /** Whether this surface renders agent-authored ShipIt pointers (docs/258). */
+  shipitLinks?: boolean;
 }) {
+  if (isShipitLinkHref(href)) {
+    // Not an agent-authored surface — render the label as plain text. The
+    // scheme reaches `urlTransform` intact (so this branch can see it) but never
+    // reaches the DOM: no href, no handler, provably inert.
+    if (!shipitLinks) return <>{children}</>;
+    const pointer = parseShipitLink(href);
+    if (pointer) return <ShipitPointer link={pointer} title={title}>{children}</ShipitPointer>;
+  }
+
   if (href?.startsWith(ISSUE_LINK_SCHEME)) {
     return <IssueBadge token={href.slice(ISSUE_LINK_SCHEME.length)}>{children}</IssueBadge>;
   }
@@ -327,6 +413,34 @@ export const markdownComponents: Components = {
   },
 };
 
+/**
+ * The same overrides with agent-authored ShipIt pointers **enabled** (docs/258).
+ *
+ * They must not be enabled globally. `MarkdownContent` is shared far beyond
+ * assistant chat — PR descriptions and comments, issue descriptions and
+ * comments, plan approvals, reviews, subagent reports — and every one of those
+ * renders text ShipIt did not author: a PR comment from a stranger, an issue
+ * description, a README quoted into a review. Enabling the schemes there would
+ * let repository- or tracker-authored markdown present a button that **starts a
+ * Compose service** when clicked (req 12), which is exactly the untrusted-input
+ * boundary ShipIt treats as sacred: ingested content is data, not instructions.
+ *
+ * A second **module-level** constant, not a map built per render:
+ * `MarkdownContent` is memoised on the premise that its plugins and components
+ * are stable module constants, and building one per render would silently
+ * reinstate the O(messages × tokens) re-parse that memo exists to prevent.
+ */
+const shipitLinkComponents: Components = {
+  ...markdownComponents,
+  a({ href, title, children }) {
+    return (
+      <MarkdownLink href={href} title={title} shipitLinks>
+        {children}
+      </MarkdownLink>
+    );
+  },
+};
+
 // `remarkLinkifyPaths` / `remarkLinkifyIssues` run last so they see GFM's
 // autolinked URLs as `link` nodes (which they skip) and only touch remaining
 // plain text. The first turns bare `dir/file.ext` references into in-app
@@ -335,12 +449,19 @@ export const markdownComponents: Components = {
 // the declared-destination resolver — see `IssueBadge`).
 const remarkPlugins = [remarkGfm, remarkBreaks, remarkLinkifyPaths, remarkLinkifyIssues];
 
-// `remarkLinkifyIssues` mints `shipit-issue:TOKEN` hrefs; react-markdown's default
-// `urlTransform` would strip that unknown scheme to "" (losing the token), so we
-// pass our scheme through and delegate everything else to the default sanitiser
-// (which still filters `javascript:`, `data:`, etc.).
+// `remarkLinkifyIssues` mints `shipit-issue:TOKEN` hrefs and the agent authors
+// `shipit-preview:` / `shipit-present:` ones (docs/258); react-markdown's default
+// `urlTransform` would strip those unknown schemes to "" (losing the token, and
+// leaving a pointer indistinguishable from a broken link), so we pass them
+// through and delegate everything else to the default sanitiser (which still
+// filters `javascript:`, `data:`, etc.).
+//
+// Passing a ShipIt scheme through is NOT what enables it: `MarkdownLink` renders
+// one as plain text unless the surface opted in, so the scheme never reaches the
+// DOM on a surface that didn't ask for it. Recognising it here is what lets that
+// branch tell a pointer apart from an ordinary broken link at all.
 function urlTransform(url: string): string {
-  if (url.startsWith(ISSUE_LINK_SCHEME)) return url;
+  if (url.startsWith(ISSUE_LINK_SCHEME) || isShipitLinkHref(url)) return url;
   return defaultUrlTransform(url);
 }
 
@@ -351,16 +472,23 @@ function urlTransform(url: string): string {
  * selection survives token-by-token streaming without the freeze hack that
  * used to live in `MessageList`.
  *
- * `memo`'d on `text`: `react-markdown` re-runs the full remark pipeline
+ * `memo`'d on its props: `react-markdown` re-runs the full remark pipeline
  * (micromark parse → mdast → hast → React elements) on every render, and the
  * `MessageList` re-renders on every streamed token. Without this gate, every
  * message in the transcript re-parsed its markdown on each token of the
  * *currently streaming* message — O(messages × tokens) parsing that pinned the
- * main thread (the dominant cost in the 2026-06 perf trace). `remarkPlugins`
- * and `markdownComponents` are module-level constants, so the parse output
- * depends only on `text`; a shallow prop compare is exactly correct.
+ * main thread (the dominant cost in the 2026-06 perf trace). `remarkPlugins` and
+ * both component maps are module-level constants and `shipitLinks` is a
+ * primitive, so the parse output depends only on the props; a shallow compare is
+ * exactly correct.
+ *
+ * `shipitLinks` opts this surface into agent-authored pointers (docs/258) and is
+ * **default off** — see `shipitLinkComponents` for why it must stay that way.
  */
-export const MarkdownContent = memo(({ text }: { text: string }) => {
+export const MarkdownContent = memo(({ text, shipitLinks = false }: {
+  text: string;
+  shipitLinks?: boolean;
+}) => {
   return (
     <div
       className="prose dark:prose-invert prose-sm max-w-none"
@@ -368,7 +496,7 @@ export const MarkdownContent = memo(({ text }: { text: string }) => {
     >
       <Markdown
         remarkPlugins={remarkPlugins}
-        components={markdownComponents}
+        components={shipitLinks ? shipitLinkComponents : markdownComponents}
         urlTransform={urlTransform}
         skipHtml
       >

@@ -8,6 +8,7 @@ import {
 } from "./PresentPane.js";
 import { usePresentStore } from "../stores/present-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 
 function meta(over: { presentId: string; title?: string; filePath?: string; mimeType?: string }) {
   return {
@@ -55,6 +56,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   usePresentStore.getState().reset();
   useSessionStore.getState().setSessionId(undefined);
+  useUiStore.setState({ toast: null });
 });
 
 describe("PresentPane", () => {
@@ -284,5 +286,72 @@ describe("presentationToBlob", () => {
     );
     expect(blob.type).toBe("image/svg+xml");
     expect(await blob.text()).toBe("<svg></svg>");
+  });
+});
+
+/**
+ * docs/258 — a pointer addressing a place inside a presented artifact. Markdown
+ * renders in ShipIt's own DOM, so the pane scrolls it itself; rendered HTML is
+ * handled by a script injected into its `srcDoc` (see `RenderedFrame.test.tsx`).
+ */
+describe("PresentPane — agent-authored pointers", () => {
+  const MD = "# First heading\n\nbody\n\n## Open questions?\n\nmore\n";
+
+  /** Seed one markdown artifact, mock its bytes, and render the pane. */
+  async function renderMarkdownArtifact() {
+    useSessionStore.getState().setSessionId("sess-1");
+    usePresentStore.getState().hydrate([
+      meta({ presentId: "p1", filePath: "/persist/reqs.md", mimeType: "text/markdown" }),
+    ]);
+    mockContentFetch({ p1: MD }, "text/markdown");
+    render(<PresentPane isActiveTab />);
+    await screen.findByText("Open questions?");
+  }
+
+  it("scrolls to the heading a fragment names", async () => {
+    await renderMarkdownArtifact();
+    const scrollIntoView = vi.fn();
+    for (const h of document.querySelectorAll("h1,h2")) {
+      (h as HTMLElement).scrollIntoView = scrollIntoView;
+    }
+
+    // The slug contract the agent authors against: lowercase, punctuation
+    // dropped, whitespace to hyphens.
+    usePresentStore.getState().setLinkTarget({ presentId: "p1", fragment: "open-questions", clickId: 1 });
+    await screen.findByText("Open questions?");
+    await vi.waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+    expect(useUiStore.getState().toast).toBeNull();
+  });
+
+  it("reports a fragment that matches no heading, naming it (req 10)", async () => {
+    await renderMarkdownArtifact();
+    usePresentStore.getState().setLinkTarget({ presentId: "p1", fragment: "nope", clickId: 2 });
+    await vi.waitFor(() => expect(useUiStore.getState().toast?.message).toContain("nope"));
+    expect(useUiStore.getState().toast?.variant).toBe("error");
+  });
+
+  it("reports the miss once, not again when the pane re-renders", async () => {
+    await renderMarkdownArtifact();
+    usePresentStore.getState().setLinkTarget({ presentId: "p1", fragment: "nope", clickId: 3 });
+    await vi.waitFor(() => expect(useUiStore.getState().toast).not.toBeNull());
+    useUiStore.setState({ toast: null });
+    // A re-render (any store write the pane subscribes to) must not re-toast.
+    usePresentStore.getState().markSeen();
+    expect(useUiStore.getState().toast).toBeNull();
+  });
+
+  it("switches out of source view — a pointer addresses the rendered artifact", async () => {
+    useSessionStore.getState().setSessionId("sess-1");
+    usePresentStore.getState().hydrate([meta({ presentId: "p1", filePath: "/persist/a.html" })]);
+    mockContentFetch({ p1: "<h1 id='top'>Hi</h1>" });
+    render(<PresentPane isActiveTab />);
+    await screen.findByTitle("Rendered content");
+
+    fireEvent.click(screen.getByRole("button", { name: /source/i }));
+    expect(screen.queryByTitle("Rendered content")).toBeNull();
+
+    usePresentStore.getState().setLinkTarget({ presentId: "p1", fragment: "top", clickId: 4 });
+    // Honouring the view mode would silently drop the request.
+    await screen.findByTitle("Rendered content");
   });
 });

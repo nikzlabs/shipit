@@ -16,7 +16,7 @@ import {
   saveRightTab,
 } from "../utils/local-storage.js";
 
-type RightTab =
+export type RightTab =
   | "preview"
   | "docs"
   | "issues"

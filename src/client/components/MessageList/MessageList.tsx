@@ -384,7 +384,13 @@ export function MessageList({
                 </div>
               )}
               {useMarkdown ? (
-                <MarkdownContent text={msg.text} />
+                // `shipitLinks` — the ONE surface where agent-authored pointers
+                // into the Preview / Present tab are live (docs/258). This text
+                // is the agent's own output; every other `MarkdownContent` call
+                // site renders content ShipIt did not author (PR and issue
+                // bodies, comments, reviews, subagent reports) and must not be
+                // able to present a button that starts a Compose service.
+                <MarkdownContent text={msg.text} shipitLinks />
               ) : hasCodeBlocks ? (
                 segments.map((seg) => {
                   // Key on the segment's character offset, not its array index.

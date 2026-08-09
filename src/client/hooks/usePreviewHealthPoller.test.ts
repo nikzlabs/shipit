@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { buildSubdomainUrl, computePreviewUrl } from "./usePreviewHealthPoller.js";
+import { beforeEach, describe, expect, it } from "vitest";
+import { buildSubdomainUrl, computePreviewUrl, desiredPathFor } from "./usePreviewHealthPoller.js";
+import { usePreviewStore } from "../stores/preview-store.js";
 import type { PreviewStatus } from "../components/PreviewFrame.js";
 
 const preview: PreviewStatus = {
@@ -100,5 +101,55 @@ describe("computePreviewUrl", () => {
 
   it("returns null when the preview is not running", () => {
     expect(computePreviewUrl("session-a", 3000, { ...preview, running: false }, "localhost:3001")).toBeNull();
+  });
+});
+
+/**
+ * docs/258 — which path a freshly created slot enters at. This is what makes a
+ * pointer to a *stopped* service work: the slot is created after the boot,
+ * already at the destination, rather than at the app's front page.
+ */
+describe("desiredPathFor", () => {
+  beforeEach(() => {
+    usePreviewStore.setState({ previewPaths: {}, previewLinkIntent: null });
+  });
+
+  const intent = {
+    sessionId: "sess-1",
+    service: "web",
+    port: 5173,
+    slotKey: "sess-1:5173",
+    targetPath: "/runs/1?highlight=4",
+    clickId: 1,
+    phase: "navigating" as const,
+    startedAt: Date.now(),
+  };
+
+  it("falls back to the path the page last reported about itself", () => {
+    usePreviewStore.setState({ previewPaths: { "sess-1:5173": "/dashboard" } });
+    expect(desiredPathFor("sess-1:5173", "sess-1")).toBe("/dashboard");
+  });
+
+  it("prefers a live destination for this slot", () => {
+    // Where the user just asked to go beats where the previous page happened
+    // to be.
+    usePreviewStore.setState({
+      previewPaths: { "sess-1:5173": "/dashboard" },
+      previewLinkIntent: intent,
+    });
+    expect(desiredPathFor("sess-1:5173", "sess-1")).toBe("/runs/1?highlight=4");
+  });
+
+  it("does not leak the destination into another slot", () => {
+    usePreviewStore.setState({
+      previewPaths: { "sess-1:4000": "/other" },
+      previewLinkIntent: intent,
+    });
+    expect(desiredPathFor("sess-1:4000", "sess-1")).toBe("/other");
+  });
+
+  it("does not apply an intent from another session", () => {
+    usePreviewStore.setState({ previewLinkIntent: intent });
+    expect(desiredPathFor("sess-1:5173", "sess-2")).toBeUndefined();
   });
 });

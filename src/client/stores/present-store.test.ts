@@ -262,3 +262,63 @@ describe("present-store", () => {
     expect(s.unseenCount).toBe(0);
   });
 });
+
+/** docs/258 — focusing by the path an agent-authored pointer names. */
+describe("focusByPath", () => {
+  const entry = (presentId: string, filePath: string) => ({
+    presentId,
+    mimeType: "text/html",
+    filePath,
+    createdAt: "2026-08-09T00:00:00.000Z",
+  });
+
+  it("focuses the artifact presented from that path", () => {
+    usePresentStore.getState().hydrate([
+      entry("p1", "/persist/a.html"),
+      entry("p2", "/persist/b.html"),
+    ]);
+    const found = usePresentStore.getState().focusByPath("/persist/b.html");
+    expect(found?.presentId).toBe("p2");
+    expect(usePresentStore.getState().activePresentIndex).toBe(1);
+  });
+
+  it("closes the gallery, where no artifact is rendered at all", () => {
+    // Unlike `focusById`: with the grid open there is no rendered artifact and
+    // no markdown DOM, so a pointer would land on nothing.
+    usePresentStore.getState().hydrate([entry("p1", "/persist/a.html")]);
+    usePresentStore.getState().setGalleryOpen(true);
+    usePresentStore.getState().focusByPath("/persist/a.html");
+    expect(usePresentStore.getState().galleryOpen).toBe(false);
+  });
+
+  it("treats ./x and x as the same artifact", () => {
+    usePresentStore.getState().hydrate([entry("p1", "./docs/plan.md")]);
+    expect(usePresentStore.getState().focusByPath("docs/plan.md")?.presentId).toBe("p1");
+  });
+
+  it("returns null for a path nothing was presented from", () => {
+    usePresentStore.getState().hydrate([entry("p1", "/persist/a.html")]);
+    expect(usePresentStore.getState().focusByPath("/persist/missing.html")).toBeNull();
+  });
+
+  it("does not match a suffix or a basename", () => {
+    usePresentStore.getState().hydrate([entry("p1", "/persist/a.html")]);
+    expect(usePresentStore.getState().focusByPath("a.html")).toBeNull();
+  });
+});
+
+describe("linkTarget", () => {
+  it("is dropped by a full clear, so it cannot outlive its artifact", () => {
+    usePresentStore.getState().setLinkTarget({ presentId: "p1", clickId: 1 });
+    usePresentStore.getState().clear();
+    expect(usePresentStore.getState().linkTarget).toBeNull();
+  });
+
+  it("only clears for the click that still owns it", () => {
+    usePresentStore.getState().setLinkTarget({ presentId: "p1", clickId: 2 });
+    usePresentStore.getState().clearLinkTarget(1);
+    expect(usePresentStore.getState().linkTarget?.clickId).toBe(2);
+    usePresentStore.getState().clearLinkTarget(2);
+    expect(usePresentStore.getState().linkTarget).toBeNull();
+  });
+});

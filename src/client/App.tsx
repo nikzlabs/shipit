@@ -24,6 +24,7 @@ import { useTheme } from "./hooks/useTheme.js";
 import { useKeybinding } from "./keybindings/use-keybinding.js";
 import { useAutoFix } from "./hooks/useAutoFix.js";
 import { useAppBootstrap } from "./hooks/useAppBootstrap.js";
+import { usePreviewLinkIntent } from "./hooks/usePreviewLinkIntent.js";
 import { useSessionActivation } from "./hooks/useSessionActivation.js";
 import { useAppKeyboardShortcuts } from "./hooks/useAppKeyboardShortcuts.js";
 import { useAppModals } from "./hooks/useAppModals.js";
@@ -445,6 +446,12 @@ export default function App() {
     bootstrapLoaded,
     reconnect,
   });
+
+  // docs/258 — an agent-authored `shipit-preview://` pointer records where it
+  // wants the panel to go; this starts the named service if it isn't running
+  // (req 12) and selects its port. It lives here because `start_service` is a
+  // WebSocket message and `App` owns the socket.
+  usePreviewLinkIntent(sessionId, send);
 
   // Session resume/claim/routing: the four route-sync effects + the
   // new-session claim handlers. Effect ordering and dependency arrays are
