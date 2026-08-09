@@ -348,11 +348,14 @@ export function dismissNonTurnFailure(
  * to normalize a blank generation into its own fallback (`github.ts` does), and
  * a background failure must never block the operation around it.
  *
- * `fallback` is what a call with no session runs on — app-di's in-process
- * generator in local mode, a test's stub, and the degrade-to-empty default
- * otherwise. It is never consulted for a call that HAS a session: that would
- * silently run non-turn work on a model nobody chose, which is the dependency
- * req 9 exists to remove.
+ * `fallback` is the pre-feature generator — app-di's in-process one in local
+ * mode, a test's stub, and the degrade-to-empty default otherwise. It runs in
+ * exactly two cases: a call with **no session** (the post-interrupt commit
+ * message, which has nothing to attribute to and no notice to raise), and an
+ * install with **no eligible model at all**, where req 9's rule has no answer to
+ * apply and refusing to run would be a regression rather than a policy. It is
+ * never consulted when a model WAS chosen and then failed — that is the
+ * dependency req 9 exists to remove, and the notice is what reports it.
  */
 export function makeNonTurnGenerateText(
   deps: NonTurnWorkDeps & { fallback: (prompt: string, cwd: string) => Promise<string> },
@@ -366,6 +369,25 @@ export function makeNonTurnGenerateText(
       credentialStore: deps.credentialStore,
       providerAccountManager: deps.providerAccountManager,
     });
+    // **Nothing eligible is "ShipIt has no opinion", not "do not run".** The
+    // requirement's default is about choosing among models the install can run;
+    // with none to choose from there is no choice to make, and refusing to run
+    // would be a regression rather than a policy. `listConfiguredCredentials`
+    // sees the credential store and the environment — not a CLI logged in on
+    // the host outside both — so a dev checkout and a hand-authenticated
+    // deployment both land here, and both named their sessions perfectly well
+    // before this feature. So fall back to exactly what they did before.
+    //
+    // A stale PIN is the opposite case and keeps its hard stop below: there the
+    // user chose a service and it went away, which is precisely what req 9's
+    // notice reports on.
+    if (!resolution.ok && resolution.reason === "nothing_eligible") {
+      console.warn(
+        `[non-turn] ${purpose} session=${sessionId}: no eligible model on any installed harness;`
+        + " falling back to the pre-feature generator",
+      );
+      return deps.fallback(prompt, cwd);
+    }
     if (!resolution.ok) {
       reportUnrunnable(deps, sessionId, purpose, resolution);
       return "";
@@ -392,21 +414,20 @@ export function makeNonTurnGenerateText(
   };
 }
 
-/** Emit the right notice for a selection that could not be resolved at all. */
+/**
+ * Emit the notice for a **pin** the install can no longer run.
+ *
+ * Only that case. "Nothing eligible" names no service — nothing failed, ShipIt
+ * simply has no opinion — and a notice there would fire on every session of a
+ * half-configured install while naming nothing the user can act on. The callers
+ * fall back to their pre-feature path instead.
+ */
 function reportUnrunnable(
   deps: Pick<NonTurnWorkDeps, "getRunnerRegistry" | "chatHistoryManager">,
   sessionId: string,
   purpose: NonTurnPurpose,
-  resolution: Extract<NonTurnResolution, { ok: false }>,
+  resolution: Extract<NonTurnResolution, { ok: false; reason: "pin_unavailable" }>,
 ): void {
-  if (resolution.reason === "nothing_eligible") {
-    // No service failed — this install has no credentialed model on any
-    // installed harness, which every other surface already tells the user. A
-    // notice here would fire on every session of a half-configured install and
-    // name nothing actionable.
-    console.warn(`[non-turn] ${purpose} skipped session=${sessionId}: no eligible model on any installed harness`);
-    return;
-  }
   emitNonTurnFailure(deps, {
     sessionId,
     purpose,

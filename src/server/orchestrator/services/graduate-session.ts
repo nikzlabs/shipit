@@ -316,9 +316,20 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
       })
     : undefined;
   const target = resolution?.ok ? resolution.target : undefined;
-  // With no credential store wired (tests, minimal local setups) naming keeps
-  // its pre-feature shape exactly: the session's harness, its own account root,
-  // no model, no shaping.
+  // **A stale pin stops naming; "nothing eligible" does not.** The two absences
+  // are different facts. A pin the install can no longer run is a service the
+  // user chose that went away — req 9's notice reports exactly that, and
+  // spawning something else would defeat the choice. Nothing eligible is ShipIt
+  // having no opinion: `listConfiguredCredentials` sees the credential store and
+  // the environment, not a CLI logged in on the host outside both, so a dev
+  // checkout and a hand-authenticated deployment both land there — and both
+  // named their sessions perfectly well before this feature. Falling back to
+  // what they did before is the only answer that cannot regress them.
+  const pinUnavailable = resolution !== undefined && !resolution.ok
+    && resolution.reason === "pin_unavailable";
+  // With no credential store wired (tests, minimal local setups) and in the
+  // nothing-eligible case, naming keeps its pre-feature shape exactly: the
+  // session's harness, its own account root, no model, no shaping.
   const namingHarness = target?.harnessId ?? agentId;
 
   // docs/150 — naming is a real provider call, so it runs on a real account.
@@ -329,7 +340,7 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
   // singleton path, which is what those routes legitimately use.
   const namingRoute = target
     ? target.route
-    : (providerAccountManager?.selectRouteForTurn(agentId) ?? null);
+    : (providerAccountManager?.selectRouteForTurn(namingHarness) ?? null);
   const namingAccountId = namingRoute?.kind === "account" ? namingRoute.id : undefined;
   const namingCredentialRoot = namingAccountId && credentialsDir
     ? providerAccountCredentialRoot(credentialsDir, namingHarness, namingAccountId)
@@ -345,7 +356,7 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
   const reportNamingFailure = (detail: string | undefined): void => {
     if (!chatHistoryManager) return;
     if (resolution && !resolution.ok) {
-      if (resolution.reason === "nothing_eligible") return;
+      if (!pinUnavailable) return;
       emitNonTurnFailure(
         { getRunnerRegistry: () => runnerRegistry, chatHistoryManager },
         {
@@ -406,9 +417,10 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
   // healthy token; best-effort (a failed heal just falls through to the CLI,
   // which returns null → placeholder title sticks, exactly as before).
   const nameAfterHeal = async (): Promise<SessionNameResult> => {
-    if (resolution && !resolution.ok) {
-      // Nothing runnable — do not spawn anything, and let the caller's `null`
-      // branch keep the placeholder title. The notice is raised there.
+    if (pinUnavailable) {
+      // The model the user chose is gone. Do not silently name on something
+      // else; let the caller's `null` branch keep the placeholder title and
+      // raise the notice that says which service went away.
       return { name: null };
     }
     if (ensureAgentTokenFresh) {

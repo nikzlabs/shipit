@@ -23,8 +23,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 // prompt-without-title spawn here would fork a real `claude`/`codex`
 // process (15s timeout each) and race against the AI rename — the per-turn
 // quota test alone would spawn four real processes.
+// docs/252 phase 7 — `generateSessionName` returns `{ name, usage?, failure? }`.
+// `{ name: null }` is "naming produced no title", which is what these tests want.
 vi.mock("../session-namer.js", () => ({
-  generateSessionName: vi.fn().mockResolvedValue(null),
+  generateSessionName: vi.fn().mockResolvedValue({ name: null }),
 }));
 
 import fs from "node:fs";

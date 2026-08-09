@@ -72,6 +72,9 @@ table — a phase is checked off when its PR has merged.
 - [x] Composer picker split into harness and model, model rows grouped by service
 - [x] Delete `nativeModelIdsForHarness` and the hand-kept `METERED_MODELS` set
 - [x] Cross-backend review — nine findings, eight fixed (see `plan.md`)
+- [x] A stale pin stops naming with a notice; "nothing eligible" falls back to the pre-feature
+      path instead, so an install whose CLI is authenticated outside ShipIt's credential store
+      keeps naming its sessions
 - [ ] Delete the `ProviderAccount` projection. Still load-bearing: the docs/150 account
       machinery — the quota-aware walk, cutoffs, benching, failover — is keyed by `AgentId`
       and phase 3 delegates to it rather than reimplementing it. Retiring the projection

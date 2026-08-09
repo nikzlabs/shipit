@@ -436,4 +436,84 @@ describe("graduateSession", () => {
     expect(generateSpy).not.toHaveBeenCalled();
     expect(state.branchRenamed).toBe(true);
   });
+
+  // docs/252 phase 7 (req 9) — the two absences are different facts.
+  //
+  // "Nothing eligible" is ShipIt having no opinion: `listConfiguredCredentials`
+  // sees the credential store and the environment, not a CLI logged in on the
+  // host outside both, so a dev checkout lands here — and named its sessions
+  // perfectly well before this feature. It must keep doing so.
+  it("still names on the session's own harness when nothing is eligible", async () => {
+    const generateSessionName = vi.fn(async () => ({ name: { slug: "s", title: "T" } }));
+    vi.doMock("../session-namer.js", () => ({ generateSessionName }));
+    const appended: unknown[] = [];
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({
+      id: "s1", title: "placeholder", branch: "shipit/abc123", workspaceDir: "/tmp/ws",
+    });
+
+    graduateSession(
+      {
+        ...deps,
+        credentialStore: {
+          getNonTurnModel: () => undefined,
+          listCredentialRoutes: () => [],
+          getCredentialSecret: () => undefined,
+        } as never,
+        chatHistoryManager: {
+          append: (_s: string, m: unknown) => appended.push(m),
+          replaceInProgress: () => {},
+          updateNonTurnFailureCard: () => true,
+        } as never,
+      },
+      { sessionId: "s1", userText: "hi", agentId: "claude" },
+    );
+
+    await flush(() => state.branchRenamed === true);
+
+    expect(generateSessionName).toHaveBeenCalledWith("hi", { harnessId: "claude" });
+    expect(state.title).toBe("T");
+    // Nothing failed, so nothing to report — a notice here would fire on every
+    // session of a half-configured install and name nothing actionable.
+    expect(appended).toHaveLength(0);
+  });
+
+  // A pin the install can no longer run IS a service the user chose that went
+  // away: naming stops, the placeholder title stays, and the notice says which.
+  it("stops naming and persists a notice for a stale pin", async () => {
+    const generateSessionName = vi.fn(async () => ({ name: { slug: "s", title: "T" } }));
+    vi.doMock("../session-namer.js", () => ({ generateSessionName }));
+    const appended: { nonTurnFailure?: { serviceName?: string; purpose?: string } }[] = [];
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({
+      id: "s1", title: "placeholder", branch: "shipit/abc123", workspaceDir: "/tmp/ws",
+    });
+
+    graduateSession(
+      {
+        ...deps,
+        credentialStore: {
+          getNonTurnModel: () => ({ serviceId: "openai", billingMode: "key", modelId: "gpt-5.4-mini" }),
+          listCredentialRoutes: () => [],
+          getCredentialSecret: () => undefined,
+        } as never,
+        chatHistoryManager: {
+          append: (_s: string, m: unknown) => appended.push(m as never),
+          replaceInProgress: () => {},
+          updateNonTurnFailureCard: () => true,
+        } as never,
+      },
+      { sessionId: "s1", userText: "hi", agentId: "claude" },
+    );
+
+    await flush(() => state.branchRenamed === true);
+
+    expect(generateSessionName).not.toHaveBeenCalled();
+    // The surrounding operation completed with its fallback — graduation's own
+    // placeholder title (the first-message slice), not an AI-generated one.
+    expect(state.title).toBe("hi");
+    expect(appended).toHaveLength(1);
+    expect(appended[0].nonTurnFailure?.serviceName).toBe("OpenAI");
+    expect(appended[0].nonTurnFailure?.purpose).toBe("session-naming");
+  });
 });

@@ -234,19 +234,40 @@ describe("makeNonTurnGenerateText", () => {
     expect(h.appended).toHaveLength(1);
   });
 
-  // No service failed — an install with no credentials has nothing to blame,
-  // and a notice on every session naming nothing actionable is noise.
-  it("stays silent when nothing at all is eligible", async () => {
+  // "Nothing eligible" is ShipIt having no opinion, not a refusal to run.
+  // `listConfiguredCredentials` sees the credential store and the environment,
+  // not a CLI logged in on the host outside both — so a dev checkout and a
+  // hand-authenticated deployment land here, and both worked before this
+  // feature. Falling back is the only answer that cannot regress them; a notice
+  // would name nothing actionable and fire on every session.
+  it("falls back to the pre-feature generator when nothing at all is eligible", async () => {
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
     const { deps, h } = buildDeps({ routes: [] });
-    const generate = makeNonTurnGenerateText({
-      ...(deps as object),
-      fallback: async () => "unused",
-    } as never);
+    const fallback = vi.fn(async () => "from the fallback");
+    const generate = makeNonTurnGenerateText({ ...(deps as object), fallback } as never);
 
-    expect(await generate("prompt", "/ws", { sessionId: "s1" })).toBe("");
+    expect(await generate("prompt", "/ws", { sessionId: "s1" })).toBe("from the fallback");
     expect(h.appended).toHaveLength(0);
     expect(h.emitted).toHaveLength(0);
+  });
+
+  // The opposite case, and the distinction is the whole point: a pin the
+  // install can no longer run is a service the USER chose that went away, so it
+  // stops and says so rather than quietly running something else.
+  it("stops and reports a stale pin rather than falling back", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const { deps, h } = buildDeps({ routes: [] });
+    Object.assign((deps as { credentialStore: Record<string, unknown> }).credentialStore, {
+      getNonTurnModel: () => ({ serviceId: "openai", billingMode: "key", modelId: "gpt-5.4-mini" }),
+    });
+    const fallback = vi.fn(async () => "from the fallback");
+    const generate = makeNonTurnGenerateText({ ...(deps as object), fallback } as never);
+
+    expect(await generate("prompt", "/ws", { sessionId: "s1" })).toBe("");
+    expect(fallback).not.toHaveBeenCalled();
+    expect(h.appended).toHaveLength(1);
+    expect(h.appended[0].nonTurnFailure?.serviceName).toBe("OpenAI");
+    expect(h.appended[0].nonTurnFailure?.pinned).toBe(true);
   });
 });
 

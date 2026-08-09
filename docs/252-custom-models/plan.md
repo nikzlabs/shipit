@@ -1138,6 +1138,27 @@ hidden pin — it now renders as unavailable, with the warning beside it; and th
 flag was seeded into `useState` at mount, so a dismissal arriving from another attached viewer
 left that copy expanded until a remount.
 
+**CI found a seventh thing, and it is a design decision rather than a slip: the two "no model"
+answers are different facts.** The first cut treated an unresolvable selection as one case and
+refused to run — which broke a control test that names a session on an install with no
+credentials at all, and would have broken the same case in production. The distinction that
+resolves it:
+
+- **A stale pin** (`pin_unavailable`) is a service the *user chose* that went away. Naming stops,
+  the placeholder title stays, and req 9's notice says which service. Running something else
+  would defeat the choice, which is the whole point of the setting being explicit.
+- **Nothing eligible** (`nothing_eligible`) is ShipIt having *no opinion*. Req 9's default is a
+  rule for choosing among models the install can run; with none to choose from there is no
+  choice to make, and refusing to run is a regression rather than a policy. Critically,
+  `listConfiguredCredentials` reads the credential store and the environment — **not** a CLI
+  logged in on the host outside both — so a dev checkout and a hand-authenticated deployment both
+  land here, and both named their sessions perfectly well before this feature. Both halves
+  therefore fall back to their pre-feature path: naming spawns the session's own harness with no
+  model and no shaping, and text generation delegates to the injected generator.
+
+No notice fires for the second case, deliberately: nothing failed, and a notice would appear on
+every session of a half-configured install while naming nothing the user can act on.
+
 **One finding is recorded rather than fixed, and it is a real gap.** `recordNonTurnUsage` writes
 nothing when the harness reported no telemetry — and `codex exec` reports none through this path,
 so **naming on a metered OpenAI key spends money and records no row**. The reviewer is right that

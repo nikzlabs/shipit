@@ -47,10 +47,13 @@ import { buildIssueSeedPrompt } from "../../shared/issue-ref.js";
 // `graduateSession` shells out to the real naming CLI when nothing is pinned.
 // Returning a name here is deliberate: it is exactly what would rewrite the
 // branch to a title-derived slug, so the pin has something real to beat.
+// docs/252 phase 7 — `generateSessionName` returns `{ name, usage?, failure? }`
+// rather than a bare `SessionName | null`. The old shape resolved to a value
+// whose `.name` was undefined, which graduation reads as "naming failed" — so
+// the AI branch rename below never fired and the control case timed out.
 vi.mock("../session-namer.js", () => ({
   generateSessionName: vi.fn().mockResolvedValue({
-    slug: "sso-login-crash",
-    title: "SSO login crash",
+    name: { slug: "sso-login-crash", title: "SSO login crash" },
   }),
 }));
 
