@@ -1145,6 +1145,17 @@ export default function App() {
             failoverCutoffs?: Record<string, { session: number; weekly: number }>;
             /** docs/150 req 21 — per-provider account selection mode. */
             accountSelectionMode?: Record<string, "strict" | "balanced">;
+            /** docs/252 phase 7 (req 9) — the pinned non-turn model + what it resolves to. */
+            nonTurnModel?: { serviceId: string; billingMode: "sub" | "key"; modelId: string };
+            nonTurnModelResolved?: {
+              serviceId: string;
+              billingMode: "sub" | "key";
+              modelId: string;
+              serviceName: string;
+              label: string;
+              harnessId: string;
+              source: "pinned" | "default";
+            };
           };
         }>("/api/bootstrap");
         useGitStore.getState().setIdentity(data.settings.gitIdentity);
@@ -1226,6 +1237,13 @@ export default function App() {
           {useSettingsStore
             .getState()
             .setVoiceWebhookConfigured(data.settings.voiceWebhookConfigured);}
+        // docs/252 phase 7 (req 9) — applied unconditionally: absent means "no
+        // pin" / "nothing runnable", both real states rather than a reason to
+        // keep a stale value from a previous read.
+        useSettingsStore.getState().setNonTurnModel(
+          data.settings.nonTurnModel ?? null,
+          data.settings.nonTurnModelResolved ?? null,
+        );
         if (data.settings.providerAccounts)
           {useSettingsStore
             .getState()

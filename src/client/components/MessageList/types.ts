@@ -247,6 +247,30 @@ export interface ChatMessage {
     createdAt: string;
   };
   /**
+   * docs/252 phase 7 (req 9) — when set, this message renders the dismissible
+   * notice that ShipIt's non-turn work (naming this session, writing its
+   * pull-request description) failed. The surrounding operation completed with
+   * a fallback; this says which service broke.
+   *
+   * Populated from `non_turn_failure_card` WS events and from persisted
+   * history. `dismissedAt` is state on the row rather than the card's absence,
+   * so a dismissed notice stays in the scrollback as a quiet record instead of
+   * making a recurring failure look like it never happened.
+   */
+  nonTurnFailure?: {
+    cardId: string;
+    purpose: "session-naming" | "pr-description";
+    serviceId?: string;
+    serviceName?: string;
+    billingMode?: "sub" | "key";
+    modelId?: string;
+    pinned?: boolean;
+    fallback: string;
+    detail?: string;
+    createdAt: string;
+    dismissedAt?: string;
+  };
+  /**
    * docs/171 — when set, this message renders an inline `ReleaseLifecycleCard`.
    * Carries the full `ReleaseStatusSummary` snapshot; the `release_card` WS
    * handler upserts it by `cardId`, so every phase transition (propose → tagged

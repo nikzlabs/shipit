@@ -52,6 +52,8 @@ import { repushAgentToken, repushProviderAccountToken } from "./session-credenti
 import { MarketplaceStore } from "./marketplace-store.js";
 import type { UpdateMode } from "./services/updates.js";
 import type { VersionInfo } from "../shared/types.js";
+import type { GenerateText } from "./non-turn-model.js";
+import { makeNonTurnGenerateText } from "./services/non-turn-work.js";
 
 /**
  * Static, process-lifetime metadata captured at startup and surfaced to the
@@ -233,6 +235,38 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       })();
     }
   };
+
+  // ---- Non-turn work's text generator (docs/252 phase 7, req 9) ----
+  //
+  // The injected `deps.generateText` still wins: tests and the dogfood local
+  // path supply their own, and replacing an explicitly-provided generator would
+  // change what those runs produce. What this replaces is the PRODUCTION
+  // default, which returned the empty string because the orchestrator has no
+  // resident agent — so every containerized pull request got a blank body and
+  // the feature degraded silently (req 9 calls that half a change, not a
+  // behaviour to preserve).
+  //
+  // The registry is read through the holder above rather than captured: this
+  // generator is passed INTO `createRunnerRegistry` below, so it cannot close
+  // over the registry it spawns through. Same lazy shape, same reason, as
+  // `getPrStatusPoller`.
+  const effectiveGenerateText: GenerateText = deps.generateText ?? makeNonTurnGenerateText({
+    credentialStore,
+    providerAccountManager,
+    getRunnerRegistry: () => registryHolder.ref ?? undefined,
+    chatHistoryManager,
+    usageManager,
+    // The credential window a background spawn needs: its harness and account
+    // are chosen independently of the session, so they are routinely not the
+    // ones the session's container already holds.
+    ...(credentialsDir ? { credentialsDir } : {}),
+    sessionManager,
+    // A call with no session is not non-turn *work* — it is the post-interrupt
+    // commit message, which has no session to attribute to and no notice to
+    // raise. It keeps app-di's generator, which is the in-process agent in local
+    // mode and the degrade-to-empty default otherwise.
+    fallback: (prompt, cwd) => generateText(prompt, cwd),
+  });
 
   // docs/184: compose services no longer receive the user's platform-managed
   // credentials (Claude OAuth / GitHub token / MCP OAuth). The
@@ -499,7 +533,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     // instead of spawning against it.
     ...(providerAccountManager ? { providerAccountManager } : {}),
     readSystemPrompt: readSystemPromptApp,
-    generateText,
+    generateText: effectiveGenerateText,
     getPrStatusPoller: () => prStatusPollerRef.ref ?? undefined,
     // planning#266 — same lazy-resolution shape, same reason: the merge-watch manager
     // is built after the registry it dispatches into. Turn adoption calls this
@@ -912,7 +946,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     createGitManager, createRepoGit, databaseManager, sessionManager,
     repoStore, chatHistoryManager, usageManager, authManager, codexAuthManager,
     credentialStore, providerAccountManager, agentRegistry, githubAuthManager,
-    secretStore, reviewStore, egressAllowlistStore, presentStore, generateText,
+    secretStore, reviewStore, egressAllowlistStore, presentStore,
+    generateText: effectiveGenerateText,
     isTestMode, runtimeMode,
     // ---- Wired collaborators ----
     containerManager, dockerProxyServer, dockerForStats,

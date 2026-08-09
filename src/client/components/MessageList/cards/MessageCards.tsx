@@ -2,6 +2,7 @@ import { SpawnedSessionCard } from "../../SpawnedSessionCard.js";
 import { ChildMergedCard } from "../../ChildMergedCard.js";
 import { SelfMergeWatchCard } from "../../SelfMergeWatchCard.js";
 import { SessionReportCard } from "../../SessionReportCard.js";
+import { NonTurnFailureCard } from "../../NonTurnFailureCard.js";
 import { SpawnFailedCard } from "../../SpawnFailedCard.js";
 import { ReviewCard } from "../../ReviewCard.js";
 import { UserReviewCard } from "../../UserReviewCard.js";
@@ -155,6 +156,31 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
             {...(msg.sessionReport.subject ? { subject: msg.sessionReport.subject } : {})}
             body={msg.sessionReport.body}
             {...(cb.onResumeSession ? { onOpen: cb.onResumeSession } : {})}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // docs/252 phase 7 (req 9) — the non-turn-work failure notice carries no chat
+  // text of its own. Rendered whether or not it is dismissed: dismissal is state
+  // on the row (the card collapses to one muted line), never its removal, so a
+  // recurring failure stays visible in the scrollback.
+  if (msg.nonTurnFailure && cb.sessionId) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <NonTurnFailureCard
+            sessionId={cb.sessionId}
+            cardId={msg.nonTurnFailure.cardId}
+            purpose={msg.nonTurnFailure.purpose}
+            {...(msg.nonTurnFailure.serviceName ? { serviceName: msg.nonTurnFailure.serviceName } : {})}
+            {...(msg.nonTurnFailure.billingMode ? { billingMode: msg.nonTurnFailure.billingMode } : {})}
+            {...(msg.nonTurnFailure.modelId ? { modelId: msg.nonTurnFailure.modelId } : {})}
+            {...(msg.nonTurnFailure.pinned ? { pinned: true } : {})}
+            fallback={msg.nonTurnFailure.fallback}
+            {...(msg.nonTurnFailure.detail ? { detail: msg.nonTurnFailure.detail } : {})}
+            {...(msg.nonTurnFailure.dismissedAt ? { dismissedAt: msg.nonTurnFailure.dismissedAt } : {})}
           />
         </div>
       </div>

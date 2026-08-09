@@ -21,50 +21,17 @@
  *    `Authorization: Bearer …`.
  *  - `wire_api = "chat"` is **rejected** by this CLI ("set `wire_api =
  *    \"responses\"` in your provider config"), which is why the Codex harness
- *    declares only `openai-responses` and why {@link wireApiForStyle} treats
- *    anything else as unshapeable rather than mapping it.
- */
-
-import type { ServiceRouting } from "../../../shared/types.js";
-import type { ApiStyle } from "../../../shared/catalogue/types.js";
-
-/**
- * The provider-block name ShipIt writes under.
+ *    declares only `openai-responses` and why `wireApiForStyle` treats anything
+ *    else as unshapeable rather than mapping it.
  *
- * A fixed name rather than one derived from the `serviceId`, because the block
- * is created fresh per spawn and only ever has one occupant: the turn's own
- * service. A per-service name would accumulate blocks in a user's
- * `config.toml`-shaped override set for no gain, and would collide with a
- * provider the user configured under the same name.
+ * **The rules themselves moved to `shared/spawn-routing.ts` in phase 7**, so the
+ * orchestrator's own `codex exec` shell-out (session naming) shapes its spawn
+ * from the same source rather than from a second copy. Nothing changed in the
+ * move; this module stays as the name every existing importer and test uses.
  */
-export const SHIPIT_PROVIDER_ID = "shipit";
 
-/** Codex's `wire_api` value for a resolved style, or `undefined` if it has none. */
-export function wireApiForStyle(style: ApiStyle): string | undefined {
-  return style === "openai-responses" ? "responses" : undefined;
-}
-
-/**
- * The `-c` overrides that point this spawn at `routing`, or `[]` when there is
- * nothing to shape.
- *
- * Returns nothing rather than a partial block for a style Codex cannot speak:
- * a half-written provider would be rejected at startup, and a turn that runs
- * against OpenAI because its override was dropped is worse than one that does
- * not start. The catalogue join already prevents the case — no model reaches
- * this harness under a style it does not declare — so this is the backstop for
- * a row edited under a running install.
- */
-export function codexProviderArgs(routing: ServiceRouting | undefined): string[] {
-  if (!routing) return [];
-  const wireApi = wireApiForStyle(routing.style);
-  if (!wireApi || routing.credentialTarget.kind !== "env") return [];
-  const p = `model_providers.${SHIPIT_PROVIDER_ID}`;
-  return [
-    "-c", `${p}.name=${routing.serviceName}`,
-    "-c", `${p}.base_url=${routing.baseUrl}`,
-    "-c", `${p}.wire_api=${wireApi}`,
-    "-c", `${p}.env_key=${routing.credentialTarget.name}`,
-    "-c", `model_provider=${SHIPIT_PROVIDER_ID}`,
-  ];
-}
+export {
+  SHIPIT_PROVIDER_ID,
+  wireApiForStyle,
+  codexProviderArgs,
+} from "../../../shared/spawn-routing.js";

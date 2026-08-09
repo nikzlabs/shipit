@@ -43,6 +43,7 @@ import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-no
 import { getAgentCapabilities } from "../shared/agent-registry.js";
 import { sessionAccountId, sessionNeedsAccountFailover } from "./services/provider-account-switch.js";
 import { sessionNeedsCredentialFailover } from "./service-routing.js";
+import type { GenerateText } from "./non-turn-model.js";
 
 // ---- Runner registry setup ----
 
@@ -157,7 +158,7 @@ export interface RunnerRegistryDeps {
    * create-PR is on, to derive a PR description from chat history. Optional
    * so tests can leave the flow unwired.
    */
-  generateText?: (prompt: string, cwd: string) => Promise<string>;
+  generateText?: GenerateText;
   /**
    * docs/149 — lazy resolver for the PR-status poller. Lazy because the
    * poller is constructed AFTER the runner registry (it depends on the

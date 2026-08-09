@@ -29,6 +29,7 @@ import { PrStatusPoller } from "./pr-status-poller.js";
 import type { AgentId, AgentEvent, AgentProcess, RuntimeMode } from "../shared/types.js";
 import type { AgentHomeResolver } from "../shared/agent-home.js";
 import type { LocalAgentFactory } from "./local-agent-home.js";
+import type { GenerateText } from "./non-turn-model.js";
 
 /**
  * Runtime mode for the orchestrator. Selected via the `RUNTIME_MODE` env var.
@@ -166,7 +167,7 @@ export interface AppDeps {
    * Spawns a short-lived Claude process, collects text output, and returns it.
    * Inject a stub in tests.
    */
-  generateText?: (prompt: string, cwd: string) => Promise<string>;
+  generateText?: GenerateText;
   /**
    * Unified credential store for git identity, GitHub token, agent API keys.
    * Defaults to `new CredentialStore(credentialsDir)`.
@@ -262,7 +263,7 @@ export interface ManagerSet {
   providerAccountManager: ProviderAccountManager;
   agentRegistry: AgentRegistry;
   githubAuthManager: GitHubAuthManager;
-  generateText: (prompt: string, cwd: string) => Promise<string>;
+  generateText: GenerateText;
   isTestMode: boolean;
   /** Resolved runtime mode (containerized vs local). See {@link RuntimeMode}. */
   runtimeMode: RuntimeMode;

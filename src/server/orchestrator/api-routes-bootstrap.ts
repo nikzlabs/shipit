@@ -146,6 +146,11 @@ export async function registerBootstrapRoutes(
     failoverCutoffs?: Record<string, { session?: number; weekly?: number }>;
     /** docs/150 req 21 — per-provider account selection mode. */
     accountSelectionMode?: Record<string, "strict" | "balanced">;
+    /**
+     * docs/252 phase 7 (req 9) — pin the model non-turn work runs on, or `null`
+     * to clear the pin and follow the install again.
+     */
+    nonTurnModel?: { serviceId: string; billingMode: "sub" | "key"; modelId: string } | null;
   } }>(
     "/api/settings",
     async (request, reply) => {
@@ -181,6 +186,7 @@ export async function registerBootstrapRoutes(
           ...(request.body.voiceDeliveryMode !== undefined ? { voiceDeliveryMode: request.body.voiceDeliveryMode } : {}),
           ...(request.body.failoverCutoffs !== undefined ? { failoverCutoffs: request.body.failoverCutoffs } : {}),
           ...(request.body.accountSelectionMode !== undefined ? { accountSelectionMode: request.body.accountSelectionMode } : {}),
+          ...(request.body.nonTurnModel !== undefined ? { nonTurnModel: request.body.nonTurnModel } : {}),
         });
       } catch (err) {
         if (err instanceof ServiceError) {

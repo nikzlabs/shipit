@@ -1114,6 +1114,24 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_turns(session_id);
     `);
   },
+  // docs/252 phase 7 (req 9) — persist the dismissible "non-turn work failed"
+  // notice. Session naming is fire-and-forget and routinely finishes with the
+  // user on another session or no viewer attached at all, so an emit-only card
+  // would be silent in exactly the case the requirement exists to prevent —
+  // and the requirement additionally demands the notice still be findable
+  // after a reload. Dismissal is a patch to this JSON payload, not a delete:
+  // the row is the record that the failure happened. NULL = ordinary
+  // (non-card) message.
+  //
+  // Guarded like the two docs/252 migrations above, and for the same reason:
+  // the migration TESTS rewind `user_version` to re-run an earlier step, which
+  // re-runs every step after it against a table that already has the column.
+  // Every migration appended from here on inherits that requirement.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "non_turn_failure")) return;
+    db.exec("ALTER TABLE messages ADD COLUMN non_turn_failure TEXT");
+  },
 ];
 
 /**

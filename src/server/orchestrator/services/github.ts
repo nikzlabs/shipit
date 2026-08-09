@@ -22,6 +22,7 @@ import type { GitHubStatus } from "./types.js";
 import { formatUnresolvedConflictNotice } from "./conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./secret-scan-notice.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
+import type { GenerateText } from "../non-turn-model.js";
 
 /**
  * Resolve owner/repo from a known remote URL or by reading git remotes.
@@ -404,11 +405,18 @@ export async function agentMergePullRequest(
   return { success: false, message: result.message };
 }
 
-/** Generate a PR description using the agent's generateText capability. */
+/**
+ * Generate a PR description using the agent's generateText capability.
+ *
+ * docs/252 phase 7 — `sessionId` is what routes this through req 9's model:
+ * the generator needs a session both to spawn through and to attribute the
+ * spend to. Optional so a caller with no session degrades exactly as before.
+ */
 export async function generatePrDescription(
   git: GitManager,
-  generateText: (prompt: string, cwd: string) => Promise<string>,
+  generateText: GenerateText,
   sessionDir: string,
+  sessionId?: string,
 ): Promise<{ description: string }> {
   const log = await git.log(20);
   const diff = await git.diffSummary();
@@ -432,8 +440,20 @@ export async function generatePrDescription(
       : ["(no file-level diff available)"]),
   ].join("\n");
 
-  const description = await generateText(prompt, sessionDir);
-  return { description: description.trim() };
+  const description = await generateText(prompt, sessionDir, {
+    ...(sessionId ? { sessionId } : {}),
+    purpose: "pr-description",
+  });
+  // docs/252 phase 7 (req 9) — the same normalization the conversation-aware
+  // path applies. Cross-backend review found this endpoint still returning the
+  // empty string, which is the exact behaviour the requirement calls a change:
+  // the user pressed "generate a description" and got nothing, with nothing
+  // saying why. The notice comes from the generator; the generic text comes
+  // from here.
+  const trimmed = description.trim();
+  if (trimmed) return { description: trimmed };
+  console.warn("[pr] Description generation returned nothing; using the generic fallback");
+  return { description: await basicPrDescription(git) };
 }
 
 /** One-click PR creation — push, generate description, create PR. */
@@ -441,7 +461,7 @@ export async function quickCreatePr(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
   chatHistoryManager: ChatHistoryManager,
-  generateText: (prompt: string, cwd: string) => Promise<string>,
+  generateText: GenerateText,
   sessionId: string,
   sessionTitle: string,
   sessionDir: string,
@@ -1511,7 +1531,7 @@ export async function viewWorkflow(
 async function generatePrDescriptionFromContext(
   git: GitManager,
   chatHistoryManager: ChatHistoryManager,
-  generateText: (prompt: string, cwd: string) => Promise<string>,
+  generateText: GenerateText,
   sessionId: string,
   baseBranch: string,
   sessionDir: string,
@@ -1566,22 +1586,44 @@ async function generatePrDescriptionFromContext(
       "Return ONLY the markdown description, no extra commentary.",
     ].join("\n");
 
-    return await generateText(prompt, sessionDir);
+    const generated = await generateText(prompt, sessionDir, {
+      sessionId,
+      purpose: "pr-description",
+    });
+    // docs/252 phase 7 (req 9) — **a blank generation is a failure, and this is
+    // the line that says so.** The generic prose below used to live only in the
+    // `catch`, so it was reached on a thrown error and not on an empty result —
+    // and in containerized production an empty result was the ONLY outcome,
+    // because the orchestrator had no agent and the default generator returned
+    // `""`. Every pull request ShipIt opened therefore had an empty body and
+    // nothing anywhere said why. Req 9 calls that a change to make, not a
+    // behaviour to preserve.
+    if (generated.trim()) return generated;
+    console.warn("[pr] Description generation returned nothing; using the generic fallback");
+    return await basicPrDescription(git);
   } catch (err) {
     console.warn("[pr] Failed to generate description:", err);
-    // Fallback to basic description
-    try {
-      const log = await git.log(5);
-      return [
-        "## Summary",
-        "Changes from ShipIt session.",
-        "",
-        "## Changes",
-        ...log.map((c) => `- ${c.message}`),
-      ].join("\n");
-    } catch {
-      return "Changes from ShipIt session.";
-    }
+    return await basicPrDescription(git);
+  }
+}
+
+/**
+ * The generic description a failed or blank generation falls back to. Extracted
+ * so the rejection path and the blank-success path cannot drift — they are the
+ * same outcome from the user's side, and only one of them used to reach this.
+ */
+async function basicPrDescription(git: GitManager): Promise<string> {
+  try {
+    const log = await git.log(5);
+    return [
+      "## Summary",
+      "Changes from ShipIt session.",
+      "",
+      "## Changes",
+      ...log.map((c) => `- ${c.message}`),
+    ].join("\n");
+  } catch {
+    return "Changes from ShipIt session.";
   }
 }
 

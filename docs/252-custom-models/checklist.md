@@ -1,7 +1,7 @@
 ---
 issue: planning#321
 title: Custom models — implementation checklist
-description: Per-phase build steps for docs/252. Phases 1, 2, 3, 5, 8 and 9 are done.
+description: Per-phase build steps for docs/252. Phases 1, 2, 3, 5, 7, 8 and 9 are done.
 ---
 
 # 252 — Custom models: checklist
@@ -72,6 +72,9 @@ table — a phase is checked off when its PR has merged.
 - [x] Composer picker split into harness and model, model rows grouped by service
 - [x] Delete `nativeModelIdsForHarness` and the hand-kept `METERED_MODELS` set
 - [x] Cross-backend review — nine findings, eight fixed (see `plan.md`)
+- [x] A stale pin stops naming with a notice; "nothing eligible" falls back to the pre-feature
+      path instead, so an install whose CLI is authenticated outside ShipIt's credential store
+      keeps naming its sessions
 - [ ] Delete the `ProviderAccount` projection. Still load-bearing: the docs/150 account
       machinery — the quota-aware walk, cutoffs, benching, failover — is keyed by `AgentId`
       and phase 3 delegates to it rather than reimplementing it. Retiring the projection
@@ -92,7 +95,38 @@ table — a phase is checked off when its PR has merged.
       one eligible model" — which is the part req 2 needed; the rename across its six call
       sites is churn with no behaviour change and was not taken.
 
-## Phases 4, 6, 7
+## Phase 7 — Non-turn work
+
+- [x] `CredentialStore.nonTurnModel` — the pinned `(service, billing mode, model)`, with
+      unset kept as a distinct state rather than filled in with the resolved answer
+- [x] `non-turn-model.ts` — the resolver: req 9's derived default (first service, first
+      billing mode, first model), the derived harness (first installed harness offering it),
+      and the credential route + spawn shaping for it
+- [x] A retired pin resolves through its successor at read time (req 13), so one retirement
+      cannot fire req 9's notice on every session forever
+- [x] `applyServiceRouting` / `codexProviderArgs` moved to `shared/spawn-routing.ts` so the
+      orchestrator's own CLI shell-out shapes a spawn from the same source as a turn
+- [x] `session-namer.ts` takes the resolved target, forwards the model, shapes the
+      environment, and returns telemetry instead of discarding it
+- [x] `services/non-turn-work.ts` — the brokered generation over `runner.spawnSubAgent`,
+      wired as the production `generateText` (an injected one still wins)
+- [x] A blank PR-description generation normalizes into the generic fallback (req 9's
+      *change*), with the rejection path and the blank-success path tested separately
+- [x] Usage rows for both halves, with their own attribution, through `turn-attribution.ts`
+- [x] The dismissible failure notice: typed card, `messages.non_turn_failure` column +
+      migration, `emitChatCard`, `CARD_MESSAGE_FIELDS`, `TRANSCRIPT_SCOPED_MESSAGES`,
+      dismiss endpoint, history round-trip test
+- [x] Settings → Services → **Background work**: the visible setting, with the derived
+      default labelled and the derived harness shown as a fact rather than a control
+- [x] Cross-backend review — nine findings, eight fixed (see `plan.md`)
+- [ ] **Codex-harness non-turn work spends money and records no usage row.** `codex exec`
+      reports no telemetry through the orchestrator's shell-out, and an all-zero row priced
+      from the catalogue's rates would assert "this was free" — a wrong number rather than a
+      missing one. Closing it means either measuring `codex exec --json`'s event stream
+      (unverified here) or narrowing req 16's label. **Phase 6** owns the usage view and the
+      decision.
+
+## Phases 4 and 6
 
 Not started. See [`plan.md`](./plan.md)'s phase table. (Phases 8 and 9 have landed; their
 notes are in `plan.md` rather than here, since both landed ahead of this checklist's

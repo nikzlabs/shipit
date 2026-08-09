@@ -23,15 +23,17 @@ import type { VoiceDeliveryMode } from "../shared/types/voice-note-types.js";
 import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js";
 import {
   allServices,
+  getMode,
   harnessForNativeService,
   modesOfferingModel,
   nativeServiceForHarness,
   resolveModelSelection,
   resolveRetiredModelId,
   retirementSuccessor,
+  selectionExists,
   storageEnvFor,
 } from "../shared/catalogue/index.js";
-import type { BillingMode } from "../shared/catalogue/index.js";
+import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
 
 /**
  * docs/170 — the Linear **credential**, and nothing that identifies a
@@ -112,6 +114,23 @@ interface CredentialData {
    * A field unset ⇒ the backend's native default (no `--effort` flag; `models[0]`).
    */
   agentSubAgentDefaults?: Record<string, SubAgentDefaults>;
+  /**
+   * docs/252 phase 7 (req 9) — the model the work ShipIt does OUTSIDE a turn
+   * runs on: naming a session, writing a pull-request description.
+   *
+   * A `(service, billing mode, model)` selection like any other (req 3), chosen
+   * independently of whatever any session is using. The harness is **derived**,
+   * not stored — the first installed harness that model is offered on — so this
+   * never grows a second control (`non-turn-model.ts`).
+   *
+   * **Absent is a state, not a missing value.** Unset means "the first model
+   * this install can actually run", resolved fresh every time the work runs, so
+   * it follows what the install has instead of pointing at a vendor the user
+   * may never have used or has stopped paying for. Only a value the user
+   * explicitly pinned can go stale, and that is the one req 9's failure notice
+   * reports on.
+   */
+  nonTurnModel?: { serviceId: string; billingMode: BillingMode; modelId: string };
   /**
    * Account-level MCP server configs keyed by name (docs/088). Values use
    * `$secret:` placeholders — the raw secret values live in `agentEnv` under
@@ -1158,6 +1177,52 @@ export class CredentialStore {
 
   setEnableSubAgents(enabled: boolean): void {
     this.data.enableSubAgents = enabled;
+    this.save();
+  }
+
+  // ---- Non-turn work's model (docs/252 phase 7, req 9) ----
+
+  /**
+   * The user's explicit pin for non-turn work, or `undefined` for "follow the
+   * install" — see {@link CredentialData.nonTurnModel}. Deliberately NOT
+   * resolved here: the derived default is a rule evaluated where the work runs
+   * (`non-turn-model.ts`), so the two states stay distinguishable all the way to
+   * the UI, which is what req 9's *visible* setting requires.
+   */
+  getNonTurnModel(): ModelSelection | undefined {
+    const stored = this.data.nonTurnModel;
+    if (!stored) return undefined;
+    // A pin naming no catalogue row is not a pin — it is the state phase 1's
+    // invariant forbids ("a stored selection either names a real catalogue row,
+    // or carries no service and mode at all"). Reading it as unset degrades to
+    // the derived default rather than to a triple nothing can resolve.
+    //
+    // A **retired** model is not that state. It named a real row when it was
+    // written and the catalogue still carries its retirement record, so req 13
+    // has a successor to move it to — and `resolveNonTurnModel` is where that
+    // resolution lives. Refusing it here made that whole path unreachable: the
+    // pin read as unset, the derived default silently took over, and the user's
+    // choice was discarded by a retirement rather than followed through it.
+    // Found by cross-backend review.
+    if (selectionExists(stored)) return { ...stored };
+    const retired = getMode(stored.serviceId, stored.billingMode)
+      ?.retired.some((r) => r.id === stored.modelId);
+    return retired ? { ...stored } : undefined;
+  }
+
+  /** Pin non-turn work to a selection, or clear the pin with `null`. */
+  setNonTurnModel(selection: ModelSelection | null): void {
+    if (selection === null) {
+      delete this.data.nonTurnModel;
+      this.save();
+      return;
+    }
+    if (!selectionExists(selection)) {
+      throw new Error(
+        `No catalogue entry for ${selection.serviceId}/${selection.billingMode}/${selection.modelId}`,
+      );
+    }
+    this.data.nonTurnModel = { ...selection };
     this.save();
   }
 

@@ -25,6 +25,7 @@ import type { PrStatusPoller } from "../pr-status-poller.js";
 import { getErrorMessage } from "../validation.js";
 import { activatePendingAutoMergeForPr, quickCreatePr } from "./github.js";
 import { notableFilesForBranch } from "./notable-files.js";
+import type { GenerateText } from "../non-turn-model.js";
 
 export interface PrLifecycleDeps {
   sessionManager: SessionManager;
@@ -32,7 +33,7 @@ export interface PrLifecycleDeps {
   githubAuthManager: GitHubAuthManager;
   credentialStore: CredentialStore;
   chatHistoryManager: ChatHistoryManager;
-  generateText: (prompt: string, cwd: string) => Promise<string>;
+  generateText: GenerateText;
   createGitManager: (dir: string) => GitManager;
 }
 

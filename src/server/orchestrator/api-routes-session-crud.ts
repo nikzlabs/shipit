@@ -29,6 +29,7 @@ import type { AgentId, IssueRef } from "../shared/types.js";
 import type { BillingMode } from "../shared/catalogue/index.js";
 import { getErrorMessage } from "./validation.js";
 import { markIssueStartedFromSeed } from "./issue-lifecycle.js";
+import { dismissNonTurnFailure } from "./services/non-turn-work.js";
 
 export async function registerSessionCrudRoutes(
   app: FastifyInstance,
@@ -51,6 +52,11 @@ export async function registerSessionCrudRoutes(
     // singleton root (which aliases to the migrated default account).
     providerAccountManager: deps.providerAccountManager,
     ...(deps.credentialsDir ? { credentialsDir: deps.credentialsDir } : {}),
+    // docs/252 phase 7 (req 9) — naming runs on the model chosen for non-turn
+    // work, records what it spent, and surfaces a durable notice when it fails.
+    credentialStore: deps.credentialStore,
+    chatHistoryManager: deps.chatHistoryManager,
+    usageManager: deps.usageManager,
   };
 
   // Single shared claim service for every surface that mints a repo-backed
@@ -120,6 +126,34 @@ export async function registerSessionCrudRoutes(
         }
         reply.code(500).send({ error: `Failed to unarchive session: ${getErrorMessage(err)}` });
       }
+    },
+  );
+
+  // POST /api/sessions/:id/non-turn-failure/:cardId/dismiss — docs/252 phase 7
+  // (req 9). Dismissal is a PATCH of the persisted card, never a delete: the
+  // row is the record that the failure happened, and losing it on acknowledge
+  // would make "I read this" and "it never happened" the same state after a
+  // reload.
+  app.post<{ Params: { id: string; cardId: string } }>(
+    "/api/sessions/:id/non-turn-failure/:cardId/dismiss",
+    async (request, reply) => {
+      if (!deps.chatHistoryManager) {
+        reply.code(503).send({ error: "Chat history is unavailable" });
+        return;
+      }
+      const dismissed = dismissNonTurnFailure(
+        {
+          getRunnerRegistry: () => deps.runnerRegistry,
+          chatHistoryManager: deps.chatHistoryManager,
+        },
+        request.params.id,
+        request.params.cardId,
+      );
+      if (!dismissed) {
+        reply.code(404).send({ error: "No such notice in this session" });
+        return;
+      }
+      return { dismissed: true };
     },
   );
 

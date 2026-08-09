@@ -36,6 +36,19 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
   egressPrompt: { cardId: "eg1", host: "evil.example.com", phase: "denied", createdAt: "2026-06-05T00:00:00.000Z" },
   compaction: { id: "c1", trigger: "manual", preTokens: 100, postTokens: 20, durationMs: 9, createdAt: "t" },
   subAgentConsult: { cardId: "sac1", spawnId: "spawn-1", subAgentId: "codex", status: "success", durationMs: 47000, costUsd: 0.03, truncated: false, outputMarkdown: "## Findings\n\n- `foo.ts:42` — bug\n", createdAt: "2026-06-05T00:00:00.000Z" },
+  nonTurnFailure: {
+    cardId: "ntf1",
+    purpose: "session-naming",
+    serviceId: "anthropic",
+    serviceName: "Anthropic",
+    billingMode: "sub",
+    modelId: "claude-haiku-4-5-20251001",
+    pinned: true,
+    fallback: "The session kept its placeholder title.",
+    detail: "401 Unauthorized",
+    createdAt: "2026-08-09T00:00:00.000Z",
+    dismissedAt: "2026-08-09T00:01:00.000Z",
+  },
   actionChecklist: {
     cardId: "ac1",
     title: "Optional follow-ups",
@@ -1220,5 +1233,40 @@ describe("ChatHistoryManager", () => {
       expect(messages).toHaveLength(1);
       expect(messages[0].text).toBe("Original");
     });
+  });
+
+  // docs/252 phase 7 (req 9) — the notice must still be findable after a reload,
+  // and dismissal is STATE on the row rather than its removal: deleting it would
+  // make "I read this" and "it never happened" the same thing on the next load,
+  // and would take the record of a recurring failure with it.
+  it("keeps a dismissed non-turn-failure notice in history with its dismissal stamped", () => {
+    const mgr = new ChatHistoryManager(dbManager);
+    mgr.append("sess-1", {
+      role: "assistant",
+      text: "",
+      nonTurnFailure: {
+        cardId: "ntf-1",
+        purpose: "session-naming",
+        serviceId: "deepseek",
+        serviceName: "DeepSeek",
+        billingMode: "key",
+        modelId: "deepseek-v4-flash",
+        fallback: "The session kept its placeholder title.",
+        createdAt: "2026-08-09T00:00:00.000Z",
+      },
+    });
+
+    expect(mgr.updateNonTurnFailureCard("sess-1", "ntf-1", { dismissedAt: "2026-08-09T00:05:00.000Z" }))
+      .toBe(true);
+
+    const reloaded = mgr.load("sess-1");
+    expect(reloaded).toHaveLength(1);
+    expect(reloaded[0].nonTurnFailure?.dismissedAt).toBe("2026-08-09T00:05:00.000Z");
+    expect(reloaded[0].nonTurnFailure?.serviceName).toBe("DeepSeek");
+  });
+
+  it("reports false when dismissing a notice that is not in this session", () => {
+    const mgr = new ChatHistoryManager(dbManager);
+    expect(mgr.updateNonTurnFailureCard("sess-1", "missing", { dismissedAt: "x" })).toBe(false);
   });
 });

@@ -266,6 +266,33 @@ interface SettingsState {
    */
   credentialRoutes: CredentialRoute[];
   /**
+   * docs/252 phase 7 (req 9) — the model the user PINNED for non-turn work
+   * (session naming, pull-request descriptions), or `null` for "follow the
+   * install".
+   *
+   * `null` is a state, not a missing value: it is what makes the setting
+   * visibly derived rather than a hidden dependency on a vendor the user may
+   * stop paying for.
+   */
+  nonTurnModel: { serviceId: string; billingMode: "sub" | "key"; modelId: string } | null;
+  /**
+   * docs/252 phase 7 (req 9) — what non-turn work resolves to right now, pin or
+   * no pin, plus the derived harness. Computed server-side so the client never
+   * re-derives req 9's rule and drifts from what actually runs. `null` when
+   * nothing on this install is runnable.
+   */
+  nonTurnModelResolved:
+    | {
+        serviceId: string;
+        billingMode: "sub" | "key";
+        modelId: string;
+        serviceName: string;
+        label: string;
+        harnessId: string;
+        source: "pinned" | "default";
+      }
+    | null;
+  /**
    * In-flight account-scoped sign-in challenges, keyed by
    * {@link providerAccountAuthKey} so concurrent row sign-ins stay independent.
    */
@@ -328,6 +355,11 @@ interface SettingsState {
   ) => void;
   setProviderAccounts: (accounts: ProviderAccount[]) => void;
   setCredentialRoutes: (routes: CredentialRoute[]) => void;
+  /** docs/252 phase 7 — apply a `/api/settings` response's non-turn fields. */
+  setNonTurnModel: (
+    pinned: SettingsState["nonTurnModel"],
+    resolved: SettingsState["nonTurnModelResolved"],
+  ) => void;
   /** Set (or clear, with `null`) one account's in-flight sign-in challenge. */
   setProviderAccountAuth: (provider: AgentId, accountId: string, auth: ProviderAccountAuth | null) => void;
   /** Set (or clear, with `null`) one account's last sign-in failure message. */
@@ -401,6 +433,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   claudeAuthDiagnostics: {},
   providerAccounts: [],
   credentialRoutes: [],
+  nonTurnModel: null,
+  nonTurnModelResolved: null,
   providerAccountAuths: {},
   providerAccountAuthErrors: {},
 
@@ -593,6 +627,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }),
   setProviderAccounts: (accounts) => set({ providerAccounts: accounts }),
   setCredentialRoutes: (routes) => set({ credentialRoutes: routes }),
+  setNonTurnModel: (pinned, resolved) => set({ nonTurnModel: pinned, nonTurnModelResolved: resolved }),
   setProviderAccountAuth: (provider, accountId, auth) =>
     set((state) => ({
       providerAccountAuths: withKey(

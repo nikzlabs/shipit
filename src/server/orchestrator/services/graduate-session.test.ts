@@ -97,7 +97,7 @@ describe("graduateSession", () => {
   });
 
   it("marks setWarm(false) and track() synchronously", async () => {
-    vi.doMock("../session-namer.js", () => ({ generateSessionName: vi.fn(async () => null) }));
+    vi.doMock("../session-namer.js", () => ({ generateSessionName: vi.fn(async () => ({ name: null })) }));
     const { graduateSession } = await import("./graduate-session.js");
     const { deps, spies, state } = buildDeps({
       id: "s1",
@@ -116,7 +116,7 @@ describe("graduateSession", () => {
   });
 
   it("renames title to the placeholder slice when no explicit title is supplied", async () => {
-    vi.doMock("../session-namer.js", () => ({ generateSessionName: vi.fn(async () => null) }));
+    vi.doMock("../session-namer.js", () => ({ generateSessionName: vi.fn(async () => ({ name: null })) }));
     const { graduateSession } = await import("./graduate-session.js");
     const { deps, state } = buildDeps({ id: "s1", title: "old", branch: "shipit/abc", workspaceDir: "/tmp/ws", remoteUrl: "x" });
 
@@ -126,7 +126,7 @@ describe("graduateSession", () => {
   });
 
   it("uses explicitTitle when supplied and skips AI naming", async () => {
-    const generateSpy = vi.fn(async () => ({ slug: "should-not-run", title: "Should Not Run" }));
+    const generateSpy = vi.fn(async () => ({ name: { slug: "should-not-run", title: "Should Not Run" } }));
     vi.doMock("../session-namer.js", () => ({ generateSessionName: generateSpy }));
     const { graduateSession } = await import("./graduate-session.js");
     const { deps, spies, state } = buildDeps({ id: "s1", title: "old", branch: "shipit/abc", workspaceDir: "/tmp/ws", remoteUrl: "x" });
@@ -145,7 +145,7 @@ describe("graduateSession", () => {
   });
 
   it("skips AI naming when explicitBranch is supplied", async () => {
-    const generateSpy = vi.fn(async () => ({ slug: "should-not-run", title: "Should Not Run" }));
+    const generateSpy = vi.fn(async () => ({ name: { slug: "should-not-run", title: "Should Not Run" } }));
     vi.doMock("../session-namer.js", () => ({ generateSessionName: generateSpy }));
     const { graduateSession } = await import("./graduate-session.js");
     const { deps, spies, state } = buildDeps({ id: "s1", title: "placeholder", branch: "user/feature", workspaceDir: "/tmp/ws", remoteUrl: "x" });
@@ -164,7 +164,7 @@ describe("graduateSession", () => {
 
   it("runs AI naming and renames branch + title when no explicit fields are supplied", async () => {
     vi.doMock("../session-namer.js", () => ({
-      generateSessionName: vi.fn(async () => ({ slug: "fix-flaky", title: "Fix flaky test" })),
+      generateSessionName: vi.fn(async () => ({ name: { slug: "fix-flaky", title: "Fix flaky test" } })),
     }));
     const { graduateSession } = await import("./graduate-session.js");
     const { deps, spies, state } = buildDeps({
@@ -191,7 +191,7 @@ describe("graduateSession", () => {
   // the session again after the call precisely so it sees such a rename.
   it("does not overwrite a title the user set by hand while naming was in flight", async () => {
     vi.doMock("../session-namer.js", () => ({
-      generateSessionName: vi.fn(async () => ({ slug: "fix-flaky", title: "Fix flaky test" })),
+      generateSessionName: vi.fn(async () => ({ name: { slug: "fix-flaky", title: "Fix flaky test" } })),
     }));
     const { graduateSession } = await import("./graduate-session.js");
     const { deps, spies, state } = buildDeps({
@@ -218,7 +218,7 @@ describe("graduateSession", () => {
 
   it("does not overwrite a title the agent set while naming was in flight", async () => {
     vi.doMock("../session-namer.js", () => ({
-      generateSessionName: vi.fn(async () => ({ slug: "fix-flaky", title: "Fix flaky test" })),
+      generateSessionName: vi.fn(async () => ({ name: { slug: "fix-flaky", title: "Fix flaky test" } })),
     }));
     const { graduateSession } = await import("./graduate-session.js");
     const { deps, state } = buildDeps({
@@ -243,7 +243,7 @@ describe("graduateSession", () => {
   // HOME=/root, which aliases to the migrated default account, and healed the
   // provider (every account, aggregated with `every()`).
   it("names on the account a turn would use, and heals that account", async () => {
-    const generateSessionName = vi.fn(async () => ({ slug: "s", title: "T" }));
+    const generateSessionName = vi.fn(async () => ({ name: { slug: "s", title: "T" } }));
     vi.doMock("../session-namer.js", () => ({ generateSessionName }));
     const { graduateSession } = await import("./graduate-session.js");
     const { deps, state } = buildDeps({
@@ -266,15 +266,17 @@ describe("graduateSession", () => {
     await flush(() => state.branchRenamed === true);
 
     expect(ensureAgentTokenFresh).toHaveBeenCalledWith("claude", "acct_work");
-    expect(generateSessionName).toHaveBeenCalledWith(
-      "hi",
-      "claude",
-      "/credentials/provider-accounts/claude/acct_work",
-    );
+    // docs/252 phase 7 — the namer now takes the resolved TARGET. With no
+    // credential store wired (this setup has none), it keeps the pre-feature
+    // shape exactly: the session's harness, its account root, no model.
+    expect(generateSessionName).toHaveBeenCalledWith("hi", {
+      harnessId: "claude",
+      credentialRoot: "/credentials/provider-accounts/claude/acct_work",
+    });
   });
 
   it("leaves naming on the singleton root for a reserved (API-key) route", async () => {
-    const generateSessionName = vi.fn(async () => ({ slug: "s", title: "T" }));
+    const generateSessionName = vi.fn(async () => ({ name: { slug: "s", title: "T" } }));
     vi.doMock("../session-namer.js", () => ({ generateSessionName }));
     const { graduateSession } = await import("./graduate-session.js");
     const { deps, state } = buildDeps({
@@ -296,12 +298,12 @@ describe("graduateSession", () => {
 
     // A reserved route has no account root; `undefined` keeps the singleton
     // path, which is what those routes legitimately use.
-    expect(generateSessionName).toHaveBeenCalledWith("hi", "claude", undefined);
+    expect(generateSessionName).toHaveBeenCalledWith("hi", { harnessId: "claude" });
   });
 
   it("with skipBranchRename: true, AI naming updates the title but leaves the branch alone", async () => {
     vi.doMock("../session-namer.js", () => ({
-      generateSessionName: vi.fn(async () => ({ slug: "fix-flaky", title: "Fix flaky test" })),
+      generateSessionName: vi.fn(async () => ({ name: { slug: "fix-flaky", title: "Fix flaky test" } })),
     }));
     const { graduateSession } = await import("./graduate-session.js");
     const { deps, spies, state } = buildDeps({
@@ -327,7 +329,7 @@ describe("graduateSession", () => {
   });
 
   it("calls repoStore.touch when remoteUrl is present", async () => {
-    vi.doMock("../session-namer.js", () => ({ generateSessionName: vi.fn(async () => null) }));
+    vi.doMock("../session-namer.js", () => ({ generateSessionName: vi.fn(async () => ({ name: null })) }));
     const { graduateSession } = await import("./graduate-session.js");
     const { deps, spies } = buildDeps({
       id: "s1",
@@ -342,7 +344,7 @@ describe("graduateSession", () => {
   });
 
   it("does not call repoStore.touch when remoteUrl is empty", async () => {
-    vi.doMock("../session-namer.js", () => ({ generateSessionName: vi.fn(async () => null) }));
+    vi.doMock("../session-namer.js", () => ({ generateSessionName: vi.fn(async () => ({ name: null })) }));
     const { graduateSession } = await import("./graduate-session.js");
     const { deps, spies } = buildDeps({ id: "s1", title: "x", workspaceDir: "/tmp/ws" });
 
@@ -352,7 +354,7 @@ describe("graduateSession", () => {
   });
 
   it("broadcasts session_list once synchronously", async () => {
-    vi.doMock("../session-namer.js", () => ({ generateSessionName: vi.fn(async () => null) }));
+    vi.doMock("../session-namer.js", () => ({ generateSessionName: vi.fn(async () => ({ name: null })) }));
     const { graduateSession } = await import("./graduate-session.js");
     const { deps, spies } = buildDeps({ id: "s1", title: "x", remoteUrl: "x" });
 
@@ -363,7 +365,7 @@ describe("graduateSession", () => {
   });
 
   it("sets model + parentSession when supplied", async () => {
-    vi.doMock("../session-namer.js", () => ({ generateSessionName: vi.fn(async () => null) }));
+    vi.doMock("../session-namer.js", () => ({ generateSessionName: vi.fn(async () => ({ name: null })) }));
     const { graduateSession } = await import("./graduate-session.js");
     const { deps, spies, state } = buildDeps({ id: "s1", title: "x", remoteUrl: "x" });
 
@@ -403,7 +405,7 @@ describe("graduateSession", () => {
 
   it("skips the PR-ready card when a PR is already tracked", async () => {
     vi.doMock("../session-namer.js", () => ({
-      generateSessionName: vi.fn(async () => ({ slug: "thing", title: "Thing" })),
+      generateSessionName: vi.fn(async () => ({ name: { slug: "thing", title: "Thing" } })),
     }));
     const { graduateSession } = await import("./graduate-session.js");
     const { deps, spies, state } = buildDeps({
@@ -424,7 +426,7 @@ describe("graduateSession", () => {
   });
 
   it("skips AI naming when the session has no workspace directory", async () => {
-    const generateSpy = vi.fn(async () => ({ slug: "x", title: "X" }));
+    const generateSpy = vi.fn(async () => ({ name: { slug: "x", title: "X" } }));
     vi.doMock("../session-namer.js", () => ({ generateSessionName: generateSpy }));
     const { graduateSession } = await import("./graduate-session.js");
     const { deps, state } = buildDeps({ id: "s1", title: "x", remoteUrl: "x" });
@@ -433,5 +435,85 @@ describe("graduateSession", () => {
 
     expect(generateSpy).not.toHaveBeenCalled();
     expect(state.branchRenamed).toBe(true);
+  });
+
+  // docs/252 phase 7 (req 9) — the two absences are different facts.
+  //
+  // "Nothing eligible" is ShipIt having no opinion: `listConfiguredCredentials`
+  // sees the credential store and the environment, not a CLI logged in on the
+  // host outside both, so a dev checkout lands here — and named its sessions
+  // perfectly well before this feature. It must keep doing so.
+  it("still names on the session's own harness when nothing is eligible", async () => {
+    const generateSessionName = vi.fn(async () => ({ name: { slug: "s", title: "T" } }));
+    vi.doMock("../session-namer.js", () => ({ generateSessionName }));
+    const appended: unknown[] = [];
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({
+      id: "s1", title: "placeholder", branch: "shipit/abc123", workspaceDir: "/tmp/ws",
+    });
+
+    graduateSession(
+      {
+        ...deps,
+        credentialStore: {
+          getNonTurnModel: () => undefined,
+          listCredentialRoutes: () => [],
+          getCredentialSecret: () => undefined,
+        } as never,
+        chatHistoryManager: {
+          append: (_s: string, m: unknown) => appended.push(m),
+          replaceInProgress: () => {},
+          updateNonTurnFailureCard: () => true,
+        } as never,
+      },
+      { sessionId: "s1", userText: "hi", agentId: "claude" },
+    );
+
+    await flush(() => state.branchRenamed === true);
+
+    expect(generateSessionName).toHaveBeenCalledWith("hi", { harnessId: "claude" });
+    expect(state.title).toBe("T");
+    // Nothing failed, so nothing to report — a notice here would fire on every
+    // session of a half-configured install and name nothing actionable.
+    expect(appended).toHaveLength(0);
+  });
+
+  // A pin the install can no longer run IS a service the user chose that went
+  // away: naming stops, the placeholder title stays, and the notice says which.
+  it("stops naming and persists a notice for a stale pin", async () => {
+    const generateSessionName = vi.fn(async () => ({ name: { slug: "s", title: "T" } }));
+    vi.doMock("../session-namer.js", () => ({ generateSessionName }));
+    const appended: { nonTurnFailure?: { serviceName?: string; purpose?: string } }[] = [];
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({
+      id: "s1", title: "placeholder", branch: "shipit/abc123", workspaceDir: "/tmp/ws",
+    });
+
+    graduateSession(
+      {
+        ...deps,
+        credentialStore: {
+          getNonTurnModel: () => ({ serviceId: "openai", billingMode: "key", modelId: "gpt-5.4-mini" }),
+          listCredentialRoutes: () => [],
+          getCredentialSecret: () => undefined,
+        } as never,
+        chatHistoryManager: {
+          append: (_s: string, m: unknown) => appended.push(m as never),
+          replaceInProgress: () => {},
+          updateNonTurnFailureCard: () => true,
+        } as never,
+      },
+      { sessionId: "s1", userText: "hi", agentId: "claude" },
+    );
+
+    await flush(() => state.branchRenamed === true);
+
+    expect(generateSessionName).not.toHaveBeenCalled();
+    // The surrounding operation completed with its fallback — graduation's own
+    // placeholder title (the first-message slice), not an AI-generated one.
+    expect(state.title).toBe("hi");
+    expect(appended).toHaveLength(1);
+    expect(appended[0].nonTurnFailure?.serviceName).toBe("OpenAI");
+    expect(appended[0].nonTurnFailure?.purpose).toBe("session-naming");
   });
 });
