@@ -88,7 +88,13 @@ export async function startQueuedMessage(
  * here is the recurring bug and not a shortcut.
  */
 export function releaseQueuedTurn(runner: SessionRunnerInterface): boolean {
-  if (runner.running || runner.queueLength === 0) return false;
+  // planning#338 — `systemTurnInProgress` without `running` is a system FLOW (the
+  // rebase driver) holding the session between its own turns while it runs git
+  // against the workspace. Releasing a user turn into that window is how a
+  // production session stranded mid-rebase: the released turn displaced the
+  // conflict-resolution agent and nothing ever ran `git rebase --continue` or
+  // `--abort`. The flow releases the queue itself when it settles.
+  if (runner.running || runner.systemTurnInProgress || runner.queueLength === 0) return false;
   // A runner with no system-turn deps can't start a dispatched turn at all
   // (`dispatch` falls back to a plain enqueue), so dequeuing here would only
   // shuffle the entry to the back of its own queue.

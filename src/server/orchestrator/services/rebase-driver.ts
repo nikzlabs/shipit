@@ -29,6 +29,8 @@ import type { UsageManager } from "../usage.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { ServiceError } from "./types.js";
 import { agentLogAppend } from "../log-emit.js";
+import { emitNoticePostTurn } from "../chat-card-persistence.js";
+import { releaseQueuedTurn } from "../queue-drain.js";
 import { isNonFastForwardError } from "./git.js";
 import { getErrorMessage } from "../validation.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
@@ -285,6 +287,29 @@ export async function runRebaseFlow(
   if (runner.running) {
     throw new ServiceError(409, "Cannot rebase while an agent turn is in progress");
   }
+  // planning#338 — the hold below is exclusive. A second flow entering while the
+  // first holds the session between its own turns (`running` false, flag true)
+  // would run two rebases against one working tree and clear the shared flag on
+  // its own teardown. The auto path translates this 409 into a deferral.
+  if (runner.systemTurnInProgress) {
+    throw new ServiceError(409, "Cannot rebase while a system turn is in progress");
+  }
+
+  // planning#338 — hold the system-turn marker for the WHOLE flow, not just while a
+  // resolution turn is in flight. The per-turn flag has two gaps a user turn
+  // slipped through in production: (a) the executor's `tryDrain` clears
+  // `running` at `agent_result`, seconds before `done` settles the turn, and
+  // (b) between resolution turns (and around the final continue/force-push) the
+  // driver runs git against the workspace with no turn in flight at all. A user
+  // message dispatched in either gap displaces the resolution turn's agent slot
+  // and strands the workspace mid-rebase — auto-commit then refuses forever
+  // ("rebase in progress") until a human aborts by hand. Every user-turn entry
+  // path (WS send, `dispatchOnRunner`, `releaseQueuedTurn`) now respects this
+  // flag, so messages queue and drain after the flow settles (docs/146's
+  // original intent). The executor still clears the flag at each resolution
+  // turn's teardown; `runRebaseResolutionTurn.onTurnComplete` re-asserts it
+  // synchronously, so there is no observable gap.
+  runner.systemTurnInProgress = true;
 
   try {
     // 1. Fetch latest from origin.
@@ -363,7 +388,48 @@ export async function runRebaseFlow(
       handWorkspaceBackToWorker(runner.sessionDir);
 
       const prompt = buildRebaseConflictPrompt(baseBranch, result.conflicts);
-      await runRebaseResolutionTurn(deps, prompt);
+      try {
+        await runRebaseResolutionTurn(deps, prompt);
+      } catch (err) {
+        // planning#338 — the resolution turn ended without completing: an agent
+        // process error, a no-result exit, a runner disposal, or a newer turn
+        // displacing its agent slot. Abort HERE, before rethrowing, so the
+        // workspace can never strand mid-rebase with auto-commit refusing every
+        // later turn. (The auto-resolve wrapper aborts on its own catch too —
+        // idempotent — but the user-driven route only emits `rebase_aborted`
+        // and never touched git, which is exactly how the production incident
+        // stuck.) The notice is persisted, not just emitted: it is the whole
+        // durable record of why the sync the user asked for did not happen.
+        // A failed abort must not masquerade as a clean one: the notice below
+        // is the durable record, and telling the user "the branch is
+        // unchanged" while the workspace is still mid-rebase re-creates the
+        // silent-stranding this path exists to prevent. Verify.
+        let stillInProgress = false;
+        try {
+          await git.rebaseAbort();
+        } catch {
+          try {
+            stillInProgress = await git.isRebaseInProgress();
+          } catch {
+            stillInProgress = true; // can't verify — assume the worst, say so
+          }
+        }
+        const outcomeText = stillInProgress
+          ? "Aborting the rebase FAILED — the workspace is still mid-rebase; run `git rebase --abort` to recover."
+          : "The rebase was aborted — the branch is unchanged.";
+        try {
+          emitNoticePostTurn(
+            (m) => runner.emitMessage(m),
+            deps.chatHistoryManager,
+            runner.sessionId,
+            `Rebase onto \`${baseBranch}\` was interrupted before the conflicts were resolved (${getErrorMessage(err)}). ${outcomeText}`,
+            "warn",
+          );
+        } catch (noticeErr) {
+          console.error("[rebase] abort notice failed:", getErrorMessage(noticeErr));
+        }
+        throw err;
+      }
 
       // The agent may have left files unmodified or staged. `add -A` covers both.
       await git.stageAll();
@@ -404,6 +470,24 @@ export async function runRebaseFlow(
     // workspace back on every exit path (clean, resolved, up-to-date, abort,
     // throw). No-op when the flag is unset.
     handWorkspaceBackToWorker(runner.sessionDir);
+    // planning#338 — release the flow's hold, then start the head of the queue.
+    // Skipped while a DISPLACING turn still owns the runner (`running` — it is
+    // never a system turn, so the flag is not its): clearing under it would
+    // re-enable steering into it mid-turn, and its own post-turn drain owns the
+    // queue. The release covers the user-driven path, which — unlike the
+    // auto-resolve path with its `drainQueue` callback — previously had no
+    // post-flow drain at all, so a message queued during the flow just sat
+    // there. `releaseQueuedTurn` no-ops on an empty queue.
+    if (!runner.running) {
+      runner.systemTurnInProgress = false;
+      // Defensive: a disposed runner refuses dispatch; a failed release must
+      // not turn a settled flow into an unhandled rejection.
+      try {
+        releaseQueuedTurn(runner);
+      } catch (releaseErr) {
+        console.error("[rebase] post-flow queue release failed:", getErrorMessage(releaseErr));
+      }
+    }
   }
 }
 
@@ -473,6 +557,7 @@ function runRebaseResolutionTurn(
   const { runner } = deps;
 
   return new Promise<void>((resolve, reject) => {
+    let turnSettled = false;
     // A user (or another system) turn slipped in between rebase iterations —
     // `dispatch` would enqueue rather than start, and `onTurnComplete` would
     // never fire, hanging this promise until the wall-clock timeout. Reject so
@@ -506,15 +591,41 @@ function runRebaseResolutionTurn(
       permissionMode: undefined,
       deliveryId: undefined,
       dictated: undefined,
-      onTurnComplete: ({ errored }) => {
-        if (errored) {
-          // The shared listener already wrote the error row + reset runner
-          // state; rejecting only unblocks the conflict loop so it aborts the
-          // in-progress rebase (mirrors the old hand-rolled error path).
-          reject(new Error("Agent error during rebase conflict resolution"));
-        } else {
+      onTurnComplete: (outcome) => {
+        // The raw callback is NOT once-only: `withSettlement` latches the
+        // settlement promise but invokes the chained original on every call,
+        // and a runner disposal/abandonment settlement can be followed by a
+        // late terminal event from the dying process. A second invocation
+        // after the flow's `finally` has released the hold would re-lock an
+        // idle runner with no flow left to clear it — latch here.
+        if (turnSettled) return;
+        turnSettled = true;
+        // planning#338 — `finishTurn` cleared the per-turn system-turn flag in the
+        // same synchronous call stack that runs this callback. The FLOW still
+        // owns the session (more git work, possibly another resolution turn),
+        // so re-assert its hold before any await can let a user turn in —
+        // unless a displacing turn already claimed the runner (`running`),
+        // in which case the flag is that turn's to keep false.
+        if (!runner.running) runner.systemTurnInProgress = true;
+        if (outcome.status === "completed") {
           resolve();
+          return;
         }
+        // planning#338 — anything short of `completed` means the conflicted files
+        // are NOT reliably resolved: an agent process error (the shared
+        // listener already wrote the error row), a no-result exit, `dropped`
+        // (runner disposed / queue cleared), or `interrupted` — the user
+        // pressed stop, or a newer turn took the agent slot (the production
+        // displacement). The pre-planning#338 code resolved on those (`errored`
+        // was the only reject), so the driver ran `git add -A && git rebase
+        // --continue` over a half-resolved — or someone else's — working tree.
+        // Rejecting routes every one of them through the conflict loop's
+        // abort-and-rethrow.
+        reject(new Error(
+          outcome.status === "errored"
+            ? "Agent error during rebase conflict resolution"
+            : `the conflict-resolution turn ended as "${outcome.status}"${outcome.detail ? ` — ${outcome.detail}` : ""}`,
+        ));
       },
     }));
   });

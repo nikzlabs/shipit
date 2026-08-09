@@ -91,6 +91,10 @@ export async function adoptInFlightTurn(
   // `runDispatchedTurn` take a branded `PreparedDispatch`, so the hand-rolled
   // version does not compile any more.
   const drainNext = async (): Promise<void> => {
+    // planning#338 — a rebase flow holds the session; starting a queued turn would
+    // displace its agent slot mid-rebase. The flow's `finally` releases the
+    // queue when it settles. (An adopted turn itself never sets the flag.)
+    if (runner.systemTurnInProgress) return;
     const next = runner.dequeue();
     if (!next) return;
     runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });

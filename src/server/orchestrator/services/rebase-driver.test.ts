@@ -14,6 +14,8 @@ import {
   MAX_REBASE_ITERATIONS,
 } from "./rebase-driver.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
+import { releaseQueuedTurn } from "../queue-drain.js";
+import { testDispatch } from "../integration_tests/dispatch-test-helpers.js";
 import type { AgentProcess, AgentEvent, AgentRunParams, WsServerMessage } from "../../shared/types.js";
 
 // planning#146: the rebase driver must hand the workspace (BOTH `.git` AND the
@@ -1080,5 +1082,272 @@ describe("rebase-driver: buildRebaseConflictPrompt", () => {
 describe("rebase-driver: constants", () => {
   it("MAX_REBASE_ITERATIONS is exported and > 0", () => {
     expect(MAX_REBASE_ITERATIONS).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * planning#338 — a production session stranded mid-rebase: a queued user message was
+ * dispatched while the conflict-resolution system turn was in flight, its fresh
+ * proxy displaced the resolution turn's agent slot, and the driver's
+ * continuation (`git add -A && git rebase --continue`) never ran — nor did
+ * anything run `git rebase --abort`, so every later turn's auto-commit refused
+ * with "rebase in progress" until a human cleaned up by hand.
+ *
+ * Two independent fixes under test here:
+ *  1. The flow HOLDS `systemTurnInProgress` for its whole duration and every
+ *     user-turn entry path respects it, so a message arriving mid-flow queues
+ *     and drains after the flow settles.
+ *  2. Defense in depth: when a resolution turn is displaced (or otherwise ends
+ *     short of `completed`) anyway, the driver aborts the rebase and leaves a
+ *     persisted notice — the workspace can never strand mid-rebase.
+ */
+describe("rebase-driver: planning#338 displacement + queue hold", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
+
+  beforeEach(() => {
+    vi.mocked(handWorkspaceBackToWorker).mockClear();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-displace-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+    process.env.GIT_EDITOR = "true";
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** A resolution agent whose turn is displaced by a newer spawn: it emits
+   * `superseded` (what `supersedeDisplacedAgent` fires at the displaced proxy)
+   * and never produces a result — its terminal events would be sse-dropped as
+   * stale in production. */
+  class FakeSupersededAgent extends EventEmitter {
+    readonly agentId = "claude" as const;
+    run(): void {
+      setImmediate(() => this.emit("superseded"));
+    }
+    writeStdin(): void { /* no-op */ }
+    interrupt(): void { /* no-op */ }
+    kill(): void { /* no-op */ }
+  }
+
+  it("displacement mid-resolution — aborts the rebase, persists a notice, and never strands the workspace", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const captured: { role: string; text: string }[] = [];
+
+    await expect(
+      runFlow({
+        git,
+        githubAuthManager: makeStubAuth(true),
+        runner,
+        sessionManager: makeStubSessionManager(),
+        chatHistoryManager: makeStubHistory(captured),
+        agentFactory: () => new FakeSupersededAgent() as unknown as AgentProcess,
+        usageManager: makeStubUsageManager(),
+        sseBroadcast: () => {},
+      }, "main"),
+    ).rejects.toThrow(/interrupted/);
+
+    // The incident state: nothing continued OR aborted the rebase, so the
+    // workspace sat mid-rebase and auto-commit refused forever. The driver now
+    // aborts before rethrowing.
+    expect(await git.isRebaseInProgress()).toBe(false);
+    // The user gets a durable explanation, not just a transient WS event.
+    const notice = captured.find((m) => m.text.includes("aborted"));
+    expect(notice).toBeDefined();
+    expect(notice?.text).toContain("interrupted");
+    // The displaced turn does not re-assert the flow's hold — the displacing
+    // turn owns the runner now, and the flag is not the flow's to keep.
+    expect(runner.systemTurnInProgress).toBe(false);
+  });
+
+  it("agent error mid-resolution — aborts the rebase instead of leaving it in progress", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const captured: { role: string; text: string }[] = [];
+
+    await expect(
+      runFlow({
+        git,
+        githubAuthManager: makeStubAuth(true),
+        runner,
+        sessionManager: makeStubSessionManager(),
+        chatHistoryManager: makeStubHistory(captured),
+        agentFactory: () => new FakeRebaseAgent(() => {
+          throw new Error("resolution agent crashed");
+        }) as unknown as AgentProcess,
+        usageManager: makeStubUsageManager(),
+        sseBroadcast: () => {},
+      }, "main"),
+    ).rejects.toThrow(/Agent error during rebase conflict resolution/);
+
+    // Before planning#338 the user-driven path relied on the route's `rebase_aborted`
+    // EVENT alone and never touched git — the rebase stayed in progress.
+    expect(await git.isRebaseInProgress()).toBe(false);
+    expect(runner.systemTurnInProgress).toBe(false);
+    expect(captured.some((m) => m.text.includes("aborted"))).toBe(true);
+  });
+
+  it("a user message dispatched during the flow is queued, and drains only after the flow settles", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const messages: WsServerMessage[] = [];
+    runner.on("message", (m: WsServerMessage) => messages.push(m));
+
+    let agentInvocations = 0;
+    let queuedHandle: { settled: Promise<{ status: string }> } | null = null;
+    const result = await runFlow({
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent((cwd) => {
+        agentInvocations++;
+        if (agentInvocations === 1) {
+          // A user message arrives while the resolution turn is running. It
+          // must queue — not displace the resolution turn's agent slot.
+          queuedHandle = runner.dispatch(testDispatch({ text: "Build it from the reverse-engineered API" }));
+          fs.writeFileSync(path.join(cwd, "shared.txt"), "merged result\n");
+          return "Resolved.";
+        }
+        return "Ran the queued user turn.";
+      }) as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    }, "main");
+
+    // The rebase completed untouched by the concurrent message…
+    expect(result.status).toBe("conflicts_resolved");
+    expect(await git.isRebaseInProgress()).toBe(false);
+    expect(messages.some((m) => m.type === "message_queued")).toBe(true);
+
+    // …and the queued message then ran as its own turn after the flow settled.
+    expect(queuedHandle).not.toBeNull();
+    const outcome = await queuedHandle!.settled;
+    expect(outcome.status).toBe("completed");
+    expect(agentInvocations).toBe(2);
+    expect(runner.queueLength).toBe(0);
+    expect(runner.systemTurnInProgress).toBe(false);
+  });
+
+  it("the hold is exclusive — a second flow entering while one holds the session is refused with 409", async () => {
+    const { workDir, git } = setupRepoWithRemote(tmpDir);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    runner.systemTurnInProgress = true; // another flow's hold (running=false)
+
+    await expect(
+      runFlow({
+        git,
+        githubAuthManager: makeStubAuth(true),
+        runner,
+        sessionManager: makeStubSessionManager(),
+        chatHistoryManager: makeStubHistory([]),
+        agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+        usageManager: makeStubUsageManager(),
+        sseBroadcast: () => {},
+      }, "main"),
+    ).rejects.toThrow(/system turn is in progress/);
+    // The refused flow must not clear the hold it does not own.
+    expect(runner.systemTurnInProgress).toBe(true);
+  });
+
+  it("a failed rebase abort is reported as a failure, not narrated as a clean abort", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const captured: { role: string; text: string }[] = [];
+
+    // The displacement path reaches the driver's abort — which then fails,
+    // leaving the workspace genuinely mid-rebase.
+    const abortSpy = vi.spyOn(git, "rebaseAbort").mockRejectedValue(new Error("cannot lock ref"));
+
+    await expect(
+      runFlow({
+        git,
+        githubAuthManager: makeStubAuth(true),
+        runner,
+        sessionManager: makeStubSessionManager(),
+        chatHistoryManager: makeStubHistory(captured),
+        agentFactory: () => new FakeSupersededAgent() as unknown as AgentProcess,
+        usageManager: makeStubUsageManager(),
+        sseBroadcast: () => {},
+      }, "main"),
+    ).rejects.toThrow(/interrupted/);
+    abortSpy.mockRestore();
+
+    // The workspace really is still mid-rebase — and the durable notice says
+    // so instead of claiming "the branch is unchanged".
+    expect(await git.isRebaseInProgress()).toBe(true);
+    const notice = captured.find((m) => m.text.includes("FAILED"));
+    expect(notice).toBeDefined();
+    expect(notice?.text).toContain("still mid-rebase");
+
+    // Clean up the real rebase state so afterEach's rm doesn't race git.
+    await git.rebaseAbort().catch(() => {});
+  });
+
+  it("dispatchOnRunner enqueues a non-system dispatch while the flow holds the session between turns", async () => {
+    // The gap the production incident fell through: `tryDrain` clears `running`
+    // at `agent_result` while the driver still has git work (and possibly more
+    // resolution turns) ahead. The flow-held flag must make dispatch enqueue.
+    const { workDir } = setupRepoWithRemote(tmpDir);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    runner.setSystemTurnDeps({
+      agentFactory: () => new FakeRebaseAgent(() => "ok") as unknown as AgentProcess,
+      autoCommit: async () => ({ commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [] }),
+      scheduleAutoPush: () => {},
+      listenerDeps: {
+        sessionManager: makeStubSessionManager(),
+        chatHistoryManager: makeStubHistory([]),
+        usageManager: makeStubUsageManager(),
+        sseBroadcast: () => {},
+        broadcastLog: () => {},
+        getSelectedModel: () => undefined,
+      },
+      buildRunParams: async (sessionId, _agentId, prompt) =>
+        ({ prompt, sessionId, cwd: workDir }) as AgentRunParams,
+    });
+
+    runner.systemTurnInProgress = true; // the flow's hold, no turn in flight
+
+    const handle = runner.dispatch(testDispatch({ text: "user msg mid-flow" }));
+    expect(runner.running).toBe(false);
+    expect(runner.queueLength).toBe(1);
+
+    // Another SYSTEM turn (CI fix / wake shape: systemTurn without
+    // postTurn:"none") is no safer mid-rebase — it queues too.
+    const ciHandle = runner.dispatch(testDispatch({ text: "fix CI", systemTurn: true }));
+    expect(runner.running).toBe(false);
+    expect(runner.queueLength).toBe(2);
+
+    // The flow's own resolution turns (`systemTurn` + `postTurn: "none"`, the
+    // driver's exclusive shape) must still start.
+    const sysHandle = runner.dispatch(testDispatch({ text: "resolve conflicts", systemTurn: true, postTurn: "none" }));
+    expect(runner.running).toBe(true);
+    await sysHandle.settled;
+
+    // Release the hold the way the flow's finally does, and drain. The head
+    // starts; the second entry drains off the first's own post-turn drain.
+    runner.systemTurnInProgress = false;
+    expect(releaseQueuedTurn(runner)).toBe(true);
+    await handle.settled;
+    await ciHandle.settled;
+    expect(runner.queueLength).toBe(0);
   });
 });

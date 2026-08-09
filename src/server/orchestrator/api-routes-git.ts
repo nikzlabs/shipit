@@ -501,6 +501,16 @@ export async function registerGitRoutes(
         const agent = runner?.getAgent();
         if (agent) {
           agent.kill();
+          // planning#338 — while a rebase FLOW holds the session, this agent is a
+          // resolution turn the driver is awaiting. Clearing the slot below
+          // makes the container relay drop its terminal events as stale, so
+          // without an explicit settle the awaited turn never resolves and the
+          // flow's session hold wedges every later message in the queue.
+          // `superseded` settles it as interrupted; the driver then rejects,
+          // its own abort no-ops against ours, and its `finally` releases the
+          // hold + queue. Guarded on the flag: for an ordinary (non-flow)
+          // agent, the kill's own `done` teardown is the correct path.
+          if (runner?.systemTurnInProgress) agent.emit("superseded");
           if (runner) {
             runner.setAgent(null);
             runner.running = false;
@@ -508,7 +518,15 @@ export async function registerGitRoutes(
         }
 
         const git = createGitManager(dir);
-        await rebaseAbort(git);
+        // planning#338 — the settle above lets the driver's abort race ours; whichever
+        // runs second sees "no rebase in progress". That is success, not failure:
+        // only surface an error when the rebase genuinely survived the abort.
+        try {
+          await rebaseAbort(git);
+        } catch (abortErr) {
+          const stillInProgress = await git.isRebaseInProgress().catch(() => true);
+          if (stillInProgress) throw abortErr;
+        }
         if (runner) {
           runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId });
         }
