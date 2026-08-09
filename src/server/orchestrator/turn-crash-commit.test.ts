@@ -267,6 +267,61 @@ describe("post-turn commit when the agent process dies", () => {
   });
 
   /**
+   * Prod incident 2026-08-09 (session 468191f5): a dispatched turn's process
+   * was SIGTERMed mid-turn while `wasInterrupted` was true, so the dispatch
+   * no-result hook stood down — and NOTHING finalized the streamed rows
+   * (`onInterruptedTurn` is WS-only). They stayed `in_progress=1`, and the next
+   * turn's `replaceInProgress()` deleted them: the user watched the turn's
+   * messages vanish on reload. The executor now finalizes structurally when no
+   * caller-supplied hook does.
+   */
+  it("finalizes a dispatched turn's streamed rows when the process dies and the no-result hook stands down", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const listenerDeps = makeListenerDeps();
+    const chm = listenerDeps.chatHistoryManager as unknown as {
+      replaceInProgress: ReturnType<typeof vi.fn>;
+      finalizeInProgress: ReturnType<typeof vi.fn>;
+    };
+
+    const deps: SystemTurnDeps = {
+      agentFactory: () => {
+        const a = makeFakeAgent();
+        agents.push(a);
+        return a as unknown as ReturnType<SystemTurnDeps["agentFactory"]>;
+      },
+      autoCommit: realAutoCommit,
+      scheduleAutoPush: vi.fn(),
+      steerInputs: () => ({ liveSteering: true, steeringCapable: true }),
+      listenerDeps,
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "long-running work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "turn started");
+
+    // The turn streams visible work…
+    agents[0]!.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "streamed partial work" }] });
+    // …an interrupt lands but the process outlives it (`wasInterrupted` stays
+    // set)…
+    runner.wasInterrupted = true;
+    // …and the process then dies without an `agent_result`.
+    agents[0]!.emit("done", 143);
+
+    await waitFor(() => !runner.running, "turn settled");
+    await waitFor(() => chm.finalizeInProgress.mock.calls.length > 0, "streamed rows finalized");
+
+    // The finalized history carries the streamed partial work — rebuilt from
+    // the accumulator, not wiped.
+    const lastReplace = chm.replaceInProgress.mock.calls.at(-1) as [string, unknown[]];
+    expect(lastReplace[0]).toBe("s1");
+    expect(JSON.stringify(lastReplace[1])).toContain("streamed partial work");
+
+    runner.dispose({ force: true });
+  });
+
+  /**
    * The normal streaming turn end is unchanged: `agent_result` runs the whole
    * post-turn flow, and the resident process's later `done` must not re-run it
    * (a second `postTurnPrFlow` means a duplicate PR round-trip and card).

@@ -227,6 +227,91 @@ describe("Integration: Session Worker IPC", () => {
     expect(status.json()).toMatchObject({ running: false });
   });
 
+  // Identity-guarded kill (prod incident 2026-08-09, session 468191f5): the
+  // orchestrator's fire-and-forget `/agent/kill` executed ~9 minutes late and
+  // SIGTERMed the NEW resident streaming process mid-turn — the kill carried no
+  // victim identity, so the worker killed whoever was resident at execution
+  // time. A kill that names its victim (`runToken`) must be a no-op when the
+  // resident spawn is a different one.
+  it("a kill naming a retired spawn's runToken does NOT kill the newer resident", async () => {
+    // Spawn A occupies the slot, then exits on its own (frees the slot).
+    await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "First" }, runToken: "tok-old" },
+    });
+    const agentA = lastAgent;
+    agentA.emit("done", 0);
+    await waitFor(async () => {
+      const status = await worker.getApp().inject({ method: "GET", url: "/agent/status" });
+      return status.json().running === false;
+    }, 3000, "slot freed after A's exit");
+
+    // Spawn B is now resident — the live turn the late kill must not touch.
+    await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "Second" }, runToken: "tok-new" },
+    });
+    const agentB = lastAgent;
+    expect(agentB).not.toBe(agentA);
+
+    // The late-executing kill, aimed at retired spawn A.
+    const res = await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/kill",
+      payload: { runToken: "tok-old" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ killed: false, staleVictim: true });
+    expect(agentB.killed).toBe(false);
+    const status = await worker.getApp().inject({ method: "GET", url: "/agent/status" });
+    expect(status.json()).toMatchObject({ running: true, runToken: "tok-new" });
+  });
+
+  it("a kill naming the resident spawn's own runToken still kills it", async () => {
+    await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "Work" }, runToken: "tok-A" },
+    });
+
+    const res = await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/kill",
+      payload: { runToken: "tok-A" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ killed: true });
+    expect(lastAgent.killed).toBe(true);
+    const status = await worker.getApp().inject({ method: "GET", url: "/agent/status" });
+    expect(status.json()).toMatchObject({ running: false });
+  });
+
+  // A targeted kill against a resident whose identity is unknown (started
+  // without a runToken — legacy caller) refuses rather than guessing: the
+  // failure mode being fixed (killing the wrong live process) is worse than a
+  // leaked process, and the untargeted legacy kill still clears it.
+  it("a kill naming a runToken no-ops when the resident spawn has none", async () => {
+    await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "Work" } },
+    });
+
+    const res = await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/kill",
+      payload: { runToken: "tok-A" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ killed: false, staleVictim: true });
+    expect(lastAgent.killed).toBe(false);
+  });
+
   it("returns 404 when interrupting with no agent", async () => {
     const res = await worker.getApp().inject({
       method: "POST",

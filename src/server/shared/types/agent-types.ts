@@ -912,6 +912,21 @@ export interface WorkerAgentStartBody {
   deliveryId?: string;
 }
 
+/**
+ * Request body of the worker's `POST /agent/kill`. The kill is fire-and-forget
+ * on the orchestrator side and can execute on the worker long after it was
+ * issued — in production (2026-08-09, session 468191f5) a kill aimed at a
+ * retired proxy resolved ~9 minutes late and SIGTERMed the *new* resident
+ * streaming process mid-turn. `runToken` names the intended victim (the same
+ * per-spawn token `/agent/start` records); the worker no-ops when the resident
+ * spawn is not that victim. Optional so legacy callers (recovery paths, the
+ * 409-desync clear) keep today's unconditional kill, and so an old worker that
+ * ignores the body keeps working.
+ */
+export interface WorkerAgentKillBody {
+  runToken?: string;
+}
+
 // ---- Worker agent status (docs/240) ----
 
 /**

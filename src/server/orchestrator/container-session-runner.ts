@@ -1329,13 +1329,39 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * Capturing the victim synchronously (before the first await) and comparing on
    * resolve makes the clear a no-op once the slot has moved on. When the victim
    * IS still in the slot, the clear happens exactly as before.
+   *
+   * The WORKER side needs the same guard (prod incident 2026-08-09, session
+   * 468191f5): a `/agent/kill` that executed ~9 minutes late SIGTERMed the NEW
+   * resident streaming process mid-turn — the slot-clear guard above fired
+   * ("not clearing the incoming agent") but the wrong process was already dead.
+   * `victimRunToken` names the intended victim in the POST body; the worker
+   * no-ops when its resident spawn is not that victim. Only passed by callers
+   * that know their victim (`ProxyAgentProcess.kill()`); recovery paths omit it
+   * on purpose — they clear whatever the worker holds, orchestrator-view-stale
+   * or not.
    */
-  async killAgentOnWorker(opts?: { timeoutMs?: number }): Promise<void> {
+  async killAgentOnWorker(opts?: { timeoutMs?: number; victimRunToken?: string }): Promise<void> {
     const victim = this._agent;
-    await workerPost(this.workerUrl, "/agent/kill", undefined, opts);
+    await workerPost(
+      this.workerUrl,
+      "/agent/kill",
+      opts?.victimRunToken !== undefined ? { runToken: opts.victimRunToken } : undefined,
+      opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : undefined,
+    );
     if (this._agent !== victim) {
       console.warn(
         `[container-runner:${this.sessionId}] /agent/kill resolved after the slot moved on — not clearing the incoming agent`,
+      );
+      return;
+    }
+    // A caller that named its victim killed AT MOST that spawn: when the slot
+    // holds a different spawn (a late kill from a retired proxy — the slot was
+    // reused before its fire-and-forget kill even started), the worker
+    // no-opped, the resident is alive, and clearing the slot would strand its
+    // event stream — the planning#290 symptom through the front door.
+    if (opts?.victimRunToken !== undefined && this._agent?.runToken !== opts.victimRunToken) {
+      console.warn(
+        `[container-runner:${this.sessionId}] /agent/kill victim ${opts.victimRunToken} is not the slot occupant — nothing was killed, not clearing the slot`,
       );
       return;
     }

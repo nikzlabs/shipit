@@ -42,7 +42,7 @@ export interface ProxyAgentRunner {
   writeAgentStdin(data: string): Promise<void>;
   sendAgentMessage(text: string): Promise<void>;
   interruptAgentOnWorker(): Promise<void>;
-  killAgentOnWorker(): Promise<void>;
+  killAgentOnWorker(opts?: { victimRunToken?: string }): Promise<void>;
   setAgentPermissionModeOnWorker(mode: PermissionMode | undefined): Promise<void>;
   compactAgentOnWorker(instructions?: string): Promise<void>;
   resolvePermissionOnWorker(requestId: string, decision: PermissionDecision): Promise<void>;
@@ -230,9 +230,14 @@ export class ProxyAgentProcess extends EventEmitter<{
    *     deserves *some* feedback that the kill failed, not silence.
    * The Logs panel is the right surface — visible, badged, but
    * non-disruptive. See docs/124-session-rescue-and-diagnostics §1.4.
+   *
+   * The kill names ITS OWN spawn (`victimRunToken`) so a late-executing
+   * worker-side kill cannot SIGTERM a newer resident process that has since
+   * taken the slot (prod incident 2026-08-09 — the fire-and-forget POST
+   * resolved ~9 minutes late and killed the live turn's process).
    */
   kill(): void {
-    this.runner.killAgentOnWorker().catch((err: unknown) => {
+    this.runner.killAgentOnWorker({ victimRunToken: this.runToken }).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       this.emit("log", "server", `Failed to kill agent on worker: ${msg}`);
     });
