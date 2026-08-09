@@ -97,6 +97,14 @@ export async function drainNextQueuedMessage(
 ): Promise<void> {
   if (!runner) return;
 
+  // planning#338 — a system flow (the rebase driver) grabbed the session while this
+  // turn's post-turn work was still finishing (the window between `tryDrain`
+  // clearing `running` and this drain running is an await on the local commit).
+  // Starting a queued turn now would displace the flow's agent slot mid-rebase.
+  // Leave the queue alone: the flow's `finally` releases it when it settles.
+  // This drain only ever runs off an interactive turn, which never owns the flag.
+  if (runner.systemTurnInProgress) return;
+
   const messageQueue = runner.messageQueue;
   if (runner.wasInterrupted) {
     if (messageQueue.length > 0) {

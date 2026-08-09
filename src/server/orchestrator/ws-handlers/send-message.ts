@@ -614,6 +614,23 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
   const runnerEarly = resolveRunner(ctx);
   if (runnerEarly) runnerEarly.assertCanDispatch();
 
+  // planning#338 — while a system flow (rebase resolution, CI fix) holds the
+  // session, the resident agent is the flow's own turn. The stale-kill below
+  // would classify it non-reusable (`!systemTurnInProgress` in the
+  // persistent-streaming gate), kill it, and clear its slot — the awaited
+  // resolution turn then never settles and the flow's hold wedges the session.
+  // A pending question can only be stale here (a system turn's AskUserQuestion
+  // interrupt settles the turn — and clears this flag — before the card is
+  // answerable), so refuse rather than queue an answer to a question the next
+  // turn won't be asking.
+  if (runnerEarly?.systemTurnInProgress) {
+    ctx.send({
+      type: "error",
+      message: "The agent is busy with a system operation (rebase or CI fix). Try again once it finishes.",
+    });
+    return;
+  }
+
   // Preserve the session's permission mode across the answer. An AskUserQuestion
   // answer is a fresh `--resume` turn; if we don't re-pin the mode, a session
   // asked a clarifying question *in plan mode* resumes the CLI in default mode

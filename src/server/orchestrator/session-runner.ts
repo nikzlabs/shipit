@@ -425,11 +425,17 @@ export function dispatchOnRunner(
   // rebase driver) holding the session between its own turns: the executor's
   // `tryDrain` clears `running` at `agent_result`, and the driver keeps running
   // git (stage, `rebase --continue`, force-push, the next resolution turn)
-  // after each turn settles. Starting a non-system turn in that window
-  // displaces the flow's agent slot and strands the workspace mid-rebase — the
-  // planning#338 production incident. Enqueue instead; the flow releases the queue
-  // when it settles. The flow's OWN dispatches carry `systemTurn` and pass.
-  if (runner.systemTurnInProgress && !opts.systemTurn) return enqueueAndReport();
+  // after each turn settles. Starting ANY other turn in that window displaces
+  // the flow's agent slot and strands the workspace mid-rebase — the planning#338
+  // production incident — and another SYSTEM turn (a CI fix, a wake turn) is no
+  // safer: it would run against a mid-rebase tree and clear the shared flag on
+  // its own teardown. Enqueue instead; the flow releases the queue when it
+  // settles. The one dispatch that must pass is the flow's own resolution turn,
+  // which is the sole producer of `systemTurn` + `postTurn: "none"` ("a step
+  // inside a git operation the driver owns" — see dispatched-turn.ts).
+  if (runner.systemTurnInProgress && !(opts.systemTurn && opts.postTurn === "none")) {
+    return enqueueAndReport();
+  }
 
   // Flip running=true synchronously BEFORE scheduling the async dispatched
   // turn. Without this, the microtask gap between `void runDispatchedTurn(...)`

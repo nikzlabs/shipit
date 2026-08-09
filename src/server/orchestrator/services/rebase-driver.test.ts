@@ -1245,6 +1245,63 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
     expect(runner.systemTurnInProgress).toBe(false);
   });
 
+  it("the hold is exclusive — a second flow entering while one holds the session is refused with 409", async () => {
+    const { workDir, git } = setupRepoWithRemote(tmpDir);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    runner.systemTurnInProgress = true; // another flow's hold (running=false)
+
+    await expect(
+      runFlow({
+        git,
+        githubAuthManager: makeStubAuth(true),
+        runner,
+        sessionManager: makeStubSessionManager(),
+        chatHistoryManager: makeStubHistory([]),
+        agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+        usageManager: makeStubUsageManager(),
+        sseBroadcast: () => {},
+      }, "main"),
+    ).rejects.toThrow(/system turn is in progress/);
+    // The refused flow must not clear the hold it does not own.
+    expect(runner.systemTurnInProgress).toBe(true);
+  });
+
+  it("a failed rebase abort is reported as a failure, not narrated as a clean abort", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const captured: { role: string; text: string }[] = [];
+
+    // The displacement path reaches the driver's abort — which then fails,
+    // leaving the workspace genuinely mid-rebase.
+    const abortSpy = vi.spyOn(git, "rebaseAbort").mockRejectedValue(new Error("cannot lock ref"));
+
+    await expect(
+      runFlow({
+        git,
+        githubAuthManager: makeStubAuth(true),
+        runner,
+        sessionManager: makeStubSessionManager(),
+        chatHistoryManager: makeStubHistory(captured),
+        agentFactory: () => new FakeSupersededAgent() as unknown as AgentProcess,
+        usageManager: makeStubUsageManager(),
+        sseBroadcast: () => {},
+      }, "main"),
+    ).rejects.toThrow(/interrupted/);
+    abortSpy.mockRestore();
+
+    // The workspace really is still mid-rebase — and the durable notice says
+    // so instead of claiming "the branch is unchanged".
+    expect(await git.isRebaseInProgress()).toBe(true);
+    const notice = captured.find((m) => m.text.includes("FAILED"));
+    expect(notice).toBeDefined();
+    expect(notice?.text).toContain("still mid-rebase");
+
+    // Clean up the real rebase state so afterEach's rm doesn't race git.
+    await git.rebaseAbort().catch(() => {});
+  });
+
   it("dispatchOnRunner enqueues a non-system dispatch while the flow holds the session between turns", async () => {
     // The gap the production incident fell through: `tryDrain` clears `running`
     // at `agent_result` while the driver still has git work (and possibly more
@@ -1273,15 +1330,24 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
     expect(runner.running).toBe(false);
     expect(runner.queueLength).toBe(1);
 
-    // The flow's own resolution turns carry `systemTurn` and must still start.
+    // Another SYSTEM turn (CI fix / wake shape: systemTurn without
+    // postTurn:"none") is no safer mid-rebase — it queues too.
+    const ciHandle = runner.dispatch(testDispatch({ text: "fix CI", systemTurn: true }));
+    expect(runner.running).toBe(false);
+    expect(runner.queueLength).toBe(2);
+
+    // The flow's own resolution turns (`systemTurn` + `postTurn: "none"`, the
+    // driver's exclusive shape) must still start.
     const sysHandle = runner.dispatch(testDispatch({ text: "resolve conflicts", systemTurn: true, postTurn: "none" }));
     expect(runner.running).toBe(true);
     await sysHandle.settled;
 
-    // Release the hold the way the flow's finally does, and drain.
+    // Release the hold the way the flow's finally does, and drain. The head
+    // starts; the second entry drains off the first's own post-turn drain.
     runner.systemTurnInProgress = false;
     expect(releaseQueuedTurn(runner)).toBe(true);
     await handle.settled;
+    await ciHandle.settled;
     expect(runner.queueLength).toBe(0);
   });
 });

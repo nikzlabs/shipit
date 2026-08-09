@@ -201,6 +201,15 @@ export async function runDispatchedTurn(
   // (`ws-handlers/agent-execution.ts`), whose re-entry is narrower, routes
   // through `startQueuedMessage` instead so a dispatched entry lands back here.
   const drainNext = async (): Promise<void> => {
+    // planning#338 — a rebase flow grabbed the session during this turn's post-turn
+    // window (after `tryDrain` cleared `running`, while the local commit was
+    // still being awaited). Dequeuing now would start a turn against a
+    // mid-rebase tree — or double-drain against the flow's own post-flow
+    // release. `!opts.systemTurn` keeps a SYSTEM turn's own drain working: its
+    // per-turn flag is still set at drain time (`finishTurn` clears it after),
+    // and the flow can't have grabbed the hold mid-turn (`runRebaseFlow`
+    // refuses while the flag is up).
+    if (runner.systemTurnInProgress && !opts.systemTurn) return;
     if (runner.queueLength === 0) return;
     const next = runner.dequeue();
     if (!next) return;

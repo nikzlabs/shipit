@@ -287,6 +287,13 @@ export async function runRebaseFlow(
   if (runner.running) {
     throw new ServiceError(409, "Cannot rebase while an agent turn is in progress");
   }
+  // planning#338 — the hold below is exclusive. A second flow entering while the
+  // first holds the session between its own turns (`running` false, flag true)
+  // would run two rebases against one working tree and clear the shared flag on
+  // its own teardown. The auto path translates this 409 into a deferral.
+  if (runner.systemTurnInProgress) {
+    throw new ServiceError(409, "Cannot rebase while a system turn is in progress");
+  }
 
   // planning#338 — hold the system-turn marker for the WHOLE flow, not just while a
   // resolution turn is in flight. The per-turn flag has two gaps a user turn
@@ -393,14 +400,29 @@ export async function runRebaseFlow(
         // and never touched git, which is exactly how the production incident
         // stuck.) The notice is persisted, not just emitted: it is the whole
         // durable record of why the sync the user asked for did not happen.
-        try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
+        // A failed abort must not masquerade as a clean one: the notice below
+        // is the durable record, and telling the user "the branch is
+        // unchanged" while the workspace is still mid-rebase re-creates the
+        // silent-stranding this path exists to prevent. Verify.
+        let stillInProgress = false;
+        try {
+          await git.rebaseAbort();
+        } catch {
+          try {
+            stillInProgress = await git.isRebaseInProgress();
+          } catch {
+            stillInProgress = true; // can't verify — assume the worst, say so
+          }
+        }
+        const outcomeText = stillInProgress
+          ? "Aborting the rebase FAILED — the workspace is still mid-rebase; run `git rebase --abort` to recover."
+          : "The rebase was aborted — the branch is unchanged.";
         try {
           emitNoticePostTurn(
             (m) => runner.emitMessage(m),
             deps.chatHistoryManager,
             runner.sessionId,
-            `Rebase onto \`${baseBranch}\` was interrupted before the conflicts were resolved `
-            + `(${getErrorMessage(err)}). The rebase was aborted — the branch is unchanged.`,
+            `Rebase onto \`${baseBranch}\` was interrupted before the conflicts were resolved (${getErrorMessage(err)}). ${outcomeText}`,
             "warn",
           );
         } catch (noticeErr) {
@@ -458,7 +480,13 @@ export async function runRebaseFlow(
     // there. `releaseQueuedTurn` no-ops on an empty queue.
     if (!runner.running) {
       runner.systemTurnInProgress = false;
-      releaseQueuedTurn(runner);
+      // Defensive: a disposed runner refuses dispatch; a failed release must
+      // not turn a settled flow into an unhandled rejection.
+      try {
+        releaseQueuedTurn(runner);
+      } catch (releaseErr) {
+        console.error("[rebase] post-flow queue release failed:", getErrorMessage(releaseErr));
+      }
     }
   }
 }
@@ -529,6 +557,7 @@ function runRebaseResolutionTurn(
   const { runner } = deps;
 
   return new Promise<void>((resolve, reject) => {
+    let turnSettled = false;
     // A user (or another system) turn slipped in between rebase iterations —
     // `dispatch` would enqueue rather than start, and `onTurnComplete` would
     // never fire, hanging this promise until the wall-clock timeout. Reject so
@@ -563,6 +592,14 @@ function runRebaseResolutionTurn(
       deliveryId: undefined,
       dictated: undefined,
       onTurnComplete: (outcome) => {
+        // The raw callback is NOT once-only: `withSettlement` latches the
+        // settlement promise but invokes the chained original on every call,
+        // and a runner disposal/abandonment settlement can be followed by a
+        // late terminal event from the dying process. A second invocation
+        // after the flow's `finally` has released the hold would re-lock an
+        // idle runner with no flow left to clear it — latch here.
+        if (turnSettled) return;
+        turnSettled = true;
         // planning#338 — `finishTurn` cleared the per-turn system-turn flag in the
         // same synchronous call stack that runs this callback. The FLOW still
         // owns the session (more git work, possibly another resolution turn),

@@ -418,5 +418,17 @@ describe("rebase flow: API + WS events", () => {
     // The original feature commit is restored.
     const log = execSync("git log --oneline", { cwd: sessionDir, env, encoding: "utf-8" });
     expect(log).toContain("Feature commit");
+
+    // planning#338 — the abort explicitly settles the resolution turn the flow was
+    // awaiting (the fake CLI's kill, like a container kill whose terminal SSE
+    // is dropped once the slot clears, never reports completion on its own).
+    // Without that settle the flow's session hold is never released and every
+    // later message queues forever. The proof is end-to-end: a new message
+    // must spawn a fresh agent turn, not sit in the queue.
+    const claudeAtAbort = latestClaude;
+    client.send({ type: "send_message", text: "after abort" });
+    const postAbortClaude = await waitForClaude(() => latestClaude, claudeAtAbort);
+    postAbortClaude.emit("event", { type: "system", subtype: "init", session_id: "test-session-post-abort" });
+    postAbortClaude.finish("test-session-post-abort");
   });
 });
