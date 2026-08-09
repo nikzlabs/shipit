@@ -656,6 +656,39 @@ export class CredentialStore {
     this.save();
   }
 
+  /**
+   * docs/252 phase 5, req 12 — bench a **subscription** credential until `until`
+   * (epoch ms), so routing stops choosing the one that just refused a turn.
+   *
+   * The string-delivered twin of `ProviderAccountManager.markAccountExhausted`,
+   * and it shares that method's two rules for the same reasons: the stamp only
+   * ever moves *later*, so a second failure carrying a vaguer reset cannot
+   * shorten a lockout the provider already told us the end of; and a `key` route
+   * is silently ignored, because metered billing has no subscription window to
+   * exhaust and req 12 forbids failing a key over anyway.
+   *
+   * Returns the stamped route, or `null` when there was nothing to stamp — an
+   * unknown id, or a `key` credential.
+   */
+  markCredentialRouteExhausted(routeId: string, until: number): CredentialRoute | null {
+    const route = this.getCredentialRoute(routeId);
+    if (route?.billingMode !== "sub") return null;
+    if (typeof route.exhaustedUntil === "number" && route.exhaustedUntil >= until) return route;
+    this.upsertCredentialRoute({ ...route, exhaustedUntil: until });
+    return this.getCredentialRoute(routeId) ?? null;
+  }
+
+  /**
+   * docs/150 req 21 — stamp the credential a turn actually resolved onto, which
+   * is what the `balanced` selection mode sorts by. The string-delivered twin of
+   * `ProviderAccountManager.markAccountUsed`.
+   */
+  markCredentialRouteUsed(routeId: string): void {
+    const route = this.getCredentialRoute(routeId);
+    if (!route) return;
+    this.upsertCredentialRoute({ ...route, lastUsedAt: Date.now() });
+  }
+
   // ---- Provider accounts (docs/150) — a projection over credential routes ----
   //
   // docs/252 phase 2 makes `CredentialRoute` the storage shape and leaves these

@@ -23,6 +23,7 @@ import {
 } from "./credential-routes.js";
 import { collectServiceCredentialEnv } from "../secret-resolver.js";
 import { credentialStorageEnvNames } from "../../shared/catalogue/index.js";
+import { credentialRouteEnvName } from "../../shared/types/domain-types/credential-route.js";
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "shipit-cred-routes-"));
@@ -179,21 +180,37 @@ describe("upsertSingleStringCredential", () => {
 
 describe("collectServiceCredentialEnv", () => {
   it("materializes each mode's first credential under its catalogue storageEnv", () => {
-    createStringCredential(store, { serviceId: "deepseek", billingMode: "key", secret: "sk-ds" });
-    createStringCredential(store, { serviceId: "openrouter", billingMode: "key", secret: "sk-or" });
+    const ds = createStringCredential(store, { serviceId: "deepseek", billingMode: "key", secret: "sk-ds" }).route;
+    const or = createStringCredential(store, { serviceId: "openrouter", billingMode: "key", secret: "sk-or" }).route;
     expect(collectServiceCredentialEnv(store)).toEqual({
       DEEPSEEK_API_KEY: "sk-ds",
       OPENROUTER_API_KEY: "sk-or",
+      // docs/252 phase 5 — plus a name per credential, which is what lets spawn
+      // shaping source the one a session is actually pinned to.
+      [credentialRouteEnvName(ds.id)]: "sk-ds",
+      [credentialRouteEnvName(or.id)]: "sk-or",
     });
   });
 
-  it("delivers the group's FIRST credential, so phase 2 cannot change which one a turn uses", () => {
+  it("delivers the group's FIRST credential under the group name", () => {
     const first = createStringCredential(store, { serviceId: "zai", billingMode: "sub", secret: "plan-1" }).route;
     const second = createStringCredential(store, { serviceId: "zai", billingMode: "sub", secret: "plan-2" }).route;
     expect(collectServiceCredentialEnv(store).ZAI_CODING_PLAN_KEY).toBe("plan-1");
     // Reordering moves delivery with it — the order IS the selection order.
     reorderCredentialRoutes(store, "zai", "sub", [second.id, first.id]);
     expect(collectServiceCredentialEnv(store).ZAI_CODING_PLAN_KEY).toBe("plan-2");
+  });
+
+  it("delivers EVERY credential of a subscription under its own name (docs/252 phase 5)", () => {
+    // The group name can carry only one, which was fine while nothing could
+    // choose a different one. req 12's failover is exactly that reason: a
+    // session moved onto the second key would otherwise keep authenticating
+    // with the first, because it is the only one in the environment.
+    const first = createStringCredential(store, { serviceId: "zai", billingMode: "sub", secret: "plan-1" }).route;
+    const second = createStringCredential(store, { serviceId: "zai", billingMode: "sub", secret: "plan-2" }).route;
+    const env = collectServiceCredentialEnv(store);
+    expect(env[credentialRouteEnvName(first.id)]).toBe("plan-1");
+    expect(env[credentialRouteEnvName(second.id)]).toBe("plan-2");
   });
 
   it("delivers nothing for an account-backed credential", () => {

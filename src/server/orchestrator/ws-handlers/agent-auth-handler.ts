@@ -2,6 +2,12 @@ import type { WsServerMessage } from "../../shared/types.js";
 import type { AgentProcess } from "../../shared/types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { emitChatCard, persistTurnInProgress } from "../chat-card-persistence.js";
+import {
+  credentialFailurePolicyFor,
+  credentialFailureStopMessage,
+  credentialSetAsideMessage,
+} from "../credential-failure-policy.js";
+import { UNKNOWN_RESET_LOCKOUT_MS } from "./agent-rate-limits.js";
 import type { AgentListenerDeps, WireListenersOpts } from "./agent-listeners.js";
 
 /**
@@ -58,6 +64,29 @@ export function wireAuthRequiredHandler(
     const failingAgentId = turnSession?.agentId;
     const turnSessionId = opts.capturedSessionId;
 
+    // docs/252 phase 5, req 12 — the whole branch, taken before anything else
+    // reads this event. A key-authenticated turn does not enter ShipIt's re-auth
+    // flow: there is no OAuth token to heal, no account to sign into, and the
+    // vendor refresher this would nudge belongs to a service that may not even
+    // be the one that just refused the turn. Everything the `sub` path does from
+    // here — `willRecoverAuth`, `onAgentAuthRequired`, the "sign in" copy — is
+    // *deleted* for a key rather than redirected, which is what req 12 means by
+    // "ShipIt runs no recovery or re-prompt flow of its own".
+    //
+    // The second axis is `vendorOwnedRecovery`, and cross-backend review is what
+    // found it missing: a SUBSCRIPTION that is not the harness vendor's (GLM's
+    // coding plan) has no OAuth token to heal and no refresher to nudge either,
+    // so the `sub` path would have healed nothing, nudged Anthropic about a GLM
+    // failure, and left the dead credential selected for every later turn. Req 12
+    // says subscriptions fail over; for these, ShipIt's own answer is to set the
+    // credential aside so the next turn resolves another.
+    const failurePolicy = credentialFailurePolicyFor(turnSession ?? undefined);
+    const setAsideCredential =
+      !failurePolicy.stopsOnFailure
+      && !failurePolicy.vendorOwnedRecovery
+      && turnSession?.providerRouteKind === "reserved"
+      && !!turnSessionId;
+
     // docs/179 — decide SYNCHRONOUSLY (before the teardown below kills the agent
     // and triggers the executor's `done` handler) whether this auth failure
     // will be auto-recovered. `willRecoverAuth` returns true only for a first-
@@ -66,7 +95,10 @@ export function wireAuthRequiredHandler(
     // stay quiet — no sign-in card, no OAuth flow — and let `recoverAuth` heal
     // the token and re-dispatch the turn. A transient stale-token 401 thus
     // recovers without the user seeing anything or re-sending.
-    const willRecover = opts.willRecoverAuth?.() ?? false;
+    const willRecover =
+      failurePolicy.stopsOnFailure || !failurePolicy.vendorOwnedRecovery
+        ? false
+        : opts.willRecoverAuth?.() ?? false;
 
     /**
      * Emit + persist the "not authenticated" row. `emitChatCard` needs a runner
@@ -93,16 +125,22 @@ export function wireAuthRequiredHandler(
      * row sorting after it. On the recover-then-fail path (`running` still set)
      * the flush is redundant with `emitChatCard`'s own persist, and harmless.
      */
+    const message = failurePolicy.stopsOnFailure
+      ? credentialFailureStopMessage(failurePolicy)
+      : setAsideCredential
+        ? credentialSetAsideMessage(failurePolicy)
+        : AGENT_NOT_AUTHENTICATED_MESSAGE;
+
     const persistAuthErrorRow = (): void => {
       if (!runner || !turnSessionId) {
-        emitToViewers({ type: "error", message: AGENT_NOT_AUTHENTICATED_MESSAGE });
+        emitToViewers({ type: "error", message });
         return;
       }
       persistTurnInProgress(deps.chatHistoryManager, runner, turnSessionId);
       emitChatCard(
         runner,
-        { type: "error", message: AGENT_NOT_AUTHENTICATED_MESSAGE, sessionId: turnSessionId },
-        { role: "assistant", text: `Error: ${AGENT_NOT_AUTHENTICATED_MESSAGE}`, isError: true },
+        { type: "error", message, sessionId: turnSessionId },
+        { role: "assistant", text: `Error: ${message}`, isError: true },
         { chatHistoryManager: deps.chatHistoryManager, sessionId: turnSessionId },
       );
       deps.chatHistoryManager.finalizeInProgress(turnSessionId);
@@ -112,7 +150,15 @@ export function wireAuthRequiredHandler(
     // to re-authenticate via Settings, nudge the per-agent silent refresher,
     // and mark the turn ended.
     const surfaceReauth = (): void => {
-      console.log("[server] Agent CLI requires authentication; prompting re-auth via Settings");
+      console.log(
+        failurePolicy.stopsOnFailure
+          ? `[server] key-authenticated turn failed auth (${failurePolicy.serviceId ?? "unknown service"}); `
+            + "stopping without re-auth (docs/252 req 12)"
+          : setAsideCredential
+            ? `[server] ${failurePolicy.serviceId ?? "service"} credential refused the turn; `
+              + "setting it aside so the next turn fails over (docs/252 req 12)"
+            : "[server] Agent CLI requires authentication; prompting re-auth via Settings",
+      );
       // We no longer auto-launch the interactive OAuth flow on a mid-turn 401.
       // It broadcast the verification URL over a global SSE event, popping a
       // blocking sign-in overlay in every open browser window. Instead, surface
@@ -131,13 +177,31 @@ export function wireAuthRequiredHandler(
       // prompt with no reply and no error, twice. `emitChatCard` broadcasts,
       // records the row in-band, and writes it to chat history in one call, so
       // it now survives a detached viewer, a session switch, and a reload.
+      // docs/252 phase 5 — bench the credential that just refused the turn, so
+      // the next one resolves another of the same `(service, mode)`. This is the
+      // whole failover: ShipIt does NOT re-run the turn, because a re-run on an
+      // auth failure is docs/179's flow and it exists to heal a stale OAuth
+      // token, which is exactly what a supplied key does not have. The stamp is
+      // self-expiring for the same reason the unknown-reset lockout is — a
+      // transient blip costs minutes, not a day — and
+      // `markSessionAccountExhausted` still refuses a metered key (req 12).
+      if (setAsideCredential && turnSessionId) {
+        deps.markSessionAccountExhausted?.(turnSessionId, Date.now() + UNKNOWN_RESET_LOCKOUT_MS);
+      }
       persistAuthErrorRow();
       // docs/153, docs/155 — let the per-agent module decide its side effect on
       // auth failure (Claude nudges the silent OAuth refresher; others register
       // their own hook or none). The listener doesn't know the agent — that's
       // the point of the table. This is the silent token refresh, NOT the
       // interactive login overlay we removed above.
-      if (failingAgentId) {
+      //
+      // req 12 — skipped for any credential that is not the harness vendor's.
+      // The hook is the *vendor's* silent OAuth refresher: on Claude it rotates
+      // the subscription token and can broadcast `agent_auth_failed
+      // reason:revoked`, which pops a global "Sign in" toast. Firing it because a
+      // DeepSeek key or a GLM plan credential was rejected reports the wrong
+      // service as broken and offers a sign-in that fixes nothing.
+      if (failingAgentId && !failurePolicy.stopsOnFailure && failurePolicy.vendorOwnedRecovery) {
         deps.onAgentAuthRequired?.(failingAgentId);
       }
       if (runner && turnSessionId) {

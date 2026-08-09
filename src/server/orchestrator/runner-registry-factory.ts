@@ -42,6 +42,7 @@ import { routeVoiceNote } from "./voice/voice-note-router.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
 import { sessionAccountId, sessionNeedsAccountFailover } from "./services/provider-account-switch.js";
+import { sessionNeedsCredentialFailover } from "./service-routing.js";
 
 // ---- Runner registry setup ----
 
@@ -500,9 +501,15 @@ export function createRunnerRegistry(
               },
             });
           },
+          // docs/252 phase 5 — a benched string-delivered subscription credential
+          // retires the resident process on the same terms an exhausted account
+          // does, so this is no longer gated on there being an account manager at
+          // all: a GLM-only install has none, and its failover has to work.
+          // `sessionNeedsAccountFailover` answers false without one.
+          needsAccountFailover: (sessionId: string) =>
+            sessionNeedsAccountFailover(sessionManager.get(sessionId), providerAccountManager)
+            || sessionNeedsCredentialFailover(sessionManager.get(sessionId), credentialStore),
           ...(providerAccountManager ? {
-            needsAccountFailover: (sessionId: string) =>
-              sessionNeedsAccountFailover(sessionManager.get(sessionId), providerAccountManager),
             // docs/150 — scope the runtime-401 heal to this turn's account.
             resolveTurnAccountId: (sessionId: string) =>
               sessionAccountId(sessionManager.get(sessionId)),

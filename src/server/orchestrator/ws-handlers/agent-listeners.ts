@@ -201,6 +201,24 @@ export interface WireListenersOpts {
    */
   recoverMissingConversation?: (agentSessionId: string) => boolean;
   /**
+   * docs/252 phase 5 — synchronous gate the `error` handler calls FIRST,
+   * mirroring {@link willRecoverAuth}.
+   *
+   * A quota failure does not always arrive as an `agent_result`. Codex's
+   * app-server can refuse `turn/start` outright, and that rejected JSON-RPC
+   * request becomes an adapter-level `error` — so the req-14 same-turn failover
+   * and the req-7 exhaustion stamp, both of which watch `agent_result`, never
+   * saw a Codex subscription run out mid-turn. Established by reading the two
+   * paths (`codex/adapter.ts` `initializeAndRun(...).catch` → `emit("error")`),
+   * not assumed from Claude's shape.
+   *
+   * Returning true means the executor has claimed the turn: it benches the
+   * credential and re-dispatches, exactly as the `agent_result` path does, and
+   * this handler must run NONE of its terminal teardown — the retry owns the
+   * drain, the commit and the finished broadcast.
+   */
+  willRetryOnQuotaError?: (err: Error) => boolean;
+  /**
    * True when this turn is being run on a persistent streaming agent
    * (live steering active, docs/140). In streaming mode the CLI can
    * genuinely block on `AskUserQuestion` (the user's answer flows back via
@@ -1395,6 +1413,13 @@ export function wireAgentListeners(
   wireAuthRequiredHandler(agent, runner, deps, opts, emitToViewers);
 
   agent.on("error", async (err: Error) => {
+    // docs/252 phase 5 — before anything: is this a quota failure the executor
+    // is about to fail over from? Everything below is the terminal teardown of a
+    // turn that has ended (it finalizes history, appends an error row, clears
+    // `running` and broadcasts `session_agent_finished`), and a turn about to be
+    // re-run has not ended. Same stand-down shape as the `auth_required`
+    // recovery, for the same reason.
+    if (opts.willRetryOnQuotaError?.(err) === true) return;
     // docs/150 req 13 — a turn blocked because no connected account can serve
     // it is a routing decision, not a crashed process. It reaches this handler
     // (env-prep throws, `executeAgentTurn` re-emits as `error`) so it inherits

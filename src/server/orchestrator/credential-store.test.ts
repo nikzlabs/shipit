@@ -61,6 +61,52 @@ describe("CredentialStore", () => {
 
   // ---- Sub-agent defaults (docs/217) ----
 
+  // ---- Benching a string-delivered credential (docs/252 phase 5, req 12) ----
+
+  describe("markCredentialRouteExhausted", () => {
+    const routeOf = (id: string, billingMode: "sub" | "key") => ({
+      id,
+      serviceId: "zai",
+      billingMode,
+      via: "string" as const,
+      label: id,
+      isPrimary: false,
+      status: "ready" as const,
+      createdAt: 0,
+      updatedAt: 0,
+    });
+
+    it("benches a subscription credential", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.upsertCredentialRouteWithSecret(routeOf("cred_a", "sub"), "k");
+      expect(store.markCredentialRouteExhausted("cred_a", 5_000)?.exhaustedUntil).toBe(5_000);
+    });
+
+    it("refuses a metered key — it has no subscription window to exhaust", () => {
+      // req 12: keys do not fail over, so benching one would take a session off
+      // the credential it selected with nowhere it is allowed to go.
+      const store = new CredentialStore(createTmpDir());
+      store.upsertCredentialRouteWithSecret(routeOf("cred_k", "key"), "k");
+      expect(store.markCredentialRouteExhausted("cred_k", 5_000)).toBeNull();
+      expect(store.getCredentialRoute("cred_k")?.exhaustedUntil).toBeUndefined();
+    });
+
+    it("only ever moves the stamp later", () => {
+      // A second failure carrying a vaguer reset must not shorten a lockout the
+      // provider already told us the end of. Same rule as `markAccountExhausted`.
+      const store = new CredentialStore(createTmpDir());
+      store.upsertCredentialRouteWithSecret(routeOf("cred_a", "sub"), "k");
+      store.markCredentialRouteExhausted("cred_a", 9_000);
+      store.markCredentialRouteExhausted("cred_a", 1_000);
+      expect(store.getCredentialRoute("cred_a")?.exhaustedUntil).toBe(9_000);
+    });
+
+    it("ignores an unknown id", () => {
+      const store = new CredentialStore(createTmpDir());
+      expect(store.markCredentialRouteExhausted("cred_gone", 5_000)).toBeNull();
+    });
+  });
+
   describe("agentSubAgentDefaults", () => {
     it("returns an empty object for an unset agent", () => {
       const store = new CredentialStore(createTmpDir());

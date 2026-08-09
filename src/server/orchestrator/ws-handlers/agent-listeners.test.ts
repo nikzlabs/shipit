@@ -303,7 +303,11 @@ describe("wireAgentListeners", () => {
     function wireAuth(extra: {
       willRecoverAuth?: () => boolean;
       recoverAuth?: () => Promise<boolean>;
+      onAgentAuthRequired?: (agentId: string) => void;
+      markSessionAccountExhausted?: (sessionId: string, until: number) => void;
+      session?: Record<string, unknown>;
     }) {
+      const { session, onAgentAuthRequired, markSessionAccountExhausted, ...opts } = extra;
       const agent = new FakeAgent();
       const killSpy = vi.spyOn(agent, "kill");
       const runner = new SessionRunner({
@@ -315,12 +319,15 @@ describe("wireAgentListeners", () => {
       const emitted: { type?: string }[] = [];
       runner.on("message", (msg) => emitted.push(msg as { type?: string }));
       const d = deps();
-      d.sessionManager.get = vi.fn(() => ({ agentId: "codex" })) as never;
+      if (onAgentAuthRequired) d.onAgentAuthRequired = onAgentAuthRequired as never;
+      if (markSessionAccountExhausted) d.markSessionAccountExhausted = markSessionAccountExhausted;
+      d.sessionManager.get = vi.fn(() => ({ agentId: "codex", ...session })) as never;
+      const extraOpts = opts;
       wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
         capturedSessionId: "session-1",
         isNewSession: false,
         persistUserMessage: vi.fn(),
-        ...extra,
+        ...extraOpts,
       });
       return { agent, killSpy, runner, emitted, d };
     }
@@ -438,6 +445,173 @@ describe("wireAgentListeners", () => {
       expect(runner.recordedCards).toHaveLength(0);
       expect(d.chatHistoryManager.finalizeInProgress).not.toHaveBeenCalled();
       runner.dispose({ force: true });
+    });
+
+    // docs/252 phase 5, req 12 — the branch is the BILLING MODE of the failing
+    // selection. Everything above is the `sub` path and is unchanged; these are
+    // the deletions.
+    describe("a key-authenticated service never enters re-auth (docs/252 req 12)", () => {
+      const keySession = {
+        serviceId: "deepseek",
+        billingMode: "key",
+        providerRouteServiceId: "deepseek",
+        providerRouteBillingMode: "key",
+      };
+
+      it("does not heal or re-dispatch, even with a healer wired", async () => {
+        // The whole recovery is an OAuth token refresh followed by a re-run of
+        // the turn. There is no OAuth token behind an API key, so healing is a
+        // no-op that reports success and the re-run spends the turn again on the
+        // credential that just refused it.
+        const willRecoverAuth = vi.fn(() => true);
+        const recoverAuth = vi.fn().mockResolvedValue(true);
+        const { agent, runner } = wireAuth({
+          willRecoverAuth,
+          recoverAuth,
+          session: keySession,
+        });
+
+        agent.emit("auth_required");
+        await tick();
+
+        expect(willRecoverAuth).not.toHaveBeenCalled();
+        expect(recoverAuth).not.toHaveBeenCalled();
+        expect(runner.running).toBe(false);
+        runner.dispose({ force: true });
+      });
+
+      it("does not nudge the vendor's OAuth refresher", async () => {
+        // The hook belongs to the harness's own vendor and can broadcast a
+        // global "Sign in" toast. Firing it because a DeepSeek key was rejected
+        // reports the wrong service as broken.
+        const onAgentAuthRequired = vi.fn();
+        const { agent, runner } = wireAuth({ onAgentAuthRequired, session: keySession });
+
+        agent.emit("auth_required");
+        await tick();
+
+        expect(onAgentAuthRequired).not.toHaveBeenCalled();
+        runner.dispose({ force: true });
+      });
+
+      it("stops and says so — naming the service, not a sign-in", async () => {
+        const { agent, runner, d } = wireAuth({ session: keySession });
+
+        agent.emit("auth_required");
+        await tick();
+
+        const appended = (d.chatHistoryManager.append as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as
+          | { text?: string }
+          | undefined;
+        expect(appended?.text).toContain("DeepSeek");
+        expect(appended?.text).toContain("Settings → Services");
+        expect(appended?.text).not.toContain("sign in");
+        runner.dispose({ force: true });
+      });
+
+      it("still nudges the refresher for the harness vendor's OWN subscription", async () => {
+        // The `key` gate must not swallow the case the refresher exists for.
+        const onAgentAuthRequired = vi.fn();
+        const { agent, runner } = wireAuth({
+          onAgentAuthRequired,
+          session: {
+            serviceId: "openai",
+            billingMode: "sub",
+            providerRouteServiceId: "openai",
+            providerRouteBillingMode: "sub",
+            providerRouteKind: "account",
+            providerRouteId: "acct_1",
+          },
+        });
+
+        agent.emit("auth_required");
+        await tick();
+
+        expect(onAgentAuthRequired).toHaveBeenCalledWith("codex");
+        runner.dispose({ force: true });
+      });
+    });
+
+    // Found by cross-backend review. A subscription that is not the harness
+    // vendor's — GLM's coding plan — has no OAuth token to heal and no refresher
+    // to nudge, so the `sub` path healed nothing, told Anthropic about a GLM
+    // failure, and left the dead credential selected for every later turn.
+    describe("a non-vendor subscription credential is set aside (docs/252 req 12)", () => {
+      const glmSession = {
+        serviceId: "zai",
+        billingMode: "sub",
+        providerRouteServiceId: "zai",
+        providerRouteBillingMode: "sub",
+        providerRouteKind: "reserved",
+        providerRouteId: "cred_a",
+      };
+
+      it("benches the credential so the next turn fails over", async () => {
+        const markSessionAccountExhausted = vi.fn();
+        const { agent, runner } = wireAuth({ markSessionAccountExhausted, session: glmSession });
+
+        agent.emit("auth_required");
+        await tick();
+
+        expect(markSessionAccountExhausted).toHaveBeenCalledWith("session-1", expect.any(Number));
+        runner.dispose({ force: true });
+      });
+
+      it("never benches a metered key", async () => {
+        // The stamp is a subscription window; a key has none, and req 12 forbids
+        // failing one over. `markCredentialRouteExhausted` refuses too — this is
+        // the belt at the call site.
+        const markSessionAccountExhausted = vi.fn();
+        const { agent, runner } = wireAuth({
+          markSessionAccountExhausted,
+          session: {
+            serviceId: "deepseek",
+            billingMode: "key",
+            providerRouteServiceId: "deepseek",
+            providerRouteBillingMode: "key",
+            providerRouteKind: "reserved",
+            providerRouteId: "cred_k",
+          },
+        });
+
+        agent.emit("auth_required");
+        await tick();
+
+        expect(markSessionAccountExhausted).not.toHaveBeenCalled();
+        runner.dispose({ force: true });
+      });
+
+      it("neither heals nor nudges the harness vendor", async () => {
+        const willRecoverAuth = vi.fn(() => true);
+        const onAgentAuthRequired = vi.fn();
+        const { agent, runner } = wireAuth({
+          willRecoverAuth,
+          recoverAuth: vi.fn().mockResolvedValue(true),
+          onAgentAuthRequired,
+          session: glmSession,
+        });
+
+        agent.emit("auth_required");
+        await tick();
+
+        expect(willRecoverAuth).not.toHaveBeenCalled();
+        expect(onAgentAuthRequired).not.toHaveBeenCalled();
+        runner.dispose({ force: true });
+      });
+
+      it("says the credential was set aside, not that you should sign in", async () => {
+        const { agent, runner, d } = wireAuth({ session: glmSession });
+
+        agent.emit("auth_required");
+        await tick();
+
+        const appended = (d.chatHistoryManager.append as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as
+          | { text?: string }
+          | undefined;
+        expect(appended?.text).toContain("set that credential aside");
+        expect(appended?.text).not.toContain("Settings → Agents");
+        runner.dispose({ force: true });
+      });
     });
   });
 

@@ -129,7 +129,7 @@ the design.
 | 2 | Credentials and Settings | 5, 7, 15 | You can save a service key. It does nothing yet. |
 | 3 | Spawn shaping and eligibility | 1, 2, 3, 8, 11, 16 | **A session runs on a custom service.** Turns record what billed them, and respawn on a service change. **Landed.** |
 | 4 | In-session switching | 4 | The picker acts mid-session, across services. |
-| 5 | Credential-failure policy | 12 | Correct behaviour when a credential dies. |
+| 5 | Credential-failure policy | 12 | Correct behaviour when a credential dies. **Landed.** |
 | 6 | Usage, cost and attribution | 10, 11, 16 | You can *see* what you are running and where the money went. (Phase 3 records it.) |
 | 7 | Non-turn work | 9 | Naming and PR descriptions get their own model. |
 | 8 | Model retirement | 13 | Sessions survive a model leaving the catalogue. |
@@ -874,6 +874,131 @@ interception must not drag a key-authenticated service into vendor re-auth, and 
 same-turn quota retry needs the same billing-mode gate that account benching already
 has. Establish Codex coverage rather than assuming it.
 
+**Phase 5 has landed.** The rule is `credential-failure-policy.ts` — one function every
+gate asks, so the branch cannot be drawn differently in two places. Around it:
+`service-routing.ts` gained the string-credential walk (which of a subscription's
+credentials a turn takes, and `all_exhausted` when none is left),
+`credential-store.markCredentialRouteExhausted` is the bench, and `session-agent-env.ts`
+moves an already-pinned session off a spent credential the way `failoverPinnedSession`
+already moved one off a spent account.
+
+**Where the gate went, and why not where the design said.** The design located the fix at
+`AUTH_ERROR_PATTERNS` (`process.ts`) — "fixed by *deleting* behaviour". What is deleted is
+the *recovery*, and the deletion is in the **orchestrator**, not in the worker. Three
+reasons, in order of weight:
+
+- The worker knows a billing mode only for a **shaped** turn, and the orchestrator knows it
+  for every turn — it is a column on the session row. Gating in the worker would leave the
+  unshaped cases (an account-delivered credential, a session that has pinned nothing yet)
+  answering from no evidence.
+- It is **one gate for both harnesses**. Claude detects auth failure by matching text and
+  Codex by sniffing stderr and by structural pre-flight, and both funnel into one
+  payload-free `auth_required`. Gating downstream of that is what makes "establish Codex
+  coverage" a property of the design rather than a second implementation to keep in step.
+- The **interception itself is still right**. It is what keeps the CLI's "Please run
+  /login" out of the transcript — copy a ShipIt user cannot act on either way. What was
+  wrong was everything that came *after* it: `willRecoverAuth` (heal an OAuth token that
+  does not exist, then re-run the turn on the same bad key), `onAgentAuthRequired` (nudge
+  the *harness vendor's* refresher because a DeepSeek key was rejected, which can broadcast
+  a global "Sign in" toast), and the "Open Settings → Agents to sign in" copy. All three are
+  skipped for a `key`, and the message names the failing service and points at Settings →
+  Services.
+
+**Codex coverage was not there, and closing it is this phase's second gate.** The design
+flagged it as unestablished; reading the two paths confirmed it. Codex reports a spent
+subscription by refusing `turn/start`, and a rejected JSON-RPC request becomes an
+adapter-level **`error`** (`codex/adapter.ts`'s `initializeAndRun(...).catch`) rather than
+the `agent_result` that req 14's same-turn failover and req 7's exhaustion stamp both
+watch. So a Codex subscription running out mid-turn benched nothing and failed over
+nowhere. `willRetryOnQuotaError` is the `error`-path twin of the `agent_result` branch,
+wired as a synchronous gate the listener asks *first* — the same shape as
+`willRecoverAuth`, and for the same reason: everything below it is the terminal teardown of
+a turn that has ended, and a turn about to be re-run has not ended.
+
+**What phase 5 found.** Five things, three of which are gaps earlier phases asserted closed.
+
+- **Delivery and routing would have disagreed the moment failover worked.** Phase 3 noted
+  that delivery hands the worker a mode's *first* credential and the turn authenticates
+  with exactly that one, "so the two agree" — true only while nothing could pick a
+  different one. Failover is precisely that reason: a session moved onto the second GLM key
+  would have kept authenticating with the first, because it is the only one in the
+  environment, billing the credential ShipIt had just benched and attributing the turn to
+  the other. Every stored credential is now also materialized under a name of its own
+  (`credentialRouteEnvName`, `SHIPIT_CREDENTIAL_<id>`), and spawn shaping sources the
+  **pinned route's** variable. The group name is untouched, because a session with no
+  pinned route still reads it. The cost is that a session's environment holds every
+  credential of a service rather than one — all the same user's, for the same service,
+  where the environment already carried every service and mode they have configured.
+- **Phase 3's stale-route drop re-selected but never re-pinned.** `setProviderRoute` sits
+  inside the `!session.agentPinned` branch, so an already-pinned session kept naming the
+  removed credential on its row: every later turn re-resolved correctly while `usage_turns`
+  and the spawn identity recorded a credential the turn had not authenticated with
+  (req 11). The move is persisted now, for the removal case as well as the new benched one.
+- **`selectRouteForNewTurn` bailed without a `ProviderAccountManager`.** That early return
+  predated a world where a credential could live anywhere else, and it made a GLM-only
+  install — no accounts at all, which is the install this whole feature exists for —
+  resolve no route, pin nothing, and get no failover. `selectRouteForSelection` answers
+  correctly without one; a session with no selection still reaches `auth_required` and so
+  still resolves `undefined`, which is what preserves the pre-feature behaviour.
+- **Phase 3 deferred one decision to this phase and the answer is "no".** When every
+  connected *account* of a mode is spent, `all_exhausted` stays terminal rather than
+  falling through to that mode's env-delivered string credential. The env credential
+  carries no row, so ShipIt tracks no quota for it, cannot bench it after it fails, and
+  cannot name it in the transcript — rolling onto it would replace req 13's "the earliest
+  window resets at X" with a second failure and a worse message. A hop ShipIt cannot see
+  the far side of is one it does not make. The same rule shapes the string walk: the
+  deployment's environment is reachable only when *nothing* is stored, which is exactly
+  what phase 3 did.
+- **The routing controls close only as far as they can honestly work.** Phase 2 deferred
+  both to here. The **selection mode** now does something for a string-delivered
+  subscription — `strict` takes the user's fallback order, `balanced` the
+  least-recently-used credential — and has a control on the card. The **cutoffs** do not
+  ship: a cutoff is a percentage of a reported quota, and nothing reports one for a
+  string-delivered subscription until phase 6 builds `zai-plan-usage`. Shipping the control
+  inert would be the dishonesty req 10 refuses one surface over, so it waits for the quota
+  reader rather than for the failover.
+
+**What the cross-backend review changed.** Codex reviewed the branch under CLAUDE.md's
+rule and returned three findings; all three held up on checking and all three are fixed.
+The first is the interesting one, because it is this phase's own rule applied to only one
+of the two axes it needs.
+
+- **A subscription that is not the harness vendor's still went through vendor recovery.**
+  The gate as first written asked one question — is this `key`? — and sent every `sub`
+  down the docs/179 path. For GLM's coding plan that heals an Anthropic OAuth token that
+  has nothing to do with the failure, nudges Anthropic's refresher (which can broadcast a
+  global "Sign in" toast naming the wrong service), and — the part that actually breaks
+  req 12 — leaves the dead credential selected, so every later turn picks it again and the
+  healthy second credential is never reached. **There are two axes, not one**:
+  `stopsOnFailure` is the *billing* question and `vendorOwnedRecovery` is "whose healer can
+  act on this credential", which is decided by whether the failing service is the harness's
+  `nativeService`. A non-vendor subscription now skips both vendor flows, is **benched**
+  with the self-expiring unknown-reset lockout, and says so — the next turn fails over.
+  Deliberately not a same-turn re-run: a re-run on an auth failure is docs/179's flow and
+  it exists to heal a stale OAuth token, which is exactly what a supplied key does not
+  have.
+- **A failed retry on the new error path would have stranded the turn.** Returning `true`
+  from `willRetryOnQuotaError` claims a turn nobody else will finish: the listener has
+  surrendered its terminal cleanup and the dead process's `done` stands down. If the
+  history writes or the re-dispatch threw, `running` stayed true with the turn's edits
+  uncommitted — CLAUDE.md's "every terminal path runs the commit", broken by a path that
+  *looks* terminal and is not. Everything that can throw now runs **before** the claim and
+  un-claims by returning `false`; a rejection after the claim runs the same teardown
+  `recoverAuth` runs on a failed heal.
+- **A rotated credential kept being delivered from a stale compose snapshot.** The
+  per-credential merge filled a gap but did not overwrite, so a compose-backed session
+  whose YAML happens to be unparsable — the case the *dropping* half of that function
+  exists for — would keep pushing the old secret after a replace, indefinitely. The store
+  now wins outright for `SHIPIT_CREDENTIAL_*`, which is safe for exactly that prefix
+  because it is ShipIt's own namespace and a compose file cannot legitimately declare it.
+
+One thing the review did not raise and the fix above exposed: **`describeAccountSelectionFailure`
+was still harness-shaped.** "Every connected Claude account is out of quota" is the wrong
+sentence for a spent GLM coding plan that happens to run on the Claude harness, and req 12's
+"stops and says so" is that sentence. It takes an optional subject now — the service's name,
+supplied only when the selection is not the harness's own vendor, so the first-party wording
+is byte-identical.
+
 **Phase 6 — Usage, cost and attribution.** Quota reporting moves from `AgentId → routeId` to
 per-`(service, billing mode)` **→ route** — the outer key moves, the per-credential inner key
 stays, because two subscriptions have independent windows — with a mode that reports no quota
@@ -1460,14 +1585,19 @@ the failing service is authenticated — a fact it holds statically in the servi
 A subscription fails over to another subscription *of the same service*; an API key
 does not fail over at all, and the turn stops.
 
-Review confirmed this is the right axis and that the existing code already half-draws
-it — but found the gate is applied in **one** of the two places that need it. Account
-benching checks the route kind and bails for a reserved route
-(`bootstrap-managers.ts:442`), while the same-turn quota retry has **no billing-mode gate at
-all**: it fires whenever exhaustion is detected, from the error object or, when there is
-none, from the turn's own text (`turn-executor.ts:1032`). A key-authenticated service
-answering "quota exceeded" would therefore be retried once on the same bad key, which is
-exactly what req 12 forbids. Both paths need the gate — on `kind`, never on how the credential is shaped.
+Review confirmed this is the right axis and that the existing code already half-drew
+it — but found the gate applied in **one** of the two places that need it. Account
+benching checked the route kind and bailed for a reserved route
+(`bootstrap-managers.ts`), while the same-turn quota retry had **no billing-mode gate at
+all**: it fired whenever exhaustion was detected, from the error object or, when there was
+none, from the turn's own text (`turn-executor.ts`). A key-authenticated service answering
+"quota exceeded" was therefore retried once on the same bad key, which is exactly what
+req 12 forbids. **Phase 5 put the gate on both**, and on the billing mode rather than on
+how the credential is shaped — `credential-failure-policy.ts` is the single function they
+share, so the branch cannot be drawn differently in two places. Benching itself widened at
+the same time: a subscription is not always an account, so
+`markSessionAccountExhausted` now stamps a string-delivered subscription credential too,
+and still refuses a metered key.
 
 That also means there is no service re-prompt flow to build; the spike proposed
 one. See Appendix A for what has to be *removed* instead.
@@ -1937,11 +2067,12 @@ is key-authenticated.
   service with no quota should show nothing (req 10).
 - The **non-turn failures** are covered by req 9, though as two separate paths rather
   than one.
-- The **401 misfire** is fixed by *deleting* behavior, not adding it (req 12). Today
-  `AUTH_ERROR_PATTERNS` (`process.ts:43`) catches auth-shaped text and drives ShipIt's
-  own re-auth flow, which for an API-keyed service is both wrong and unfixable. That
-  interception must not apply to a key-authenticated service; the turn stops and says
-  so.
+- The **401 misfire** is fixed by *deleting* behavior, not adding it (req 12).
+  `AUTH_ERROR_PATTERNS` (`process.ts`) catches auth-shaped text and drove ShipIt's
+  own re-auth flow, which for an API-keyed service is both wrong and unfixable.
+  **Phase 5 deleted the recovery rather than the detection**, and did it in the
+  orchestrator — see that phase's notes for why the gate is not at
+  `AUTH_ERROR_PATTERNS` itself. The turn stops and says so, naming the service.
 
   Note what this does *not* require: ShipIt never has to decide whether a given error
   means "quota spent" or "key is bad". The branch is on the billing mode, which is
@@ -1974,7 +2105,8 @@ is key-authenticated.
 | `shared/types/usage-limits-types.ts` | `SubscriptionLimits` — already keyed by `routeId` |
 | `orchestrator/agents/*/limits-provider.ts` | Per-`AgentId` today; becomes per service (req 10) |
 | `orchestrator/usage.ts` | `RecordedTurn` — token/cost accounting, distinct from quota |
-| `orchestrator/service-routing.ts` | The resolver: configured credentials, per-mode turn routing, the spawn identity. Phase 7's second caller |
+| `orchestrator/service-routing.ts` | The resolver: configured credentials, per-mode turn routing (including which of a subscription's string credentials), the spawn identity. Phase 7's second caller |
+| `orchestrator/credential-failure-policy.ts` | req 12's branch — `sub` fails over, `key` stops — asked by every gate so it cannot be drawn twice |
 | `orchestrator/turn-attribution.ts` | The `cost_usd` rule, shared by both usage writers |
 | `session/agents/codex/spawn-shaping.ts` | Codex's `model_providers` block — the only way to redirect that CLI |
 | `orchestrator/session-namer.ts` | Non-turn spawn with no service seam (req 9) |

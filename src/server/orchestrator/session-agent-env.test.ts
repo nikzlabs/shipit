@@ -71,6 +71,17 @@ function makeFakeCredentialStore(
     getAutoCreatePr: () => false,
     listCredentialRoutes: () => routes.map((r) => ({ ...r })),
     getCredentialSecret: (routeId: string) => secrets[routeId],
+    // docs/252 phase 5 — env prep asks whether the pinned credential is benched
+    // and stamps the one it resolved onto.
+    getCredentialRoute: (routeId: string) => {
+      const found = routes.find((r) => r.id === routeId);
+      return found ? { ...found } : undefined;
+    },
+    markCredentialRouteUsed: (routeId: string) => {
+      const found = routes.find((r) => r.id === routeId);
+      if (found) found.lastUsedAt = Date.now();
+    },
+    getSelectionMode: () => "strict" as const,
   };
   return stub as unknown as CredentialStore;
 }
@@ -82,6 +93,8 @@ function makeFakeSessionManager(opts: {
   providerRouteId?: string;
   remoteUrl?: string;
   model?: string;
+  /** Extra session-row fields (docs/252: the selection triple, route ownership). */
+  extra?: Record<string, unknown>;
 }): {
   sm: SessionManager;
   state: {
@@ -114,6 +127,7 @@ function makeFakeSessionManager(opts: {
       providerRouteId: opts.providerRouteId,
       remoteUrl: opts.remoteUrl ?? "",
       model: opts.model,
+      ...(opts.extra ?? {}),
     }),
     setAgentId: () => { state.setAgentIdCalls += 1; },
     setAgentPinned: () => {
@@ -436,6 +450,142 @@ describe("prepareSessionAgentEnvironment", () => {
 
     expect(state.setAgentPinnedCalls).toBe(1);
     expect(state.setProviderRouteCalls).toEqual([]);
+  });
+
+  // docs/252 phase 5, req 12 — the string-delivered twin of the account
+  // failover. A subscription authenticated by a supplied key is benched exactly
+  // as an account is, so a session pinned to the spent one moves to another
+  // credential of the SAME `(service, mode)` before its next turn.
+  describe("a pinned string-delivered subscription credential that is benched", () => {
+    const glmRoutes = (benchedUntil: number): CredentialRoute[] => [
+      {
+        id: "cred_a", serviceId: "zai", billingMode: "sub", via: "string", label: "Plan A",
+        isPrimary: true, priority: 0, status: "ready", createdAt: 0, updatedAt: 0,
+        exhaustedUntil: benchedUntil,
+      },
+      {
+        id: "cred_b", serviceId: "zai", billingMode: "sub", via: "string", label: "Plan B",
+        isPrimary: false, priority: 1, status: "ready", createdAt: 0, updatedAt: 0,
+      },
+    ];
+    const glmSession = {
+      serviceId: "zai",
+      billingMode: "sub",
+      providerRouteServiceId: "zai",
+      providerRouteBillingMode: "sub",
+    };
+
+    it("re-pins the session onto the next credential, and PERSISTS the move", async () => {
+      // Persisting is the half phase 3 asserted and did not do: the first-turn
+      // branch pins only an unpinned session, so an already-pinned one kept
+      // naming the spent credential on its row while every turn re-resolved
+      // around it — attribution and authentication naming different credentials.
+      const runner = new FakeContainerRunner();
+      const credentialStore = makeFakeCredentialStore({
+        credentialRoutes: glmRoutes(Date.now() + 60_000),
+        credentialSecrets: { cred_a: "k1", cred_b: "k2" },
+      });
+      const { sm, state } = makeFakeSessionManager({
+        agentPinned: true,
+        providerRouteKind: "reserved",
+        providerRouteId: "cred_a",
+        model: "glm-5.2[1m]",
+        extra: glmSession,
+      });
+
+      await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+        sessionId: "s1",
+        agentId: "claude",
+        enforceAccountRouting: true,
+        deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+      });
+
+      expect(state.setProviderRouteCalls).toEqual([
+        { id: "s1", kind: "reserved", routeId: "cred_b" },
+      ]);
+    });
+
+    it("leaves a healthy pinned credential exactly where it is", async () => {
+      const runner = new FakeContainerRunner();
+      const credentialStore = makeFakeCredentialStore({
+        credentialRoutes: glmRoutes(Date.now() - 1),
+        credentialSecrets: { cred_a: "k1", cred_b: "k2" },
+      });
+      const { sm, state } = makeFakeSessionManager({
+        agentPinned: true,
+        providerRouteKind: "reserved",
+        providerRouteId: "cred_a",
+        model: "glm-5.2[1m]",
+        extra: glmSession,
+      });
+
+      await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+        sessionId: "s1",
+        agentId: "claude",
+        enforceAccountRouting: true,
+        deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+      });
+
+      expect(state.setProviderRouteCalls).toEqual([]);
+    });
+
+    it("blocks the turn when every credential of the mode is spent (req 12)", async () => {
+      // "When no subscription is left to fail over to, ShipIt stops and says so,
+      // exactly as it does for a key."
+      const until = Date.now() + 60_000;
+      const routes = glmRoutes(until);
+      routes[1]!.exhaustedUntil = until;
+      const runner = new FakeContainerRunner();
+      const credentialStore = makeFakeCredentialStore({
+        credentialRoutes: routes,
+        credentialSecrets: { cred_a: "k1", cred_b: "k2" },
+      });
+      const { sm } = makeFakeSessionManager({
+        agentPinned: true,
+        providerRouteKind: "reserved",
+        providerRouteId: "cred_a",
+        model: "glm-5.2[1m]",
+        extra: glmSession,
+      });
+
+      await expect(
+        prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+          sessionId: "s1",
+          agentId: "claude",
+          enforceAccountRouting: true,
+          deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+        }),
+        // Names the SERVICE, not the harness: "every connected Claude account is
+        // out of quota" is the pre-feature sentence and is simply wrong for a
+        // spent GLM coding plan that happens to run on the Claude harness.
+      ).rejects.toThrow(/Every GLM \(Z\.ai\) credential is out of quota/);
+    });
+
+    it("does not move a session during a pre-turn warm-up", async () => {
+      // The warm-up calls (child spawn, headless create, CI fix, wake) leave
+      // `enforceAccountRouting` unset and must not repoint a session outside a
+      // turn — the same gate the account failover is under.
+      const runner = new FakeContainerRunner();
+      const credentialStore = makeFakeCredentialStore({
+        credentialRoutes: glmRoutes(Date.now() + 60_000),
+        credentialSecrets: { cred_a: "k1", cred_b: "k2" },
+      });
+      const { sm, state } = makeFakeSessionManager({
+        agentPinned: true,
+        providerRouteKind: "reserved",
+        providerRouteId: "cred_a",
+        model: "glm-5.2[1m]",
+        extra: glmSession,
+      });
+
+      await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+        sessionId: "s1",
+        agentId: "claude",
+        deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+      });
+
+      expect(state.setProviderRouteCalls).toEqual([]);
+    });
   });
 
   // The service-level warm-up calls (child spawn, headless create) run before
@@ -1172,6 +1322,64 @@ describe("selectAgentEnvForPush (relocated from agent-execution.ts)", () => {
       }),
     });
     expect(out).toEqual({ OPENAI_API_KEY: "k" });
+  });
+
+  // docs/252 phase 5 — a snapshot taken before the per-credential names existed
+  // makes a shaped turn find no credential and raise `auth_required`, because
+  // spawn shaping now sources the PINNED credential from its own variable. Every
+  // session already holding a compose stack was in that state on the deploy that
+  // shipped this, and `syncSecrets` does not necessarily run before the next turn.
+  it("merges a per-credential name a stale compose snapshot is missing", () => {
+    const stored: CredentialRoute = {
+      id: "cred_ds", serviceId: "deepseek", billingMode: "key", via: "string",
+      label: "Key", isPrimary: true, priority: 0, status: "ready", createdAt: 0, updatedAt: 0,
+    };
+    const out = selectAgentEnvForPush({
+      serviceManager: {
+        getSecretsSnapshot: () => ({
+          agentValues: { STRIPE_KEY: "s" },
+          declared: [],
+          missingByService: {},
+          missingRequired: [],
+          agentNames: [],
+        }),
+      },
+      credentialStore: makeFakeCredentialStore({
+        credentialRoutes: [stored],
+        credentialSecrets: { cred_ds: "sk-ds" },
+      }),
+    });
+    expect(out.SHIPIT_CREDENTIAL_CRED_DS).toBe("sk-ds");
+    // The group name is NOT merged: a compose file can legitimately declare its
+    // own `DEEPSEEK_API_KEY`, and the snapshot is authoritative for it.
+    expect(out.DEEPSEEK_API_KEY).toBeUndefined();
+  });
+
+  it("overwrites a ROTATED per-credential value the snapshot still carries", () => {
+    // Found by cross-backend review. Filling only the gap would keep pushing the
+    // old secret after a rotation: the name is present in the stale snapshot, so
+    // nothing replaces it, and a broken compose file means no sync ever will —
+    // a revoked key delivered indefinitely.
+    const stored: CredentialRoute = {
+      id: "cred_ds", serviceId: "deepseek", billingMode: "key", via: "string",
+      label: "Key", isPrimary: true, priority: 0, status: "ready", createdAt: 0, updatedAt: 0,
+    };
+    const out = selectAgentEnvForPush({
+      serviceManager: {
+        getSecretsSnapshot: () => ({
+          agentValues: { SHIPIT_CREDENTIAL_CRED_DS: "sk-old" },
+          declared: [],
+          missingByService: {},
+          missingRequired: [],
+          agentNames: [],
+        }),
+      },
+      credentialStore: makeFakeCredentialStore({
+        credentialRoutes: [stored],
+        credentialSecrets: { cred_ds: "sk-rotated" },
+      }),
+    });
+    expect(out.SHIPIT_CREDENTIAL_CRED_DS).toBe("sk-rotated");
   });
 });
 
