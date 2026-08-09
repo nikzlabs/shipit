@@ -162,6 +162,12 @@ table — a phase is checked off when its PR has merged.
       `cached_input_tokens` there as it does on the app server, so the subtraction moved to
       `shared/codex-token-usage.ts` and both boundaries read one rule. Codex still reports no
       dollar figure — `costReported` stays false and the rates apply, as for a Codex turn.
+      Cross-backend review found two defects fixed with it: `cache_write_input_tokens` is a
+      detail of the input total too, so leaving it inside `input` billed those tokens twice
+      (pre-existing on the turn path since phase 3), and a present-but-empty usage block priced
+      to $0 instead of counting as no telemetry. A third — naming that resolves **no** target at
+      all reports tokens nobody records — is pre-existing, harness-independent and a
+      requirements question; filed as `planning#343` rather than answered here.
 
 ## Phases 8 and 9
 

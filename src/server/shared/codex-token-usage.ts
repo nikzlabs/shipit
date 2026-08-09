@@ -12,14 +12,24 @@
  *    reads as JSONL (`turn.completed`, snake_case keys).
  *
  * Both say the same thing in different words, and the thing they say is a trap:
- * **`input_tokens` INCLUDES the cached ones.** Measured against codex-cli
- * 0.146.0 driving a local Responses recorder — fed `input_tokens: 1000` with
- * `cached_tokens: 800`, both surfaces report 1000 and 800 unchanged. Claude's
- * classes are disjoint, so ShipIt's pricing code assumes disjointness; left
- * overlapping, `input × inputRate + cacheRead × cacheReadRate` charges every
- * cached token twice, at the dearer rate, on every Codex run. The rates always
- * apply here — Codex reports no dollar figure of its own — so there is no
- * harness-reported total to mask the error.
+ * **`input_tokens` is the TOTAL, and both cache figures are details of it.**
+ * Measured against codex-cli 0.146.0 driving a local Responses recorder — fed
+ * `input_tokens: 1000` with `input_tokens_details: {cached_tokens: 800,
+ * cache_write_tokens: 50}`, it reports `input_tokens: 1000,
+ * cached_input_tokens: 800, cache_write_input_tokens: 50`, the total passed
+ * through untouched.
+ *
+ * Claude's classes are disjoint, so ShipIt's pricing code assumes disjointness
+ * and `costFromRates` charges each class its own **replacement** rate — the
+ * catalogue's `cacheWrite` is "1.25× the uncached input rate" for OpenAI and
+ * literally `=== input` for DeepSeek and GLM, i.e. what those tokens cost
+ * *instead of* the ordinary rate, never a surcharge on top of it
+ * (`catalogue/services.ts`). So **both** details come out of the input total.
+ * Subtract only the cached one and every cache-write token is charged twice,
+ * at the ordinary rate and again at the write rate; subtract neither and every
+ * cached token is charged twice, at the dearer rate. Codex reports no dollar
+ * figure of its own, so the rates always apply here and there is no
+ * harness-reported total to mask either error.
  *
  * The subtraction lives here rather than at each boundary for the reason
  * `spawn-routing.ts` gives for its own move: a second implementation is how the
@@ -36,12 +46,13 @@
  * per surface. The arithmetic below is the part that must not.
  */
 export interface CodexReportedTokens {
-  /** Total input, **including** the cached portion. */
+  /** Total input, **including** both the cached and the cache-written portions. */
   inputTokens?: number | undefined;
   /** Total output. Includes reasoning tokens, which Codex also reports separately. */
   outputTokens?: number | undefined;
   /** The cached portion of `inputTokens`. */
   cachedInputTokens?: number | undefined;
+  /** The portion of `inputTokens` written to the cache — also inside the total. */
   cacheWriteInputTokens?: number | undefined;
 }
 
@@ -56,23 +67,30 @@ export interface DisjointTokens {
 /**
  * Split Codex's overlapping counts into ShipIt's disjoint classes.
  *
- * `undefined` in, `undefined` out — a run that reported no usage block reported
- * nothing, which the callers must keep distinct from a run that consumed zero
- * (an all-zero row prices to $0 through the rates, asserting "this was free").
+ * **Reported nothing and consumed zero are different facts, and this returns
+ * `undefined` for the first.** An all-zero row prices to $0 through the
+ * catalogue's rates and thereby asserts the run was free — a wrong number
+ * rather than a missing one, which is the trap the whole cost rule is written
+ * to avoid. So an absent usage block and a present-but-empty one (`{}`, every
+ * field non-numeric) both mean "nothing was reported"; only a block carrying at
+ * least one real figure becomes a row.
  *
- * `Math.max(0, …)` because a future app server that reports the classes
- * disjointly would otherwise go negative rather than merely double-counting.
+ * `Math.max(0, …)` because a provider that reports the details as additions
+ * rather than as portions of the total would otherwise go negative — a credit
+ * on the bill, which is worse than the double-count it guards against.
  */
 export function disjointCodexTokens(
   reported: CodexReportedTokens | undefined,
 ): DisjointTokens | undefined {
   if (!reported) return undefined;
+  const { inputTokens, outputTokens, cachedInputTokens, cacheWriteInputTokens } = reported;
+  const reportedSomething = [inputTokens, outputTokens, cachedInputTokens, cacheWriteInputTokens]
+    .some((v) => typeof v === "number");
+  if (!reportedSomething) return undefined;
   return {
-    input: Math.max(0, (reported.inputTokens ?? 0) - (reported.cachedInputTokens ?? 0)),
-    output: reported.outputTokens ?? 0,
-    cacheRead: reported.cachedInputTokens,
-    ...(reported.cacheWriteInputTokens !== undefined
-      ? { cacheWrite: reported.cacheWriteInputTokens }
-      : {}),
+    input: Math.max(0, (inputTokens ?? 0) - (cachedInputTokens ?? 0) - (cacheWriteInputTokens ?? 0)),
+    output: outputTokens ?? 0,
+    cacheRead: cachedInputTokens,
+    ...(cacheWriteInputTokens !== undefined ? { cacheWrite: cacheWriteInputTokens } : {}),
   };
 }

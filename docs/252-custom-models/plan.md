@@ -1385,6 +1385,33 @@ false and the row prices from the catalogue's rates, exactly as a Codex *turn* d
 closed is the token gap, on both halves — the naming shell-out through this parser, and PR
 descriptions through `spawnSubAgent`, which already carried the app server's figures.
 
+**Cross-backend review found a pre-existing pricing defect on the way past, and it is fixed
+here.** Phase 3's normalization subtracted only `cachedInputTokens` out of the input total while
+emitting `cacheWriteInputTokens` beside it — but measurement shows Codex passes the Responses
+`input_tokens` **total** through untouched and reports *both* cache figures as details of it
+(fed `input_tokens: 1000` with `{cached_tokens: 800, cache_write_tokens: 50}`, it reports exactly
+those three numbers). `costFromRates` charges each class a **replacement** rate — the catalogue's
+`cacheWrite` is "1.25× the uncached input rate" for OpenAI and literally `=== input` for DeepSeek
+and GLM — so a cache-written token left inside `input` is billed twice, once at the ordinary rate
+and again at the write rate. Both details now come out of the total, on the turn path as well as
+the naming path, and the adapter test that missed it (it carried no cache-write case at all) has
+one. The same review found that a present-but-empty usage block became `{input: 0, output: 0}`
+and so priced to $0 — the forbidden "this was free" row arriving through the back door — so
+"reported nothing" now covers an empty block as well as an absent one.
+
+**One escape remains, and it is neither Codex-specific nor this issue's.** In the
+`nothing_eligible` fallback above, `graduateSession` leaves `target` undefined and names on the
+session's own harness anyway; recording is gated on `target && result.usage`, so those tokens are
+reported by the CLI and then dropped. It predates this issue, applies to **both** harnesses
+equally, and is not fixable by measurement: with no configured route there is no service, no
+billing mode and therefore no rate table, so the run is unattributable and unpriceable by
+construction — writing the row anyway would produce exactly the $0 assertion this whole rule
+forbids. Whether an unattributable non-turn run belongs in req 16's legacy group is a
+requirements question rather than an implementation one, so it is filed rather than answered
+here. **Req 16's split is therefore exhaustive over non-turn work that resolves a model, which
+is every install that has configured a credential — not over an install running a
+hand-authenticated CLI ShipIt cannot see.**
+
 **One shape carried over from the sub-agent path deliberately.** The usage row is written with
 `subAgentId` set to the **derived harness**. It is what the row is — a one-shot spawn of that
 harness rather than the pinned agent's turn — and it is what keeps the row out of the primary

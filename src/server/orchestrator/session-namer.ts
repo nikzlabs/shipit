@@ -298,9 +298,15 @@ function parseClaudeJson(stdout: string): { text: string | null; usage?: Session
  *    ("Model metadata … not found") and then completed normally. So an error
  *    message becomes the failure detail only when no agent message arrived.
  *
- * Best-effort, exactly like {@link parseClaudeJson}: a stream this does not
- * recognize leaves the raw stdout as the text, which the slug regex then reads
- * as it read plain `codex exec` output before.
+ * Best-effort, exactly like {@link parseClaudeJson}: **whenever no agent message
+ * is found and the stream reported no error, the raw stdout is handed back** so
+ * the slug regex reads it as it read plain `codex exec` output before. That is
+ * deliberately not conditioned on the stream being unrecognizable end to end —
+ * cross-backend review pointed out that a mixed stream, or a future CLI that
+ * renames the agent-message event, would otherwise lose naming outright. The
+ * fallback costs nothing when there is genuinely no title in the bytes (the
+ * regex simply fails), and the whole point of the flag is telemetry: naming must
+ * never lose its title to gain a metric.
  */
 export function parseCodexJsonl(stdout: string): {
   text: string | null;
@@ -308,7 +314,6 @@ export function parseCodexJsonl(stdout: string): {
   failure?: string;
 } {
   const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
-  let sawEvent = false;
   let text: string | null = null;
   let errorMessage: string | undefined;
   let usage: SessionNameUsage | undefined;
@@ -323,7 +328,6 @@ export function parseCodexJsonl(stdout: string): {
       continue;
     }
     if (typeof event.type !== "string") continue;
-    sawEvent = true;
 
     if (event.type === "item.completed") {
       const item = event.item as { type?: unknown; text?: unknown; message?: unknown } | undefined;
@@ -359,9 +363,11 @@ export function parseCodexJsonl(stdout: string): {
     }
   }
 
-  // Nothing recognizable on stdout: treat it as the prose the pre-`--json`
-  // spawn produced rather than declaring the run a failure.
-  if (!sawEvent) return { text: stdout };
+  // No agent message. If the stream said WHY, that detail is the useful answer
+  // and the run is a failure. If it said nothing, fall back to reading stdout as
+  // the prose the pre-`--json` spawn produced — an unrecognized or mixed stream
+  // must not cost naming its title.
+  if (text === null && !errorMessage) return { text: stdout, ...(usage ? { usage } : {}) };
   return {
     text,
     ...(usage ? { usage } : {}),

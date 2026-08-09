@@ -470,12 +470,13 @@ describe("generateSessionName", () => {
       const result = await mod.generateSessionName("Add a login page", { harnessId: "codex" });
 
       expect(result.name).toEqual({ slug: "add-login", title: "Add Login Page" });
-      // `input_tokens` INCLUDES `cached_input_tokens`, so input is 1000 - 800.
-      // Recording the raw pair charges the cached tokens twice at the input
-      // rate, and Codex reports no dollar figure that would mask it.
+      // `input_tokens` is the TOTAL and both cache figures are details of it,
+      // so ordinary input is 1000 - 800 - 5. `costFromRates` charges each class
+      // a replacement rate, and Codex reports no dollar figure that would mask
+      // a double count.
       expect(result.usage).toEqual({
         durationMs: expect.any(Number),
-        inputTokens: 200,
+        inputTokens: 195,
         outputTokens: 42,
         cacheReadTokens: 800,
         cacheCreateTokens: 5,
@@ -529,6 +530,44 @@ describe("generateSessionName", () => {
 
       expect(result.name).toEqual({ slug: "ok", title: "Ok" });
       expect(result.failure).toBeUndefined();
+    });
+
+    // Cross-backend review found this one: `usage: {}` is truthy, so a naive
+    // guard turned it into `{input: 0, output: 0}` — defined zeros, which
+    // `recordNonTurnUsage` reads as telemetry and prices to $0 through the
+    // rates. That is the exact "this was free" assertion the issue forbids.
+    it("treats a present-but-empty usage block as no telemetry, not as free", async () => {
+      mockCodex([
+        '{"type":"item.completed","item":{"type":"agent_message",'
+        + '"text":"{\\"slug\\": \\"s\\", \\"title\\": \\"T\\"}"}}',
+        '{"type":"turn.completed","usage":{}}',
+      ].join("\n"));
+
+      const mod = await import("./session-namer.js");
+      const result = await mod.generateSessionName("hi", { harnessId: "codex" });
+
+      expect(result.name).toEqual({ slug: "s", title: "T" });
+      expect(result.usage?.inputTokens).toBeUndefined();
+      expect(result.usage?.outputTokens).toBeUndefined();
+    });
+
+    // Also review's: the fallback must not be conditioned on the stream being
+    // unrecognizable end to end. A mixed stream, or a future CLI that renames
+    // the agent-message event, would otherwise lose naming outright — and the
+    // flag exists for telemetry, which must never cost naming its title.
+    it("falls back to raw stdout when the stream carries no agent message", async () => {
+      mockCodex([
+        '{"type":"thread.started","thread_id":"x"}',
+        '{"slug": "mixed", "title": "Mixed"}',
+        '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}',
+      ].join("\n"));
+
+      const mod = await import("./session-namer.js");
+      const result = await mod.generateSessionName("hi", { harnessId: "codex" });
+
+      expect(result.name).toEqual({ slug: "mixed", title: "Mixed" });
+      // The telemetry still lands — the fallback is about the text, not the row.
+      expect(result.usage).toMatchObject({ inputTokens: 10, outputTokens: 2 });
     });
 
     it("reports no tokens and no cost when the stream carries no usage at all", async () => {
