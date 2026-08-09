@@ -115,25 +115,29 @@ SDK. One thing for the agent to author, one thing to document.
 
 ### Starting a stopped service (req 12)
 
-A stopped service has no port yet, so there is nothing to resolve and nothing to
-navigate. The click therefore records the *intent* — service name, path, payload
-— and starting is a separate step that the intent outlives.
+**A stopped service already knows its port.** Services are seeded from the
+compose file with the port extracted and `status: "stopped"`
+(`service-manager.ts:915`), so the port is a *declared* value, not a runtime
+discovery. Every resolution step above therefore works unchanged on a stopped
+service: the slot key `sessionId:port` is computable at click time, and
+`previewPaths` can be written before anything is running.
 
-`start_service` is a **WebSocket** message, and the socket is held by `App`,
-which threads `send` down as props (`PreviewServicesDrawer.tsx:526`). A markdown
-link click handler is nowhere near it, and a module-level `send` singleton would
-be a new global for one call site. So the intent goes into the preview store and
-`App` — which already owns both the socket and the store — sends
-`{ type: "start_service", name }` when it sees an intent naming a stopped
-service.
+So req 12 adds exactly one thing to the flow: when the resolved service's status
+is not `running` or `starting`, send `{ type: "start_service", name }`.
 
-Nothing then needs to wait: the service comes up, `service_status` lands, the
+`start_service` is a **WebSocket** message and the socket is held by `App`, which
+threads `send` down as props (`PreviewServicesDrawer.tsx:526`). A markdown link
+click handler is nowhere near it, and a module-level `send` singleton would be a
+new global for one call site — so `App`, which already owns both the socket and
+the store, sends it off the stored intent.
+
+Nothing then needs to wait. The service comes up, `service_status` lands, the
 health poller creates the slot, and the slot's URL is built from the path the
-intent already wrote into `previewPaths`. The user's destination survives the
-wait because it was recorded as a *destination*, not as a navigation to perform
-at click time. That is the same property that makes step 3 above work for a
-preview that is merely not open yet — req 12 needs no second mechanism, only a
-`start_service` send.
+click already wrote into `previewPaths`. The destination survives the wait
+because the click recorded a *destination*, not a navigation to perform at click
+time — the same property that makes step 3 work for a preview that is merely not
+open yet. Req 12 needs no second mechanism and no waiting UI: the click switches
+to the Preview tab, where the service's own startup state already renders.
 
 A start can fail (a bad compose file, a missing secret). That surfaces where
 service failures already surface — `composeError`, the service's own error state
