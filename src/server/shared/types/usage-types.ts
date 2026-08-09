@@ -67,11 +67,11 @@ export interface TurnUsage {
    */
   billingMode?: BillingMode;
   /**
-   * docs/252 req 16 — what this turn's tokens are worth at the rates persisted
-   * WITH the row. Present whenever the row carries rates, for both modes: on a
-   * `sub` row it is the "would have cost" comparison the per-turn column shows;
-   * on a `key` row it is what makes a harness-reported figure auditable against
-   * the catalogue instead of opaque. **Never money spent.**
+   * docs/252 req 16 — what this turn's tokens would have cost at the rates
+   * persisted WITH the row. **`sub` rows only**, because that is the only place
+   * the requirement puts this figure: for a `key` row the rates ARE the spend,
+   * so a second copy under a comparison's name is a number waiting to be summed
+   * into the wrong column. Never money spent.
    */
   atApiRatesUsd?: number;
 }
@@ -127,7 +127,13 @@ export interface UsageGroup {
    * seen and added into no headline. `sub`: always zero; nothing was billed.
    */
   costUsd: number;
-  /** Recomputed from the persisted rates. Zero on a `legacy` group, which has none. */
+  /**
+   * Recomputed from the persisted rates. **`sub` groups only** — zero on a
+   * `key` group (whose rates are already its spend) and on `legacy` (which has
+   * none). Populating it for a `key` group would be a comparison figure sitting
+   * beside the spend it duplicates, one careless `reduce` away from doubling
+   * the metered total.
+   */
   atApiRatesUsd: number;
 }
 
@@ -210,18 +216,22 @@ export function sessionRunningFigure(
 /**
  * Rank sessions for the modal's "where did it go?" list.
  *
- * Money first, but with an EXPLICIT tiebreak: once a subscription session is
- * legitimately $0 (which under req 16 is the normal case), spend alone leaves
- * most of the list in arbitrary insertion order. Falling through to the
- * estimate, then to tokens, keeps the ordering meaningful all the way down —
- * and the final `sessionId` comparison makes it total, so the list does not
+ * Ordered by **the figure each row actually renders** ({@link
+ * sessionRunningFigure}), which is the only ordering a reader can verify by
+ * looking at the column. An earlier version ranked on `metered + legacy` — a
+ * hidden fourth figure that no row shows, so a session displaying $0.10 could
+ * outrank one displaying $10.00, and it quietly did the one addition the whole
+ * split forbids.
+ *
+ * The tiebreak is EXPLICIT because under req 16 most sessions are legitimately
+ * $0: falling through to tokens, then turns, keeps the tail meaningful, and the
+ * final `sessionId` comparison makes the order total so the list does not
  * reshuffle between renders.
  */
 export function compareSessionsBySpend(a: SessionUsage, b: SessionUsage): number {
-  const money = (s: SessionUsage) => s.totals.meteredCostUsd + s.totals.legacyCostUsd;
+  const shown = (s: SessionUsage) => sessionRunningFigure(s.totals)?.usd ?? 0;
   return (
-    money(b) - money(a)
-    || b.totals.atApiRatesUsd - a.totals.atApiRatesUsd
+    shown(b) - shown(a)
     || sessionUsageTokens(b) - sessionUsageTokens(a)
     || b.turnCount - a.turnCount
     || a.sessionId.localeCompare(b.sessionId)
@@ -292,6 +302,14 @@ export interface WsUsageUpdate {
   sessionId: string;
   /** docs/252 req 16 — the split, not a single total. See {@link UsageTotals}. */
   totals: UsageTotals;
+  /**
+   * The per-`(service, mode)` breakdown, sent live rather than only on
+   * `/history`. Without it every turn would replace a hydrated session's split
+   * with a totals-only record and the "by service" section would vanish until
+   * the next reload; keeping the OLD groups instead would go stale the moment
+   * the session changes mode, which is precisely when the split matters.
+   */
+  groups: UsageGroup[];
   totalDurationMs: number;
   turnCount: number;
   lastTurnInputTokens?: number;

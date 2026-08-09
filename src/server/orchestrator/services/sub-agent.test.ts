@@ -384,8 +384,16 @@ describe("runSubAgent — happy path", () => {
       spawnResult: { status: "success", text: "ok", truncated: false, durationMs: 1000, costUsd: 0, rateLimits },
     });
     await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
-    // attributed to the sub-agent (codex), so its pill — not the pinned agent's — refreshes
-    expect(recordAgentRateLimits).toHaveBeenCalledWith("codex", rateLimits.session, rateLimits.weekly);
+    // Attributed to the sub-agent (codex), so its pill — not the pinned
+    // agent's — refreshes. docs/252 req 10 adds the session AND the route the
+    // consult actually ran on: quota is filed against whatever `(service,
+    // mode)` owns that route, so letting the orchestrator re-derive one would
+    // name a credential this consult never used.
+    const call = recordAgentRateLimits.mock.calls[0];
+    expect(call.slice(0, 4)).toEqual(["codex", rateLimits.session, rateLimits.weekly, "s1"]);
+    // The 5th argument is the consult's OWN resolved route id, which is what
+    // stops the orchestrator re-deriving one from the session.
+    expect(call).toHaveLength(5);
   });
 
   it("does not touch the limits provider when the consult pushed no rate-limit snapshot", async () => {

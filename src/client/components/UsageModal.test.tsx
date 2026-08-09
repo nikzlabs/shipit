@@ -178,8 +178,8 @@ describe("UsageModal", () => {
       />
     );
     const chart = screen.getByTestId("weekly-usage-chart");
-    // Cost mode (default): the most-recent bar's tooltip shows the Mon–Sun span
-    // and the formatted cost.
+    // Metered mode (default): the most-recent bar's tooltip shows the Mon–Sun
+    // span and the formatted cost.
     expect(chart.querySelector('[title="Jun 15 – Jun 21: $0.65"]')).not.toBeNull();
     const section = screen.getByTestId("weekly-usage-section");
     // The estimate is prefixed `≈` so it can never read as money spent.
@@ -667,6 +667,10 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
     // as an estimate rather than as "this turn was free".
     expect(rows[0]).toHaveTextContent("$0.05");
     expect(rows[1]).toHaveTextContent("≈$0.02");
+    // `≈` stays reserved for the comparison — a metered turn is qualified by the
+    // column header ("Cost (est.)") rather than by borrowing that marker.
+    expect(rows[0].textContent).not.toContain("≈");
+    expect(screen.getByText("Cost (est.)")).toBeInTheDocument();
   });
 
   it("ranks $0 subscription sessions by their estimate instead of arbitrarily", () => {

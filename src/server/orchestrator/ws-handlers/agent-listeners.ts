@@ -1309,6 +1309,11 @@ export function wireAgentListeners(
         // does not change what it says the moment the page reloads.
         if (turnAttribution) {
           perTurnUsage.billingMode = turnAttribution.billingMode;
+        }
+        // `sub` only, matching what rehydration computes — a `key` turn's
+        // `costUsd` already comes from these rates, so a second copy under the
+        // comparison's name would invite double-counting.
+        if (turnAttribution?.billingMode === "sub") {
           perTurnUsage.atApiRatesUsd = costFromRates(turnAttribution.rates, {
             input: event.tokens?.input,
             output: event.tokens?.output,
@@ -1323,6 +1328,7 @@ export function wireAgentListeners(
             type: "usage_update",
             sessionId: sessionUsage.sessionId,
             totals: sessionUsage.totals,
+            groups: sessionUsage.groups ?? [],
             totalDurationMs: sessionUsage.totalDurationMs,
             turnCount: sessionUsage.turnCount,
             lastTurnInputTokens: event.tokens?.input,

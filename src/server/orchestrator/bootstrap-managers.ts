@@ -847,7 +847,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
    * `Map.set()` at construction, not a new branch here. (docs/155)
    * No-op for unknown agents and in test mode (no registry).
    */
-  const recordAgentRateLimits: AppCtx["recordAgentRateLimits"] = (agentId, session, weekly, sessionId) => {
+  const recordAgentRateLimits: AppCtx["recordAgentRateLimits"] = (agentId, session, weekly, sessionId, explicitRouteId) => {
     // docs/150 — attribute the snapshot to the route the reporting turn
     // actually ran on. Resolving it here (rather than at each call site) keeps
     // the callers a single line and puts the one place that knows how a
@@ -855,8 +855,12 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     // a session with no pinned route yet (or no session at all, e.g. a
     // sub-agent spawn) falls back to whatever the router would pick now, which
     // is the same account that turn would have used.
+    // A caller that resolved its OWN route (a sub-agent consult, which routes
+    // independently of the session's pin and can fail over mid-run) wins over
+    // both: re-deriving one would name a different credential, and req 10 files
+    // the snapshot against whatever owns the route.
     const pinned = sessionId ? sessionManager.get(sessionId)?.providerRouteId : undefined;
-    const routeId = pinned ?? providerAccountManager?.selectRouteForTurn(agentId)?.id;
+    const routeId = explicitRouteId ?? pinned ?? providerAccountManager?.selectRouteForTurn(agentId)?.id;
     // No resolvable route means we cannot say whose quota this is; recording it
     // under a guess would attribute one subscription's usage to another.
     if (!routeId) return;

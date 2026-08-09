@@ -220,7 +220,10 @@ function foldSplitRows(rows: SplitRow[]): UsageGroup[] {
     // A `sub` row spent nothing — `cost_usd` is already zero for it, but the
     // column is what makes that a rule rather than a coincidence of the writer.
     if (billingMode !== "sub") group.costUsd += r.cost ?? 0;
-    if (r.rate_input !== null) {
+    // req 16 puts the "would have cost" comparison on `sub` rows and nowhere
+    // else: for a `key` row the rates ARE the spend, so a second figure under a
+    // comparison's name would duplicate it.
+    if (billingMode === "sub" && r.rate_input !== null) {
       group.atApiRatesUsd += costFromRates(
         {
           input: r.rate_input,
@@ -590,7 +593,9 @@ export class UsageManager {
 function applyAttribution(turn: TurnUsage | UsageTurn, row: UsageRow): void {
   if (row.billing_mode !== "sub" && row.billing_mode !== "key") return;
   turn.billingMode = row.billing_mode;
-  if (row.rate_input === null) return;
+  // `sub` only — see {@link TurnUsage.atApiRatesUsd}. A `key` turn's `costUsd`
+  // is already the figure derived from these rates.
+  if (row.billing_mode !== "sub" || row.rate_input === null) return;
   turn.atApiRatesUsd = costFromRates(
     {
       input: row.rate_input,

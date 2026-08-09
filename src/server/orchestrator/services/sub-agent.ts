@@ -133,6 +133,13 @@ export interface RunSubAgentDeps {
      * account. Omitted only where no session owns the turn.
      */
     sessionId?: string,
+    /**
+     * docs/252 req 10 — the credential route the reporting turn ACTUALLY ran
+     * on, when the caller resolved one of its own. A consult routes
+     * independently of the session's pin, and the snapshot is filed against
+     * whatever `(service, mode)` owns the route.
+     */
+    routeId?: string,
   ) => void;
   /** Source-of-truth credentials root (`/credentials`). Omitted in local mode / tests. */
   credentialsDir?: string;
@@ -582,8 +589,19 @@ export async function runSubAgent(
     // `agent_rate_limits` events are confined to the one-shot adapter, so
     // forward the carried-back snapshot into that agent's limits provider —
     // otherwise the pill stays stale until the next primary turn for that agent.
+    // docs/252 req 10 — name the route the consult ACTUALLY ran on. It resolves
+    // its own (§4 above) and may have failed over since, so letting the
+    // orchestrator re-derive one from the session would file this snapshot
+    // against a credential that did not run it — and, where the two differ in
+    // billing mode, against a subscription quota a key-mode consult never drew.
     if (result.rateLimits) {
-      deps.recordAgentRateLimits?.(subAgentId, result.rateLimits.session, result.rateLimits.weekly);
+      deps.recordAgentRateLimits?.(
+        subAgentId,
+        result.rateLimits.session,
+        result.rateLimits.weekly,
+        sessionId,
+        route?.id,
+      );
     }
 
     finalizeConsultCard({
@@ -850,6 +868,7 @@ function emitSubAgentUsageUpdate(
     type: "usage_update",
     sessionId,
     totals: sessionUsage.totals,
+    groups: sessionUsage.groups ?? [],
     totalDurationMs: sessionUsage.totalDurationMs,
     turnCount: sessionUsage.turnCount,
     cumulativeInputTokens: tokenTotals?.cumulativeInputTokens,

@@ -103,12 +103,12 @@ table — a phase is checked off when its PR has merged.
 - [x] "At API rates" recomputes from persisted rates; "metered spend" sums `cost_usd`
 - [x] Legacy rows excluded from BOTH dollar figures, with their own unqualified total
 - [x] Volume in tokens: the group column, both headlines and the chart's third series
-- [x] The chart's cost-vs-turns toggle becomes Paid / At API rates / Tokens
+- [x] The chart's cost-vs-turns toggle becomes Metered / At API rates / Tokens
 - [x] The inherited surfaces — dial trigger + popover, per-session cost, avg per turn,
       per-turn column, by-spend ranking — carry the split, with an explicit tiebreak
 - [x] `SessionUsage.totalCostUsd` replaced by `totals` on every wire shape and reader
 - [x] Labels: "Metered spend (est.)", `≈ … at API rates`, "earlier accounting"
-- [ ] Cross-backend review, findings applied (see `plan.md`)
+- [x] Cross-backend review — five findings, all five fixed (see `plan.md`)
 
 ## Phase 4 — In-session switching
 

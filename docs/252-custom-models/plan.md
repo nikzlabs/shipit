@@ -1191,6 +1191,41 @@ exclusion is a property of the data rather than a filter someone has to remember
   upstream text passes through intact, which is the honest outcome rather than a silent
   reclassification.
 
+**What the cross-backend review changed.** Codex reviewed the branch under CLAUDE.md's rule and
+returned five findings; all five held up on checking and all five are fixed. Three are the same
+mistake in three places: **a figure existed somewhere the contract does not put it.**
+
+- **A key row carried an "at API rates" figure.** It was computed for every attributed row and
+  documented as an audit value, with `usageTotalsFrom` ignoring it — but a comparison figure
+  sitting beside the spend it duplicates is one careless `reduce` from doubling the metered
+  total, and it contradicted the requirement's own scoping in the wire shape. It is now
+  populated for `sub` rows only, on the group, on the turn, and on the live emit.
+- **The by-spend ranking summed `metered + legacy`** — a hidden fourth figure no row renders, so
+  a session displaying $0.10 could outrank one displaying $10.00, and it performed the one
+  addition the split forbids. It now ranks on `sessionRunningFigure`, i.e. on the figure the row
+  actually shows, which is also the only ordering a reader can verify by looking at the column.
+- **The weekly chart called a rate-derived series "Paid".** `catalogue.md` is explicit that a
+  figure from four unit rates cannot be labelled that way; the toggle now says **Metered** and
+  the per-turn column header says **Cost (est.)**. The `≈` marker stays reserved for the
+  at-API-rates comparison — overloading it to mean "estimate" would erase the distinction the
+  split rests on, so the qualifier goes in the header instead.
+
+Two more were real and are fixed:
+
+- **Every live turn blanked the current session's split.** `usage_update` REPLACES
+  `currentSessionUsage`, and it carried totals only — so the "by service" section that
+  `/history` had hydrated vanished on the next turn and stayed gone until a reload (the
+  fetch-on-open refreshes all-session stats, not this). The message now carries `groups`.
+  Retaining the previous groups instead was rejected: they go stale exactly when the session
+  changes mode, which is when the split matters most.
+- **A sub-agent consult's quota went to the wrong subscription.** The consult resolves its own
+  credential route and can fail over mid-run, but forwarded no route — so the orchestrator
+  re-derived one from the session. Under the old per-`AgentId` keying that was merely imprecise;
+  under req 10 it is wrong in kind, because the snapshot is filed against whatever `(service,
+  mode)` **owns** the route: a consult on a DeepSeek key would be filed as the session's
+  Anthropic subscription quota. `recordAgentRateLimits` gained an explicit `routeId` and the
+  consult passes its own.
+
 **Not in this phase, and still open:** GLM's `zai-plan-usage` quota reader. Phase 2 deferred it
 for want of somewhere to report into; that place now exists (a provider declares its
 `(serviceId, billingMode)` and the registry indexes on it), so the reader is an addition rather

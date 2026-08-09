@@ -533,7 +533,13 @@ describe("UsageManager — the usage split (docs/252 req 16)", () => {
     expect(plan.costUsd).toBe(0);
     expect(plan.atApiRatesUsd).toBeCloseTo(1.0);
     expect(plan.models).toEqual(["claude-opus-5"]);
-    expect(groupOf(usage.groups!, "deepseek:key")!.costUsd).toBeCloseTo(0.5);
+    const metered = groupOf(usage.groups!, "deepseek:key")!;
+    expect(metered.costUsd).toBeCloseTo(0.5);
+    // req 16 puts the comparison on `sub` rows and NOWHERE else — for a key row
+    // the rates are already its spend, so a second figure under a comparison's
+    // name is one careless `reduce` away from doubling the metered total.
+    // (Cross-backend review found this populated for key groups.)
+    expect(metered.atApiRatesUsd).toBe(0);
   });
 
   it("keeps one service's two billing modes as two rows, not one", () => {
@@ -616,6 +622,8 @@ describe("UsageManager — the usage split (docs/252 req 16)", () => {
     expect(turns[0]).toMatchObject({ costUsd: 0, billingMode: "sub" });
     expect(turns[0].atApiRatesUsd).toBeCloseTo(1);
     expect(turns[1]).toMatchObject({ costUsd: 0.5, billingMode: "key" });
+    // Same rule per turn: a metered turn's cost IS the rate-derived figure.
+    expect(turns[1].atApiRatesUsd).toBeUndefined();
     // A legacy row can say neither.
     expect(turns[2].billingMode).toBeUndefined();
     expect(turns[2].atApiRatesUsd).toBeUndefined();

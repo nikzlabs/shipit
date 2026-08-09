@@ -64,7 +64,12 @@ function formatWeekRange(week: string): string {
 type WeeklyMetric = "paid" | "atApiRates" | "tokens";
 
 const WEEKLY_METRICS: { key: WeeklyMetric; label: string }[] = [
-  { key: "paid", label: "Paid" },
+  // "Metered", not "Paid". A `key` row's figure is the harness's own only when
+  // the turn ran on that harness's native service AND it reported one; every
+  // other metered turn is priced from four unit rates, which cannot express
+  // per-request, image or tiered-cache charges (`catalogue.md`, *Pricing*).
+  // Labelling that "Paid" asserts a fact about a bank statement.
+  { key: "paid", label: "Metered" },
   { key: "atApiRates", label: "At API rates" },
   { key: "tokens", label: "Tokens" },
 ];
@@ -675,7 +680,17 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
                 <span>Turn</span>
                 <span className="text-right">In</span>
                 <span className="text-right">Out</span>
-                <span className="text-right">Cost</span>
+                {/* Not "Paid": a metered turn's figure is an estimate wherever
+                    the harness did not report one. `≈` stays reserved for the
+                    at-API-rates comparison — overloading it here would erase
+                    the distinction the split rests on — so the qualifier lives
+                    in the header instead. */}
+                <span
+                  className="text-right"
+                  title="ShipIt's estimate of metered spend, or the at-API-rates value of a subscription turn"
+                >
+                  Cost (est.)
+                </span>
                 <span className="text-right">Time</span>
               </div>
               <div className="max-h-64 overflow-y-auto">

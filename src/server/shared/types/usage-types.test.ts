@@ -37,10 +37,11 @@ describe("usageTotalsFrom (docs/252 req 16)", () => {
     expect(out.legacyTokens).toBe(90);
   });
 
-  it("ignores a key group's at-API-rates value, which is an audit figure only", () => {
-    // Every attributed row carries recomputed rates, including metered ones —
-    // that is what makes a harness-reported figure auditable. Summing it into
-    // the comparison column would double-count the metered half.
+  it("takes no at-API-rates figure from a key group, even if one is present", () => {
+    // The producer leaves it zero for a `key` group (that is where the rates
+    // already went — into `costUsd`). This is the second belt: a hand-built or
+    // future group carrying one still cannot reach the comparison column, which
+    // req 16 scopes to subscription rows.
     const out = usageTotalsFrom([
       group({ key: "deepseek:key", kind: "key", costUsd: 0.4, atApiRatesUsd: 0.39 }),
     ]);
@@ -70,7 +71,7 @@ describe("sessionRunningFigure (docs/252 req 16)", () => {
 });
 
 describe("compareSessionsBySpend (docs/252 req 16)", () => {
-  it("ranks by money, then by the estimate, then by tokens", () => {
+  it("ranks by the figure each row actually renders", () => {
     // The tiebreak is the point: under the split most sessions are legitimately
     // $0, so spend alone leaves the tail in insertion order.
     const ranked = [
@@ -79,7 +80,18 @@ describe("compareSessionsBySpend (docs/252 req 16)", () => {
       session("paid", { meteredCostUsd: 0.01 }),
       session("mid-plan", { atApiRatesUsd: 2, includedTokens: 200 }),
     ].sort(compareSessionsBySpend);
-    expect(ranked.map((s) => s.sessionId)).toEqual(["paid", "busy-plan", "mid-plan", "quiet"]);
+    expect(ranked.map((s) => s.sessionId)).toEqual(["busy-plan", "mid-plan", "paid", "quiet"]);
+  });
+
+  it("never ranks on a figure no row shows", () => {
+    // Regression (cross-backend review): ranking on `metered + legacy` was a
+    // hidden fourth figure — the $0.10 session outranked the $10.00 one, and it
+    // performed the one addition the split forbids.
+    const ranked = [
+      session("ten-dollars", { meteredCostUsd: 10 }),
+      session("ten-cents-plus-old-money", { meteredCostUsd: 0.1, legacyCostUsd: 100 }),
+    ].sort(compareSessionsBySpend);
+    expect(ranked.map((s) => s.sessionId)).toEqual(["ten-dollars", "ten-cents-plus-old-money"]);
   });
 
   it("is total, so a list of equals does not reshuffle between renders", () => {
@@ -89,9 +101,9 @@ describe("compareSessionsBySpend (docs/252 req 16)", () => {
     expect(compareSessionsBySpend(b, a)).toBeGreaterThan(0);
   });
 
-  it("counts a pre-feature total as money for ranking", () => {
+  it("ranks a pre-feature total by what it shows, like any other row", () => {
     const ranked = [session("plan", { atApiRatesUsd: 50 }), session("old", { legacyCostUsd: 1 })]
       .sort(compareSessionsBySpend);
-    expect(ranked.map((s) => s.sessionId)).toEqual(["old", "plan"]);
+    expect(ranked.map((s) => s.sessionId)).toEqual(["plan", "old"]);
   });
 });

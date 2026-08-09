@@ -182,6 +182,18 @@ export interface AppCtx {
      * account. Omitted only where no session owns the turn.
      */
     sessionId?: string,
+    /**
+     * docs/252 req 10 — the credential route the reporting turn ACTUALLY ran
+     * on, when the caller resolved one of its own.
+     *
+     * A sub-agent consult resolves its route independently of the session's
+     * pinned one (`services/sub-agent.ts`), and can fail over mid-run. Without
+     * this the fallback re-derives a route from the session, which is a
+     * different credential — and since req 10 files a snapshot against the
+     * `(service, mode)` that OWNS the route, a consult on a key would be filed
+     * as the session's subscription quota.
+     */
+    routeId?: string,
   ) => void;
   /**
    * Latest subscription-limits snapshot from the limits registry. Used to
