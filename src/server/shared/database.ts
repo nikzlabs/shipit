@@ -912,7 +912,128 @@ const MIGRATIONS: Migration[] = [
     // value preserves that structure exactly while spreading the hues.
     for (const row of rows) update.run(ORDER[row.color_index], row.url);
   },
+  // docs/252 phase 1 — the selected model becomes the triple
+  // `(serviceId, billingMode, modelId)`. `model` keeps holding the model id; the
+  // two new columns carry the rest of the identity, which a bare id cannot: the
+  // same id is reachable through a vendor directly and through a gateway, and
+  // through two billing modes of one service, at different prices.
+  //
+  // The other two columns record which `(service, mode)` the pinned credential
+  // route belongs to. A session stores its route as a bare `{kind, id}` and
+  // environment preparation reuses it unconditionally whenever it is present, so
+  // without an owner a later switch to a different service would respawn
+  // correctly — new endpoint, new model — and then authenticate with the
+  // PREVIOUS service's credential. That is not a failed turn; it is a turn
+  // billed to the wrong account.
+  //
+  // ## Backfilling the billing mode
+  //
+  // The third element decides what a user is billed, so it is not guessed:
+  // sessions already persist `provider_route_kind` and `provider_route_id`,
+  // columns that exist for exactly this distinction. **Classify by route id, not
+  // by kind** — the kind describes where a credential is *stored*, not how it is
+  // *billed*, and the two do not line up: `claude-env-oauth` is a `reserved`
+  // route carrying a SUBSCRIPTION token (quota-bearing, ranked above metered
+  // billing). Reading `kind` alone would bill those subscribers as metered and
+  // hide their quota.
+  //
+  //   kind 'account' (any id)              → sub   (a subscription account)
+  //   id 'claude-env-oauth'                → sub   (a subscription token that arrives by env)
+  //   id 'claude-api-key' / 'codex-api-key'→ key   (metered)
+  //   no route at all                      → sub   (the only case with no evidence)
+  //
+  // The last row is the one judgement, and it fails in the safe direction: a
+  // session wrongly on `sub` stops and says so, where one wrongly on `key`
+  // silently spends money. It is also only sound because the chosen mode must
+  // actually OFFER the model — and it does for every model in scope here, since
+  // both first-party services declare every one of their models under both
+  // modes (including `claude-fable-5`, which phase 1's research placed in both).
+  //
+  // ## Why the mapping is inlined
+  //
+  // A migration must keep reproducing the same result forever, so this cannot
+  // read the live catalogue: a model dropped from the catalogue next year must
+  // not change what an old row migrates to. The service is derived from the
+  // pinned agent — which IS the frozen fact, since before this feature a
+  // harness could only reach its own vendor — with a model-id prefix as the
+  // fallback for rows that never pinned one.
+  //
+  // The four `ADD COLUMN`s are guarded rather than bare. Migrations run inside a
+  // transaction so a real database can never be half-applied — the guard is for
+  // the migration TESTS, which rewind `user_version` to re-run a specific step
+  // and therefore re-run every step after it too. Without it, appending any
+  // migration breaks an unrelated older test.
+  (db) => {
+    addSessionColumnIfMissing(db, "service_id");
+    addSessionColumnIfMissing(db, "billing_mode");
+    addSessionColumnIfMissing(db, "provider_route_service_id");
+    addSessionColumnIfMissing(db, "provider_route_billing_mode");
+
+    // **Only rows whose model the catalogue actually offers get a triple.** The
+    // stored triple must either name a real catalogue row or carry no service and
+    // mode at all — a fabricated `(anthropic, sub, sonnet)` is a row
+    // `resolveEndpoint` cannot shape a turn from, which is worse than saying
+    // nothing. A legacy alias (`sonnet`, `opus`) or a retired id
+    // (`claude-opus-4-8`) therefore keeps its `model` and gets NULLs; the next
+    // real selection writes the triple, and req 13's retirement map (phase 8) is
+    // what carries such a session forward.
+    //
+    // The id list is INLINED, like the palette data in the color migrations
+    // above and for the same reason: a migration must keep reproducing the same
+    // result forever, so it cannot follow a catalogue that later drops a model.
+    const ANTHROPIC_MODELS = ["claude-opus-5", "claude-sonnet-5", "haiku", "claude-fable-5"];
+    const OPENAI_MODELS = [
+      "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4",
+      "gpt-5.4-mini", "gpt-5.5", "gpt-5.3-codex", "gpt-5.2",
+      // The retired unsuffixed slug: old rows still hold it, and the catalogue
+      // carries a successor for it, so it is placeable.
+      "gpt-5.6",
+    ];
+    const placeholders = (n: number) => Array(n).fill("?").join(", ");
+    db.prepare(
+      `UPDATE sessions SET service_id = 'anthropic'
+       WHERE model IN (${placeholders(ANTHROPIC_MODELS.length)})`,
+    ).run(...ANTHROPIC_MODELS);
+    db.prepare(
+      `UPDATE sessions SET service_id = 'openai'
+       WHERE model IN (${placeholders(OPENAI_MODELS.length)})`,
+    ).run(...OPENAI_MODELS);
+
+    // Billing mode, by route id — never by route kind. Both first-party services
+    // declare every one of their models under BOTH modes, so whichever mode is
+    // chosen here is guaranteed to offer the row's model; that is what makes the
+    // evidence-free default below sound rather than merely convenient.
+    db.exec(
+      `UPDATE sessions SET billing_mode = 'key'
+       WHERE service_id IS NOT NULL
+         AND provider_route_id IN ('claude-api-key', 'codex-api-key')`,
+    );
+    db.exec(
+      "UPDATE sessions SET billing_mode = 'sub' WHERE service_id IS NOT NULL AND billing_mode IS NULL",
+    );
+
+    // A pinned route belongs to the pair we just derived for it.
+    db.exec(
+      `UPDATE sessions
+       SET provider_route_service_id = service_id,
+           provider_route_billing_mode = billing_mode
+       WHERE provider_route_id IS NOT NULL AND service_id IS NOT NULL`,
+    );
+  },
 ];
+
+/**
+ * Add a nullable TEXT column to `sessions` only if it is absent.
+ *
+ * See the docs/252 migration below for why the guard exists: it is for the
+ * migration tests that rewind `user_version`, not for production, where the
+ * migration transaction already rules out a half-applied step.
+ */
+function addSessionColumnIfMissing(db: DatabaseInstance, column: string): void {
+  const columns = db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
+  if (columns.some((c) => c.name === column)) return;
+  db.exec(`ALTER TABLE sessions ADD COLUMN ${column} TEXT`);
+}
 
 /**
  * 0-based index of the repo-color backfill in `MIGRATIONS`, so the re-spread
@@ -921,8 +1042,12 @@ const MIGRATIONS: Migration[] = [
  * Frozen, like the palette data those two migrations inline. Migrations are
  * append-only — `user_version` counts them, so inserting one renumbers every
  * database in existence — which is what makes a literal index safe here.
+ *
+ * Exported so the migration test can rewind to this exact step rather than
+ * counting back from the tip: counting from the tip silently re-targets the
+ * wrong migrations the moment one is appended.
  */
-const COLOR_BACKFILL_MIGRATION = 66;
+export const COLOR_BACKFILL_MIGRATION = 66;
 
 export class DatabaseManager {
   readonly db: DatabaseInstance;

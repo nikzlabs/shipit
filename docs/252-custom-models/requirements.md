@@ -8,7 +8,10 @@ does today. So a requirement below is silent about an existing capability when t
 does not change it, and that silence is not permission to drop it. Where a requirement *does*
 describe something that already works, it is because this feature changes it in some way.
 
-No open questions remain.
+One open question remains, found while implementing the launch catalogue rather
+than raised in conversation — see [Open questions](#open-questions). It does not
+block phase 1; it decides which column a subscription-reachable but per-token
+billed model's usage goes in (phase 6).
 
 ## Requirements
 
@@ -249,7 +252,29 @@ No open questions remain.
 
 ## Open questions
 
-_None._
+- **A subscription can include a model that is still billed per token. Which column does
+  that usage go in?** Found while authoring the launch catalogue (phase 1), not from
+  anything said in conversation. Req 16 splits usage into *money that left the account*
+  (key rows) and *what plan usage would have cost* (sub rows), and req 10 gives a
+  subscription a quota. `claude-fable-5` is neither: ShipIt's own picker already flags it
+  as billing "per token (usage-based) rather than against the subscription plan limit",
+  and Anthropic sells it on the ordinary API — so it is reachable with subscription
+  credentials *and* it costs real money, which no billing mode as specified describes. It
+  is a real case today, not a hypothetical: it is the only model in the shipped
+  `METERED_MODELS` set.
+
+  Three readings, none of them chosen: (a) a `sub` row's spend still counts as metered
+  spend when the catalogue says that model is metered — which means `BillingMode` stops
+  being the sole thing that decides the column, and req 16's clean split gets a per-model
+  exception; (b) such a model belongs only to the `key` mode, so a subscription-only user
+  simply is not offered it — honest under req 8, but a capability those users have today
+  would disappear; (c) leave it as it is — the model sits in both modes, and a
+  subscription turn on it reports zero spend, which is wrong by exactly the amount it
+  cost.
+
+  Nothing in phase 1 depends on the answer: the API rate is the same under either mode,
+  and the catalogue carries it. It bites in **phase 6**, where the aggregation has to pick
+  a column. `plan.md`'s phase-1 findings record the mechanism side.
 
 ## Resolved questions
 

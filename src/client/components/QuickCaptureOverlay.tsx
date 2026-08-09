@@ -11,6 +11,7 @@ import { startQuickSessionInBackground } from "../stores/actions/session-actions
 import {
   getSavedAgentId,
   getSavedModelId,
+  getSavedModelSelection,
   getSavedQuickSessionRepo,
   getSavedReasoning,
   saveAgentId,
@@ -162,11 +163,22 @@ export function QuickCaptureOverlay({
     // seed (the ReasoningSelector persists every pick via `saveReasoning`), so
     // the level carries forward to new quick sessions exactly like the model.
     const reasoning = selectedReasoning ?? getSavedReasoning(selectedAgentId);
+    const savedSelection = getSavedModelSelection();
     const params = {
       repoUrl: selectedRepo.url,
       initialPrompt: payload.text,
       agent: selectedAgentId,
       ...(selectedModel ? { model: selectedModel } : {}),
+      // docs/252 — send the rest of the selection's identity alongside the id.
+      // A quick session's first turn is dispatched server-side at creation, so
+      // there is no WS connect to carry the seed; without these the bare id
+      // would be re-resolved to whichever service sorts first, which for an id
+      // two services offer is a coin flip over who gets billed. Only sent when
+      // the saved selection is for THIS model — an explicit picker change since
+      // the seed was read is a different choice and must not inherit its service.
+      ...(selectedModel && savedSelection?.modelId === selectedModel
+        ? { serviceId: savedSelection.serviceId, billingMode: savedSelection.billingMode }
+        : {}),
       ...(reasoning ? { reasoning } : {}),
       ...(armAutoMerge ? { armAutoMerge: true } : {}),
       // docs/144 — Mode B is the voice-native path (hold the hotkey, speak a

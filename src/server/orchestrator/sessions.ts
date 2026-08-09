@@ -4,6 +4,39 @@ import { parseTimestampMs } from "../shared/utils.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import type { AgentId } from "../shared/types/agent-types.js";
+import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
+import { resolveModelSelection, sameCredentialOwner } from "../shared/catalogue/index.js";
+
+/**
+ * docs/252 — how a credential route is BILLED, derived from the route itself.
+ *
+ * The route's own mode, not the selection in force when it was pinned. Those can
+ * disagree today: route selection does not yet consult the billing mode (that is
+ * phase 3), so a session whose selection says `sub` can still be routed onto
+ * `claude-api-key` when no subscription account is connected. Stamping the
+ * *selection* there would record a metered key route as subscription-owned — a
+ * durable falsehood the later phases read back.
+ *
+ * The rule is the same one the docs/252 migration applies to historical rows,
+ * and the duplication is deliberate: a migration must keep reproducing the same
+ * result forever, so it inlines its copy and cannot follow this one.
+ *
+ * Returns `undefined` for a route this cannot classify, leaving the caller to
+ * fall back to the session's selection rather than guessing.
+ */
+export function billingModeForRoute(
+  kind: ProviderRouteKind,
+  routeId: string,
+): BillingMode | undefined {
+  // A login-flow account is always a subscription.
+  if (kind === "account") return "sub";
+  // `claude-env-oauth` is the counter-example the whole `kind` vs `via` split
+  // exists for: a `reserved` route carrying a quota-bearing SUBSCRIPTION token,
+  // ranked above metered billing. Classifying by `kind` would bill it as a key.
+  if (routeId === "claude-env-oauth") return "sub";
+  if (routeId === "claude-api-key" || routeId === "codex-api-key") return "key";
+  return undefined;
+}
 
 interface SessionRow {
   id: string;
@@ -41,6 +74,12 @@ interface SessionRow {
   agent_pinned: number;
   provider_route_kind: string | null;
   provider_route_id: string | null;
+  /** docs/252 — the rest of the selection triple; `model` holds the model id. */
+  service_id: string | null;
+  billing_mode: string | null;
+  /** docs/252 — the `(service, mode)` the pinned route was pinned FOR. */
+  provider_route_service_id: string | null;
+  provider_route_billing_mode: string | null;
   pr_status: string | null;
   /** docs/117 — set when the session was spawned by another via `shipit session create`. */
   parent_session_id: string | null;
@@ -322,9 +361,19 @@ export class SessionManager {
     if (row.reasoning_effort) info.reasoningEffort = row.reasoning_effort;
     if (row.agent_id === "claude" || row.agent_id === "codex") info.agentId = row.agent_id;
     if (row.agent_pinned) info.agentPinned = true;
+    // docs/252 — the rest of the selection triple. Read independently of
+    // `model`: a row can legitimately carry a service and mode with no model yet
+    // (the selection was resolved before a pick), and a model with no service
+    // (a versioned id the catalogue has no row for).
+    if (row.service_id) info.serviceId = row.service_id;
+    if (row.billing_mode === "sub" || row.billing_mode === "key") info.billingMode = row.billing_mode;
     if ((row.provider_route_kind === "account" || row.provider_route_kind === "reserved") && row.provider_route_id) {
       info.providerRouteKind = row.provider_route_kind;
       info.providerRouteId = row.provider_route_id;
+      if (row.provider_route_service_id) info.providerRouteServiceId = row.provider_route_service_id;
+      if (row.provider_route_billing_mode === "sub" || row.provider_route_billing_mode === "key") {
+        info.providerRouteBillingMode = row.provider_route_billing_mode;
+      }
     }
     if (row.parent_session_id) info.parentSessionId = row.parent_session_id;
     if (row.spawned_by_turn) info.spawnedByTurn = row.spawned_by_turn;
@@ -810,9 +859,102 @@ export class SessionManager {
       .run(JSON.stringify(capabilities), id);
   }
 
-  /** Store the selected model for a session. */
-  setModel(id: string, model: string): void {
-    this.db.prepare("UPDATE sessions SET model = ? WHERE id = ?").run(model, id);
+  /**
+   * Store the selected model for a session.
+   *
+   * docs/252 — the selection is the triple `(serviceId, billingMode, modelId)`,
+   * so this resolves the bare id through the catalogue and writes all three.
+   * Callers that already know the service and mode should use
+   * {@link setModelSelection} directly; this overload stays because most call
+   * sites (the WS picker, graduation, the authed-selection redirect) still speak
+   * model ids and will keep doing so until the picker groups by service in
+   * phase 3.
+   *
+   * `preferredServiceId` biases resolution so a model id the harness's own
+   * vendor offers stays on that vendor rather than landing on whichever gateway
+   * happens to list the same string.
+   */
+  setModel(id: string, model: string, preferredServiceId?: string): void {
+    const selection = resolveModelSelection(model, preferredServiceId);
+    if (selection) {
+      this.setModelSelection(id, selection);
+      return;
+    }
+    // The catalogue has no row for this id — a versioned slug the picker never
+    // surfaced, or one since retired. **Clear the service and mode rather than
+    // leaving the previous ones in place**: the invariant a stored row must hold
+    // is that its triple either names a real catalogue row or carries no service
+    // and mode at all. Keeping the old pair would leave
+    // `(anthropic, sub, claude-sonnet-4-20250514)` on disk — a triple
+    // `resolveEndpoint` cannot shape a turn from and `selectionExists` reports
+    // false for, which is worse than saying nothing.
+    //
+    // The pinned route goes with them, for the same reason `setModelSelection`
+    // drops it on an owner change: with no service we cannot prove the route
+    // still fits, and re-pinning on the next turn is cheap where mis-billing is
+    // not.
+    this.db
+      .prepare(
+        `UPDATE sessions
+         SET model = ?, service_id = NULL, billing_mode = NULL,
+             provider_route_kind = NULL, provider_route_id = NULL,
+             provider_route_service_id = NULL, provider_route_billing_mode = NULL
+         WHERE id = ?`,
+      )
+      .run(model, id);
+  }
+
+  /**
+   * docs/252 — persist a full `(serviceId, billingMode, modelId)` selection.
+   *
+   * **This is where the pinned credential route is invalidated**, and that is
+   * the whole reason the write goes through one method. A route belongs to a
+   * `(service, billing mode)` and environment preparation reuses it
+   * unconditionally whenever it is present, so a selection that crosses either
+   * axis must drop it — otherwise the next turn respawns against the new
+   * endpoint and authenticates with the previous service's credential, billing
+   * the wrong account. A plain model change *within* one mode keeps the route,
+   * which is what makes mid-session model switching free.
+   *
+   * Inert today: both first-party services are the only ones reachable and a
+   * session cannot yet cross services. It is here rather than in phase 3
+   * because phase 3 is what makes the crossing *reachable*, and a route that
+   * outlives its owner is not a failed turn — it is a silently mis-billed one.
+   *
+   * **Contract: `selection` must name a real catalogue row.** This method writes
+   * what it is given, because the alternative — silently dropping a write, or
+   * throwing on a path that today swallows errors — is worse than a caller
+   * checking. Every caller does: `setModel` only reaches here via
+   * `resolveModelSelection`, and the three that build a triple from untrusted
+   * input (the WS `set_model` message, the session-creation route, the browser
+   * seed) each gate on `selectionExists` first. The invariant a stored row holds
+   * is that its triple resolves or its service and mode are absent.
+   */
+  setModelSelection(id: string, selection: ModelSelection): void {
+    const current = this.get(id);
+    const owner = current?.providerRouteId
+      ? {
+          serviceId: current.providerRouteServiceId ?? current.serviceId ?? "",
+          billingMode: current.providerRouteBillingMode ?? current.billingMode ?? selection.billingMode,
+          modelId: selection.modelId,
+        }
+      : undefined;
+    const keepRoute = owner === undefined || sameCredentialOwner(owner, selection);
+    if (keepRoute) {
+      this.db
+        .prepare("UPDATE sessions SET model = ?, service_id = ?, billing_mode = ? WHERE id = ?")
+        .run(selection.modelId, selection.serviceId, selection.billingMode, id);
+      return;
+    }
+    this.db
+      .prepare(
+        `UPDATE sessions
+         SET model = ?, service_id = ?, billing_mode = ?,
+             provider_route_kind = NULL, provider_route_id = NULL,
+             provider_route_service_id = NULL, provider_route_billing_mode = NULL
+         WHERE id = ?`,
+      )
+      .run(selection.modelId, selection.serviceId, selection.billingMode, id);
   }
 
   /**
@@ -860,10 +1002,28 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET auto_fix_ci_paused = ? WHERE id = ?").run(paused ? 1 : 0, id);
   }
 
+  /**
+   * Pin the credential route a turn resolved.
+   *
+   * docs/252 — the route is stamped with the `(service, billing mode)` it was
+   * pinned FOR, taken from the session's current selection. That owner is what
+   * {@link setModelSelection} compares against to decide whether a later
+   * selection change invalidates the route.
+   */
   setProviderRoute(id: string, kind: ProviderRouteKind, routeId: string): void {
+    const session = this.get(id);
     this.db.prepare(
-      "UPDATE sessions SET provider_route_kind = ?, provider_route_id = ? WHERE id = ?",
-    ).run(kind, routeId, id);
+      `UPDATE sessions
+       SET provider_route_kind = ?, provider_route_id = ?,
+           provider_route_service_id = ?, provider_route_billing_mode = ?
+       WHERE id = ?`,
+    ).run(
+      kind,
+      routeId,
+      session?.serviceId ?? null,
+      billingModeForRoute(kind, routeId) ?? session?.billingMode ?? null,
+      id,
+    );
   }
 
   /**

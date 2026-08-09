@@ -26,6 +26,7 @@ import {
   createClaimSessionService,
 } from "./services/index.js";
 import type { AgentId, IssueRef } from "../shared/types.js";
+import type { BillingMode } from "../shared/catalogue/index.js";
 import { getErrorMessage } from "./validation.js";
 import { markIssueStartedFromSeed } from "./issue-lifecycle.js";
 
@@ -399,6 +400,14 @@ export async function registerSessionCrudRoutes(
        */
       armAutoMerge?: boolean;
       /**
+       * docs/252 — the rest of the selected model's identity. A bare `model`
+       * cannot say which service is billing you once two of them offer the same
+       * id, and Quick Capture's seed (the browser's `vibe-model-id` slot) holds
+       * the full triple. Ignored unless the pair names a real catalogue row.
+       */
+      serviceId?: string;
+      billingMode?: BillingMode;
+      /**
        * docs/144 — the prompt was dictated by voice (quick-capture Mode B), so
        * the first turn's prompt carries the `<dictated_input>` hint. Multipart
        * sends it as the string "true"/"false".
@@ -413,6 +422,8 @@ export async function registerSessionCrudRoutes(
       let branch: string | undefined;
       let agent: AgentId | undefined;
       let model: string | undefined;
+      let serviceId: string | undefined;
+      let billingMode: BillingMode | undefined;
       let reasoning: string | undefined;
       let issueRef: IssueRef | undefined;
       let armAutoMerge = false;
@@ -444,6 +455,12 @@ export async function registerSessionCrudRoutes(
               case "model":
                 model = value;
                 break;
+              case "serviceId":
+                serviceId = value;
+                break;
+              case "billingMode":
+                if (value === "sub" || value === "key") billingMode = value;
+                break;
               case "reasoning":
                 reasoning = value;
                 break;
@@ -468,6 +485,8 @@ export async function registerSessionCrudRoutes(
         branch = body.branch;
         agent = body.agent;
         model = body.model;
+        serviceId = body.serviceId;
+        billingMode = body.billingMode;
         reasoning = body.reasoning;
         issueRef = body.issueRef;
         if (body.armAutoMerge !== undefined && typeof body.armAutoMerge !== "boolean") {
@@ -494,6 +513,8 @@ export async function registerSessionCrudRoutes(
             ...(branch !== undefined ? { branch } : {}),
             ...(agent !== undefined ? { agent } : {}),
             ...(model !== undefined ? { model } : {}),
+            ...(serviceId !== undefined ? { serviceId } : {}),
+            ...(billingMode !== undefined ? { billingMode } : {}),
             ...(reasoning !== undefined ? { reasoning } : {}),
             ...(uploadInputs.length > 0 ? { uploads: uploadInputs } : {}),
             armAutoMerge,

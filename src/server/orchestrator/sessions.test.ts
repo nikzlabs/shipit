@@ -10,6 +10,7 @@ import type { SessionInfo } from "../shared/types.js";
 import { ChatHistoryManager } from "./chat-history.js";
 import { UsageManager } from "./usage.js";
 import { deleteSession } from "./services/session.js";
+import { selectionExists } from "../shared/catalogue/index.js";
 
 describe("SessionManager", () => {
   let dbManager: DatabaseManager;
@@ -1043,5 +1044,188 @@ describe("SessionManager", () => {
       const remaining = visible.filter((id) => id !== archived);
       expect(mgr.list().map((s) => s.id).sort()).toEqual([...remaining].sort());
     });
+  });
+});
+
+/**
+ * docs/252 phase 1 — the selected model is the triple
+ * `(serviceId, billingMode, modelId)`, and the write path owns the pinned
+ * credential route's lifetime.
+ */
+describe("SessionManager — model selection (docs/252)", () => {
+  let dbManager: DatabaseManager;
+  let mgr: SessionManager;
+
+  beforeEach(() => {
+    dbManager = new DatabaseManager(":memory:");
+    mgr = new SessionManager(dbManager);
+    mgr.track("s1");
+  });
+
+  afterEach(() => {
+    dbManager.close();
+  });
+
+  it("resolves a bare model id into the full triple", () => {
+    mgr.setModel("s1", "claude-opus-5");
+    const session = mgr.get("s1");
+    expect(session?.model).toBe("claude-opus-5");
+    expect(session?.serviceId).toBe("anthropic");
+    expect(session?.billingMode).toBe("sub");
+  });
+
+  it("honours a preferred service so a first-party id never lands on a gateway", () => {
+    mgr.setModel("s1", "claude-opus-5", "anthropic");
+    expect(mgr.get("s1")?.serviceId).toBe("anthropic");
+  });
+
+  it("persists a model the catalogue cannot place WITHOUT inventing a service", () => {
+    // A versioned slug the picker never surfaced. The old behaviour — store the
+    // model — is preserved; what must not happen is a fabricated triple.
+    mgr.setModel("s1", "claude-sonnet-4-20250514");
+    const session = mgr.get("s1");
+    expect(session?.model).toBe("claude-sonnet-4-20250514");
+    expect(session?.serviceId).toBeUndefined();
+    expect(session?.billingMode).toBeUndefined();
+  });
+
+  it("CLEARS a previous service/mode when the new model cannot be placed", () => {
+    // The invariant: a stored row's triple either names a real catalogue row or
+    // carries no service and mode at all. Keeping the old pair would leave
+    // `(anthropic, sub, claude-sonnet-4-20250514)` on disk — a triple nothing
+    // can resolve an endpoint from, which is worse than saying nothing.
+    mgr.setModel("s1", "claude-opus-5");
+    mgr.setProviderRoute("s1", "account", "acct_1");
+    mgr.setModel("s1", "claude-sonnet-4-20250514");
+    const session = mgr.get("s1");
+    expect(session?.model).toBe("claude-sonnet-4-20250514");
+    expect(session?.serviceId).toBeUndefined();
+    expect(session?.billingMode).toBeUndefined();
+    // …and the route goes too: with no service we cannot prove it still fits.
+    expect(session?.providerRouteId).toBeUndefined();
+  });
+
+  it("never stores a triple naming a row the catalogue does not contain", () => {
+    // Stated as an invariant over both write paths, because it is the property
+    // every later phase reads back: `resolveEndpoint` and eligibility both
+    // assume the stored triple resolves.
+    for (const model of ["claude-opus-5", "sonnet", "opus", "claude-opus-4-8", "gpt-5.6-sol"]) {
+      mgr.setModel("s1", model);
+      const session = mgr.get("s1");
+      if (session?.serviceId && session.billingMode) {
+        expect(
+          selectionExists({
+            serviceId: session.serviceId,
+            billingMode: session.billingMode,
+            modelId: session.model ?? "",
+          }),
+          model,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("stamps a pinned route with the (service, mode) it was pinned FOR", () => {
+    mgr.setModel("s1", "claude-opus-5");
+    mgr.setProviderRoute("s1", "account", "acct_1");
+    const session = mgr.get("s1");
+    expect(session?.providerRouteId).toBe("acct_1");
+    expect(session?.providerRouteServiceId).toBe("anthropic");
+    expect(session?.providerRouteBillingMode).toBe("sub");
+  });
+
+  it("stamps the ROUTE's billing mode, not the selection's", () => {
+    // These can disagree today: route selection does not yet consult the billing
+    // mode (phase 3), so a session whose selection says `sub` still lands on
+    // `claude-api-key` when no subscription account is connected. Stamping the
+    // selection there would record a metered key route as subscription-owned —
+    // a durable falsehood the later phases read back.
+    mgr.setModel("s1", "claude-opus-5");
+    expect(mgr.get("s1")?.billingMode).toBe("sub");
+    mgr.setProviderRoute("s1", "reserved", "claude-api-key");
+    expect(mgr.get("s1")?.providerRouteBillingMode).toBe("key");
+  });
+
+  it("treats an env-delivered OAuth token as the subscription it is", () => {
+    // `claude-env-oauth` is the counter-example the `kind` vs `via` split exists
+    // for: a `reserved` route carrying a quota-bearing subscription token.
+    mgr.setModel("s1", "claude-opus-5");
+    mgr.setProviderRoute("s1", "reserved", "claude-env-oauth");
+    expect(mgr.get("s1")?.providerRouteBillingMode).toBe("sub");
+  });
+
+  it("falls back to the selection for a route it cannot classify", () => {
+    mgr.setModelSelection("s1", {
+      serviceId: "deepseek",
+      billingMode: "key",
+      modelId: "deepseek-v4-flash",
+    });
+    mgr.setProviderRoute("s1", "reserved", "deepseek-api-key");
+    expect(mgr.get("s1")?.providerRouteBillingMode).toBe("key");
+  });
+
+  it("KEEPS the route across a plain model change inside one billing mode", () => {
+    // The case that makes mid-session model switching free: same credential
+    // owner, so the pinned route is still the right one.
+    mgr.setModel("s1", "claude-opus-5");
+    mgr.setProviderRoute("s1", "account", "acct_1");
+    mgr.setModelSelection("s1", {
+      serviceId: "anthropic",
+      billingMode: "sub",
+      modelId: "claude-sonnet-5",
+    });
+    const session = mgr.get("s1");
+    expect(session?.model).toBe("claude-sonnet-5");
+    expect(session?.providerRouteId).toBe("acct_1");
+  });
+
+  it("CLEARS the route when the billing mode changes", () => {
+    // "Charge me, keep working" — the subscription's account cannot authenticate
+    // a metered key turn, and reusing it would bill the wrong thing rather than
+    // fail. The next turn's preflight re-pins.
+    mgr.setModel("s1", "claude-opus-5");
+    mgr.setProviderRoute("s1", "account", "acct_1");
+    mgr.setModelSelection("s1", {
+      serviceId: "anthropic",
+      billingMode: "key",
+      modelId: "claude-opus-5",
+    });
+    const session = mgr.get("s1");
+    expect(session?.billingMode).toBe("key");
+    expect(session?.providerRouteId).toBeUndefined();
+    expect(session?.providerRouteKind).toBeUndefined();
+    expect(session?.providerRouteServiceId).toBeUndefined();
+    expect(session?.providerRouteBillingMode).toBeUndefined();
+  });
+
+  it("CLEARS the route when the service changes, even at the same model id", () => {
+    // The sharpest edge: two services offering the same id. Without this the
+    // turn respawns against the new endpoint and authenticates with the old
+    // service's credential — a turn billed to the wrong account, not a failure.
+    mgr.setModelSelection("s1", {
+      serviceId: "deepseek",
+      billingMode: "key",
+      modelId: "deepseek-v4-flash",
+    });
+    mgr.setProviderRoute("s1", "reserved", "deepseek-api-key");
+    mgr.setModelSelection("s1", {
+      serviceId: "openrouter",
+      billingMode: "key",
+      modelId: "deepseek/deepseek-v4-flash",
+    });
+    const session = mgr.get("s1");
+    expect(session?.serviceId).toBe("openrouter");
+    expect(session?.providerRouteId).toBeUndefined();
+  });
+
+  it("leaves a session with no pinned route alone", () => {
+    mgr.setModel("s1", "claude-opus-5");
+    mgr.setModelSelection("s1", {
+      serviceId: "anthropic",
+      billingMode: "key",
+      modelId: "claude-opus-5",
+    });
+    expect(mgr.get("s1")?.providerRouteId).toBeUndefined();
+    expect(mgr.get("s1")?.billingMode).toBe("key");
   });
 });

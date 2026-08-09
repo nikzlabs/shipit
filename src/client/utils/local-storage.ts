@@ -1,6 +1,8 @@
 import type { AgentId, IssuePriorityLevel, PermissionMode } from "../../server/shared/types.js";
 import type { IssueFilters } from "../components/issues-filter.js";
 import { DEFAULT_SORT_PREFS, type GroupKey, type SortDir, type SortKey, type SortPrefs } from "../components/issues-sort.js";
+import type { ModelSelection } from "../../server/shared/catalogue/index.js";
+import { parseSelection, resolveModelSelection, selectionExists, serializeSelection } from "../../server/shared/catalogue/index.js";
 
 /**
  * Parse a JSON string with a guaranteed fallback. Returns `fallback` when `raw`
@@ -112,7 +114,22 @@ export function saveAgentId(agentId: AgentId): void {
   }
 }
 
-export function getSavedModelId(): string | undefined {
+/**
+ * docs/252 — `vibe-model-id` is one of the three persisted model selections, and
+ * the easiest to miss: it is the seed for a **new** session's model, injected
+ * into every session WebSocket's query string. A bare id there silently decides
+ * what a fresh session bills to the moment one id belongs to two services or two
+ * billing modes, so the slot now holds the serialized triple.
+ *
+ * **The same key, not a new one.** `parseSelection` rejects a bare id by
+ * construction, which is exactly the "legacy, migrate it" signal — so a value
+ * written by an older build is recognised, resolved through the catalogue, and
+ * written back in the new form on first read. There is no second key to keep in
+ * sync and no window where two builds disagree about which one is authoritative:
+ * an older build reading a serialized value gets a string it does not offer, and
+ * falls through to the agent's default exactly as it does for any unknown model.
+ */
+function readRawModelPreference(): string | undefined {
   try {
     return localStorage.getItem(MODEL_PREFERENCE_KEY) ?? undefined;
   } catch {
@@ -120,16 +137,71 @@ export function getSavedModelId(): string | undefined {
   }
 }
 
-export function saveModelId(modelId: string | undefined): void {
+function writeRawModelPreference(value: string | undefined): void {
   try {
-    if (modelId) {
-      localStorage.setItem(MODEL_PREFERENCE_KEY, modelId);
-    } else {
-      localStorage.removeItem(MODEL_PREFERENCE_KEY);
-    }
+    if (value) localStorage.setItem(MODEL_PREFERENCE_KEY, value);
+    else localStorage.removeItem(MODEL_PREFERENCE_KEY);
   } catch {
     // localStorage may be unavailable
   }
+}
+
+/**
+ * The saved selection as a full triple, migrating a legacy bare id in place.
+ *
+ * Returns `undefined` when nothing is saved OR when the saved value is a bare id
+ * the catalogue cannot place (a versioned slug, a model since retired) — the
+ * caller still gets that raw id from {@link getSavedModelId}, so an
+ * unrecognisable seed degrades to today's behaviour rather than being dropped.
+ */
+export function getSavedModelSelection(): ModelSelection | undefined {
+  const raw = readRawModelPreference();
+  const parsed = parseSelection(raw);
+  // Syntax is not existence. A triple stored by a build whose catalogue carried
+  // a service this one has dropped still parses, and returning it would seed a
+  // new session with a row nothing can resolve an endpoint from. Checking here
+  // (rather than at every reader) is what keeps the invariant "a selection names
+  // a real catalogue row, or there is no selection" true on the client too.
+  if (parsed) return selectionExists(parsed) ? parsed : undefined;
+  const migrated = resolveModelSelection(raw);
+  if (migrated) writeRawModelPreference(serializeSelection(migrated));
+  return migrated;
+}
+
+/**
+ * The saved model id alone. Still a bare id, because that is what the composer
+ * picker and the WebSocket's `?model=` seed take; the service and mode ride
+ * alongside rather than inside it.
+ */
+export function getSavedModelId(): string | undefined {
+  const raw = readRawModelPreference();
+  return parseSelection(raw)?.modelId ?? raw;
+}
+
+/**
+ * Save a full selection. Preferred over {@link saveModelId} once one is known.
+ *
+ * A selection naming no catalogue row is refused rather than stored: the seed
+ * would parse on the next read and resolve to nothing, which is a worse failure
+ * than never having been saved.
+ */
+export function saveModelSelection(selection: ModelSelection | undefined): void {
+  if (selection && !selectionExists(selection)) return;
+  writeRawModelPreference(selection ? serializeSelection(selection) : undefined);
+}
+
+/**
+ * Save a bare model id, resolving it to a selection when the catalogue can place
+ * it. An id it cannot place is stored as-is, which is what an older build wrote
+ * and what the reader above still understands.
+ */
+export function saveModelId(modelId: string | undefined): void {
+  if (!modelId) {
+    writeRawModelPreference(undefined);
+    return;
+  }
+  const selection = resolveModelSelection(modelId);
+  writeRawModelPreference(selection ? serializeSelection(selection) : modelId);
 }
 
 // docs/217 — composer reasoning seed, keyed PER AGENT so switching agents

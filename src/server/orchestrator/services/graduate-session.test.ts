@@ -377,7 +377,10 @@ describe("graduateSession", () => {
       rootSessionId: "root-1",
     });
 
-    expect(spies.setModelSpy).toHaveBeenCalledWith("s1", "claude-opus-4-7");
+    // docs/252 — the third argument biases the bare id's resolution into a
+    // `(service, mode, model)` triple toward the agent's own vendor, which is
+    // the frozen fact for a model id chosen before services existed.
+    expect(spies.setModelSpy).toHaveBeenCalledWith("s1", "claude-opus-4-7", "anthropic");
     // docs/201 — root ancestor is threaded through to setParentSession as the 4th arg.
     expect(spies.setParentSpy).toHaveBeenCalledWith("s1", "parent-1", "turn-42", "root-1");
     expect(state.model).toBe("claude-opus-4-7");

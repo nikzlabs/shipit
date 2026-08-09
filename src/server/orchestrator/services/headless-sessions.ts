@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { BillingMode } from "../../shared/catalogue/index.js";
 import simpleGit from "simple-git";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
@@ -87,6 +88,9 @@ export interface CreateHeadlessSessionOptions {
   branch?: string;
   agent?: AgentId;
   model?: string;
+  /** docs/252 — the rest of the selection triple, when the caller knows it. */
+  serviceId?: string;
+  billingMode?: BillingMode;
   /**
    * docs/217 — per-session reasoning effort (Control B) for the first turn.
    * Validated against the resolved agent's options below and persisted to the
@@ -264,6 +268,8 @@ export async function createHeadlessSession(
     ...(explicitTitle ? { explicitTitle } : {}),
     ...(explicitBranch ? { explicitBranch } : {}),
     ...(opts.model ? { model: opts.model } : {}),
+    ...(opts.serviceId ? { serviceId: opts.serviceId } : {}),
+    ...(opts.billingMode ? { billingMode: opts.billingMode } : {}),
     ...(reasoning ? { reasoning } : {}),
   });
 
