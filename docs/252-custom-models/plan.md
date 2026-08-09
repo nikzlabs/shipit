@@ -446,6 +446,50 @@ resolved API style is deliberately *not* stored: req 16 groups by service and mo
 keyed by service/mode/model, and nothing names a reader for historical style — so it would be
 a column and a migration with no consumer.)
 
+**The usage-record half has landed separately, ahead of the rest of phase 3.** The ordering
+constraint above is an **upper** bound — not later than the phase that starts producing
+attributed turns — so landing it earlier satisfies it, and it removes the one piece of phase 3
+that cannot be repaired if the phase slips or is re-cut. It was split out for two reasons
+beyond that: it touches nothing phase 2 is changing, so the two could land in parallel; and a
+migration that rebuilds a table is the kind of change that deserves its own review rather than
+riding along with the spawn-shaping rewrite.
+
+Nothing user-visible changed with it. With no writer yet supplying the new fields, every row
+is all-null — exactly the `legacy` bucket described below — and the discriminator defaults to
+the behaviour it replaced, so no existing caller changed and no displayed number moved.
+
+What landed: `usage_turns` gains `service_id`, `billing_mode` and the four rate columns
+(`rate_input`, `rate_output`, `rate_cache_read`, `rate_cache_write`) under an all-or-nothing
+`CHECK`; `RecordedTurn` gains `attribution` and `costSource`, and `record()`'s trailing bag is
+now `RecordedTurnExtra`, derived from `RecordedTurn` so the two cannot drift. **A single
+`attribution` object rather than six loose fields**, so the all-or-nothing rule holds in the
+type system as well as in SQL — the `CHECK` is the backstop for anything that reaches SQL by
+another route. SQLite cannot add a table-level `CHECK` with `ALTER TABLE`, so the migration is
+the standard rebuild (create, copy, drop, rename, re-create the index), guarded on the column
+already existing because the migration tests rewind `user_version` and re-run every later step.
+`MODEL_SELECTION_MIGRATION` and `USAGE_ATTRIBUTION_MIGRATION` are exported frozen indices for
+the same reason `COLOR_BACKFILL_MIGRATION` is: phase 1's migration test rewound to `version -
+1`, which silently re-targets a different step the moment one is appended — appending this one
+would have done exactly that.
+
+One defect the split surfaced, found by cross-backend review: **the delta chain had to become
+keyed by `(session, subAgentId)`, not merely primary-only.** `stmtLastCumulative` selected the
+last *primary* cumulative snapshot and excluded sub-agent rows, which was sufficient while
+`subAgentId` itself decided the branch — a consult could never take the cumulative path at all.
+The discriminator makes that combination expressible, and under the old query a consult
+reporting a running total would have been diffed against the **primary agent's unrelated**
+one: primary $2 then consult $9 persists $7. A wrong number, not a missing one. A running
+total belongs to one conversation, so the chain is now keyed by the pair. This is a
+generalization and not a behaviour change — the primary chain is the `sub_agent_id IS NULL`
+key, binding NULL through `IS ?` reproduces the previous clause exactly, and a consult still
+cannot perturb it. The first draft instead *documented* the primary-only chain as though it
+were isolation, which is the class of thing CLAUDE.md's "verify an inherited guarantee at the
+source" warns about — the guarantee was asserted in a docstring the code did not provide.
+
+What is still phase 3's: the producers. Spawn shaping supplies the attribution, and the
+sub-agent writer — which passes neither model nor route today (`services/sub-agent.ts:470`) —
+widens with it. Phase 6 remains the only reader.
+
 **The cost semantics have to be settled here too, and the phase boundary is where they bite.**
 `cost_usd` as recorded is already a **delta** ShipIt computes, because Claude Code's
 `total_cost_usd` is a running conversation total rather than a turn cost (`usage.ts:115`). For

@@ -1020,6 +1020,100 @@ const MIGRATIONS: Migration[] = [
        WHERE provider_route_id IS NOT NULL AND service_id IS NOT NULL`,
     );
   },
+  // docs/252 phase 3 (usage-record half) — the per-turn usage row gains its
+  // attribution: which `(service, billing mode)` a turn ran on, and the four
+  // unit rates in force when it did.
+  //
+  // Req 16 splits usage and cost by service and billing mode, and neither can be
+  // reconstructed after the fact: the same model id is reachable through two
+  // services and two modes at different prices, and the session's CURRENT
+  // selection says nothing about what an earlier turn ran on. So the row has to
+  // gain the columns no later than the phase that starts producing such turns.
+  // This lands earlier than that, which satisfies the bound: with no writer yet
+  // supplying the fields, every row is all-null — exactly the `legacy` bucket
+  // req 16 already defines for pre-feature rows.
+  //
+  // The rates are STORED rather than looked up at read time, and that is the
+  // whole point of the four columns: a price edit must not silently restate
+  // every historical "you paid", and a retired model has no live price to look
+  // up at all. Req 16 asks where money *was* spent, which is a fact about the
+  // past. They are stored on every attributed row including the ones whose
+  // `cost_usd` came from the harness, because the two answer different
+  // questions — what was billed, versus what the catalogue said at the time.
+  //
+  // The resolved API style is deliberately NOT stored: req 16 groups by service
+  // and mode, pricing is keyed by service/mode/model, and nothing names a reader
+  // for historical style — it would be a column with no consumer.
+  //
+  // ## Why this rebuilds the table instead of six ALTER TABLEs
+  //
+  // The six are ALL-OR-NOTHING: either every one is present or every one is
+  // null. There is no such thing as a row that knows its service but not what it
+  // was charged, and since historical attribution cannot be reconstructed
+  // afterwards, a half-row is unrecoverable in exactly the way the columns exist
+  // to prevent. That belongs at the write — a CHECK constraint — rather than in
+  // a convention every future caller has to remember, and SQLite cannot add a
+  // table-level CHECK with ALTER TABLE. Hence the standard rebuild: new table,
+  // copy, drop, rename, re-create the index.
+  //
+  // All-null is the `legacy` bucket. It needs no extra discriminator and no
+  // widening of `BillingMode`, which stays "sub" | "key" and describes a
+  // *selection* rather than a row's provenance.
+  //
+  // Guarded like the docs/252 phase-1 migration above, and for the same reason:
+  // the migration TESTS rewind `user_version` to re-run an earlier step and
+  // therefore re-run every step after it too. Without the guard, re-running this
+  // one would rebuild the table a second time and copy only the pre-migration
+  // columns, dropping attribution it had already written.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(usage_turns)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "service_id")) return;
+    db.exec(`
+      CREATE TABLE usage_turns_new (
+        id INTEGER PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        cost_usd REAL NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        created_at TEXT DEFAULT (datetime('now')),
+        cache_read_tokens INTEGER,
+        cache_create_tokens INTEGER,
+        model TEXT,
+        context_tokens INTEGER,
+        sub_agent_id TEXT,
+        cumulative_cost_usd REAL,
+        service_id TEXT,
+        billing_mode TEXT,
+        rate_input REAL,
+        rate_output REAL,
+        rate_cache_read REAL,
+        rate_cache_write REAL,
+        CHECK (
+          (service_id IS NULL AND billing_mode IS NULL
+           AND rate_input IS NULL AND rate_output IS NULL
+           AND rate_cache_read IS NULL AND rate_cache_write IS NULL)
+          OR
+          (service_id IS NOT NULL AND billing_mode IS NOT NULL
+           AND rate_input IS NOT NULL AND rate_output IS NOT NULL
+           AND rate_cache_read IS NOT NULL AND rate_cache_write IS NOT NULL)
+        )
+      );
+      INSERT INTO usage_turns_new (
+        id, session_id, cost_usd, duration_ms, input_tokens, output_tokens,
+        created_at, cache_read_tokens, cache_create_tokens, model,
+        context_tokens, sub_agent_id, cumulative_cost_usd
+      )
+      SELECT
+        id, session_id, cost_usd, duration_ms, input_tokens, output_tokens,
+        created_at, cache_read_tokens, cache_create_tokens, model,
+        context_tokens, sub_agent_id, cumulative_cost_usd
+      FROM usage_turns;
+      DROP TABLE usage_turns;
+      ALTER TABLE usage_turns_new RENAME TO usage_turns;
+      CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_turns(session_id);
+    `);
+  },
 ];
 
 /**
@@ -1048,6 +1142,22 @@ function addSessionColumnIfMissing(db: DatabaseInstance, column: string): void {
  * wrong migrations the moment one is appended.
  */
 export const COLOR_BACKFILL_MIGRATION = 66;
+
+/**
+ * 0-based index of the docs/252 phase-1 selection-triple backfill in
+ * `MIGRATIONS`. Frozen and exported for the same reason as the constant above:
+ * its test must rewind to *this* step, and counting back from the tip silently
+ * re-targets a different migration the moment one is appended — which is
+ * exactly what appending the usage-attribution step below would have done.
+ */
+export const MODEL_SELECTION_MIGRATION = 68;
+
+/**
+ * 0-based index of the docs/252 phase-3 usage-attribution rebuild in
+ * `MIGRATIONS`. Frozen and exported for its own migration test, per the note on
+ * `MODEL_SELECTION_MIGRATION`.
+ */
+export const USAGE_ATTRIBUTION_MIGRATION = 69;
 
 export class DatabaseManager {
   readonly db: DatabaseInstance;

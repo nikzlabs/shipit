@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { COLOR_BACKFILL_MIGRATION, DatabaseManager } from "./database.js";
+import {
+  COLOR_BACKFILL_MIGRATION,
+  MODEL_SELECTION_MIGRATION,
+  USAGE_ATTRIBUTION_MIGRATION,
+  DatabaseManager,
+} from "./database.js";
 import { REPO_COLOR_ASSIGNMENT_ORDER } from "./repo-colors.js";
 
 /**
@@ -429,7 +434,6 @@ describe("docs/252 — model-selection backfill (real migration)", () => {
 
   function rewindAndSeed(seeds: Seed[]): void {
     const m = new DatabaseManager(file);
-    const version = m.db.pragma("user_version", { simple: true }) as number;
     for (const column of [
       "service_id",
       "billing_mode",
@@ -447,7 +451,10 @@ describe("docs/252 — model-selection backfill (real migration)", () => {
         )
         .run(seed.id, seed.id, seed.agentId, seed.model, seed.routeKind, seed.routeId);
     }
-    m.db.pragma(`user_version = ${version - 1}`);
+    // This step's own index, NOT `version - 1`. Counting back from the tip
+    // re-targets a different migration the moment one is appended — which is
+    // what appending the usage-attribution step would have done here.
+    m.db.pragma(`user_version = ${MODEL_SELECTION_MIGRATION}`);
     m.close();
   }
 
@@ -594,5 +601,221 @@ describe("docs/252 — model-selection backfill (real migration)", () => {
     const row = readBack("a");
     expect(row.service_id).toBeNull();
     expect(row.billing_mode).toBeNull();
+  });
+});
+
+/**
+ * docs/252 phase 3 (usage-record half) — `usage_turns` gains its attribution
+ * columns, which SQLite can only give a table-level CHECK by rebuilding the
+ * table. A rebuild is the one migration shape that can silently lose data, so
+ * this runs the REAL migration against a seeded pre-migration table rather than
+ * a copy of its logic.
+ */
+describe("docs/252 — usage attribution columns (real migration)", () => {
+  let file: string;
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "shipit-252-usage-"));
+    file = join(dir, "test.db");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * Every column `usage_turns` has BEFORE this migration, in the order it had
+   * them. Listed once and used to build both the seed INSERT and the read-back
+   * assertion, so a column the rebuild silently drops has nowhere to hide: a
+   * seed row supplies a distinct non-null value for all thirteen, `id`
+   * included.
+   */
+  const PRE_MIGRATION_COLUMNS = [
+    "id",
+    "session_id",
+    "cost_usd",
+    "duration_ms",
+    "input_tokens",
+    "output_tokens",
+    "created_at",
+    "cache_read_tokens",
+    "cache_create_tokens",
+    "model",
+    "context_tokens",
+    "sub_agent_id",
+    "cumulative_cost_usd",
+  ] as const;
+
+  type TurnSeed = Record<(typeof PRE_MIGRATION_COLUMNS)[number], string | number>;
+
+  /**
+   * A row with a distinct, non-null value in every pre-migration column. Ids are
+   * explicit and non-contiguous, so a rebuild that let SQLite regenerate them
+   * (1, 2, 3 …) fails instead of coincidentally matching.
+   */
+  const turnSeed = (id: number): TurnSeed => ({
+    id,
+    session_id: `sess-${id}`,
+    cost_usd: id + 0.25,
+    duration_ms: id * 1000,
+    input_tokens: id * 10,
+    output_tokens: id * 11,
+    created_at: `2026-01-0${id % 9}T00:00:00Z`,
+    cache_read_tokens: id * 12,
+    cache_create_tokens: id * 13,
+    model: `model-${id}`,
+    context_tokens: id * 14,
+    sub_agent_id: `sub-${id}`,
+    cumulative_cost_usd: id + 0.5,
+  });
+
+  /**
+   * Rebuild `usage_turns` in its pre-migration shape, seed rows into it, and
+   * rewind to this step so re-opening runs the real thing. Dropping the six
+   * columns would not be enough — the CHECK constraint is a property of the
+   * table, not of a column — so the table is recreated outright.
+   */
+  function rewindAndSeed(turns: TurnSeed[]): void {
+    const m = new DatabaseManager(file);
+    m.db.exec(`
+      DROP TABLE usage_turns;
+      CREATE TABLE usage_turns (
+        id INTEGER PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        cost_usd REAL NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        created_at TEXT DEFAULT (datetime('now')),
+        cache_read_tokens INTEGER,
+        cache_create_tokens INTEGER,
+        model TEXT,
+        context_tokens INTEGER,
+        sub_agent_id TEXT,
+        cumulative_cost_usd REAL
+      );
+      CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_turns(session_id);
+    `);
+    const insert = m.db.prepare(
+      `INSERT INTO usage_turns (${PRE_MIGRATION_COLUMNS.join(", ")})
+       VALUES (${PRE_MIGRATION_COLUMNS.map(() => "?").join(", ")})`,
+    );
+    for (const t of turns) insert.run(...PRE_MIGRATION_COLUMNS.map((c) => t[c]));
+    m.db.pragma(`user_version = ${USAGE_ATTRIBUTION_MIGRATION}`);
+    m.close();
+  }
+
+  it("carries every existing row and column across the rebuild, ids included", () => {
+    // The rebuild's failure mode is silent: a dropped column or a lost row looks
+    // like a clean upgrade. Every pre-migration column is seeded with a distinct
+    // non-null value and read straight back, so dropping any one of them — or
+    // letting SQLite regenerate the ids — fails here.
+    const seeds = [turnSeed(3), turnSeed(7)];
+    rewindAndSeed(seeds);
+
+    const m = new DatabaseManager(file);
+    const rows = m.db.prepare("SELECT * FROM usage_turns ORDER BY id").all() as Record<
+      string,
+      unknown
+    >[];
+    expect(rows).toHaveLength(2);
+    for (const [i, seed] of seeds.entries()) {
+      for (const column of PRE_MIGRATION_COLUMNS) {
+        expect(rows[i][column], column).toBe(seed[column]);
+      }
+    }
+    m.close();
+  });
+
+  it("gives every pre-existing row the all-null legacy attribution", () => {
+    // Not backfilled and not guessed: a historical row's true attribution is not
+    // in the data, and inventing one would produce a confidently wrong split of
+    // real money. All-null IS the legacy bucket — no extra discriminator.
+    rewindAndSeed([turnSeed(1)]);
+
+    const m = new DatabaseManager(file);
+    expect(m.db.prepare("SELECT * FROM usage_turns").get()).toMatchObject({
+      service_id: null,
+      billing_mode: null,
+      rate_input: null,
+      rate_output: null,
+      rate_cache_read: null,
+      rate_cache_write: null,
+    });
+    m.close();
+  });
+
+  it("keeps the session index, so the rebuild does not quietly deoptimize lookups", () => {
+    rewindAndSeed([turnSeed(1)]);
+    const m = new DatabaseManager(file);
+    const indexes = m.db.prepare("PRAGMA index_list(usage_turns)").all() as { name: string }[];
+    expect(indexes.map((i) => i.name)).toContain("idx_usage_session");
+    m.close();
+  });
+
+  it("is a no-op when re-run, so an earlier migration's test rewind cannot drop attribution", () => {
+    // Migration tests rewind `user_version` to re-run a specific step, which
+    // re-runs every step after it too. Without the guard, this one would rebuild
+    // the table and copy only the pre-migration columns.
+    rewindAndSeed([turnSeed(1)]);
+    const m = new DatabaseManager(file);
+    m.db
+      .prepare(
+        `UPDATE usage_turns SET service_id = 'deepseek', billing_mode = 'key',
+           rate_input = 1, rate_output = 2, rate_cache_read = 0.5, rate_cache_write = 1`,
+      )
+      .run();
+    // Rewind to the migration before this one, as that suite does — everything
+    // after it re-runs, including this migration.
+    m.db.pragma(`user_version = ${MODEL_SELECTION_MIGRATION}`);
+    m.close();
+
+    const reopened = new DatabaseManager(file);
+    expect(reopened.db.prepare("SELECT * FROM usage_turns").get()).toMatchObject({
+      service_id: "deepseek",
+      billing_mode: "key",
+      rate_input: 1,
+    });
+    reopened.close();
+  });
+
+  it("rejects EVERY partially-attributed row at the write", () => {
+    // The constraint is the point of the rebuild: a row that knows its service
+    // but not what it was charged is unrecoverable, because the missing half
+    // cannot be reconstructed later. Enumerated over all 62 partial shapes
+    // rather than spot-checked — a single example would leave a dropped term in
+    // the constraint unguarded, and there is no second line of defence in SQL.
+    const ATTRIBUTION = [
+      ["service_id", "'deepseek'"],
+      ["billing_mode", "'key'"],
+      ["rate_input", "0.28"],
+      ["rate_output", "0.42"],
+      ["rate_cache_read", "0.028"],
+      // Zero is a REAL rate (a service that charges nothing to write the cache),
+      // so it has to satisfy the "present" side of the constraint rather than
+      // read as a missing value.
+      ["rate_cache_write", "0"],
+    ] as const;
+
+    const m = new DatabaseManager(file);
+    const insert = (present: readonly (readonly [string, string])[]) =>
+      m.db
+        .prepare(
+          `INSERT INTO usage_turns (session_id, cost_usd, duration_ms${present.map(([c]) => `, ${c}`).join("")})
+           VALUES ('s', 1, 1${present.map(([, v]) => `, ${v}`).join("")})`,
+        )
+        .run();
+
+    for (let mask = 1; mask < (1 << ATTRIBUTION.length) - 1; mask++) {
+      const present = ATTRIBUTION.filter((_, i) => mask & (1 << i));
+      expect(() => insert(present), present.map(([c]) => c).join("+")).toThrow(/CHECK constraint/i);
+    }
+
+    // The two complete shapes are accepted: none of them (a legacy row) and all
+    // of them, zero rate included.
+    expect(() => insert([])).not.toThrow();
+    expect(() => insert(ATTRIBUTION)).not.toThrow();
+    m.close();
   });
 });

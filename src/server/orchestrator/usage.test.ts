@@ -288,3 +288,158 @@ describe("UsageManager — cumulative cost → per-turn delta", () => {
     expect(mgr.record("s", 0.5, 500, 1, 1, { subAgentId: "codex" })).toBeCloseTo(0.5); // verbatim
   });
 });
+
+/**
+ * docs/252 req 16 — usage is reported split by service and billing mode, so the
+ * row has to record which one it ran on and at what rates. Landed ahead of the
+ * producers: with nobody supplying the fields yet, every row is all-null, which
+ * is exactly the `legacy` bucket req 16 already defines for pre-feature rows.
+ */
+describe("UsageManager — turn attribution (docs/252 req 16)", () => {
+  let dbManager: DatabaseManager;
+  beforeEach(() => {
+    dbManager = new DatabaseManager(":memory:");
+  });
+  afterEach(() => {
+    dbManager.close();
+  });
+
+  const attribution = {
+    serviceId: "deepseek",
+    billingMode: "key" as const,
+    rates: { input: 0.28, output: 0.42, cacheRead: 0.028, cacheWrite: 0 },
+  };
+
+  const rowOf = (sessionId: string) =>
+    dbManager.db.prepare("SELECT * FROM usage_turns WHERE session_id = ?").get(sessionId) as Record<
+      string,
+      unknown
+    >;
+
+  it("persists the service, the billing mode and all four rates in force", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s", 0.1, 1000, 500, 100, { attribution });
+
+    expect(rowOf("s")).toMatchObject({
+      service_id: "deepseek",
+      billing_mode: "key",
+      rate_input: 0.28,
+      rate_output: 0.42,
+      rate_cache_read: 0.028,
+      // Zero is a real answer here — a service that charges nothing to write the
+      // cache — and must not collapse into "no rate recorded", which is what the
+      // CHECK constraint's all-or-nothing rule distinguishes.
+      rate_cache_write: 0,
+    });
+  });
+
+  it("writes a legacy (all-null) row when no attribution is supplied", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s", 0.1, 1000);
+
+    expect(rowOf("s")).toMatchObject({
+      service_id: null,
+      billing_mode: null,
+      rate_input: null,
+      rate_output: null,
+      rate_cache_read: null,
+      rate_cache_write: null,
+    });
+  });
+
+  it("records the rates that were in force, not whatever the catalogue says later", () => {
+    // The reason the rates are columns rather than a read-time lookup: a price
+    // edit must not restate history, and a retired model has no price to look up
+    // at all. Two turns at different rates keep their own.
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s1", 0.1, 1000, 500, 100, { attribution });
+    mgr.record("s2", 0.1, 1000, 500, 100, {
+      attribution: { ...attribution, rates: { ...attribution.rates, input: 0.56 } },
+    });
+
+    expect(rowOf("s1")).toMatchObject({ rate_input: 0.28 });
+    expect(rowOf("s2")).toMatchObject({ rate_input: 0.56 });
+  });
+});
+
+/**
+ * docs/252 phase 3 — the cumulative-to-delta conversion branches on the SOURCE
+ * of the value, not on `subAgentId`. "Not a sub-agent implies cumulative" holds
+ * only while the sole producer is a harness billing its own vendor; a
+ * rate-derived figure is already per-turn and must not be delta'd again.
+ */
+describe("UsageManager — cost-source discriminator", () => {
+  let dbManager: DatabaseManager;
+  beforeEach(() => {
+    dbManager = new DatabaseManager(":memory:");
+  });
+  afterEach(() => {
+    dbManager.close();
+  });
+
+  it("stores a per-turn cost verbatim, even for a primary turn", () => {
+    const mgr = new UsageManager(dbManager);
+    // Under the old rule this pair would come out as 2.00 and 0.00: the second
+    // value would be read as a running total that went DOWN, i.e. a reset — the
+    // exact silent corruption the discriminator exists to prevent.
+    expect(mgr.record("s", 2.0, 1000, 0, 0, { costSource: "per-turn" })).toBeCloseTo(2.0);
+    expect(mgr.record("s", 0.35, 1000, 0, 0, { costSource: "per-turn" })).toBeCloseTo(0.35);
+    expect(mgr.getSessionUsage("s")!.totalCostUsd).toBeCloseTo(2.35);
+  });
+
+  it("leaves a per-turn row out of the cumulative baseline chain", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s", 2.0, 1000); // cumulative 2.00 → delta 2.00
+    mgr.record("s", 0.35, 1000, 0, 0, { costSource: "per-turn" }); // verbatim
+    mgr.record("s", 3.0, 1000); // cumulative 3.00 — diffs vs 2.00, not 0.35
+
+    const turns = mgr.getSessionTurns("s");
+    expect(turns.map((t) => Number(t.costUsd.toFixed(2)))).toEqual([2.0, 0.35, 1.0]);
+  });
+
+  it("defaults to cumulative for a primary turn — today's behaviour, unchanged", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s", 2.0, 1000);
+    expect(mgr.record("s", 3.0, 1000)).toBeCloseTo(1.0);
+  });
+
+  it("defaults to per-turn for a sub-agent consult — today's behaviour, unchanged", () => {
+    const mgr = new UsageManager(dbManager);
+    expect(mgr.record("s", 0.3, 500, 1, 1, { subAgentId: "codex" })).toBeCloseTo(0.3);
+    expect(mgr.record("s", 0.3, 500, 1, 1, { subAgentId: "codex" })).toBeCloseTo(0.3);
+    expect(mgr.getSessionUsage("s")!.totalCostUsd).toBeCloseTo(0.6);
+  });
+
+  it("gives a cumulative consult its OWN chain, not the primary agent's", () => {
+    // A running total belongs to one conversation, so the chain is keyed by
+    // `(session, subAgentId)`. Without that key the consult below would diff
+    // 9.00 against the primary agent's unrelated 2.00 and persist 7.00 — a wrong
+    // number rather than a missing one, and only reachable at all because the
+    // discriminator makes a cumulative consult expressible.
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s", 2.0, 1000); // primary cumulative 2.00 → delta 2.00
+    const first = mgr.record("s", 9.0, 1000, 1, 1, {
+      subAgentId: "codex",
+      costSource: "cumulative",
+    });
+    const second = mgr.record("s", 11.0, 1000, 1, 1, {
+      subAgentId: "codex",
+      costSource: "cumulative",
+    });
+    expect(first).toBeCloseTo(9.0); // first of ITS chain → its own baseline
+    expect(second).toBeCloseTo(2.0); // 11.00 − 9.00, not 11.00 − 2.00
+
+    // And the primary chain is still untouched by either.
+    expect(mgr.record("s", 3.0, 1000)).toBeCloseTo(1.0); // diffs vs 2.00
+  });
+
+  it("keeps two different sub-agents' chains apart", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s", 5.0, 1000, 1, 1, { subAgentId: "codex", costSource: "cumulative" });
+    // A different consult's first turn is its own baseline, not a delta against
+    // the other consult's 5.00.
+    expect(
+      mgr.record("s", 2.0, 1000, 1, 1, { subAgentId: "gemini", costSource: "cumulative" }),
+    ).toBeCloseTo(2.0);
+  });
+});
