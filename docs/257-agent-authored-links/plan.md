@@ -89,6 +89,13 @@ SDK. One thing for the agent to author, one thing to document.
 
 ### Preview (req 2)
 
+0. The destination panel is revealed first, for **both** flows: select the right
+   tab, flip the mobile layout to the workspace column, close the mobile
+   sidebar. Without this the click resolves a destination the user cannot see —
+   the Preview renders only when its tab is selected (`App.tsx:1555`), and so
+   does Present (`App.tsx:1819`). `PresentToolChip` already does exactly this
+   three-call sequence (`message-tools.tsx:436`); this feature reuses it rather
+   than inventing a second way to reveal a panel.
 1. `parseShipitLink` resolves the href to `{ service, path, params, hash }`.
 2. The service name is resolved against `preview-store.services`. A name no
    declared service matches → a toast saying so (req 10). A **declared but
@@ -97,10 +104,14 @@ SDK. One thing for the agent to author, one thing to document.
    `previewPaths[sessionId:port]` — the map the iframe pool already reads when
    it creates a slot, so a preview that is not open yet simply *starts* on the
    target page.
-4. A live slot is navigated instead, by asking the injected preview script to
-   `location.assign(path)`. The iframe is cross-origin, so the parent cannot
-   drive it directly; this reuses the existing `shipit-toolbar` command channel
-   that already carries `back` / `reload`.
+4. A live slot is navigated by **assigning the iframe's `src`** to the resolved
+   destination URL. An earlier draft added a `navigate` command to the injected
+   preview script, on the belief that a parent cannot navigate a cross-origin
+   iframe. That is wrong: cross-origin blocks *reading* `location` and calling
+   `history`, not assigning `src`, and `PreviewFrame.tsx:407` already does it.
+   The command would also have widened an injected listener that checks neither
+   `event.source` nor origin (`preview-proxy.ts:106`) — a new message type on an
+   unauthenticated channel, to do something the parent can already do.
 5. The link event is delivered to the page (req 11) — immediately when no
    navigation was needed, otherwise on the next SDK handshake from that slot,
    since navigating tears down the old `window.shipit`.
@@ -139,9 +150,19 @@ time — the same property that makes step 3 work for a preview that is merely n
 open yet. Req 12 needs no second mechanism and no waiting UI: the click switches
 to the Preview tab, where the service's own startup state already renders.
 
-A start can fail (a bad compose file, a missing secret). That surfaces where
-service failures already surface — `composeError`, the service's own error state
-in the drawer — not as a second toast from this feature.
+Status handling is three-way and the middle case matters: `stopped`/`error` →
+send `start_service`; `starting` → wait without re-sending (a click that arrives
+during a boot must not queue a second start); `running` → navigate now.
+
+A start that fails is a pointer that could not be opened, so it produces the
+req 10 toast like any other failure — *not* only the service's own error state in
+the drawer. Two failure paths are easy to miss: `send()` returns `false` when the
+socket isn't open (`useWebSocket.ts:151`), and a server-side start failure comes
+back as a generic WS error that currently renders as a transcript error bubble
+(`service-handlers.ts:26`, `error.ts:5`). The first is a direct return value to
+check; the second needs the intent to notice that its service reached `error`.
+The drawer keeps showing what it always showed — this adds the toast the click
+promised, it does not move compose diagnostics.
 
 ### Present rendering
 
@@ -172,6 +193,15 @@ window.shipit.links.subscribe((link) => {
   when one exists, so a plain anchor works with no page code at all (req 9). A
   page that wants different behaviour scrolls where it likes in its own handler.
 
+**The scroll cannot fire on receipt.** The SDK is injected into `<head>`
+(`RenderedFrame.tsx:56`) and posts `ready` immediately (`bootstrap.ts:150`), so
+for a Present artifact — where the click is what mounts the frame — the link
+arrives before the document has parsed and `getElementById` returns null. The
+promised no-JavaScript anchor would silently do nothing, which is the whole
+feature for a page with no script. So the SDK retains the hash and scrolls on
+`DOMContentLoaded`, attempting immediately only when `readyState` is already
+past loading. Both orderings need a test; the early one is the default case.
+
 ## Unavailable destinations (req 10)
 
 A pointer always renders and always accepts a click; a dead one explains itself
@@ -185,6 +215,44 @@ exists because issue references are pattern-matched out of ordinary prose and
 may not be references at all. Here the agent wrote the link on purpose, so
 hiding it would misreport the agent's intent as a rendering decision.
 
+## Parsing and the origin contract
+
+The href is agent-authored and becomes both an iframe navigation and data
+crossing into a frame, so the parser is a gate, not a formatter:
+
+- **Reject, never repair.** `sanitizePreviewPath` truncates an overlong value
+  (`preview-store.ts:296`), which is right for a path a page *reported* about
+  itself and wrong for a destination someone authored — a truncated destination
+  is a different destination. A pointer that fails any rule is unopenable and
+  gets the req 10 toast.
+- Exact scheme match; strict length caps; no credentials and no port in the
+  preview authority (the authority is a service name — req 8 says a port is
+  never part of the address, so one appearing there is a malformed pointer).
+- Exact match against a **declared** service name; no prefix or fuzzy matching.
+- The same validated string is what gets stored in `previewPaths` and what gets
+  navigated to. Validating one and using the other is how these bugs happen.
+- `shipit-render` is allowlisted to `link|badge|button`, and it is the only
+  parameter stripped before delivery. Anything else is the page's.
+- Preview frames get an **exact** `targetOrigin`, as the visibility messages
+  already do (`PreviewFrame.tsx:252`). Present frames are opaque-origin, where
+  `"*"` is the only expressible target — that stays acceptable only because the
+  existing browser-supplied `event.source` check and the SDK's locked
+  `parentOrigin` (`bootstrap.ts:56`) are preserved, not loosened.
+
+## Branch order in `MarkdownLink`
+
+The ShipIt-scheme branch must run **before** the repo-file branch
+(`message-markdown.tsx:187`): `shipit-present:/persist/x.html` has no `://`, so
+`parseRepoFileLink` would happily read it as a repo path and open a file preview
+(`repo-file-link.ts:38`). Same class of collision as the tracker-URL branch,
+which is ordered ahead of repo files for exactly this reason.
+
+All three rendered forms follow the repo-file branch's pattern of carrying **no
+real `href`**. A custom-protocol href would put `shipit-present:...` in the
+status bar on hover and hand it to the OS protocol handler on middle-click or
+"open in new tab". The click handler is the whole behaviour; `role="button"` and
+`tabIndex` restore the keyboard affordance.
+
 ## Key files
 
 | File | Role |
@@ -197,7 +265,6 @@ hiding it would misreport the agent's intent as a rendering decision.
 | `src/client/stores/present-store.ts` | `focusByPath`, `pendingLink` |
 | `src/client/components/PreviewFrame/PreviewFrame.tsx` | Navigate the live slot, deliver on handshake |
 | `src/client/components/PresentPane.tsx` | Deliver to the artifact frame |
-| `src/server/orchestrator/preview-proxy.ts` | `navigate` command in the injected script |
 | `src/server/shared/agent-interface-sdk/bootstrap.ts` | `window.shipit.links` |
 | `src/server/shipit-docs/chat-links.md` | Agent-facing reference |
 
@@ -205,6 +272,10 @@ hiding it would misreport the agent's intent as a rendering decision.
 
 - Auto-linkifying bare prose. Both schemes are explicit; there is no pattern to
   guess and no false-positive gate to build.
+
+- A `navigate` command in the injected preview script. Assigning the iframe
+  `src` does the same job with no new message type on an unauthenticated
+  channel.
 
 An earlier draft listed "starting a stopped service on click" here, reasoning
 that booting a container exceeds what a link's appearance promises. The

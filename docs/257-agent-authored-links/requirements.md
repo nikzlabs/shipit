@@ -1,7 +1,7 @@
 # Agent-authored links into the Preview and the Present tab — requirements
 
 What the feature must do, in the requester's terms. Design and mechanism live in
-[`plan.md`](./plan.md), which is provisional while a question below is open.
+[`plan.md`](./plan.md).
 
 ## Context
 
@@ -22,8 +22,8 @@ one requirement — with no way to make that pointer clickable.
 2. Clicking it opens the linked destination **in the Preview**.
 3. Clicking it opens the linked destination **in a presented file** (Present tab).
 4. Both destinations are supported by the same feature; neither is a follow-up.
-5. The link addresses a **specific place** in the destination — the item the
-   agent is pointing at — not just the app or the artifact as a whole.
+5. A pointer **can** address a specific place in the destination — the item the
+   agent is pointing at — as well as the app or the artifact as a whole.
 6. The feature is generic. It serves apps the *user* built (the requirements
    manager is one example), so it must not be tied to any ShipIt-owned domain
    such as issues, files, or PRs.
@@ -33,21 +33,27 @@ one requirement — with no way to make that pointer clickable.
    is never required of the agent.
 9. A Present destination is addressed by the artifact's **file path plus a URL
    fragment**; the fragment is what names the place inside it.
-10. A pointer whose destination is unavailable **stays clickable** and, on
-    click, says why instead of doing nothing. The explanation appears as a
-    **toast**, the same way for both destinations.
+10. A pointer that cannot be opened — for **any** reason — **stays clickable**
+    and, on click, says why instead of doing nothing. The explanation appears as
+    a **toast**, the same way for both destinations.
 11. A link can also **deliver a message to the destination page**, observable by
     that page's own JavaScript, so the page can respond to the click itself —
     highlight the item, open a drawer, switch a filter — rather than only being
     scrolled to an anchor. This applies to both destinations (req 2, req 3).
 12. If the pointer names a service that is **not running, ShipIt starts it
-    first** and then opens the destination. A stopped service is not an
-    unavailable destination; req 10 covers only what cannot be reached at all —
-    no such service, or an artifact that was never presented.
+    first** and then opens the destination. A stopped service is not by itself a
+    reason to report a pointer as unopenable (req 10); a start that *fails* is.
 
 ## Open questions
 
-_None._
+- **Do reqs 3, 9 and 11 apply to presented artifacts that are not HTML?** The
+  Present tab also shows SVG, markdown, images, a source view of any artifact,
+  and a thumbnail gallery. Only *rendered HTML* has a channel into the page
+  (`PresentPane.tsx:80`), so on the other kinds a pointer could focus the
+  artifact but could neither scroll to a place inside it (req 9) nor tell it
+  about the click (req 11) — unless ShipIt does the scrolling itself, which is
+  possible for markdown (it renders those headings) but not for an image.
+  Raised by the cross-backend review. Nothing is implemented while this is open.
 
 ## Resolved questions
 
