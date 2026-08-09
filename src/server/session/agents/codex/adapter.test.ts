@@ -792,7 +792,13 @@ describe("CodexAdapter", () => {
       type: "agent_result",
       status: "success",
       sessionId: "thread-abc-123",
-      tokens: { input: 150, output: 75, cacheRead: 100 },
+      // docs/252 phase 3 — Codex's `inputTokens` INCLUDES `cachedInputTokens`
+      // (measured against the app-server), where Claude's are disjoint. The
+      // adapter normalizes to the disjoint convention here, at the boundary that
+      // knows this harness's semantics, so the pricing code can multiply the
+      // classes independently without double-charging the cached tokens at the
+      // full input rate: 150 - 100 = 50.
+      tokens: { input: 50, output: 75, cacheRead: 100 },
       contextTokens: 130,
       contextWindow: 272000,
     });

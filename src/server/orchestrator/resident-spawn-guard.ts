@@ -1,0 +1,88 @@
+/**
+ * Release a resident streaming agent process whose spawn identity no longer
+ * matches what the session now selects.
+ *
+ * Live steering (docs/140) keeps ONE CLI process resident across turns: after
+ * the first turn every subsequent message is injected with `sendUserMessage`
+ * instead of spawning a new agent. Everything that shapes a spawn, however, is
+ * fixed at spawn time — the model (`--model` for Claude, the `turn/start` model
+ * for Codex's first turn), and now the endpoint and the credential too. There is
+ * no mid-stream control_request ShipIt pushes for any of them, the way it pushes
+ * `set_permission_mode` when the permission chip changes between turns.
+ *
+ * So a mid-session change was silently a no-op. `set_model` moved
+ * `SessionInfo.model` (which is what the picker's checkmark reads) while every
+ * following turn still ran on the OLD process — and the CLI's `agent_init`
+ * reported that old model back, which is what the picker's trigger label reads.
+ * The two disagreed forever: "I switched Fable → Opus, the dropdown says Opus,
+ * the button says Fable."
+ *
+ * The fix is to make the spawn boundary real. When the session's spawn identity
+ * no longer matches what the resident process was spawned with, kill the
+ * process; the turn then spawns a fresh one with the new shaping and
+ * `--resume <session>`, which is the same kill-and-resume the auth-heal and
+ * quota-failover retries already rely on for conversation continuity
+ * (`turn-executor.ts`). Such a change is rare and user-initiated, so paying one
+ * respawn for it is cheaper — and far less machinery — than plumbing a
+ * mid-stream switch through the worker HTTP surface for every backend.
+ *
+ * **docs/252 phase 3 widened the identity from a model string to the whole
+ * spawn-relevant tuple**, and sequencing that later would have been a bug rather
+ * than a deferral. A model id does not identify a service (req 5): the same
+ * `deepseek-v4-flash` is reachable directly and through a gateway, so under the
+ * old string comparison a switch between them looked like no change at all —
+ * no kill, and the next turn ran on the previous service's endpoint and
+ * credential, billing the wrong account (req 11). Phase 3 is the phase that
+ * makes that switch reachable, so it is the phase that has to close it.
+ * `sessionSpawnIdentity` (`service-routing.ts`) is the tuple; this module only
+ * compares it.
+ */
+
+import type { SessionRunnerInterface } from "./session-runner.js";
+
+/**
+ * Kill the runner's resident agent when `desiredIdentity` differs from the
+ * identity it was spawned with. No-op when there is no resident process, when
+ * the identities agree, or when the spawn-time identity is unknown
+ * (`appliedSpawnIdentity === undefined`, e.g. a process adopted across an
+ * orchestrator restart) — killing on an unknown baseline would respawn on every
+ * turn.
+ *
+ * Returns true when a process was released, so callers can log it.
+ */
+export function releaseResidentOnSpawnChange(
+  runner: SessionRunnerInterface | null | undefined,
+  desiredIdentity: string | undefined,
+): boolean {
+  if (!runner) return false;
+  const applied = runner.appliedSpawnIdentity;
+  if (applied === undefined || applied === desiredIdentity) return false;
+  const resident = runner.getAgent();
+  if (!resident) return false;
+
+  // Drop the previous turn's listeners BEFORE killing, so the kill's `done`
+  // can't re-run that turn's terminal flow (commit / drain / finished SSE)
+  // against a turn that already completed. The state `done` would have cleared
+  // is cleared here instead.
+  try {
+    resident.removeAllListeners();
+  } catch {
+    // Best-effort: an adapter without listeners is already in the state we want.
+  }
+  try {
+    resident.kill();
+  } catch {
+    // Already gone is the state we wanted.
+  }
+  if (runner.getAgent() === resident) runner.setAgent(null);
+  runner.isStreamingActive = false;
+  runner.appliedSpawnIdentity = undefined;
+  // docs/235 — the CLI reaps its background tasks when it exits; a stale count
+  // would pin `agentBusy` true and block idle reclaim forever.
+  runner.clearBackgroundTasks();
+  console.log(
+    `[spawn-switch] released resident agent for ${runner.sessionId}: `
+    + `spawned as ${applied}, session now selects ${desiredIdentity ?? "the agent default"}`,
+  );
+  return true;
+}

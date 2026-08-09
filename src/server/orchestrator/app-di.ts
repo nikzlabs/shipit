@@ -5,6 +5,7 @@ import { DatabaseManager } from "../shared/database.js";
 import { GitManager } from "../shared/git.js";
 import { AgentRegistry, isAllowedAgentEnvKey } from "../shared/agent-registry.js";
 import { readInstalledHarnesses } from "../shared/installed-harnesses.js";
+import { listConfiguredCredentials } from "./service-routing.js";
 import { collectServiceCredentialEnv } from "./secret-resolver.js";
 import { RepoGit } from "./repo-git.js";
 import { AuthManager } from "./agents/claude/auth-manager.js";
@@ -436,6 +437,12 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
 
   // ---- Agent registry ----
   const agentRegistry = deps.agentRegistry ?? new AgentRegistry({
+    // docs/252 phase 3 (req 8) — the credential question is now asked per MODEL,
+    // over the credentials this install actually holds. Supplying this is what
+    // switches the registry off the two per-`AgentId` probes below; they survive
+    // as the fallback for a registry with no credential source (a session
+    // worker, a unit test), which is the pre-feature behaviour.
+    listCredentials: () => listConfiguredCredentials(credentialStore),
     checkClaudeAuth: () =>
       providerAccountManager.hasAnyAuthForProvider("claude")
       // Explicit dependency injection is itself an auth source for tests and

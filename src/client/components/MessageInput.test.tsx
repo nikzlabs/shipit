@@ -226,8 +226,9 @@ describe("MessageInput", () => {
     });
   });
 
-  describe("model agent selector", () => {
-    it("renders model selector when onAgentChange is provided", () => {
+  describe("harness and model selectors", () => {
+    // docs/252 phase 3 — two controls, not one grouped dropdown.
+    it("renders both when onAgentChange is provided", () => {
       render(
         <MessageInput
           onSend={vi.fn()}
@@ -237,7 +238,8 @@ describe("MessageInput", () => {
           modelInfo={{ model: "claude-opus-4-8", contextWindowTokens: 200000 }}
         />,
       );
-      expect(screen.getByTestId("model-agent-selector")).toBeInTheDocument();
+      expect(screen.getByTestId("harness-selector")).toBeInTheDocument();
+      expect(screen.getByTestId("model-selector")).toBeInTheDocument();
       expect(screen.getByText("Opus 4.8")).toBeInTheDocument();
     });
   });

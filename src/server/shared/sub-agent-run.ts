@@ -15,7 +15,7 @@
  * credentials, or the registry. Wiring those is the caller's job.
  */
 
-import type { AgentProcess, AgentRunParams, AgentEvent, AgentId } from "./types.js";
+import type { AgentProcess, AgentRunParams, AgentEvent, AgentId, ServiceRouting } from "./types.js";
 
 /**
  * Default wall-clock cap on a single sub-agent run.
@@ -77,6 +77,14 @@ export interface SubAgentRunOptions {
   cwd: string;
   /** Optional model alias/id; defaults to the adapter's default model. */
   model?: string;
+  /**
+   * docs/252 phase 3 — base URL + credential for the selected model's service.
+   * A consult is a `(service, billing mode, model)` selection like any other
+   * (the invoked agent's own sub-agent defaults), so it needs the same shaping
+   * a primary turn does — otherwise a consult on a custom service would run
+   * against the harness's own vendor.
+   */
+  serviceRouting?: ServiceRouting;
   /** docs/217 — reasoning effort for the sub-agent (the invoked agent's global default). */
   reasoningEffort?: string;
   /** Wall-clock cap in ms. Defaults to {@link DEFAULT_SUB_AGENT_TIMEOUT_MS}. */
@@ -139,6 +147,8 @@ export interface SubAgentSpawnRequest {
   /** The caller's recursion depth (0 for a primary). The worker stamps depth+1. */
   depth: number;
   model?: string;
+  /** docs/252 phase 3 — base URL + credential for the sub-agent model's service. */
+  serviceRouting?: ServiceRouting;
   /** docs/217 — reasoning effort for the sub-agent (the invoked agent's global default). */
   reasoningEffort?: string;
   timeoutMs?: number;
@@ -298,6 +308,7 @@ export function buildSubAgentRunParams(opts: SubAgentRunOptions): AgentRunParams
     prompt: opts.prompt,
     cwd: opts.cwd,
     ...(opts.model !== undefined ? { model: opts.model } : {}),
+    ...(opts.serviceRouting !== undefined ? { serviceRouting: opts.serviceRouting } : {}),
     ...(opts.reasoningEffort !== undefined ? { reasoningEffort: opts.reasoningEffort } : {}),
   };
 }

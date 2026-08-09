@@ -2,7 +2,7 @@
 
 import type { EventEmitter } from "node:events";
 import type { ImageAttachment, PermissionMode } from "./attachment-types.js";
-import type { BillingMode } from "../catalogue/types.js";
+import type { ApiStyle, BillingMode, CredentialTarget } from "../catalogue/types.js";
 import type { McpServerConfig, McpServerStatus } from "./mcp-types.js";
 
 // ---- Agent identity ----
@@ -559,6 +559,38 @@ export type AgentContentBlock =
 
 // ---- Run parameters ----
 
+/**
+ * docs/252 phase 3 — how this run is pointed at the selected model's service.
+ *
+ * Present only when there is something to shape: a **string-delivered**
+ * credential, which is every custom service and the env-supplied first-party
+ * routes. Absent for an account-delivered credential, where the CLI's own login
+ * already binds it to its own vendor's endpoint — shaping that would break the
+ * token exchange, not redirect it.
+ *
+ * **No secret travels in this payload.** `credentialSourceEnv` names a variable
+ * the worker's own `process.env` already holds (delivered by the secrets push),
+ * and `credentialTarget` says where the CLI reads it from; the adapter copies
+ * one to the other at spawn. Storage name and spawn target are deliberately
+ * different things — a service's storage name must never be a harness's own
+ * variable, or the route works or fails depending on how the install happens to
+ * be signed in (docs/252 Appendix A).
+ */
+export interface ServiceRouting {
+  serviceId: string;
+  /** Display name, for the provider block Codex wants and for logs. */
+  serviceName: string;
+  billingMode: BillingMode;
+  /** The style resolved from the harness×model overlap — decides the wire format. */
+  style: ApiStyle;
+  /** Base URL for that style. Whether a `/v1` belongs in it is per-style; see the catalogue. */
+  baseUrl: string;
+  /** The variable in the worker's environment that holds the secret. */
+  credentialSourceEnv: string;
+  /** Where this harness reads the credential from. */
+  credentialTarget: CredentialTarget;
+}
+
 export interface AgentRunParams {
   prompt: string;
   sessionId?: string;
@@ -577,6 +609,12 @@ export interface AgentRunParams {
   mcpServers?: McpServerConfig[];
   /** Model alias or ID to use (e.g., "sonnet", "opus", "gpt-5.4"). */
   model?: string;
+  /**
+   * docs/252 phase 3 — base URL and credential for the selected model's service.
+   * Absent ⇒ the CLI runs against its own vendor exactly as it did before this
+   * feature. See {@link ServiceRouting}.
+   */
+  serviceRouting?: ServiceRouting;
   /**
    * Reasoning/effort level for this run, an agent-specific token from the
    * agent's `reasoning.options` (Claude: low…max via `--effort`; Codex:

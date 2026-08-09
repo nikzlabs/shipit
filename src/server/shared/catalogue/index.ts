@@ -19,6 +19,8 @@ import type {
   ApiStyle,
   BillingMode,
   BillingModeDef,
+  CredentialTarget,
+  CredentialTargets,
   HarnessDef,
   ModeCredential,
   ModelDef,
@@ -245,29 +247,195 @@ export function catalogueEntriesForHarness(harnessId: AgentId): CatalogueEntry[]
 }
 
 /**
- * The model ids a harness can offer **from its own vendor's service** only.
+ * Every model id a harness can speak to **anywhere in the catalogue**,
+ * de-duplicated in catalogue order.
  *
- * This is the deliberate phase-1 narrowing, and the reason nothing user-visible
- * moves: today `AGENT_DEFS[].capabilities.models` is a hand-kept list of the
- * harness vendor's own models, so deriving it from the whole join would put
- * DeepSeek and the gateways into the picker before there is any way to give them
- * a credential (phase 2) or to route a turn to them (phase 3). Phase 3 replaces
- * this with the credential-filtered join and this function goes away.
+ * This is the catalogue's answer and not the install's: it says nothing about
+ * credentials. It replaces phase 1's `nativeModelIdsForHarness`, which narrowed
+ * the same join to the harness's own vendor because nothing could yet give a
+ * custom service a credential or route a turn to one. Phase 3 can, so the
+ * narrowing goes.
  *
- * De-duplicated across billing modes, preserving first-seen order.
+ * The eligible list — what the picker offers — is
+ * {@link eligibleEntriesForHarness}, which filters this by the credentials the
+ * user actually configured (req 8).
  */
-export function nativeModelIdsForHarness(harnessId: AgentId): string[] {
-  const harness = getHarness(harnessId);
-  if (!harness?.nativeService) return [];
+export function catalogueModelIdsForHarness(harnessId: AgentId): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const entry of catalogueEntriesForHarness(harnessId)) {
-    if (entry.service.id !== harness.nativeService) continue;
     if (seen.has(entry.model.id)) continue;
     seen.add(entry.model.id);
     out.push(entry.model.id);
   }
   return out;
+}
+
+// ---- Eligibility and spawn shaping (phase 3, reqs 6 and 8) -----------------
+//
+// Phase 1 stopped here deliberately: "eligibility is not here". It is now.
+// Everything below still takes the user's configured routes as an ARGUMENT —
+// this module never reads a store — so the rules stay one pure, testable place
+// and the orchestrator only supplies the facts.
+
+/**
+ * A credential the user has configured, reduced to what eligibility needs.
+ *
+ * Deliberately not `CredentialRoute`: that type lives in the orchestrator's
+ * domain types and carries storage concerns (status, priority, timestamps) this
+ * layer must not depend on. What the rules need is the `(service, mode)` the
+ * credential belongs to and **how it is delivered**.
+ */
+export interface ConfiguredCredential {
+  serviceId: string;
+  billingMode: BillingMode;
+  /** Delivery, never billing — see {@link ModeCredential}. */
+  via: "account" | "string";
+}
+
+/**
+ * Where a credential of shape `via` lands for this harness, before any
+ * service-specific override. `undefined` means the harness cannot carry that
+ * shape at all — an OAuth-only CLI has no `string` target, a key-only CLI no
+ * `account` one.
+ */
+export function harnessCredentialTarget(
+  harnessId: AgentId,
+  via: "account" | "string",
+): CredentialTargets["string"] | CredentialTargets["account"] | undefined {
+  const spawn = getHarness(harnessId)?.spawn;
+  return via === "string" ? spawn?.credential.string : spawn?.credential.account;
+}
+
+/**
+ * **The eligibility predicate, stated over a configured route rather than over
+ * a mode.** Writing it as two independent tests — "the mode has a credential"
+ * AND "the harness supports one of the shapes this mode accepts" — is a real
+ * bug, because the two can be satisfied by *different* credentials.
+ *
+ * The concrete case: Anthropic's subscription accepts both an OAuth account and
+ * an env-supplied token, the user has connected only the account, and the
+ * harness can carry only strings. Both independent tests pass; the model is
+ * offered and cannot authenticate — a ShipIt-imposed failure of exactly the
+ * kind reqs 1 and 8 rule out.
+ */
+export function harnessCanCarry(harnessId: AgentId, credential: ConfiguredCredential): boolean {
+  if (harnessCredentialTarget(harnessId, credential.via) === undefined) return false;
+  // The mode must also *accept* this shape. A stored route whose shape the
+  // catalogue no longer declares (a row edited under a live install) is not a
+  // usable credential, and inventing a destination for it is how a secret ends
+  // up delivered under a name nothing reads.
+  return modeCredentialFor(credential.serviceId, credential.billingMode, credential.via) !== undefined;
+}
+
+/** The `(service, mode)` keys `harnessId` can authenticate with, given these routes. */
+function usableModeKeys(harnessId: AgentId, credentials: readonly ConfiguredCredential[]): Set<string> {
+  const out = new Set<string>();
+  for (const credential of credentials) {
+    if (!harnessCanCarry(harnessId, credential)) continue;
+    out.add(`${credential.serviceId}:${credential.billingMode}`);
+  }
+  return out;
+}
+
+/**
+ * The models this harness may offer on this install: the catalogue join
+ * (req 6), narrowed to the modes holding a credential this harness can carry
+ * (req 8), in catalogue order.
+ *
+ * Says nothing about whether the harness is *installed* — that is req 14's
+ * separate gate and the caller's conjunction to make. And nothing about whether
+ * the model then works well, which is req 1's best-effort territory.
+ */
+export function eligibleEntriesForHarness(
+  harnessId: AgentId,
+  credentials: readonly ConfiguredCredential[],
+): CatalogueEntry[] {
+  const usable = usableModeKeys(harnessId, credentials);
+  return catalogueEntriesForHarness(harnessId).filter((entry) =>
+    usable.has(`${entry.selection.serviceId}:${entry.selection.billingMode}`),
+  );
+}
+
+/** Whether this exact triple is offered on this harness with these credentials. */
+export function isSelectionEligible(
+  harnessId: AgentId,
+  selection: ModelSelection,
+  credentials: readonly ConfiguredCredential[],
+): boolean {
+  return eligibleEntriesForHarness(harnessId, credentials).some((entry) =>
+    sameSelection(entry.selection, selection),
+  );
+}
+
+/**
+ * Where a `via: "string"` credential of this mode must land for this harness —
+ * the harness's own default, unless the mode overrides it.
+ *
+ * The override exists because `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`
+ * are not interchangeable at the wire (an `x-api-key` header versus a bearer
+ * token, confirmed against the CLI in phase 3), so which one an
+ * Anthropic-compatible third party wants is a fact about that service.
+ */
+export function spawnCredentialTarget(
+  harnessId: AgentId,
+  serviceId: string,
+  billingMode: BillingMode,
+): CredentialTarget | undefined {
+  const credential = modeCredentialFor(serviceId, billingMode, "string");
+  if (credential?.via !== "string") return undefined;
+  const override = credential.targetOverride?.[harnessId];
+  if (override) return override;
+  const target = harnessCredentialTarget(harnessId, "string");
+  return target && target.kind !== "scoped-home" ? target : undefined;
+}
+
+/**
+ * How a turn on `(harness, selection)` is pointed at its service: the resolved
+ * style, the endpoint that style lives at, and — for a string-delivered
+ * credential — which variable holds the secret and where it must land.
+ *
+ * `undefined` for a selection this harness cannot run (no shared style, or the
+ * catalogue has no such row), which callers treat as "nothing to shape" rather
+ * than as an error: a session with no selection at all still runs, on the CLI's
+ * own vendor, exactly as it did before this feature.
+ */
+export interface SpawnShaping {
+  serviceId: string;
+  billingMode: BillingMode;
+  style: ApiStyle;
+  /** Base URL for the resolved style, and where this harness takes it. */
+  endpoint: { url: string; target: HarnessDef["spawn"]["endpoint"] };
+  /**
+   * Set only for a string-delivered credential. `sourceEnv` is the variable the
+   * secret is *stored and delivered* under; `target` is where the CLI reads it.
+   * The two are kept apart deliberately — a service's storage name must never
+   * be a harness's own variable name, or the route works or fails depending on
+   * how the install happens to be signed in (Appendix A).
+   */
+  credential?: { sourceEnv: string; target: CredentialTarget };
+}
+
+export function resolveSpawnShaping(
+  harnessId: AgentId,
+  selection: ModelSelection,
+): SpawnShaping | undefined {
+  const harness = getHarness(harnessId);
+  const mode = getMode(selection.serviceId, selection.billingMode);
+  const model = mode?.models.find((m) => m.id === selection.modelId);
+  if (!harness || !mode || !model) return undefined;
+  const style = resolveStyle(harnessId, model);
+  const url = style ? mode.endpoints[style] : undefined;
+  if (!style || !url) return undefined;
+  const sourceEnv = storageEnvFor(selection.serviceId, selection.billingMode);
+  const target = spawnCredentialTarget(harnessId, selection.serviceId, selection.billingMode);
+  return {
+    serviceId: selection.serviceId,
+    billingMode: selection.billingMode,
+    style,
+    endpoint: { url, target: harness.spawn.endpoint },
+    ...(sourceEnv && target ? { credential: { sourceEnv, target } } : {}),
+  };
 }
 
 /**

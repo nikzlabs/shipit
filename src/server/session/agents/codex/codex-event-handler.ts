@@ -613,11 +613,31 @@ export class CodexEventHandler {
       sessionId: this.threadId ?? "unknown",
       // `total` is the cumulative turn rollup (billing); `last.totalTokens` is
       // the real context-window occupancy (input + cache from the final call).
+      // docs/252 phase 3 — normalized to the DISJOINT convention at the adapter
+      // boundary, which is the only place that knows this harness's semantics.
+      //
+      // Measured against codex-cli 0.146.0 driving a recorder that returned a
+      // known `usage` block: given upstream `input_tokens: 1000` with
+      // `cached_tokens: 800`, the app-server reports `inputTokens: 1000` and
+      // `cachedInputTokens: 800` — so **`inputTokens` INCLUDES the cached
+      // ones**. Claude's are disjoint (`claude/adapter.ts` sums the three for
+      // occupancy). Left overlapping, `input × inputRate + cacheRead ×
+      // cacheReadRate` charges the cached tokens twice, at the more expensive
+      // rate, on every Codex turn — and the rates now always apply here, since
+      // Codex reports no dollar figure of its own.
+      //
+      // Subtracting here rather than in the pricing code is deliberate: the
+      // pricing code must be able to assume disjointness rather than each reader
+      // re-deriving it per harness. `max(0, …)` because a future app-server that
+      // reports them disjointly would otherwise go negative.
       tokens: usage?.total
         ? {
-            input: usage.total.inputTokens ?? 0,
+            input: Math.max(0, (usage.total.inputTokens ?? 0) - (usage.total.cachedInputTokens ?? 0)),
             output: usage.total.outputTokens ?? 0,
             cacheRead: usage.total.cachedInputTokens,
+            ...(usage.total.cacheWriteInputTokens !== undefined
+              ? { cacheWrite: usage.total.cacheWriteInputTokens }
+              : {}),
           }
         : undefined,
       contextTokens: usage?.last?.totalTokens,

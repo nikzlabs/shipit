@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { killChild } from "../../../shared/kill-child.js";
-import type { ClaudeEvent, ImageAttachment, PermissionMode } from "../../../shared/types.js";
+import type { ClaudeEvent, ImageAttachment, PermissionMode, ServiceRouting } from "../../../shared/types.js";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
 import type { AgentHomeResolver } from "../../../shared/agent-home.js";
 import { resolveAgentHome } from "../../../shared/agent-home.js";
@@ -29,6 +29,52 @@ function scrubEnvAuthForScopedHome(env: Record<string, string>, scopedHome: stri
   if (!scopedHome) return;
   delete env.ANTHROPIC_API_KEY;
   delete env.ANTHROPIC_AUTH_TOKEN;
+}
+
+/** Every Anthropic credential variable the CLI will read, in preference order. */
+const ANTHROPIC_CREDENTIAL_VARS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] as const;
+
+/**
+ * docs/252 phase 3 — point this spawn at the selected model's service.
+ *
+ * **Must run AFTER {@link scrubEnvAuthForScopedHome}**, and the ordering is
+ * load-bearing rather than incidental: the scrub deletes the very variables
+ * this writes, so shaping first would produce a spawn with an endpoint and no
+ * credential — a redirected turn that 401s. A test pins the order.
+ *
+ * Two things happen and both are deliberate:
+ *
+ *  - **Every Anthropic credential variable is cleared first, then exactly one is
+ *    set.** They are not interchangeable at the wire (`ANTHROPIC_API_KEY`
+ *    becomes an `x-api-key` header, `ANTHROPIC_AUTH_TOKEN` an
+ *    `Authorization: Bearer` one — measured, not assumed), and the CLI prefers
+ *    the key. Leaving a stale one behind is how a GLM turn would authenticate
+ *    with an Anthropic key against GLM's endpoint.
+ *  - **The base URL is set from the catalogue, unconditionally for a shaped
+ *    turn.** Inheriting an ambient `ANTHROPIC_BASE_URL` would make where a turn
+ *    goes depend on the orchestrator's own environment rather than on what the
+ *    user selected.
+ *
+ * A turn with nothing to shape — the harness on its own vendor through a login
+ * account — passes `undefined` and this is a no-op, which is what keeps today's
+ * spawn byte-identical for the common case.
+ */
+export function applyServiceRouting(
+  env: Record<string, string>,
+  routing: ServiceRouting | undefined,
+): { credentialDelivered: boolean } {
+  if (!routing) return { credentialDelivered: true };
+  const secret = env[routing.credentialSourceEnv];
+  for (const name of ANTHROPIC_CREDENTIAL_VARS) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- the key set is the module-level literal above, not caller input.
+    delete env[name];
+  }
+  const credentialDelivered = routing.credentialTarget.kind === "env" && !!secret;
+  if (credentialDelivered && routing.credentialTarget.kind === "env") {
+    env[routing.credentialTarget.name] = secret;
+  }
+  env.ANTHROPIC_BASE_URL = routing.baseUrl;
+  return { credentialDelivered };
 }
 
 /**
@@ -197,6 +243,11 @@ export interface ClaudeRunOptions {
   /** Model alias or ID to use (e.g., "sonnet", "opus"). */
   model?: string;
   /**
+   * docs/252 phase 3 — base URL + credential for the selected model's service.
+   * Absent ⇒ the CLI runs against Anthropic exactly as it did before.
+   */
+  serviceRouting?: ServiceRouting;
+  /**
    * docs/217 — reasoning effort passed as `--effort <level>`. Valid levels:
    * low, medium, high, xhigh, max (validated server-side against the agent's
    * option set). Omitted → the model's adaptive default.
@@ -278,7 +329,7 @@ export class ClaudeProcess extends EventEmitter {
    * they're saved to the host uploads directory and referenced in the prompt.
    */
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, guardDestructiveGit, permissionPromptTool } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, guardDestructiveGit, permissionPromptTool, serviceRouting } = opts;
     // New turn — this process is one-shot, but reset explicitly so the latch's
     // scope is stated at the turn boundary rather than inferred from lifetime.
     this.authRaisedThisTurn = false;
@@ -413,6 +464,16 @@ export class ClaudeProcess extends EventEmitter {
       NODE_ENV: "development",
     };
     scrubEnvAuthForScopedHome(spawnEnv, scopedHome);
+    // docs/252 phase 3 — AFTER the scrub, never before: the scrub deletes the
+    // very variables this writes.
+    const shaped = applyServiceRouting(spawnEnv, serviceRouting);
+    if (serviceRouting) {
+      const warning = shaped.credentialDelivered ? "" : " (WARNING: no credential in the environment)";
+      console.log(
+        `[claude] service routing: ${serviceRouting.serviceId}/${serviceRouting.billingMode}`
+        + ` -> ${serviceRouting.baseUrl}${warning}`,
+      );
+    }
     if (autoCreatePr) {
       spawnEnv.SHIPIT_AUTO_CREATE_PR = "1";
     } else {
@@ -606,7 +667,7 @@ export class StreamingClaudeProcess extends EventEmitter {
   }
 
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, guardDestructiveGit, permissionPromptTool } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, guardDestructiveGit, permissionPromptTool, serviceRouting } = opts;
 
     // See ClaudeProcess.run above for why the named `mcp__shipit__*` tools join
     // `mcp__playwright__*` in both lists (planning#130; docs/125, docs/149).
@@ -660,6 +721,16 @@ export class StreamingClaudeProcess extends EventEmitter {
       NODE_ENV: "development",
     };
     scrubEnvAuthForScopedHome(spawnEnv, scopedHome);
+    // docs/252 phase 3 — AFTER the scrub, never before: the scrub deletes the
+    // very variables this writes.
+    const shaped = applyServiceRouting(spawnEnv, serviceRouting);
+    if (serviceRouting) {
+      const warning = shaped.credentialDelivered ? "" : " (WARNING: no credential in the environment)";
+      console.log(
+        `[claude] service routing: ${serviceRouting.serviceId}/${serviceRouting.billingMode}`
+        + ` -> ${serviceRouting.baseUrl}${warning}`,
+      );
+    }
     if (autoCreatePr) {
       spawnEnv.SHIPIT_AUTO_CREATE_PR = "1";
     } else {

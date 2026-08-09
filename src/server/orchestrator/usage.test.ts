@@ -443,3 +443,34 @@ describe("UsageManager — cost-source discriminator", () => {
     ).toBeCloseTo(2.0);
   });
 });
+
+describe("UsageManager — the delta chain survives a billing-mode switch (docs/252 phase 3)", () => {
+  let dbManager: DatabaseManager;
+
+  beforeEach(() => { dbManager = new DatabaseManager(":memory:"); });
+  afterEach(() => { dbManager.close(); });
+
+  it("carries the harness's running total forward on a turn that did not take its cost from it", () => {
+    // A subscription session records `cost_usd: 0` — nothing was billed — but
+    // the CLI's `total_cost_usd` keeps rising across the whole resumed
+    // conversation. Switch the session to the same service's metered key and the
+    // first key turn must charge only ITS delta. Without the carried snapshot it
+    // finds no baseline and records the entire conversation as one turn's spend.
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s1", 0, 100, 10, 5, { costSource: "per-turn", cumulativeSnapshot: 4 });
+    mgr.record("s1", 0, 100, 10, 5, { costSource: "per-turn", cumulativeSnapshot: 9 });
+    const delta = mgr.record("s1", 11, 100, 10, 5, { costSource: "cumulative" });
+    expect(delta).toBe(2);
+    expect(mgr.getSessionUsage("s1")?.totalCostUsd).toBe(2);
+  });
+
+  it("leaves a per-turn row with no snapshot out of the chain entirely", () => {
+    // A rate-derived figure from a harness that reports no running total (Codex)
+    // must not become a baseline, or the next cumulative turn would diff against
+    // a number in a different currency of meaning.
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s1", 3, 100, 10, 5, { costSource: "cumulative" });
+    mgr.record("s1", 0.5, 100, 10, 5, { costSource: "per-turn" });
+    expect(mgr.record("s1", 5, 100, 10, 5, { costSource: "cumulative" })).toBe(2);
+  });
+});

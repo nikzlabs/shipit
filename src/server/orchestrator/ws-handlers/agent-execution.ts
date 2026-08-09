@@ -21,7 +21,8 @@ import { emitPrLifecycleAfterCommit } from "../services/pr-lifecycle.js";
 import { detectAndReArmMergedSession, detectAndReArmResetSession } from "../services/pr-rearm.js";
 import { reactToReleaseMarkers } from "../services/release-flow.js";
 import { executeAgentTurn } from "../turn-executor.js";
-import { releaseResidentOnModelChange } from "../resident-model-guard.js";
+import { releaseResidentOnSpawnChange } from "../resident-spawn-guard.js";
+import { desiredSpawnIdentity } from "../service-routing.js";
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "../prompt-assembly.js";
 
 // docs/149 — re-export so existing `selectAgentEnvForPush` consumers (unit
@@ -296,13 +297,18 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       runner?.setAgent(null);
     }
   }
-  // A resident streaming process keeps its spawn-time `--model` for life, so
-  // reusing one after the user picked a different model would silently run the
-  // old one (and report it back into the picker's trigger label, contradicting
-  // the dropdown). Release it here — before it can be captured below — so this
-  // turn spawns fresh on the newly-selected model. Same shape as the failover
-  // release above; see `resident-model-guard.ts`.
-  if (useStreaming) releaseResidentOnModelChange(runner, ctx.getSelectedModel());
+  // A resident streaming process keeps its spawn-time shaping for life — model,
+  // endpoint and credential alike — so reusing one after the user picked
+  // something different would silently run the old one (and report it back into
+  // the picker's trigger label, contradicting the dropdown). Release it here —
+  // before it can be captured below — so this turn spawns fresh. Same shape as
+  // the failover release above; see `resident-spawn-guard.ts`.
+  if (useStreaming && capturedSessionId) {
+    releaseResidentOnSpawnChange(
+      runner,
+      desiredSpawnIdentity(ctx.sessionManager, capturedSessionId, agentId),
+    );
+  }
   const existingAgent = useStreaming ? (runner?.getAgent() ?? null) : null;
   const currentAgent = existingAgent ?? ctx.agentFactory(agentId);
   if (!existingAgent && runner) runner.setAgent(currentAgent);

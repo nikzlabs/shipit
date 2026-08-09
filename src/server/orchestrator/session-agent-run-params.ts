@@ -19,6 +19,7 @@ import {
   getPrepareRunParams,
   type PrepareRunParamsFn,
 } from "./agent-run-params-prep.js";
+import { serviceRoutingForSelection } from "./service-routing.js";
 
 export interface BuildAgentRunParamsDeps {
   credentialStore: CredentialStore;
@@ -112,6 +113,26 @@ export async function buildAgentRunParams(
   // above), so the ops overlay in the system prompt can't be lost to a mid-build
   // DB close.
   const sessionInfo = deps.sessionManager.get(sessionId);
+  // docs/252 phase 3 — where this turn's model lives, and what authenticates it.
+  // Read here with the other synchronous DB reads (the pre-`await` ordering rule
+  // above). The credential route is already pinned: env prep runs before this
+  // (`turn-executor.ts`), which is what makes an account-delivered credential
+  // detectable and therefore leaves today's first-party spawn untouched.
+  const serviceRouting = sessionInfo
+    ? serviceRoutingForSelection(
+        agentId,
+        sessionInfo.serviceId && sessionInfo.billingMode && sessionInfo.model
+          ? {
+              serviceId: sessionInfo.serviceId,
+              billingMode: sessionInfo.billingMode,
+              modelId: sessionInfo.model,
+            }
+          : undefined,
+        sessionInfo.providerRouteKind && sessionInfo.providerRouteId
+          ? { kind: sessionInfo.providerRouteKind, id: sessionInfo.providerRouteId }
+          : undefined,
+      )
+    : undefined;
   const sessionKind = sessionInfo?.kind;
   const isOps = sessionKind === "ops";
   const isSandbox = sessionKind === "sandbox";
@@ -159,6 +180,7 @@ export async function buildAgentRunParams(
     ...(systemPrompt !== undefined ? { systemPrompt } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(selectedModel !== undefined ? { model: selectedModel } : {}),
+    ...(serviceRouting !== undefined ? { serviceRouting } : {}),
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     ...(mcpServers.length > 0 ? { mcpServers } : {}),
     ...(compact ? { compact: true } : {}),

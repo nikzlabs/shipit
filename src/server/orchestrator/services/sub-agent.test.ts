@@ -216,8 +216,17 @@ describe("runSubAgent — happy path", () => {
     );
     // usage attributed to the sub-agent, not the pinned agent — now WITH the
     // sub-agent's token breakdown (docs/144), not undefined/undefined.
+    //
+    // docs/252 phase 3 — and with an explicit cost SOURCE. A one-shot consult's
+    // figure is already this run's own, which `record()` previously inferred
+    // from `subAgentId` being set; the discriminator states it instead, so a
+    // rate-derived figure and a harness running total can coexist. There is no
+    // `attribution` here because this fixture's sub-agent defaults carry no
+    // service or mode — that is the `legacy` row, and it is what an install
+    // whose defaults predate this feature keeps writing.
     expect(record).toHaveBeenCalledWith("s1", 0.03, 4200, 1000, 200, {
       subAgentId: "codex",
+      costSource: "per-turn",
       contextTokens: 1200,
     });
     // transient running spinner, the DURABLE pending card (planning#280), the live

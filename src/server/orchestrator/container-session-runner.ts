@@ -120,8 +120,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   // false or on dispose.
   private _streamingProxy: ProxyAgentProcess | null = null;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
-  /** See `SessionRunnerInterface.appliedModel` — the resident CLI's `--model`. */
-  private _appliedModel: string | undefined = undefined;
+  /** See `SessionRunnerInterface.appliedSpawnIdentity` — the resident CLI's whole spawn tuple. */
+  private _appliedSpawnIdentity: string | undefined = undefined;
 
   // Per-runner mutex for `_startAgentViaProxy`. Concurrent callers chain on
   // this promise so docs/142's B2 kill+restart cannot interleave with another
@@ -402,8 +402,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   clearBackgroundTasks(): void { this._backgroundTasks.clear(); }
   get appliedPermissionMode(): PermissionMode | undefined { return this._appliedPermissionMode; }
   set appliedPermissionMode(v: PermissionMode | undefined) { this._appliedPermissionMode = v; }
-  get appliedModel(): string | undefined { return this._appliedModel; }
-  set appliedModel(v: string | undefined) { this._appliedModel = v; }
+  get appliedSpawnIdentity(): string | undefined { return this._appliedSpawnIdentity; }
+  set appliedSpawnIdentity(v: string | undefined) { this._appliedSpawnIdentity = v; }
 
   get accumulatedText(): string { return this.turn.accumulatedText; }
   set accumulatedText(s: string) { this.turn.accumulatedText = s; }
@@ -470,6 +470,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           spawnId: req.spawnId,
           depth: req.depth,
           ...(req.model !== undefined ? { model: req.model } : {}),
+          ...(req.serviceRouting !== undefined ? { serviceRouting: req.serviceRouting } : {}),
           ...(req.reasoningEffort !== undefined ? { reasoningEffort: req.reasoningEffort } : {}),
           ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
           ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
@@ -562,7 +563,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // process outlives proxy recreation and keeps running its `--model`, so
       // the drift check must keep comparing against it until the process
       // genuinely exits.
-      this._appliedModel = undefined;
+      this._appliedSpawnIdentity = undefined;
     }
   }
 
@@ -2476,7 +2477,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // here keeps the tracker from holding a stale list across a respawn.
     this._backgroundTasks.clear();
     this._appliedPermissionMode = undefined;
-    this._appliedModel = undefined;
+    this._appliedSpawnIdentity = undefined;
     this._agent = null;
     this.emitMessage({
       type: "session_status",
@@ -2585,7 +2586,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // here keeps the tracker from holding a stale list across a respawn.
     this._backgroundTasks.clear();
     this._appliedPermissionMode = undefined;
-    this._appliedModel = undefined;
+    this._appliedSpawnIdentity = undefined;
     this.termBuf.reset();
     this.emit("disposed");
     this.removeAllListeners();

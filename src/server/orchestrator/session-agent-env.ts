@@ -24,7 +24,7 @@ import type { SessionManager } from "./sessions.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { ServiceManager } from "./service-manager.js";
-import type { AgentId } from "../shared/types.js";
+import type { AgentId, SessionInfo } from "../shared/types.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import {
   ensureLocalWorkspaceTrust,
@@ -54,6 +54,8 @@ import { agentHome } from "../shared/agent-home.js";
 import type { ProviderAccountManager, ProviderRoute } from "./provider-account-manager.js";
 import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 import { routeFromSelection } from "./provider-route-preflight.js";
+import { selectRouteForSelection } from "./service-routing.js";
+import type { ModelSelection } from "../shared/catalogue/index.js";
 import { failoverNotice, failoverPinnedSession } from "./services/provider-account-switch.js";
 import { emitNoticeInTurn } from "./chat-card-persistence.js";
 import { ensureCodexHomeInitialized } from "./agents/codex/home-init.js";
@@ -372,14 +374,31 @@ export interface PrepareSessionAgentEnvironmentResult {
  */
 function selectRouteForNewTurn(
   agentId: AgentId,
+  session: SessionInfo,
   deps: SessionAgentEnvDeps,
   enforce: boolean,
 ): ProviderRoute | undefined {
   const manager = deps.providerAccountManager;
   if (!manager) return undefined;
-  const selection = manager.selectAccountForTurn(agentId);
+  // docs/252 phase 3 — scoped to the SELECTED `(service, billing mode)`. Asking
+  // one question per `AgentId` could answer with a credential belonging to a
+  // different mode entirely, which is how an included turn became a metered one.
+  const selection = selectRouteForSelection(agentId, modelSelectionOf(session), {
+    credentialStore: deps.credentialStore,
+    providerAccountManager: manager,
+  });
   if (!enforce) return selection.ok ? selection.route : undefined;
   return routeFromSelection(agentId, selection);
+}
+
+/** The session's persisted triple, or `undefined` when it holds no complete one. */
+function modelSelectionOf(session: SessionInfo): ModelSelection | undefined {
+  if (!session.model || !session.serviceId || !session.billingMode) return undefined;
+  return {
+    serviceId: session.serviceId,
+    billingMode: session.billingMode,
+    modelId: session.model,
+  };
 }
 
 export async function prepareSessionAgentEnvironment(
@@ -455,7 +474,7 @@ export async function prepareSessionAgentEnvironment(
   const selectedRoute =
     routedSession.providerRouteKind && routedSession.providerRouteId
       ? { kind: routedSession.providerRouteKind, id: routedSession.providerRouteId }
-      : selectRouteForNewTurn(agentId, deps, args.enforceAccountRouting ?? false);
+      : selectRouteForNewTurn(agentId, routedSession, deps, args.enforceAccountRouting ?? false);
 
   // docs/150 req 21 — stamp the account this turn actually resolved onto, which
   // is what `balanced` sorts by. Here rather than inside `selectAccountForTurn`

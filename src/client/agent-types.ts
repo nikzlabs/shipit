@@ -5,12 +5,33 @@ import type { PermissionMode } from "../server/shared/types.js";
  * to the client. Used by the model/agent picker, auth cards, onboarding,
  * and the message input to gate features per backend.
  */
+/**
+ * docs/252 phase 3 (req 8) — one model this install can run on a harness, as the
+ * `(service, billing mode, model)` triple it is selected by. The same model id
+ * is reachable through a vendor directly and through a gateway, and through two
+ * modes of one service, at different prices — so a bare id cannot say who is
+ * billing the turn (req 11), which is why the picker groups on this.
+ */
+export interface EligibleModelOption {
+  serviceId: string;
+  serviceName: string;
+  billingMode: "sub" | "key";
+  modelId: string;
+  label: string;
+}
+
 export interface AgentOption {
   id: string;
   name: string;
   installed: boolean;
   authConfigured: boolean;
   models: string[];
+  /**
+   * The credential-filtered join for this install (req 8). Optional for
+   * backward-compat with older wire payloads and test fixtures; the picker falls
+   * back to `models` as a single unnamed group when it is absent.
+   */
+  eligibleModels?: EligibleModelOption[];
   /**
    * Whether the agent backend can run the chat-native AI review flow
    * (docs/125-chat-native-ai-review). Drives whether the "Ask agent to

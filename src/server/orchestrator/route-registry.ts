@@ -1,5 +1,4 @@
 import type { FastifyInstance } from "fastify";
-import { getAuthEnvKey } from "../shared/agent-registry.js";
 import { nativeServiceForHarness, selectionExists } from "../shared/catalogue/index.js";
 import { applyModelRetirement } from "./model-retirement.js";
 import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
@@ -1210,9 +1209,14 @@ export async function registerRoutes(
             const info = agentRegistry.get(agentId);
             if (!info) { send({ type: "error", message: `Unknown agent: ${agentId}` }); return; }
             if (!info.installed) { send({ type: "error", message: `${info.name} CLI is not installed` }); return; }
+            // docs/252 phase 3 — see `setAgent` in `services/settings.ts`: the
+            // gate is now "has at least one eligible model" (req 8), so the
+            // message names that rather than a vendor's env var.
             if (!info.authConfigured) {
-              const envKey = getAuthEnvKey(agentId);
-              send({ type: "error", message: `${envKey ?? "API key"} is not set. Add it in Settings → Agents.` });
+              send({
+                type: "error",
+                message: `${info.name} has no models available. Add a credential for a service it can reach in Settings → Services.`,
+              });
               return;
             }
             ctx.setActiveAgentId(agentId);
@@ -1222,16 +1226,22 @@ export async function registerRoutes(
             // turn would spawn `claude --model gpt-5.5` and fail. Fall back to
             // the new agent's default model when the current one isn't in its
             // lineup.
+            //
+            // docs/252 phase 3 — the fallback is the new harness's first
+            // ELIGIBLE entry and is persisted as the whole triple. Re-resolving
+            // a bare id here would pick whichever service sorts first, which
+            // need not be one this install has a credential for (req 8) — the
+            // same cross-mode drift phase 8 closed on the child-spawn path.
             const currentModel = ctx.getSelectedModel();
             if (currentModel && !info.capabilities.models.includes(currentModel)) {
-              const fallbackModel = info.capabilities.models[0];
-              ctx.setSelectedModel(fallbackModel);
-              if (activeAppSessionId) {
-                sessionManager.setModel(
-                  activeAppSessionId,
-                  fallbackModel,
-                  nativeServiceForHarness(info.id),
-                );
+              const fallback = info.eligibleModels[0];
+              ctx.setSelectedModel(fallback?.modelId);
+              if (activeAppSessionId && fallback) {
+                sessionManager.setModelSelection(activeAppSessionId, {
+                  serviceId: fallback.serviceId,
+                  billingMode: fallback.billingMode,
+                  modelId: fallback.modelId,
+                });
               }
             }
             // docs/217 — reasoning is per-agent; a stale value from the previous
@@ -1254,6 +1264,14 @@ export async function registerRoutes(
           case "set_model": {
             const currentAgentId = ctx.getActiveAgentId();
             const activeAgent = agentRegistry.get(currentAgentId);
+            /** req 8, asked of the harness that will actually run the turn. */
+            const isEligibleHere = (selection: ModelSelection): boolean =>
+              (agentRegistry.get(ctx.getActiveAgentId())?.eligibleModels ?? []).some(
+                (m) =>
+                  m.serviceId === selection.serviceId
+                  && m.billingMode === selection.billingMode
+                  && m.modelId === selection.modelId,
+              );
             if (activeAgent && !activeAgent.capabilities.models.includes(msg.model)) {
               // The model isn't in the current agent's lineup. The grouped
               // model picker switches agent + model together by firing
@@ -1324,7 +1342,12 @@ export async function registerRoutes(
                 msg.serviceId && msg.billingMode
                   ? { serviceId: msg.serviceId, billingMode: msg.billingMode, modelId: msg.model }
                   : undefined;
-              if (explicit && selectionExists(explicit)) {
+              // docs/252 phase 3 — an explicit triple must additionally be
+              // ELIGIBLE on this harness (req 8). `selectionExists` alone only
+              // says the catalogue carries the row, so a client could otherwise
+              // select a service this install has no credential for and get a
+              // turn that fails at the endpoint.
+              if (explicit && selectionExists(explicit) && isEligibleHere(explicit)) {
                 sessionManager.setModelSelection(activeAppSessionId, explicit);
               } else {
                 sessionManager.setModel(

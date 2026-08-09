@@ -26,6 +26,7 @@
  */
 
 import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage, SessionMessageOrigin } from "../shared/types.js";
+import { desiredSpawnIdentity } from "./service-routing.js";
 import { buildTurnMessages, wireAgentListeners } from "./ws-handlers/agent-listeners.js";
 import { createAgentStderrTail } from "./agent-stderr-tail.js";
 import {
@@ -1328,11 +1329,23 @@ export async function executeAgentTurn(
       // undefined so the run params are unchanged from the system-turn shape.
       agent.run(input.useStreaming !== undefined ? { ...runParams, useStreaming: input.useStreaming } : runParams);
       if (runner) runner.appliedPermissionMode = input.permissionMode;
-      // Record the model this process is actually running. The next turn
-      // compares its selection against this to decide whether the resident
-      // process can be reused (`resident-model-guard.ts`) — without it a
-      // mid-session model change is silently a no-op under live steering.
-      if (runner) runner.appliedModel = runParams.model;
+      // Record what this process was actually spawned AS — model, service,
+      // billing mode, style, endpoint and credential route. The next turn
+      // compares its own against this to decide whether the resident process can
+      // be reused (`resident-spawn-guard.ts`); without it a mid-session change
+      // is silently a no-op under live steering.
+      //
+      // Derived from the session row rather than from `runParams`, deliberately:
+      // the guard asks the same function of the same row, so the two agree by
+      // construction. Two derivations of "the same" tuple is how a spurious
+      // respawn on every turn gets built.
+      if (runner) {
+        runner.appliedSpawnIdentity = desiredSpawnIdentity(
+          deps.listenerDeps.sessionManager,
+          sessionId,
+          agentId,
+        );
+      }
     }
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
