@@ -1,4 +1,5 @@
-import { useState, useRef } from "react";
+// eslint-disable-next-line no-restricted-imports -- useEffect: clear the pending save-confirmation timer on unmount
+import { useState, useRef, useEffect } from "react";
 import { Button } from "./ui/button.js";
 import { DeclaredSecretRow } from "./DeclaredSecretRow.js";
 import { usePreviewStore } from "../stores/preview-store.js";
@@ -65,6 +66,22 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const loadedRef = useRef(false);
+  /**
+   * The pending "Saved" confirmation timer.
+   *
+   * Held in a ref so it can be cancelled. Left dangling, its callback runs
+   * `setSaving`/`setSaved` on an unmounted component — harmless in a browser,
+   * fatal in a test worker, where the timer outlives the jsdom teardown and
+   * React's scheduler dereferences a `window` that no longer exists. That
+   * surfaced as a red CI run whose every test had passed
+   * (`ReferenceError: window is not defined`, UNHANDLED ERRORS).
+   */
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // eslint-disable-next-line no-restricted-syntax -- cancel the confirmation timer when the tab goes away
+  useEffect(() => () => {
+    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+  }, []);
 
   // Lazy-load on first render. Subsequent re-renders skip.
   if (!loadedRef.current && repoUrl && onSecretsLoad) {
@@ -191,7 +208,11 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
     }
 
     onSecretsSave(repoUrl, { set, keep });
-    setTimeout(() => {
+    // Replace any in-flight confirmation so two quick saves can't race to
+    // decide whether the button reads "Saving..." or "Saved".
+    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+    savedTimerRef.current = setTimeout(() => {
+      savedTimerRef.current = null;
       setSaving(false);
       setSaved(true);
     }, 500);
