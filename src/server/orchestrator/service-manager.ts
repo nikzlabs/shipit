@@ -245,7 +245,7 @@ export interface ServiceManagerOptions {
    * collision) before the session state dir's `.env.agent` is written and
    * pushed to the worker. Synchronous — `CredentialStore` is an in-memory JSON store.
    */
-  mcpAgentEnvLoader?: () => Record<string, string>;
+  accountAgentEnvLoader?: () => Record<string, string>;
   /**
    * Phase 1 follow-up — Docker-secrets isolation. When configured, secret
    * values are written to per-secret files outside the workspace volume and
@@ -482,7 +482,7 @@ export class ServiceManager extends EventEmitter {
       sessionId: opts.sessionId,
       workspaceDir: opts.workspaceDir,
       ...(opts.secretsLoader ? { secretsLoader: opts.secretsLoader } : {}),
-      ...(opts.mcpAgentEnvLoader ? { mcpAgentEnvLoader: opts.mcpAgentEnvLoader } : {}),
+      ...(opts.accountAgentEnvLoader ? { accountAgentEnvLoader: opts.accountAgentEnvLoader } : {}),
       ...(opts.dockerSecretsConfig ? { dockerSecretsConfig: opts.dockerSecretsConfig } : {}),
       serviceEnvDir: opts.serviceEnvDir,
       onSnapshot: (snapshot) => this.emit("secrets_status", snapshot),

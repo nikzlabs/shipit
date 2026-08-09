@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { AgentId, PermissionMode, FileContextRef, ProviderAccount, SubAgentDefaults } from "../../server/shared/types.js";
+import type { AgentId, CredentialRoute, PermissionMode, FileContextRef, ProviderAccount, SubAgentDefaults } from "../../server/shared/types.js";
 import {
   getSavedNotifyOnFinish, saveNotifyOnFinish,
   getSavedSoundOnFinish, saveSoundOnFinish,
@@ -186,14 +186,15 @@ interface SettingsState {
   /**
    * docs/150 reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent
    * id. Reaching either window's cutoff moves new work to the next eligible
-   * account. Server always sends an entry per registered agent, so the client
-   * never has to know the 90% default.
+   * credential. docs/252 phase 2 — keyed by `credentialModeKey(serviceId,
+   * billingMode)`, with one entry per SUBSCRIPTION mode in the catalogue (keys
+   * do not fail over, so they get none). The server always sends every entry,
+   * so the client never has to know the 90% default.
    */
   failoverCutoffs: Record<string, { session: number; weekly: number }>;
   /**
-   * docs/150 req 21 — per-provider account selection mode, keyed by agent id.
-   * Same contract as `failoverCutoffs`: the server sends an entry per
-   * registered agent, so the client never encodes the "strict" default.
+   * docs/150 req 21 — selection mode. Same key and the same contract as
+   * `failoverCutoffs`, so the client never encodes the "strict" default.
    */
   accountSelectionMode: Record<string, "strict" | "balanced">;
   /**
@@ -213,6 +214,13 @@ interface SettingsState {
    */
   claudeAuthDiagnostics: Record<string, ClaudeAuthDiagnostics>;
   providerAccounts: ProviderAccount[];
+  /**
+   * docs/252 phase 2 — every credential the user holds, keyed by
+   * `(serviceId, billingMode)` and in selection order within each group.
+   * Carries no secret. A superset of `providerAccounts`, which stays while the
+   * docs/150 account flow still speaks the account shape.
+   */
+  credentialRoutes: CredentialRoute[];
   /**
    * In-flight account-scoped sign-in challenges, keyed by
    * {@link providerAccountAuthKey} so concurrent row sign-ins stay independent.
@@ -251,8 +259,9 @@ interface SettingsState {
   setLiveSteering: (enabled: boolean) => void;
   setAutoResolveConflicts: (enabled: boolean) => void;
   setAutoFixCi: (enabled: boolean) => void;
-  setFailoverCutoffs: (agentId: string, cutoffs: { session: number; weekly: number }) => void;
-  setAccountSelectionMode: (agentId: string, mode: "strict" | "balanced") => void;
+  /** `modeKey` is `credentialModeKey(serviceId, billingMode)` — docs/252 phase 2. */
+  setFailoverCutoffs: (modeKey: string, cutoffs: { session: number; weekly: number }) => void;
+  setAccountSelectionMode: (modeKey: string, mode: "strict" | "balanced") => void;
   setAutoResetMergedBranch: (enabled: boolean) => void;
   setEnableSubAgents: (enabled: boolean) => void;
   /** docs/217 — replace the per-agent sub-agent defaults map (Control A). */
@@ -270,6 +279,7 @@ interface SettingsState {
     message?: string,
   ) => void;
   setProviderAccounts: (accounts: ProviderAccount[]) => void;
+  setCredentialRoutes: (routes: CredentialRoute[]) => void;
   /** Set (or clear, with `null`) one account's in-flight sign-in challenge. */
   setProviderAccountAuth: (provider: AgentId, accountId: string, auth: ProviderAccountAuth | null) => void;
   /** Set (or clear, with `null`) one account's last sign-in failure message. */
@@ -340,6 +350,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   agentSubAgentDefaults: {},
   claudeAuthDiagnostics: {},
   providerAccounts: [],
+  credentialRoutes: [],
   providerAccountAuths: {},
   providerAccountAuthErrors: {},
 
@@ -452,10 +463,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setAutoResolveConflicts: (enabled) => set({ autoResolveConflicts: enabled }),
 
   setAutoFixCi: (enabled) => set({ autoFixCi: enabled }),
-  setFailoverCutoffs: (agentId, cutoffs) =>
-    set((s) => ({ failoverCutoffs: { ...s.failoverCutoffs, [agentId]: cutoffs } })),
-  setAccountSelectionMode: (agentId, mode) =>
-    set((s) => ({ accountSelectionMode: { ...s.accountSelectionMode, [agentId]: mode } })),
+  setFailoverCutoffs: (modeKey, cutoffs) =>
+    set((s) => ({ failoverCutoffs: { ...s.failoverCutoffs, [modeKey]: cutoffs } })),
+  setAccountSelectionMode: (modeKey, mode) =>
+    set((s) => ({ accountSelectionMode: { ...s.accountSelectionMode, [modeKey]: mode } })),
   setAutoResetMergedBranch: (enabled) => set({ autoResetMergedBranch: enabled }),
   setEnableSubAgents: (enabled) => set({ enableSubAgents: enabled }),
   setAgentSubAgentDefaults: (map) => set({ agentSubAgentDefaults: map }),
@@ -520,6 +531,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       };
     }),
   setProviderAccounts: (accounts) => set({ providerAccounts: accounts }),
+  setCredentialRoutes: (routes) => set({ credentialRoutes: routes }),
   setProviderAccountAuth: (provider, accountId, auth) =>
     set((state) => ({
       providerAccountAuths: withKey(

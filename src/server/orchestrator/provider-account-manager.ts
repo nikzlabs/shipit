@@ -11,6 +11,7 @@ import type {
 } from "../shared/types.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
+import { nativeServiceForHarness } from "../shared/catalogue/index.js";
 
 /** Persisted, non-derived account statuses (see {@link ProviderAccount}). */
 export type ProviderAccountStatus = ProviderAccount["status"];
@@ -72,6 +73,26 @@ const LEGACY_CREDENTIAL_MARKERS: Record<AgentId, readonly string[]> = {
 export interface ProviderRoute {
   kind: ProviderRouteKind;
   id: string;
+}
+
+/**
+ * docs/252 phase 2 — the `(service, billing mode)` the routing settings for a
+ * provider's accounts now live under.
+ *
+ * Always the **subscription** mode of the harness's own vendor, because that is
+ * what this manager routes within: order, spreading and the failover cutoffs
+ * are answers to "which of these accounts next?", and req 12 keeps that
+ * question inside one subscription mode. Nothing here consults a `key` mode's
+ * settings, and nothing should — keys do not fail over, so there is no group.
+ *
+ * A tuple so call sites can spread it into the store's two-argument accessors
+ * without naming the pair twice.
+ */
+function routingSettingsKeyFor(provider: AgentId): [string, "sub"] {
+  // Both shipped harnesses declare a `nativeService`; the fallback keeps the
+  // settings lookup total for a harness that does not, where "no group" is the
+  // honest answer and the defaults apply.
+  return [nativeServiceForHarness(provider) ?? provider, "sub"];
 }
 
 export interface ProviderAccountManagerOptions {
@@ -651,7 +672,7 @@ export class ProviderAccountManager {
           (account.status === "ready" || account.status === "authenticating") &&
           !exclude.has(account.id),
       ),
-      this.credentialStore.getSelectionMode(provider),
+      this.credentialStore.getSelectionMode(...routingSettingsKeyFor(provider)),
     );
 
     const limits = this.getSubscriptionLimits?.()?.[provider] ?? {};
@@ -663,7 +684,7 @@ export class ProviderAccountManager {
     // a 90% setting strictly worse than no failover at all: once every account
     // crossed 90%, every turn would fail with `all_exhausted` while ten percent
     // of quota sat unused on each one.
-    const cutoffs = this.credentialStore.getFailoverCutoffs(provider);
+    const cutoffs = this.credentialStore.getFailoverCutoffs(...routingSettingsKeyFor(provider));
     const overCutoff: ProviderAccount[] = [];
     const exhaustedResets: number[] = [];
     for (const account of connected) {
@@ -756,7 +777,7 @@ export class ProviderAccountManager {
     // churn the session between them for no benefit, killing the resident
     // process every time. A cutoff is a preference, so it can only displace a
     // session onto an account that is actually under one.
-    const cutoffs = this.credentialStore.getFailoverCutoffs(provider);
+    const cutoffs = this.credentialStore.getFailoverCutoffs(...routingSettingsKeyFor(provider));
     if (!isOverCutoff(limits[route.id], cutoffs)) return null;
     // "Somewhere better" means an account genuinely UNDER its cutoff — not
     // merely whichever account the selector would name first. Asking the

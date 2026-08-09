@@ -108,7 +108,7 @@ describe("selectAccountForTurn — selection mode (req 21)", () => {
   });
 
   it("defaults to strict, so an untouched install is unchanged", () => {
-    expect(store.getSelectionMode("claude")).toBe("strict");
+    expect(store.getSelectionMode("anthropic", "sub")).toBe("strict");
   });
 
   it("strict keeps every consecutive selection on the highest-ranked account", () => {
@@ -129,7 +129,7 @@ describe("selectAccountForTurn — selection mode (req 21)", () => {
   });
 
   it("balanced spreads consecutive selections across the eligible accounts", () => {
-    store.setSelectionMode("claude", "balanced");
+    store.setSelectionMode("anthropic", "sub", "balanced");
     const mgr = manager();
     const [first, second] = twoAccounts(mgr);
 
@@ -147,7 +147,7 @@ describe("selectAccountForTurn — selection mode (req 21)", () => {
   });
 
   it("balanced still refuses an exhausted account rather than balancing onto it", () => {
-    store.setSelectionMode("claude", "balanced");
+    store.setSelectionMode("anthropic", "sub", "balanced");
     const resetAt = Date.now() + 60 * 60 * 1000;
     const mgr = manager();
     const [first, second] = twoAccounts(mgr);
@@ -170,7 +170,7 @@ describe("selectAccountForTurn — selection mode (req 21)", () => {
       fs.rmSync(root, { recursive: true, force: true });
       fs.mkdirSync(root, { recursive: true });
       store = new CredentialStore(root);
-      store.setSelectionMode("claude", mode);
+      store.setSelectionMode("anthropic", "sub", mode);
       const mgr = manager();
       const [first, second] = twoAccounts(mgr);
 
@@ -187,7 +187,7 @@ describe("selectAccountForTurn — selection mode (req 21)", () => {
       fs.rmSync(root, { recursive: true, force: true });
       fs.mkdirSync(root, { recursive: true });
       store = new CredentialStore(root);
-      store.setSelectionMode("claude", mode);
+      store.setSelectionMode("anthropic", "sub", mode);
       const mgr = manager();
       const [first, second] = twoAccounts(mgr);
       mgr.markAccountExhausted("claude", first, resetAt);
@@ -203,11 +203,11 @@ describe("selectAccountForTurn — selection mode (req 21)", () => {
   it("rejects an unrecognized stored mode instead of routing on it", () => {
     // A hand-edited config must not reach the routing path as an unknown value.
     // Falling back to the default is the only behavior that keeps turns running.
-    store.setSelectionMode("claude", "balanced");
+    store.setSelectionMode("anthropic", "sub", "balanced");
     (store as unknown as { data: { accountSelectionMode: Record<string, string> } }).data
-      .accountSelectionMode.claude = "round-robin";
+      .accountSelectionMode["anthropic:sub"] = "round-robin";
 
-    expect(store.getSelectionMode("claude")).toBe("strict");
+    expect(store.getSelectionMode("anthropic", "sub")).toBe("strict");
   });
 });
 

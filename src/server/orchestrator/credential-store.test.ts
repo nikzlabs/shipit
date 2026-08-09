@@ -25,26 +25,26 @@ describe("CredentialStore", () => {
   describe("failover cutoffs", () => {
     it("defaults both windows to 90% (req 5)", () => {
       const store = new CredentialStore(createTmpDir());
-      expect(store.getFailoverCutoffs("claude")).toEqual({ session: 90, weekly: 90 });
+      expect(store.getFailoverCutoffs("anthropic", "sub")).toEqual({ session: 90, weekly: 90 });
     });
 
     it("persists per provider, independently", () => {
       const dir = createTmpDir();
       const store = new CredentialStore(dir);
-      store.setFailoverCutoffs("claude", { session: 70 });
+      store.setFailoverCutoffs("anthropic", "sub", { session: 70 });
 
-      expect(store.getFailoverCutoffs("claude")).toEqual({ session: 70, weekly: 90 });
-      expect(store.getFailoverCutoffs("codex")).toEqual({ session: 90, weekly: 90 });
+      expect(store.getFailoverCutoffs("anthropic", "sub")).toEqual({ session: 70, weekly: 90 });
+      expect(store.getFailoverCutoffs("openai", "sub")).toEqual({ session: 90, weekly: 90 });
       // Survives a reload — a restart must not silently revert the user's setting.
-      expect(new CredentialStore(dir).getFailoverCutoffs("claude")).toEqual({ session: 70, weekly: 90 });
+      expect(new CredentialStore(dir).getFailoverCutoffs("anthropic", "sub")).toEqual({ session: 70, weekly: 90 });
     });
 
     it("leaves the other window alone on a partial update", () => {
       const store = new CredentialStore(createTmpDir());
-      store.setFailoverCutoffs("claude", { session: 50, weekly: 60 });
-      store.setFailoverCutoffs("claude", { weekly: 80 });
+      store.setFailoverCutoffs("anthropic", "sub", { session: 50, weekly: 60 });
+      store.setFailoverCutoffs("anthropic", "sub", { weekly: 80 });
 
-      expect(store.getFailoverCutoffs("claude")).toEqual({ session: 50, weekly: 80 });
+      expect(store.getFailoverCutoffs("anthropic", "sub")).toEqual({ session: 50, weekly: 80 });
     });
 
     // Clamping on READ as well as write: a hand-edited config with a bad value
@@ -55,7 +55,7 @@ describe("CredentialStore", () => {
         path.join(dir, "shipit-credentials.json"),
         JSON.stringify({ failoverCutoffs: { claude: { session: 0, weekly: 150 } } }),
       );
-      expect(new CredentialStore(dir).getFailoverCutoffs("claude")).toEqual({ session: 1, weekly: 100 });
+      expect(new CredentialStore(dir).getFailoverCutoffs("anthropic", "sub")).toEqual({ session: 1, weekly: 100 });
     });
   });
 
@@ -259,10 +259,13 @@ describe("CredentialStore", () => {
 
     it("new instance reads back saved env", () => {
       const dir = createTmpDir();
-      new CredentialStore(dir).setAgentEnv("OPENAI_API_KEY", "sk-persisted");
+      // docs/252 — a name the catalogue does NOT claim as a mode's `storageEnv`.
+      // A claimed one (`OPENAI_API_KEY`) is deliberately migrated out of this
+      // slot on the next load; that behaviour has its own test below.
+      new CredentialStore(dir).setAgentEnv("mcp__acme__TOKEN", "sk-persisted");
 
       const store2 = new CredentialStore(dir);
-      expect(store2.getAgentEnv("OPENAI_API_KEY")).toBe("sk-persisted");
+      expect(store2.getAgentEnv("mcp__acme__TOKEN")).toBe("sk-persisted");
     });
   });
 
@@ -324,6 +327,10 @@ describe("CredentialStore", () => {
       expect(raw).toEqual({
         agentEnv: { OPENAI_API_KEY: "sk-abc" },
         githubToken: "ghp_xyz",
+        // docs/252 — the migration runs on construction and writes the (empty)
+        // route list, which is what marks it as done: its absence is what makes
+        // a later boot re-import the frozen legacy `providerAccounts` blob.
+        credentialRoutes: [],
       });
     });
 
@@ -577,7 +584,7 @@ describe("CredentialStore", () => {
       const cipher = new SecretCipher(crypto.randomBytes(32));
       const store = new CredentialStore(dir, cipher);
       store.setGithubToken("ghp_secret");
-      store.setAgentEnv("OPENAI_API_KEY", "sk-secret");
+      store.setAgentEnv("mcp__acme__TOKEN", "sk-secret");
 
       // The raw file is opaque ciphertext — no plaintext token survives.
       const raw = fs.readFileSync(path.join(dir, "shipit-credentials.json"), "utf-8");
@@ -588,7 +595,7 @@ describe("CredentialStore", () => {
       // A new instance with the SAME cipher reads it back.
       const reloaded = new CredentialStore(dir, cipher);
       expect(reloaded.getGithubToken()).toBe("ghp_secret");
-      expect(reloaded.getAgentEnv("OPENAI_API_KEY")).toBe("sk-secret");
+      expect(reloaded.getAgentEnv("mcp__acme__TOKEN")).toBe("sk-secret");
     });
 
     it("keeps mode 0600 on the encrypted file", () => {

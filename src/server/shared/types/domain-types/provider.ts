@@ -1,6 +1,22 @@
 import type { AgentId } from "../agent-types.js";
 
-export type ProviderRouteKind = "account" | "reserved";
+/**
+ * Where a turn's credential came from.
+ *
+ * - `account` — a login flow produced a credential root on disk.
+ * - `reserved` — env-supplied and singleton (`claude-api-key`,
+ *   `claude-env-oauth`, `codex-api-key`).
+ * - `string` — docs/252 phase 2: a user-managed secret stored per credential
+ *   route. Neither of the other two: not singleton like `reserved`, and with no
+ *   login flow or credential root like `account`. A string-delivered
+ *   subscription (GLM's coding plan) needs several of these, which is the one
+ *   piece of genuinely new persistence in that design.
+ *
+ * Nothing *pins* a session to a `string` route until phase 3 routes turns onto
+ * custom services; the member exists here so the session column can carry it
+ * and so the classification is stated once.
+ */
+export type ProviderRouteKind = "account" | "reserved" | "string";
 
 export type ProviderAccountStatus = "ready" | "authenticating" | "auth_failed" | "unavailable";
 

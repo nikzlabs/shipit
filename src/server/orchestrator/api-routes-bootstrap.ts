@@ -6,6 +6,7 @@
 import type { FastifyInstance } from "fastify";
 import type { AgentId, SubAgentDefaultsPatch } from "../shared/types.js";
 import type { ApiDeps } from "./api-routes.js";
+import type { ServiceManager } from "./service-manager.js";
 
 import {
   getBootstrapData,
@@ -27,14 +28,69 @@ import {
   cancelProviderAccountLogin,
   submitProviderAccountCode,
   signOutProvider,
+  listCredentialRoutes,
+  createStringCredential,
+  updateStringCredential,
+  deleteCredentialRoute,
+  reorderCredentialRoutes,
   ServiceError,
 } from "./services/index.js";
+import {
+  isAgentSecretsCapable,
+  refreshAgentEnvForAllSessions,
+  selectAgentEnvForPush,
+} from "./session-agent-env.js";
 import { getErrorMessage } from "./validation.js";
 
 export async function registerBootstrapRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
 ): Promise<void> {
+  /**
+   * docs/252 phase 2 — make a credential change reach the sessions already
+   * running, rather than only the next one to start.
+   *
+   * Same two steps an MCP secret write takes: re-sync every live compose
+   * stack's agent env (which is the path a compose-backed session's credentials
+   * travel, and the gap Appendix A recorded), and push the freshly-collected
+   * set to compose-less runners, whose env comes straight from the store.
+   * Fire-and-forget — a settings write must not fail because one session's
+   * stack is unhealthy.
+   */
+  const propagateCredentialChange = (): void => {
+    // The orchestrator's own view of "is this provider authenticated" is a
+    // CACHE, refreshed explicitly (`AgentRegistry.refreshAuth`) rather than
+    // recomputed on read. A credential write that updates storage and the
+    // environment but not the cache leaves the product disagreeing with itself:
+    // the key is stored and delivered, and the agent is still un-selectable
+    // until something else happens to refresh. Removal has the mirror-image
+    // false positive. Every registered agent, because a credential is no longer
+    // owned by one of them.
+    for (const agent of deps.agentRegistry.list()) deps.agentRegistry.refreshAuth(agent.id);
+    // docs/257 — `buildAgentListPayload`, not a bare `{ agents }`: a credential
+    // write can make an install runnable or stop it being runnable, so this
+    // broadcast has to carry `canRunTurns`. Sending the old shape here would
+    // leave every other tab with a stale signal and a composer that disagrees
+    // with what the server will accept.
+    deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry));
+
+    refreshAgentEnvForAllSessions(deps.serviceManagers ?? new Map<string, ServiceManager>());
+    for (const sessionId of deps.runnerRegistry.ids()) {
+      const runner = deps.runnerRegistry.get(sessionId);
+      if (!isAgentSecretsCapable(runner)) continue;
+      void runner
+        .tryPushAgentSecrets(
+          selectAgentEnvForPush({
+            serviceManager: runner.serviceManager ?? null,
+            credentialStore: deps.credentialStore,
+          }),
+        )
+        .catch((err: unknown) => {
+          console.warn(`[credentials] agent-env push failed for ${sessionId}:`, getErrorMessage(err));
+        });
+    }
+  };
+
   // ---- GET /api/bootstrap ----
   app.get("/api/bootstrap", async () => {
     return getBootstrapData(deps);
@@ -153,12 +209,20 @@ export async function registerBootstrapRoutes(
           deps.agentRegistry, deps.credentialStore,
           request.params.id as AgentId, request.body.key, request.body.value,
         );
-        // docs/257 — this route makes an install runnable (it is how a Codex
-        // API key is stored) and used to broadcast NOTHING, handing the fresh
-        // agent list only to the tab that posted it. Every other tab kept a
+        // docs/252 phase 2 — a catalogue `storageEnv` name written here IS a
+        // credential now (`setAgentEnv` routes it into the credential store), so
+        // it owes the same propagation the Services surface does. Without it a
+        // key saved from the Codex tab or from onboarding reached storage and
+        // left a running compose-backed session on its previous snapshot.
+        //
+        // docs/257 — this is also how a Codex API key is stored, so it is a
+        // producer of "the install can run something" and has to announce it:
+        // the route used to broadcast NOTHING, leaving every other tab with a
         // stale `canRunTurns: false` and a disabled composer until its next
-        // bootstrap. It is a producer of the fact, so it announces it.
-        deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry));
+        // bootstrap. `propagateCredentialChange` carries that broadcast, with
+        // the `buildAgentListPayload` shape docs/257 needs.
+        propagateCredentialChange();
+        deps.sseBroadcast("credential_routes", { routes: listCredentialRoutes(deps.credentialStore) });
         return { agentId: result.agentId, key: result.key, success: true, agents: result.agents };
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -166,6 +230,99 @@ export async function registerBootstrapRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to set agent env: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // ---- Credential routes (docs/252 phase 2) ----
+  //
+  // String-delivered credentials only: a pasted API key, or a subscription
+  // authenticated by one. Account-backed subscriptions keep the docs/150
+  // `/api/provider-accounts/...` flow below, which additionally drives a login
+  // and owns a credential root on disk.
+  //
+  // No route ever returns a secret — `CredentialRoute` carries none — so there
+  // is no redaction step here to forget.
+
+  app.get("/api/credential-routes", async () => {
+    return { routes: listCredentialRoutes(deps.credentialStore) };
+  });
+
+  app.post<{ Body: { serviceId: string; billingMode: string; secret: string; label?: string } }>(
+    "/api/credential-routes",
+    async (request, reply) => {
+      try {
+        const result = createStringCredential(deps.credentialStore, request.body);
+        propagateCredentialChange();
+        deps.sseBroadcast("credential_routes", { routes: result.routes });
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to save credential: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  app.patch<{ Params: { routeId: string }; Body: { label?: string; secret?: string } }>(
+    "/api/credential-routes/:routeId",
+    async (request, reply) => {
+      try {
+        const result = updateStringCredential(deps.credentialStore, request.params.routeId, request.body ?? {});
+        propagateCredentialChange();
+        deps.sseBroadcast("credential_routes", { routes: result.routes });
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to update credential: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  app.delete<{ Params: { routeId: string } }>(
+    "/api/credential-routes/:routeId",
+    async (request, reply) => {
+      try {
+        const result = deleteCredentialRoute(deps.credentialStore, request.params.routeId);
+        propagateCredentialChange();
+        deps.sseBroadcast("credential_routes", { routes: result.routes });
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to remove credential: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // docs/150 req 2 applied to a subscription's string credentials: the fallback
+  // order within one `(service, billing mode)` group.
+  app.put<{ Params: { serviceId: string; billingMode: string }; Body: { routeIds?: unknown } }>(
+    "/api/credential-routes/:serviceId/:billingMode/order",
+    async (request, reply) => {
+      try {
+        const result = reorderCredentialRoutes(
+          deps.credentialStore,
+          request.params.serviceId,
+          request.params.billingMode,
+          request.body?.routeIds,
+        );
+        propagateCredentialChange();
+        deps.sseBroadcast("credential_routes", { routes: result.routes });
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to reorder credentials: ${getErrorMessage(err)}` });
       }
     },
   );
@@ -373,13 +530,15 @@ export async function registerBootstrapRoutes(
     "/api/auth/api-key",
     async (request, reply) => {
       try {
-        setApiKey(request.body.key);
+        setApiKey(deps.credentialStore, request.body.key);
+        propagateCredentialChange();
         deps.authManager.kill();
         deps.authManager.checkCredentials();
         // docs/155 Phase 2b — unified SSE event family. Setting an API key
         // is the "authentication finished" signal for Claude; the client's
         // `agent_auth_complete` handler refreshes the agent list.
         deps.sseBroadcast("agent_auth_complete", { agentId: "claude" });
+        deps.sseBroadcast("credential_routes", { routes: listCredentialRoutes(deps.credentialStore) });
         return { success: true };
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -419,7 +578,8 @@ export async function registerBootstrapRoutes(
           "claude",
           { credentialsDir: deps.credentialsDir },
         );
-        clearApiKey();
+        clearApiKey(deps.credentialStore);
+        propagateCredentialChange();
         deps.agentRegistry.refreshAuth("claude");
         // docs/257 — a provider-wide sign-out can remove the LAST credential on
         // the install, so this is one of the sites where `canRunTurns` must ride
@@ -429,6 +589,10 @@ export async function registerBootstrapRoutes(
         const payload = buildAgentListPayload(deps.agentRegistry);
         deps.sseBroadcast("agent_list", payload);
         deps.sseBroadcast("provider_accounts", { accounts: deps.providerAccountManager.list() });
+        // docs/252 phase 2 — signing out removes credentials, so the Services
+        // surface has to hear about it too: `provider_accounts` alone leaves it
+        // showing rows that no longer exist.
+        deps.sseBroadcast("credential_routes", { routes: listCredentialRoutes(deps.credentialStore) });
         return { success: true, agents: payload.agents };
       } catch (err) {
         // The running-turn refusal is a 409 the user can act on, not a fault.
@@ -486,6 +650,8 @@ export async function registerBootstrapRoutes(
         const payload = buildAgentListPayload(deps.agentRegistry);
         deps.sseBroadcast("agent_list", payload);
         deps.sseBroadcast("provider_accounts", { accounts: deps.providerAccountManager.list() });
+        // docs/252 phase 2 — see the Claude sign-out above.
+        deps.sseBroadcast("credential_routes", { routes: listCredentialRoutes(deps.credentialStore) });
         return { success: true, agents: payload.agents };
       } catch (err) {
         // The running-turn refusal is a 409 the user can act on, not a fault.

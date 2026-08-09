@@ -411,6 +411,128 @@ and used by nothing. Shipping this alone is deliberate: credential storage and d
 where the security-relevant review is, and it deserves a PR that isn't also changing how
 turns run.
 
+**Phase 2 has landed, apart from GLM's quota integration.** `CredentialRoute`
+(`shared/types/domain-types/credential-route.ts`) is the storage shape;
+`credential-store.ts` holds the routes and a per-instance `credentialSecrets`
+map; `services/credential-routes.ts` is the CRUD with the catalogue's rules;
+`ServicesPanel.tsx` is the add-flow. GLM's coding plan can be stored, delivered
+and removed like any other string-delivered subscription — what has **not**
+been built is `zai-plan-usage`, its quota reader, which needs phase 6's
+per-`(service, mode)` quota machinery to have somewhere to report into. Req 15
+is met on catalogue contents and credentials, and unmet on GLM's quota.
+
+**What phase 2 found.** Five things, three of which change what a later phase
+does.
+
+- **`CredentialRoute` did not have to replace `ProviderAccount` at ~70 call
+  sites to replace it in storage.** The store holds routes; `listProviderAccounts`
+  / `upsertProviderAccount` are a lossless projection over them
+  (`providerAccountToRoute` and its inverse), because an account row *is* a
+  `via: "account"` credential of its vendor's subscription mode and `provider`
+  is recoverable from `serviceId` through the catalogue's `nativeService`. **Phase
+  3 deletes the projection** when eligibility and turn routing stop asking
+  "which vendor's agent is this?" — until then the docs/150 machinery keeps its
+  shape and nothing about routing changed in a credentials PR.
+- **There were three writers for one API key, not one, and the third was
+  invisible.** `setApiKey` (Anthropic) wrote only `process.env`; `set_agent_env`
+  (Codex's `OPENAI_API_KEY`) wrote `CredentialData.agentEnv`; the new surface
+  writes routes. Both legacy writers now go through
+  `upsertSingleStringCredential`, and a load-time migration moves any catalogue
+  `storageEnv` name out of `agentEnv` — moved, not copied, because a copy keeps
+  being delivered from the old slot after the user removes the credential. The
+  asymmetry the phase description names is closed in that direction: Anthropic's
+  key now persists.
+- **`process.env` is still load-bearing, and keeping it seeded is not enough —
+  it has to be kept in *step*.** `reservedRouteFor` and
+  `AgentRegistry.isAuthConfigured` probe the environment, so a key living only
+  in the route store would persist correctly and report the provider as
+  unauthenticated. `app-di` seeds it from the stored routes at boot. The half
+  that is easy to miss is the other direction: without a matching *clear*,
+  removing a credential stops delivering it to every session and leaves the
+  orchestrator still counting it as authentication until a restart — a revoked
+  credential that still authenticates. Every credential mutation now syncs the
+  mode's variable, and only ever touches a value this process put there, so a
+  deployment-set variable survives. **Phase 3 should retire the whole coupling
+  rather than inherit it** — those probes are exactly the per-`AgentId`
+  eligibility it replaces.
+- **The compose gap needed a wider pipe *and* a propagation step.**
+  `collectAccountAgentEnv` (MCP secrets + service credentials) replaces the
+  `mcp__*`-only loader on both delivery paths, which is the gap Appendix A
+  recorded. That alone only reaches the *next* sync, so every credential write
+  also calls `refreshAgentEnvForAllSessions` and pushes to compose-less runners
+  — the same two steps an MCP secret write already took, lifted out of
+  `api-routes-mcp.ts` now that they have a second caller.
+- **Delivery takes each mode's FIRST credential, and that is a placeholder.**
+  A subscription can now hold several, but choosing between them is a per-turn
+  routing decision phase 3 owns; phase 2 delivers what the old single slot would
+  have delivered so this phase cannot change which credential a turn
+  authenticates with. **Phase 3 replaces `collectServiceCredentialEnv`'s
+  first-in-order rule with resolution from the selected model's service** — until
+  it does, req 12's second GLM key is stored and unreachable.
+
+**What the cross-backend review changed, recorded because four of the five are
+the same mistake.** Codex reviewed the branch under CLAUDE.md's rule; the
+findings below all held up on checking. Four of them are one shape: *a credential
+write updated some of the places that answer "is this credential live" and not
+the others*, and each one is individually plausible.
+
+- **`process.env` was written unconditionally, which destroyed a
+  deployment-supplied value.** Boot seeding deliberately skips a name that is
+  already set, so a deployment's variable is not ShipIt's to overwrite — and the
+  matching clear then deleted it, leaving the deployment unauthenticated until a
+  restart. The rule is now "only ever touch a value this process put there",
+  which costs nothing: these probes ask whether a credential is *present*, never
+  which one, and which credential a session receives comes from the route store.
+- **`AgentRegistry.authConfigured` is a cache, and the route endpoints did not
+  refresh it.** Adding a key stored it, delivered it, and left the agent
+  un-selectable; removing one left it selectable. Every credential write now
+  refreshes and re-broadcasts.
+- **`set_agent_env` wrote a credential and skipped the propagation.** It routes
+  into the credential store now, so it owes the same push — without it a key
+  saved from the Codex tab or from onboarding left a running compose-backed
+  session on its previous snapshot.
+- **A compose snapshot is only as fresh as the last *successful* sync**, and
+  that pass returns early on an unparsable compose file — so revoking a
+  credential on a session with broken YAML re-pushed the stale snapshot and the
+  worker kept the revoked key. Every push now drops catalogue credential names
+  the store no longer holds and the compose file does not declare, so revocation
+  never depends on the user's YAML being valid.
+- **The route and its secret were two writes**, leaving a window where a `ready`
+  route has no secret behind it — a credential that reports configured and
+  delivers nothing. One `save()` removes the window.
+- **The add-flow was a dead end for an account-backed subscription**: it told the
+  user to press "Add account on its card" while no card existed, because a card
+  only appeared once an account did. Choosing such a mode now reveals the card
+  and hands off to it. The same fix exposed a second error — a mode's two
+  delivery shapes are *independent*, and Anthropic's subscription accepts both,
+  so the dialog offers a token input and a sign-in rather than choosing one.
+
+**Two findings are deferred rather than fixed, and both should be said out loud:**
+
+- **A string-backed subscription has no routing controls.** `zai:sub` carries
+  cutoffs and a selection mode in the settings payload with nowhere to set them:
+  those controls live inside `ProviderAccountsCard`, keyed by provider. What
+  *is* exposed is the fallback **order**, because in phase 2 that is not
+  cosmetic — the first credential of a group is the delivered one, so moving a
+  row changes which key a session receives. The rest do nothing until **phase 5**
+  makes failover real for a string-backed subscription, which is where they
+  belong.
+- **Rollback and re-upgrade is lossy.** The frozen `providerAccounts` blob is a
+  downgrade path, not a two-way sync: changes made while rolled back are
+  discarded on the way back up, because the presence of `credentialRoutes`
+  permanently suppresses re-import. Making it two-way would mean reconciling two
+  live sources, which is the thing this design removes.
+
+**Onboarding was not broken by this phase, and the reason is worth recording**
+because the design predicted it would be. The prediction assumed phase 2 removed
+the `AgentId` keying from credentials outright; the projection above means
+`OnboardingWizard`'s two hard-coded cards keep working unchanged, now writing
+`(anthropic, sub)` and `(openai, sub)`. They keep their API-key disclosure — the
+copies in Settings → Services do not, since there the key is a first-class card —
+so a user with no subscription still has a way in (req 2). It is still the
+interim: the step is hard-coded to two providers and lists every other agent
+read-only, which `docs/257-onboarding-non-blocking` replaces.
+
 **Phase 3 — Spawn shaping and eligibility.** Both spawn sites set the base URL and
 credential from the selected model's service, after the scrub. **There is no existing
 base-URL seam to extend** — no field on `AgentRunParams`, no Claude flag or env assignment,

@@ -73,6 +73,10 @@ const HARD_DENY_PREFIXES = [
   "/api/secrets",
   "/api/mcp-servers",
   "/api/provider-accounts",
+  // docs/252 phase 2 — the same class of surface as `/api/provider-accounts`,
+  // and it must carry the same backstop for the same reason: it manages the
+  // user's credentials for every service.
+  "/api/credential-routes",
   "/api/trackers",
   "/api/updates",
 ] as const;

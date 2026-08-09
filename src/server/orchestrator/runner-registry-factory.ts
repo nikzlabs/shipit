@@ -85,7 +85,8 @@ export interface RunnerRegistryDeps {
   containerManager: SessionContainerManager | null;
   /**
    * Account-level credential store (docs/088). Used to wire ServiceManager's
-   * `mcpAgentEnvLoader` (merging `mcp__*` secrets into the agent env) and to
+   * `accountAgentEnvLoader` (merging MCP secrets and the user's stored service
+   * credentials into the agent env) and to
    * trigger MCP npm-package installs at session activation. Optional so test
    * setups without credentials still work.
    */

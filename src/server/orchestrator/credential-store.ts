@@ -7,16 +7,28 @@ import type {
   OAuthTokens,
   McpOAuthRegisteredClient,
 } from "../shared/types/mcp-types.js";
-import type { AgentId, AccountSelectionMode, FailoverCutoffs, ProviderAccount, SubAgentDefaults, SubAgentDefaultsPatch } from "../shared/types.js";
-import { DEFAULT_SELECTION_MODE } from "../shared/types.js";
+import type {
+  AgentId,
+  AccountSelectionMode,
+  CredentialBillingMode,
+  CredentialRoute,
+  FailoverCutoffs,
+  ProviderAccount,
+  SubAgentDefaults,
+  SubAgentDefaultsPatch,
+} from "../shared/types.js";
+import { credentialModeKey, DEFAULT_SELECTION_MODE } from "../shared/types.js";
 import { DEFAULT_FAILOVER_CUTOFF } from "../shared/types.js";
 import type { VoiceDeliveryMode } from "../shared/types/voice-note-types.js";
 import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js";
 import {
+  allServices,
+  harnessForNativeService,
   nativeServiceForHarness,
   resolveModelSelection,
   resolveRetiredModelId,
   retirementSuccessor,
+  storageEnvFor,
 } from "../shared/catalogue/index.js";
 
 /**
@@ -51,10 +63,18 @@ interface CredentialData {
    * supportsSteering: true. (docs/140)
    */
   liveSteering?: boolean;
-  /** docs/150 reqs 4–6 — per-provider proactive failover cutoffs. */
-  failoverCutoffs?: Partial<Record<AgentId, FailoverCutoffs>>;
-  /** docs/150 req 21 — per-provider account selection mode. */
-  accountSelectionMode?: Partial<Record<AgentId, AccountSelectionMode>>;
+  /**
+   * docs/150 reqs 4–6 — proactive failover cutoffs.
+   *
+   * docs/252 phase 2 re-keys this (and {@link accountSelectionMode}) from
+   * `AgentId` to `credentialModeKey(serviceId, billingMode)`. Both are answers
+   * to "which of these credentials next?", a question that belongs to the group
+   * a turn routes within — which is the `(service, billing mode)` pair, not the
+   * CLI. Legacy `AgentId` keys are migrated once at load.
+   */
+  failoverCutoffs?: Record<string, FailoverCutoffs>;
+  /** docs/150 req 21 — account selection mode, keyed as {@link failoverCutoffs}. */
+  accountSelectionMode?: Record<string, AccountSelectionMode>;
   /**
    * When true, the PR poller's auto-resolve loop fires when a tracked PR
    * transitions to CONFLICTING while the agent is idle. (docs/146)
@@ -114,7 +134,36 @@ interface CredentialData {
    * per account/provider.
    */
   mcpOAuthClients?: Record<string, McpOAuthRegisteredClient>;
+  /**
+   * **Legacy, frozen.** docs/150's per-`AgentId` account rows. docs/252 phase 2
+   * migrates these into {@link credentialRoutes} once, at load, and never reads
+   * or writes them again — the blob is left on disk deliberately, as the
+   * downgrade path for an install that rolls back before it connects anything
+   * new. It is not a second live source: nothing writes it after the migration.
+   */
   providerAccounts?: Partial<Record<AgentId, ProviderAccount[]>>;
+  /**
+   * docs/252 phase 2 — every credential the user holds, keyed by
+   * `(serviceId, billingMode)` on each record. One flat array rather than a map
+   * because the natural key is a pair and every read filters anyway.
+   */
+  credentialRoutes?: CredentialRoute[];
+  /**
+   * docs/252 phase 2 — the secret behind each `via: "string"` credential route,
+   * keyed by route id.
+   *
+   * Per *instance*, which is the one piece of genuinely new persistence in this
+   * design: `agentEnv` is a single `Record<string, string>` whose named slot the
+   * next write overwrites, so a second GLM coding-plan key would destroy the
+   * first — leaving req 12 with nothing to fail over to. Storage is keyed by
+   * route id exactly as an account's credential root is keyed by account id;
+   * the catalogue's `storageEnv` names the variable a credential is
+   * *materialized into at spawn*, never where it is kept.
+   *
+   * Server-side only. {@link CredentialRoute} carries no secret precisely so
+   * the route list stays safe to return verbatim through Settings.
+   */
+  credentialSecrets?: Record<string, string>;
   /**
    * Voice provider API keys (docs/144) keyed by provider id ("openai",
    * "elevenlabs", "deepgram", …). Each provider that needs its own credential
@@ -164,6 +213,142 @@ export class CredentialStore {
     this.cipher = cipher;
     this.load();
     this.migrateSubAgentDefaults();
+    this.migrateProviderAccountsToRoutes();
+    this.migrateAgentEnvKeysToRoutes();
+    this.migrateRoutingSettingsKeys();
+  }
+
+  /**
+   * docs/252 phase 2 — lift a top-level API key out of the single `agentEnv`
+   * slot and into a credential route of the mode that names it.
+   *
+   * Today exactly one key travels this way: Codex's `OPENAI_API_KEY`, persisted
+   * by `set_agent_env`. It is moved rather than copied, because leaving it in
+   * both places is precisely the two-writers-one-fact drift this feature is
+   * removing — and because `getAllAgentEnv()` feeds the agent env directly, so
+   * a copy would keep being delivered from the old slot after the user removed
+   * the credential.
+   *
+   * Matching is by the catalogue's `storageEnv` names, so a name the catalogue
+   * does not claim (every `mcp__*` secret, anything a deployment set by hand)
+   * is left exactly where it is.
+   */
+  private migrateAgentEnvKeysToRoutes(): void {
+    const env = this.data.agentEnv;
+    if (!env) return;
+    let changed = false;
+    for (const service of allServices()) {
+      for (const mode of service.modes) {
+        const envName = storageEnvFor(service.id, mode.kind);
+        if (!envName) continue;
+        const value = env[envName];
+        if (typeof value !== "string" || !value) continue;
+        // Already migrated (or configured through the new surface): the mode
+        // holds a string credential, so the `agentEnv` copy is the stale one.
+        const already = this.listCredentialRoutes(service.id, mode.kind).some((r) => r.via === "string");
+        const now = Date.now();
+        if (!already) {
+          const id = `cred_${service.id}_${mode.kind}`;
+          this.data.credentialRoutes = [
+            ...(this.data.credentialRoutes ?? []),
+            {
+              id,
+              serviceId: service.id,
+              billingMode: mode.kind,
+              via: "string",
+              label: `${service.name} key`,
+              labelIsGenerated: true,
+              isPrimary: false,
+              priority: 0,
+              status: "ready",
+              createdAt: now,
+              updatedAt: now,
+            },
+          ];
+          this.data.credentialSecrets = { ...(this.data.credentialSecrets ?? {}), [id]: value };
+        }
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- keyed by a catalogue storageEnv name
+        delete env[envName];
+        changed = true;
+      }
+    }
+    if (changed) this.save();
+  }
+
+  /**
+   * docs/252 phase 2 — lift docs/150's per-`AgentId` account rows into
+   * `(service, billing mode)`-keyed credential routes.
+   *
+   * The mapping is forced, not chosen: an account row is a **subscription**
+   * credential (metered keys were never accounts — they are the reserved env
+   * routes), and the service is the harness's own vendor, because before this
+   * feature a harness could reach nothing else. So `claude` → `(anthropic,
+   * sub)` and `codex` → `(openai, sub)`, with `via: "account"` throughout.
+   *
+   * Runs once: the presence of `credentialRoutes` is the marker, so a later
+   * boot never re-imports the frozen legacy blob and cannot resurrect an
+   * account the user has since disconnected.
+   */
+  private migrateProviderAccountsToRoutes(): void {
+    if (this.data.credentialRoutes) return;
+    const legacy = this.data.providerAccounts;
+    const routes: CredentialRoute[] = [];
+    for (const [provider, accounts] of Object.entries(legacy ?? {})) {
+      const serviceId = nativeServiceForHarness(provider as AgentId);
+      // A provider with no catalogue service cannot be expressed as a route.
+      // Dropping is wrong and inventing a service is worse, so leave the legacy
+      // blob as the only record and say so — this is unreachable for the two
+      // shipped harnesses, both of which declare a `nativeService`.
+      if (!serviceId) {
+        console.warn(
+          `[credential-store] cannot migrate ${provider} accounts: no catalogue service for that harness`,
+        );
+        continue;
+      }
+      for (const account of accounts ?? []) {
+        routes.push({ ...providerAccountToRoute(account, serviceId) });
+      }
+    }
+    this.data.credentialRoutes = routes;
+    this.save();
+  }
+
+  /**
+   * docs/252 phase 2 — re-key the routing settings from `AgentId` to
+   * `credentialModeKey(serviceId, billingMode)`.
+   *
+   * A legacy key is an `AgentId` and therefore contains no `:`, which is what
+   * makes this both detectable and idempotent. The target is the *subscription*
+   * mode of the harness's own vendor, for the same reason the account migration
+   * above picks it: order, spreading and cutoffs only ever described a group of
+   * subscription accounts.
+   */
+  private migrateRoutingSettingsKeys(): void {
+    let changed = false;
+    const rekey = <T>(map: Record<string, T> | undefined): Record<string, T> | undefined => {
+      if (!map) return map;
+      const next: Record<string, T> = {};
+      // Two passes, so precedence never depends on JSON key order. An
+      // already-migrated entry wins over a legacy one for the same group: a
+      // mixed file can only arise from a rollback-and-re-upgrade, and there the
+      // new-form key is the newer write.
+      for (const [key, value] of Object.entries(map)) {
+        if (key.includes(":")) next[key] = value;
+      }
+      for (const [key, value] of Object.entries(map)) {
+        if (key.includes(":")) continue;
+        const serviceId = nativeServiceForHarness(key as AgentId);
+        if (!serviceId) continue; // an agent the catalogue does not carry; drop the setting rather than guess
+        const target = credentialModeKey(serviceId, "sub");
+        changed = true;
+        if (target in next) continue;
+        next[target] = value;
+      }
+      return next;
+    };
+    this.data.failoverCutoffs = rekey(this.data.failoverCutoffs);
+    this.data.accountSelectionMode = rekey(this.data.accountSelectionMode);
+    if (changed) this.save();
   }
 
   /**
@@ -328,45 +513,127 @@ export class CredentialStore {
     }
   }
 
-  // ---- Provider accounts (docs/150) ----
+  // ---- Credential routes (docs/252 phase 2) ----
 
-  listProviderAccounts(provider?: AgentId): ProviderAccount[] {
-    if (provider) {
-      return [...(this.data.providerAccounts?.[provider] ?? [])].map((a) => ({ ...a }));
-    }
-    return (["claude", "codex"] as AgentId[]).flatMap((id) => this.listProviderAccounts(id));
+  /**
+   * Every stored credential, optionally narrowed to one `(service, billing
+   * mode)` pair. Storage order, not selection order — ordering by `priority`
+   * and deriving `isPrimary` from position is `ProviderAccountManager.list()`'s
+   * job (docs/150 req 19) and must stay in one place.
+   */
+  listCredentialRoutes(serviceId?: string, billingMode?: CredentialBillingMode): CredentialRoute[] {
+    return (this.data.credentialRoutes ?? [])
+      .filter((r) => (serviceId === undefined || r.serviceId === serviceId)
+        && (billingMode === undefined || r.billingMode === billingMode))
+      .map((r) => ({ ...r }));
   }
 
-  getProviderAccount(provider: AgentId, accountId: string): ProviderAccount | undefined {
-    const found = this.data.providerAccounts?.[provider]?.find((a) => a.id === accountId);
+  getCredentialRoute(routeId: string): CredentialRoute | undefined {
+    const found = this.data.credentialRoutes?.find((r) => r.id === routeId);
     return found ? { ...found } : undefined;
   }
 
   /**
-   * docs/150 req 19 — this store no longer maintains an `isPrimary` invariant.
-   * "Primary" is position 0 of the `priority` order, derived by
-   * `ProviderAccountManager.list()`. The three blocks that used to live here —
-   * clearing the flag from siblings on upsert, and re-electing a primary on
-   * upsert and on delete — existed only to keep a second copy of that fact
-   * consistent, and a second copy is what req 19 is about removing. Rows on
-   * disk may still carry a stale flag; it is ignored on read.
+   * Add or replace a credential route.
+   *
+   * docs/150 req 19 — no `isPrimary` invariant is maintained here. "Primary" is
+   * position 0 of the `priority` order, derived on read; a second copy of that
+   * fact is exactly what req 19 removed. A stale flag on disk is ignored.
    */
-  upsertProviderAccount(account: ProviderAccount): void {
-    this.data.providerAccounts ??= {};
-    const accounts = [...(this.data.providerAccounts[account.provider] ?? [])];
-    const idx = accounts.findIndex((a) => a.id === account.id);
-    const next = { ...account, updatedAt: Date.now() };
-    if (idx >= 0) accounts[idx] = next;
-    else accounts.push(next);
-    this.data.providerAccounts[account.provider] = accounts;
+  upsertCredentialRoute(route: CredentialRoute): void {
+    const routes = [...(this.data.credentialRoutes ?? [])];
+    const idx = routes.findIndex((r) => r.id === route.id);
+    const next = { ...route, updatedAt: Date.now() };
+    if (idx >= 0) routes[idx] = next;
+    else routes.push(next);
+    this.data.credentialRoutes = routes;
     this.save();
   }
 
-  deleteProviderAccount(provider: AgentId, accountId: string): void {
-    const accounts = this.data.providerAccounts?.[provider];
-    if (!accounts) return;
-    this.data.providerAccounts![provider] = accounts.filter((a) => a.id !== accountId);
+  /**
+   * Remove a credential route **and its secret**, in that order in one write.
+   * Splitting them would leave a secret with no record naming it, which nothing
+   * would ever clean up.
+   */
+  deleteCredentialRoute(routeId: string): void {
+    this.data.credentialRoutes = (this.data.credentialRoutes ?? []).filter((r) => r.id !== routeId);
+    const secrets = { ...(this.data.credentialSecrets ?? {}) };
+    if (routeId in secrets) {
+      const { [routeId]: _removed, ...rest } = secrets;
+      this.data.credentialSecrets = rest;
+    }
     this.save();
+  }
+
+  /**
+   * Add a route **and** its secret in one write.
+   *
+   * Two writes would leave a window in which a `ready` route exists with no
+   * secret behind it — a credential that reports as configured and delivers
+   * nothing. A crash there is unrecoverable by inspection, because the route
+   * looks complete. One `save()` removes the window rather than documenting it.
+   */
+  upsertCredentialRouteWithSecret(route: CredentialRoute, secret: string): void {
+    const routes = [...(this.data.credentialRoutes ?? [])];
+    const idx = routes.findIndex((r) => r.id === route.id);
+    const next = { ...route, updatedAt: Date.now() };
+    if (idx >= 0) routes[idx] = next;
+    else routes.push(next);
+    this.data.credentialRoutes = routes;
+    this.data.credentialSecrets = { ...(this.data.credentialSecrets ?? {}), [route.id]: secret };
+    this.save();
+  }
+
+  /** The secret behind a `via: "string"` route. Server-side only. */
+  getCredentialSecret(routeId: string): string | undefined {
+    const value = this.data.credentialSecrets?.[routeId];
+    return typeof value === "string" && value.length > 0 ? value : undefined;
+  }
+
+  setCredentialSecret(routeId: string, secret: string): void {
+    this.data.credentialSecrets = { ...(this.data.credentialSecrets ?? {}), [routeId]: secret };
+    this.save();
+  }
+
+  // ---- Provider accounts (docs/150) — a projection over credential routes ----
+  //
+  // docs/252 phase 2 makes `CredentialRoute` the storage shape and leaves these
+  // four as the account-shaped view the docs/150 routing machinery still reads.
+  // The projection is total and lossless in both directions: an account row IS
+  // a `via: "account"` credential of its vendor's subscription mode, and
+  // `provider` is recoverable from `serviceId` through the catalogue's
+  // `nativeService`. Phase 3 — which moves eligibility and turn routing off
+  // `AgentId` — is what deletes this pair of adapters; re-keying ~70 call sites
+  // here would have bought nothing this phase can use.
+
+  listProviderAccounts(provider?: AgentId): ProviderAccount[] {
+    if (!provider) {
+      return (["claude", "codex"] as AgentId[]).flatMap((id) => this.listProviderAccounts(id));
+    }
+    const serviceId = nativeServiceForHarness(provider);
+    if (!serviceId) return [];
+    return this.listCredentialRoutes(serviceId, "sub")
+      .filter((route) => route.via === "account")
+      .map((route) => routeToProviderAccount(route, provider));
+  }
+
+  getProviderAccount(provider: AgentId, accountId: string): ProviderAccount | undefined {
+    return this.listProviderAccounts(provider).find((a) => a.id === accountId);
+  }
+
+  upsertProviderAccount(account: ProviderAccount): void {
+    const serviceId = nativeServiceForHarness(account.provider);
+    if (!serviceId) {
+      throw new Error(`No catalogue service for provider ${account.provider}`);
+    }
+    this.upsertCredentialRoute(providerAccountToRoute(account, serviceId));
+  }
+
+  deleteProviderAccount(provider: AgentId, accountId: string): void {
+    const route = this.getCredentialRoute(accountId);
+    if (route?.via !== "account") return;
+    if (route.serviceId !== nativeServiceForHarness(provider)) return;
+    this.deleteCredentialRoute(accountId);
   }
 
   // ---- Agent environment variables ----
@@ -696,25 +963,33 @@ export class CredentialStore {
   // ---- Proactive failover cutoffs (docs/150 reqs 4-6) ----
 
   /**
-   * Per-provider cutoffs, defaulting to 90% on both windows (req 5). Stored
-   * values are clamped on write, so a hand-edited config that slipped an
-   * out-of-range number in cannot make the selector behave nonsensically.
+   * Cutoffs for one `(service, billing mode)`, defaulting to 90% on both
+   * windows (req 5). Stored values are clamped on read as well as write, so a
+   * hand-edited config that slipped an out-of-range number in cannot make the
+   * selector behave nonsensically.
    */
-  getFailoverCutoffs(provider: AgentId): FailoverCutoffs {
-    const stored = this.data.failoverCutoffs?.[provider];
+  getFailoverCutoffs(serviceId: string, billingMode: CredentialBillingMode): FailoverCutoffs {
+    const stored = this.data.failoverCutoffs?.[credentialModeKey(serviceId, billingMode)];
     return {
       session: clampCutoff(stored?.session),
       weekly: clampCutoff(stored?.weekly),
     };
   }
 
-  setFailoverCutoffs(provider: AgentId, cutoffs: Partial<FailoverCutoffs>): FailoverCutoffs {
-    const current = this.getFailoverCutoffs(provider);
+  setFailoverCutoffs(
+    serviceId: string,
+    billingMode: CredentialBillingMode,
+    cutoffs: Partial<FailoverCutoffs>,
+  ): FailoverCutoffs {
+    const current = this.getFailoverCutoffs(serviceId, billingMode);
     const next: FailoverCutoffs = {
       session: cutoffs.session === undefined ? current.session : clampCutoff(cutoffs.session),
       weekly: cutoffs.weekly === undefined ? current.weekly : clampCutoff(cutoffs.weekly),
     };
-    this.data.failoverCutoffs = { ...this.data.failoverCutoffs, [provider]: next };
+    this.data.failoverCutoffs = {
+      ...this.data.failoverCutoffs,
+      [credentialModeKey(serviceId, billingMode)]: next,
+    };
     this.save();
     return next;
   }
@@ -727,13 +1002,20 @@ export class CredentialStore {
    * no sensible behavior and failing the turn over a bad settings value would
    * be worse than routing the way an untouched install does.
    */
-  getSelectionMode(provider: AgentId): AccountSelectionMode {
-    const stored = this.data.accountSelectionMode?.[provider];
+  getSelectionMode(serviceId: string, billingMode: CredentialBillingMode): AccountSelectionMode {
+    const stored = this.data.accountSelectionMode?.[credentialModeKey(serviceId, billingMode)];
     return stored === "strict" || stored === "balanced" ? stored : DEFAULT_SELECTION_MODE;
   }
 
-  setSelectionMode(provider: AgentId, mode: AccountSelectionMode): AccountSelectionMode {
-    this.data.accountSelectionMode = { ...this.data.accountSelectionMode, [provider]: mode };
+  setSelectionMode(
+    serviceId: string,
+    billingMode: CredentialBillingMode,
+    mode: AccountSelectionMode,
+  ): AccountSelectionMode {
+    this.data.accountSelectionMode = {
+      ...this.data.accountSelectionMode,
+      [credentialModeKey(serviceId, billingMode)]: mode,
+    };
     this.save();
     return mode;
   }
@@ -843,6 +1125,36 @@ export class CredentialStore {
     this.data = {};
     this.save();
   }
+}
+
+/**
+ * docs/252 phase 2 — the two halves of the account↔route projection.
+ *
+ * Kept as free functions next to the store rather than as methods so they are
+ * obviously pure and obviously each other's inverse, which is the property the
+ * round-trip test asserts. Every field of `ProviderAccount` other than
+ * `provider` survives verbatim — including the four that look like clutter and
+ * are not: selection filters on `status` and `exhaustedUntil`, balanced routing
+ * reads `lastUsedAt`, and duplicate detection and label adoption use
+ * `externalId` and `labelIsGenerated`.
+ */
+export function providerAccountToRoute(account: ProviderAccount, serviceId: string): CredentialRoute {
+  const { provider: _provider, ...rest } = account;
+  return { ...rest, serviceId, billingMode: "sub", via: "account" };
+}
+
+export function routeToProviderAccount(route: CredentialRoute, provider: AgentId): ProviderAccount {
+  const { serviceId: _serviceId, billingMode: _billingMode, via: _via, ...rest } = route;
+  return { ...rest, provider };
+}
+
+/**
+ * The `AgentId` an account-backed route belongs to, or `undefined` when the
+ * service is not any harness's own vendor — which is every custom service, and
+ * why this is the projection's only partial step.
+ */
+export function providerForRoute(route: CredentialRoute): AgentId | undefined {
+  return harnessForNativeService(route.serviceId);
 }
 
 /**

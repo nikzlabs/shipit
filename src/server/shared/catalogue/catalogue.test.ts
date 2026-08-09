@@ -11,10 +11,14 @@ import { describe, it, expect } from "vitest";
 import {
   SERVICES,
   HARNESSES,
+  allHarnesses,
+  allServices,
   catalogueEntriesForHarness,
   catalogueContextWindows,
   catalogueModelLabels,
   contextWindowFor,
+  credentialModeForStorageEnv,
+  credentialStorageEnvNames,
   getMode,
   getModel,
   isContextSentinel,
@@ -31,6 +35,7 @@ import {
   sameSelection,
   selectionExists,
   serializeSelection,
+  storageEnvFor,
 } from "./index.js";
 import type { ApiStyle, BillingModeDef, ModelDef, ModelSelection, ServiceDef } from "./index.js";
 import { formatModelName } from "../../../client/utils/format-model.js";
@@ -571,5 +576,58 @@ describe("the scalar wire form", () => {
       billingMode: "key",
       modelId: "vendor:model:v2",
     });
+  });
+});
+
+/**
+ * docs/252 phase 2 — the credential invariants the type system cannot carry.
+ */
+describe("credentials", () => {
+  it("never reuses one storageEnv name across two modes", () => {
+    // The same variable meaning two different credentials is the single-slot
+    // collision phase 2 exists to remove, one level up: delivery materializes
+    // by name, so two modes sharing a name means one silently wins.
+    const seen = new Map<string, string>();
+    for (const service of allServices()) {
+      for (const mode of service.modes) {
+        for (const credential of mode.credentials) {
+          if (credential.via !== "string") continue;
+          const owner = `${service.id}:${mode.kind}`;
+          const previous = seen.get(credential.storageEnv);
+          expect(previous, `${credential.storageEnv} claimed by ${previous} and ${owner}`)
+            .toBeUndefined();
+          seen.set(credential.storageEnv, owner);
+        }
+      }
+    }
+  });
+
+  it("resolves a storageEnv name back to its owning mode", () => {
+    for (const envName of credentialStorageEnvNames()) {
+      const owner = credentialModeForStorageEnv(envName);
+      expect(owner, envName).toBeDefined();
+      expect(storageEnvFor(owner!.serviceId, owner!.billingMode)).toBe(envName);
+    }
+    expect(credentialModeForStorageEnv("NOT_A_CATALOGUE_KEY")).toBeUndefined();
+  });
+
+  it("declares at least one credential shape for every mode", () => {
+    // A mode with no way in is a row that can never be selected (req 8) — it
+    // would appear in the add-flow and reject every credential offered to it.
+    for (const service of allServices()) {
+      for (const mode of service.modes) {
+        expect(mode.credentials.length, `${service.id}:${mode.kind}`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("gives every harness somewhere to put a credential", () => {
+    // `CredentialTargets` has both halves optional so a key-only CLI need not
+    // invent an account destination — but a harness with neither can
+    // authenticate nothing at all.
+    for (const harness of allHarnesses()) {
+      const { string: stringTarget, account: accountTarget } = harness.spawn.credential;
+      expect(stringTarget ?? accountTarget, harness.id).toBeDefined();
+    }
   });
 });

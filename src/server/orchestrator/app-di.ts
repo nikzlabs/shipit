@@ -5,6 +5,7 @@ import { DatabaseManager } from "../shared/database.js";
 import { GitManager } from "../shared/git.js";
 import { AgentRegistry, isAllowedAgentEnvKey } from "../shared/agent-registry.js";
 import { readInstalledHarnesses } from "../shared/installed-harnesses.js";
+import { collectServiceCredentialEnv } from "./secret-resolver.js";
 import { RepoGit } from "./repo-git.js";
 import { AuthManager } from "./agents/claude/auth-manager.js";
 import { CodexAuthManager } from "./agents/codex/auth-manager.js";
@@ -418,8 +419,15 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     initGlobalGitConfig(credentialsDir);
   }
 
-  // Load persisted agent env vars into process.env before agent detection
-  const storedEnv = credentialStore.getAllAgentEnv();
+  // Load persisted agent env vars into process.env before agent detection.
+  //
+  // docs/252 phase 2 — the stored service credentials go in the same way, under
+  // their catalogue `storageEnv` names. That is what keeps the existing env
+  // probes (`AgentRegistry.isAuthConfigured`, `reservedRouteFor`) answering the
+  // same way once a key lives in the credential-route store instead of in
+  // `agentEnv`: those read `process.env`, and this is where `process.env` is
+  // seeded. Nothing here overwrites a value the deployment set itself.
+  const storedEnv = { ...credentialStore.getAllAgentEnv(), ...collectServiceCredentialEnv(credentialStore) };
   for (const [key, value] of Object.entries(storedEnv)) {
     if (isAllowedAgentEnvKey(key) && !process.env[key]) {
       process.env[key] = value;

@@ -15,16 +15,22 @@ import type {
   AgentMcpWriteResult,
 } from "../shared/types/agent-types.js";
 import type { McpServerConfig } from "../shared/types/mcp-types.js";
+import type { CredentialRoute } from "../shared/types.js";
+import type { AccountAgentEnvSource } from "./session-agent-env.js";
 import { applyLocalMcp, localMcpSpawnEnv, LOCAL_SHIPIT_BRIDGE } from "./local-agent-mcp.js";
 
-/** Minimal `CredentialStore` stub — only the two readers the env payload uses. */
+/** Minimal `CredentialStore` stub — only the readers the env payload uses. */
 function credentialStore(
   agentEnv: Record<string, string> = {},
   mcpOAuth: Record<string, { accessToken: string }> = {},
-) {
+  credentialRoutes: CredentialRoute[] = [],
+  secrets: Record<string, string> = {},
+): AccountAgentEnvSource {
   return {
     getAllAgentEnv: () => ({ ...agentEnv }),
     getAllMcpOAuthTokens: () => mcpOAuth as never,
+    listCredentialRoutes: () => credentialRoutes.map((r) => ({ ...r })),
+    getCredentialSecret: (routeId: string) => secrets[routeId],
   };
 }
 

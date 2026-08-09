@@ -86,7 +86,7 @@ export interface ServiceSecretsResolverOptions {
   sessionId: string;
   workspaceDir: string;
   secretsLoader?: () => Promise<Record<string, string>>;
-  mcpAgentEnvLoader?: () => Record<string, string>;
+  accountAgentEnvLoader?: () => Record<string, string>;
   dockerSecretsConfig?: DockerSecretsConfig;
   /**
    * docs/183 — orchestrator-private root for per-service env files, OUTSIDE the
@@ -127,7 +127,7 @@ export class ServiceSecretsResolver {
   private readonly sessionId: string;
   private readonly workspaceDir: string;
   private secretsLoader?: () => Promise<Record<string, string>>;
-  private readonly mcpAgentEnvLoader?: () => Record<string, string>;
+  private readonly accountAgentEnvLoader?: () => Record<string, string>;
   private readonly dockerSecretsConfig?: DockerSecretsConfig;
   private readonly serviceEnvDir: string;
   private readonly onSnapshot?: (snapshot: SecretsStatusInternalSnapshot) => void;
@@ -167,7 +167,7 @@ export class ServiceSecretsResolver {
     this.sessionId = opts.sessionId;
     this.workspaceDir = opts.workspaceDir;
     this.secretsLoader = opts.secretsLoader;
-    this.mcpAgentEnvLoader = opts.mcpAgentEnvLoader;
+    this.accountAgentEnvLoader = opts.accountAgentEnvLoader;
     this.dockerSecretsConfig = opts.dockerSecretsConfig;
     this.serviceEnvDir = opts.serviceEnvDir;
     this.onSnapshot = opts.onSnapshot;
@@ -262,20 +262,22 @@ export class ServiceSecretsResolver {
     // user must set a user secret of the same name if the service needs it.
     this.warnPlatformSources(resolution.platformSourceWarnings);
 
-    // docs/088: merge account-level MCP secrets (`mcp__*` keys) into the
-    // resolved agent-env set. This runs AFTER `resolveSecrets()` — MCP
-    // secrets are account-level and never declared in compose, so they take
-    // a separate path. Compose-declared entries win on key collision (they
-    // are explicit per-repo overrides).
+    // docs/088 + docs/252: merge the ACCOUNT-LEVEL set — MCP secrets (`mcp__*`),
+    // MCP OAuth tokens, and the user's stored service credentials — into the
+    // resolved agent-env set. This runs AFTER `resolveSecrets()`: account-level
+    // secrets are never declared in compose, so they take a separate path.
+    // Compose-declared entries win on key collision (they are explicit per-repo
+    // overrides), which is the pre-existing precedence and applies unchanged to
+    // service credentials.
     let mergedAgentValues = resolution.agentValues;
-    if (this.mcpAgentEnvLoader) {
-      let mcpEnv: Record<string, string> = {};
+    if (this.accountAgentEnvLoader) {
+      let accountEnv: Record<string, string> = {};
       try {
-        mcpEnv = this.mcpAgentEnvLoader();
+        accountEnv = this.accountAgentEnvLoader();
       } catch (err) {
-        console.warn(`[compose:${this.sessionId}] mcpAgentEnvLoader failed:`, (err as Error).message);
+        console.warn(`[compose:${this.sessionId}] accountAgentEnvLoader failed:`, (err as Error).message);
       }
-      mergedAgentValues = { ...mcpEnv, ...resolution.agentValues };
+      mergedAgentValues = { ...accountEnv, ...resolution.agentValues };
     }
 
     // De-duplicate required-and-missing across services. Same secret name

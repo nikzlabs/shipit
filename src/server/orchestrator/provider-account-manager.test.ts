@@ -904,7 +904,7 @@ describe("ProviderAccountManager", () => {
     }
 
     it("defaults both cutoffs to 90% (req 5)", () => {
-      expect(store.getFailoverCutoffs("claude")).toEqual({ session: 90, weekly: 90 });
+      expect(store.getFailoverCutoffs("anthropic", "sub")).toEqual({ session: 90, weekly: 90 });
     });
 
     it("moves new work off an account past the short-window cutoff (req 6)", () => {
@@ -939,7 +939,7 @@ describe("ProviderAccountManager", () => {
 
     it("honours a configured cutoff instead of the default", () => {
       const { a, b } = twoReadyAccounts();
-      store.setFailoverCutoffs("claude", { session: 50 });
+      store.setFailoverCutoffs("anthropic", "sub", { session: 50 });
       const mgr = mgrWith({ [a]: { session: win(60) }, [b]: { session: win(10) } });
 
       expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: b } });
