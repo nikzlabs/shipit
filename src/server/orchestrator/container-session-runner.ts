@@ -1055,7 +1055,25 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken, deliveryId }, { timeoutMs: 0 });
         } catch (retryErr) {
           if (retryErr instanceof Error && retryErr.message === "Agent already running") {
-            await workerPost(this.workerUrl, "/agent/kill").catch(() => { /* may already be gone */ });
+            // Name the stale resident as the kill's victim when the worker can
+            // tell us who it is. This kill is the desync clear, so it must
+            // still fire — but untargeted, a kill that TIMES OUT client-side
+            // and executes on a wedged worker minutes later (the 2026-08-09
+            // incident had a ~9-minute-late kill) would land on whatever spawn
+            // is resident by then, including the one the retry below starts.
+            // Targeted at the reported resident, a late execution against a
+            // reused slot no-ops. Status probe failure → untargeted, exactly
+            // today's behavior.
+            let staleResidentToken: string | undefined;
+            try {
+              const status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as WorkerAgentStatus;
+              staleResidentToken = status.runToken;
+            } catch { /* fall back to the untargeted clear */ }
+            await workerPost(
+              this.workerUrl,
+              "/agent/kill",
+              staleResidentToken !== undefined ? { runToken: staleResidentToken } : undefined,
+            ).catch(() => { /* may already be gone */ });
             await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken, deliveryId }, { timeoutMs: 0 });
           } else {
             throw retryErr;
@@ -1331,13 +1349,39 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * Capturing the victim synchronously (before the first await) and comparing on
    * resolve makes the clear a no-op once the slot has moved on. When the victim
    * IS still in the slot, the clear happens exactly as before.
+   *
+   * The WORKER side needs the same guard (prod incident 2026-08-09, session
+   * 468191f5): a `/agent/kill` that executed ~9 minutes late SIGTERMed the NEW
+   * resident streaming process mid-turn — the slot-clear guard above fired
+   * ("not clearing the incoming agent") but the wrong process was already dead.
+   * `victimRunToken` names the intended victim in the POST body; the worker
+   * no-ops when its resident spawn is not that victim. Only passed by callers
+   * that know their victim (`ProxyAgentProcess.kill()`); recovery paths omit it
+   * on purpose — they clear whatever the worker holds, orchestrator-view-stale
+   * or not.
    */
-  async killAgentOnWorker(opts?: { timeoutMs?: number }): Promise<void> {
+  async killAgentOnWorker(opts?: { timeoutMs?: number; victimRunToken?: string }): Promise<void> {
     const victim = this._agent;
-    await workerPost(this.workerUrl, "/agent/kill", undefined, opts);
+    await workerPost(
+      this.workerUrl,
+      "/agent/kill",
+      opts?.victimRunToken !== undefined ? { runToken: opts.victimRunToken } : undefined,
+      opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : undefined,
+    );
     if (this._agent !== victim) {
       console.warn(
         `[container-runner:${this.sessionId}] /agent/kill resolved after the slot moved on — not clearing the incoming agent`,
+      );
+      return;
+    }
+    // A caller that named its victim killed AT MOST that spawn: when the slot
+    // holds a different spawn (a late kill from a retired proxy — the slot was
+    // reused before its fire-and-forget kill even started), the worker
+    // no-opped, the resident is alive, and clearing the slot would strand its
+    // event stream — the planning#290 symptom through the front door.
+    if (opts?.victimRunToken !== undefined && this._agent?.runToken !== opts.victimRunToken) {
+      console.warn(
+        `[container-runner:${this.sessionId}] /agent/kill victim ${opts.victimRunToken} is not the slot occupant — nothing was killed, not clearing the slot`,
       );
       return;
     }
@@ -2546,9 +2590,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // transcript with no terminal card.
     this.cancelInFlightSubAgents("runner disposed");
 
-    // Kill agent on worker (fire and forget)
+    // Kill agent on worker (fire and forget). Names ITS OWN spawn as the
+    // victim: the container outlives this runner (a new runner may reconnect
+    // and adopt or start a fresh spawn), so an untargeted kill delayed on a
+    // slow worker could land on that successor's live process — the 2026-08-09
+    // incident class. Targeted, a late execution against a reused slot no-ops.
     if (this._agent) {
-      workerPost(this.workerUrl, "/agent/kill").catch(() => {});
+      workerPost(this.workerUrl, "/agent/kill", { runToken: this._agent.runToken }).catch(() => {});
       this._agent = null;
     }
 

@@ -15,7 +15,7 @@ import type {
   AgentEvent,
   AgentId,
 } from "./agents/agent-process.js";
-import type { PermissionMode, ServiceRouting, WorkerAgentStartBody, WorkerAgentStatus } from "../shared/types.js";
+import type { PermissionMode, ServiceRouting, WorkerAgentKillBody, WorkerAgentStartBody, WorkerAgentStatus } from "../shared/types.js";
 import type { PermissionBroker } from "./permission-broker.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
@@ -199,13 +199,33 @@ export class AgentController {
       return { interrupted: true };
     });
 
-    app.post("/agent/kill", async (_request, reply) => {
+    app.post<{ Body: WorkerAgentKillBody | null }>("/agent/kill", async (request, reply) => {
+      // Identity-guarded kill (prod incident 2026-08-09, session 468191f5): the
+      // orchestrator's kill is fire-and-forget and can execute here long after
+      // it was issued. planning#290 guarded the ORCHESTRATOR-side slot clear, but
+      // the request itself carried no victim identity, so a late-executing kill
+      // SIGTERMed whichever process was resident at execution time — including
+      // a newer live one mid-turn (whose in-flight turn then died silently).
+      // When the caller names its victim, refuse to kill anyone else. A body
+      // without `runToken` (legacy caller / recovery paths that intentionally
+      // clear whatever is resident) keeps the unconditional behavior. The
+      // mismatch path deliberately does NOT `cancelAllSpawns()` either — the
+      // resident (newer) primary's sub-agents are not the victim's.
+      const victimRunToken = request.body?.runToken;
+      if (typeof victimRunToken === "string" && this.residentSpawn?.runToken !== victimRunToken) {
+        console.warn(
+          `[agent-kill] victim runToken=${victimRunToken} is not the resident spawn `
+          + `(resident=${this.residentSpawn?.runToken ?? "none"}) — kill ignored`,
+        );
+        return { killed: false, staleVictim: true };
+      }
       this.cancelAllSpawns();
       if (!this.agent) {
         return reply.code(404).send({ error: "No agent running" });
       }
       this.agent.kill();
       this.agent = null;
+      this.residentSpawn = null;
       this.endTurn();
       return { killed: true };
     });

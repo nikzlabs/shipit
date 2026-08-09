@@ -1375,6 +1375,50 @@ export async function executeAgentTurn(
         if (handled) return;
       }
 
+      // Structural counterpart of `onInterruptedTurn` for turns whose caller
+      // supplied none (prod incident 2026-08-09, session 468191f5): a
+      // dispatched/steered turn whose process was SIGTERMed mid-turn reached
+      // this point with NOTHING finalizing its streamed rows when the
+      // no-result hook stood down (`wasInterrupted` true — e.g. an interrupt
+      // the resident process outlived) or threw. Those rows stayed
+      // `in_progress=1`, so the NEXT turn's `replaceInProgress()` deleted them
+      // — the user watched the turn's messages vanish on reload. Finalize here
+      // whenever no caller hook did, so a turn that dies without an
+      // `agent_result` can never leave rows behind for a later turn to sweep
+      // away. Three stand-downs: a SUPERSEDED turn's accumulator now belongs
+      // to the newer turn (rebuilding history from it would clobber that
+      // turn's live rows); a non-null agent slot means another turn is already
+      // live on this runner for the same reason; and an ERRORED turn was
+      // already finalized by the `error` listener (`agent-listeners.ts`),
+      // which leaves the accumulator populated — an adapter can emit `error`
+      // and then `done`, and re-running `replaceInProgress` here after the
+      // rows were finalized would append a duplicate copy of the turn.
+      if (
+        !receivedResult
+        && !sawAuthRequired
+        && !agentErrored
+        && !input.onInterruptedTurn
+        && !wasSuperseded
+        && runner !== null
+        && runner.getAgent() === null
+      ) {
+        // planning#279 — guarded like every other step: this rewrites chat-history
+        // rows, and its failure must not cost the turn its commit below.
+        await postTurnStep("finalize-partial-turn-fallback", () => {
+          const partial = buildTurnMessages(
+            runner.chatMessageGroups,
+            runner.steeredMessages ?? [],
+            runner.recordedCards ?? [],
+            { inProgress: false },
+          );
+          deps.listenerDeps.chatHistoryManager.replaceInProgress(sessionId, partial);
+          deps.listenerDeps.chatHistoryManager.finalizeInProgress(sessionId);
+          // Mirrors `onInterruptedTurn` (docs/163): the finalized turn must not
+          // be replayed on top of its persisted copy by a later WS reconnect.
+          runner.clearTurnEventBuffer();
+        });
+      }
+
       if (useStreaming) {
         // Streaming post-turn (commit/PR) ran on agent_result when the turn ended
         // cleanly; done is normally process-exit cleanup only. BUT a streaming
