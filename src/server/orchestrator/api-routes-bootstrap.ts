@@ -15,7 +15,7 @@ import {
   setAgentEnv,
   setApiKey,
   clearApiKey,
-  listAgents,
+  buildAgentListPayload,
   fullReset,
   listProviderAccounts,
   createProviderAccount,
@@ -153,6 +153,12 @@ export async function registerBootstrapRoutes(
           deps.agentRegistry, deps.credentialStore,
           request.params.id as AgentId, request.body.key, request.body.value,
         );
+        // docs/257 — this route makes an install runnable (it is how a Codex
+        // API key is stored) and used to broadcast NOTHING, handing the fresh
+        // agent list only to the tab that posted it. Every other tab kept a
+        // stale `canRunTurns: false` and a disabled composer until its next
+        // bootstrap. It is a producer of the fact, so it announces it.
+        deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry));
         return { agentId: result.agentId, key: result.key, success: true, agents: result.agents };
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -242,7 +248,7 @@ export async function registerBootstrapRoutes(
         );
         deps.agentRegistry.refreshAuth(request.params.provider);
         deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
-        deps.sseBroadcast("agent_list", { agents: listAgents(deps.agentRegistry) });
+        deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry));
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -279,7 +285,7 @@ export async function registerBootstrapRoutes(
         );
         deps.agentRegistry.refreshAuth(request.params.provider);
         deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
-        deps.sseBroadcast("agent_list", { agents: listAgents(deps.agentRegistry) });
+        deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry));
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -415,10 +421,15 @@ export async function registerBootstrapRoutes(
         );
         clearApiKey();
         deps.agentRegistry.refreshAuth("claude");
-        const agents = listAgents(deps.agentRegistry);
-        deps.sseBroadcast("agent_list", { agents });
+        // docs/257 — a provider-wide sign-out can remove the LAST credential on
+        // the install, so this is one of the sites where `canRunTurns` must ride
+        // the broadcast: omit it and the composer stays enabled over an install
+        // that can no longer run anything, and the server refuses the message
+        // the user was still allowed to type.
+        const payload = buildAgentListPayload(deps.agentRegistry);
+        deps.sseBroadcast("agent_list", payload);
         deps.sseBroadcast("provider_accounts", { accounts: deps.providerAccountManager.list() });
-        return { success: true, agents };
+        return { success: true, agents: payload.agents };
       } catch (err) {
         // The running-turn refusal is a 409 the user can act on, not a fault.
         if (err instanceof ServiceError) {
@@ -469,18 +480,13 @@ export async function registerBootstrapRoutes(
         // for a sign-out that then 409s.
         deps.codexAuthManager.cancel();
         deps.agentRegistry.refreshAuth("codex");
-        const agents = deps.agentRegistry.list().map((a) => ({
-          id: a.id, name: a.name, installed: a.installed,
-          authConfigured: a.authConfigured, models: a.capabilities.models,
-          supportsReview: a.capabilities.supportsReview,
-          supportsSteering: a.capabilities.supportsSteering,
-          supportsCompaction: a.capabilities.supportsCompaction,
-          supportedPermissionModes: a.capabilities.supportedPermissionModes,
-          skillInvocationPrefix: a.capabilities.skillInvocationPrefix,
-        }));
-        deps.sseBroadcast("agent_list", { agents });
+        // docs/257 — same as the Claude sign-out above: the last credential can
+        // go here, so the payload carries `canRunTurns`. The hand-rolled agent
+        // list this replaced had also drifted from `listAgents` (no `reasoning`).
+        const payload = buildAgentListPayload(deps.agentRegistry);
+        deps.sseBroadcast("agent_list", payload);
         deps.sseBroadcast("provider_accounts", { accounts: deps.providerAccountManager.list() });
-        return { success: true, agents };
+        return { success: true, agents: payload.agents };
       } catch (err) {
         // The running-turn refusal is a 409 the user can act on, not a fault.
         if (err instanceof ServiceError) {

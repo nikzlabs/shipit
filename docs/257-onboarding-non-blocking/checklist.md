@@ -1,7 +1,7 @@
 # Checklist
 
-> **Status: design-only.** No implementation code is in the tree. All three questions the
-> design raised are answered and receipted.
+> **Status: phase 1 implemented.** Phase 2 (the panel) is still design-only. All three
+> questions the design raised are answered and receipted.
 >
 > Phase 2 depends on [`docs/252`](../252-custom-models/plan.md): phases 1–2 to exist, phase 3
 > for req 6 to actually be delivered. See [`plan.md`](./plan.md) → *Dependency on docs/252*.
@@ -17,35 +17,39 @@
 
 ## Phase 1 — runnable signal + honest composer (reqs 3, 8, 10)
 
-- [ ] `canRunTurns` computed in `services/settings.ts` (pre-252 form: any agent installed
-      **and** `authConfigured`)
-- [ ] Field on `GlobalSettings` → `GET /api/bootstrap` (`services/misc.ts`)
-- [ ] Field added to the SSE `agent_list` payload at **all ten** emit sites —
-      `app-lifecycle.ts` `:1300`, `:1339`, `:1451`, `:1468`, `:1492`;
-      `api-routes-bootstrap.ts` `:245`, `:282`, and the provider-wide sign-outs `:419`, `:481`;
-      and the initial/reconnect snapshot `route-registry.ts:163`
-- [ ] `api-routes-bootstrap.ts:147` (Codex API key) gains an `agent_list` broadcast — today it
-      returns `agents` and pushes nothing, so other tabs stay stale
-- [ ] Client store field; `useServerEvents.ts:437` reads it. Do **not** wire through the WS
-      `global_settings` handler — that channel has no server producer
-- [ ] Explicit wiring in the HTTP readers, which copy named fields rather than spreading
-      `settings`: `client/utils/session-data.ts:349` and `App.tsx:1107`
-- [ ] `client/utils/chat-runnable.ts` — reader + `starterPromptsAllowed`
-- [ ] `MessageInput` `disabledReason`: disables the textarea (`:766`), the attach button
-      (`:780`), paste/drag-drop (`:681`), the mic (`:799`) and the permission selector (`:820`)
-- [ ] `MessageInput` renders the textarea empty while `disabledReason` is set, so a retained
-      draft or prefill cannot hide the placeholder
-- [ ] `App.tsx:1985` passes `disabledReason` when `!canRunTurns`; other disabled cases unchanged
-- [ ] `QuickCaptureOverlay.tsx:254` passes **`disabledReason`**, not just `disabled` — the
-      existing prop guards submission only
-- [ ] Server test: `canRunTurns` false with no credential, true with one
-- [ ] Server test: each of the ten emit sites carries the field (a table-driven test, so a new
-      producer added later fails loudly)
-- [ ] Client test: composer is not typeable, cannot attach, cannot dictate, and shows the reason
-- [ ] Client test: a retained draft does not hide the placeholder
-- [ ] Client test: Quick Capture is inert — not typeable and not recording, not merely unable
-      to send
-- [ ] Unit test: `starterPromptsAllowed` — both conditions, including completed-then-removed
+- [x] `canRunTurns` computed in `services/settings.ts` (pre-252 form: any agent installed
+      **and** `authConfigured`) — `computeCanRunTurns`, the single swap point
+- [x] Field on `GlobalSettings` → `GET /api/bootstrap` (`services/misc.ts`), including the
+      settings-read-failed fallback, which computes it rather than defaulting to `false`
+- [x] Field added to the SSE `agent_list` payload at **all ten** emit sites — via
+      `buildAgentListPayload`, which every producer now goes through, so a hand-rolled
+      `{ agents }` cannot reappear. (Eleven with the one added below.)
+- [x] `POST /api/agents/:id/env` (the Codex API key) gains an `agent_list` broadcast — it
+      returned `agents` and pushed nothing, so other tabs stayed stale. Eleventh producer.
+- [x] Client store field (`settings-store.canRunTurns`); `useServerEvents` reads it, and
+      ignores an absent field rather than clobbering a good value. The WS `global_settings`
+      handler is deliberately untouched — that channel has no server producer
+- [x] Explicit wiring in both HTTP readers, which copy named fields rather than spreading
+      `settings`: `client/utils/session-data.ts` and the Settings refetch in `App.tsx`
+- [x] `client/utils/chat-runnable.ts` — reader + `starterPromptsAllowed`
+- [x] `MessageInput` `disabledReason`: disables the textarea, the attach button, paste and
+      drag-drop, the permission selector, and hides the mic (a `MicButton` has no inert state
+      worth rendering) — including the Quick Capture hotkey's mic auto-arm
+- [x] `MessageInput` renders the textarea empty while `disabledReason` is set, so a retained
+      draft or prefill cannot hide the placeholder; the draft survives in the store
+- [x] `App.tsx` passes `disabledReason` when `!canRunTurns`; other disabled cases unchanged
+- [x] `QuickCaptureOverlay` passes **`disabledReason`**, not just `disabled` — the existing
+      prop guards submission only
+- [x] Server test: `canRunTurns` false with no credential, true with one, false for a
+      credential no installed harness can use
+- [x] Server test: every emit site carries the field — a source scan asserting each producer
+      routes through `buildAgentListPayload`, plus a per-file producer census, so a new
+      producer fails loudly naming its file and line
+- [x] Client test: composer is not typeable, cannot attach, cannot dictate, and shows the reason
+- [x] Client test: a retained draft does not hide the placeholder, and cannot be sent
+- [x] Client test: Quick Capture is inert — not typeable, not attachable and not recording,
+      not merely unable to send
+- [x] Unit test: `starterPromptsAllowed` — both conditions, including completed-then-removed
 
 ## Phase 2 — the panel (reqs 1, 2, 4, 5, 6, 7, 9)
 

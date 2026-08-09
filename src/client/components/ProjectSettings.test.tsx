@@ -155,6 +155,39 @@ describe("ProjectSettings - Secrets tab", () => {
     );
   });
 
+  it("cancels the pending 'Saved' confirmation when the tab unmounts", async () => {
+    // Save schedules a 500ms timer that flips the button to "Saved". Left
+    // dangling it fires after the test file's jsdom is torn down, and React's
+    // scheduler dereferences a `window` that no longer exists — a worker crash
+    // that turns a fully green run red with `UNHANDLED ERRORS`. The user-facing
+    // half is the same bug: state set on an unmounted component.
+    const onSecretsLoad = vi.fn().mockResolvedValue(["API_KEY"]);
+    const { unmount } = renderOnSecretsTab({ onSecretsSave: vi.fn(), onSecretsLoad });
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-key-0")).toHaveValue("API_KEY");
+    });
+
+    // Fake timers from here so a regression cannot leak a real timer into the
+    // worker — which is exactly the failure being guarded against. The
+    // assertion matches the specific timer id rather than counting pending
+    // timers: unmount itself schedules two of React's own, so a count says
+    // nothing about this one.
+    vi.useFakeTimers();
+    try {
+      const setSpy = vi.spyOn(globalThis, "setTimeout");
+      fireEvent.click(screen.getByTestId("secrets-save"));
+      const scheduled = setSpy.mock.calls.findIndex(([, ms]) => ms === 500);
+      expect(scheduled, "save should schedule the 500ms confirmation").toBeGreaterThanOrEqual(0);
+      const timerId = setSpy.mock.results[scheduled]?.value;
+
+      const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+      unmount();
+      expect(clearSpy).toHaveBeenCalledWith(timerId);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps an untouched existing custom secret without resending its value", async () => {
     const onSecretsSave = vi.fn();
     const onSecretsLoad = vi.fn().mockResolvedValue(["API_KEY"]);

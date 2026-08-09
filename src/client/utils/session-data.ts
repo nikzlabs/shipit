@@ -87,6 +87,8 @@ interface BootstrapResponse {
   templates: TemplateInfo[];
   githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
   settings: {
+    /** docs/257 req 8 — server-computed "this install can run a turn". */
+    canRunTurns?: boolean;
     gitIdentity: { name: string; email: string };
     systemPrompt: string;
     maxIdleContainers?: number | null;
@@ -363,6 +365,20 @@ export async function loadBootstrapData(): Promise<void> {
   if (!data.settings.gitIdentity.name && !data.settings.gitIdentity.email) {
     useGitStore.getState().setIdentityNeeded(true);
   }
+  // docs/257 req 8 — the readers here copy named fields rather than spreading
+  // `settings`, so a new one has to be wired by hand or it silently never
+  // arrives.
+  //
+  // `?? false` deliberately, and deliberately UNLIKE the `agent_list` SSE
+  // handler, which ignores an absent field instead. This is the authoritative
+  // full snapshot: a field missing from it means "the server did not say", and
+  // "cannot run" is the safe reading. The SSE event is an incremental push,
+  // where a missing field means "no news" and clobbering a good value with
+  // `false` would disable a runnable install. (Both are belt-and-braces — the
+  // SPA is served by the same orchestrator that answers this request, so a
+  // server old enough to omit the field cannot serve a client new enough to
+  // read it.)
+  useSettingsStore.getState().setCanRunTurns(data.settings.canRunTurns ?? false);
   useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
   useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
   if (data.settings.maxIdleContainers !== null && data.settings.maxIdleContainers !== undefined) useSettingsStore.getState().setMaxIdleContainers(data.settings.maxIdleContainers);

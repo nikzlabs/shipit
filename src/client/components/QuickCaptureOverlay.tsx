@@ -20,6 +20,7 @@ import {
 } from "../utils/local-storage.js";
 import { agentIdForModel } from "../utils/agent-for-model.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
+import { useChatDisabledReason } from "../utils/chat-runnable.js";
 import { MessageInput, type SendPayload } from "./MessageInput.js";
 import { Button } from "./ui/button.js";
 import { Alert } from "./ui/banner.js";
@@ -43,6 +44,8 @@ export function QuickCaptureOverlay({
   const repos = useRepoStore((s) => s.repos);
   const activeRepoUrl = useRepoStore((s) => s.activeRepoUrl);
   const permissionMode = useSettingsStore((s) => s.permissionMode);
+  // docs/257 req 3 — the same install-level signal the main composer reads.
+  const chatDisabledReason = useChatDisabledReason();
   const [selectedRepoUrl, setSelectedRepoUrl] = useState<string | undefined>(undefined);
   const [pendingFiles, setPendingFiles] = useState<FileContextRef[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | undefined>(getSavedModelId());
@@ -267,6 +270,13 @@ export function QuickCaptureOverlay({
             surface="overlay"
             onSend={(payload) => handleSend(payload)}
             disabled={disabled}
+            /* docs/257 req 3 — `disabledReason`, not just another clause in
+               `disabled`. `disabled` guards submission only, so adding
+               `!canRunTurns` there would leave Quick Capture typeable,
+               attachable and — when opened by the voice hotkey — recording,
+               with just the Send button dead. That is the "block at submit"
+               failure the requirement rejects, reached through another door. */
+            disabledReason={chatDisabledReason}
             isLoading={false}
             permissionMode={permissionMode}
             onPermissionModeChange={(mode) => useSettingsStore.getState().setPermissionMode(undefined, mode)}

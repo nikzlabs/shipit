@@ -149,6 +149,7 @@ import { buildIssueSeedPrompt } from "../server/shared/issue-ref.js";
 import { sendUserMessage } from "./utils/send-user-message.js";
 import { buildReleaseConfirmMessage } from "./utils/release-confirm-message.js";
 import { isAgentMessagingBlocked } from "./utils/agent-messaging-trust.js";
+import { useChatDisabledReason } from "./utils/chat-runnable.js";
 import type { SendCommentsPayload } from "./components/FilePreviewModal.js";
 
 export default function App() {
@@ -419,6 +420,9 @@ export default function App() {
     currentRepoUrl,
     currentRepo,
   );
+  // docs/257 req 3 — "this install cannot run anything", the one case where the
+  // composer is disabled as a whole and says why in its own placeholder.
+  const chatDisabledReason = useChatDisabledReason();
   const search = useSearch(messages);
   const { notify, requestPermission } = useNotification();
   useAttentionNotifications(notify);
@@ -1113,6 +1117,8 @@ export default function App() {
       try {
         const data = await apiGet<{
           settings: {
+            /** docs/257 req 8 — server-computed "this install can run a turn". */
+            canRunTurns?: boolean;
             gitIdentity: { name: string; email: string };
             systemPrompt: string;
             agents: AgentOption[];
@@ -1136,6 +1142,11 @@ export default function App() {
           };
         }>("/api/bootstrap");
         useGitStore.getState().setIdentity(data.settings.gitIdentity);
+        // docs/257 req 8 — this reader copies named fields too, so the runnable
+        // signal has to be listed here or opening Settings would leave the
+        // composer reading a value this refetch never refreshed.
+        if (data.settings.canRunTurns !== undefined)
+          {useSettingsStore.getState().setCanRunTurns(data.settings.canRunTurns);}
         useSettingsStore
           .getState()
           .setSystemPromptContent(data.settings.systemPrompt);
@@ -1795,7 +1806,16 @@ export default function App() {
                   }
                 : undefined
             }
-            onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)}
+            /* docs/257 req 3 — the composer "does not accept input that could
+               not run", and a file attached from the Files panel is input. The
+               handler goes undefined rather than no-op so FileTree hides the
+               affordance entirely instead of offering a button that does
+               nothing. */
+            onAddToChat={
+              chatDisabledReason
+                ? undefined
+                : (f) => useSettingsStore.getState().addPendingFile(f)
+            }
             onDownload={(f) => {
               const sid = useSessionStore.getState().sessionId;
               if (sid) {
@@ -1995,6 +2015,13 @@ export default function App() {
               ? status !== "open" && !sessionId
               : status !== "open")
           }
+          /* docs/257 req 3 — set ONLY for the not-runnable case, and *in
+             addition to* the expression above rather than folded into it: the
+             other conditions keep today's behaviour, and repo trust in
+             particular renders its own inline notice next to the composer
+             (`RepoTrustNotice`), which suits a consent better than a
+             placeholder. */
+          disabledReason={chatDisabledReason}
           isLoading={isLoading}
           onInterrupt={() => send({ type: "interrupt_agent" })}
           permissionMode={permissionMode}

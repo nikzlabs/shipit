@@ -50,7 +50,7 @@ import type { AgentId, AgentProcess, LogSource, LogRingEntry } from "../shared/t
 import type { AppDeps, RuntimeMode } from "./app-di.js";
 import { SessionRunner } from "./session-runner.js";
 import { prepareDispatch } from "./prepared-dispatch.js";
-import { listAgents } from "./services/settings.js";
+import { buildAgentListPayload } from "./services/settings.js";
 import { sweepSubAgentCredentialsOnSignOut } from "./services/sub-agent.js";
 
 // ---- Re-exports for extracted modules ----
@@ -1297,7 +1297,7 @@ export function markProviderAccountUnauthenticated(opts: {
   }
   agentRegistry.refreshAuth(agentId);
   sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
-  sseBroadcast("agent_list", { agents: listAgents(agentRegistry) });
+  sseBroadcast("agent_list", buildAgentListPayload(agentRegistry));
 }
 
 /**
@@ -1336,7 +1336,7 @@ export function markProviderAccountReauthenticated(opts: {
   }
   agentRegistry.refreshAuth(agentId);
   sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
-  sseBroadcast("agent_list", { agents: listAgents(agentRegistry) });
+  sseBroadcast("agent_list", buildAgentListPayload(agentRegistry));
 }
 
 /** Wire auth event handlers. */
@@ -1374,17 +1374,10 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
     if (healed > 0) console.log(`[auth] re-pushed refreshed ${agentId} token into ${healed} pinned session(s)`);
   };
 
-  /** Snapshot the current agent list in the SSE-friendly shape. */
-  const agentListPayload = () => ({
-    agents: agentRegistry.list().map((a) => ({
-      id: a.id, name: a.name, installed: a.installed,
-      authConfigured: a.authConfigured, models: a.capabilities.models,
-      supportsReview: a.capabilities.supportsReview,
-      supportsSteering: a.capabilities.supportsSteering,
-      supportedPermissionModes: a.capabilities.supportedPermissionModes,
-      skillInvocationPrefix: a.capabilities.skillInvocationPrefix,
-    })),
-  });
+  // The agent-list snapshot used to be hand-rolled here. It is
+  // `buildAgentListPayload` now — docs/257 needs `canRunTurns` on every
+  // producer of the event, and the hand-rolled copy had already drifted
+  // (`reasoning` and `supportsCompaction` were missing from it).
 
   // docs/144 — sign-out sweep. When an agent's auth drops to not-configured,
   // wipe any in-flight cross-agent credential subtree provisioned for a spawn
@@ -1448,7 +1441,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
             reason: "duplicate",
             message: refusal,
           });
-          sseBroadcast("agent_list", agentListPayload());
+          sseBroadcast("agent_list", buildAgentListPayload(agentRegistry));
           sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
           return;
         }
@@ -1465,7 +1458,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
       agentRegistry.refreshAuth(agentId);
       repushTokenToPinnedSessions(agentId, accountId);
       sseBroadcast("agent_auth_complete", { agentId, ...(accountId ? { accountId } : {}) });
-      sseBroadcast("agent_list", agentListPayload());
+      sseBroadcast("agent_list", buildAgentListPayload(agentRegistry));
       sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
     });
 
@@ -1489,7 +1482,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
         ...(payload?.message ? { message: payload.message } : {}),
       });
       agentRegistry.refreshAuth(agentId);
-      sseBroadcast("agent_list", agentListPayload());
+      sseBroadcast("agent_list", buildAgentListPayload(agentRegistry));
     });
   }
 
