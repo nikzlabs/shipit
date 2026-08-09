@@ -204,7 +204,11 @@ describe("ProviderAccountsCard failover cutoffs", () => {
       expect(useSettingsStore.getState().failoverCutoffs[CLAUDE_ROUTING_KEY]).toEqual({ session: 90, weekly: 90 }),
     );
     await waitFor(() => expect(input.value).toBe("90"));
-    expect(useUiStore.getState().toast?.message).toContain("failover cutoff");
+    // docs/257 req 5 — the rollback reports itself on the card, not as a global
+    // toast. The notice lives in the store precisely because this save can be
+    // flushed from an unmount cleanup, after the component's state is gone.
+    expect(screen.getByTestId("provider-accounts-notice-claude")).toHaveTextContent("failover cutoff");
+    expect(useUiStore.getState().toast).toBeNull();
   });
 
   it("hides the cutoff controls when only one account is connected", () => {
@@ -289,21 +293,24 @@ describe("ProviderAccountsCard inline results and errors (docs/257 req 5)", () =
     // error would have used (docs/150 req 22). It was a global toast.
     renderCard();
     act(() => {
-      useSettingsStore.getState().setProviderAccountNotice("claude", "That account is already connected.");
+      useSettingsStore.getState().setProviderAccountNotice("claude", {
+        kind: "error",
+        message: "That account is already connected.",
+      });
     });
 
-    const notice = screen.getByTestId("provider-accounts-external-notice-claude");
+    const notice = screen.getByTestId("provider-accounts-notice-claude");
     expect(notice).toHaveTextContent("That account is already connected.");
 
-    fireEvent.click(screen.getByTestId("provider-accounts-external-notice-claude-dismiss"));
-    expect(screen.queryByTestId("provider-accounts-external-notice-claude")).toBeNull();
+    fireEvent.click(screen.getByTestId("provider-accounts-notice-claude-dismiss"));
+    expect(screen.queryByTestId("provider-accounts-notice-claude")).toBeNull();
   });
 
   it("scopes an external notice to its own provider", () => {
     render(<ProviderAccountsCard provider="codex" agent={undefined} />);
     act(() => {
-      useSettingsStore.getState().setProviderAccountNotice("claude", "Claude's problem");
+      useSettingsStore.getState().setProviderAccountNotice("claude", { kind: "error", message: "Claude's problem" });
     });
-    expect(screen.queryByTestId("provider-accounts-external-notice-codex")).toBeNull();
+    expect(screen.queryByTestId("provider-accounts-notice-codex")).toBeNull();
   });
 });

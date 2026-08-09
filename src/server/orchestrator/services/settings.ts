@@ -130,9 +130,17 @@ export function resolveHarnessOnboarding(
  *
  * `credentialStore` is a **required** parameter, `undefined` and all — phase 2
  * puts `harnessOnboardingCompletedAt` on this payload as well, and the site
- * that matters most is the one where the LAST credential is removed. Making it
- * required means the compiler names every producer instead of an omission
- * degrading silently to "no news" on the client.
+ * that matters most is the one where the LAST credential is removed. Requiring
+ * the argument means no producer can *forget* the store: adding one is a
+ * compile error until it is passed, which is what surfaced the two opts-bag
+ * helpers in `app-lifecycle.ts` that the design's emit-site list never named.
+ *
+ * **What it does not catch**, because the parameter type admits `undefined`
+ * (several callers hold an optional store): a producer that passes a variable
+ * which happens to be `undefined`. That is a real hole, not a theoretical one,
+ * and it is why the guard test in `can-run-turns.test.ts` scans for the store
+ * being *named* at each call site rather than trusting the type. The pair is
+ * the guarantee; neither half is it alone.
  */
 export function buildAgentListPayload(
   agentRegistry: AgentRegistry,

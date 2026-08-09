@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { CredentialRoute } from "../../../server/shared/types.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
@@ -43,6 +43,7 @@ beforeEach(() => {
   useSettingsStore.getState().setCredentialRoutes([]);
   useSettingsStore.getState().setProviderAccounts([]);
   useUiStore.getState().setToast(null);
+  useSettingsStore.setState({ providerAccountNotices: {} });
   vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
     fetchCalls.push({
       url,
@@ -259,5 +260,60 @@ describe("ServicesPanel credential-row errors (docs/257 req 5)", () => {
       expect(screen.getByTestId("credential-error-cred_1")).toBeInTheDocument();
     });
     expect(useUiStore.getState().toast).toBeNull();
+  });
+});
+
+/**
+ * docs/257 req 5 — the case the card's own tests cannot see.
+ *
+ * `ProviderAccountsCard` renders in isolation in its own suite, so a notice set
+ * as the last account disappears looks fine there. In this HOST it is not: the
+ * card's presence is derived from the account list, so the notice was mounted
+ * and unmounted in the same commit and the user never learned which sessions
+ * the disconnect had stranded. Found by cross-backend review.
+ */
+describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)", () => {
+  it("still shows the disconnect result after the LAST account is removed", async () => {
+    const now = Date.now();
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", createdAt: now, updatedAt: now }),
+    ]);
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct_1", provider: "claude", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+    ]);
+    // The server disconnects and reports what it stranded (docs/150 req 23).
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ accounts: [], switchedSessionIds: [], strandedSessionIds: ["s1", "s2"] }),
+      }),
+    );
+
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await userEvent.click(
+      within(screen.getByTestId("provider-account-row-acct_1")).getByRole("button", { name: "Disconnect" }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("provider-accounts-notice-claude"))
+        .toHaveTextContent("2 session(s) have no connected Claude account");
+    });
+    // The row really is gone — this is not the notice surviving because nothing
+    // was removed.
+    expect(screen.queryByTestId("provider-account-row-acct_1")).toBeNull();
+  });
+
+  it("drops the card again once the notice is dismissed", async () => {
+    useSettingsStore.getState().setProviderAccounts([]);
+    useSettingsStore.getState().setProviderAccountNotice("claude", { kind: "info", message: "Disconnected." });
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    expect(screen.getByTestId("provider-accounts-card-claude")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("provider-accounts-notice-claude-dismiss"));
+    // Back to "only what you configured" — the card was on screen to deliver a
+    // message, not because anything is configured.
+    expect(screen.queryByTestId("provider-accounts-card-claude")).toBeNull();
+    expect(screen.getByTestId("services-empty")).toBeInTheDocument();
   });
 });

@@ -85,6 +85,7 @@ function accountProviderFor(service: ServiceDef, billingMode: BillingMode): Agen
 export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] }) {
   const routes = useSettingsStore((s) => s.credentialRoutes);
   const accounts = useSettingsStore((s) => s.providerAccounts);
+  const notices = useSettingsStore((s) => s.providerAccountNotices);
   const [addOpen, setAddOpen] = useState(false);
   /**
    * Modes the user picked in the dialog that have no credential yet.
@@ -99,10 +100,22 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
    */
   const [revealed, setRevealed] = useState<string[]>([]);
 
+  /**
+   * docs/257 req 5 — a card with something to say stays on screen.
+   *
+   * Without this clause, disconnecting the LAST account of a service removed
+   * the account and this filter dropped the card in the same commit — so the
+   * result of that disconnect ("N sessions have no connected account") was
+   * mounted and unmounted together and the user never saw which sessions the
+   * removal had stranded. Found by cross-backend review; the notice being in
+   * the store rather than in the card's own state is what makes rendering it
+   * again possible at all.
+   */
   const configured = catalogueModes().filter(({ service, billingMode }) => {
     const provider = accountProviderFor(service, billingMode);
     return routes.some((r) => r.serviceId === service.id && r.billingMode === billingMode && r.via === "string")
       || (provider !== undefined && accounts.some((a) => a.provider === provider))
+      || (provider !== undefined && notices[provider] !== undefined)
       || revealed.includes(credentialModeKey(service.id, billingMode));
   });
 

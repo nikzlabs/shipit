@@ -151,6 +151,7 @@ import { sendUserMessage } from "./utils/send-user-message.js";
 import { buildReleaseConfirmMessage } from "./utils/release-confirm-message.js";
 import { isAgentMessagingBlocked } from "./utils/agent-messaging-trust.js";
 import { useChatDisabledReason, useHarnessOnboardingPanelVisible } from "./utils/chat-runnable.js";
+import { useGitHubGateLatch } from "./hooks/useGitHubGateLatch.js";
 import type { SendCommentsPayload } from "./components/FilePreviewModal.js";
 
 export default function App() {
@@ -365,24 +366,16 @@ export default function App() {
   // join this disjunction and summon the wizard; connecting a harness is now
   // `HarnessOnboardingPanel`, in the conversation view, covering nothing.
   const githubNeeded = bootstrapLoaded && !githubStatus.authenticated;
-  // The trigger latch stays, and it is not caution — it is what "the GitHub
-  // step is unchanged" costs. `showGitHubGate` is `triggered && !dismissed`, so
-  // it differs from a direct `githubNeeded` gate in exactly one situation: a
-  // user who connected GitHub in THIS page load and whose token then dies gets
-  // nothing, rather than a gate popping over their work. That is the row the
-  // human's ruling protects. Dismissal now fires when GitHub connects, which is
-  // the same shape as before — the old step 1 advanced rather than closing only
-  // because a second step was waiting behind it.
-  const onboardingTriggeredRef = useRef(false);
-  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
+  // The trigger latch stays, and it is not caution — it is what "the GitHub step
+  // is unchanged" costs. See `useGitHubGateLatch`, which owns and tests the one
+  // row where it differs from a direct `githubNeeded` gate. Dismissal now fires
+  // when GitHub connects, the same shape as before: the old step 1 advanced
+  // rather than closing only because a second step was waiting behind it.
+  const { showGitHubGate, dismiss: dismissGitHubGate } = useGitHubGateLatch(githubNeeded);
   // docs/211 — sandbox create is in flight; disables the dialog controls. The
   // dialog itself is rendered once here (not in SessionSidebar) so the empty
   // HomeScreen can open it on mobile, where the sidebar unmounts when closed.
   const [creatingSandbox, setCreatingSandbox] = useState(false);
-  if (githubNeeded && !onboardingTriggeredRef.current) {
-    onboardingTriggeredRef.current = true;
-  }
-  const showGitHubGate = onboardingTriggeredRef.current && !onboardingDismissed;
   // docs/257 req 9 — the historical condition, plus the explicit exclusion that
   // keeps the panel from mounting behind the gate's backdrop. See
   // `utils/chat-runnable.ts`.
@@ -2123,7 +2116,7 @@ export default function App() {
             return false;
           }}
           onComplete={() => {
-            setOnboardingDismissed(true);
+            dismissGitHubGate();
             if (gitIdentityNeeded)
               {useGitStore.getState().setIdentityNeeded(false);}
           }}

@@ -82,6 +82,13 @@
       card-scoped for "Add account" (no row yet) and for a *successful* disconnect's result (the
       row it describes is gone). `ServicesPanel`'s own credential-row toasts moved too, for the
       same reason and by the same argument
+- [x] **Card-level notices are durable**, not merely relocated: they live in the store and
+      `ServicesPanel` keeps a card mounted while it has one. Disconnecting the LAST account
+      deletes the card as well as the row, so a notice in component state was mounted and
+      unmounted in the same commit (found by cross-backend review)
+- [x] The selection-mode and cutoff failures moved too. The plan had scoped them out as
+      unreachable during first run; review was right that one card reporting some failures
+      inline and others globally is itself the drift req 7 prevents
 - [x] The duplicate-account refusal (`reason: "duplicate"`) gets an in-panel landing place: a
       `providerAccountNotices` store slot rendered as a card-level notice, since an SSE handler
       has no other channel into a component it does not render
@@ -104,6 +111,11 @@
 ## Before done
 
 - [x] `npm run lint:dev` + `npm run typecheck` clean
-- [x] Cross-backend review of the implementation diff against every numbered requirement
+- [x] Cross-backend review of the implementation diff against every numbered requirement.
+      Four findings folded in: the durable-notice bug above, the two routing-control toasts, an
+      overstated "compiler guarantee" in the docs (corrected — the required argument and the
+      source scan are two halves of one guard, neither sufficient alone), and the untested gate
+      latch, now extracted to `useGitHubGateLatch` with the row it protects pinned. The fifth,
+      req 6's dependency on docs/252 phase 3, is the known gap recorded above
 - [x] Visual check in the live app: panel in the chat pane with the right panel live beside it,
       the add dialog as the only thing over it, and the panel absent behind the GitHub gate

@@ -10,8 +10,7 @@ import type { AgentId, ProviderAccount } from "../../../server/shared/types.js";
 import { credentialModeKey } from "../../../server/shared/types/domain-types/credential-route.js";
 import { nativeServiceForHarness } from "../../../server/shared/catalogue/index.js";
 import { Button } from "../ui/button.js";
-import { useUiStore } from "../../stores/ui-store.js";
-import type { ClaudeAuthDiagnostics } from "../../stores/settings-store.js";
+import type { ClaudeAuthDiagnostics, ProviderAccountNotice } from "../../stores/settings-store.js";
 import {
   useSettingsStore,
   providerAccountAuthKey,
@@ -42,24 +41,12 @@ const apiKeyCopy: Record<AgentId, { label: string; placeholder: string; prefix: 
   codex: { label: "OpenAI API key", placeholder: "sk-...", prefix: "sk-" },
 };
 
-/**
- * docs/257 req 5 — an inline result or failure, rendered where it happened.
- *
- * Two kinds, because req 5 moves both halves: a failure to report, and the
- * *result* of a successful disconnect ("moved N sessions"), which used to be a
- * global toast as well.
- */
-interface Notice {
-  kind: "error" | "info";
-  message: string;
-}
-
 function NoticeLine({
   notice,
   onDismiss,
   testId,
 }: {
-  notice: Notice;
+  notice: ProviderAccountNotice;
   /** Present on card-level notices, which have no row to disappear with. */
   onDismiss?: () => void;
   testId: string;
@@ -180,11 +167,13 @@ export function ProviderAccountsCard({
    * fails before there is a row, and a *successful* disconnect deletes the row
    * its result describes.
    */
-  const [rowNotices, setRowNotices] = useState<Record<string, Notice>>({});
-  const [cardNotice, setCardNotice] = useState<Notice | null>(null);
-  /** Card-level notices pushed from outside the card — see the store field. */
-  const externalNotice = useSettingsStore((s) => s.providerAccountNotices[provider]);
-  const setExternalNotice = useSettingsStore((s) => s.setProviderAccountNotice);
+  const [rowNotices, setRowNotices] = useState<Record<string, ProviderAccountNotice>>({});
+  /**
+   * Card-level notices live in the store, not here. See the store field: each
+   * one outlives either this component or the row it is about.
+   */
+  const cardNotice = useSettingsStore((s) => s.providerAccountNotices[provider]);
+  const setCardNotice = useSettingsStore((s) => s.setProviderAccountNotice);
 
   const name = providerNames[provider];
 
@@ -248,8 +237,7 @@ export function ProviderAccountsCard({
    */
   const addAccount = async () => {
     setAdding(true);
-    setCardNotice(null);
-    setExternalNotice(provider, null);
+    setCardNotice(provider, null);
     try {
       const known = new Set(accounts.map((account) => account.id));
       const result = await request<{ accounts: ProviderAccount[] }>("/api/provider-accounts", {
@@ -263,7 +251,7 @@ export function ProviderAccountsCard({
       if (created) await startLogin(created.id);
     } catch (err) {
       // Card-scoped: this fails before a row exists to hang it on.
-      setCardNotice({ kind: "error", message: messageOf(err, "Failed to add account") });
+      setCardNotice(provider, { kind: "error", message: messageOf(err, "Failed to add account") });
     } finally {
       setAdding(false);
     }
@@ -353,7 +341,7 @@ export function ProviderAccountsCard({
   const disconnect = async (account: ProviderAccount, replacementAccountId?: string) => {
     setSavingId(account.id);
     clearRow(account.id);
-    setCardNotice(null);
+    setCardNotice(provider, null);
     try {
       const query = replacementAccountId
         ? `?replacementAccountId=${encodeURIComponent(replacementAccountId)}`
@@ -372,12 +360,12 @@ export function ProviderAccountsCard({
       // row this result is about, so there is no row left to render it on.
       const stranded = result.strandedSessionIds?.length ?? 0;
       if (result.switchedSessionIds.length > 0) {
-        setCardNotice({
+        setCardNotice(provider, {
           kind: "info",
           message: `Moved ${result.switchedSessionIds.length} session(s) to the replacement account.`,
         });
       } else if (stranded > 0) {
-        setCardNotice({
+        setCardNotice(provider, {
           kind: "info",
           message: `Disconnected. ${stranded} session(s) have no connected ${name} account — connect one before their next turn.`,
         });
@@ -401,7 +389,7 @@ export function ProviderAccountsCard({
   const connect = async (account: ProviderAccount) => {
     setSavingId(account.id);
     clearRow(account.id);
-    setExternalNotice(provider, null);
+    setCardNotice(provider, null);
     try {
       await startLogin(account.id);
     } catch (err) {
@@ -527,17 +515,10 @@ export function ProviderAccountsCard({
         </Button>
       </div>
 
-      {externalNotice && (
-        <NoticeLine
-          notice={{ kind: "error", message: externalNotice }}
-          onDismiss={() => setExternalNotice(provider, null)}
-          testId={`provider-accounts-external-notice-${provider}`}
-        />
-      )}
       {cardNotice && (
         <NoticeLine
           notice={cardNotice}
-          onDismiss={() => setCardNotice(null)}
+          onDismiss={() => setCardNotice(provider, null)}
           testId={`provider-accounts-notice-${provider}`}
         />
       )}
@@ -879,7 +860,16 @@ function SelectionModeControl({ provider, name }: { provider: AgentId; name: str
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
     } catch (err) {
       useSettingsStore.getState().setAccountSelectionMode(routingKeyFor(provider), previous);
-      useUiStore.getState().setToast({ message: `Failed to update ${name} account order` });
+      // docs/257 req 5 — inline, like every other failure this card reports.
+      // Cross-backend review was right that leaving these two as toasts made
+      // one card report some failures inline and others globally, which is the
+      // drift req 7 exists to prevent; and the argument for moving the rest
+      // ("a toast fired from inside a panel cannot be scoped to its host")
+      // applies here verbatim. Card-scoped because the control is card-scoped.
+      useSettingsStore.getState().setProviderAccountNotice(provider, {
+        kind: "error",
+        message: `Failed to update ${name} account order`,
+      });
       console.error("[settings] account selection mode save failed:", err);
     } finally {
       setSaving(false);
@@ -963,7 +953,14 @@ async function saveCutoff(
     if (now[key] === value) {
       useSettingsStore.getState().setFailoverCutoffs(routingKeyFor(provider), { ...now, [key]: before[key] });
     }
-    useUiStore.getState().setToast({ message: `Failed to update ${name} failover cutoff` });
+    // docs/257 req 5. This one is the clearest case for a STORE-held notice
+    // rather than component state: `saveCutoff` is deliberately a module-level
+    // function over the store because it is called from an unmount cleanup,
+    // where the component's state and its setters are already gone.
+    useSettingsStore.getState().setProviderAccountNotice(provider, {
+      kind: "error",
+      message: `Failed to update ${name} failover cutoff`,
+    });
     console.error("[settings] failover cutoff save failed:", err);
   }
 }

@@ -313,10 +313,10 @@ export function useServerEvents(): void {
       // screen for a few seconds. It is card-scoped rather than row-scoped for
       // the same reason it was a toast: the row is gone.
       if (data.reason === "duplicate") {
-        useSettingsStore.getState().setProviderAccountNotice(
-          data.agentId,
-          data.message ?? "That account is already connected.",
-        );
+        useSettingsStore.getState().setProviderAccountNotice(data.agentId, {
+          kind: "error",
+          message: data.message ?? "That account is already connected.",
+        });
         if (data.accountId) {
           useSettingsStore.getState().setProviderAccountAuth(data.agentId, data.accountId, null);
         }

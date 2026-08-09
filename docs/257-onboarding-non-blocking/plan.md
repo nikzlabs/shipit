@@ -564,15 +564,30 @@ Two PRs. This is a small feature and does not want more.
 **Both phases have shipped.** Two details of phase 2 landed differently from the sketch above,
 and both are recorded where they belong rather than left to be rediscovered:
 
-- **The stamp's producer guarantee is a compiler guarantee, not a convention.**
+- **The stamp's producer guarantee is two halves, and neither is sufficient.**
   `buildAgentListPayload`'s credential-store parameter is required (`CredentialStore | undefined`,
-  not optional), so every producer had to be visited by name — which reached two exported helpers
-  in `app-lifecycle.ts` the emit-site list never mentioned, because they take an opts bag rather
-  than a deps object. Phase 1's source-scan guard grew a second assertion for the hole the
-  compiler cannot close: a producer that passes a literal `undefined`.
-- **Card-scoped is not a weaker row-scoped.** Two of the moved toasts genuinely have no row to
-  land on — "Add account" fails before the row exists, and a *successful* disconnect deletes the
-  row its result describes — so the card-level slot is req 5's answer for those, not a shortcut.
+  not optional), so no producer can *forget* the store — which is what surfaced two exported
+  helpers in `app-lifecycle.ts` the emit-site list never mentioned, because they take an opts bag
+  rather than a deps object. But the type admits `undefined` (several callers hold an optional
+  store), so a producer passing an undefined-valued variable still compiles. Phase 1's source-scan
+  guard therefore grew a second assertion, scanning for the store being *named* at each call site.
+  Cross-backend review was right to call the earlier "compiler guarantee" wording untrue.
+- **Card-scoped is not a weaker row-scoped, and it has to be durable.** Two of the moved toasts
+  genuinely have no row to land on — "Add account" fails before the row exists, and a *successful*
+  disconnect deletes the row its result describes. Cross-backend review then found the sharper
+  version of that: disconnecting the **last** account also deletes the *card*, because
+  `ServicesPanel` renders only what is configured — so a notice in the card's own state was
+  mounted and unmounted in the same commit and the user never learned which sessions the removal
+  had stranded. Card-level notices therefore live in the store (`providerAccountNotices`) and
+  `ServicesPanel` keeps a card mounted while it has one to show. The same slot is what lets a
+  failover-cutoff failure report itself from an *unmount cleanup*, where component state is gone.
+- **Every failure this card reports goes inline, including the routing controls.** The plan
+  originally scoped the move to the credential actions and left the selection-mode and cutoff
+  toasts alone, on the grounds that they only render with two or more accounts and so are
+  unreachable during first run. Review pointed out the cost: one card reporting some failures
+  inline and others globally is the drift req 7 exists to prevent, and this plan's own reason for
+  inlining ("a toast fired from inside a panel cannot be scoped to its host") applies to them
+  verbatim. They moved.
 
 Phase 1 is coherent alone: under today's code its predicate is `!noAgentReady`, so it makes
 the existing product honest without changing the flow. Phase 2 is where the dependency on
@@ -594,7 +609,8 @@ the split is about reviewability, not about shipping order.
 | `client/utils/chat-runnable.ts` | `canRunTurns` reader + `starterPromptsAllowed` (phase 1), plus `harnessOnboardingPanelVisible` — the panel's three-clause predicate, beside the composer's own. |
 | `client/components/Settings/ProviderAccountsCard.tsx` | Inline the global toasts: **row-scoped** where a row exists, **card-scoped** for "Add account" (which fails before a row exists) and for a *successful* disconnect's result (which deletes the row it describes). |
 | `client/components/Settings/ServicesPanel.tsx` | Its own credential-row toasts (reorder / remove / replace) moved inline too — the same shared surface, the same argument, and reachable from the panel in the phase-2-to-3 window. |
-| `client/stores/settings-store.ts` | `harnessOnboardingCompletedAt`, and `providerAccountNotices` — the card-level slot an SSE handler needs to reach a component it does not render. |
+| `client/stores/settings-store.ts` | `harnessOnboardingCompletedAt`, and `providerAccountNotices` — the card-level notice slot. In the store rather than in component state because each notice outlives either the component (an unmount-flushed cutoff save) or the row and card it is about (a last-account disconnect). |
+| `client/hooks/useGitHubGateLatch.ts` | **New.** The trigger latch, extracted from `App.tsx` so the one row it protects has a test. Four lines that read like an accident is how a later simplification deletes them. |
 | `client/hooks/useServerEvents.ts` (duplicate refusal) | `reason: "duplicate"` toasts at `:304` because the refusal deletes the row; needs an in-panel landing place. |
 | *docs/252 phase 2's Services surface* | **No change needed.** The panel renders its card list and opens its "Add a service" dialog as-is. |
 | `server/orchestrator/services/settings.ts` | `resolveHarnessOnboarding` — computes `canRunTurns` and stamps `harnessOnboardingCompletedAt` together, on the read path. `buildAgentListPayload` takes the credential store as a **required** parameter so an omission is a compile error. |
