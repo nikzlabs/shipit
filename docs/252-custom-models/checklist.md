@@ -1,7 +1,7 @@
 ---
 issue: planning#321
 title: Custom models — implementation checklist
-description: Per-phase build steps for docs/252. Phases 1, 2, 3, 4, 5, 7, 8 and 9 are done.
+description: Per-phase build steps for docs/252. All nine phases are done.
 ---
 
 # 252 — Custom models: checklist
@@ -32,8 +32,9 @@ table — a phase is checked off when its PR has merged.
 - [x] One writer per credential — `setApiKey` and `set_agent_env` write through
 - [x] Onboarding still connects a credential and reaches a runnable model
 - [x] Cross-backend review, findings applied (see `plan.md`)
-- [ ] GLM's `zai-plan-usage` quota reader — needs phase 6's per-`(service, mode)` quota
-      machinery to report into, so req 15 is unmet on quota until then
+- [ ] GLM's `zai-plan-usage` quota reader. **Unblocked by phase 6** — a provider now
+      declares its own `(serviceId, billingMode)` and the registry indexes on it, so this
+      is an addition rather than a change. Req 15 stays unmet on quota until it lands.
 
 ## Phase 5 — Credential-failure policy
 
@@ -75,10 +76,12 @@ table — a phase is checked off when its PR has merged.
 - [x] A stale pin stops naming with a notice; "nothing eligible" falls back to the pre-feature
       path instead, so an install whose CLI is authenticated outside ShipIt's credential store
       keeps naming its sessions
-- [ ] Delete the `ProviderAccount` projection. Still load-bearing: the docs/150 account
-      machinery — the quota-aware walk, cutoffs, benching, failover — is keyed by `AgentId`
-      and phase 3 delegates to it rather than reimplementing it. Retiring the projection
-      means re-keying that machinery, which is **phase 6**'s work (`(service, mode) → route`).
+- [ ] Delete the `ProviderAccount` projection. Phase 6 re-keyed the **quota** map to
+      `(service, mode) → route`, and `ProviderAccountManager` now reads it under that key —
+      but the account machinery itself (the quota-aware walk, cutoffs, benching, failover)
+      is still keyed by `AgentId` and still consumes `ProviderAccount`. Retiring the
+      projection means re-keying *that*, which no phase has needed to do: each re-keyed
+      what it read, not what the router is built from.
 - [x] Replace the first-credential delivery within one mode. Closed in **phase 5**: every
       stored credential is delivered under a name of its own and spawn shaping sources the
       pinned route's, so choosing a different one no longer means authenticating with the
@@ -90,6 +93,22 @@ table — a phase is checked off when its PR has merged.
 - [ ] `authConfigured` leaves `AgentInfo`. Its MEANING moved here — "this harness has at least
       one eligible model" — which is the part req 2 needed; the rename across its six call
       sites is churn with no behaviour change and was not taken.
+
+## Phase 6 — Usage, cost and attribution
+
+- [x] Quota re-keyed to `(service, billing mode) → routeId → limits`, inner key preserved
+- [x] A `key` mode reports no quota and renders no indicator at all (req 10)
+- [x] `/api/limits/refresh` takes `(serviceId, billingMode)`, rejecting a mode with no quota
+- [x] `UsageGroup` / `UsageTotals` — the split by `(service, mode)`, plus the legacy bucket
+- [x] "At API rates" recomputes from persisted rates; "metered spend" sums `cost_usd`
+- [x] Legacy rows excluded from BOTH dollar figures, with their own unqualified total
+- [x] Volume in tokens: the group column, both headlines and the chart's third series
+- [x] The chart's cost-vs-turns toggle becomes Paid / At API rates / Tokens
+- [x] The inherited surfaces — dial trigger + popover, per-session cost, avg per turn,
+      per-turn column, by-spend ranking — carry the split, with an explicit tiebreak
+- [x] `SessionUsage.totalCostUsd` replaced by `totals` on every wire shape and reader
+- [x] Labels: "Metered spend (est.)", `≈ … at API rates`, "earlier accounting"
+- [ ] Cross-backend review, findings applied (see `plan.md`)
 
 ## Phase 4 — In-session switching
 
@@ -142,8 +161,7 @@ table — a phase is checked off when its PR has merged.
       (unverified here) or narrowing req 16's label. **Phase 6** owns the usage view and the
       decision.
 
-## Phase 6
+## Phases 8 and 9
 
-Not started. See [`plan.md`](./plan.md)'s phase table. (Phases 8 and 9 have landed; their
-notes are in `plan.md` rather than here, since both landed ahead of this checklist's
-per-phase sections.)
+Both have landed; their notes are in [`plan.md`](./plan.md) rather than here, since each
+landed ahead of this checklist's per-phase sections.

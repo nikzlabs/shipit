@@ -849,7 +849,7 @@ function emitSubAgentUsageUpdate(
   runner.emitMessage({
     type: "usage_update",
     sessionId,
-    totalCostUsd: sessionUsage.totalCostUsd,
+    totals: sessionUsage.totals,
     totalDurationMs: sessionUsage.totalDurationMs,
     turnCount: sessionUsage.turnCount,
     cumulativeInputTokens: tokenTotals?.cumulativeInputTokens,

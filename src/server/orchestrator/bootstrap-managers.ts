@@ -16,6 +16,8 @@ import type { AppDeps } from "./app-di.js";
 import type { ManagerSet } from "./app-di.js";
 import { buildAgentRuntime } from "./agents/index.js";
 import { LimitsRegistry } from "./limits-registry.js";
+import { limitsModeKey } from "../shared/types/usage-limits-types.js";
+import { credentialOwnerForRouteId } from "./service-routing.js";
 import {
   setupContainerManager,
   buildRunnerFactory,
@@ -801,8 +803,16 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // and the orchestrator routes them through `recordAgentRateLimits` into
   // the matching provider (built above in `buildAgentRuntime()`). Skipped in
   // test mode to keep integration tests deterministic.
+  // docs/252 req 10 — the registry is keyed by `(service, billing mode)`, so
+  // the per-`AgentId` provider table is re-indexed by what each provider
+  // declares it reports for. A harness is not a vendor: two harnesses could in
+  // principle report into the same mode, and one harness redirected elsewhere
+  // reports into none.
+  const limitsProvidersByMode = new Map(
+    [...limitsProviders.values()].map((p) => [limitsModeKey(p), p]),
+  );
   const limitsRegistry = !isTestMode
-    ? new LimitsRegistry({ providers: limitsProviders, sseBroadcast })
+    ? new LimitsRegistry({ providers: limitsProvidersByMode, sseBroadcast })
     : null;
   if (limitsRegistry) {
     // docs/150 — give the account router the live quota snapshot so it can skip
@@ -816,13 +826,16 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     // `auth_complete` / `codex_auth_complete` emit so existing per-agent SSE
     // wiring is untouched. (docs/155 Phase 2)
     for (const [agentId, mgr] of authManagers) {
+      const provider = limitsProviders.get(agentId);
+      if (!provider) continue;
+      const modeKey = limitsModeKey(provider);
       mgr.on("complete", () => {
-        limitsRegistry.markAuthRefreshed(agentId);
+        limitsRegistry.markAuthRefreshed(modeKey);
         // docs/161 — seed one `/api/oauth/usage` baseline per sign-in so the
         // Claude pill shows a low-usage number without waiting for the user to
         // click refresh. Self-skips if an API snapshot already exists and is a
         // no-op for providers without an on-demand path (Codex).
-        void limitsRegistry.refreshNow(agentId, "seed");
+        void limitsRegistry.refreshNow(modeKey, "seed");
       });
     }
   }
@@ -847,8 +860,16 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     // No resolvable route means we cannot say whose quota this is; recording it
     // under a guess would attribute one subscription's usage to another.
     if (!routeId) return;
-    limitsProviders.get(agentId)?.setRateLimits(session, weekly, routeId);
-    limitsRegistry?.markAuthRefreshed(agentId);
+    // docs/252 req 10 — the OWNER of that route decides where the snapshot
+    // goes, not the harness that reported it. A turn redirected to another
+    // service must not file its usage against the harness's own vendor, and a
+    // metered key has no allowance to report at all — req 10 keeps that slot
+    // empty rather than filling it with a placeholder.
+    const owner = credentialOwnerForRouteId(routeId, credentialStore);
+    if (owner?.billingMode !== "sub") return;
+    const modeKey = limitsModeKey(owner);
+    limitsProvidersByMode.get(modeKey)?.setRateLimits(session, weekly, routeId);
+    limitsRegistry?.markAuthRefreshed(modeKey);
   };
 
   // ---- Session directory creation ----

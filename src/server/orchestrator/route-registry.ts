@@ -303,8 +303,8 @@ export async function registerRoutes(
     sseBroadcast,
     ...(limitsRegistry
       ? {
-          refreshSubscriptionLimits: (agentId: AgentId, reason: "manual" | "seed", routeId?: string) =>
-            limitsRegistry.refreshNow(agentId, reason, routeId),
+          refreshSubscriptionLimits: (modeKey: string, reason: "manual" | "seed", routeId?: string) =>
+            limitsRegistry.refreshNow(modeKey, reason, routeId),
           // docs/144 — let the sub-agent spawn route forward a consult's
           // rate-limit snapshot into the matching provider.
           recordAgentRateLimits,

@@ -7,7 +7,7 @@ export const handleUsageUpdate: Handler<WsUsageUpdate> = (_ctx, data) => {
   const update = data;
   ui.setCurrentSessionUsage({
     sessionId: update.sessionId,
-    totalCostUsd: update.totalCostUsd,
+    totals: update.totals,
     totalDurationMs: update.totalDurationMs,
     turnCount: update.turnCount,
   });

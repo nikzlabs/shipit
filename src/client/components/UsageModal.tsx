@@ -1,28 +1,14 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
-import type { SessionInfo, TurnUsage } from "../../server/shared/types.js";
+import type {
+  SessionInfo, SessionUsage, SubscriptionLimitsMap, TurnUsage, UsageGroup, UsageStats,
+  UsageTotals, WeeklyUsage,
+} from "../../server/shared/types.js";
+import { compareSessionsBySpend, sessionRunningFigure, sessionUsageTokens } from "../../server/shared/types/usage-types.js";
 import { formatTokenCount, getContextLevel, type ModelInfo } from "../utils/model-info.js";
 import { formatModelName } from "../utils/format-model.js";
-
-export interface SessionUsage {
-  sessionId: string;
-  totalCostUsd: number;
-  totalDurationMs: number;
-  turnCount: number;
-}
-
-export interface WeeklyUsage {
-  week: string;
-  costUsd: number;
-  turns: number;
-}
-
-export interface UsageStats {
-  sessions: SessionUsage[];
-  totalCostUsd: number;
-  totalTurns: number;
-  weekly: WeeklyUsage[];
-}
+import { RUNNING_FIGURE_TITLE, formatCost, formatEstimate, turnCostDisplay } from "../utils/format-cost.js";
+import { billingModeLabel, serviceLabel } from "../utils/service-label.js";
 
 interface UsageModalProps {
   currentSessionUsage: SessionUsage | null;
@@ -36,12 +22,12 @@ interface UsageModalProps {
    * authoritative across reloads, no longer derived from cumulative deltas.
    */
   turnUsage?: TurnUsage[];
-}
-
-function formatCost(usd: number): string {
-  if (usd === 0) return "$0.00";
-  if (usd < 0.01) return `$${usd.toFixed(3)}`;
-  return `$${usd.toFixed(2)}`;
+  /**
+   * docs/252 req 10 — the live quota snapshot, keyed by `${serviceId}:${mode}`.
+   * A `sub` group joins its own entry to show a quota bar; a `key` group has no
+   * quota to report and renders no indicator at all, rather than an empty one.
+   */
+  subscriptionLimits?: SubscriptionLimitsMap;
 }
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -64,11 +50,36 @@ function formatWeekRange(week: string): string {
   return `${formatWeek(week)} – ${formatWeek(end.toISOString().slice(0, 10))}`;
 }
 
-type WeeklyMetric = "cost" | "turns";
+/**
+ * docs/252 req 16 — three series on a toggle, never stacked. Two segments in
+ * one bar carrying two different units invites reading them as parts of a
+ * whole, which they are not. Volume is **tokens**, not turns: a turn is not a
+ * fixed quantity of anything, and it is not the unit price or quota is computed
+ * in.
+ *
+ * The split still tells its story across the toggle — a week where Paid rises
+ * and At API rates falls is a week work moved *off* the plans, which Tokens
+ * confirms.
+ */
+type WeeklyMetric = "paid" | "atApiRates" | "tokens";
 
-/** Compact metric label for the hover tooltip / average line. */
-function formatWeeklyValue(metric: WeeklyMetric, costUsd: number, turns: number): string {
-  return metric === "cost" ? formatCost(costUsd) : `${turns}`;
+const WEEKLY_METRICS: { key: WeeklyMetric; label: string }[] = [
+  { key: "paid", label: "Paid" },
+  { key: "atApiRates", label: "At API rates" },
+  { key: "tokens", label: "Tokens" },
+];
+
+function weeklyValue(metric: WeeklyMetric, w: WeeklyUsage): number {
+  if (metric === "paid") return w.costUsd;
+  if (metric === "atApiRates") return w.atApiRatesUsd;
+  return w.tokens;
+}
+
+/** Compact metric label for the bar labels, hover tooltip and average line. */
+function formatWeeklyValue(metric: WeeklyMetric, value: number): string {
+  if (metric === "paid") return formatCost(value);
+  if (metric === "atApiRates") return formatEstimate(value);
+  return formatTokenCount(value);
 }
 
 /** Minimum column width that keeps both a `$12.34` value and a `Apr 13` x-axis
@@ -114,13 +125,13 @@ function useVisibleWeeks(ref: React.RefObject<HTMLElement | null>): number {
  * readable; draws an average baseline and emphasizes the most recent week.
  */
 function WeeklyUsageChart({ weekly }: { weekly: WeeklyUsage[] }) {
-  const [metric, setMetric] = useState<WeeklyMetric>("cost");
+  const [metric, setMetric] = useState<WeeklyMetric>("paid");
   const chartRef = useRef<HTMLDivElement>(null);
   const visibleWeeks = useVisibleWeeks(chartRef);
 
   // Keep the x-axis bounded — only the latest weeks that fit are charted.
   const recent = weekly.slice(-visibleWeeks);
-  const value = (w: WeeklyUsage) => (metric === "cost" ? w.costUsd : w.turns);
+  const value = (w: WeeklyUsage) => weeklyValue(metric, w);
   const max = recent.reduce((hi, w) => Math.max(hi, value(w)), 0);
   const total = recent.reduce((sum, w) => sum + value(w), 0);
   const avg = recent.length > 0 ? total / recent.length : 0;
@@ -128,9 +139,9 @@ function WeeklyUsageChart({ weekly }: { weekly: WeeklyUsage[] }) {
   // bar still fits inside the chart area. The avg baseline uses the same scale.
   const BAR_SCALE = 82;
   const avgPct = max > 0 ? (avg / max) * BAR_SCALE : 0;
-  const fmt = (w: WeeklyUsage) => formatWeeklyValue(metric, w.costUsd, w.turns);
-  const avgLabel = metric === "cost" ? formatCost(avg) : `${Math.round(avg)}`;
-  const totalLabel = metric === "cost" ? formatCost(total) : `${total}`;
+  const fmt = (w: WeeklyUsage) => formatWeeklyValue(metric, value(w));
+  const avgLabel = formatWeeklyValue(metric, avg);
+  const totalLabel = formatWeeklyValue(metric, total);
 
   return (
     <section data-testid="weekly-usage-section">
@@ -145,18 +156,19 @@ function WeeklyUsageChart({ weekly }: { weekly: WeeklyUsage[] }) {
           </span>
         </div>
         <div className="flex gap-1 text-xs">
-          {(["cost", "turns"] as const).map((m) => (
+          {WEEKLY_METRICS.map((m) => (
             <button
-              key={m}
+              key={m.key}
               type="button"
-              onClick={() => setMetric(m)}
-              className={`px-2 py-0.5 rounded capitalize transition-colors ${
-                metric === m
+              onClick={() => setMetric(m.key)}
+              className={`px-2 py-0.5 rounded transition-colors ${
+                metric === m.key
                   ? "bg-(--color-bg-tertiary) text-(--color-text-primary)"
                   : "text-(--color-text-secondary) hover:text-(--color-text-primary)"
               }`}
+              data-testid={`weekly-metric-${m.key}`}
             >
-              {m}
+              {m.label}
             </button>
           ))}
         </div>
@@ -261,7 +273,241 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
   return <h3 className="text-sm font-medium text-(--color-text-secondary) mb-2">{children}</h3>;
 }
 
-export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, modelInfo, contextTokens, turnUsage }: UsageModalProps) {
+/**
+ * docs/252 req 16 — the two headline figures, never one.
+ *
+ * "Metered spend (est.)" is the only figure that is money, and `est.` is
+ * load-bearing rather than hedging: it is computed from the catalogue's four
+ * unit rates, which cannot express per-request, image or tiered-cache charges
+ * (`catalogue.md`, *Pricing*). Calling it "You paid" would assert a fact about
+ * a bank statement.
+ *
+ * Plan usage is counted in **tokens** with its API-rate value beneath — the
+ * number that says whether a subscription is worth keeping. It is deliberately
+ * not in the money slot, is prefixed `≈`, and is never summed into the metered
+ * figure.
+ *
+ * A scope with nothing metered says "Nothing", not `$0.00`: a zero reads as
+ * telemetry that came back empty, which is the wrong impression for what is the
+ * normal case for a subscription user.
+ */
+function UsageHeadline({ totals, testId }: { totals: UsageTotals; testId: string }) {
+  const hasIncluded = totals.includedTokens > 0 || totals.atApiRatesUsd > 0;
+  return (
+    <div className="flex gap-5 items-start" data-testid={testId}>
+      <div className="min-w-0">
+        <div className="text-[10px] uppercase tracking-wide text-(--color-text-secondary)">
+          Metered spend (est.)
+        </div>
+        <div
+          className="text-lg font-semibold tabular-nums text-(--color-text-primary)"
+          data-testid={`${testId}-metered`}
+          title={RUNNING_FIGURE_TITLE.metered}
+        >
+          {totals.meteredCostUsd > 0 ? formatCost(totals.meteredCostUsd) : "Nothing"}
+        </div>
+        {/* With nothing metered and nothing on a plan there is no contrast to
+            draw, so the estimate rides here instead of opening a second column
+            that would be the only thing on screen. */}
+        {!hasIncluded && totals.legacyCostUsd > 0 && (
+          <div className="text-[11px] text-(--color-text-secondary) tabular-nums">
+            {formatCost(totals.legacyCostUsd)} earlier accounting
+          </div>
+        )}
+      </div>
+      {hasIncluded && (
+        <>
+          <div className="w-px self-stretch bg-(--color-border-primary)" />
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-wide text-(--color-text-secondary)">
+              Included in plans
+            </div>
+            <div
+              className="text-lg font-semibold tabular-nums text-(--color-text-primary)"
+              data-testid={`${testId}-included`}
+            >
+              {formatTokenCount(totals.includedTokens)} tokens
+            </div>
+            <div
+              className="text-[11px] text-(--color-text-secondary) tabular-nums"
+              data-testid={`${testId}-at-api-rates`}
+              title={RUNNING_FIGURE_TITLE["at-api-rates"]}
+            >
+              {formatEstimate(totals.atApiRatesUsd)} at API rates
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Worst quota window this `(service, mode)` is reporting, or null when it reports none. */
+function worstQuota(
+  group: UsageGroup,
+  limits: SubscriptionLimitsMap | undefined,
+): { pct: number; label: string } | null {
+  if (group.kind !== "sub" || !limits) return null;
+  let worst: { pct: number; label: string } | null = null;
+  for (const snapshot of Object.values(limits[group.key] ?? {})) {
+    for (const [label, window] of [["5h window", snapshot.session], ["7d window", snapshot.weekly]] as const) {
+      if (window?.usedPct === undefined || window.usedPct === null) continue;
+      if (!worst || window.usedPct > worst.pct) worst = { pct: window.usedPct, label };
+    }
+  }
+  return worst;
+}
+
+/**
+ * One row of the split. A metered row shows a price and no quota bar; a plan
+ * row shows a bar and no price — that is req 10's "no indicator at all" rule
+ * and req 12's billing-mode branch showing up in a third place.
+ *
+ * The legacy row is colourless and unlabelled by mode on purpose: tinting it as
+ * plan or metered would assert the very attribution the bucket exists to admit
+ * is missing.
+ */
+function UsageGroupRow({
+  group,
+  limits,
+}: {
+  group: UsageGroup;
+  limits: SubscriptionLimitsMap | undefined;
+}) {
+  const quota = worstQuota(group, limits);
+  const legacy = group.kind === "legacy";
+  return (
+    <div
+      className={`flex items-start gap-3 text-sm py-1.5 border-b border-(--color-border-primary) last:border-0 ${
+        legacy ? "opacity-75" : ""
+      }`}
+      data-testid="usage-group-row"
+      data-group-key={group.key}
+    >
+      <span className="flex-1 min-w-0">
+        <span className="flex items-center gap-2 flex-wrap">
+          <span className="text-(--color-text-primary)">
+            {legacy ? "Before ShipIt tracked this" : serviceLabel(group.serviceId!)}
+          </span>
+          <span className="text-[10px] px-1.5 py-px rounded-full border border-(--color-border-primary) text-(--color-text-secondary)">
+            {legacy ? "Unattributed" : billingModeLabel(group.billingMode!)}
+          </span>
+        </span>
+        {group.models.length > 0 && (
+          <span className="block text-xs text-(--color-text-secondary) truncate">
+            {group.models.map(formatModelName).join(", ")}
+          </span>
+        )}
+      </span>
+      <span className="w-24 shrink-0 text-right text-xs text-(--color-text-secondary) tabular-nums pt-0.5">
+        {formatTokenCount(group.tokens)} tokens
+      </span>
+      <span className="w-28 shrink-0 text-right tabular-nums">
+        {group.kind === "sub" ? (
+          <>
+            <span className="text-(--color-text-primary) text-xs">Included</span>
+            {quota && (
+              <>
+                <span className="block mt-1 h-1 rounded-full bg-(--color-bg-tertiary) overflow-hidden">
+                  <span
+                    className="block h-full bg-(--color-accent)"
+                    style={{ width: `${Math.min(100, quota.pct)}%` }}
+                    data-testid="usage-group-quota"
+                  />
+                </span>
+                <span className="block text-[10px] text-(--color-text-secondary)">
+                  {Math.round(quota.pct)}% of {quota.label}
+                </span>
+              </>
+            )}
+            <span
+              className="block text-[10px] text-(--color-text-secondary) mt-1"
+              title={RUNNING_FIGURE_TITLE["at-api-rates"]}
+            >
+              {formatEstimate(group.atApiRatesUsd)} at API rates
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="text-(--color-text-primary)">{formatCost(group.costUsd)}</span>
+            <span className="block text-[10px] text-(--color-text-secondary)">
+              {legacy ? "earlier accounting" : "metered"}
+            </span>
+          </>
+        )}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * docs/252 req 16 — "Avg / turn", divided by the RIGHT turn count.
+ *
+ * The pre-split version divided one dollar total by every turn in the scope, so
+ * a mixed session averaged its metered spend over subscription turns that
+ * contributed nothing to it. Each figure now divides by the turns that
+ * produced it, and a scope with only one kind of turn shows only that figure.
+ */
+function averagePerTurn(totals: UsageTotals): { metered?: number; atApiRates?: number } | null {
+  const out: { metered?: number; atApiRates?: number } = {};
+  if (totals.meteredTurns > 0 && totals.meteredCostUsd > 0) {
+    out.metered = totals.meteredCostUsd / totals.meteredTurns;
+  }
+  if (totals.includedTurns > 0 && totals.atApiRatesUsd > 0) {
+    out.atApiRates = totals.atApiRatesUsd / totals.includedTurns;
+  }
+  return out.metered === undefined && out.atApiRates === undefined ? null : out;
+}
+
+/** One or two "Avg / turn" lines — money and estimate never share a row. */
+function AvgPerTurnStat({
+  avg,
+  testId,
+}: {
+  avg: { metered?: number; atApiRates?: number };
+  testId: string;
+}) {
+  return (
+    <>
+      {avg.metered !== undefined && (
+        <Stat label="Avg / metered turn" value={formatCost(avg.metered)} testId={testId} />
+      )}
+      {avg.atApiRates !== undefined && (
+        <Stat
+          label="Avg / plan turn"
+          value={`${formatEstimate(avg.atApiRates)} at API rates`}
+          testId={`${testId}-at-api-rates`}
+        />
+      )}
+    </>
+  );
+}
+
+function UsageSplitSection({
+  heading,
+  groups,
+  limits,
+  testId,
+}: {
+  heading: string;
+  groups: UsageGroup[];
+  limits: SubscriptionLimitsMap | undefined;
+  testId: string;
+}) {
+  if (groups.length === 0) return null;
+  return (
+    <section data-testid={testId}>
+      <SectionHeading>{heading}</SectionHeading>
+      <div className="max-h-64 overflow-y-auto">
+        {groups.map((g) => (
+          <UsageGroupRow key={g.key} group={g} limits={limits} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, modelInfo, contextTokens, turnUsage, subscriptionLimits }: UsageModalProps) {
   // Look up session titles by ID
   const getSessionTitle = (sessionId: string): string => {
     const session = sessions.find((s) => s.id === sessionId);
@@ -280,15 +526,13 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
   const totalCacheCreate = turnUsage?.reduce((sum, t) => sum + (t.cacheCreate ?? 0), 0) ?? 0;
   const hasTurnTokens = (turnUsage?.length ?? 0) > 0;
 
-  const sessionAvgCost =
-    currentSessionUsage && currentSessionUsage.turnCount > 0
-      ? currentSessionUsage.totalCostUsd / currentSessionUsage.turnCount
-      : 0;
-  const allAvgCost =
-    allUsage && allUsage.totalTurns > 0 ? allUsage.totalCostUsd / allUsage.totalTurns : 0;
+  const sessionAvg = currentSessionUsage ? averagePerTurn(currentSessionUsage.totals) : null;
+  const allAvg = allUsage ? averagePerTurn(allUsage.totals) : null;
   // Costliest first — with room for a full list, ordering by spend is what makes
-  // the breakdown answer "where did the money go?".
-  const rankedSessions = allUsage ? [...allUsage.sessions].sort((a, b) => b.totalCostUsd - a.totalCostUsd) : [];
+  // the breakdown answer "where did the money go?". The tiebreak is explicit
+  // (docs/252 req 16): under the split most sessions are legitimately $0, so
+  // spend alone would leave the tail in arbitrary order.
+  const rankedSessions = allUsage ? [...allUsage.sessions].sort(compareSessionsBySpend) : [];
 
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
@@ -308,18 +552,28 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
           <section>
             <SectionHeading>This session</SectionHeading>
             {currentSessionUsage ? (
-              <div className="space-y-1 text-sm">
-                {modelInfo && (
-                  <Stat label="Model" value={formatModelName(modelInfo.model)} testId="usage-model-name" />
-                )}
-                <Stat label="Cost" value={formatCost(currentSessionUsage.totalCostUsd)} />
-                <Stat label="Turns" value={`${currentSessionUsage.turnCount}`} />
-                <Stat label="Duration" value={formatDuration(currentSessionUsage.totalDurationMs)} />
-                {/* Only meaningful past the first turn — with one turn the
-                    average is just the cost row again. */}
-                {currentSessionUsage.turnCount > 1 && (
-                  <Stat label="Avg / turn" value={formatCost(sessionAvgCost)} testId="usage-session-avg" />
-                )}
+              <div className="space-y-2 text-sm">
+                <UsageHeadline totals={currentSessionUsage.totals} testId="usage-session-headline" />
+                <div className="space-y-1">
+                  {modelInfo && (
+                    <Stat label="Model" value={formatModelName(modelInfo.model)} testId="usage-model-name" />
+                  )}
+                  {/* A turn count describes the SESSION; it is not the volume
+                      measure any more (req 16), which is why it sits here and
+                      not in the headline. */}
+                  <Stat label="Turns" value={`${currentSessionUsage.turnCount}`} />
+                  <Stat
+                    label="Tokens"
+                    value={formatTokenCount(sessionUsageTokens(currentSessionUsage))}
+                    testId="usage-session-tokens"
+                  />
+                  <Stat label="Duration" value={formatDuration(currentSessionUsage.totalDurationMs)} />
+                  {/* Only meaningful past the first turn — with one turn the
+                      average is just the headline again. */}
+                  {currentSessionUsage.turnCount > 1 && sessionAvg && (
+                    <AvgPerTurnStat avg={sessionAvg} testId="usage-session-avg" />
+                  )}
+                </div>
               </div>
             ) : (
               <p className="text-sm text-(--color-text-secondary)">No usage data yet</p>
@@ -330,18 +584,38 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
           <section>
             <SectionHeading>All sessions</SectionHeading>
             {allUsage && allUsage.totalTurns > 0 ? (
-              <div className="space-y-1 text-sm">
-                <Stat label="Cost" value={formatCost(allUsage.totalCostUsd)} />
-                <Stat label="Turns" value={`${allUsage.totalTurns}`} />
-                <Stat label="Sessions" value={`${allUsage.sessions.length}`} testId="usage-session-count" />
-                {allUsage.totalTurns > 1 && (
-                  <Stat label="Avg / turn" value={formatCost(allAvgCost)} testId="usage-all-avg" />
-                )}
+              <div className="space-y-2 text-sm">
+                <UsageHeadline totals={allUsage.totals} testId="usage-all-headline" />
+                <div className="space-y-1">
+                  <Stat label="Turns" value={`${allUsage.totalTurns}`} />
+                  <Stat label="Sessions" value={`${allUsage.sessions.length}`} testId="usage-session-count" />
+                  {allUsage.totalTurns > 1 && allAvg && (
+                    <AvgPerTurnStat avg={allAvg} testId="usage-all-avg" />
+                  )}
+                </div>
               </div>
             ) : (
               <p className="text-sm text-(--color-text-secondary)">No usage data yet</p>
             )}
           </section>
+
+          {/* The split — one row per (service, billing mode), legacy last */}
+          {currentSessionUsage?.groups && currentSessionUsage.groups.length > 0 && (
+            <UsageSplitSection
+              heading="This session — by service"
+              groups={currentSessionUsage.groups}
+              limits={subscriptionLimits}
+              testId="usage-session-split"
+            />
+          )}
+          {allUsage && allUsage.groups.length > 0 && (
+            <UsageSplitSection
+              heading="All sessions — by service"
+              groups={allUsage.groups}
+              limits={subscriptionLimits}
+              testId="usage-all-split"
+            />
+          )}
 
           {/* Context usage */}
           {modelInfo && contextTokens !== undefined && contextTokens > 0 && (
@@ -407,6 +681,10 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
               <div className="max-h-64 overflow-y-auto">
                 {[...turnUsage].reverse().map((turn, i) => {
                   const turnNum = turnUsage.length - i;
+                  // docs/252 req 16 — a subscription turn's `costUsd` is zero
+                  // by rule, so the column shows its at-API-rates value rather
+                  // than reporting the turn as free.
+                  const cost = turnCostDisplay(turn);
                   return (
                     <div
                       key={i}
@@ -416,7 +694,12 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
                       <span className="text-(--color-text-secondary)">#{turnNum}</span>
                       <span className="text-(--color-text-primary) text-right">{formatTokenCount(turn.inputTokens)}</span>
                       <span className="text-(--color-text-primary) text-right">{formatTokenCount(turn.outputTokens)}</span>
-                      <span className="text-(--color-text-secondary) text-right">{formatCost(turn.costUsd)}</span>
+                      <span
+                        className="text-(--color-text-secondary) text-right"
+                        title={cost.estimated ? RUNNING_FIGURE_TITLE["at-api-rates"] : undefined}
+                      >
+                        {cost.text}
+                      </span>
                       <span className="text-(--color-text-secondary) text-right">{formatDuration(turn.durationMs ?? 0)}</span>
                     </div>
                   );
@@ -430,22 +713,38 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
             <section data-testid="recent-sessions-section">
               <SectionHeading>Recent sessions</SectionHeading>
               <div className="space-y-1 max-h-64 overflow-y-auto">
-                {rankedSessions.map((s) => (
-                  <div
-                    key={s.sessionId}
-                    className="flex items-center justify-between text-sm py-1 border-b border-(--color-border-primary) last:border-0"
-                  >
-                    <span className="text-(--color-text-primary) truncate mr-3" title={s.sessionId}>
-                      {getSessionTitle(s.sessionId)}
-                    </span>
-                    <span className="shrink-0 flex items-center gap-3 tabular-nums">
-                      <span className="text-(--color-text-secondary) text-xs">
-                        {s.turnCount} {s.turnCount === 1 ? "turn" : "turns"}
+                {rankedSessions.map((s) => {
+                  // req 16 — the same running figure the dial shows, so a
+                  // session reads the same in both places.
+                  const figure = sessionRunningFigure(s.totals);
+                  return (
+                    <div
+                      key={s.sessionId}
+                      className="flex items-center justify-between text-sm py-1 border-b border-(--color-border-primary) last:border-0"
+                      data-testid="usage-session-row"
+                    >
+                      <span className="text-(--color-text-primary) truncate mr-3" title={s.sessionId}>
+                        {getSessionTitle(s.sessionId)}
                       </span>
-                      <span className="text-(--color-text-primary)">{formatCost(s.totalCostUsd)}</span>
-                    </span>
-                  </div>
-                ))}
+                      <span className="shrink-0 flex items-center gap-3 tabular-nums">
+                        <span className="text-(--color-text-secondary) text-xs">
+                          {formatTokenCount(sessionUsageTokens(s))} tokens
+                        </span>
+                        <span
+                          className={figure?.kind === "metered" ? "text-(--color-text-primary)" : "text-(--color-text-secondary)"}
+                          title={figure ? RUNNING_FIGURE_TITLE[figure.kind] : undefined}
+                          data-figure-kind={figure?.kind}
+                        >
+                          {figure === null
+                            ? "—"
+                            : figure.kind === "at-api-rates"
+                              ? formatEstimate(figure.usd)
+                              : formatCost(figure.usd)}
+                        </span>
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </section>
           )}

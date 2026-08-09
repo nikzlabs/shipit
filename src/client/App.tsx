@@ -2361,6 +2361,7 @@ export default function App() {
             modelInfo={modelInfo}
             contextTokens={contextTokens}
             turnUsage={turnUsageForActiveSession}
+            subscriptionLimits={subscriptionLimits}
           />
         )}
         {diffDialogOpen && turnDiff && (

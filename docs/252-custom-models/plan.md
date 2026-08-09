@@ -130,7 +130,7 @@ the design.
 | 3 | Spawn shaping and eligibility | 1, 2, 3, 8, 11, 16 | **A session runs on a custom service.** Turns record what billed them, and respawn on a service change. **Landed.** |
 | 4 | In-session switching | 4 | The picker acts mid-session, across services. **Landed.** |
 | 5 | Credential-failure policy | 12 | Correct behaviour when a credential dies. **Landed.** |
-| 6 | Usage, cost and attribution | 10, 11, 16 | You can *see* what you are running and where the money went. (Phase 3 records it.) |
+| 6 | Usage, cost and attribution | 10, 11, 16 | You can *see* what you are running and where the money went. (Phase 3 records it.) **Landed.** |
 | 7 | Non-turn work | 9 | Naming and PR descriptions get their own model. **Landed.** |
 | 8 | Model retirement | 13 | Sessions survive a model leaving the catalogue. |
 | 9 | Harness install selection | 14 | Deployments choose their harnesses. **Landed.** |
@@ -1142,6 +1142,59 @@ exist, which is what "reporting usage is not new; the split is" implies.
 This is the phase most likely to want splitting in two: the quota/attribution half is a
 re-keying of existing machinery, while the cost half (req 16) depends on the price table phase
 1 authors and on the open question above.
+
+**Phase 6 has landed.** The split is `UsageGroup` / `UsageTotals` / `usageTotalsFrom`
+(`shared/types/usage-types.ts`) over a `foldSplitRows` aggregation in `usage.ts`; the quota map
+is re-keyed to `${serviceId}:${billingMode} → routeId → limits` (`usage-limits-types.ts`,
+`limits-registry.ts`); and the display rules are `sessionRunningFigure` /
+`compareSessionsBySpend` (shared, so the dial and the modal cannot drift) plus
+`client/utils/format-cost.ts`.
+
+**The aggregation groups by `(service, mode)` AND by the rate set**, which is the one shape
+decision worth stating. "At API rates" recomputes from each row's *persisted* rates, and a
+`(service, mode)` pair accumulates several rate sets over time — two models, or one model
+after a price edit. Grouping by the rate columns lets a single `costFromRates` call price a
+whole bucket, so the formula lives in **one** place (`turn-attribution.ts`) instead of being
+re-expressed in SQL. Legacy rows have all six attribution columns NULL together and SQLite
+groups NULLs as equal, so they fall into exactly one bucket with no rate set at all — the
+exclusion is a property of the data rather than a filter someone has to remember.
+
+**What phase 6 found.**
+
+- **`SessionUsage.totalCostUsd` had to go, not gain a sibling.** Keeping it would have left
+  `SUM(cost_usd)` — metered *plus* legacy — reachable under a name that reads as "the cost",
+  which is the conflation req 16 exists to end. It is replaced by `totals: UsageTotals`
+  throughout, including on `usage_update` / `turn_usage_update`. That is the widest part of
+  this phase's diff and none of it is optional: every one of those readers was showing a
+  figure whose meaning changed.
+- **The dial needed a rule, not a field.** Three kinds of figure and one slot, so
+  `sessionRunningFigure` picks money → estimate → pre-feature accounting, in that order, and
+  the popover lists whichever of the three exist as separate rows. The `earlier` case is what
+  stops a long-lived session silently losing a total the user has already seen.
+- **The pre-rehydration fallback had the same bug as the server would have.** `ContextDial`
+  falls back to summing the turn series when session totals have not arrived; summing `costUsd`
+  there reports a subscription session as having spent nothing. It now splits by
+  `TurnUsage.billingMode`, which is why that field (and `atApiRatesUsd`) is on the per-turn
+  shape at all rather than only in the aggregate.
+- **A quota snapshot belongs to the ROUTE's owner, not to the harness that reported it.**
+  `recordAgentRateLimits` resolves `(service, mode)` from the credential route the turn ran on
+  (`credentialOwnerForRouteId`, `service-routing.ts`) and drops anything that is not a `sub` —
+  so a redirected turn cannot file another vendor's usage against Anthropic's quota, and
+  `claude-api-key` stops producing a pill for a mode that has no allowance (req 10).
+- **The `/api/limits/refresh` body changed shape**, from `{agentId}` to
+  `{serviceId, billingMode}`, and rejects a `key` mode outright: req 10 says such a mode shows
+  no indicator, so there is no button and asking is a request for something that does not
+  exist rather than a silent no-op.
+- **`normalizeAgentUsageLimitError` still keys on the harness**, deliberately: its wording
+  describes the harness's own vendor subscription ("Claude's 5h usage limit"), so it looks up
+  that harness's `nativeService` `sub` group. A redirected turn finds no window there and the
+  upstream text passes through intact, which is the honest outcome rather than a silent
+  reclassification.
+
+**Not in this phase, and still open:** GLM's `zai-plan-usage` quota reader. Phase 2 deferred it
+for want of somewhere to report into; that place now exists (a provider declares its
+`(serviceId, billingMode)` and the registry indexes on it), so the reader is an addition rather
+than a change. Req 15 stays unmet on GLM's quota until it lands.
 
 **Phase 7 — Non-turn work.** Session naming and PR descriptions get their own explicitly
 chosen `(service, billing mode, model)`, visible as a setting whose unset state resolves to

@@ -1,5 +1,7 @@
 // ---- Usage tracking data types ----
 
+import type { BillingMode } from "../catalogue/types.js";
+
 export interface UsageTurn {
   sessionId: string;
   costUsd: number;
@@ -21,6 +23,10 @@ export interface UsageTurn {
    * iteration breakdown was wired up — callers fall back to the sum.
    */
   contextTokens?: number;
+  /** docs/252 req 16 — see {@link TurnUsage.billingMode}. */
+  billingMode?: BillingMode;
+  /** docs/252 req 16 — see {@link TurnUsage.atApiRatesUsd}. */
+  atApiRatesUsd?: number;
 }
 
 /**
@@ -55,6 +61,19 @@ export interface TurnUsage {
    * to `turnContextTokens()`.
    */
   contextTokens?: number;
+  /**
+   * docs/252 req 16 — how this turn was billed. Absent on a `legacy` row, which
+   * predates attribution and cannot be classified after the fact.
+   */
+  billingMode?: BillingMode;
+  /**
+   * docs/252 req 16 — what this turn's tokens are worth at the rates persisted
+   * WITH the row. Present whenever the row carries rates, for both modes: on a
+   * `sub` row it is the "would have cost" comparison the per-turn column shows;
+   * on a `key` row it is what makes a harness-reported figure auditable against
+   * the catalogue instead of opaque. **Never money spent.**
+   */
+  atApiRatesUsd?: number;
 }
 
 /**
@@ -72,24 +91,187 @@ export function turnContextTokens(
   return turn.inputTokens + (turn.cacheRead ?? 0) + (turn.cacheCreate ?? 0);
 }
 
-export interface SessionUsage {
-  sessionId: string;
-  totalCostUsd: number;
-  totalDurationMs: number;
-  turnCount: number;
+/**
+ * docs/252 req 16 — one row of the usage split: a `(service, billing mode)`
+ * pair, or the single `legacy` bucket for rows recorded before ShipIt tracked
+ * attribution.
+ *
+ * **The column decides the source, keyed on billing mode** (`catalogue.md`,
+ * *Pricing*). `costUsd` sums the stored per-turn figure; `atApiRatesUsd`
+ * RECOMPUTES from each row's persisted rates and its tokens. Neither reads the
+ * other's source, and neither reads the live catalogue — which is what makes a
+ * retired model's history still valuable and stops a price edit restating the
+ * past.
+ */
+export type UsageGroupKind = "sub" | "key" | "legacy";
+
+export interface UsageGroup {
+  /**
+   * `${serviceId}:${billingMode}`, or the literal `"legacy"`. Same string the
+   * quota map is keyed by, so a `sub` row can be joined to its indicator
+   * without re-deriving anything.
+   */
+  key: string;
+  kind: UsageGroupKind;
+  /** Absent on the legacy group — its attribution is exactly what is unknown. */
+  serviceId?: string;
+  billingMode?: BillingMode;
+  /** Distinct model ids seen in this group, sorted. */
+  models: string[];
+  turns: number;
+  /** Input + output + cache reads + cache writes. Volume is tokens, not turns (req 16). */
+  tokens: number;
+  /**
+   * Money. `key`: the summed per-turn figure. `legacy`: its own **unqualified**
+   * total, of unknown provenance — carried forward as what the user has already
+   * seen and added into no headline. `sub`: always zero; nothing was billed.
+   */
+  costUsd: number;
+  /** Recomputed from the persisted rates. Zero on a `legacy` group, which has none. */
+  atApiRatesUsd: number;
 }
 
-/** Cost + turns aggregated into a single calendar week, for the trend chart. */
+/**
+ * The headline figures for a scope, derived from its groups. Three separate
+ * numbers because they are three different kinds of thing and summing any two
+ * of them is the conflation req 16 exists to end.
+ */
+export interface UsageTotals {
+  /** Money that left the account: `key` groups only. */
+  meteredCostUsd: number;
+  meteredTurns: number;
+  meteredTokens: number;
+  /** What `sub` groups would have cost at API rates. A comparison, never money spent. */
+  atApiRatesUsd: number;
+  includedTurns: number;
+  includedTokens: number;
+  /** The legacy group's own unqualified total. In neither figure above. */
+  legacyCostUsd: number;
+  legacyTurns: number;
+  legacyTokens: number;
+}
+
+export const EMPTY_USAGE_TOTALS: UsageTotals = {
+  meteredCostUsd: 0, meteredTurns: 0, meteredTokens: 0,
+  atApiRatesUsd: 0, includedTurns: 0, includedTokens: 0,
+  legacyCostUsd: 0, legacyTurns: 0, legacyTokens: 0,
+};
+
+/** Fold groups into the three headline figures. The only place the split is summed. */
+export function usageTotalsFrom(groups: readonly UsageGroup[]): UsageTotals {
+  const out: UsageTotals = { ...EMPTY_USAGE_TOTALS };
+  for (const g of groups) {
+    if (g.kind === "key") {
+      out.meteredCostUsd += g.costUsd;
+      out.meteredTurns += g.turns;
+      out.meteredTokens += g.tokens;
+    } else if (g.kind === "sub") {
+      out.atApiRatesUsd += g.atApiRatesUsd;
+      out.includedTurns += g.turns;
+      out.includedTokens += g.tokens;
+    } else {
+      out.legacyCostUsd += g.costUsd;
+      out.legacyTurns += g.turns;
+      out.legacyTokens += g.tokens;
+    }
+  }
+  return out;
+}
+
+/**
+ * The ONE dollar figure a compact running surface can show for a session — the
+ * context dial's trigger, the modal's per-session "Cost" — and what it means.
+ *
+ * req 16: a subscription session shows its at-API-rates estimate, labelled as
+ * such, rather than a blank or a zero. So the priority is money first, estimate
+ * second, pre-feature accounting last:
+ *
+ *  - `metered` — money left the account this session. The estimate is still
+ *    reachable in the popover; the trigger carries the figure that is money.
+ *  - `at-api-rates` — nothing was billed, so the estimate is the live sense of
+ *    consumption those surfaces exist to give. Rendered with `≈` and labelled.
+ *  - `earlier` — only pre-feature rows have a dollar value here. Shown so a
+ *    long-lived session does not silently lose a total the user has already
+ *    seen; it is not merged into either figure above.
+ *
+ * `null` when there is nothing to show at all.
+ */
+export type RunningFigureKind = "metered" | "at-api-rates" | "earlier";
+
+export function sessionRunningFigure(
+  totals: UsageTotals,
+): { usd: number; kind: RunningFigureKind } | null {
+  if (totals.meteredCostUsd > 0) return { usd: totals.meteredCostUsd, kind: "metered" };
+  if (totals.atApiRatesUsd > 0) return { usd: totals.atApiRatesUsd, kind: "at-api-rates" };
+  if (totals.legacyCostUsd > 0) return { usd: totals.legacyCostUsd, kind: "earlier" };
+  return null;
+}
+
+/**
+ * Rank sessions for the modal's "where did it go?" list.
+ *
+ * Money first, but with an EXPLICIT tiebreak: once a subscription session is
+ * legitimately $0 (which under req 16 is the normal case), spend alone leaves
+ * most of the list in arbitrary insertion order. Falling through to the
+ * estimate, then to tokens, keeps the ordering meaningful all the way down —
+ * and the final `sessionId` comparison makes it total, so the list does not
+ * reshuffle between renders.
+ */
+export function compareSessionsBySpend(a: SessionUsage, b: SessionUsage): number {
+  const money = (s: SessionUsage) => s.totals.meteredCostUsd + s.totals.legacyCostUsd;
+  return (
+    money(b) - money(a)
+    || b.totals.atApiRatesUsd - a.totals.atApiRatesUsd
+    || sessionUsageTokens(b) - sessionUsageTokens(a)
+    || b.turnCount - a.turnCount
+    || a.sessionId.localeCompare(b.sessionId)
+  );
+}
+
+/** Every token a session consumed, however it was paid for. */
+export function sessionUsageTokens(s: SessionUsage): number {
+  return s.totals.meteredTokens + s.totals.includedTokens + s.totals.legacyTokens;
+}
+
+export interface SessionUsage {
+  sessionId: string;
+  totalDurationMs: number;
+  turnCount: number;
+  /** docs/252 req 16 — replaces the single `totalCostUsd`, which added money to allowance. */
+  totals: UsageTotals;
+  /**
+   * The per-`(service, mode)` breakdown. Only populated for the session the
+   * user is looking at (`getSessionUsage`); the all-sessions list carries
+   * `totals` alone, since nothing ranks by group.
+   */
+  groups?: UsageGroup[];
+}
+
+/**
+ * One calendar week of the trend chart. Three series rather than one, on a
+ * toggle — the chart never stacks them, because two segments in one bar
+ * carrying two different units invites reading them as parts of a whole.
+ */
 export interface WeeklyUsage {
   /** Week bucket keyed by its MONDAY as `YYYY-MM-DD` (UTC). */
   week: string;
+  /** Metered spend — `key` rows only, matching the headline. Legacy excluded. */
   costUsd: number;
-  turns: number;
+  /** What that week's `sub` rows would have cost at API rates. */
+  atApiRatesUsd: number;
+  /**
+   * Volume, across EVERY row including legacy: a token count is honest whether
+   * or not the row can say who billed it. Only the dollar series need the
+   * attribution the legacy rows lack.
+   */
+  tokens: number;
 }
 
 export interface UsageStats {
   sessions: SessionUsage[];
-  totalCostUsd: number;
+  totals: UsageTotals;
+  /** The all-sessions split, one row per `(service, mode)` plus the legacy bucket. */
+  groups: UsageGroup[];
   totalTurns: number;
   /**
    * Per-week buckets, oldest → newest, for the usage trend chart. Gaps between
@@ -108,7 +290,8 @@ export interface WsUsageStats {
 export interface WsUsageUpdate {
   type: "usage_update";
   sessionId: string;
-  totalCostUsd: number;
+  /** docs/252 req 16 — the split, not a single total. See {@link UsageTotals}. */
+  totals: UsageTotals;
   totalDurationMs: number;
   turnCount: number;
   lastTurnInputTokens?: number;
@@ -139,8 +322,8 @@ export interface WsTurnUsageUpdate {
   type: "turn_usage_update";
   sessionId: string;
   turn: TurnUsage;
-  /** Total cost across all turns for this session, including this turn. */
-  totalCostUsd: number;
+  /** Session totals including this turn — the split, per docs/252 req 16. */
+  totals: UsageTotals;
   /** Total turns recorded for this session, including this turn. */
   turnCount: number;
 }

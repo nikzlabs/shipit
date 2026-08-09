@@ -9,18 +9,18 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
 import { registerLimitsRoutes } from "./api-routes-limits.js";
 import type { ApiDeps } from "./api-routes.js";
-import type { AgentId, LimitsRefreshResult } from "../shared/types.js";
+import type { LimitsRefreshResult } from "../shared/types.js";
 
 describe("POST /api/limits/refresh", () => {
   let app: FastifyInstance;
-  let calls: { agentId: AgentId; reason: string; routeId?: string }[];
+  let calls: { modeKey: string; reason: string; routeId?: string }[];
   let results: LimitsRefreshResult[];
 
   async function build(deps: Partial<ApiDeps> = {}): Promise<void> {
     app = Fastify();
     await registerLimitsRoutes(app, {
-      refreshSubscriptionLimits: vi.fn(async (agentId, reason, routeId) => {
-        calls.push({ agentId, reason, routeId });
+      refreshSubscriptionLimits: vi.fn(async (modeKey, reason, routeId) => {
+        calls.push({ modeKey, reason, routeId });
         return results;
       }),
       ...deps,
@@ -45,11 +45,11 @@ describe("POST /api/limits/refresh", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/limits/refresh",
-      payload: { agentId: "claude", routeId: "acct-a" },
+      payload: { serviceId: "anthropic", billingMode: "sub", routeId: "acct-a" },
     });
 
     expect(res.statusCode).toBe(200);
-    expect(calls).toEqual([{ agentId: "claude", reason: "manual", routeId: "acct-a" }]);
+    expect(calls).toEqual([{ modeKey: "anthropic:sub", reason: "manual", routeId: "acct-a" }]);
   });
 
   it("returns the per-route outcome so the button can explain itself", async () => {
@@ -58,39 +58,60 @@ describe("POST /api/limits/refresh", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/limits/refresh",
-      payload: { agentId: "claude", routeId: "acct-a" },
+      payload: { serviceId: "anthropic", billingMode: "sub", routeId: "acct-a" },
     });
 
     expect(res.json()).toEqual({ ok: true, results });
   });
 
-  it("still allows a provider-wide refresh when no route is named", async () => {
+  it("still allows a group-wide refresh when no route is named", async () => {
     await build();
     const res = await app.inject({
       method: "POST",
       url: "/api/limits/refresh",
-      payload: { agentId: "claude" },
+      payload: { serviceId: "anthropic", billingMode: "sub" },
     });
 
     expect(res.statusCode).toBe(200);
-    expect(calls).toEqual([{ agentId: "claude", reason: "manual", routeId: undefined }]);
+    expect(calls).toEqual([{ modeKey: "anthropic:sub", reason: "manual", routeId: undefined }]);
   });
 
-  it("rejects an unknown agent and a malformed routeId", async () => {
+  it("rejects an unknown group and a malformed routeId", async () => {
     await build();
-    const unknownAgent = await app.inject({
+    const missingGroup = await app.inject({
       method: "POST",
       url: "/api/limits/refresh",
-      payload: { agentId: "gemini" },
+      payload: {},
     });
-    expect(unknownAgent.statusCode).toBe(400);
+    expect(missingGroup.statusCode).toBe(400);
+
+    const unknownService = await app.inject({
+      method: "POST",
+      url: "/api/limits/refresh",
+      payload: { serviceId: "nope", billingMode: "sub" },
+    });
+    expect(unknownService.statusCode).toBe(400);
 
     const blankRoute = await app.inject({
       method: "POST",
       url: "/api/limits/refresh",
-      payload: { agentId: "claude", routeId: "  " },
+      payload: { serviceId: "anthropic", billingMode: "sub", routeId: "  " },
     });
     expect(blankRoute.statusCode).toBe(400);
+    expect(calls).toEqual([]);
+  });
+
+  // docs/252 req 10 — a key mode has no allowance and nothing that resets, so
+  // it renders no indicator at all. There is no button, and asking anyway is a
+  // request for something that does not exist rather than a silent no-op.
+  it("rejects a key mode, which reports no quota (docs/252 req 10)", async () => {
+    await build();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/limits/refresh",
+      payload: { serviceId: "anthropic", billingMode: "key" },
+    });
+    expect(res.statusCode).toBe(400);
     expect(calls).toEqual([]);
   });
 
@@ -99,7 +120,7 @@ describe("POST /api/limits/refresh", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/limits/refresh",
-      payload: { agentId: "claude" },
+      payload: { serviceId: "anthropic", billingMode: "sub" },
     });
     expect(res.statusCode).toBe(503);
   });

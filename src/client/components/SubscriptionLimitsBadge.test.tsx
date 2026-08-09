@@ -34,10 +34,11 @@ const FUTURE_SESSION_RESET = new Date(Date.now() + 60 * 60_000).toISOString();
 const FUTURE_WEEKLY_RESET = new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString();
 
 function makeSnap(overrides: Partial<SubscriptionLimits> = {}): SubscriptionLimits {
-  const agentId = overrides.agentId ?? "claude";
+  const serviceId = overrides.serviceId ?? "anthropic";
   return {
-    agentId,
-    routeId: `acct-${agentId}`,
+    serviceId,
+    billingMode: "sub",
+    routeId: `acct-${serviceId}`,
     plan: "Pro",
     session: { usedPct: 30, resetAt: FUTURE_SESSION_RESET },
     weekly: { usedPct: 50, resetAt: FUTURE_WEEKLY_RESET },
@@ -188,13 +189,16 @@ describe("SubscriptionLimitsBadge group", () => {
     expect(screen.getByRole("button", { name: "Refresh subscription usage" })).toBeInTheDocument();
   });
 
-  it("renders one row for one provider", () => {
-    const limits: SubscriptionLimitsMap = { claude: routed(makeSnap()) };
+  // docs/252 req 10 — a group is a `(service, billing mode)`, so an unnamed
+  // route's pill carries the SERVICE's name. It used to say "Claude", which
+  // named the harness rather than the thing that owns the quota.
+  it("renders one row for one service", () => {
+    const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap()) };
     render(<SubscriptionLimitsBadge limits={limits} />);
-    expect(screen.getByText("Claude")).toBeInTheDocument();
+    expect(screen.getByText("Anthropic")).toBeInTheDocument();
     expect(screen.getByText(/5h 30%/)).toBeInTheDocument();
     expect(screen.getByText(/7d 50%/)).toBeInTheDocument();
-    expect(screen.queryByText("Codex")).toBeNull();
+    expect(screen.queryByText("OpenAI")).toBeNull();
   });
 
   it("renders one labelled pill per connected account (docs/150 req 10)", () => {
@@ -204,7 +208,7 @@ describe("SubscriptionLimitsBadge group", () => {
       { id: "acct-personal", provider: "claude", label: "Personal", isPrimary: false, status: "ready", createdAt: now, updatedAt: now },
     ]);
     const limits: SubscriptionLimitsMap = {
-      claude: {
+      "anthropic:sub": {
         // Reversed vs the account order to prove the pills follow the user's
         // account order, not map insertion order.
         "acct-personal": makeSnap({ routeId: "acct-personal", session: { usedPct: 12, resetAt: FUTURE_SESSION_RESET } }),
@@ -232,7 +236,7 @@ describe("SubscriptionLimitsBadge group", () => {
     useSettingsStore.getState().setProviderAccounts([
       { id: "acct-work", provider: "claude", label: "nicolas.zherebtsov@gmail.com", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
-    const limits: SubscriptionLimitsMap = { claude: routed(makeSnap({ routeId: "acct-work" })) };
+    const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "acct-work" })) };
     const { container } = render(<SubscriptionLimitsBadge limits={limits} />);
 
     const pill = container.querySelector(":scope > span");
@@ -250,7 +254,7 @@ describe("SubscriptionLimitsBadge group", () => {
     useSettingsStore.getState().setProviderAccounts([
       { id: "acct-work", provider: "claude", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
-    const limits: SubscriptionLimitsMap = { claude: routed(makeSnap({ routeId: "acct-work" })) };
+    const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "acct-work" })) };
     render(<SubscriptionLimitsBadge limits={limits} />);
     expect(screen.getByText("Work")).toBeInTheDocument();
   });
@@ -261,34 +265,35 @@ describe("SubscriptionLimitsBadge group", () => {
       { id: "acct-work", provider: "claude", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
       { id: "acct-personal", provider: "claude", label: "Personal", isPrimary: false, status: "ready", createdAt: now, updatedAt: now },
     ]);
-    const limits: SubscriptionLimitsMap = { claude: routed(makeSnap({ routeId: "acct-work" })) };
+    const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "acct-work" })) };
     render(<SubscriptionLimitsBadge limits={limits} />);
     expect(screen.getByText("Work")).toBeInTheDocument();
     expect(screen.getByText("Personal")).toBeInTheDocument();
     expect(screen.getAllByText(/5h · —/)).toHaveLength(1);
   });
 
-  // Reserved env / API-key routes are not accounts, so they keep the provider
+  // Reserved env / API-key routes are not accounts, so they keep the service
   // label rather than inventing a name for something the user never named.
-  it("keeps the provider label for a reserved route", () => {
+  it("keeps the service label for a reserved route", () => {
     useSettingsStore.getState().setProviderAccounts([]);
-    const limits: SubscriptionLimitsMap = { claude: routed(makeSnap({ routeId: "claude-env-oauth" })) };
+    const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "claude-env-oauth" })) };
     render(<SubscriptionLimitsBadge limits={limits} />);
-    expect(screen.getByText("Claude")).toBeInTheDocument();
+    expect(screen.getByText("Anthropic")).toBeInTheDocument();
   });
 
-  it("renders both rows in stable order: Claude then Codex", () => {
+  it("renders both rows in stable order: Anthropic then OpenAI", () => {
     const limits: SubscriptionLimitsMap = {
       // Map insertion order is reversed to confirm the component
       // doesn't naively use it.
-      codex: routed(makeSnap({ agentId: "codex", plan: "Plus", session: { usedPct: 10, resetAt: "x" }, weekly: { usedPct: 5, resetAt: "y" } })),
-      claude: routed(makeSnap({ agentId: "claude" })),
+      "openai:sub": routed(makeSnap({ serviceId: "openai",
+    billingMode: "sub", plan: "Plus", session: { usedPct: 10, resetAt: "x" }, weekly: { usedPct: 5, resetAt: "y" } })),
+      "anthropic:sub": routed(makeSnap({ serviceId: "anthropic", billingMode: "sub" })),
     };
     const { container } = render(<SubscriptionLimitsBadge limits={limits} />);
     const rows = container.querySelectorAll(":scope > span");
     expect(rows.length).toBe(2);
-    expect(rows[0].textContent).toMatch(/^Claude/);
-    expect(rows[1].textContent).toMatch(/^Codex/);
+    expect(rows[0].textContent).toMatch(/^Anthropic/);
+    expect(rows[1].textContent).toMatch(/^OpenAI/);
   });
 });
 
@@ -489,7 +494,7 @@ describe("SubscriptionLimitPill", () => {
   });
 
   it("gives each quota block its own window-specific tooltip", () => {
-    render(<SubscriptionLimitPill label="Codex" snapshot={makeSnap({ agentId: "codex" })} />);
+    render(<SubscriptionLimitPill label="Codex" snapshot={makeSnap({ serviceId: "openai", billingMode: "sub" })} />);
 
     const session = screen.getByText(/5h 30%/).closest("[data-meter-pct]");
     const weekly = screen.getByText(/7d 50%/).closest("[data-meter-pct]");
@@ -612,11 +617,15 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
   }
 
   it("fetches fresh usage on mount when autoRefresh is set, scoped to the pill's route", async () => {
-    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} autoRefresh />);
+    render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap()) }} autoRefresh />);
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
     const init = refreshCalls()[0][1] as RequestInit;
     expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body as string)).toEqual({ agentId: "claude", routeId: "acct-claude" });
+    expect(JSON.parse(init.body as string)).toEqual({
+      serviceId: "anthropic",
+      billingMode: "sub",
+      routeId: "acct-anthropic",
+    });
   });
 
   it("refreshes only the pressed account, not every connected subscription", async () => {
@@ -628,14 +637,15 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
       { id: "acct-one", provider: "claude", label: "Claude", status: "ready" },
       { id: "acct-two", provider: "claude", label: "Claude2", status: "ready" },
     ] as never);
-    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap({ routeId: "acct-two" })) }} />);
+    render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap({ routeId: "acct-two" })) }} />);
 
     const buttons = screen.getAllByLabelText("Refresh subscription usage");
     expect(buttons).toHaveLength(2);
     buttons[0].click();
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
     expect(JSON.parse((refreshCalls()[0][1] as RequestInit).body as string)).toEqual({
-      agentId: "claude",
+      serviceId: "anthropic",
+    billingMode: "sub",
       routeId: "acct-one",
     });
   });
@@ -672,7 +682,7 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
   });
 
   it("does not fetch on mount without autoRefresh (the desktop header)", async () => {
-    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} />);
+    render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap()) }} />);
     await Promise.resolve();
     expect(refreshCalls()).toHaveLength(0);
   });
@@ -680,7 +690,7 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
   it("skips the fetch while the provider is locked out after a 429", async () => {
     render(
       <SubscriptionLimitsBadge
-        limits={{ claude: routed(makeSnap({ lockedUntil: Date.now() + 10 * 60_000 })) }}
+        limits={{ "anthropic:sub": routed(makeSnap({ lockedUntil: Date.now() + 10 * 60_000 })) }}
         autoRefresh
       />,
     );
@@ -691,7 +701,8 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
   it("does not fetch for a provider with no on-demand endpoint (Codex)", async () => {
     render(
       <SubscriptionLimitsBadge
-        limits={{ codex: routed(makeSnap({ agentId: "codex", plan: "Plus" })) }}
+        limits={{ "openai:sub": routed(makeSnap({ serviceId: "openai",
+    billingMode: "sub", plan: "Plus" })) }}
         autoRefresh
       />,
     );
@@ -700,17 +711,17 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
   });
 
   it("throttles repeated opens so re-opening the dropdown can't burn the budget", async () => {
-    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} autoRefresh />);
+    render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap()) }} autoRefresh />);
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
     // Closing the popover unmounts the badge; re-opening remounts it.
     cleanup();
-    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} autoRefresh />);
+    render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap()) }} autoRefresh />);
     await Promise.resolve();
     expect(refreshCalls()).toHaveLength(1);
   });
 
   it("fetches again once the throttle interval has elapsed", async () => {
-    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} autoRefresh />);
+    render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap()) }} autoRefresh />);
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
     cleanup();
 
@@ -719,7 +730,7 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
       .spyOn(Date, "now")
       .mockReturnValue(realNow + AUTO_REFRESH_MIN_INTERVAL_MS + 1);
     try {
-      render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} autoRefresh />);
+      render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap()) }} autoRefresh />);
       await waitFor(() => expect(refreshCalls()).toHaveLength(2));
     } finally {
       nowSpy.mockRestore();
@@ -736,7 +747,7 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
 
     // Opening the dropdown right after a manual refresh shouldn't spend a
     // second call — the numbers are seconds old.
-    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} autoRefresh />);
+    render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap()) }} autoRefresh />);
     await Promise.resolve();
     expect(refreshCalls()).toHaveLength(1);
   });

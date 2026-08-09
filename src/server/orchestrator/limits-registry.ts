@@ -9,9 +9,10 @@
  *     emitted as `AgentRateLimitsEvent`); Codex's arrive on the
  *     app-server's `account/rateLimits/updated` notification (parsed by
  *     `CodexAdapter`, same event type). The orchestrator routes both
- *     through `recordAgentRateLimits(agentId, …)` which calls
- *     `provider.setRateLimits(…)` and then `markAuthRefreshed(agentId)`
- *     so this registry rebroadcasts.
+ *     through `recordAgentRateLimits(agentId, …)`, which resolves the
+ *     `(service, billing mode)` that owns the reporting turn's credential
+ *     route, calls `provider.setRateLimits(…)` and then
+ *     `markAuthRefreshed(modeKey)` so this registry rebroadcasts.
  *   - **No HTTP polling.** Anthropic's `/api/oauth/usage` is aggressively
  *     server-side rate-limited (`HTTP 429` with `retry-after: 0` after a
  *     handful of calls, ~30 min lockout — see
@@ -29,7 +30,6 @@
  */
 
 import type {
-  AgentId,
   LimitsRefreshResult,
   SubscriptionLimits,
   SubscriptionLimitsMap,
@@ -37,21 +37,26 @@ import type {
 import type { LimitsProvider } from "./agents/types.js";
 
 export interface LimitsRegistryOptions {
-  /** Map of registered providers, keyed by agent id. */
-  providers: Map<AgentId, LimitsProvider>;
+  /**
+   * Registered providers, keyed by `${serviceId}:${billingMode}` (docs/252
+   * req 10). The outer key moved off `AgentId` because quota belongs to a
+   * service's billing mode, not to the CLI that happened to report it.
+   */
+  providers: Map<string, LimitsProvider>;
   /** Broadcast helper, typically `sseBroadcast` from index.ts. */
   sseBroadcast: (event: string, data: unknown) => void;
 }
 
 export class LimitsRegistry {
-  private providers: Map<AgentId, LimitsProvider>;
+  private providers: Map<string, LimitsProvider>;
   private sseBroadcast: (event: string, data: unknown) => void;
   /**
-   * docs/150 — `agentId → routeId → snapshot`. The inner key is a
-   * provider-account id or a reserved route id, so two connected subscriptions
-   * for the same provider stay independent instead of overwriting each other.
+   * docs/150 + docs/252 — `${serviceId}:${billingMode} → routeId → snapshot`.
+   * The inner key is a provider-account id or a reserved route id, so two
+   * connected subscriptions of the same service stay independent instead of
+   * overwriting each other.
    */
-  private cache = new Map<AgentId, Map<string, SubscriptionLimits>>();
+  private cache = new Map<string, Map<string, SubscriptionLimits>>();
 
   constructor(opts: LimitsRegistryOptions) {
     this.providers = opts.providers;
@@ -65,9 +70,9 @@ export class LimitsRegistry {
    */
   getSnapshot(): SubscriptionLimitsMap {
     const out: SubscriptionLimitsMap = {};
-    for (const [agentId, byRoute] of this.cache) {
+    for (const [modeKey, byRoute] of this.cache) {
       if (byRoute.size === 0) continue;
-      out[agentId] = Object.fromEntries(byRoute);
+      out[modeKey] = Object.fromEntries(byRoute);
     }
     return out;
   }
@@ -80,9 +85,9 @@ export class LimitsRegistry {
    *   - `recordAgentRateLimits` just pushed a fresh `setRateLimits()`
    *     payload into the provider — the windows changed.
    */
-  markAuthRefreshed(agentId: AgentId): void {
-    void this.refreshOne(agentId).catch((err: unknown) => {
-      console.error(`[limits] refresh for ${agentId} failed:`, err);
+  markAuthRefreshed(modeKey: string): void {
+    void this.refreshOne(modeKey).catch((err: unknown) => {
+      console.error(`[limits] refresh for ${modeKey} failed:`, err);
     });
   }
 
@@ -96,11 +101,11 @@ export class LimitsRegistry {
    * behind the pill's refresh button) can tell the user why nothing changed.
    */
   async refreshNow(
-    agentId: AgentId,
+    modeKey: string,
     reason: "manual" | "seed",
     routeId?: string,
   ): Promise<LimitsRefreshResult[]> {
-    const provider = this.providers.get(agentId);
+    const provider = this.providers.get(modeKey);
     if (!provider?.refreshNow) {
       return routeId ? [{ routeId, outcome: "unavailable" }] : [];
     }
@@ -116,11 +121,11 @@ export class LimitsRegistry {
       try {
         results.push(await provider.refreshNow(reason, route));
       } catch (err) {
-        console.error(`[limits] on-demand refresh for ${agentId}/${route} failed:`, err);
+        console.error(`[limits] on-demand refresh for ${modeKey}/${route} failed:`, err);
         results.push({ routeId: route, outcome: "failed", detail: errMsg(err) });
       }
     }
-    await this.refreshOne(agentId);
+    await this.refreshOne(modeKey);
     return results;
   }
 
@@ -129,35 +134,35 @@ export class LimitsRegistry {
    * Deletes the cached snapshot and broadcasts so the client drops the
    * corresponding pill immediately.
    */
-  markSignedOut(agentId: AgentId, routeId?: string): void {
+  markSignedOut(modeKey: string, routeId?: string): void {
     if (routeId === undefined) {
-      const had = this.cache.delete(agentId);
+      const had = this.cache.delete(modeKey);
       if (had) this.broadcast();
       return;
     }
     // Disconnecting one account must not blank the other's pill.
-    this.providers.get(agentId)?.forgetRoute(routeId);
-    const byRoute = this.cache.get(agentId);
+    this.providers.get(modeKey)?.forgetRoute(routeId);
+    const byRoute = this.cache.get(modeKey);
     if (byRoute?.delete(routeId)) {
-      if (byRoute.size === 0) this.cache.delete(agentId);
+      if (byRoute.size === 0) this.cache.delete(modeKey);
       this.broadcast();
     }
   }
 
   // ---- Internals ----
 
-  private async refreshOne(agentId: AgentId): Promise<void> {
-    const provider = this.providers.get(agentId);
+  private async refreshOne(modeKey: string): Promise<void> {
+    const provider = this.providers.get(modeKey);
     if (!provider) return;
     let changed = false;
     const live = new Set(provider.routeIds());
     for (const routeId of live) {
       const snapshot = await provider.fetch(routeId);
-      if (this.applySnapshot(agentId, routeId, snapshot)) changed = true;
+      if (this.applySnapshot(modeKey, routeId, snapshot)) changed = true;
     }
     // Drop cached routes the provider has since forgotten (sign-out), so a
     // stale pill can't outlive its account.
-    const byRoute = this.cache.get(agentId);
+    const byRoute = this.cache.get(modeKey);
     if (byRoute) {
       for (const routeId of [...byRoute.keys()]) {
         if (!live.has(routeId)) {
@@ -165,7 +170,7 @@ export class LimitsRegistry {
           changed = true;
         }
       }
-      if (byRoute.size === 0) this.cache.delete(agentId);
+      if (byRoute.size === 0) this.cache.delete(modeKey);
     }
     if (changed) this.broadcast();
   }
@@ -175,14 +180,14 @@ export class LimitsRegistry {
    * changed in a way that should trigger a broadcast.
    */
   private applySnapshot(
-    agentId: AgentId,
+    modeKey: string,
     routeId: string,
     snapshot: SubscriptionLimits | null,
   ): boolean {
-    const byRoute = this.cache.get(agentId);
+    const byRoute = this.cache.get(modeKey);
     if (snapshot === null) {
       if (!byRoute?.delete(routeId)) return false;
-      if (byRoute.size === 0) this.cache.delete(agentId);
+      if (byRoute.size === 0) this.cache.delete(modeKey);
       return true;
     }
     const prev = byRoute?.get(routeId);
@@ -192,7 +197,7 @@ export class LimitsRegistry {
       !windowEqual(prev.session, snapshot.session) ||
       !windowEqual(prev.weekly, snapshot.weekly);
     if (byRoute) byRoute.set(routeId, snapshot);
-    else this.cache.set(agentId, new Map([[routeId, snapshot]]));
+    else this.cache.set(modeKey, new Map([[routeId, snapshot]]));
     return isChange;
   }
 

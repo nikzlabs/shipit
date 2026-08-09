@@ -1,10 +1,14 @@
-import { useState, useMemo } from "react";
+import { Fragment, useState, useMemo } from "react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover.js";
 import type { ModelInfo } from "../utils/model-info.js";
 import { formatTokenCount, getContextLevel } from "../utils/model-info.js";
-import type { TurnUsage } from "../../server/shared/types.js";
+import type { TurnUsage, UsageTotals } from "../../server/shared/types.js";
 import { turnContextTokens } from "../../server/shared/types.js";
+import { sessionRunningFigure } from "../../server/shared/types/usage-types.js";
+import {
+  RUNNING_FIGURE_TITLE, formatCost, formatEstimate, turnCostDisplay,
+} from "../utils/format-cost.js";
 
 const levelTextColors: Record<string, string> = {
   green: "text-(--color-context-ok)",
@@ -20,12 +24,6 @@ const levelBarColors: Record<string, string> = {
   red: "bg-(--color-context-full)",
 };
 
-function formatCost(usd: number): string {
-  if (usd === 0) return "$0";
-  if (usd < 0.01) return `$${usd.toFixed(3)}`;
-  return `$${usd.toFixed(2)}`;
-}
-
 /**
  * docs/178 — heuristic FALLBACK for detecting compaction: a sharp drop in
  * context size between the previous and most recent turn. The authoritative
@@ -39,6 +37,93 @@ function formatCost(usd: number): string {
  * raw `inputTokens` — with prompt caching active, `inputTokens` is tiny and
  * noisy, so comparing it would never reliably detect a compaction.
  */
+/**
+ * docs/252 req 16 — the split, derived from the per-turn series, for the render
+ * before session totals have arrived. Deliberately mirrors the server's rule
+ * rather than summing `costUsd`: that column is money, so summing it across a
+ * subscription session yields zero and across a mixed one yields only the
+ * metered half.
+ */
+function fallbackTotals(turns: TurnUsage[]): UsageTotals {
+  const totals: UsageTotals = {
+    meteredCostUsd: 0, meteredTurns: 0, meteredTokens: 0,
+    atApiRatesUsd: 0, includedTurns: 0, includedTokens: 0,
+    legacyCostUsd: 0, legacyTurns: 0, legacyTokens: 0,
+  };
+  for (const t of turns) {
+    const tokens = t.inputTokens + t.outputTokens + (t.cacheRead ?? 0) + (t.cacheCreate ?? 0);
+    if (t.billingMode === "sub") {
+      totals.atApiRatesUsd += t.atApiRatesUsd ?? 0;
+      totals.includedTurns += 1;
+      totals.includedTokens += tokens;
+    } else if (t.billingMode === "key") {
+      totals.meteredCostUsd += t.costUsd;
+      totals.meteredTurns += 1;
+      totals.meteredTokens += tokens;
+    } else {
+      totals.legacyCostUsd += t.costUsd;
+      totals.legacyTurns += 1;
+      totals.legacyTokens += tokens;
+    }
+  }
+  return totals;
+}
+
+/**
+ * The popover's cost rows — up to three, never added together.
+ *
+ * A session with no usage at all still gets the "Metered spend" row reading
+ * `$0.00`, because the row is also the click target that opens the usage modal
+ * and a button with no label is worse than a zero.
+ */
+function CostRows({ totals, underline }: { totals: UsageTotals; underline?: boolean }) {
+  const label = underline
+    ? "text-(--color-text-secondary) underline decoration-dotted underline-offset-2"
+    : "text-(--color-text-secondary)";
+  const rows: { key: string; label: string; value: string; title: string; dim?: boolean }[] = [];
+  if (totals.meteredCostUsd > 0 || (totals.atApiRatesUsd === 0 && totals.legacyCostUsd === 0)) {
+    rows.push({
+      key: "metered",
+      label: "Metered spend",
+      value: formatCost(totals.meteredCostUsd),
+      title: RUNNING_FIGURE_TITLE.metered,
+    });
+  }
+  if (totals.atApiRatesUsd > 0) {
+    rows.push({
+      key: "at-api-rates",
+      label: "At API rates",
+      value: formatEstimate(totals.atApiRatesUsd),
+      title: RUNNING_FIGURE_TITLE["at-api-rates"],
+      dim: true,
+    });
+  }
+  if (totals.legacyCostUsd > 0) {
+    rows.push({
+      key: "earlier",
+      label: "Earlier accounting",
+      value: formatCost(totals.legacyCostUsd),
+      title: RUNNING_FIGURE_TITLE.earlier,
+      dim: true,
+    });
+  }
+  return (
+    <>
+      {rows.map((row) => (
+        <Fragment key={row.key}>
+          <span className={label} title={row.title}>{row.label}</span>
+          <span
+            className={`text-right font-mono ${row.dim ? "text-(--color-text-secondary)" : "text-(--color-text-primary)"}`}
+            data-testid={`context-dial-cost-${row.key}`}
+          >
+            {row.value}
+          </span>
+        </Fragment>
+      ))}
+    </>
+  );
+}
+
 function wasCompacted(turns: TurnUsage[]): boolean {
   if (turns.length < 2) return false;
   const last = turnContextTokens(turns[turns.length - 1]);
@@ -60,11 +145,20 @@ function wasCompacted(turns: TurnUsage[]): boolean {
  * so this component never invokes it directly (CLAUDE.md §5).
  *
  * The dial is also the canonical surface for *running session cost*. The
- * trigger button shows the cumulative session cost next to the K-token
- * reading, and the popover's "Total cost" row opens the full usage modal.
+ * trigger button shows one running figure next to the K-token reading, and
+ * the popover breaks it into its parts and opens the full usage modal.
  * The previous standalone cost pill in the composer toolbar (driven from
  * the same `currentSessionUsage` the dial now reads) was removed when
  * these two surfaces were unified.
+ *
+ * **docs/252 req 16 — which figure, and what it means.** `cost_usd` is money
+ * that left the account, so a subscription session's is zero. Rendering that
+ * zero would tell most users their session consumed nothing, so the trigger
+ * falls through to the at-API-rates estimate — prefixed `≈`, and labelled in
+ * the tooltip and the popover, never presented as money spent
+ * ({@link sessionRunningFigure}). The popover is where the parts are separated:
+ * metered spend, the estimate, and any pre-feature total each get their own
+ * row, and no two of them are ever added together.
  *
  * On mobile the K-token reading and the cost are both hidden (`hidden
  * md:inline`) to keep the composer's input bar compact — the dial icon
@@ -78,11 +172,11 @@ export function ContextDial({
   contextTokensOverride,
   /**
    * Authoritative session-cumulative totals — sourced from `UsageManager`
-   * via `usage_update` / `/history`. Used for the popover's totals row so
-   * it always matches the value `UsageModal` shows (no more $1.31-vs-$5.41
+   * via `usage_update` / `/history`. Used for the popover's cost rows so
+   * they always match what `UsageModal` shows (no more $1.31-vs-$5.41
    * discrepancy between the dial's per-turn sum and the cost pill).
    */
-  sessionTotalCostUsd,
+  sessionTotals,
   cumulativeInputTokens,
   cumulativeOutputTokens,
   /**
@@ -102,7 +196,7 @@ export function ContextDial({
   modelInfo: ModelInfo | null;
   turnUsage: TurnUsage[];
   contextTokensOverride?: number;
-  sessionTotalCostUsd?: number;
+  sessionTotals?: UsageTotals;
   cumulativeInputTokens?: number;
   cumulativeOutputTokens?: number;
   onOpenUsageDetails?: () => void;
@@ -147,8 +241,12 @@ export function ContextDial({
   }, [turnUsage]);
 
   // Authoritative cost / token totals — fall back to per-turn sums only if
-  // the parent didn't pass them (e.g. tests, or a pre-rehydration render).
-  const totalCost = sessionTotalCostUsd ?? turnUsage.reduce((sum, t) => sum + t.costUsd, 0);
+  // the parent didn't pass them (e.g. tests, or a pre-rehydration render). The
+  // fallback splits the same way the server does: a `sub` turn contributes its
+  // at-API-rates value and never a dollar, so a pre-rehydration render cannot
+  // briefly show a subscription session as having spent money.
+  const totals = sessionTotals ?? fallbackTotals(turnUsage);
+  const running = sessionRunningFigure(totals);
   const totalInput = cumulativeInputTokens ?? turnUsage.reduce((sum, t) => sum + t.inputTokens, 0);
   const totalOutput = cumulativeOutputTokens ?? turnUsage.reduce((sum, t) => sum + t.outputTokens, 0);
 
@@ -171,7 +269,9 @@ export function ContextDial({
         <button
           type="button"
           className="flex items-center gap-1.5 rounded-md px-1.5 py-1 hover:bg-(--color-bg-hover) transition-colors"
-          aria-label={`Context usage: ${Math.round(percentage)}%${totalCost > 0 ? `, session cost ${formatCost(totalCost)}` : ""}`}
+          aria-label={`Context usage: ${Math.round(percentage)}%${
+            running ? `, ${RUNNING_FIGURE_TITLE[running.kind]}: ${formatCost(running.usd)}` : ""
+          }`}
           data-testid="context-dial"
           data-level={level}
         >
@@ -208,12 +308,14 @@ export function ContextDial({
               {formatTokenCount(contextTokens)}
             </span>
           )}
-          {totalCost > 0 && (
+          {running && (
             <span
               className="hidden md:inline text-[11px] font-mono text-(--color-accent)"
               data-testid="context-dial-cost"
+              data-figure-kind={running.kind}
+              title={RUNNING_FIGURE_TITLE[running.kind]}
             >
-              {formatCost(totalCost)}
+              {running.kind === "at-api-rates" ? formatEstimate(running.usd) : formatCost(running.usd)}
             </span>
           )}
         </button>
@@ -302,21 +404,34 @@ export function ContextDial({
             <div className="space-y-1">
               <div className="text-(--color-text-secondary)">Largest turns</div>
               <div className="space-y-0.5 font-mono">
-                {topTurns.map((t) => (
-                  <div
-                    key={t.index}
-                    className="flex justify-between text-(--color-text-primary)"
-                  >
-                    <span className="text-(--color-text-secondary)">#{t.index}</span>
-                    <span>{formatTokenCount(t.contextTokens)} ctx</span>
-                    <span>{formatTokenCount(t.outputTokens)} out</span>
-                    <span>{formatCost(t.costUsd)}</span>
-                  </div>
-                ))}
+                {topTurns.map((t) => {
+                  // docs/252 req 16 — a subscription turn's `costUsd` is zero
+                  // by rule, so it shows its at-API-rates value instead of
+                  // reporting the turn as free.
+                  const cost = turnCostDisplay(t);
+                  return (
+                    <div
+                      key={t.index}
+                      className="flex justify-between text-(--color-text-primary)"
+                    >
+                      <span className="text-(--color-text-secondary)">#{t.index}</span>
+                      <span>{formatTokenCount(t.contextTokens)} ctx</span>
+                      <span>{formatTokenCount(t.outputTokens)} out</span>
+                      <span className={cost.estimated ? "text-(--color-text-secondary)" : ""}>
+                        {cost.text}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
 
+          {/* docs/252 req 16 — one row per KIND of figure. Money, allowance
+              valued at API rates, and pre-feature accounting are three
+              different things, so they are listed rather than summed. Each row
+              appears only when it has something to say, so a subscription-only
+              session shows one line and no misleading `$0.00`. */}
           <div className="border-t border-(--color-border-primary) pt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-(--color-text-secondary)">
             {onOpenUsageDetails ? (
               <button
@@ -329,20 +444,10 @@ export function ContextDial({
                 data-testid="context-dial-open-usage"
                 aria-label="Open usage details"
               >
-                <span className="text-(--color-text-secondary) underline decoration-dotted underline-offset-2">
-                  Total cost
-                </span>
-                <span className="text-(--color-text-primary) text-right font-mono">
-                  {formatCost(totalCost)}
-                </span>
+                <CostRows totals={totals} underline />
               </button>
             ) : (
-              <>
-                <span>Total cost</span>
-                <span className="text-(--color-text-primary) text-right font-mono">
-                  {formatCost(totalCost)}
-                </span>
-              </>
+              <CostRows totals={totals} />
             )}
             <span>Input tokens</span>
             <span className="text-(--color-text-primary) text-right font-mono">

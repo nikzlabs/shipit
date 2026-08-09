@@ -29,7 +29,10 @@ export interface CodexLimitsDeps {
 }
 
 export class CodexLimitsProvider implements LimitsProvider {
-  readonly agentId = "codex" as const;
+  // docs/252 req 10 — see `ClaudeLimitsProvider`: the allowance belongs to
+  // OpenAI's subscription, not to the Codex harness.
+  readonly serviceId = "openai";
+  readonly billingMode = "sub" as const;
   private codexAuthManager: Pick<CodexAuthManager, "getAccessToken">;
   private now: () => number;
   /**
@@ -92,7 +95,8 @@ export class CodexLimitsProvider implements LimitsProvider {
       plan = tokenResult.plan;
     }
     return {
-      agentId: "codex",
+      serviceId: this.serviceId,
+      billingMode: this.billingMode,
       routeId,
       plan,
       session: latest.session,

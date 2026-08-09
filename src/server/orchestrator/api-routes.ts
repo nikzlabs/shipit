@@ -140,7 +140,8 @@ export interface ApiDeps {
    * then 503s.
    */
   refreshSubscriptionLimits?: (
-    agentId: AgentId,
+    /** docs/252 req 10 — `${serviceId}:${billingMode}`, the key quota is reported under. */
+    modeKey: string,
     reason: "manual" | "seed",
     routeId?: string,
   ) => Promise<LimitsRefreshResult[]>;

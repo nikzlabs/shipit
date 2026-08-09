@@ -890,7 +890,7 @@ describe("ProviderAccountManager", () => {
       return new ProviderAccountManager({
         credentialsDir: root,
         credentialStore: store,
-        getSubscriptionLimits: () => ({ claude: limits as never }),
+        getSubscriptionLimits: () => ({ "anthropic:sub": limits as never }),
       });
     }
 
@@ -1025,7 +1025,7 @@ describe("ProviderAccountManager", () => {
       return new ProviderAccountManager({
         credentialsDir: root,
         credentialStore: store,
-        getSubscriptionLimits: () => ({ claude: limits as never }),
+        getSubscriptionLimits: () => ({ "anthropic:sub": limits as never }),
       });
     }
 

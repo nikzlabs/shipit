@@ -79,6 +79,36 @@ export function envRouteIdFor(storageEnv: string): string {
 }
 
 /**
+ * docs/252 req 10 — which `(service, billing mode)` a **route id** belongs to.
+ *
+ * The inverse of {@link envRouteIdFor}, plus the credential store for stored
+ * routes. Quota is reported per billing mode of a service, so the one thing a
+ * quota snapshot needs is the mode that owns the credential the reporting turn
+ * ran on — and that is a property of the route, never of the harness that
+ * happened to report it. A harness redirected to another service must not file
+ * that service's usage against its own vendor's quota.
+ *
+ * `undefined` for a route this cannot classify, which callers treat as "we
+ * cannot say whose quota this is" and drop rather than guess.
+ */
+export function credentialOwnerForRouteId(
+  routeId: string,
+  credentialStore: Pick<CredentialStore, "getCredentialRoute">,
+): { serviceId: string; billingMode: BillingMode } | undefined {
+  const stored = credentialStore.getCredentialRoute(routeId);
+  if (stored) return { serviceId: stored.serviceId, billingMode: stored.billingMode };
+  // A deployment-supplied credential has no stored row — phase 2 only ever
+  // touches values this process put there — so its reserved id is resolved
+  // from the catalogue instead.
+  for (const service of servicesWithStringCredentials()) {
+    if (envRouteIdFor(service.storageEnv) === routeId) {
+      return { serviceId: service.serviceId, billingMode: service.billingMode };
+    }
+  }
+  return undefined;
+}
+
+/**
  * Every credential this install holds, for req 8's rule.
  *
  * Two sources, and the second is easy to forget: the credential store, plus any

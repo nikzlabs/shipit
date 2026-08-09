@@ -77,7 +77,11 @@ export interface ClaudeLimitsDeps {
 }
 
 export class ClaudeLimitsProvider implements LimitsProvider {
-  readonly agentId = "claude" as const;
+  // docs/252 req 10 — Anthropic's SUBSCRIPTION is what has an allowance;
+  // `claude-api-key` is metered and reports no quota, which is why a key-mode
+  // route's snapshot is dropped upstream rather than filed here.
+  readonly serviceId = "anthropic";
+  readonly billingMode = "sub" as const;
   private authManager: Pick<AuthManager, "getAccessToken">;
   private fetchImpl: typeof fetch;
   private now: () => number;
@@ -182,7 +186,8 @@ export class ClaudeLimitsProvider implements LimitsProvider {
 
     const fetchedAt = Math.max(eventLatest?.at ?? 0, apiLatest?.at ?? 0);
     return {
-      agentId: "claude",
+      serviceId: this.serviceId,
+      billingMode: this.billingMode,
       routeId,
       plan,
       session,
