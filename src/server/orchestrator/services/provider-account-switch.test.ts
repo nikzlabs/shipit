@@ -259,7 +259,8 @@ describe("failoverPinnedSession", () => {
   /** An exhausted 5h window that frees up at `resetAt`. */
   function spent(resetAt: string): SubscriptionLimits {
     return {
-      agentId: "claude",
+      serviceId: "anthropic",
+    billingMode: "sub",
       routeId: "unused",
       plan: null,
       session: { usedPct: 100, resetAt },
@@ -316,7 +317,7 @@ describe("failoverPinnedSession", () => {
     fs.writeFileSync(path.join(dir, ".claude", ".credentials.json"), "token-a");
     fs.writeFileSync(path.join(dir, ".claude", "projects", "-workspace", "conv-xyz.jsonl"), "turn1\n");
 
-    limits = { claude: { [a.id]: spent(new Date(Date.now() + 3_600_000).toISOString()) } };
+    limits = { "anthropic:sub": { [a.id]: spent(new Date(Date.now() + 3_600_000).toISOString()) } };
     return { a: a.id, b: b.id };
   }
 
@@ -352,7 +353,8 @@ describe("failoverPinnedSession", () => {
     /** A window at `usedPct`, still open — over the 90% cutoff but not spent. */
     function used(pct: number): SubscriptionLimits {
       return {
-        agentId: "claude",
+        serviceId: "anthropic",
+    billingMode: "sub",
         routeId: "unused",
         plan: null,
         session: { usedPct: pct, resetAt: new Date(Date.now() + 3_600_000).toISOString() },
@@ -375,7 +377,7 @@ describe("failoverPinnedSession", () => {
 
     it("reports a cutoff move as a cutoff, not as exhaustion (req 6)", () => {
       const { a, b } = twoAccountsPinnedToFirst();
-      limits = { claude: { [a]: used(92), [b]: used(10) } };
+      limits = { "anthropic:sub": { [a]: used(92), [b]: used(10) } };
 
       const moved = failoverPinnedSession(SESSION, deps());
 
@@ -387,7 +389,7 @@ describe("failoverPinnedSession", () => {
 
     it("reports a spent account as out of quota (req 7)", () => {
       const { a, b } = twoAccountsPinnedToFirst();
-      limits = { claude: { [a]: spent(new Date(Date.now() + 3_600_000).toISOString()), [b]: used(10) } };
+      limits = { "anthropic:sub": { [a]: spent(new Date(Date.now() + 3_600_000).toISOString()), [b]: used(10) } };
 
       const moved = failoverPinnedSession(SESSION, deps());
 
@@ -402,7 +404,7 @@ describe("failoverPinnedSession", () => {
     it("reports an account that lost its sign-in as unavailable", () => {
       const { a, b } = twoAccountsPinnedToFirst();
       accounts.setAccountStatus("claude", a, "auth_failed");
-      limits = { claude: { [b]: used(10) } };
+      limits = { "anthropic:sub": { [b]: used(10) } };
 
       const moved = failoverPinnedSession(SESSION, deps());
 
@@ -451,7 +453,7 @@ describe("failoverPinnedSession", () => {
     sessions.setAgentId(SESSION, "claude");
     sessions.setProviderRoute(SESSION, "account", a.id);
     const resetAt = new Date(Date.now() + 3_600_000).toISOString();
-    limits = { claude: { [a.id]: spent(resetAt) } };
+    limits = { "anthropic:sub": { [a.id]: spent(resetAt) } };
 
     expect(() => failoverPinnedSession(SESSION, deps())).toThrow(ProviderRouteUnavailableError);
     // The session stays where it is: nothing to move to, so nothing moved.
@@ -465,7 +467,7 @@ describe("failoverPinnedSession", () => {
     seedClaudeAccount(a.id, "token-a");
     sessions.setAgentId(SESSION, "claude");
     sessions.setProviderRoute(SESSION, "account", a.id);
-    limits = { claude: { [a.id]: spent(new Date(Date.now() + 3_600_000).toISOString()) } };
+    limits = { "anthropic:sub": { [a.id]: spent(new Date(Date.now() + 3_600_000).toISOString()) } };
 
     const previous = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = "sk-metered";

@@ -13,18 +13,30 @@ import type {
   SubscriptionLimitsWindow,
 } from "../../server/shared/types.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { serviceLabel } from "../utils/service-label.js";
+import { allServices, nativeServiceForHarness } from "../../server/shared/catalogue/index.js";
 
 /**
- * Stable ordering of pills in the header. Matches the provider
- * registration order in `app-di.ts` / `index.ts` so muscle memory
- * works — Claude first, Codex second.
+ * Stable ordering of pills in the header.
+ *
+ * docs/252 req 10 — one group per `(service, billing mode)` rather than per
+ * agent, since quota belongs to a service's subscription and not to the CLI.
+ * Only subscription modes appear at all: a key has no allowance and nothing
+ * that resets, and req 10 keeps that slot empty rather than showing a
+ * placeholder. First-party services keep their historical position so muscle
+ * memory works — Claude first, Codex second — with the rest in catalogue order.
  */
-const PILL_ORDER: AgentId[] = ["claude", "codex"];
-
-const AGENT_LABEL: Record<AgentId, string> = {
-  claude: "Claude",
-  codex: "Codex",
-};
+function pillOrder(): string[] {
+  const first = ["claude", "codex"]
+    .map((harness) => nativeServiceForHarness(harness as never))
+    .filter((id): id is string => id !== undefined);
+  const rest = allServices()
+    .map((service) => service.id)
+    .filter((id) => !first.includes(id));
+  return [...first, ...rest]
+    .filter((id) => allServices().some((s) => s.id === id && s.modes.some((m) => m.kind === "sub")))
+    .map((id) => `${id}:sub`);
+}
 
 /**
  * A known percentage older than this reads as "stale": the number is shown
@@ -110,15 +122,16 @@ export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLim
 
   return (
     <>
-      {pills.map(({ key, agentId, routeId, label, snapshot }) => (
+      {pills.map(({ key, serviceId, routeId, label, snapshot }) => (
         <SubscriptionLimitPill
           key={key}
-          agentId={agentId}
+          serviceId={serviceId}
           routeId={routeId}
           label={label}
           snapshot={snapshot}
-          // eslint-disable-next-line no-restricted-syntax -- Claude is the only agent with an on-demand /api/oauth/usage refresh endpoint
-          showRefresh={agentId === "claude"}
+          // Anthropic is the only service with an on-demand /api/oauth/usage
+          // refresh endpoint; every other group's numbers are event-fed only.
+          showRefresh={serviceId === "anthropic"}
           autoRefresh={autoRefresh}
         />
       ))}
@@ -128,7 +141,7 @@ export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLim
 
 interface SubscriptionPill {
   key: string;
-  agentId: AgentId;
+  serviceId: string;
   routeId: string;
   label: string;
   snapshot?: SubscriptionLimits;
@@ -153,17 +166,20 @@ function buildPills(
   accounts: { id: string; provider: AgentId; label: string }[],
 ): SubscriptionPill[] {
   const pills: SubscriptionPill[] = [];
-  for (const id of PILL_ORDER) {
-    const byRoute = limits[id];
-    const providerAccounts = accounts.filter((account) => account.provider === id);
+  for (const modeKey of pillOrder()) {
+    const serviceId = modeKey.slice(0, modeKey.lastIndexOf(":"));
+    const byRoute = limits[modeKey];
+    const modeAccounts = accounts.filter(
+      (account) => nativeServiceForHarness(account.provider) === serviceId,
+    );
 
     // Connected accounts define pill presence, not cached snapshots. A quiet
     // account may have no quota event yet, but its pill must remain available
     // so the user can request a refresh and see that usage is still unknown.
-    for (const account of providerAccounts) {
+    for (const account of modeAccounts) {
       pills.push({
-        key: `${id}:${account.id}`,
-        agentId: id,
+        key: `${modeKey}:${account.id}`,
+        serviceId,
         routeId: account.id,
         label: account.label,
         snapshot: byRoute?.[account.id],
@@ -173,12 +189,12 @@ function buildPills(
     // Reserved routes are not provider-account rows, so snapshots remain the
     // only evidence that they exist. Append them after the user's account order.
     for (const snapshot of Object.values(byRoute ?? {})) {
-      if (providerAccounts.some((account) => account.id === snapshot.routeId)) continue;
+      if (modeAccounts.some((account) => account.id === snapshot.routeId)) continue;
       pills.push({
-        key: `${id}:${snapshot.routeId}`,
-        agentId: id,
+        key: `${modeKey}:${snapshot.routeId}`,
+        serviceId,
         routeId: snapshot.routeId,
-        label: AGENT_LABEL[id],
+        label: serviceLabel(serviceId),
         snapshot,
       });
     }
@@ -187,7 +203,7 @@ function buildPills(
 }
 
 interface SubscriptionLimitPillProps {
-  agentId?: AgentId;
+  serviceId?: string;
   /**
    * The subscription this pill describes — a provider-account id or a reserved
    * route id. Scopes the refresh to this account so one press costs one
@@ -201,9 +217,9 @@ interface SubscriptionLimitPillProps {
   autoRefresh?: boolean;
 }
 
-export function SubscriptionLimitPill({ agentId, routeId, label, snapshot, showRefresh, autoRefresh }: SubscriptionLimitPillProps) {
+export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, showRefresh, autoRefresh }: SubscriptionLimitPillProps) {
   const now = Date.now();
-  const resolvedAgentId = snapshot?.agentId ?? agentId;
+  const resolvedServiceId = snapshot?.serviceId ?? serviceId;
   const resolvedRouteId = routeId ?? snapshot?.routeId;
 
   // The pill carries inline meters with underline gauges, so it overrides
@@ -240,9 +256,9 @@ export function SubscriptionLimitPill({ agentId, routeId, label, snapshot, showR
         fetchedAt={snapshot?.fetchedAt}
         now={now}
       />
-      {showRefresh && resolvedAgentId && (
+      {showRefresh && resolvedServiceId && (
         <LimitsRefreshButton
-          agentId={resolvedAgentId}
+          serviceId={resolvedServiceId}
           routeId={resolvedRouteId}
           lockedUntil={snapshot?.lockedUntil}
           autoRefresh={autoRefresh}
@@ -448,12 +464,12 @@ const OUTCOME_MESSAGE: Record<LimitsRefreshOutcome, string | null> = {
  * both go through this component's state.
  */
 function LimitsRefreshButton({
-  agentId,
+  serviceId,
   routeId,
   lockedUntil,
   autoRefresh,
 }: {
-  agentId: AgentId;
+  serviceId: string;
   routeId?: string;
   lockedUntil?: number;
   autoRefresh?: boolean;
@@ -467,7 +483,7 @@ function LimitsRefreshButton({
     ? formatResetCountdown(new Date(lockedUntil).toISOString(), now)
     : null;
 
-  const throttleKey = `${agentId}:${routeId ?? "*"}`;
+  const throttleKey = `${serviceId}:sub:${routeId ?? "*"}`;
 
   const refresh = useCallback(async () => {
     lastRefreshAttemptAt.set(throttleKey, Date.now());
@@ -475,7 +491,9 @@ function LimitsRefreshButton({
     try {
       const res = await api.post<{ ok: boolean; results?: LimitsRefreshResult[] }>(
         "/api/limits/refresh",
-        routeId ? { agentId, routeId } : { agentId },
+        // Only a subscription reports a quota (req 10), so the pill can only
+        // ever be asking about the `sub` mode.
+        routeId ? { serviceId, billingMode: "sub", routeId } : { serviceId, billingMode: "sub" },
       );
       // Report on this pill's own route when the response names it; a fan-out
       // response (no routeId sent) has no single owner, so fall back to the
@@ -487,7 +505,7 @@ function LimitsRefreshButton({
     } finally {
       setRefreshing(false);
     }
-  }, [agentId, api, routeId, throttleKey]);
+  }, [api, routeId, serviceId, throttleKey]);
 
   // Fire-once-on-mount auto refresh. The ref (not the throttle map) is what
   // makes it once-per-mount: the map only bounds how often *any* mount is

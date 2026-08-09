@@ -1,10 +1,7 @@
 import { create } from "zustand";
 import type { TemplateInfo } from "../utils/template-info.js";
 import type { AgentOption } from "../agent-types.js";
-import type {
-  SessionUsage,
-  UsageStats,
-} from "../components/UsageModal.js";
+import type { SessionUsage, UsageStats } from "../../server/shared/types.js";
 import type { ModelInfo } from "../utils/model-info.js";
 import type { ToastData } from "../components/Toast.js";
 import type { AgentId, DockerMemoryStats, SubscriptionLimitsMap, RuntimeMode, VersionInfo } from "../../server/shared/types.js";

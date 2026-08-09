@@ -29,7 +29,8 @@ describe("CodexLimitsProvider (event-fed)", () => {
     expect(provider.routeIds()).toEqual([ROUTE]);
     const snap = await provider.fetch(ROUTE);
     expect(snap).toMatchObject({
-      agentId: "codex",
+      serviceId: "openai",
+      billingMode: "sub",
       plan: "Pro",
       session: WINDOW,
       weekly: WEEKLY,
@@ -42,7 +43,7 @@ describe("CodexLimitsProvider (event-fed)", () => {
     const provider = new CodexLimitsProvider({ codexAuthManager: auth });
     provider.setRateLimits(WINDOW, null, ROUTE);
     const snap = await provider.fetch(ROUTE);
-    expect(snap).toMatchObject({ agentId: "codex", plan: null, session: WINDOW, weekly: null });
+    expect(snap).toMatchObject({ serviceId: "openai", billingMode: "sub", plan: null, session: WINDOW, weekly: null });
   });
 
   it("keeps only the most recently pushed snapshot", async () => {

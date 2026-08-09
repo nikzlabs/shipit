@@ -20,10 +20,11 @@ const FUTURE_SESSION_RESET = new Date(Date.now() + 60 * 60_000).toISOString();
 const FUTURE_WEEKLY_RESET = new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString();
 
 function makeSnap(overrides: Partial<SubscriptionLimits> = {}): SubscriptionLimits {
-  const agentId = overrides.agentId ?? "claude";
+  const serviceId = overrides.serviceId ?? "anthropic";
   return {
-    agentId,
-    routeId: `acct-${agentId}`,
+    serviceId,
+    billingMode: "sub",
+    routeId: `acct-${serviceId}`,
     plan: "Pro",
     session: { usedPct: 30, resetAt: FUTURE_SESSION_RESET },
     weekly: { usedPct: 50, resetAt: FUTURE_WEEKLY_RESET },
@@ -68,15 +69,16 @@ describe("MobileStatusPanel", () => {
     // — the user shouldn't need a second tap on the refresh glyph.
     render(
       <MobileStatusPanel
-        subscriptionLimits={{ claude: routed(makeSnap()) }}
+        subscriptionLimits={{ "anthropic:sub": routed(makeSnap()) }}
         dockerMemory={null}
         processStartedAt={null}
       />,
     );
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
     expect(JSON.parse((refreshCalls()[0][1] as RequestInit).body as string)).toEqual({
-      agentId: "claude",
-      routeId: "acct-claude",
+      serviceId: "anthropic",
+      billingMode: "sub",
+      routeId: "acct-anthropic",
     });
   });
 

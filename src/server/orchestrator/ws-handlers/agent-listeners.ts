@@ -1,5 +1,5 @@
 import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage, PermissionMode, LogSource } from "../../shared/types.js";
-import { resolveTurnCost, selectionOf, turnAttributionFor } from "../turn-attribution.js";
+import { costFromRates, resolveTurnCost, selectionOf, turnAttributionFor } from "../turn-attribution.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
@@ -1304,13 +1304,31 @@ export function wireAgentListeners(
             ...(turnAttribution ? { attribution: turnAttribution } : {}),
           },
         );
+        // docs/252 req 16 — the live emit carries the same two attribution
+        // fields rehydration computes from the stored row, so a per-turn row
+        // does not change what it says the moment the page reloads.
+        if (turnAttribution) {
+          perTurnUsage.billingMode = turnAttribution.billingMode;
+        }
+        // `sub` only, matching what rehydration computes — a `key` turn's
+        // `costUsd` already comes from these rates, so a second copy under the
+        // comparison's name would invite double-counting.
+        if (turnAttribution?.billingMode === "sub") {
+          perTurnUsage.atApiRatesUsd = costFromRates(turnAttribution.rates, {
+            input: event.tokens?.input,
+            output: event.tokens?.output,
+            cacheRead: event.tokens?.cacheRead,
+            cacheWrite: event.tokens?.cacheWrite,
+          });
+        }
         const sessionUsage = deps.usageManager.getSessionUsage(usageSessionId);
         if (sessionUsage) {
           const tokenTotals = deps.usageManager.getSessionTokenTotals(usageSessionId);
           emitToViewers({
             type: "usage_update",
             sessionId: sessionUsage.sessionId,
-            totalCostUsd: sessionUsage.totalCostUsd,
+            totals: sessionUsage.totals,
+            groups: sessionUsage.groups ?? [],
             totalDurationMs: sessionUsage.totalDurationMs,
             turnCount: sessionUsage.turnCount,
             lastTurnInputTokens: event.tokens?.input,
@@ -1323,7 +1341,7 @@ export function wireAgentListeners(
               type: "turn_usage_update",
               sessionId: sessionUsage.sessionId,
               turn: perTurnUsage,
-              totalCostUsd: sessionUsage.totalCostUsd,
+              totals: sessionUsage.totals,
               turnCount: sessionUsage.turnCount,
             });
           }

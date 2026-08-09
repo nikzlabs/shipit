@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import type { UsageTotals } from "../../shared/types.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -20,6 +21,19 @@ import {
   createTestDatabaseManager,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
+
+/**
+ * docs/252 req 16 — the session's money figure, which is no longer one column.
+ *
+ * These sessions run without a catalogue-resolvable selection, so every row is
+ * `legacy`; an attributed one would land in `meteredCostUsd` instead, and the
+ * split never adds the two. Summing them here keeps each assertion about the
+ * cumulative-to-delta arithmetic it exists to check rather than about which
+ * bucket the row fell into.
+ */
+function spend(totals: UsageTotals): number {
+  return totals.meteredCostUsd + totals.legacyCostUsd;
+}
 
 describe("Integration: Usage & cost tracking", () => {
   let app: FastifyInstance;
@@ -79,10 +93,10 @@ describe("Integration: Usage & cost tracking", () => {
     expect(res.json()).toMatchObject({
       stats: {
         sessions: [],
-        totalCostUsd: 0,
         totalTurns: 0,
       },
     });
+    expect(spend(res.json().stats.totals)).toBe(0);
   });
 
   it("usage_update is sent after result event with total_cost_usd", async () => {
@@ -122,10 +136,10 @@ describe("Integration: Usage & cost tracking", () => {
     expect(usageUpdate).toMatchObject({
       type: "usage_update",
       sessionId: appSessionId,
-      totalCostUsd: 0.42,
       totalDurationMs: 3200,
       turnCount: 1,
     });
+    expect(spend((usageUpdate as { totals: UsageTotals }).totals)).toBeCloseTo(0.42);
 
     // Emit done to finish the turn
     lastClaude.emit("done", 0);
@@ -155,8 +169,8 @@ describe("Integration: Usage & cost tracking", () => {
     expect(update1).toMatchObject({
       type: "usage_update",
       turnCount: 1,
-      totalCostUsd: 0.10,
     });
+    expect(spend((update1 as { totals: UsageTotals }).totals)).toBeCloseTo(0.10);
     lastClaude.emit("done", 0);
 
     // Wait for done handler
@@ -191,7 +205,7 @@ describe("Integration: Usage & cost tracking", () => {
     // conversation (same session_id "accum-session"): 0.10 then 0.20. The
     // second turn's own cost is the 0.10 delta, so the session bill is 0.20 —
     // NOT 0.30 (summing the cumulative snapshots double-counted turn 1).
-    expect(update2.totalCostUsd).toBeCloseTo(0.20);
+    expect(spend(update2.totals)).toBeCloseTo(0.20);
     expect(update2.totalDurationMs).toBe(3000);
 
     lastClaude.emit("done", 0);
@@ -225,12 +239,12 @@ describe("Integration: Usage & cost tracking", () => {
     expect(statsRes.statusCode).toBe(200);
     const statsMsg = statsRes.json();
 
-    expect(statsMsg.stats.totalCostUsd).toBeCloseTo(0.55);
+    expect(spend(statsMsg.stats.totals)).toBeCloseTo(0.55);
     expect(statsMsg.stats.totalTurns).toBe(1);
     expect(statsMsg.stats.sessions).toHaveLength(1);
+    expect(spend(statsMsg.stats.sessions[0].totals)).toBeCloseTo(0.55);
     expect(statsMsg.stats.sessions[0]).toMatchObject({
       sessionId: appSessionId,
-      totalCostUsd: 0.55,
       totalDurationMs: 5000,
       turnCount: 1,
     });
@@ -296,7 +310,6 @@ describe("Integration: Usage & cost tracking", () => {
     expect(usageUpdate).toMatchObject({
       type: "usage_update",
       sessionId: appSessionId,
-      totalCostUsd: 0,
       totalDurationMs: 2500,
       turnCount: 1,
       lastTurnInputTokens: 120,
@@ -309,7 +322,6 @@ describe("Integration: Usage & cost tracking", () => {
     expect(turnUsage).toMatchObject({
       type: "turn_usage_update",
       sessionId: appSessionId,
-      totalCostUsd: 0,
       turnCount: 1,
       turn: {
         inputTokens: 120,
@@ -326,14 +338,14 @@ describe("Integration: Usage & cost tracking", () => {
     const statsRes = await app.inject({ method: "GET", url: `/api/sessions/${appSessionId}/usage` });
     expect(statsRes.statusCode).toBe(200);
     const statsMsg = statsRes.json();
-    expect(statsMsg.stats.totalCostUsd).toBe(0);
+    expect(spend(statsMsg.stats.totals)).toBe(0);
     expect(statsMsg.stats.totalTurns).toBe(1);
     expect(statsMsg.stats.sessions[0]).toMatchObject({
       sessionId: appSessionId,
-      totalCostUsd: 0,
       totalDurationMs: 2500,
       turnCount: 1,
     });
+    expect(spend(statsMsg.stats.sessions[0].totals)).toBe(0);
 
     client.close();
   });

@@ -17,12 +17,16 @@ import type { AgentId, SubscriptionLimits, SubscriptionLimitsMap, SubscriptionLi
 const SESSION_LIMIT_NOTICE = "You've hit your session limit · resets 5:10pm (UTC)";
 const NOON_UTC = Date.parse("2026-08-06T12:00:00.000Z");
 
+/** docs/252 req 10 — quota belongs to a service's SUBSCRIPTION, not to a harness. */
+const serviceOf = (agentId: AgentId): string => (agentId === "claude" ? "anthropic" : "openai");
+
 const snapshot = (
   agentId: AgentId,
   session: SubscriptionLimitsWindow | null,
   routeId = `acct-${agentId}`,
 ): SubscriptionLimits => ({
-  agentId,
+  serviceId: serviceOf(agentId),
+  billingMode: "sub",
   routeId,
   plan: null,
   session,
@@ -31,7 +35,7 @@ const snapshot = (
 });
 
 const limitsFor = (agentId: AgentId, session: SubscriptionLimitsWindow | null): SubscriptionLimitsMap => ({
-  [agentId]: { [`acct-${agentId}`]: snapshot(agentId, session) },
+  [`${serviceOf(agentId)}:sub`]: { [`acct-${agentId}`]: snapshot(agentId, session) },
 });
 
 /** docs/150 — two connected accounts for one provider. */
@@ -40,7 +44,7 @@ const twoAccounts = (
   a: SubscriptionLimitsWindow | null,
   b: SubscriptionLimitsWindow | null,
 ): SubscriptionLimitsMap => ({
-  [agentId]: {
+  [`${serviceOf(agentId)}:sub`]: {
     "acct-a": snapshot(agentId, a, "acct-a"),
     "acct-b": snapshot(agentId, b, "acct-b"),
   },

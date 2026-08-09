@@ -72,9 +72,10 @@ describe("useSubscriptionPillCount", () => {
   // snapshot — but it still occupies a pill's worth of header.
   it("counts a reserved route that only the snapshot map knows about", () => {
     const limits: SubscriptionLimitsMap = {
-      claude: {
+      "anthropic:sub": {
         "claude-env-oauth": {
-          agentId: "claude",
+          serviceId: "anthropic",
+          billingMode: "sub",
           routeId: "claude-env-oauth",
           plan: null,
           session: null,

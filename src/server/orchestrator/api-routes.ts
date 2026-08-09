@@ -140,7 +140,8 @@ export interface ApiDeps {
    * then 503s.
    */
   refreshSubscriptionLimits?: (
-    agentId: AgentId,
+    /** docs/252 req 10 — `${serviceId}:${billingMode}`, the key quota is reported under. */
+    modeKey: string,
     reason: "manual" | "seed",
     routeId?: string,
   ) => Promise<LimitsRefreshResult[]>;
@@ -154,6 +155,14 @@ export interface ApiDeps {
     agentId: AgentId,
     session: { usedPct: number | null; resetAt: string } | null,
     weekly: { usedPct: number | null; resetAt: string } | null,
+    sessionId?: string,
+    /**
+     * docs/252 req 10 — the credential route the reporting turn ACTUALLY ran
+     * on, when the caller resolved one of its own. A consult routes
+     * independently of the session's pin, and the snapshot is filed against
+     * whatever `(service, mode)` owns the route.
+     */
+    routeId?: string,
   ) => void;
   /**
    * docs/164 — override for the bug-report Stage-2 (LLM) redaction pass. When

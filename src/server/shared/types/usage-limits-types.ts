@@ -7,7 +7,8 @@
  * See docs/135-subscription-limits-badge/plan.md.
  */
 
-import type { AgentId } from "./agent-types.js";
+import type { BillingMode } from "../catalogue/types.js";
+import { credentialModeKey } from "./domain-types/credential-route.js";
 
 export interface SubscriptionLimitsWindow {
   /**
@@ -34,8 +35,19 @@ export interface SubscriptionLimitsWindow {
 }
 
 export interface SubscriptionLimits {
-  /** Which agent these numbers belong to. */
-  agentId: AgentId;
+  /**
+   * docs/252 req 10 — usage is reported per **billing mode of a service**, not
+   * per agent. `agentId` was the conflation this feature removes: a harness is
+   * not a vendor, so it cannot own a quota, and one service can hold both a
+   * subscription (which has an allowance) and a key (which has none).
+   *
+   * Only a `sub` mode ever produces a snapshot — a key has no allowance and
+   * nothing that resets, and req 10 keeps that slot empty rather than filling
+   * it with a placeholder. The mode is still carried explicitly so the key is
+   * uniform with every other `(service, mode)` map in this feature.
+   */
+  serviceId: string;
+  billingMode: BillingMode;
   /**
    * docs/150 req 10 — which *route* produced these numbers: a provider-account
    * id (`acct_…`) or a reserved route id (`claude-env-oauth`,
@@ -73,11 +85,19 @@ export interface SubscriptionLimits {
 
 /**
  * Map sent over the wire on every `subscription_limits` SSE broadcast:
- * **provider → route → limits** (docs/150 req 10).
+ * **`${serviceId}:${billingMode}` → route → limits** (docs/150 req 10,
+ * re-keyed by docs/252 req 10).
  *
- * The inner key is a provider-account id or a reserved route id, so a user with
- * two Anthropic subscriptions gets two independent entries under `claude`
- * rather than one that flickers between whichever account last took a turn.
+ * The OUTER key moved off `AgentId`; the inner one deliberately did not.
+ * Dropping the route would be a regression, not a simplification: two connected
+ * subscriptions have two independent 5h windows, two independent
+ * `/api/oauth/usage` results and two independent 429 lockouts, and req 12's
+ * failover has to know *which* subscription is exhausted before moving to
+ * another.
+ *
+ * So a user with two Anthropic subscriptions gets two independent entries under
+ * `anthropic:sub` rather than one that flickers between whichever account last
+ * took a turn.
  * Routes with no snapshot are **omitted** (not stored as `null`). Connected
  * provider accounts still render an unknown-state pill from the account
  * registry; this map supplies readings, not account visibility. Reserved
@@ -85,7 +105,12 @@ export interface SubscriptionLimits {
  * client replaces its store map wholesale on each broadcast so stale readings
  * and signed-out reserved routes propagate naturally.
  */
-export type SubscriptionLimitsMap = Partial<Record<AgentId, Record<string, SubscriptionLimits>>>;
+export type SubscriptionLimitsMap = Record<string, Record<string, SubscriptionLimits> | undefined>;
+
+/** The outer key of {@link SubscriptionLimitsMap} for one snapshot. */
+export function limitsModeKey(of: { serviceId: string; billingMode: BillingMode }): string {
+  return credentialModeKey(of.serviceId, of.billingMode);
+}
 
 /**
  * Why an on-demand usage refresh did or didn't produce new numbers.
@@ -127,15 +152,15 @@ export interface LimitsRefreshResult {
 /**
  * Flatten the nested map to a list — what most consumers actually want (render
  * each pill, find the worst window, ask whether anything is exhausted). Each
- * entry carries its own `agentId`/`routeId`, so nothing has to be re-derived
- * from the nesting.
+ * entry carries its own `serviceId`/`billingMode`/`routeId`, so nothing has to
+ * be re-derived from the nesting.
  */
 export function listSubscriptionLimits(map: SubscriptionLimitsMap): SubscriptionLimits[] {
   const out: SubscriptionLimits[] = [];
   for (const byRoute of Object.values(map)) {
     if (!byRoute) continue;
     // Defensive: this map arrives over the wire, and a hole here would
-    // otherwise throw inside every consumer that reads `.agentId`.
+    // otherwise throw inside every consumer that reads `.serviceId`.
     for (const snap of Object.values(byRoute)) if (snap) out.push(snap);
   }
   return out;

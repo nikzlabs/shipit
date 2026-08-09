@@ -71,9 +71,10 @@ function seedAccountCredentials(
 }
 
 /** A quota snapshot with `pct` used in the short (5h) window. */
-function sessionWindowAt(pct: number, agentId: AgentId = "claude"): SubscriptionLimits {
+function sessionWindowAt(pct: number, serviceId = "anthropic"): SubscriptionLimits {
   return {
-    agentId,
+    serviceId,
+    billingMode: "sub",
     routeId: "unused",
     plan: null,
     session: { usedPct: pct, resetAt: new Date(Date.now() + 3_600_000).toISOString() },
@@ -302,7 +303,7 @@ describe("provider route pinning (docs/150)", () => {
     it("switches to the next account at the default 90% cutoff and keeps the conversation", async () => {
       const { first, second, dir } = await pinnedMidConversation();
 
-      limits = { claude: { [first]: sessionWindowAt(95) } };
+      limits = { "anthropic:sub": { [first]: sessionWindowAt(95) } };
       await runEnvPrep("s1", "claude");
 
       const session = sessions.get("s1");
@@ -323,7 +324,7 @@ describe("provider route pinning (docs/150)", () => {
 
       // 60% is comfortably under the 90% default — nothing should move, or the
       // cutoff would be decoration.
-      limits = { claude: { [first]: sessionWindowAt(60) } };
+      limits = { "anthropic:sub": { [first]: sessionWindowAt(60) } };
       await runEnvPrep("s1", "claude");
       expect(sessions.get("s1")?.providerRouteId).toBe(first);
 
@@ -341,7 +342,7 @@ describe("provider route pinning (docs/150)", () => {
       // turn to land somewhere no better (req 6's "only if there IS somewhere
       // better"), so the session stays where it is and keeps working.
       limits = {
-        claude: { [first]: sessionWindowAt(95), [second]: sessionWindowAt(97) },
+        "anthropic:sub": { [first]: sessionWindowAt(95), [second]: sessionWindowAt(97) },
       };
       await runEnvPrep("s1", "claude");
 
@@ -361,7 +362,7 @@ describe("provider route pinning (docs/150)", () => {
       fs.mkdirSync(rollout, { recursive: true });
       fs.writeFileSync(path.join(rollout, "rollout-2026-thread-1.jsonl"), "codex-turn1\n");
 
-      limits = { codex: { [first]: sessionWindowAt(91, "codex") } };
+      limits = { "openai:sub": { [first]: sessionWindowAt(91, "openai") } };
       await runEnvPrep("s2", "codex");
 
       expect(sessions.get("s2")?.providerRouteId).toBe(second);
@@ -385,7 +386,7 @@ describe("provider route pinning (docs/150)", () => {
         defaultAgentId: "claude",
       });
 
-      limits = { claude: { [first]: sessionWindowAt(95) } };
+      limits = { "anthropic:sub": { [first]: sessionWindowAt(95) } };
       await prepareSessionAgentEnvironment(runner, {
         sessionId: "s1",
         agentId: "claude",

@@ -1,5 +1,6 @@
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
-import { listSubscriptionLimits } from "../../shared/types/usage-limits-types.js";
+import { limitsModeKey } from "../../shared/types/usage-limits-types.js";
+import { nativeServiceForHarness } from "../../shared/catalogue/index.js";
 
 /**
  * Rate-limit + subscription-snapshot handling, extracted from
@@ -220,7 +221,17 @@ export function normalizeAgentUsageLimitError(
   // only true if *every* connected account for this provider is exhausted.
   // Reclassifying on the first exhausted account would tell a user with a
   // healthy second subscription that they are out of quota.
-  const providerLimits = listSubscriptionLimits(limits ?? {}).filter((l) => l.agentId === agentId);
+  //
+  // docs/252 req 10 — and it is per `(service, billing mode)`, so the group is
+  // this harness's own vendor SUBSCRIPTION: the only thing that reports a
+  // quota, and the only thing the message's "5h usage limit" wording describes.
+  // A turn redirected to another service has no window here and falls through
+  // with the upstream text intact, which is the honest outcome.
+  const modeKey = limitsModeKey({
+    serviceId: nativeServiceForHarness(agentId) ?? agentId,
+    billingMode: "sub",
+  });
+  const providerLimits = Object.values(limits?.[modeKey] ?? {});
   const sessionWindows = providerLimits.map((l) => l.session).filter((w) => w !== null);
   if (sessionWindows.length === 0) return message;
   if (sessionWindows.some((w) => w.usedPct === null || w.usedPct < 100)) return message;

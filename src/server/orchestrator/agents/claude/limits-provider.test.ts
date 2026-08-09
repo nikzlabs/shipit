@@ -29,7 +29,8 @@ describe("ClaudeLimitsProvider", () => {
     expect(provider.routeIds()).toEqual([ROUTE]);
     const snap = await provider.fetch(ROUTE);
     expect(snap).not.toBeNull();
-    expect(snap?.agentId).toBe("claude");
+    expect(snap?.serviceId).toBe("anthropic");
+    expect(snap?.billingMode).toBe("sub");
     expect(snap?.plan).toBe("Max 20x");
     expect(snap?.session?.usedPct).toBe(30);
     expect(snap?.weekly?.usedPct).toBe(12);

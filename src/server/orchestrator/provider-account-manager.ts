@@ -12,6 +12,7 @@ import type {
 import type { CredentialStore } from "./credential-store.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
 import { nativeServiceForHarness } from "../shared/catalogue/index.js";
+import { credentialModeKey } from "../shared/types/domain-types/credential-route.js";
 
 /** Persisted, non-derived account statuses (see {@link ProviderAccount}). */
 export type ProviderAccountStatus = ProviderAccount["status"];
@@ -675,7 +676,10 @@ export class ProviderAccountManager {
       this.credentialStore.getSelectionMode(...routingSettingsKeyFor(provider)),
     );
 
-    const limits = this.getSubscriptionLimits?.()?.[provider] ?? {};
+    // docs/252 req 10 — quota is keyed by `(service, billing mode)` now.
+    // Accounts are always subscriptions, so this manager's group is exactly
+    // `routingSettingsKeyFor`'s, which is where its cutoffs already come from.
+    const limits = this.getSubscriptionLimits?.()?.[credentialModeKey(...routingSettingsKeyFor(provider))] ?? {};
     const now = Date.now();
 
     // docs/150 reqs 4–6 — three tiers, not two. An account past its cutoff is
@@ -767,7 +771,10 @@ export class ProviderAccountManager {
     const account = this.get(provider, route.id);
     if (!account) return "unavailable";
     if (account.status !== "ready" && account.status !== "authenticating") return "unavailable";
-    const limits = this.getSubscriptionLimits?.()?.[provider] ?? {};
+    // docs/252 req 10 — quota is keyed by `(service, billing mode)` now.
+    // Accounts are always subscriptions, so this manager's group is exactly
+    // `routingSettingsKeyFor`'s, which is where its cutoffs already come from.
+    const limits = this.getSubscriptionLimits?.()?.[credentialModeKey(...routingSettingsKeyFor(provider))] ?? {};
     if (exhaustedUntil(limits[route.id], account, Date.now()) !== null) return "exhausted";
 
     // docs/150 req 6 — past a cutoff, this session should move to the next
