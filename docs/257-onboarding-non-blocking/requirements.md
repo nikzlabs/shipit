@@ -1,7 +1,7 @@
 ---
 issue: planning#335
 title: Non-blocking onboarding
-description: Harness onboarding stops being a blocking modal and becomes an inline, modal-free panel in the conversation view, so a new user can see and use ShipIt before connecting anything.
+description: Harness onboarding stops being a blocking modal over the product and becomes an inline panel in the conversation view, so a new user can see and use ShipIt before connecting a subscription.
 ---
 
 # Non-blocking onboarding — requirements
