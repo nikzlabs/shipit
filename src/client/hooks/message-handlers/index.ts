@@ -76,6 +76,7 @@ import { handleSessionSpawned } from "./session-spawned.js";
 import { handleChildMergedCard } from "./child-merged.js";
 import { handleSelfMergeWatchCard } from "./self-merge-watch.js";
 import { handleSessionReportCard } from "./session-report.js";
+import { handleNonTurnFailureCard, handleNonTurnFailureDismissed } from "./non-turn-failure.js";
 import { handleSessionStarted } from "./session-started.js";
 import { handleSessionStatus } from "./session-status.js";
 import { handleSessionContainerFreshness } from "./session-container-freshness.js";
@@ -191,6 +192,8 @@ export const messageHandlers: MessageHandlerMap = {
   session_forked: handleSessionForked,
   session_memory_exhausted: handleSessionMemoryExhausted,
   session_report_card: handleSessionReportCard,
+  non_turn_failure_card: handleNonTurnFailureCard,
+  non_turn_failure_dismissed: handleNonTurnFailureDismissed,
   session_spawn_failed: handleSessionSpawnFailed,
   session_spawned: handleSessionSpawned,
   child_merged_card: handleChildMergedCard,
@@ -255,6 +258,8 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "self_merge_watch_card",
   "session_renamed_card",
   "session_report_card",
+  "non_turn_failure_card",
+  "non_turn_failure_dismissed",
   "session_spawn_failed",
   "session_spawned",
   "session_container_freshness",

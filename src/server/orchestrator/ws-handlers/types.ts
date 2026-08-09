@@ -19,6 +19,7 @@ import type { ReleaseStatusPoller } from "../release-status-poller.js";
 import type { AgentId, AgentProcess } from "../../shared/types.js";
 import type { SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry, QueuedMessage } from "../session-runner.js";
+import type { GenerateText } from "../non-turn-model.js";
 
 // Re-export so existing consumers of types.ts don't break
 export type { QueuedMessage };
@@ -153,7 +154,7 @@ export interface AppCtx {
   containerManager?: SessionContainerManager;
 
   // Factories
-  generateText: (prompt: string, cwd: string) => Promise<string>;
+  generateText: GenerateText;
   getSharedRepoDir: (repoUrl: string) => string;
 
   // PR lifecycle

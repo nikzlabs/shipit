@@ -117,6 +117,8 @@ import type {
   WsBranchAutoResetCard,
   WsBranchSyncedCard,
   WsSessionRenamedCard,
+  WsNonTurnFailureCard,
+  WsNonTurnFailureDismissed,
 } from "./cards.js";
 import type {
   WsError,
@@ -152,6 +154,8 @@ export type WsServerMessage =
   | WsBranchAutoResetCard
   | WsBranchSyncedCard
   | WsSessionRenamedCard
+  | WsNonTurnFailureCard
+  | WsNonTurnFailureDismissed
   | WsBugReportCard
   | WsBugReportFiled
   | WsBugReportFailed

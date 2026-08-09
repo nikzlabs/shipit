@@ -1200,7 +1200,7 @@ export async function registerGitHubRoutes(
       if (!dir) return;
       try {
         const git = createGitManager(dir);
-        return await generatePrDescription(git, deps.generateText, dir);
+        return await generatePrDescription(git, deps.generateText, dir, request.params.id);
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });

@@ -31,51 +31,15 @@ function scrubEnvAuthForScopedHome(env: Record<string, string>, scopedHome: stri
   delete env.ANTHROPIC_AUTH_TOKEN;
 }
 
-/** Every Anthropic credential variable the CLI will read, in preference order. */
-const ANTHROPIC_CREDENTIAL_VARS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] as const;
-
 /**
- * docs/252 phase 3 — point this spawn at the selected model's service.
- *
- * **Must run AFTER {@link scrubEnvAuthForScopedHome}**, and the ordering is
- * load-bearing rather than incidental: the scrub deletes the very variables
- * this writes, so shaping first would produce a spawn with an endpoint and no
- * credential — a redirected turn that 401s. A test pins the order.
- *
- * Two things happen and both are deliberate:
- *
- *  - **Every Anthropic credential variable is cleared first, then exactly one is
- *    set.** They are not interchangeable at the wire (`ANTHROPIC_API_KEY`
- *    becomes an `x-api-key` header, `ANTHROPIC_AUTH_TOKEN` an
- *    `Authorization: Bearer` one — measured, not assumed), and the CLI prefers
- *    the key. Leaving a stale one behind is how a GLM turn would authenticate
- *    with an Anthropic key against GLM's endpoint.
- *  - **The base URL is set from the catalogue, unconditionally for a shaped
- *    turn.** Inheriting an ambient `ANTHROPIC_BASE_URL` would make where a turn
- *    goes depend on the orchestrator's own environment rather than on what the
- *    user selected.
- *
- * A turn with nothing to shape — the harness on its own vendor through a login
- * account — passes `undefined` and this is a no-op, which is what keeps today's
- * spawn byte-identical for the common case.
+ * docs/252 — the shaping rule itself now lives in `shared/spawn-routing.ts`, so
+ * the orchestrator's own CLI shell-out (session naming, phase 7) can shape a
+ * spawn identically without importing this tree. Re-exported here because this
+ * is where every existing importer and test looks for it; the ordering contract
+ * is unchanged — call it AFTER {@link scrubEnvAuthForScopedHome}.
  */
-export function applyServiceRouting(
-  env: Record<string, string>,
-  routing: ServiceRouting | undefined,
-): { credentialDelivered: boolean } {
-  if (!routing) return { credentialDelivered: true };
-  const secret = env[routing.credentialSourceEnv];
-  for (const name of ANTHROPIC_CREDENTIAL_VARS) {
-    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- the key set is the module-level literal above, not caller input.
-    delete env[name];
-  }
-  const credentialDelivered = routing.credentialTarget.kind === "env" && !!secret;
-  if (credentialDelivered && routing.credentialTarget.kind === "env") {
-    env[routing.credentialTarget.name] = secret;
-  }
-  env.ANTHROPIC_BASE_URL = routing.baseUrl;
-  return { credentialDelivered };
-}
+import { applyServiceRouting } from "../../../shared/spawn-routing.js";
+export { applyServiceRouting };
 
 /**
  * Phrases that signal an auth failure in CLI output. Used both for non-JSON

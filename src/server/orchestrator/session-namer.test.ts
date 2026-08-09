@@ -22,7 +22,9 @@ describe("generateSessionName", () => {
           expect(file).toBe("claude");
           expect(args).toContain("-p");
           expect(args).toContain("--output-format");
-          expect(args).toContain("text");
+          // docs/252 phase 7 — the JSON envelope, so naming's telemetry can be
+          // recorded rather than discarded (req 16).
+          expect(args).toContain("json");
           setImmediate(() => {
             cb(null, '{"slug": "add-login", "title": "Add Login Page"}\n', "");
           });
@@ -32,8 +34,8 @@ describe("generateSessionName", () => {
     });
 
     const mod = await import("./session-namer.js");
-    const result = await mod.generateSessionName("Add a login page", "claude");
-    expect(result).toEqual({ slug: "add-login", title: "Add Login Page" });
+    const result = await mod.generateSessionName("Add a login page", { harnessId: "claude" });
+    expect(result.name).toEqual({ slug: "add-login", title: "Add Login Page" });
   });
 
   // docs/150 — naming is a real provider call and must be billed to a real
@@ -56,7 +58,10 @@ describe("generateSessionName", () => {
     }));
 
     const mod = await import("./session-namer.js");
-    await mod.generateSessionName("hi", "claude", "/credentials/provider-accounts/claude/acct_work");
+    await mod.generateSessionName("hi", {
+      harnessId: "claude",
+      credentialRoot: "/credentials/provider-accounts/claude/acct_work",
+    });
 
     expect(seenHome).toBe("/credentials/provider-accounts/claude/acct_work");
   });
@@ -77,7 +82,7 @@ describe("generateSessionName", () => {
     }));
 
     const mod = await import("./session-namer.js");
-    await mod.generateSessionName("hi", "claude");
+    await mod.generateSessionName("hi", { harnessId: "claude" });
 
     // A reserved route (API key / env OAuth) has no account root, and the
     // singleton path is what those legitimately use.
@@ -106,8 +111,8 @@ describe("generateSessionName", () => {
     });
 
     const mod = await import("./session-namer.js");
-    const result = await mod.generateSessionName("Add a login page", "codex");
-    expect(result).toEqual({ slug: "add-login", title: "Add Login Page" });
+    const result = await mod.generateSessionName("Add a login page", { harnessId: "codex" });
+    expect(result.name).toEqual({ slug: "add-login", title: "Add Login Page" });
   });
 
   it("returns null when the CLI exits with an error", async () => {
@@ -128,8 +133,8 @@ describe("generateSessionName", () => {
     });
 
     const mod = await import("./session-namer.js");
-    const result = await mod.generateSessionName("hello", "claude");
-    expect(result).toBeNull();
+    const result = await mod.generateSessionName("hello", { harnessId: "claude" });
+    expect(result.name).toBeNull();
   });
 
   it("returns null when CLI output has no JSON", async () => {
@@ -150,8 +155,8 @@ describe("generateSessionName", () => {
     });
 
     const mod = await import("./session-namer.js");
-    const result = await mod.generateSessionName("hello", "claude");
-    expect(result).toBeNull();
+    const result = await mod.generateSessionName("hello", { harnessId: "claude" });
+    expect(result.name).toBeNull();
   });
 
   it("trims slug to lowercase alphanumerics + hyphens, max 40 chars", async () => {
@@ -176,9 +181,9 @@ describe("generateSessionName", () => {
     });
 
     const mod = await import("./session-namer.js");
-    const result = await mod.generateSessionName("x", "claude");
-    expect(result?.slug.length).toBeLessThanOrEqual(40);
-    expect(result?.slug).toMatch(/^[a-z0-9-]+$/);
+    const result = await mod.generateSessionName("x", { harnessId: "claude" });
+    expect(result.name?.slug.length).toBeLessThanOrEqual(40);
+    expect(result.name?.slug).toMatch(/^[a-z0-9-]+$/);
   });
 
   // Naming is one of the two `codex` processes that start against the
@@ -208,7 +213,10 @@ describe("generateSessionName", () => {
     }));
 
     const mod = await import("./session-namer.js");
-    await mod.generateSessionName("hi", "codex", "/credentials/provider-accounts/codex/acct_work");
+    await mod.generateSessionName("hi", {
+      harnessId: "codex",
+      credentialRoot: "/credentials/provider-accounts/codex/acct_work",
+    });
 
     expect(order).toEqual([
       "gate:/credentials/provider-accounts/codex/acct_work/.codex",
@@ -238,7 +246,10 @@ describe("generateSessionName", () => {
     }));
 
     const mod = await import("./session-namer.js");
-    await mod.generateSessionName("hi", "claude", "/credentials/provider-accounts/claude/acct_work");
+    await mod.generateSessionName("hi", {
+      harnessId: "claude",
+      credentialRoot: "/credentials/provider-accounts/claude/acct_work",
+    });
 
     expect(gated).toEqual([]);
     vi.doUnmock("./agents/codex/home-init.js");
@@ -263,8 +274,8 @@ describe("generateSessionName", () => {
     });
 
     const mod = await import("./session-namer.js");
-    const result = await mod.generateSessionName("x", "claude");
-    expect(result?.title.length).toBeLessThanOrEqual(60);
+    const result = await mod.generateSessionName("x", { harnessId: "claude" });
+    expect(result.name?.title.length).toBeLessThanOrEqual(60);
   });
   // docs/252 phase 9 (req 14) — naming runs on the ORCHESTRATOR's own CLIs, so a
   // deployment that did not install this harness has nothing to shell out to.
@@ -282,10 +293,143 @@ describe("generateSessionName", () => {
     }));
 
     const mod = await import("./session-namer.js");
-    const result = await mod.generateSessionName("hi", "claude");
+    const result = await mod.generateSessionName("hi", { harnessId: "claude" });
 
-    expect(result).toBeNull();
+    expect(result.name).toBeNull();
     expect(spawned).toBe(false);
     vi.doUnmock("../shared/installed-harnesses.js");
+  });
+
+  // docs/252 phase 7 (req 9) — naming runs on the model chosen for non-turn
+  // work, pointed at that model's service. The shaping goes through the SAME
+  // `applyServiceRouting` a turn's spawn uses: a second implementation is how a
+  // naming run ends up authenticating differently from the turn it names.
+  it("shapes the Claude spawn at the selected service and forwards the model", async () => {
+    let seenArgs: string[] = [];
+    let seenEnv: Record<string, string> = {};
+    vi.doMock("node:child_process", () => ({
+      execFile: (
+        _file: string,
+        args: string[],
+        opts: { env?: Record<string, string> },
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        seenArgs = args;
+        seenEnv = opts.env ?? {};
+        setImmediate(() => cb(null, '{"slug": "s", "title": "T"}\n', ""));
+        return { on: () => {}, stdin: { end: () => {} } } as unknown;
+      },
+    }));
+
+    const mod = await import("./session-namer.js");
+    await mod.generateSessionName("hi", {
+      harnessId: "claude",
+      model: "deepseek-v4-flash",
+      serviceRouting: {
+        serviceId: "deepseek",
+        serviceName: "DeepSeek",
+        billingMode: "key",
+        style: "anthropic-messages",
+        baseUrl: "https://api.deepseek.com/anthropic",
+        credentialSourceEnv: "DEEPSEEK_API_KEY",
+        credentialTarget: { kind: "env", name: "ANTHROPIC_API_KEY" },
+      },
+      credentialSecret: "sk-deepseek",
+    });
+
+    expect(seenArgs).toContain("--model");
+    expect(seenArgs).toContain("deepseek-v4-flash");
+    expect(seenEnv.ANTHROPIC_BASE_URL).toBe("https://api.deepseek.com/anthropic");
+    expect(seenEnv.ANTHROPIC_API_KEY).toBe("sk-deepseek");
+  });
+
+  // The orchestrator's own ambient credentials must not leak into a redirected
+  // naming run — the same clear-then-set rule the turn path applies.
+  it("refuses to name when the selected service has no credential to deliver", async () => {
+    let spawned = false;
+    vi.doMock("node:child_process", () => ({
+      execFile: () => {
+        spawned = true;
+        return { on: () => {}, stdin: { end: () => {} } } as unknown;
+      },
+    }));
+
+    const mod = await import("./session-namer.js");
+    const result = await mod.generateSessionName("hi", {
+      harnessId: "claude",
+      serviceRouting: {
+        serviceId: "deepseek",
+        serviceName: "DeepSeek",
+        billingMode: "key",
+        style: "anthropic-messages",
+        baseUrl: "https://api.deepseek.com/anthropic",
+        credentialSourceEnv: "DEEPSEEK_API_KEY",
+        credentialTarget: { kind: "env", name: "ANTHROPIC_API_KEY" },
+      },
+    });
+
+    expect(spawned).toBe(false);
+    expect(result.name).toBeNull();
+    expect(result.failure).toContain("DeepSeek");
+  });
+
+  // req 16 — naming can be pointed at a metered service, so what it spent has
+  // to be reportable. `--output-format json` is what makes that possible.
+  it("carries the JSON envelope's telemetry back to the caller", async () => {
+    vi.doMock("node:child_process", () => ({
+      execFile: (
+        _file: string,
+        _args: string[],
+        _opts: unknown,
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        setImmediate(() => cb(null, JSON.stringify({
+          result: '{"slug": "s", "title": "T"}',
+          total_cost_usd: 0.004,
+          duration_ms: 2100,
+          usage: {
+            input_tokens: 900,
+            output_tokens: 40,
+            cache_read_input_tokens: 12,
+            cache_creation_input_tokens: 3,
+          },
+        }), ""));
+        return { on: () => {}, stdin: { end: () => {} } } as unknown;
+      },
+    }));
+
+    const mod = await import("./session-namer.js");
+    const result = await mod.generateSessionName("hi", { harnessId: "claude" });
+
+    expect(result.name).toEqual({ slug: "s", title: "T" });
+    expect(result.usage).toEqual({
+      durationMs: 2100,
+      costUsd: 0.004,
+      inputTokens: 900,
+      outputTokens: 40,
+      cacheReadTokens: 12,
+      cacheCreateTokens: 3,
+    });
+  });
+
+  // Guarded by construction: an envelope the parser does not recognize degrades
+  // to reading stdout as text, which is exactly the pre-phase-7 behaviour.
+  it("still names when the CLI returns bare text instead of the JSON envelope", async () => {
+    vi.doMock("node:child_process", () => ({
+      execFile: (
+        _file: string,
+        _args: string[],
+        _opts: unknown,
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        setImmediate(() => cb(null, '{"slug": "bare", "title": "Bare"}\n', ""));
+        return { on: () => {}, stdin: { end: () => {} } } as unknown;
+      },
+    }));
+
+    const mod = await import("./session-namer.js");
+    const result = await mod.generateSessionName("hi", { harnessId: "claude" });
+
+    expect(result.name).toEqual({ slug: "bare", title: "Bare" });
   });
 });

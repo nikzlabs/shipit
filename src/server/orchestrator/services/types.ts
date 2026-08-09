@@ -7,6 +7,7 @@ import type { AgentReasoningCapability, SubAgentDefaults } from "../../shared/ty
 import type { EligibleModel } from "../../shared/agent-registry.js";
 import type { AccountSelectionMode, CredentialRoute, FailoverCutoffs, ProviderAccount, SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
+import type { BillingMode } from "../../shared/catalogue/types.js";
 
 // ---- Types for service function results ----
 
@@ -120,6 +121,28 @@ export interface GlobalSettings {
    */
   agentSubAgentDefaults: Record<string, SubAgentDefaults>;
   /**
+   * docs/252 phase 7 (req 9) — the model the user PINNED for non-turn work
+   * (session naming, pull-request descriptions), or absent for "follow the
+   * install".
+   *
+   * Absent is a state, not a missing value, which is why this is not filled in
+   * with the resolved answer: req 9's setting has to be visible as *unset* so
+   * the user can see it tracks the install rather than a vendor they may stop
+   * paying for. What it currently resolves to rides
+   * {@link GlobalSettings.nonTurnModelResolved}.
+   */
+  nonTurnModel?: NonTurnModelSelection;
+  /**
+   * docs/252 phase 7 (req 9) — what non-turn work would run on **right now**,
+   * pin or no pin, including the derived harness.
+   *
+   * Computed server-side rather than re-derived in the browser: the derivation
+   * is req 9's rule (first eligible model, first installed harness offering it)
+   * and a second implementation in the client is how the setting starts
+   * disagreeing with what actually runs. Absent when nothing is runnable.
+   */
+  nonTurnModelResolved?: NonTurnModelResolved;
+  /**
    * docs/163 — voice-note delivery mode: "native" (inline note + TTS),
    * "external" (webhook only), or "both". Default "native".
    */
@@ -141,6 +164,24 @@ export interface GlobalSettings {
    * Carries **no secret** — see `CredentialRoute`.
    */
   credentialRoutes: CredentialRoute[];
+}
+
+/** docs/252 phase 7 — the pinned non-turn selection, as it crosses the wire. */
+export interface NonTurnModelSelection {
+  serviceId: string;
+  billingMode: BillingMode;
+  modelId: string;
+}
+
+/** docs/252 phase 7 — the resolved answer, for display beside the "Default" option. */
+export interface NonTurnModelResolved extends NonTurnModelSelection {
+  serviceName: string;
+  /** Model label, not the raw id — the same string the picker shows. */
+  label: string;
+  /** Derived (req 9): the first installed harness offering this model. */
+  harnessId: AgentId;
+  /** Whether the resolution came from the user's pin or from the derived default. */
+  source: "pinned" | "default";
 }
 
 export interface GitHubStatus {

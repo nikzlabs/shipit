@@ -104,6 +104,18 @@ interface BootstrapResponse {
     enableSubAgents?: boolean;
     providerAccounts?: ProviderAccount[];
     credentialRoutes?: CredentialRoute[];
+    /** docs/252 phase 7 (req 9) — the pinned non-turn model, absent for "follow the install". */
+    nonTurnModel?: { serviceId: string; billingMode: "sub" | "key"; modelId: string };
+    /** docs/252 phase 7 (req 9) — what non-turn work resolves to now, harness included. */
+    nonTurnModelResolved?: {
+      serviceId: string;
+      billingMode: "sub" | "key";
+      modelId: string;
+      serviceName: string;
+      label: string;
+      harnessId: string;
+      source: "pinned" | "default";
+    };
     /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent id. */
     failoverCutoffs?: Record<string, { session: number; weekly: number }>;
     accountSelectionMode?: Record<string, "strict" | "balanced">;
@@ -401,6 +413,14 @@ export async function loadBootstrapData(): Promise<void> {
   if (data.settings.enableSubAgents !== undefined) useSettingsStore.getState().setEnableSubAgents(data.settings.enableSubAgents);
   if (data.settings.providerAccounts) useSettingsStore.getState().setProviderAccounts(data.settings.providerAccounts);
   if (data.settings.credentialRoutes) useSettingsStore.getState().setCredentialRoutes(data.settings.credentialRoutes);
+  // docs/252 phase 7 (req 9) — the pin AND the resolved answer, always applied
+  // (never guarded on presence): absent means "no pin" / "nothing runnable",
+  // which are real states the panel has to render, not a reason to keep a stale
+  // value from a previous read.
+  useSettingsStore.getState().setNonTurnModel(
+    data.settings.nonTurnModel ?? null,
+    data.settings.nonTurnModelResolved ?? null,
+  );
   useUiStore.getState().setRuntimeMode(data.runtimeMode ?? "containerized");
   useUiStore.getState().setTailnetPreviewHost(data.tailnetPreviewHost ?? null);
   useUiStore.getState().setBootstrapLoaded(true);

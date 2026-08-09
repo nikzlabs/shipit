@@ -8,6 +8,7 @@ import type {
   BranchAutoResetCard,
   BranchSyncedCard,
   SessionRenamedCard,
+  NonTurnFailureCard,
 } from "../domain-types.js";
 import type { ReleaseStatusSummary } from "../release-types.js";
 import type { VoiceNoteSource } from "../voice-note-types.js";
@@ -286,4 +287,32 @@ export interface WsSessionRenamedCard {
   type: "session_renamed_card";
   sessionId: string;
   card: SessionRenamedCard;
+}
+
+/**
+ * docs/252 phase 7 (req 9) — the persisted, dismissible notice that non-turn
+ * work (session naming, a pull-request description) failed.
+ *
+ * Emitted via `emitChatCard` so it broadcasts live AND is persisted in-band,
+ * because the requirement is explicit that this must still be findable after a
+ * reload or a session switch: naming is fire-and-forget and routinely finishes
+ * with no viewer attached, which is precisely when a transient message says
+ * nothing at all.
+ *
+ * The card HAS a lifecycle — dismissal — but it is one-way and carries no
+ * payload, so the follow-up rides {@link WsNonTurnFailureDismissed} rather than
+ * re-broadcasting the whole card. Idempotent on the client by `card.cardId`.
+ */
+export interface WsNonTurnFailureCard {
+  type: "non_turn_failure_card";
+  sessionId: string;
+  card: NonTurnFailureCard;
+}
+
+/** docs/252 phase 7 — the user dismissed a {@link WsNonTurnFailureCard}. */
+export interface WsNonTurnFailureDismissed {
+  type: "non_turn_failure_dismissed";
+  sessionId: string;
+  cardId: string;
+  dismissedAt: string;
 }

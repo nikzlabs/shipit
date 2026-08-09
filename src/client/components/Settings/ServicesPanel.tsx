@@ -51,6 +51,7 @@ import { Button } from "../ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { ProviderAccountsCard } from "./ProviderAccountsCard.js";
+import { BackgroundWorkSection } from "./BackgroundWorkSection.js";
 
 const MODE_LABEL: Record<BillingMode, string> = { sub: "Subscription", key: "API key" };
 
@@ -175,6 +176,16 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
           </div>
         </>
       )}
+
+      {/*
+        docs/252 phase 7 (req 9) — the background-work model sits here, under the
+        services it draws from: it is a `(service, billing mode, model)` choice
+        like any other, and the list it offers is exactly what the cards above
+        made eligible.
+      */}
+      <div className="border-t border-(--color-border-secondary) pt-4">
+        <BackgroundWorkSection agentList={agentList} />
+      </div>
 
       {addOpen && (
         <AddServiceDialog

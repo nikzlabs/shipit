@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { DatabaseManager } from "../shared/database.js";
 import type { SubagentEvent, ToolResultEntry } from "./session-runner.js";
-import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SelfMergeWatchCard, SessionReportCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, BranchAutoResetCard, BranchSyncedCard, SessionRenamedCard, SessionMessageOrigin } from "../shared/types.js";
+import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SelfMergeWatchCard, SessionReportCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, BranchAutoResetCard, BranchSyncedCard, SessionRenamedCard, NonTurnFailureCard, SessionMessageOrigin } from "../shared/types.js";
 import type { ReleaseStatusSummary } from "../shared/types/release-types.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import { retireBackgroundSubagentResult } from "./subagent-completion.js";
@@ -247,6 +247,16 @@ export interface PersistedMessage {
    */
   subAgentConsult?: SubAgentConsultCard;
   /**
+   * docs/252 phase 7 (req 9) — when set, this message renders the inline,
+   * dismissible notice that non-turn work failed (session naming, a
+   * pull-request description). Persisted rather than emitted-only because
+   * naming is fire-and-forget: it routinely finishes with the user on another
+   * session or no viewer attached at all, which is exactly the case a transient
+   * message cannot reach. Dismissal patches `dismissedAt` on this payload — the
+   * row stays, so "I read it" and "it never happened" stay distinguishable.
+   */
+  nonTurnFailure?: NonTurnFailureCard;
+  /**
    * docs/207 / planning#155 — when set, this message renders an inline
    * `ActionChecklistCard` (a button for one proposed action, a checklist for
    * 2+). The `propose_actions` tool fires an HTTP relay off the agent-event
@@ -425,6 +435,7 @@ interface MessageRow {
   issue_ref: string | null;
   compaction: string | null;
   sub_agent_consult: string | null;
+  non_turn_failure: string | null;
   action_checklist: string | null;
   branch_auto_reset: string | null;
   branch_synced: string | null;
@@ -457,8 +468,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, action_checklist, branch_auto_reset, branch_synced, session_renamed, child_merged, self_merge_watch, session_report, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id, agent_interface, message_origin)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @action_checklist, @branch_auto_reset, @branch_synced, @session_renamed, @child_merged, @self_merge_watch, @session_report, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id, @agent_interface, @message_origin)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, non_turn_failure, action_checklist, branch_auto_reset, branch_synced, session_renamed, child_merged, self_merge_watch, session_report, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id, agent_interface, message_origin)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @non_turn_failure, @action_checklist, @branch_auto_reset, @branch_synced, @session_renamed, @child_merged, @self_merge_watch, @session_report, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id, @agent_interface, @message_origin)
 `;
 
 const UPDATE_SQL = `
@@ -467,7 +478,7 @@ const UPDATE_SQL = `
     in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
-    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, action_checklist=@action_checklist, branch_auto_reset=@branch_auto_reset, branch_synced=@branch_synced, session_renamed=@session_renamed, child_merged=@child_merged, self_merge_watch=@self_merge_watch, session_report=@session_report, release_card=@release_card,
+    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, non_turn_failure=@non_turn_failure, action_checklist=@action_checklist, branch_auto_reset=@branch_auto_reset, branch_synced=@branch_synced, session_renamed=@session_renamed, child_merged=@child_merged, self_merge_watch=@self_merge_watch, session_report=@session_report, release_card=@release_card,
     spawned_session=@spawned_session, spawn_failed=@spawn_failed, agent_review=@agent_review, ai_review=@ai_review, user_review=@user_review, notice_id=@notice_id, agent_interface=@agent_interface, message_origin=@message_origin
   WHERE id = @id
 `;
@@ -575,6 +586,7 @@ export class ChatHistoryManager {
       issue_ref: msg.issueRef ? JSON.stringify(msg.issueRef) : null,
       compaction: msg.compaction ? JSON.stringify(msg.compaction) : null,
       sub_agent_consult: msg.subAgentConsult ? JSON.stringify(msg.subAgentConsult) : null,
+      non_turn_failure: msg.nonTurnFailure ? JSON.stringify(msg.nonTurnFailure) : null,
       action_checklist: msg.actionChecklist ? JSON.stringify(msg.actionChecklist) : null,
       branch_auto_reset: msg.branchAutoReset ? JSON.stringify(msg.branchAutoReset) : null,
       session_renamed: msg.sessionRenamed ? JSON.stringify(msg.sessionRenamed) : null,
@@ -625,6 +637,7 @@ export class ChatHistoryManager {
     if (row.issue_ref) msg.issueRef = JSON.parse(row.issue_ref) as IssueRefCard;
     if (row.compaction) msg.compaction = JSON.parse(row.compaction) as CompactionCard;
     if (row.sub_agent_consult) msg.subAgentConsult = JSON.parse(row.sub_agent_consult) as SubAgentConsultCard;
+    if (row.non_turn_failure) msg.nonTurnFailure = JSON.parse(row.non_turn_failure) as NonTurnFailureCard;
     if (row.action_checklist) msg.actionChecklist = JSON.parse(row.action_checklist) as ActionChecklistCard;
     if (row.branch_auto_reset) msg.branchAutoReset = JSON.parse(row.branch_auto_reset) as BranchAutoResetCard;
     if (row.session_renamed) msg.sessionRenamed = JSON.parse(row.session_renamed) as SessionRenamedCard;
@@ -943,6 +956,32 @@ export class ChatHistoryManager {
         const msg = this.fromRow(row);
         msg.subAgentConsult = { ...card, ...patch };
         if (opts?.finalize) msg.inProgress = false;
+        this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        return true;
+      }
+      return false;
+    })();
+  }
+
+  /**
+   * docs/252 phase 7 (req 9) — mark a persisted non-turn-failure notice as
+   * dismissed. Patches the row rather than deleting it, so the record of the
+   * failure outlives the user acknowledging it. Returns false when no row
+   * carries that `cardId` (a card from another session, or one already swept).
+   */
+  updateNonTurnFailureCard(
+    sessionId: string,
+    cardId: string,
+    patch: Partial<NonTurnFailureCard>,
+  ): boolean {
+    return this.db.transaction(() => {
+      const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
+      for (const row of rows) {
+        if (!row.non_turn_failure) continue;
+        const card = JSON.parse(row.non_turn_failure) as NonTurnFailureCard;
+        if (card.cardId !== cardId) continue;
+        const msg = this.fromRow(row);
+        msg.nonTurnFailure = { ...card, ...patch };
         this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
         return true;
       }

@@ -68,6 +68,7 @@ import type { EgressAllowlistStore } from "./egress-allowlist-store.js";
 import type { FileReviewStore } from "./review-store.js";
 import type { PresentStore } from "./present-store.js";
 import type { MarketplaceStore } from "./marketplace-store.js";
+import type { GenerateText } from "./non-turn-model.js";
 
 /**
  * Dependencies needed by API routes. A subset of AppDeps — only the
@@ -165,7 +166,7 @@ export interface ApiDeps {
   getSharedRepoDir: (repoUrl: string) => string;
   createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }>;
   // Phase 3 additions
-  generateText: (prompt: string, cwd: string) => Promise<string>;
+  generateText: GenerateText;
   sessionsRoot: string;
   /** Warm a session for a repo (called after clone, after graduation, etc.). */
   warmSessionForRepo?: (repoUrl: string) => Promise<void>;

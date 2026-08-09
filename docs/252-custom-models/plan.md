@@ -131,7 +131,7 @@ the design.
 | 4 | In-session switching | 4 | The picker acts mid-session, across services. |
 | 5 | Credential-failure policy | 12 | Correct behaviour when a credential dies. **Landed.** |
 | 6 | Usage, cost and attribution | 10, 11, 16 | You can *see* what you are running and where the money went. (Phase 3 records it.) |
-| 7 | Non-turn work | 9 | Naming and PR descriptions get their own model. |
+| 7 | Non-turn work | 9 | Naming and PR descriptions get their own model. **Landed.** |
 | 8 | Model retirement | 13 | Sessions survive a model leaving the catalogue. |
 | 9 | Harness install selection | 14 | Deployments choose their harnesses. **Landed.** |
 
@@ -1050,6 +1050,57 @@ empty string in containerized production — and the durable, dismissible failur
 
 The largest phase after the first, because it is the one place with no existing seam.
 
+**Phase 7 has landed.** The setting is `CredentialStore.nonTurnModel`; the resolver is
+`orchestrator/non-turn-model.ts` (req 9's derived default, the derived harness, the credential
+route and the spawn shaping); the runner is `orchestrator/services/non-turn-work.ts`, wired as
+the production `generateText` in `bootstrap-managers.ts`. `session-namer.ts` takes the resolved
+target instead of an `AgentId`, and the notice is a persisted `NonTurnFailureCard`. Settings →
+Services grew a **Background work** row (`BackgroundWorkSection.tsx`).
+
+**What phase 7 found.** Six things, and three of them change a claim this document made.
+
+- **The shaping rules had to leave `src/server/session/`.** Naming shells out to a CLI from
+  the **orchestrator**, which must not import that tree — the prod image omits it precisely to
+  keep the boundary honest. `applyServiceRouting` and `codexProviderArgs` moved to
+  `shared/spawn-routing.ts` and the two session-side modules re-export them. Sharing the
+  function rather than writing a second one is what stops a naming run from authenticating
+  differently from the turn it names; this document had not noticed the boundary at all.
+- **"Naming already runs a model, so it is parameter work" understated it by one field.** The
+  call took `(userText, agentId, credentialRoot)` and returned a string, so it could express
+  neither the model nor the shaping *nor the spend*. Recording the spend needed a second
+  change the design did not name: Claude Code's naming invocation moved from
+  `--output-format text` to `json`, whose envelope carries `usage` and `total_cost_usd`. The
+  parse is guarded — an unrecognized envelope degrades to reading stdout as text, which is
+  exactly the previous behaviour — because naming must not start failing to protect a metric.
+- **A row is written only when the harness reported telemetry.** Codex's `exec` reports none
+  through this path, and an all-zero row priced through the catalogue's rates says "this was
+  free", which is a *wrong* number rather than a missing one — the exact trap
+  `turn-attribution.ts`'s docstring is written around. The honest gap is logged instead. This
+  narrows the phase's "record it" answer: naming on Codex is recorded as nothing, not as $0.
+- **The notice needs two failure shapes, and only one of them names a service.** A pin the
+  install can no longer run names the service that went away; an install with **no** eligible
+  model anywhere names nothing, because no service failed — a notice there would fire on every
+  session of a half-configured install and be unactionable. `NonTurnResolution` splits them
+  (`pin_unavailable` vs `nothing_eligible`) and only the first raises a card.
+- **The setting is a fourth persisted model selection, and it strands on a retirement like the
+  other three.** Phase 1 enumerated three; this is the fourth. `resolveNonTurnModel` resolves a
+  retired pin through `retirementSuccessor` (req 13) at **read time** and does not write back —
+  unlike a session, nothing displays this selection as "what is running right now", so there is
+  no second precedence rule to keep honest and the user's pin stays what they typed.
+- **A PR generation with no live runner is reported, not resolved by booting a container.**
+  This document says the ordinary activation path covers it, and in practice it does — PR
+  creation is a user action on an active session, and the post-turn flow runs while the
+  container is up. Where it does not, the generator raises the notice and returns empty rather
+  than starting a container as a side effect of formatting prose. Stated because it is a
+  narrowing of "this is the ordinary activation path".
+
+**One shape carried over from the sub-agent path deliberately.** The usage row is written with
+`subAgentId` set to the **derived harness**. It is what the row is — a one-shot spawn of that
+harness rather than the pinned agent's turn — and it is what keeps the row out of the primary
+conversation's cumulative delta chain (`usage.record` keys that chain by
+`(session, subAgentId)`) and out of the context dial. Phase 6 splits by `(service, mode)` and
+is unaffected either way.
+
 **Phase 8 — Model retirement.** Per `(service, billing mode)`, a record of each retired model
 — its id, the styles it was declared under, and a successor per style (`RetiredModel`) —
 resolved where the session's model is read, generalizing the existing
@@ -1792,8 +1843,10 @@ For a pull request created outside a turn, from a session whose container is gon
 ordinary activation path: ShipIt starts a session's container for user actions, and creating a
 PR is one.
 
-Session naming is unaffected — it already runs a CLI (`session-namer.ts:28`) and only needs
-the resolved triple threaded through.
+Session naming is *almost* unaffected — it already runs a CLI (`session-namer.ts`) and mostly
+needs the resolved triple threaded through. The one thing that shape hid is the spend: it
+returned a string, so recording what a metered naming run cost also meant asking the CLI for
+its telemetry. See the phase-7 notes above.
 
 **Non-turn work spends money, and nothing records it.** This phase makes both halves
 user-configurable onto an arbitrary service and billing mode — which means a user can point
@@ -2108,8 +2161,13 @@ is key-authenticated.
 | `orchestrator/service-routing.ts` | The resolver: configured credentials, per-mode turn routing (including which of a subscription's string credentials), the spawn identity. Phase 7's second caller |
 | `orchestrator/credential-failure-policy.ts` | req 12's branch — `sub` fails over, `key` stops — asked by every gate so it cannot be drawn twice |
 | `orchestrator/turn-attribution.ts` | The `cost_usd` rule, shared by both usage writers |
-| `session/agents/codex/spawn-shaping.ts` | Codex's `model_providers` block — the only way to redirect that CLI |
-| `orchestrator/session-namer.ts` | Non-turn spawn with no service seam (req 9) |
+| `shared/spawn-routing.ts` | The two shaping rules — `applyServiceRouting`, `codexProviderArgs` — on the shared side of the container boundary, so the orchestrator's own CLI shell-out uses the same source a turn does |
+| `session/agents/codex/spawn-shaping.ts` | Codex's `model_providers` block — the only way to redirect that CLI. Re-exports `shared/spawn-routing.ts` |
+| `orchestrator/non-turn-model.ts` | Req 9's resolver: the pinned or derived selection, the derived harness, its route and shaping |
+| `orchestrator/services/non-turn-work.ts` | Runs it: the brokered generation, the usage row, and the durable failure notice |
+| `orchestrator/session-namer.ts` | Naming's CLI shell-out, now pointed at the resolved selection and reporting its telemetry (req 9) |
+| `client/components/Settings/BackgroundWorkSection.tsx` | The visible setting (req 9), with the derived default labelled and the harness shown as a fact |
+| `client/components/NonTurnFailureCard.tsx` | The dismissible notice; dismissal is state on the persisted row, never its removal |
 
 ## Appendix A — findings from the spike
 

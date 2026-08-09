@@ -475,6 +475,11 @@ export async function handleSendMessage(
           // docs/150 — AI naming runs on the account a turn would use.
           ...(ctx.providerAccountManager ? { providerAccountManager: ctx.providerAccountManager } : {}),
           ...(ctx.credentialsDir ? { credentialsDir: ctx.credentialsDir } : {}),
+          // docs/252 phase 7 (req 9) — naming's own model, its usage row, and
+          // the durable failure notice.
+          credentialStore: ctx.credentialStore,
+          chatHistoryManager: ctx.chatHistoryManager,
+          usageManager: ctx.usageManager,
         },
         {
           sessionId: effectiveSessionId,

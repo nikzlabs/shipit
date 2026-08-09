@@ -60,6 +60,11 @@ export async function registerSessionSpawnRoutes(
     // singleton root (which aliases to the migrated default account).
     providerAccountManager: deps.providerAccountManager,
     ...(deps.credentialsDir ? { credentialsDir: deps.credentialsDir } : {}),
+    // docs/252 phase 7 (req 9) — naming runs on the model chosen for non-turn
+    // work, records what it spent, and surfaces a durable notice when it fails.
+    credentialStore: deps.credentialStore,
+    chatHistoryManager: deps.chatHistoryManager,
+    usageManager: deps.usageManager,
   };
 
   // Single shared claim service for every surface that mints a repo-backed

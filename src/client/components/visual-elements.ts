@@ -77,6 +77,7 @@ export const CARD_MESSAGE_FIELDS = [
   "childMerged",
   "selfMergeWatch",
   "sessionReport",
+  "nonTurnFailure",
 ] as const satisfies readonly (keyof ChatMessage)[];
 
 /**

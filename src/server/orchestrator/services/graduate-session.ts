@@ -39,13 +39,21 @@ import type { RepoStore } from "../repo-store.js";
 import type { GitManager } from "../../shared/git.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { AgentId } from "../../shared/types.js";
-import { generateSessionName, type SessionName } from "../session-namer.js";
+import { generateSessionName, type SessionNameResult } from "../session-namer.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import { providerAccountCredentialRoot } from "../provider-account-manager.js";
 import { getErrorMessage } from "../validation.js";
 import { isTitleLockedAgainst } from "./session-title.js";
 import { nativeServiceForHarness, selectionExists } from "../../shared/catalogue/index.js";
 import type { BillingMode } from "../../shared/catalogue/index.js";
+import { resolveNonTurnModel } from "../non-turn-model.js";
+import {
+  emitNonTurnFailure,
+  recordNonTurnUsage,
+  type NonTurnFailurePersister,
+} from "./non-turn-work.js";
+import type { CredentialStore } from "../credential-store.js";
+import type { UsageManager } from "../usage.js";
 
 export interface GraduateSessionDeps {
   sessionManager: SessionManager;
@@ -75,6 +83,21 @@ export interface GraduateSessionDeps {
    */
   providerAccountManager?: ProviderAccountManager;
   credentialsDir?: string;
+  /**
+   * docs/252 phase 7 (req 9) — where naming's `(service, billing mode, model)`
+   * setting is read from. Without it naming falls back to the pre-feature
+   * behaviour: the session's own harness, its own credential root, and no model
+   * at all. Optional so minimal setups (tests, local mode) keep working.
+   */
+  credentialStore?: CredentialStore;
+  /**
+   * docs/252 phase 7 — where the failure notice is persisted. Required for the
+   * notice to survive a reload, which req 9 is explicit about; a setup without
+   * it logs the failure and keeps the placeholder title, exactly as before.
+   */
+  chatHistoryManager?: NonTurnFailurePersister;
+  /** docs/252 phase 7 — naming's own usage row (req 16). */
+  usageManager?: UsageManager;
 }
 
 export interface GraduateSessionOpts {
@@ -158,6 +181,7 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
   const {
     sessionManager, runnerRegistry, repoStore, createGitManager, prStatusPoller, sseBroadcast,
     ensureAgentTokenFresh, providerAccountManager, credentialsDir,
+    credentialStore, chatHistoryManager, usageManager,
   } = deps;
   const { sessionId, userText, agentId, explicitTitle, explicitBranch, skipBranchRename, model, serviceId, billingMode, reasoning, parentSessionId, spawnedByTurn, rootSessionId } = opts;
 
@@ -208,6 +232,9 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
         ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
         ...(providerAccountManager ? { providerAccountManager } : {}),
         ...(credentialsDir ? { credentialsDir } : {}),
+        ...(credentialStore ? { credentialStore } : {}),
+        ...(chatHistoryManager ? { chatHistoryManager } : {}),
+        ...(usageManager ? { usageManager } : {}),
       },
       { sessionId, userText, agentId, skipBranchRename: skipBranchRename ?? false },
     );
@@ -248,6 +275,10 @@ interface ScheduleSessionNamingDeps {
    */
   providerAccountManager?: ProviderAccountManager;
   credentialsDir?: string;
+  /** docs/252 phase 7 (req 9) — see {@link GraduateSessionDeps}. */
+  credentialStore?: CredentialStore;
+  chatHistoryManager?: NonTurnFailurePersister;
+  usageManager?: UsageManager;
 }
 
 interface ScheduleSessionNamingOpts {
@@ -267,18 +298,76 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
   const {
     sessionManager, runnerRegistry, createGitManager, prStatusPoller, sseBroadcast,
     ensureAgentTokenFresh, providerAccountManager, credentialsDir,
+    credentialStore, chatHistoryManager, usageManager,
   } = deps;
   const { sessionId, userText, agentId, skipBranchRename } = opts;
 
-  // docs/150 — naming is a real provider call, so it runs on a real account:
-  // the same route a turn for this agent would pick. A reserved route
+  // docs/252 phase 7 (req 9) — naming runs on the model chosen FOR non-turn
+  // work, not on the session's. That independence is the whole requirement: the
+  // incident behind it was a lapsed Claude subscription breaking naming for a
+  // user who had already moved to Codex, and following the session's model
+  // would have left the same implicit dependency in place, merely pointed
+  // elsewhere. The harness is derived from that selection (`non-turn-model.ts`),
+  // so `agentId` — the SESSION's harness — no longer decides what naming spawns.
+  const resolution = credentialStore
+    ? resolveNonTurnModel({
+        credentialStore,
+        ...(providerAccountManager ? { providerAccountManager } : {}),
+      })
+    : undefined;
+  const target = resolution?.ok ? resolution.target : undefined;
+  // With no credential store wired (tests, minimal local setups) naming keeps
+  // its pre-feature shape exactly: the session's harness, its own account root,
+  // no model, no shaping.
+  const namingHarness = target?.harnessId ?? agentId;
+
+  // docs/150 — naming is a real provider call, so it runs on a real account.
+  // The route now comes from the resolved selection rather than from a
+  // per-`AgentId` question, so a naming call on a custom service resolves that
+  // service's credential instead of the harness vendor's. A reserved route
   // (API key / env OAuth) has no account root, so `undefined` keeps the
   // singleton path, which is what those routes legitimately use.
-  const namingRoute = providerAccountManager?.selectRouteForTurn(agentId) ?? null;
+  const namingRoute = target
+    ? target.route
+    : (providerAccountManager?.selectRouteForTurn(agentId) ?? null);
   const namingAccountId = namingRoute?.kind === "account" ? namingRoute.id : undefined;
   const namingCredentialRoot = namingAccountId && credentialsDir
-    ? providerAccountCredentialRoot(credentialsDir, agentId, namingAccountId)
+    ? providerAccountCredentialRoot(credentialsDir, namingHarness, namingAccountId)
     : undefined;
+
+  /**
+   * req 9's notice: the operation completed with its fallback (the placeholder
+   * title), and the user is told which service failed. Persisted through
+   * `emitChatCard`, because naming is fire-and-forget — it routinely finishes
+   * with the user on another session — so a transient message would be silent
+   * in exactly the case this exists for.
+   */
+  const reportNamingFailure = (detail: string | undefined): void => {
+    if (!chatHistoryManager) return;
+    if (resolution && !resolution.ok) {
+      if (resolution.reason === "nothing_eligible") return;
+      emitNonTurnFailure(
+        { getRunnerRegistry: () => runnerRegistry, chatHistoryManager },
+        {
+          sessionId,
+          purpose: "session-naming",
+          unavailable: {
+            serviceName: resolution.serviceName,
+            serviceId: resolution.selection.serviceId,
+            billingMode: resolution.selection.billingMode,
+            modelId: resolution.selection.modelId,
+          },
+          detail: "The chosen model is no longer available — its credential or harness is gone.",
+        },
+      );
+      return;
+    }
+    if (!target) return; // pre-feature path: no selection to report a failure of
+    emitNonTurnFailure(
+      { getRunnerRegistry: () => runnerRegistry, chatHistoryManager },
+      { sessionId, purpose: "session-naming", target, detail },
+    );
+  };
 
   const finalizeBranchRenamed = async (): Promise<void> => {
     try {
@@ -316,24 +405,49 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
   // AI naming doesn't silently 401 in the stale-token window. A no-op for a
   // healthy token; best-effort (a failed heal just falls through to the CLI,
   // which returns null → placeholder title sticks, exactly as before).
-  const nameAfterHeal = async (): Promise<SessionName | null> => {
+  const nameAfterHeal = async (): Promise<SessionNameResult> => {
+    if (resolution && !resolution.ok) {
+      // Nothing runnable — do not spawn anything, and let the caller's `null`
+      // branch keep the placeholder title. The notice is raised there.
+      return { name: null };
+    }
     if (ensureAgentTokenFresh) {
       try {
         // docs/150 — heal the account naming will actually use. Provider-wide,
         // this refreshes every connected account and aggregates with `every()`,
         // so an unrelated revoked account both wastes a refresh and reports
         // failure for a token that was fine.
-        await ensureAgentTokenFresh(agentId, namingAccountId);
+        await ensureAgentTokenFresh(namingHarness, namingAccountId);
       } catch {
         // Best-effort — never block naming on a heal failure.
       }
     }
-    return generateSessionName(userText, agentId, namingCredentialRoot);
+    const result = await generateSessionName(userText, {
+      harnessId: namingHarness,
+      ...(target?.selection.modelId ? { model: target.selection.modelId } : {}),
+      ...(target?.serviceRouting ? { serviceRouting: target.serviceRouting } : {}),
+      ...(target?.credentialSecret ? { credentialSecret: target.credentialSecret } : {}),
+      ...(namingCredentialRoot ? { credentialRoot: namingCredentialRoot } : {}),
+    });
+    // req 16 — naming can now be pointed at a metered service, so what it spent
+    // gets a row of its own rather than disappearing. Recorded whether or not
+    // the title parsed: the tokens were consumed either way.
+    if (target && result.usage) {
+      recordNonTurnUsage(
+        { ...(usageManager ? { usageManager } : {}) },
+        { sessionId, target, purpose: "session-naming", telemetry: result.usage },
+      );
+    }
+    return result;
   };
 
   // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget session naming
-  nameAfterHeal().then(async (nameResult) => {
+  nameAfterHeal().then(async (result) => {
+    const nameResult = result.name;
     if (!nameResult) {
+      // req 9 — the operation completes with its fallback (the placeholder
+      // title stays) AND the user is told. Both halves, in that order.
+      reportNamingFailure(result.failure);
       await finalizeBranchRenamed();
       return;
     }
@@ -376,6 +490,7 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
     }
   }).catch(async (err: unknown) => {
     console.warn("[graduate-session] Session naming failed:", err);
+    reportNamingFailure(getErrorMessage(err));
     await finalizeBranchRenamed();
   });
 }

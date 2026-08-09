@@ -651,3 +651,48 @@ export interface RepoInfo {
    */
   colorIndex?: number;
 }
+
+/**
+ * docs/252 phase 7 (req 9) — payload for the inline notice shown when the work
+ * ShipIt does OUTSIDE a turn fails: naming a session, writing a pull-request
+ * description.
+ *
+ * Two properties the requirement fixes and neither is optional:
+ *
+ *  - **Durable.** Session naming is fire-and-forget — it can finish while the
+ *    user is looking at another session, or with no viewer attached at all — so
+ *    a toast would be silent in exactly the case req 9 exists to prevent. It is
+ *    transcript content, persisted through `emitChatCard` like every other card.
+ *  - **Dismissed is STATE on the row, not the absence of one.** Deleting the
+ *    row on dismissal would make "I read this" and "it never happened"
+ *    indistinguishable on the next reload, and would take the record of a
+ *    recurring failure with it.
+ *
+ * The card names the *service*, because that is what req 9 says failed and what
+ * the user can act on; the model and mode ride along so a user holding one
+ * service under two billing modes can tell which one broke.
+ */
+export interface NonTurnFailureCard {
+  /** Server-generated stable id — the dismissal target and the append-idempotency key. */
+  cardId: string;
+  /** Which piece of non-turn work failed. */
+  purpose: "session-naming" | "pr-description";
+  /**
+   * The service the work was pointed at, or absent when nothing was runnable at
+   * all — an install with no credentials has no service to blame, and saying so
+   * beats naming one at random.
+   */
+  serviceId?: string;
+  serviceName?: string;
+  billingMode?: "sub" | "key";
+  modelId?: string;
+  /** True when the selection came from the user's own pin rather than the derived default. */
+  pinned?: boolean;
+  /** What ShipIt did instead — the fallback the surrounding operation completed with. */
+  fallback: string;
+  /** Short failure detail, when the runner gave one. Never a stack trace. */
+  detail?: string;
+  createdAt: string;
+  /** Set once the user dismisses it. The row stays; only this flips. */
+  dismissedAt?: string;
+}

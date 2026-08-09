@@ -8,14 +8,16 @@ import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
 import type { AccountSelectionMode, AgentId, FailoverCutoffs, ProviderAccount, SubAgentDefaultsPatch } from "../../shared/types.js";
 import { credentialModeKey, DEFAULT_FAILOVER_CUTOFF, DEFAULT_SELECTION_MODE, parseCredentialModeKey } from "../../shared/types.js";
-import { allServices, credentialModeForStorageEnv, getMode, getService } from "../../shared/catalogue/index.js";
+import { allServices, credentialModeForStorageEnv, getMode, getModel, getService } from "../../shared/catalogue/index.js";
+import { harnessForNonTurnSelection, resolveNonTurnModel } from "../non-turn-model.js";
+import { listConfiguredCredentials } from "../service-routing.js";
 import { listCredentialRoutes, upsertSingleStringCredential } from "./credential-routes.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
 import { getGitIdentity, setGitIdentity as writeGitIdentity } from "../git-config.js";
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
 import { readGlobalSystemPrompt, writeGlobalSystemPrompt } from "../global-system-prompt.js";
 import { ServiceError } from "./types.js";
-import type { AgentInfo, GlobalSettings } from "./types.js";
+import type { AgentInfo, GlobalSettings, NonTurnModelResolved, NonTurnModelSelection } from "./types.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
@@ -241,7 +243,32 @@ export async function getGlobalSettings(
   // docs/252 phase 2 — every credential the user holds, in selection order per
   // group. Safe to return verbatim: `CredentialRoute` carries no secret.
   const credentialRoutes = credentialStore ? listCredentialRoutes(credentialStore) : [];
-  return { canRunTurns, harnessOnboardingCompletedAt, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts, credentialRoutes };
+  // docs/252 phase 7 (req 9) — the pin AND what it resolves to. Both, because
+  // they are different facts: the setting is visibly unset until the user picks
+  // something, and what runs today is what the resolver says now.
+  const nonTurnModel = credentialStore?.getNonTurnModel();
+  const nonTurnResolution = credentialStore
+    ? resolveNonTurnModel({
+        credentialStore,
+        ...(providerAccountManager ? { providerAccountManager } : {}),
+      })
+    : undefined;
+  const nonTurnModelResolved: NonTurnModelResolved | undefined =
+    nonTurnResolution?.ok
+      ? {
+          serviceId: nonTurnResolution.target.selection.serviceId,
+          billingMode: nonTurnResolution.target.selection.billingMode,
+          modelId: nonTurnResolution.target.selection.modelId,
+          serviceName: nonTurnResolution.target.serviceName,
+          label: getModel(nonTurnResolution.target.selection)?.label
+            ?? nonTurnResolution.target.selection.modelId,
+          harnessId: nonTurnResolution.target.harnessId,
+          source: nonTurnResolution.target.source,
+        }
+      : undefined;
+  return { canRunTurns, harnessOnboardingCompletedAt, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts, credentialRoutes,
+    ...(nonTurnModel ? { nonTurnModel } : {}),
+    ...(nonTurnModelResolved ? { nonTurnModelResolved } : {}) };
 }
 
 // ---- Mutation operations ----
@@ -313,6 +340,15 @@ export interface SaveGlobalSettingsOptions {
   accountSelectionMode?: Record<string, AccountSelectionMode>;
   /** docs/163 — voice-note delivery mode (native / external / both). */
   voiceDeliveryMode?: VoiceDeliveryMode;
+  /**
+   * docs/252 phase 7 (req 9) — pin non-turn work to a `(service, billing mode,
+   * model)` triple, or `null` to clear the pin and follow the install again.
+   *
+   * A whole triple rather than a bare id, for the reason every other selection
+   * in this feature is: the same model id is reachable through two services and
+   * two modes at different prices, so an id alone cannot say who is billed.
+   */
+  nonTurnModel?: NonTurnModelSelection | null;
 }
 
 export async function saveGlobalSettings(
@@ -324,7 +360,7 @@ export async function saveGlobalSettings(
     gitIdentity, systemPrompt, maxIdleContainers,
     agentSystemInstructionsEnabled, autoCreatePr, liveSteering,
     autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode,
-    failoverCutoffs, accountSelectionMode,
+    failoverCutoffs, accountSelectionMode, nonTurnModel,
   } = opts;
 
   // Save git identity if provided
@@ -445,6 +481,29 @@ export async function saveGlobalSettings(
           chosen ? { serviceId: chosen.serviceId, billingMode: chosen.billingMode } : undefined,
         );
       }
+    }
+  }
+
+  // docs/252 phase 7 (req 9) — pin (or unpin) the model non-turn work runs on.
+  // Validated against ELIGIBILITY, not merely against the catalogue: a triple
+  // whose mode has no credential, or whose model no installed harness offers,
+  // would be a pin that fails on every session and fires the notice each time —
+  // and the UI only ever offers eligible rows, so this guards API misuse.
+  if (nonTurnModel !== undefined) {
+    if (nonTurnModel === null) {
+      credentialStore.setNonTurnModel(null);
+    } else {
+      const runnable = harnessForNonTurnSelection(
+        nonTurnModel,
+        listConfiguredCredentials(credentialStore),
+      );
+      if (!runnable) {
+        throw new ServiceError(
+          400,
+          `No installed harness can run ${nonTurnModel.serviceId}/${nonTurnModel.billingMode}/${nonTurnModel.modelId} with the credentials configured`,
+        );
+      }
+      credentialStore.setNonTurnModel(nonTurnModel);
     }
   }
 

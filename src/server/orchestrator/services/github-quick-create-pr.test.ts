@@ -84,3 +84,62 @@ describe("quickCreatePr (docs/202 re-arm overrides)", () => {
     expect(result.baseBranch).toBe("main");
   });
 });
+
+/**
+ * docs/252 phase 7 (req 9) — a failed or unavailable generation must yield the
+ * generic description, not an empty one.
+ *
+ * This was the actual production behaviour before phase 7 and it was invisible:
+ * the orchestrator has no resident agent, so the default text generator
+ * returned `""`, the generic prose lived only in the `catch`, and every
+ * containerized pull request got an empty body with nothing anywhere saying
+ * why. The requirement calls this half a *change*, so both paths — a rejection
+ * and a blank success — are pinned separately.
+ */
+describe("quickCreatePr description fallback (docs/252 req 9)", () => {
+  it("falls back to the generic description when generation returns nothing", async () => {
+    const git = makeGit();
+    const github = makeGitHub();
+
+    await quickCreatePr(
+      git, github, chatHistory, async () => "",
+      "s1", "Title", "/ws/s1", REMOTE,
+    );
+
+    const body = (github.createPullRequest as unknown as ReturnType<typeof vi.fn>)
+      .mock.calls[0][0].body as string;
+    expect(body).toContain("## Summary");
+    expect(body).toContain("c1");
+  });
+
+  it("falls back to the generic description when generation throws", async () => {
+    const git = makeGit();
+    const github = makeGitHub();
+
+    await quickCreatePr(
+      git, github, chatHistory, async () => { throw new Error("boom"); },
+      "s1", "Title", "/ws/s1", REMOTE,
+    );
+
+    const body = (github.createPullRequest as unknown as ReturnType<typeof vi.fn>)
+      .mock.calls[0][0].body as string;
+    expect(body).toContain("## Summary");
+  });
+
+  it("passes the session id and purpose so the generation is routed and attributed", async () => {
+    const git = makeGit();
+    const github = makeGitHub();
+    const generate = vi.fn(async () => "## Summary\nbody");
+
+    await quickCreatePr(
+      git, github, chatHistory, generate,
+      "s1", "Title", "/ws/s1", REMOTE,
+    );
+
+    expect(generate).toHaveBeenCalledWith(
+      expect.any(String),
+      "/ws/s1",
+      { sessionId: "s1", purpose: "pr-description" },
+    );
+  });
+});
