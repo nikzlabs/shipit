@@ -45,6 +45,11 @@ export const handleModelSelectionChanged: Handler<WsModelSelectionChanged> = (_c
         : s,
     ),
   );
+  // The server has answered. Say so unconditionally — the composer's optimistic
+  // pick has to be dropped whether the answer was "yes" or "no", and a REFUSED
+  // pick leaves the session row exactly as it was, so "the row now matches"
+  // cannot be the signal.
+  session.bumpModelSelectionEcho(data.sessionId);
   if (data.notice && session.sessionId === data.sessionId) {
     useUiStore.getState().setToast({ message: data.notice, duration: 6000 });
   }

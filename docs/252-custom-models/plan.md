@@ -911,10 +911,12 @@ keyed on the model id after the id stopped identifying anything.**
 Two things phase 4 deliberately did **not** change. The confirmation is **per-connection**,
 like the sibling `error`, rather than broadcast through the runner: `emitMessage` buffers into
 the turn-event log, and replaying a stale selection to a reconnecting viewer would clobber a
-newer one. Other viewers converge on their next session-list refresh, exactly as before. And
-the composer's model control stays **disabled while a turn runs**, so a mid-turn switch is not
-reachable from the UI; the turn-start capture of the usage attribution
-(`agent-listeners.ts`) already covers the paths where it is.
+newer one. Other viewers' *pickers* therefore stay stale until their next session-list refresh,
+exactly as before — what is no longer true is that a stale picker could affect a **turn**, and
+that is the half that mattered (see the review findings below). And the composer's model
+control stays **disabled while a turn runs**, so a mid-turn switch is not reachable from the
+UI; the turn-start capture of the usage attribution (`agent-listeners.ts`) already covers the
+paths where it is.
 
 **The third persisted selection caught up here too.** The sub-agent defaults picker was the
 last surface still speaking bare model ids — phase 3 narrowed its *list* to what the install
@@ -925,6 +927,47 @@ the harness's eligible set rather than trusting. An **empty** eligible set still
 credential source is wired" (a worker, a unit test), not "nothing is eligible" — that is what
 `capabilities.models` itself falls back to, so the check follows it rather than refusing every
 write.
+
+**What the cross-backend review changed.** Codex reviewed the branch under CLAUDE.md's rule
+and returned six findings; all six held up and all six are fixed. Two are worth reading
+together, because the phase created one of them by fixing the other: **refusing a request is
+only half a decision — the other half is what the client is then left showing.**
+
+- **A refused pick stayed on screen forever.** The composer clears its optimistic pick when
+  the session row catches up with it — and a refusal leaves the row *exactly* as it was, so
+  that signal never fires. Because a cross-service pick keeps the model id, nothing else on
+  screen moves either: the trigger and the checkmark claimed a service the session was not on
+  for as long as the tab stayed open, while every turn ran on the old one. Introduced by the
+  refusal rule itself. The fix is a per-session **"the server answered" counter** rather than
+  a match test, because it is true of both outcomes.
+- **The refusal was reported as an `error`, whose handler appends an assistant bubble nothing
+  persists** — transcript content that vanishes on reload, which CLAUDE.md rules out. It is
+  now a `notice` on `model_selection_changed`, which also carries the authoritative selection
+  the picker has to snap back to. One message answers both halves.
+- **A stale second viewer could run the wrong model against the right service.**
+  `getSelectedModel` is per-*connection* while the service, mode and credential are read from
+  the session *row*, so with two tabs open a switch in A left B's closure holding the previous
+  model — and a turn sent from B spawned model X at service Y's endpoint. Worse, the resident
+  process was then stamped with Y's identity (`turn-executor.ts` derives it from the row), so
+  the guard believed a process spawned with X was an X-and-Y process and a later switch *back*
+  reused it. `buildAgentRunParams` and the usage-attribution capture now read the row first,
+  which makes the model and the shaping one source instead of two. This is the same
+  "two derivations of the same tuple" failure phase 3 named for the spawn identity, one layer
+  up.
+- **Refusal was not atomic.** `set_model` self-heals a cross-harness pick by switching the
+  harness *first*, and the triple was verified after that — so a refused request had already
+  moved the session to the other harness and reset its reasoning. The handler now resolves the
+  harness that *would* run the model, verifies, and only then writes.
+- **Half a triple was read as no triple.** `serviceId` and `billingMode` are independently
+  optional on the wire, and "one missing" fell into the legacy bare-id path — discarding the
+  field that *was* sent and re-resolving the id, which is the same mis-billing arriving through
+  a malformed request instead of a stale one. Only *neither* field is the legacy shape; exactly
+  one is refused, on both this path and the sub-agent one.
+- **Two tests did not guard what their names claimed.** "Drops the optimistic pick" asserted
+  the same pill before and after a *matching* confirmation, so it passed whether or not the
+  pick was ever cleared. It now moves the row somewhere a surviving pick would mask. The
+  suite docstring also says plainly which of its cases pin phase 3's mechanism rather than
+  phase 4's.
 
 **Phase 5 — Credential-failure policy.** Branch on the **billing mode** of the failing
 selection rather than on the error text, and never on how its credential is delivered. Two gates, not one: the auth-error

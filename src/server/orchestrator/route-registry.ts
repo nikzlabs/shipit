@@ -4,6 +4,7 @@ import { applyModelRetirement } from "./model-retirement.js";
 import {
   conformSelectionToAgent,
   describeSelectionMove,
+  modelSelectionFrom,
   selectionFrom,
   verifyExplicitSelection,
 } from "./model-switch.js";
@@ -684,9 +685,15 @@ export async function registerRoutes(
        * on their next session-list refresh, unchanged from before.
        */
       const sendSelectionChanged = (agentId: AgentId, notice?: string): void => {
-        if (!activeAppSessionId) return;
-        const session = sessionManager.get(activeAppSessionId);
-        if (!session) return;
+        const session = activeAppSessionId ? sessionManager.get(activeAppSessionId) : undefined;
+        // No session row to report on — nothing was persisted, so there is no
+        // authoritative selection to converge the picker onto. A notice still
+        // has to reach the user rather than being swallowed, so it degrades to
+        // the plain error path.
+        if (!activeAppSessionId || !session) {
+          if (notice) send({ type: "error", message: notice });
+          return;
+        }
         const selection = selectionFrom(session);
         send({
           type: "model_selection_changed",
@@ -1348,59 +1355,20 @@ export async function registerRoutes(
           case "set_model": {
             const currentAgentId = ctx.getActiveAgentId();
             const activeAgent = agentRegistry.get(currentAgentId);
-            if (activeAgent && !activeAgent.capabilities.models.includes(msg.model)) {
-              // The model isn't in the current agent's lineup. The grouped
-              // model picker switches agent + model together by firing
-              // `set_agent` then `set_model`, so this fires whenever the user
-              // crosses an agent boundary (e.g. Codex → Opus). Rather than
-              // depend on `set_agent` having already landed — which it may not
-              // have, if its auth/install guard bailed or the two messages
-              // raced — make `set_model` self-healing: if an installed+authed
-              // agent owns this model, switch to it here. Only error when no
-              // available agent can run the model.
-              const owner = agentRegistry.available().find(
-                (a) => a.capabilities.models.includes(msg.model),
-              );
-              if (!owner) {
-                send({ type: "error", message: `Model "${msg.model}" is not available for ${activeAgent.name}` });
-                return;
-              }
-              if (owner.id !== currentAgentId) {
-                // docs/138 — after the session has taken its first turn the
-                // agent is pinned for life (per-agent credential isolation).
-                // The model can still move freely within the pinned agent's
-                // lineup, but a cross-agent model is rejected here rather
-                // than triggering the silent auto-switch the unpinned flow
-                // uses. The UI mirrors this by greying out cross-agent rows
-                // in the picker; this branch is the authoritative guard.
-                if (activeAppSessionId) {
-                  const pinnedSession = sessionManager.get(activeAppSessionId);
-                  if (pinnedSession?.agentPinned) {
-                    send({
-                      type: "error",
-                      message: `This session is locked to ${activeAgent.name}. Model "${msg.model}" requires ${owner.name}, which can't be selected after the first message. Switch models within ${activeAgent.name} instead.`,
-                    });
-                    return;
-                  }
-                }
-                ctx.setActiveAgentId(owner.id);
-                if (activeAppSessionId) {
-                  sessionManager.setAgentId(activeAppSessionId, owner.id);
-                }
-                // docs/217 — `set_model` can cross an agent boundary on its own
-                // (the picker fires set_agent + set_model, but they can race or
-                // set_agent's guard can bail, and QuickCapture sends set_model
-                // alone). Reasoning is per-agent, so self-heal it here too —
-                // otherwise a stale Claude `max` could ride a Codex spawn as
-                // `-c model_reasoning_effort=max`. Mirrors the set_agent path.
-                const currentReasoning = ctx.getSelectedReasoning();
-                if (currentReasoning && !owner.capabilities.reasoning?.options.some((o) => o.value === currentReasoning)) {
-                  ctx.setSelectedReasoning(undefined);
-                  if (activeAppSessionId) {
-                    sessionManager.setReasoning(activeAppSessionId, null);
-                  }
-                }
-              }
+            // docs/252 phase 4 — **decide everything before mutating anything.**
+            // This handler can self-switch the harness (below), and cross-backend
+            // review found the refusal downstream of that: a request refused for
+            // its triple had already moved the session to the other harness and
+            // reset its reasoning, so "refused" left the session changed in two
+            // ways the user did not ask for. Resolve the harness that WOULD run
+            // this model first, verify against it, and only then write.
+            const modelOwner =
+              activeAgent && !activeAgent.capabilities.models.includes(msg.model)
+                ? agentRegistry.available().find((a) => a.capabilities.models.includes(msg.model))
+                : activeAgent;
+            if (activeAgent && !modelOwner) {
+              send({ type: "error", message: `Model "${msg.model}" is not available for ${activeAgent.name}` });
+              return;
             }
             // docs/252 — persist the SELECTION, not just the model id: a bare id
             // cannot say which service is billing the turn (req 11), because the
@@ -1412,20 +1380,67 @@ export async function registerRoutes(
             // triple was not eligible, which silently landed the session on
             // whichever *other* service offers the same id — the user picks
             // Vercel, has no Vercel key, and gets billed to OpenRouter. The
-            // fall-through survives only for a client that sent no triple at all
-            // (an older browser, Quick Capture), where a bare id is all there is.
-            // See `model-switch.ts`.
-            const explicit =
-              msg.serviceId && msg.billingMode
-                ? { serviceId: msg.serviceId, billingMode: msg.billingMode, modelId: msg.model }
-                : undefined;
+            // fall-through survives only for a client that sent NEITHER field (an
+            // older browser, Quick Capture), where a bare id is all there is;
+            // exactly one field is an incoherent request, not a legacy one, and
+            // `modelSelectionFrom` refuses it rather than dropping the half it
+            // was given. See `model-switch.ts`.
             const verdict = verifyExplicitSelection(
-              agentRegistry.get(ctx.getActiveAgentId()),
-              explicit,
+              modelOwner,
+              modelSelectionFrom(msg.model, msg.serviceId, msg.billingMode),
             );
             if (verdict && !verdict.ok) {
-              send({ type: "error", message: verdict.message });
+              // Reported as a notice on the authoritative selection, not as an
+              // `error`: the session did not change, so the picker has to be told
+              // to drop its optimistic pick — and an `error` renders an assistant
+              // bubble that is never persisted, which is transcript content that
+              // vanishes on reload.
+              sendSelectionChanged(ctx.getActiveAgentId(), verdict.message);
               return;
+            }
+            if (activeAgent && modelOwner && modelOwner.id !== currentAgentId) {
+              // The model isn't in the current agent's lineup. The picker
+              // switches harness + model together by firing `set_agent` then
+              // `set_model`, so this fires whenever the user crosses a harness
+              // boundary (e.g. Codex → Opus). Rather than depend on `set_agent`
+              // having already landed — which it may not have, if its
+              // auth/install guard bailed or the two messages raced — make
+              // `set_model` self-healing and switch to the owner here.
+              //
+              // docs/138 — after the session has taken its first turn the agent
+              // is pinned for life (per-agent credential isolation). The model
+              // can still move freely within the pinned agent's lineup, but a
+              // cross-agent model is rejected here rather than triggering the
+              // silent auto-switch the unpinned flow uses. The UI mirrors this
+              // by hiding cross-harness rows; this branch is the authoritative
+              // guard.
+              if (activeAppSessionId) {
+                const pinnedSession = sessionManager.get(activeAppSessionId);
+                if (pinnedSession?.agentPinned) {
+                  send({
+                    type: "error",
+                    message: `This session is locked to ${activeAgent.name}. Model "${msg.model}" requires ${modelOwner.name}, which can't be selected after the first message. Switch models within ${activeAgent.name} instead.`,
+                  });
+                  return;
+                }
+              }
+              ctx.setActiveAgentId(modelOwner.id);
+              if (activeAppSessionId) {
+                sessionManager.setAgentId(activeAppSessionId, modelOwner.id);
+              }
+              // docs/217 — `set_model` can cross an agent boundary on its own
+              // (the picker fires set_agent + set_model, but they can race or
+              // set_agent's guard can bail, and QuickCapture sends set_model
+              // alone). Reasoning is per-agent, so self-heal it here too —
+              // otherwise a stale Claude `max` could ride a Codex spawn as
+              // `-c model_reasoning_effort=max`. Mirrors the set_agent path.
+              const currentReasoning = ctx.getSelectedReasoning();
+              if (currentReasoning && !modelOwner.capabilities.reasoning?.options.some((o) => o.value === currentReasoning)) {
+                ctx.setSelectedReasoning(undefined);
+                if (activeAppSessionId) {
+                  sessionManager.setReasoning(activeAppSessionId, null);
+                }
+              }
             }
             ctx.setSelectedModel(msg.model);
             // Persist to session metadata so it survives reconnects and warm pool.

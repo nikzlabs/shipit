@@ -3,6 +3,7 @@ import {
   conformSelectionToAgent,
   describeSelectionMove,
   isEligibleOnAgent,
+  modelSelectionFrom,
   selectionFrom,
   verifyExplicitSelection,
 } from "./model-switch.js";
@@ -91,11 +92,10 @@ describe("verifyExplicitSelection — honoured or refused, never re-resolved", (
   const a = agent([OPENROUTER_OPUS]);
 
   it("passes an eligible triple through verbatim", () => {
-    const verdict = verifyExplicitSelection(a, {
-      serviceId: "openrouter",
-      billingMode: "key",
-      modelId: "anthropic/claude-opus-5",
-    });
+    const verdict = verifyExplicitSelection(
+      a,
+      modelSelectionFrom("anthropic/claude-opus-5", "openrouter", "key"),
+    );
     expect(verdict).toEqual({
       ok: true,
       selection: {
@@ -111,26 +111,49 @@ describe("verifyExplicitSelection — honoured or refused, never re-resolved", (
     // Vercel key. Falling through to bare-id resolution would silently land the
     // session on OpenRouter — a different service, a different bill, and a
     // selection the user never made (req 11).
-    const verdict = verifyExplicitSelection(a, {
-      serviceId: "vercel",
-      billingMode: "key",
-      modelId: "anthropic/claude-opus-5",
-    });
+    const verdict = verifyExplicitSelection(
+      a,
+      modelSelectionFrom("anthropic/claude-opus-5", "vercel", "key"),
+    );
     expect(verdict?.ok).toBe(false);
     expect(verdict && !verdict.ok && verdict.message).toContain("vercel");
   });
 
   it("refuses a triple the catalogue does not carry at all", () => {
-    const verdict = verifyExplicitSelection(a, {
-      serviceId: "openrouter",
-      billingMode: "key",
-      modelId: "not-a-model",
-    });
+    const verdict = verifyExplicitSelection(
+      a,
+      modelSelectionFrom("not-a-model", "openrouter", "key"),
+    );
     expect(verdict?.ok).toBe(false);
   });
 
   it("returns undefined when no triple was sent — the bare-id path is untouched", () => {
-    expect(verifyExplicitSelection(a, undefined)).toBeUndefined();
+    expect(
+      verifyExplicitSelection(a, modelSelectionFrom("anthropic/claude-opus-5", undefined, undefined)),
+    ).toBeUndefined();
+  });
+
+  it("refuses HALF a triple rather than dropping the half it was given", () => {
+    // The two fields are independently optional on the wire. Reading "one
+    // missing" as "no triple" throws away the field that WAS sent and
+    // re-resolves the bare id — so `{model: X, serviceId: "vercel"}` could
+    // persist X on OpenRouter, which is the same mis-billing the refusal rule
+    // exists to prevent, arriving through a malformed request rather than a
+    // stale one. Found by cross-backend review.
+    const noMode = verifyExplicitSelection(
+      a,
+      modelSelectionFrom("anthropic/claude-opus-5", "vercel", undefined),
+    );
+    const noService = verifyExplicitSelection(
+      a,
+      modelSelectionFrom("anthropic/claude-opus-5", undefined, "key"),
+    );
+    expect(noMode?.ok).toBe(false);
+    expect(noService?.ok).toBe(false);
+  });
+
+  it("treats NEITHER field as the legacy shape, not as an error", () => {
+    expect(modelSelectionFrom("x", undefined, undefined)).toBeUndefined();
   });
 });
 

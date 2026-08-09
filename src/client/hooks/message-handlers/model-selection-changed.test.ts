@@ -37,7 +37,11 @@ function message(over: Partial<WsModelSelectionChanged> = {}): WsModelSelectionC
 }
 
 beforeEach(() => {
-  useSessionStore.setState({ sessionId: "s1", sessions: [session(), session({ id: "s2" })] });
+  useSessionStore.setState({
+    sessionId: "s1",
+    sessions: [session(), session({ id: "s2" })],
+    modelSelectionEcho: {},
+  });
   useUiStore.setState({ toast: undefined });
 });
 
@@ -92,5 +96,21 @@ describe("handleModelSelectionChanged", () => {
   it("says nothing when the user asked for the change themselves", () => {
     handleModelSelectionChanged(ctx, message());
     expect(useUiStore.getState().toast).toBeUndefined();
+  });
+
+  it("records that the server answered — including when it REFUSED and changed nothing", () => {
+    // The composer's optimistic pick has to be dropped either way, and a refusal
+    // leaves the row exactly as it was, so "the row now matches" cannot be the
+    // signal. Cross-backend review found the picker sitting on a refused pick.
+    const before = useSessionStore.getState().modelSelectionEcho.s1 ?? 0;
+    handleModelSelectionChanged(
+      ctx,
+      message({
+        // A refusal: the selection reported is the one the session already had.
+        selection: { serviceId: "openrouter", billingMode: "key", modelId: "anthropic/claude-opus-5" },
+        notice: "vercel has no credential Claude Code can use.",
+      }),
+    );
+    expect(useSessionStore.getState().modelSelectionEcho.s1).toBe(before + 1);
   });
 });

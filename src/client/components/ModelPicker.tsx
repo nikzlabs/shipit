@@ -267,6 +267,8 @@ export function ModelSelector({
 
   const sessionId = useSessionStore((s) => s.sessionId);
   const pendingSessionRef = useRef<string | undefined>(sessionId);
+  const pendingEchoRef = useRef<number>(0);
+  const selectionEcho = useSessionStore((s) => (sessionId ? (s.modelSelectionEcho[sessionId] ?? 0) : 0));
   const sessions = useSessionStore((s) => s.sessions);
   const currentSession = sessionId ? sessions.find((s) => s.id === sessionId) : undefined;
   const sessionModel = currentSession?.model;
@@ -379,6 +381,7 @@ export function ModelSelector({
   const handleModelSelect = useCallback(
     (row: ModelRow) => {
       pendingSessionRef.current = sessionId;
+      pendingEchoRef.current = selectionEcho;
       const selection: EligibleModelOption = {
         serviceId: row.serviceId,
         serviceName: row.serviceName,
@@ -389,15 +392,23 @@ export function ModelSelector({
       setPendingSelection(selection);
       onModelChange?.(selection);
     },
-    [onModelChange, sessionId],
+    [onModelChange, sessionId, selectionEcho],
   );
 
-  // Drop the optimistic pending pick once the session record catches up with it
-  // — from then on the session row drives both the label and the checkmark.
-  // The whole triple has to match: a same-id cross-service pick would otherwise
-  // clear on the model alone and snap the checkmark back to the old group. Keep
-  // the CLI-confirmation clear as the escape hatch for a pick the server never
-  // persisted, so a stale pending pick can't outlive a turn.
+  // Drop the optimistic pending pick once the server has ANSWERED — which is a
+  // different question from "the row now matches", and the difference is the
+  // whole point: a REFUSED pick leaves the row exactly as it was, so a
+  // match-only rule would leave the trigger and the checkmark claiming a service
+  // the session is not on, indefinitely and invisibly (a same-id cross-service
+  // pick changes nothing else on screen). The echo counter says the server
+  // answered, whichever way it answered.
+  //
+  // The row-match clear stays as the fast path for a confirmation that arrives
+  // as a session-list refresh rather than as our own echo, and it compares the
+  // whole triple: a same-id cross-service pick would otherwise clear on the
+  // model alone and snap the checkmark back to the old group. The
+  // CLI-confirmation clear stays as the escape hatch for a pick the server never
+  // answered at all, so a stale pending pick can't outlive a turn.
   const prevLiveRef = useRef(liveModel);
   const sessionMatchesPending =
     !!pendingSelection
@@ -405,7 +416,9 @@ export function ModelSelector({
     && (!pendingSelection.serviceId
       || (currentSession?.serviceId === pendingSelection.serviceId
         && currentSession.billingMode === pendingSelection.billingMode));
-  if (sessionMatchesPending) {
+  if (pendingSelection && selectionEcho > pendingEchoRef.current) {
+    setPendingSelection(undefined);
+  } else if (sessionMatchesPending) {
     setPendingSelection(undefined);
   } else if (pendingSelection && liveModel && liveModel !== prevLiveRef.current) {
     setPendingSelection(undefined);

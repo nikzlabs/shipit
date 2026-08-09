@@ -115,6 +115,31 @@ export type ExplicitSelectionVerdict =
   | { ok: true; selection: ModelSelection }
   | { ok: false; message: string };
 
+/** A triple whose service or mode is missing — a request neither half can answer. */
+const INCOHERENT = Symbol("incoherent-selection");
+
+/**
+ * What the client asked for: a full triple, `undefined` for "no triple sent", or
+ * {@link INCOHERENT} for **exactly one** of the two fields.
+ *
+ * The three-way answer exists because the two-way one silently discards a half.
+ * `serviceId` and `billingMode` are independently optional on the wire, and
+ * reading "one missing" as "no triple" throws away the field that WAS sent and
+ * re-resolves the bare id — so `{model: X, serviceId: "vercel"}` could persist X
+ * on OpenRouter, which is the exact mis-billing the refusal rule exists to
+ * prevent, arriving through a malformed request instead of a stale one. Only
+ * "neither field" is the legacy shape.
+ */
+export function modelSelectionFrom(
+  modelId: string,
+  serviceId: string | undefined,
+  billingMode: BillingMode | undefined,
+): ModelSelection | typeof INCOHERENT | undefined {
+  if (serviceId && billingMode) return { serviceId, billingMode, modelId };
+  if (serviceId || billingMode) return INCOHERENT;
+  return undefined;
+}
+
 /**
  * Whether a `(service, billing mode, model)` the client sent may be persisted.
  *
@@ -124,9 +149,15 @@ export type ExplicitSelectionVerdict =
  */
 export function verifyExplicitSelection(
   agent: Pick<AgentInfo, "name" | "eligibleModels"> | undefined,
-  selection: ModelSelection | undefined,
+  selection: ModelSelection | typeof INCOHERENT | undefined,
 ): ExplicitSelectionVerdict | undefined {
-  if (!selection) return undefined;
+  if (selection === undefined) return undefined;
+  if (selection === INCOHERENT) {
+    return {
+      ok: false,
+      message: "That model selection is incomplete — reload the page and pick again.",
+    };
+  }
   if (!selectionExists(selection)) {
     return {
       ok: false,

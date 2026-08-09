@@ -9,10 +9,13 @@
  * silently a no-op, and the failure is not a broken turn but a turn billed to
  * the service the user just moved away from (req 11).
  *
- * Phase 3 built the mechanism (the resident process's spawn identity is the
- * whole tuple, and the pinned credential route is invalidated on a
- * `(service, mode)` move). This suite is the end-to-end proof that the picker
- * acting on a LIVE session drives it.
+ * **What each test here is actually guarding, stated because it is not obvious
+ * from the names.** The respawn and the route re-pin are phase 3's mechanism;
+ * these two cases would pass with phase 4's handler changes reverted, and they
+ * are here as the end-to-end proof that the picker acting on a LIVE session
+ * reaches that mechanism at all — which nothing else asserted. The refusal and
+ * atomicity cases are phase 4's own and fail without it. The rules themselves
+ * are unit-tested in `model-switch.test.ts`.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
@@ -236,14 +239,61 @@ describe("Integration: mid-session model switching across services (docs/252 pha
       serviceId: "anthropic",
       billingMode: "key",
     });
-    const err = await drainUntil(client, (m) => m.type === "error");
-    expect(err.message).toContain("anthropic");
+    // Reported as a notice on the authoritative selection, not as an `error`:
+    // the picker has to be told to drop its optimistic pick, and an `error`
+    // renders an assistant bubble nothing persists.
+    const refusal = await drainUntil(
+      client,
+      (m) => m.type === "model_selection_changed" && !!(m as AnyMsg).notice,
+    );
+    expect(refusal.notice).toContain("anthropic");
+    expect(refusal.selection).toEqual({
+      serviceId: "openrouter",
+      billingMode: "key",
+      modelId: MODEL,
+    });
 
     // Unchanged — not moved to the subscription, and not to any other service
     // that happens to offer the id.
     const after = sessionManager.get(sessionId);
     expect(after?.serviceId).toBe("openrouter");
     expect(after?.billingMode).toBe("key");
+    expect(after?.model).toBe(MODEL);
+
+    client.close();
+  });
+
+  it("refuses ATOMICALLY — a rejected pick does not leave the harness switched", async () => {
+    // `set_model` self-heals a cross-harness pick by switching the harness
+    // first. Verifying the triple after that made "refused" a request that had
+    // still moved the session to the other harness and reset its reasoning —
+    // two changes the user did not ask for, on a request that reported failure.
+    // Found by cross-backend review; the fix is to decide before mutating.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "set_model", model: MODEL, serviceId: "openrouter", billingMode: "key" });
+    await drainUntil(client, (m) => m.type === "model_selection_changed");
+    const sessionId = sessionManager.list()[0]!.id;
+    expect(sessionManager.get(sessionId)?.agentId).toBe("claude");
+
+    // A model Codex DOES own here (Vercel's `openai/gpt-5.6-sol`), named with a
+    // service that does not carry that id — so the self-heal would switch the
+    // harness to Codex and the triple is then refused.
+    client.send({
+      type: "set_model",
+      model: "openai/gpt-5.6-sol",
+      serviceId: "openai",
+      billingMode: "key",
+    });
+    await drainUntil(
+      client,
+      (m) => m.type === "model_selection_changed" && !!(m as AnyMsg).notice,
+    );
+
+    const after = sessionManager.get(sessionId);
+    expect(after?.agentId).toBe("claude");
+    expect(after?.serviceId).toBe("openrouter");
     expect(after?.model).toBe(MODEL);
 
     client.close();

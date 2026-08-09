@@ -258,20 +258,25 @@ export function wireAgentListeners(
     // the call site is buggy — fail loudly rather than silently mis-routing.
     throw new Error("wireAgentListeners requires opts.capturedSessionId");
   }
+  const sessionAtTurnStart = deps.sessionManager.get(opts.capturedSessionId);
   // Capture the model used for this turn — sourced from `agent_init` (what the
-  // CLI actually picked) or falls back to the user-selected model. Used on
+  // CLI actually picked) or falls back to the selected model. Used on
   // `agent_result` to attach the model to per-turn usage so the dial can
   // re-target context window when the user switches models mid-session.
-  let turnModel: string | undefined = deps.getSelectedModel();
+  //
+  // docs/252 phase 4 — the fallback reads the session ROW first, for the same
+  // reason `buildAgentRunParams` does: `getSelectedModel` is per-connection, so
+  // with two viewers on one session it can name a model this turn did not spawn
+  // with, and this value is what a harness reporting no model of its own gets
+  // recorded against (req 11).
+  let turnModel: string | undefined = sessionAtTurnStart?.model ?? deps.getSelectedModel();
   // docs/252 phase 3 (req 16) — who is billing this turn, captured at turn
   // START alongside the model, for the same reason: the session's selection can
   // move under a running turn (`set_model` between the spawn and the result),
   // and a turn must be recorded against what actually ran it. The rates are the
   // catalogue's as of now and are persisted with the row, so a later price edit
   // cannot restate the past.
-  const turnAttributionAtStart = turnAttributionFor(
-    selectionOf(deps.sessionManager.get(opts.capturedSessionId)),
-  );
+  const turnAttributionAtStart = turnAttributionFor(selectionOf(sessionAtTurnStart));
   // Helper: emit to all viewers via runner. If runner is unexpectedly null
   // (registry lookup failed before any viewer attached), the message has
   // nowhere good to go — log and drop rather than try a per-connection send,
