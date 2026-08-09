@@ -211,6 +211,30 @@ function splitAnsweredValue(
   return { labels, extra: rest.length > 0 ? rest.join(", ") : null };
 }
 
+/**
+ * True when the press that produced this click left a live text selection
+ * inside `el`.
+ *
+ * The option rows are `<button>`s, whose text a browser refuses to select
+ * until `user-select: text` is set on them (verified in Chrome: without it a
+ * drag over the row selects nothing). Setting it alone is not enough — the
+ * drag STILL ends in a `click` on the row, so highlighting an option to quote
+ * it would answer the question. Swallowing that click is the other half of the
+ * fix, and it is scoped to the row rather than the whole card so a
+ * keyboard-activated option (Enter/Space, which fires `click` with whatever
+ * selection the page already had) is never suppressed.
+ *
+ * A plain mouse click is safe by construction: the mousedown collapses the
+ * selection before the click, so there is nothing here to find.
+ */
+function hasLiveSelectionIn(el: HTMLElement): boolean {
+  if (typeof window === "undefined") return false;
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
+  if (!sel.toString().trim()) return false;
+  return el.contains(sel.anchorNode) || el.contains(sel.focusNode);
+}
+
 export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, resolvedAnswer }: AskUserQuestionProps) {
   // Track selected options: questionIndex -> Set of selected labels (for multi-select)
   const [selections, setSelections] = useState<Map<number, Set<string>>>(new Map());
@@ -489,9 +513,16 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
                 return (
                   <button
                     key={opt.label}
-                    onClick={() => handleOptionClick(qIndex, opt.label, q.multiSelect)}
+                    onClick={(e) => {
+                      // Highlighting the row to quote it must not answer with it.
+                      if (hasLiveSelectionIn(e.currentTarget)) return;
+                      handleOptionClick(qIndex, opt.label, q.multiSelect);
+                    }}
                     disabled={disabled || isAnswered}
-                    className={`w-full text-left rounded-md px-3 py-2 text-sm transition-colors border ${
+                    // `select-text`: a <button>'s text is unselectable by
+                    // default, which blocked highlighting an option to quote it
+                    // back at the agent (ChatQuoteReply's "Reply" affordance).
+                    className={`w-full text-left rounded-md px-3 py-2 text-sm transition-colors border select-text ${
                       isAnswered
                         ? wasAnswered
                           ? "border-(--color-accent) bg-(--color-accent-subtle) text-(--color-text-link)"
@@ -528,9 +559,12 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
               {!isAnswered && (
                 <div>
                   <button
-                    onClick={() => handleOtherClick(qIndex)}
+                    onClick={(e) => {
+                      if (hasLiveSelectionIn(e.currentTarget)) return;
+                      handleOtherClick(qIndex);
+                    }}
                     disabled={disabled || isAnswered}
-                    className={`w-full text-left rounded-md px-3 py-2 text-sm transition-colors border ${
+                    className={`w-full text-left rounded-md px-3 py-2 text-sm transition-colors border select-text ${
                       isOther
                         ? "border-(--color-accent) bg-(--color-accent-subtle) text-(--color-text-link)"
                         : "border-(--color-border-secondary) hover:border-(--color-text-tertiary) hover:bg-(--color-bg-hover) text-(--color-text-primary)"

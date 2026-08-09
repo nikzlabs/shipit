@@ -822,3 +822,93 @@ describe("AskUserQuestion — the answered lock is conditional on delivery", () 
     expect(screen.getByTestId("option-Redis")).toBeDisabled();
   });
 });
+
+/**
+ * The option rows are `<button>`s, and a browser refuses to select text inside
+ * one unless `user-select: text` is set (verified in Chrome). That blocked the
+ * user from highlighting an option to quote it back at the agent with
+ * `ChatQuoteReply`'s "Reply" affordance.
+ *
+ * Making the text selectable is only half of it: the drag that selects it still
+ * ends in a `click` on the row, so without the guard below, highlighting an
+ * option answers the question with it.
+ */
+describe("AskUserQuestion — option text is selectable", () => {
+  /** Put a live, non-collapsed selection over `el`'s text, as a drag would. */
+  function selectTextIn(el: HTMLElement) {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  }
+
+  afterEach(() => window.getSelection()?.removeAllRanges());
+
+  it("marks the option and Other rows selectable", () => {
+    render(
+      <AskUserQuestion
+        toolUseId="t1"
+        questions={singleQuestion}
+        onAnswer={vi.fn<AnswerFn>(() => true)}
+        disabled={false}
+      />
+    );
+    expect(screen.getByTestId("option-Redis")).toHaveClass("select-text");
+    expect(screen.getByTestId("option-other")).toHaveClass("select-text");
+  });
+
+  it("does not answer when the click only ends a selection drag over the row", () => {
+    const onAnswer = vi.fn<AnswerFn>(() => true);
+    render(
+      <AskUserQuestion
+        toolUseId="t1"
+        questions={singleQuestion}
+        onAnswer={onAnswer}
+        disabled={false}
+      />
+    );
+    const redis = screen.getByTestId("option-Redis");
+    selectTextIn(redis);
+    fireEvent.click(redis);
+
+    expect(onAnswer).not.toHaveBeenCalled();
+    // Still answerable — the card is not locked, just not triggered.
+    expect(redis).toBeEnabled();
+  });
+
+  it("does not toggle Other when the click only ends a selection drag over it", () => {
+    render(
+      <AskUserQuestion
+        toolUseId="t1"
+        questions={singleQuestion}
+        onAnswer={vi.fn<AnswerFn>(() => true)}
+        disabled={false}
+      />
+    );
+    const other = screen.getByTestId("option-other");
+    selectTextIn(other);
+    fireEvent.click(other);
+
+    expect(screen.queryByTestId("other-input")).not.toBeInTheDocument();
+  });
+
+  it("still answers a plain click while text elsewhere is selected", () => {
+    const onAnswer = vi.fn<AnswerFn>(() => true);
+    render(
+      <AskUserQuestion
+        toolUseId="t1"
+        questions={singleQuestion}
+        onAnswer={onAnswer}
+        disabled={false}
+      />
+    );
+    // A selection on a *different* row (or, in the real UI, anywhere else on the
+    // page) must not suppress this row — that is what keyboard activation looks
+    // like, and the guard is row-scoped precisely so it stays live.
+    selectTextIn(screen.getByTestId("option-In-memory"));
+    fireEvent.click(screen.getByTestId("option-Redis"));
+
+    expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Redis" }, "Redis");
+  });
+});
