@@ -12,6 +12,7 @@ import { DEFAULT_SELECTION_MODE } from "../shared/types.js";
 import { DEFAULT_FAILOVER_CUTOFF } from "../shared/types.js";
 import type { VoiceDeliveryMode } from "../shared/types/voice-note-types.js";
 import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js";
+import { nativeServiceForHarness, resolveModelSelection } from "../shared/catalogue/index.js";
 
 /**
  * docs/170 — the Linear **credential**, and nothing that identifies a
@@ -157,6 +158,47 @@ export class CredentialStore {
     this.filePath = path.join(credentialsDir ?? DEFAULT_CREDENTIALS_DIR, FILENAME);
     this.cipher = cipher;
     this.load();
+    this.migrateSubAgentDefaults();
+  }
+
+  /**
+   * docs/252 — backfill the `(serviceId, billingMode)` half of a sub-agent
+   * default's model selection.
+   *
+   * `SubAgentDefaults.model` is the third persisted model selection and the
+   * easiest to miss: the sub-agent spawn picks its credential route from
+   * `subAgentId` *before* reading it, so once the same model id is reachable
+   * through two services that bare string would silently resolve to the
+   * harness's own vendor — the exact conflation this feature removes, surviving
+   * in a corner.
+   *
+   * The bias is that same vendor, which is the frozen fact for any value written
+   * before this feature: a harness could reach nothing else. A model id the
+   * catalogue cannot place is left alone rather than given an invented service.
+   *
+   * Runs at load and persists once, so it is a migration rather than a read-time
+   * fill — a read-time fill would re-derive on every process and would not
+   * survive into the settings payload the UI round-trips.
+   */
+  private migrateSubAgentDefaults(): void {
+    const map = this.data.agentSubAgentDefaults;
+    if (!map) return;
+    let changed = false;
+    for (const [agentId, defaults] of Object.entries(map)) {
+      if (!defaults.model || defaults.serviceId) continue;
+      const selection = resolveModelSelection(
+        defaults.model,
+        nativeServiceForHarness(agentId as AgentId),
+      );
+      if (!selection) continue;
+      map[agentId] = {
+        ...defaults,
+        serviceId: selection.serviceId,
+        billingMode: selection.billingMode,
+      };
+      changed = true;
+    }
+    if (changed) this.save();
   }
 
   private load(): void {
@@ -726,6 +768,19 @@ export class CredentialStore {
     if ("model" in patch) {
       if (patch.model) current.model = patch.model;
       else delete current.model;
+      // docs/252 — the service and mode belong to the model, so a model write
+      // re-resolves them and a model clear drops them. Writing them independently
+      // is what would let the stored triple name a row that does not exist.
+      const selection = patch.model
+        ? resolveModelSelection(patch.model, nativeServiceForHarness(agentId as AgentId))
+        : undefined;
+      if (selection) {
+        current.serviceId = selection.serviceId;
+        current.billingMode = selection.billingMode;
+      } else {
+        delete current.serviceId;
+        delete current.billingMode;
+      }
     }
     // Rebuild the map (rather than `delete map[agentId]`) so a now-empty entry
     // drops out without a dynamic-delete.

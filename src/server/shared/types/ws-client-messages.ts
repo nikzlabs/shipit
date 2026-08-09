@@ -1,6 +1,7 @@
 import type { ImageAttachment, FileContextRef, PermissionMode, UploadRef } from "./attachment-types.js";
 import type { AgentId } from "../../session/agents/agent-process.js";
 import type { IssueRef } from "./domain-types/issue.js";
+import type { BillingMode } from "../catalogue/types.js";
 import type { WsTerminalStart, WsTerminalInput, WsTerminalResize, WsSubscribeLogs, WsLogClear } from "./terminal-types.js";
 
 export interface WsSendMessage {
@@ -89,10 +90,22 @@ export interface WsSetAgentMessage {
   agentId: AgentId;
 }
 
-/** Client → Server: set the model for the next turn. */
+/**
+ * Client → Server: set the model for the next turn.
+ *
+ * docs/252 — a selection is really the triple `(serviceId, billingMode,
+ * modelId)`, because a bare id cannot say which service is billing you when two
+ * of them offer the same id. The two new fields are OPTIONAL and the client does
+ * not send them yet: the picker has no service axis until phase 3 groups it by
+ * service, so the server resolves the missing pair from the catalogue (biased
+ * toward the active harness's own vendor). Accepting them now means phase 3 is
+ * a client change rather than a protocol change.
+ */
 export interface WsSetModelMessage {
   type: "set_model";
   model: string;
+  serviceId?: string;
+  billingMode?: BillingMode;
 }
 
 /**

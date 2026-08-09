@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useWebSocket, type UseWebSocketReturn } from "./useWebSocket.js";
-import { getSavedAgentId, getSavedModelId, getSavedReasoning } from "../utils/local-storage.js";
+import { getSavedAgentId, getSavedModelId, getSavedModelSelection, getSavedReasoning } from "../utils/local-storage.js";
 import { agentIdForModel } from "../utils/agent-for-model.js";
 import { useUiStore } from "../stores/ui-store.js";
 
@@ -25,6 +25,16 @@ export function useSessionWebSocket(sessionId: string | undefined): UseWebSocket
       agentIdForModel(model, useUiStore.getState().agentList) ?? getSavedAgentId();
     const params = new URLSearchParams({ agent });
     if (model) params.set("model", model);
+    // docs/252 — the seed's service and billing mode ride ALONGSIDE the model id
+    // rather than inside it, so the agent↔model reconciliation on the server is
+    // untouched. They only bias which catalogue row the seeded id is persisted
+    // as, which is the ambiguity a bare id cannot resolve once two services
+    // offer the same string.
+    const selection = getSavedModelSelection();
+    if (selection && selection.modelId === model) {
+      params.set("service", selection.serviceId);
+      params.set("billingMode", selection.billingMode);
+    }
     // docs/217 — seed the per-session reasoning effort from this agent's saved
     // composer pick so a brand-new session's first turn actually runs with the
     // value the selector displays (the server validates + applies it only when

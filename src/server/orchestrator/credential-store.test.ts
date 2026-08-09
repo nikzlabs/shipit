@@ -99,10 +99,74 @@ describe("CredentialStore", () => {
       const dir = createTmpDir();
       const store = new CredentialStore(dir);
       store.setAgentSubAgentDefaults("codex", { model: "gpt-5.5" });
-      expect(store.getAgentSubAgentDefaults("codex")).toEqual({ model: "gpt-5.5" });
+      // docs/252 — a model write carries its `(service, mode)` identity, because
+      // the sub-agent spawn resolves its credential route from `subAgentId`
+      // BEFORE reading this default: a bare id could not say which service.
+      expect(store.getAgentSubAgentDefaults("codex")).toEqual({
+        model: "gpt-5.5",
+        serviceId: "openai",
+        billingMode: "sub",
+      });
 
       const reloaded = new CredentialStore(dir);
-      expect(reloaded.getAgentSubAgentDefaults("codex")).toEqual({ model: "gpt-5.5" });
+      expect(reloaded.getAgentSubAgentDefaults("codex")).toEqual({
+        model: "gpt-5.5",
+        serviceId: "openai",
+        billingMode: "sub",
+      });
+    });
+
+    // docs/252 — the third persisted model selection, and the easiest to miss.
+    describe("model selection identity (docs/252)", () => {
+      it("backfills a value written before the triple existed, once, at load", () => {
+        const dir = createTmpDir();
+        fs.writeFileSync(
+          path.join(dir, "shipit-credentials.json"),
+          JSON.stringify({ agentSubAgentDefaults: { claude: { model: "claude-opus-5" } } }),
+        );
+        const store = new CredentialStore(dir);
+        expect(store.getAgentSubAgentDefaults("claude")).toEqual({
+          model: "claude-opus-5",
+          serviceId: "anthropic",
+          billingMode: "sub",
+        });
+        // Persisted, so it is a migration rather than a read-time fill.
+        const onDisk = JSON.parse(
+          fs.readFileSync(path.join(dir, "shipit-credentials.json"), "utf-8"),
+        ) as { agentSubAgentDefaults: Record<string, { serviceId?: string }> };
+        expect(onDisk.agentSubAgentDefaults.claude.serviceId).toBe("anthropic");
+      });
+
+      it("biases the backfill to the agent's own vendor", () => {
+        // The frozen fact for anything written before this feature: a harness
+        // could reach nothing but its own vendor.
+        const dir = createTmpDir();
+        fs.writeFileSync(
+          path.join(dir, "shipit-credentials.json"),
+          JSON.stringify({ agentSubAgentDefaults: { codex: { model: "gpt-5.6-sol" } } }),
+        );
+        expect(new CredentialStore(dir).getAgentSubAgentDefaults("codex").serviceId).toBe("openai");
+      });
+
+      it("leaves a model the catalogue cannot place without a fabricated service", () => {
+        const dir = createTmpDir();
+        fs.writeFileSync(
+          path.join(dir, "shipit-credentials.json"),
+          JSON.stringify({ agentSubAgentDefaults: { claude: { model: "opus" } } }),
+        );
+        expect(new CredentialStore(dir).getAgentSubAgentDefaults("claude")).toEqual({
+          model: "opus",
+        });
+      });
+
+      it("drops the identity when the model is cleared", () => {
+        const store = new CredentialStore(createTmpDir());
+        store.setAgentSubAgentDefaults("claude", { model: "claude-opus-5" });
+        store.setAgentSubAgentDefaults("claude", { reasoningEffort: "high" });
+        expect(store.getAgentSubAgentDefaults("claude").serviceId).toBe("anthropic");
+        store.setAgentSubAgentDefaults("claude", { model: null });
+        expect(store.getAgentSubAgentDefaults("claude")).toEqual({ reasoningEffort: "high" });
+      });
     });
 
     it("merges reasoningEffort and model independently", () => {

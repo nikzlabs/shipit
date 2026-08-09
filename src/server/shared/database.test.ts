@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseManager } from "./database.js";
+import { COLOR_BACKFILL_MIGRATION, DatabaseManager } from "./database.js";
 import { REPO_COLOR_ASSIGNMENT_ORDER } from "./repo-colors.js";
 
 /**
@@ -240,13 +240,17 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
     const version = m.db.pragma("user_version", { simple: true }) as number;
     m.db.exec("ALTER TABLE repos DROP COLUMN color_index");
     seed(m.db);
-    m.db.pragma(`user_version = ${version - COLOR_MIGRATIONS}`);
+    // Rewind to the backfill's own index, NOT `version - 2`. Counting back from
+    // the tip silently re-targets the wrong migrations the moment one is
+    // appended — which is what happened when docs/252 added its columns and this
+    // suite started re-running the re-spread against a dropped column.
+    // Everything after the backfill re-runs too, so a migration appended later
+    // must tolerate that (the docs/252 one guards its ADD COLUMNs for exactly
+    // this reason).
+    m.db.pragma(`user_version = ${COLOR_BACKFILL_MIGRATION}`);
     m.close();
     return version;
   }
-
-  /** Backfill + re-spread. */
-  const COLOR_MIGRATIONS = 2;
   /** What the pair produces for the first N repos in display order. */
   const spread = (n: number) => REPO_COLOR_ASSIGNMENT_ORDER.slice(0, n);
 
@@ -352,7 +356,12 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
         seedRepo(m.db, urls[i], i);
         m.db.prepare("UPDATE repos SET color_index = ? WHERE url = ?").run(c, urls[i]);
       });
-      m.db.pragma(`user_version = ${version - 1}`);
+      // The step AFTER the backfill, addressed by index rather than by counting
+      // back from the tip — see `rewindPastColorMigration`. `fromVersion` then
+      // lands strictly above `COLOR_BACKFILL_MIGRATION`, which is the gate this
+      // suite exists to pin.
+      void version;
+      m.db.pragma(`user_version = ${COLOR_BACKFILL_MIGRATION + 1}`);
       m.close();
       return colorsAfterMigration(urls);
     }
@@ -385,5 +394,205 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
     it("leaves a swapped pair alone", () => {
       expect(rewindPastRespread([1, 0, 2])).toEqual([1, 0, 2]);
     });
+  });
+});
+
+/**
+ * docs/252 phase 1 — the selection-triple backfill.
+ *
+ * Runs the REAL migration, like the color suite above: it rewinds `user_version`
+ * past this step, drops the four columns, seeds rows as they existed before it,
+ * and re-opens. The billing mode decides what a user is billed, so a copied
+ * helper that stayed green while the shipped rule changed would be worse than no
+ * test at all.
+ */
+describe("docs/252 — model-selection backfill (real migration)", () => {
+  let file: string;
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "shipit-252-"));
+    file = join(dir, "test.db");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  interface Seed {
+    id: string;
+    agentId: string | null;
+    model: string | null;
+    routeKind: string | null;
+    routeId: string | null;
+  }
+
+  function rewindAndSeed(seeds: Seed[]): void {
+    const m = new DatabaseManager(file);
+    const version = m.db.pragma("user_version", { simple: true }) as number;
+    for (const column of [
+      "service_id",
+      "billing_mode",
+      "provider_route_service_id",
+      "provider_route_billing_mode",
+    ]) {
+      m.db.exec(`ALTER TABLE sessions DROP COLUMN ${column}`);
+    }
+    for (const seed of seeds) {
+      m.db
+        .prepare(
+          `INSERT INTO sessions (id, title, created_at, last_used_at, agent_id, model,
+                                 provider_route_kind, provider_route_id)
+           VALUES (?, ?, '2026-01-01', '2026-01-01', ?, ?, ?, ?)`,
+        )
+        .run(seed.id, seed.id, seed.agentId, seed.model, seed.routeKind, seed.routeId);
+    }
+    m.db.pragma(`user_version = ${version - 1}`);
+    m.close();
+  }
+
+  function readBack(id: string) {
+    const m = new DatabaseManager(file);
+    const row = m.db
+      .prepare(
+        `SELECT service_id, billing_mode, provider_route_service_id, provider_route_billing_mode
+         FROM sessions WHERE id = ?`,
+      )
+      .get(id) as {
+      service_id: string | null;
+      billing_mode: string | null;
+      provider_route_service_id: string | null;
+      provider_route_billing_mode: string | null;
+    };
+    m.close();
+    return row;
+  }
+
+  const seed = (over: Partial<Seed> & { id: string }): Seed => ({
+    agentId: null,
+    model: null,
+    routeKind: null,
+    routeId: null,
+    ...over,
+  });
+
+  it("derives the service from the model, for both first-party vendors", () => {
+    rewindAndSeed([
+      seed({ id: "a", agentId: "claude", model: "claude-opus-5" }),
+      seed({ id: "b", agentId: "codex", model: "gpt-5.6-sol" }),
+    ]);
+    expect(readBack("a").service_id).toBe("anthropic");
+    expect(readBack("b").service_id).toBe("openai");
+  });
+
+  it("places a row by its model id, with no agent needed", () => {
+    rewindAndSeed([
+      seed({ id: "a", model: "claude-sonnet-5" }),
+      seed({ id: "c", model: "gpt-5.4" }),
+    ]);
+    expect(readBack("a").service_id).toBe("anthropic");
+    expect(readBack("c").service_id).toBe("openai");
+  });
+
+  it("refuses to place a model the catalogue does not offer", () => {
+    // The invariant: a stored triple either names a real catalogue row or has no
+    // service and mode at all. `sonnet` and `opus` are CLI aliases, and
+    // `claude-opus-4-8` is retired — none is a catalogue model, so a
+    // `(anthropic, sub, sonnet)` triple would name nothing and later phases
+    // could resolve no endpoint from it. The `model` column is untouched, and
+    // req 13's retirement map (phase 8) is what carries these forward.
+    rewindAndSeed([
+      seed({ id: "alias", agentId: "claude", model: "sonnet" }),
+      seed({ id: "retired", agentId: "claude", model: "claude-opus-4-8" }),
+      seed({ id: "versioned", agentId: "claude", model: "claude-sonnet-4-20250514" }),
+    ]);
+    for (const id of ["alias", "retired", "versioned"]) {
+      expect(readBack(id).service_id, id).toBeNull();
+      expect(readBack(id).billing_mode, id).toBeNull();
+    }
+  });
+
+  it("places the retired unsuffixed GPT-5.6 slug, which the catalogue does carry", () => {
+    // Old rows still hold it and the catalogue names a successor for it, so it
+    // is placeable — unlike the aliases above.
+    rewindAndSeed([seed({ id: "a", agentId: "codex", model: "gpt-5.6" })]);
+    expect(readBack("a").service_id).toBe("openai");
+  });
+
+  it("classifies by route ID, not by route KIND — an env OAuth token is a SUBSCRIPTION", () => {
+    // The bug the plan calls out explicitly: `claude-env-oauth` is a `reserved`
+    // route carrying a quota-bearing subscription token. Reading `kind` would
+    // bill those subscribers as metered and hide their quota.
+    rewindAndSeed([
+      seed({
+        id: "envoauth",
+        agentId: "claude",
+        model: "claude-opus-5",
+        routeKind: "reserved",
+        routeId: "claude-env-oauth",
+      }),
+      seed({
+        id: "apikey",
+        agentId: "claude",
+        model: "claude-opus-5",
+        routeKind: "reserved",
+        routeId: "claude-api-key",
+      }),
+      seed({
+        id: "codexkey",
+        agentId: "codex",
+        model: "gpt-5.6-sol",
+        routeKind: "reserved",
+        routeId: "codex-api-key",
+      }),
+    ]);
+    expect(readBack("envoauth").billing_mode).toBe("sub");
+    expect(readBack("apikey").billing_mode).toBe("key");
+    expect(readBack("codexkey").billing_mode).toBe("key");
+  });
+
+  it("treats every account route as a subscription", () => {
+    rewindAndSeed([
+      seed({
+        id: "a",
+        agentId: "claude",
+        model: "claude-opus-5",
+        routeKind: "account",
+        routeId: "acct_1",
+      }),
+    ]);
+    expect(readBack("a").billing_mode).toBe("sub");
+  });
+
+  it("defaults an evidence-free row to `sub`, which fails in the safe direction", () => {
+    // A session wrongly on `sub` stops and says so; one wrongly on `key`
+    // silently spends money.
+    rewindAndSeed([seed({ id: "a", agentId: "claude", model: "claude-opus-5" })]);
+    expect(readBack("a").billing_mode).toBe("sub");
+  });
+
+  it("stamps a pinned route with the pair it belongs to, and leaves an unpinned row null", () => {
+    rewindAndSeed([
+      seed({
+        id: "pinned",
+        agentId: "claude",
+        model: "claude-opus-5",
+        routeKind: "account",
+        routeId: "acct_1",
+      }),
+      seed({ id: "unpinned", agentId: "claude", model: "claude-opus-5" }),
+    ]);
+    expect(readBack("pinned").provider_route_service_id).toBe("anthropic");
+    expect(readBack("pinned").provider_route_billing_mode).toBe("sub");
+    expect(readBack("unpinned").provider_route_service_id).toBeNull();
+  });
+
+  it("leaves a row with no model at all entirely alone", () => {
+    // No evidence at all — inventing a service here would decide what the user
+    // is billed from nothing. The next selection writes the triple instead.
+    rewindAndSeed([seed({ id: "a", agentId: "claude" })]);
+    const row = readBack("a");
+    expect(row.service_id).toBeNull();
+    expect(row.billing_mode).toBeNull();
   });
 });

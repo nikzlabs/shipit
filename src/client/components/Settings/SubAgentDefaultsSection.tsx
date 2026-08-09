@@ -3,8 +3,16 @@ import { useUiStore } from "../../stores/ui-store.js";
 import type { AgentOption } from "../../agent-types.js";
 import type { SubAgentDefaults, SubAgentDefaultsPatch } from "../../../server/shared/types.js";
 
-/** The fields the section edits — drives the merge/clear loop generically. */
-const FIELDS: (keyof SubAgentDefaults)[] = ["model", "reasoningEffort"];
+/**
+ * The fields the section edits — drives the merge/clear loop generically.
+ *
+ * docs/252 — deliberately NOT `keyof SubAgentDefaults`: that type also carries
+ * `serviceId`/`billingMode`, which are part of the model's identity rather than
+ * controls of their own, and widening the loop over them is a type error the
+ * compiler catches rather than a silently editable field.
+ */
+const FIELDS = ["model", "reasoningEffort"] as const;
+type EditableField = (typeof FIELDS)[number];
 
 /**
  * docs/217 — Control A: per-agent defaults applied when THIS agent is invoked
@@ -30,12 +38,17 @@ export function SubAgentDefaultsSection({ agent }: { agent: AgentOption | undefi
 
   // Merge a single field via PUT /api/settings, optimistically updating the
   // store and rolling back on failure. `""` clears the field (→ backend default).
-  const patchField = async (field: keyof SubAgentDefaults, raw: string) => {
+  const patchField = async (field: EditableField, raw: string) => {
     const prev = useSettingsStore.getState().agentSubAgentDefaults;
     const base = prev[agentId] ?? {};
     // Rebuild the merged entry from scratch so a cleared field drops out without
     // a dynamic delete: the edited field takes `raw`, the others keep their value.
-    const merged: SubAgentDefaults = {};
+    //
+    // docs/252 — `serviceId`/`billingMode` are part of the model's identity, not
+    // separate controls, so they are not in FIELDS. They ride with the model:
+    // kept while it is unchanged, dropped the moment it is edited (the server's
+    // response then carries the re-resolved pair).
+    const merged: SubAgentDefaults = field === "model" ? {} : { serviceId: base.serviceId, billingMode: base.billingMode };
     for (const key of FIELDS) {
       const value = key === field ? raw : base[key];
       if (value) merged[key] = value;

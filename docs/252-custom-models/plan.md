@@ -143,6 +143,15 @@ meaning anything else. The selected model becomes the triple
 plumbing — with each billing mode declaring its own models per style. Anthropic and OpenAI
 become ordinary catalogue rows, each already carrying both modes.
 
+**Phase 1 has landed.** The rows live in `src/server/shared/catalogue/`
+(`types.ts`, `harnesses.ts`, `services.ts`, `index.ts`), with the invariants
+`catalogue.md` says the type system cannot carry enforced by
+`catalogue/catalogue.test.ts`. Every `PRICE_TODO` and `CONTEXT_TODO` sentinel is
+replaced with a figure read from the vendor's own documentation on 2026-08-09;
+the source per vendor, and the derivation for the two whose cache rates are
+published as multipliers rather than rates, are in `services.ts`'s header
+comment. What authoring the rows *found* is below, after the phase list.
+
 **The rows themselves are written out in [`catalogue.md`](./catalogue.md)**, including the
 types. So this phase is transcription for what the repo already settles, research for each 🔍
 marker. **Two** shape questions stay open on purpose, both from the survey and neither
@@ -255,6 +264,86 @@ source elsewhere.
 **This phase also carries the third-harness capability survey** (see *What a third harness
 could break*). It belongs here because this is the phase that freezes the types the survey
 could invalidate, and nowhere later is cheaper.
+
+**What phase 1 found while authoring the rows.** Five things the design did not
+anticipate, recorded here because three of them change what a later phase has to build.
+
+- **A model's id can differ by API style, and `ModelDef` cannot say so.** GLM's coding
+  plan calls the same model `glm-5.2[1m]` on its Anthropic-protocol path — the bracket
+  suffix is what selects the full 1M window — and `glm-5.2` on its OpenAI-protocol one.
+  `ModelDef` has one `id` and a *set* of `styles`, so the pair cannot both be declared.
+  Phase 1 declares GLM's subscription under the Anthropic style only, which is the path
+  ShipIt would actually drive, rather than inventing a per-style id map in a phase that
+  ships no behaviour. **Phase 2 owns the decision** when it builds the GLM integration:
+  either `ModelDef.id` becomes `string | Partial<Record<ApiStyle, string>>`, or the row
+  splits into one model per style. This is the same shape of problem as OpenCode's
+  `provider/model` namespace, which `catalogue.md` also leaves open — worth solving once.
+- **`claude-fable-5` belongs to both billing modes, and `METERED_MODELS` is now stale
+  rather than load-bearing.** `catalogue.md` left this as checklist item 4, with the two
+  branches spelled out: if Fable is genuinely unavailable under an Anthropic subscription it
+  becomes req 5's worked example and the hand-kept `METERED_MODELS` set deletes; if not, it
+  belongs to both modes at their own rates. Phase 1 confirmed the second — Anthropic
+  publishes Fable on the ordinary API and a subscription reaches it — so it is declared under
+  both modes and the picker offers exactly what it offered before.
+
+  What the check *also* found is that `METERED_MODELS`' own comment ("bills per token
+  (usage-based) rather than against the subscription plan limit") no longer describes Fable:
+  it counts against the plan like any other subscription model (confirmed 2026-08-09). That
+  briefly looked like a third case `BillingMode` could not express — a plan-reachable model
+  that still costs money — and was raised as an open question against req 16. It is not one;
+  the premise was a stale comment, and the receipt in `requirements.md` records the closure.
+
+  **The `$` icon it drives is therefore telling users something untrue, and removing it is a
+  user-visible change phase 1 forbids.** It is left exactly as it is here and belongs to
+  **phase 3**, which is where the picker is rebuilt and where deleting a hand-kept per-model
+  set is a deletion rather than a behaviour change. Noted because the set now has no fact
+  behind it, which is the state in which something quietly acquires a new justification.
+- **`capabilities.models` is derived from the harness's `nativeService`, not from the
+  join.** The join would put DeepSeek and the gateways in the picker immediately, with no
+  way to give them a credential (phase 2) or route a turn to them (phase 3) — a
+  user-visible change, which phase 1's review criterion forbids. `nativeModelIdsForHarness`
+  is the temporary narrowing and **phase 3 deletes it**, replacing it with the
+  credential-filtered join.
+- **OpenRouter reaches Claude Code and not Codex.** Its Anthropic-Messages surface is
+  documented; nothing establishes that it serves the Responses API, so no OpenRouter row
+  declares `openai-responses`. Vercel documents both, so its rows reach both harnesses.
+  Confirming OpenRouter's Responses surface is a one-line row edit, not a design change —
+  which is the service abstraction working.
+- **Appending a migration broke an unrelated migration test**, because that test rewound
+  `user_version` by counting back from the tip. `COLOR_BACKFILL_MIGRATION` is now exported
+  and the test addresses its step by index; the new migration guards its `ADD COLUMN`s so
+  re-running it after such a rewind is a no-op. Production was never at risk (migrations
+  run in one transaction) — but any future appended migration inherits the same
+  requirement, so it is written down rather than left to be rediscovered.
+
+**One invariant governs all three persisted selections, and cross-backend review is what
+found it.** Codex's review of this branch established that the first cut broke it in four
+places, each individually plausible:
+
+> **A stored selection either names a real catalogue row, or carries no service and mode
+> at all.** There is no third state.
+
+A triple that names nothing is worse than an absent one: `resolveEndpoint` cannot shape a
+turn from it, `selectionExists` reports false, and phase 3's eligibility filter has nothing
+to match — so the failure surfaces two phases away from the write that caused it. The four
+places, all now closed and each with a test that names the invariant: the **migration**
+placed a row by its agent's vendor without checking that vendor offers the model (so a
+`sonnet` alias became `anthropic:sub:sonnet`); `setModel` **kept** the previous service and
+mode when handed an id it could not place; the browser slot **returned and stored**
+syntactically-valid triples without checking existence; and **Quick Capture** dropped the
+service and mode on the floor, re-resolving the bare id server-side to whichever service
+sorts first.
+
+**A route's billing mode is a property of the route, not of the selection in force when it
+was pinned** — also from that review. `setProviderRoute` first stamped the session's
+selection, which is wrong whenever the two disagree, and they can: route selection does not
+consult the billing mode until phase 3, so a session selecting `sub` still lands on
+`claude-api-key` when no subscription account is connected. Stamping the selection recorded
+a metered key route as subscription-owned — a falsehood phases 5 and 6 read back.
+`billingModeForRoute` (`sessions.ts`) now derives it from the route, by the same rule the
+migration applies to historical rows. The duplication between the two is deliberate and
+noted at both sites: a migration must keep reproducing the same result forever, so it cannot
+follow a runtime helper.
 
 **Phase 2 — Credentials and Settings.** Credential storage per `(service, billing mode)`,
 **with several instances per mode where that mode is a string-delivered subscription** — the
@@ -1423,7 +1512,7 @@ is key-authenticated.
 | `orchestrator/session-agent-env.ts` | `selectAgentEnvForPush` — credential delivery to a container |
 | `orchestrator/local-agent-home.ts` | `resolveLocalAgentHome` — why reserved routes are unscoped |
 | `shared/model-windows.ts` | First-frame context window |
-| `client/components/ModelAgentSelector.tsx` | Picker, `METERED_MODELS` — the hand-kept metered set that billing modes delete ([`catalogue.md`](./catalogue.md)) |
+| `client/components/ModelAgentSelector.tsx` | Picker, `METERED_MODELS` — the hand-kept metered set, now stale (its one model bills against the plan) and deleted in phase 3 |
 | `shared/types/usage-limits-types.ts` | `SubscriptionLimits` — already keyed by `routeId` |
 | `orchestrator/agents/*/limits-provider.ts` | Per-`AgentId` today; becomes per service (req 10) |
 | `orchestrator/usage.ts` | `RecordedTurn` — token/cost accounting, distinct from quota |

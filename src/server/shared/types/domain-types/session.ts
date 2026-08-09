@@ -1,5 +1,6 @@
 import type { AgentId } from "../agent-types.js";
 import type { ProviderRouteKind } from "./provider.js";
+import type { BillingMode } from "../../catalogue/types.js";
 // Type-only, so it erases at compile time — no runtime edge from types/ back
 // into the detector module.
 import type { SecretFinding } from "../../secret-scan.js";
@@ -202,11 +203,34 @@ export interface SessionInfo {
    */
   agentPinned?: boolean;
   /**
+   * docs/252 — the rest of the selected model's identity. `model` holds the
+   * model id; these two say which catalogue service offers it and under which
+   * billing mode, which a bare id cannot: the same id is reachable through a
+   * vendor directly and through a gateway, and through two modes of one service,
+   * at different prices. Together the three are a `ModelSelection`.
+   *
+   * Absent on a session that has never had a selection resolved (and on rows
+   * older than the migration whose model id the catalogue could not place).
+   */
+  serviceId?: string;
+  billingMode?: BillingMode;
+  /**
    * docs/150 — route used for the pinned provider. Account routes refer to a
    * stored ProviderAccount id; reserved routes are env/API-key auth paths.
+   *
+   * docs/252 — a route belongs to a `(service, billing mode)`, and the pair it
+   * was pinned for is recorded alongside it. Environment preparation reuses a
+   * pinned route unconditionally whenever it is present, so a selection that
+   * moves to a different service or mode must invalidate it — otherwise the
+   * turn respawns against the new endpoint and authenticates with the previous
+   * service's credential, which is a turn billed to the wrong account rather
+   * than a failed one. `setModelSelection` clears all four fields on such a
+   * move; the next turn's preflight re-pins.
    */
   providerRouteKind?: ProviderRouteKind;
   providerRouteId?: string;
+  providerRouteServiceId?: string;
+  providerRouteBillingMode?: BillingMode;
   /**
    * If this session was spawned by another session via `shipit session create`
    * (see docs/117-agent-spawned-sessions/), the parent's session ID. Used to

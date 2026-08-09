@@ -253,6 +253,21 @@ _None._
 
 ## Resolved questions
 
+- 2026-08-09 — Phase 1's catalogue authoring raised one: **a subscription that includes a
+  model still billed per token has no column in req 16's split.** **Chosen: the case does not
+  exist — no requirement changes.** The question rested entirely on a premise the human
+  corrected: `claude-fable-5` no longer bills "per token (usage-based) rather than against
+  the subscription plan limit", which is what ShipIt's own picker comment (and therefore the
+  question) asserted. With Fable counting against the plan like any other subscription model,
+  `BillingMode` remains the sole thing that decides the column: a `sub` row is included work,
+  a `key` row is money. Req 16's split stands unamended, and the three readings the question
+  offered are all moot.
+
+  Recorded rather than deleted because the *shape* of the question outlives its instance. If a
+  service ever does offer a plan-reachable, per-token-billed model, this is the requirement it
+  contradicts and the fact to check first — the comment in the code, not the vendor's current
+  terms. The stale claim is now corrected at its source; see the phase-1 notes in `plan.md`.
+
 - 2026-08-09 — Should usage volume be reported in turns or tokens? **Chosen: tokens.** Stated
   directly rather than asked: the prototypes and the design had carried turn counts as the
   volume measure, inherited from the existing usage view. A turn is not a fixed quantity of
@@ -736,6 +751,10 @@ human, but most of the mechanism did not. What the human actually said, in order
 - "let's do 1, i.e. explicitly support common gateways. We can always add custom urls later"
   → req 15's launch set, and its closing paragraph deferring user-supplied endpoints instead
   of ruling them out.
+- "This is no longer the case for fable, so we can probably ignore this corner case" → the
+  2026-08-09 receipt closing the only open question phase 1 raised. It changed no requirement:
+  it withdrew the premise, which was a stale comment in ShipIt's own picker rather than
+  anything these requirements said.
 - "the default would be 'first model on the first service', something like this" → req 9's
   derived default, replacing the fixed model an earlier draft assumed. The mechanism is the
   human's sketch and is stated in `plan.md`; the requirement states only the property it

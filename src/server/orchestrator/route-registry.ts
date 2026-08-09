@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { getAuthEnvKey } from "../shared/agent-registry.js";
+import { nativeServiceForHarness, selectionExists } from "../shared/catalogue/index.js";
+import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
 import type { AgentId } from "../shared/types.js";
 import type { WsClientMessage, WsServerMessage, WsLogRecord, LogSource } from "../shared/types.js";
 import { agentLogAppend } from "./log-emit.js";
@@ -453,7 +455,7 @@ export async function registerRoutes(
   // ---- Per-session WebSocket route ----
   // Session-scoped WS: auto-activates the session on connect, no activate_session needed.
   // The session ID is in the URL path. Agent preference via ?agent= query param.
-  app.get<{ Params: { sessionId: string }; Querystring: { agent?: string; model?: string; reasoning?: string } }>(
+  app.get<{ Params: { sessionId: string }; Querystring: { agent?: string; model?: string; reasoning?: string; service?: string; billingMode?: string } }>(
     "/ws/sessions/:sessionId",
     { websocket: true },
     (socket, request) => {
@@ -543,7 +545,37 @@ export async function registerRoutes(
         try { sessionManager.setAgentId(sessionId, perConnectionAgentId); } catch { /* ignore */ }
       }
       if (selectedModel && selectedModel !== session.model) {
-        try { sessionManager.setModel(sessionId, selectedModel); } catch { /* ignore */ }
+        // docs/252 — persist the SELECTION. The browser's seed carries the
+        // service and billing mode alongside `?model=` (its `vibe-model-id` slot
+        // holds the full triple), and it is honoured only when it names a row
+        // the catalogue actually contains AND the model being persisted is the
+        // seeded one — a reconciled fallback model is a different choice and
+        // must not inherit the seed's service. Otherwise resolution is biased
+        // toward the harness's own vendor, which is the frozen fact for any
+        // legacy id: before this feature a harness could reach nothing else.
+        const seededMode: BillingMode | undefined =
+          request.query.billingMode === "sub" || request.query.billingMode === "key"
+            ? request.query.billingMode
+            : undefined;
+        const seeded: ModelSelection | undefined =
+          request.query.service && seededMode && selectedModel === request.query.model
+            ? {
+                serviceId: request.query.service,
+                billingMode: seededMode,
+                modelId: selectedModel,
+              }
+            : undefined;
+        try {
+          if (seeded && selectionExists(seeded)) {
+            sessionManager.setModelSelection(sessionId, seeded);
+          } else {
+            sessionManager.setModel(
+              sessionId,
+              selectedModel,
+              nativeServiceForHarness(perConnectionAgentId),
+            );
+          }
+        } catch { /* ignore */ }
       }
       // docs/217 — per-session reasoning effort (Control B). Prefer the persisted
       // row; for an as-yet-unpinned (new/warm) session with none, fall back to the
@@ -1179,7 +1211,11 @@ export async function registerRoutes(
               const fallbackModel = info.capabilities.models[0];
               ctx.setSelectedModel(fallbackModel);
               if (activeAppSessionId) {
-                sessionManager.setModel(activeAppSessionId, fallbackModel);
+                sessionManager.setModel(
+                  activeAppSessionId,
+                  fallbackModel,
+                  nativeServiceForHarness(info.id),
+                );
               }
             }
             // docs/217 — reasoning is per-agent; a stale value from the previous
@@ -1257,9 +1293,30 @@ export async function registerRoutes(
               }
             }
             ctx.setSelectedModel(msg.model);
-            // Persist to session metadata so it survives reconnects and warm pool
+            // Persist to session metadata so it survives reconnects and warm pool.
+            //
+            // docs/252 — persist the SELECTION, not just the model id. The client
+            // does not send a service or mode yet (the picker has no service axis
+            // until phase 3), so the pair is resolved from the catalogue, biased
+            // toward the harness's own vendor so a first-party id cannot land on
+            // a gateway that happens to list the same string. An explicit pair,
+            // once the client sends one, is honoured verbatim when the catalogue
+            // contains the row and ignored when it does not — a client must not
+            // be able to invent a service.
             if (activeAppSessionId) {
-              sessionManager.setModel(activeAppSessionId, msg.model);
+              const explicit =
+                msg.serviceId && msg.billingMode
+                  ? { serviceId: msg.serviceId, billingMode: msg.billingMode, modelId: msg.model }
+                  : undefined;
+              if (explicit && selectionExists(explicit)) {
+                sessionManager.setModelSelection(activeAppSessionId, explicit);
+              } else {
+                sessionManager.setModel(
+                  activeAppSessionId,
+                  msg.model,
+                  nativeServiceForHarness(ctx.getActiveAgentId()),
+                );
+              }
             }
             return;
           }

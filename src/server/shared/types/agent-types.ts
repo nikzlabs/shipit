@@ -2,6 +2,7 @@
 
 import type { EventEmitter } from "node:events";
 import type { ImageAttachment, PermissionMode } from "./attachment-types.js";
+import type { BillingMode } from "../catalogue/types.js";
 import type { McpServerConfig, McpServerStatus } from "./mcp-types.js";
 
 // ---- Agent identity ----
@@ -46,12 +47,34 @@ export interface SubAgentDefaults {
   reasoningEffort?: string;
   /** Model alias/id the sub-agent runs with (a value from the agent's `models`). */
   model?: string;
+  /**
+   * docs/252 — the rest of the selection triple for {@link SubAgentDefaults.model}.
+   *
+   * This is the third persisted model selection and the easiest of the three to
+   * miss. `model` is a bare string, and the sub-agent spawn picks its credential
+   * route from `subAgentId` *before* reading it — so once the same model id is
+   * reachable through two services, that string cannot say which, and it would
+   * silently resolve to the harness's own vendor. That is exactly the
+   * harness/service conflation this feature removes, surviving in a corner.
+   *
+   * Backfilled from `model` when the credential store loads (see
+   * `CredentialStore.migrateSubAgentDefaults`), biased to the agent's own
+   * vendor — the frozen fact for any value written before this feature.
+   */
+  serviceId?: string;
+  billingMode?: BillingMode;
 }
 
 /**
  * A write patch for {@link SubAgentDefaults}. An explicit `null` for a field
  * clears it (reverting to the backend's native default); `undefined`/absent
  * leaves it unchanged.
+ *
+ * docs/252 — `serviceId`/`billingMode` are deliberately NOT here. They are part
+ * of the model's identity, not controls of their own, so the store re-resolves
+ * them on a `model` write and drops them on a `model` clear. Making them
+ * patchable is what would let a client store a triple naming a row that does not
+ * exist.
  */
 export interface SubAgentDefaultsPatch {
   reasoningEffort?: string | null;

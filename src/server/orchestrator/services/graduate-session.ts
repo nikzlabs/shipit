@@ -44,6 +44,8 @@ import type { ProviderAccountManager } from "../provider-account-manager.js";
 import { providerAccountCredentialRoot } from "../provider-account-manager.js";
 import { getErrorMessage } from "../validation.js";
 import { isTitleLockedAgainst } from "./session-title.js";
+import { nativeServiceForHarness, selectionExists } from "../../shared/catalogue/index.js";
+import type { BillingMode } from "../../shared/catalogue/index.js";
 
 export interface GraduateSessionDeps {
   sessionManager: SessionManager;
@@ -109,6 +111,16 @@ export interface GraduateSessionOpts {
   /** Optional model override (quick + child). */
   model?: string;
   /**
+   * docs/252 — the rest of the selection triple for {@link model}, when the
+   * caller knows it. Quick Capture does: its seed is the browser's
+   * `vibe-model-id` slot, which holds the full triple. Without these the bare id
+   * would be re-resolved here to the FIRST service offering it, silently moving
+   * a gateway selection onto whichever gateway sorts first — the exact ambiguity
+   * the triple exists to remove. Ignored when the pair names no catalogue row.
+   */
+  serviceId?: string;
+  billingMode?: BillingMode;
+  /**
    * docs/217 — optional per-session reasoning effort (Control B), set on the
    * session row before the first turn runs. Quick-capture only; assumed already
    * validated against the agent's options by the caller.
@@ -147,7 +159,7 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
     sessionManager, runnerRegistry, repoStore, createGitManager, prStatusPoller, sseBroadcast,
     ensureAgentTokenFresh, providerAccountManager, credentialsDir,
   } = deps;
-  const { sessionId, userText, agentId, explicitTitle, explicitBranch, skipBranchRename, model, reasoning, parentSessionId, spawnedByTurn, rootSessionId } = opts;
+  const { sessionId, userText, agentId, explicitTitle, explicitBranch, skipBranchRename, model, serviceId, billingMode, reasoning, parentSessionId, spawnedByTurn, rootSessionId } = opts;
 
   // 1. Activation — flip warm to false (no-op when already active, e.g. fork).
   sessionManager.setWarm(sessionId, false);
@@ -160,7 +172,18 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
   sessionManager.rename(sessionId, placeholderTitle);
 
   // 4. Optional model + reasoning + parent linkage (child + quick concerns).
-  if (model) sessionManager.setModel(sessionId, model);
+  // docs/252 — the caller's full triple when it has one (Quick Capture seeds
+  // from the browser slot, which does), otherwise resolve the bare id biased
+  // toward the agent's own vendor. `selectionExists` is the gate: a caller must
+  // not be able to persist a triple naming a row the catalogue does not carry.
+  if (model) {
+    const supplied = serviceId && billingMode ? { serviceId, billingMode, modelId: model } : undefined;
+    if (supplied && selectionExists(supplied)) {
+      sessionManager.setModelSelection(sessionId, supplied);
+    } else {
+      sessionManager.setModel(sessionId, model, nativeServiceForHarness(agentId));
+    }
+  }
   if (reasoning) sessionManager.setReasoning(sessionId, reasoning);
   if (parentSessionId) {
     sessionManager.setParentSession(sessionId, parentSessionId, spawnedByTurn, rootSessionId);

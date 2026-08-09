@@ -10,136 +10,64 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { EventEmitter } from "node:events";
 import type { AgentId, AgentCapabilities } from "./types/agent-types.js";
-import { CLAUDE_PERMISSION_MODES } from "./types/agent-types.js";
+import {
+  HARNESSES,
+  getService,
+  nativeModelIdsForHarness,
+} from "./catalogue/index.js";
 
 const execFileAsync = promisify(execFile);
 
-/**
- * Single source of truth for the Claude models offered in the picker.
- *
- * Order matters: `models[0]` is the default model a fresh install runs with.
- * Every default path — the server's connect-time fallback in `index.ts`
- * (`agentInfo?.capabilities.models[0]`) and the client picker's fallback in
- * `ModelAgentSelector` (`activeAgent?.models[0]`, used when there's no
- * persisted session model and no saved `vibe-model-id`) — resolves to the
- * first entry. Opus leads so a brand-new user gets Opus, not Sonnet.
- *
- * Mixed style is intentional:
- * - Explicit dated/versioned IDs (`claude-opus-4-8`) are listed when a new
- *   model ships before the CLI's alias is bumped to point at it. The CLI
- *   forwards `--model` to the API as-is, so any API-recognized ID works even
- *   if the CLI's local alias table hasn't caught up.
- * - Bare family names (`haiku`) are CLI aliases that always resolve
- *   to the latest of that family on the installed CLI.
- *
- * No bare `opus` alias: older CLIs resolve it to a previous Opus (≤ 2.1.148:
- * Opus 4.7), and Opus 5 shipped (2026-07-24) the same day as the currently
- * pinned CLI, so its alias table can't be trusted to resolve `opus` to Opus 5
- * yet. Once a CLI release verifiably does, we can swap the explicit versioned
- * entry for the alias the same way.
- *
- * `claude-sonnet-5` is explicit instead of the bare `sonnet` alias so the
- * picker and first-frame context-window fallback are correct even before a
- * freshly-bumped CLI's local alias table is trusted.
- *
- * `claude-fable-5` is listed LAST on purpose: it is Anthropic's most capable
- * public model but bills per token (usage-based) rather than against the
- * subscription plan limit, so it's a deliberate opt-in, not the default. The
- * picker flags it with a $ icon (see `METERED_MODELS` in
- * `ModelAgentSelector.tsx`). It's an explicit versioned id (no CLI alias); the
- * CLI forwards `--model` as-is, verified working on CLI 2.1.162.
- *
- * Consumed by both the orchestrator-side `AGENT_DEFS` and the session-side
- * `ClaudeAdapter.capabilities` — keep this the only place to add a model.
- */
-export const CLAUDE_MODELS = ["claude-opus-5", "claude-sonnet-5", "haiku", "claude-fable-5"];
-
-export const CLAUDE_TOOL_NAMES = [
-  "Agent",
-  "AskUserQuestion",
-  "Bash",
-  "CronCreate",
-  "CronDelete",
-  "CronList",
-  "Edit",
-  "EnterPlanMode",
-  "EnterWorktree",
-  "ExitPlanMode",
-  "ExitWorktree",
-  "Glob",
-  "Grep",
-  "ListMcpResourcesTool",
-  "LSP",
-  "Monitor",
-  "NotebookEdit",
-  "PowerShell",
-  "PushNotification",
-  "Read",
-  "ReadMcpResourceTool",
-  "RemoteTrigger",
-  "ScheduleWakeup",
-  "SendMessage",
-  "ShareOnboardingGuide",
-  "Skill",
-  "TaskCreate",
-  "TaskGet",
-  "TaskList",
-  "TaskStop",
-  "TaskUpdate",
-  "TeamCreate",
-  "TeamDelete",
-  "TodoWrite",
-  "ToolSearch",
-  "WaitForMcpServers",
-  "WebFetch",
-  "WebSearch",
-  "Workflow",
-  "Write",
-] as const;
-
-export const CODEX_TOOL_NAMES = [
-  "shell",
-  "commandExecution",
-  "fileChange",
-  "apply_patch",
-  "mcpToolCall",
-  "dynamicToolCall",
-  "collabToolCall",
-  "spawn_agent",
-  "Agent",
-  "webSearch",
-  "imageView",
-  "view_image",
-  "tool_search",
-  "AskUserQuestion",
-] as const;
+// docs/252 phase 1 — tool names moved to their own module so the harness
+// catalogue can carry them without closing an import cycle with this file.
+// Re-exported here so existing import sites are unchanged.
+export { CLAUDE_TOOL_NAMES, CODEX_TOOL_NAMES } from "./agent-tool-names.js";
 
 /**
- * Single source of truth for Codex models offered in the picker.
+ * docs/252 phase 1 — the model lists are DERIVED from the service catalogue.
  *
- * Order matters: `models[0]` is the default model a fresh Codex session runs
- * with. Codex CLI 0.144.1 lists the GPT-5.6 family as explicit Sol/Terra/Luna
- * slugs; the historical unsuffixed `gpt-5.6` alias is rejected for ChatGPT
- * account auth, so do not expose it as selectable.
+ * They used to be hand-kept arrays here, which is the `AgentId` conflation this
+ * feature removes: a harness is a CLI to spawn, and which models exist is a
+ * property of the *service*. `nativeModelIdsForHarness` returns the models the
+ * harness's own vendor's service declares, de-duplicated across billing modes
+ * and in catalogue order.
+ *
+ * **Restricted to the native service on purpose.** The catalogue also carries
+ * DeepSeek, the gateways and GLM, and the join would offer them here — but
+ * there is no way to give them a credential (phase 2) or route a turn to them
+ * (phase 3) yet, so phase 1 narrows to `nativeService` and nothing user-visible
+ * moves. `catalogue.test.ts` pins both lists against what shipped before the
+ * catalogue existed. Phase 3 replaces both with the credential-filtered join.
+ *
+ * Order still matters exactly as it did: `models[0]` is the default a fresh
+ * install runs with (the server's connect-time fallback and the client picker's
+ * `activeAgent?.models[0]` both resolve to the first entry), so the ordering
+ * *within* a mode in `catalogue/services.ts` is what decides it.
  */
-export const CODEX_MODELS = [
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-  "gpt-5.4",
-  "gpt-5.4-mini",
-  "gpt-5.5",
-  "gpt-5.3-codex",
-  "gpt-5.2",
-];
+export const CLAUDE_MODELS = nativeModelIdsForHarness("claude");
+
+/** See {@link CLAUDE_MODELS} — derived from the `openai` service's rows. */
+export const CODEX_MODELS = nativeModelIdsForHarness("codex");
 
 /**
  * Compatibility shim for rows/session state written before ShipIt stopped
  * surfacing the invalid unsuffixed GPT-5.6 slug. Keep this at the boundary
  * before Codex turns so legacy sessions run the intended Sol model.
+ *
+ * docs/252 phase 1 — the mapping itself now comes from the catalogue's
+ * `retired` record for the `openai` service rather than from a literal here, so
+ * the two cannot drift. Behaviour is unchanged; **generalizing this into the
+ * per-service retirement resolver req 13 describes is phase 8**, which is why
+ * this still takes and returns a bare model id and still only speaks for Codex.
  */
 export function normalizeCodexModelId(model: string | undefined): string | undefined {
-  return model === "gpt-5.6" ? "gpt-5.6-sol" : model;
+  if (!model) return model;
+  for (const mode of getService("openai")?.modes ?? []) {
+    const retired = mode.retired.find((r) => r.id === model);
+    const successor = retired?.successors["openai-responses"];
+    if (successor) return successor;
+  }
+  return model;
 }
 
 export interface AgentInfo {
@@ -151,84 +79,33 @@ export interface AgentInfo {
   capabilities: AgentCapabilities;
 }
 
-/** Agent metadata definitions (static). */
-const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: AgentCapabilities }[] = [
-  {
-    id: "claude",
-    name: "Claude Code",
-    binary: "claude",
+/**
+ * Agent metadata definitions (static), derived from the harness catalogue.
+ *
+ * `HarnessDef.capabilities` is `Omit<AgentCapabilities, "models">` — that single
+ * removal is the type-level content of docs/252 — so this join is the one place
+ * the harness's capabilities and the service's model list come back together.
+ */
+const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: AgentCapabilities }[] =
+  HARNESSES.map((harness) => ({
+    id: harness.id,
+    name: harness.name,
+    binary: harness.binary,
     capabilities: {
-      supportsResume: true,
-      supportsImages: true,
-      supportsSystemPrompt: true,
-      supportsPermissionModes: true,
-      supportedPermissionModes: CLAUDE_PERMISSION_MODES,
-      toolNames: [...CLAUDE_TOOL_NAMES],
-      models: CLAUDE_MODELS,
-      // Claude Code CLI `--effort <level>`. Verified valid values by running
-      // `claude --effort __bogus__`: "low, medium, high, xhigh, max". Omitting
-      // the flag uses the model's adaptive default. See docs/217-per-agent-reasoning.
-      reasoning: {
-        label: "Reasoning",
-        options: [
-          { value: "low", label: "Low" },
-          { value: "medium", label: "Medium" },
-          { value: "high", label: "High" },
-          { value: "xhigh", label: "Extra high" },
-          { value: "max", label: "Max" },
-        ],
-      },
-      supportsReview: true,
-      supportsSteering: true,
-      supportsCompaction: true,
-      skillsDirName: ".claude",
-      skillInvocationPrefix: "/",
+      ...harness.capabilities,
+      supportedPermissionModes: [...harness.capabilities.supportedPermissionModes],
+      toolNames: [...harness.capabilities.toolNames],
+      ...(harness.capabilities.reasoning
+        ? {
+            reasoning: {
+              label: harness.capabilities.reasoning.label,
+              options: harness.capabilities.reasoning.options.map((o) => ({ ...o })),
+            },
+          }
+        : {}),
+      models: nativeModelIdsForHarness(harness.id),
     },
-  },
-  {
-    id: "codex",
-    name: "Codex",
-    binary: "codex",
-    capabilities: {
-      supportsResume: true,
-      supportsImages: false,
-      supportsSystemPrompt: true,
-      supportsPermissionModes: false,
-      supportedPermissionModes: [],
-      toolNames: [...CODEX_TOOL_NAMES],
-      // GPT-5.6 is the current OpenAI frontier family. Codex requires the
-      // explicit Sol slug; the old unsuffixed `gpt-5.6` alias is not accepted
-      // with ChatGPT account auth.
-      models: CODEX_MODELS,
-      // Codex CLI config `model_reasoning_effort`. Verified valid values by
-      // running `codex -c model_reasoning_effort=__bogus__`: "none, minimal,
-      // low, medium, high, xhigh". Omitting the override uses Codex's own
-      // default. Passed at app-server spawn as `-c model_reasoning_effort=…`.
-      // See docs/217-per-agent-reasoning.
-      reasoning: {
-        label: "Reasoning effort",
-        options: [
-          { value: "none", label: "None" },
-          { value: "minimal", label: "Minimal" },
-          { value: "low", label: "Low" },
-          { value: "medium", label: "Medium" },
-          { value: "high", label: "High" },
-          { value: "xhigh", label: "Extra high" },
-        ],
-      },
-      // docs/125 — Codex now ships subagents (model-invoked via the
-      // `spawn_agent` collab tool, triggered by explicit instruction) AND MCP
-      // servers (`[mcp_servers.*]` in config.toml). The worker writes the
-      // review bridge into the Codex config; the same chat-native review flow
-      // works on both backends.
-      supportsReview: true,
-      supportsSteering: true,
-      supportsCompaction: true,
-      skillsDirName: ".codex",
-      skillInvocationPrefix: "$",
-    },
-  },
-];
+  }));
 
 /**
  * Runtime list of known agent ids, derived from `AGENT_DEFS` so it can never
