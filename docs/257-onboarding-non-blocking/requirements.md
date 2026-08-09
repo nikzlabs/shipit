@@ -1,7 +1,7 @@
 ---
 issue: planning#335
 title: Non-blocking onboarding
-description: Onboarding stops being a blocking modal and becomes a wizard in the conversation view, so a new user can see and use ShipIt before connecting anything.
+description: Harness onboarding stops being a blocking modal and becomes an inline, modal-free panel in the conversation view, so a new user can see and use ShipIt before connecting anything.
 ---
 
 # Non-blocking onboarding — requirements
@@ -14,6 +14,12 @@ makes the current onboarding untenable — its credential step is hard-coded to 
 services become plural — but the problems below are ones the flow has today, independent of
 that. docs/252 phase 2 carries an interim that keeps the existing wizard working under the new
 credential keying; this feature replaces the flow.
+
+**Terminology — "harness onboarding" is the subject here.** First-run setup has two parts, and
+they are not interchangeable: connecting **GitHub / git identity**, and connecting a
+**harness credential** so the agent can run. This document is about the second. The GitHub step
+stays in the flow and is not otherwise changed (see *Out of scope*), so where a requirement
+below turns on what is configured or when the flow is finished, it means the harness half.
 
 ## Requirements
 
@@ -40,9 +46,13 @@ credential keying; this feature replaces the flow.
    order, with a sense of what is done and what remains. Removing the blocking behaviour does
    not mean scattering the setup across the app for the user to find.
 
-5. **A step may open a modal when it needs one, but never more than one at a time.** Today two
-   modals can be visible simultaneously, which is confusing and busy. Anything that opens on
-   top of the flow is a single, deliberate thing.
+5. **No modals in harness onboarding.** Every step is resolved in place, in the panel. Today
+   two modals can be visible at once, which is confusing and busy; the fix is not to ration
+   them but to stop using them here. Nothing in this flow opens anything on top of anything
+   else.
+
+   The one thing that legitimately leaves the panel is a provider's own sign-in page, which
+   ShipIt does not own and cannot host. That is a link out, not a modal.
 
 6. **The flow has room to grow.** Once a user is choosing among several services rather than
    two providers (docs/252), the credential step carries materially more than it does now. The
@@ -55,11 +65,14 @@ credential keying; this feature replaces the flow.
    second copy would drift, and the two would disagree about what a connected credential looks
    like.
 
-8. **Onboarding is not dismissible, because it does not need to be.** It occupies the
+8. **Harness onboarding is not dismissible, because it does not need to be.** It occupies the
    conversation view rather than covering the product, so there is nothing for a dismissal to
    uncover. Once at least one harness credential is configured it is finished and does not
    return; adding or changing credentials after that is Settings' job. There is no
-   "re-run onboarding".
+   "re-run harness onboarding".
+
+   This is specifically about the harness half. It says nothing about whether the GitHub step
+   can be skipped or deferred — that step keeps whatever behaviour it has today.
 
 9. **Starter prompts appear only after harness setup.** The empty-session starter prompts
    (`docs/216-onboarding-starter-prompts`) share the conversation view with this flow, and they
@@ -76,6 +89,23 @@ credential keying; this feature replaces the flow.
 _None._
 
 ## Resolved questions
+
+- 2026-08-09 — May a step open a modal? **Chosen: no modals in harness onboarding at all.**
+  Review asked what the use case was, and there is none: the requirement said "at most one at a
+  time" without naming a single step that needed one. It came from an over-reading of an
+  ambiguous phrase in the original description, not from a step that requires one. The Settings
+  credential surface req 7 reuses already resolves everything in place — including disconnect,
+  deliberately inline rather than by toast (`ProviderAccountsCard.tsx:223`) — and the OAuth step
+  is a link to the provider's own sign-in page (`:477`), which is a link-out and not a modal.
+  Rationing modals would also have left the door open to the exact "busy, confusing" problem the
+  requirement was reacting to. Req 5 rewritten.
+
+- 2026-08-09 — Which half of first-run setup do these requirements govern? **Clarified: the
+  harness half.** Review noted that "onboarding" was doing double duty for both the GitHub /
+  git identity step and harness credential setup, which matters most in req 8 — "finished once
+  a credential is configured" is a claim about harnesses, not about GitHub. A terminology
+  paragraph now says so up front, and req 8 says which half it binds. No decision changed; the
+  document was ambiguous about what it already meant.
 
 - 2026-08-09 — What can the user do before connecting a credential, beyond looking? **Chosen:
   everything except the chat; the composer is disabled as a whole.** The agent's
