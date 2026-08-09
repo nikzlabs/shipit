@@ -1,5 +1,6 @@
 import type { UsageTurn, SessionUsage, UsageStats, TurnUsage, WeeklyUsage } from "../shared/types.js";
 import type { DatabaseManager } from "../shared/database.js";
+import type { BillingMode, ModelPrice } from "../shared/catalogue/types.js";
 
 const MS_PER_WEEK = 7 * 24 * 60 * 60 * 1000;
 
@@ -38,7 +39,52 @@ interface UsageRow {
   context_tokens: number | null;
   sub_agent_id: string | null;
   cumulative_cost_usd: number | null;
+  // docs/252 req 16 — attribution. All six are null together (a `legacy` row) or
+  // present together; the table's CHECK constraint is what makes that true.
+  service_id: string | null;
+  billing_mode: string | null;
+  rate_input: number | null;
+  rate_output: number | null;
+  rate_cache_read: number | null;
+  rate_cache_write: number | null;
   created_at: string;
+}
+
+/**
+ * Where a turn's `costUsd` came from — which is what decides whether it still
+ * needs the cumulative-to-delta conversion, and the column cannot say.
+ *
+ * - `cumulative` — a harness's running conversation total (Claude Code's
+ *   `total_cost_usd`). `record()` diffs it against the session's previous
+ *   snapshot to get this turn's cost.
+ * - `per-turn` — already this turn's own cost, from whatever computed it (a
+ *   one-shot sub-agent consult's reported run cost; from phase 3 on, a figure
+ *   derived from the catalogue's persisted rates). Stored verbatim.
+ *
+ * Branching on the *source* rather than on `subAgentId` is the fix docs/252
+ * phase 3 requires: "not a sub-agent implies cumulative" holds only while the
+ * sole producer is Claude on Anthropic, and delta'ing an already-per-turn
+ * figure yields the difference between two consecutive turns.
+ */
+export type TurnCostSource = "cumulative" | "per-turn";
+
+/**
+ * docs/252 req 16 — who billed a turn, and at what rates.
+ *
+ * A single object rather than six loose fields, so the all-or-nothing rule holds
+ * in the type system as well as in SQL: there is no such thing as a row that
+ * knows its service but not what it was charged, and historical attribution
+ * cannot be reconstructed afterwards, so a half-row is unrecoverable.
+ */
+export interface TurnAttribution {
+  serviceId: string;
+  billingMode: BillingMode;
+  /**
+   * The catalogue's unit rates **at the time of the turn**, persisted rather
+   * than looked up later: a price edit must not restate history, and a retired
+   * model has no live price to look up at all (catalogue.md, Pricing).
+   */
+  rates: ModelPrice;
 }
 
 /** Inputs for a single recorded turn. */
@@ -56,7 +102,23 @@ export interface RecordedTurn {
    * tool-use turns. See `TurnUsage.contextTokens` doc.
    */
   contextTokens?: number;
+  /** docs/144 — set when the turn was a sub-agent consult rather than the pinned agent's own. */
+  subAgentId?: string;
+  /**
+   * Defaults to today's behaviour — `per-turn` for a sub-agent consult,
+   * `cumulative` otherwise — so a caller that does not know still gets what it
+   * got before.
+   */
+  costSource?: TurnCostSource;
+  /** Absent = a `legacy` row: written before ShipIt tracked where money went. */
+  attribution?: TurnAttribution;
 }
+
+/** The trailing bag of `record()` — everything `RecordedTurn` holds that the positional parameters don't. */
+export type RecordedTurnExtra = Omit<
+  RecordedTurn,
+  "costUsd" | "durationMs" | "inputTokens" | "outputTokens"
+>;
 
 export class UsageManager {
   private db;
@@ -74,17 +136,28 @@ export class UsageManager {
         session_id, cost_usd, duration_ms,
         input_tokens, output_tokens,
         cache_read_tokens, cache_create_tokens, model, context_tokens,
-        sub_agent_id, cumulative_cost_usd
+        sub_agent_id, cumulative_cost_usd,
+        service_id, billing_mode,
+        rate_input, rate_output, rate_cache_read, rate_cache_write
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    // Most recent cumulative snapshot for a session's PRIMARY-agent turns, used
-    // to diff the CLI's running total into a per-turn delta. Sub-agent rows
-    // carry a null cumulative and are excluded so a consult can't perturb the
-    // primary resume chain's baseline.
+    // Most recent cumulative snapshot for ONE agent's turns within a session,
+    // used to diff a running total into a per-turn delta. The chain is keyed by
+    // `(session, sub_agent_id)` because a resume chain belongs to one
+    // conversation: the primary agent's chain is the `sub_agent_id IS NULL` one,
+    // so a consult still can't perturb it — that guarantee is unchanged, just
+    // stated as a key rather than as an exclusion. Binding NULL through `IS ?`
+    // reproduces the previous `IS NULL` clause exactly for every primary turn.
+    //
+    // Keyed rather than primary-only because docs/252's cost-source
+    // discriminator makes a cumulative CONSULT expressible, where `subAgentId`
+    // previously made it unreachable. Under the old exclusion such a row would
+    // have been diffed against the PRIMARY agent's unrelated running total,
+    // which is a wrong number rather than a missing one.
     this.stmtLastCumulative = this.db.prepare(`
       SELECT cumulative_cost_usd FROM usage_turns
-      WHERE session_id = ? AND sub_agent_id IS NULL AND cumulative_cost_usd IS NOT NULL
+      WHERE session_id = ? AND sub_agent_id IS ? AND cumulative_cost_usd IS NOT NULL
       ORDER BY id DESC LIMIT 1
     `);
     this.stmtSessionUsage = this.db.prepare(`
@@ -112,23 +185,35 @@ export class UsageManager {
    * callers continue to work; new fields can be supplied via the trailing
    * `extra` object.
    *
-   * Cost semantics — IMPORTANT: for a PRIMARY-agent turn, `costUsd` is the
-   * CLI's `total_cost_usd`, which is the running total of the entire resumed
-   * conversation, NOT this turn's cost. We convert it into a per-turn delta
-   * here (`max(0, current - previous)`), storing the delta in `cost_usd` and
-   * the raw cumulative in `cumulative_cost_usd` so the next turn can diff
+   * Cost semantics — IMPORTANT: a `cumulative` cost (`extra.costSource`, which
+   * is what a harness's `total_cost_usd` is) is the running total of the entire
+   * resumed conversation, NOT this turn's cost. We convert it into a per-turn
+   * delta here (`max(0, current - previous)`), storing the delta in `cost_usd`
+   * and the raw cumulative in `cumulative_cost_usd` so the next turn can diff
    * against it. A reset (the CLI's running total drops because the resume chain
    * broke — e.g. a container re-clone started a fresh conversation) shows up as
    * `current < previous`, which the `max(0, …)` collapses to treating `current`
    * as a new baseline. SUM(cost_usd) is then the true session bill instead of a
    * sum of cumulative snapshots (which over-counted ~N× for N resume chains).
    *
-   * Sub-agent turns (`extra.subAgentId` set) are one-shot consults that already
-   * report a per-run cost, so they're stored verbatim with a null cumulative
-   * and never participate in the primary chain's delta baseline.
+   * A `per-turn` cost is already this turn's own and is stored verbatim, with a
+   * null cumulative so it never becomes a baseline the next cumulative turn
+   * diffs against. Sub-agent turns (`extra.subAgentId` set) are one-shot
+   * consults that report a per-run cost, so that is what they default to.
    *
-   * Returns the per-turn cost actually persisted (the delta for a primary turn,
-   * the verbatim value for a sub-agent), so the live emit can show the same
+   * The default reproduces the historical rule exactly — sub-agent ⇒ per-turn,
+   * everything else ⇒ cumulative — but the rule itself is only true while the
+   * sole producer is a harness billing its own vendor. A caller with a
+   * rate-derived figure says so; see {@link TurnCostSource}.
+   *
+   * The delta chain is keyed by `(session, subAgentId)`, because a running total
+   * belongs to one conversation. The primary agent's chain is the one with no
+   * sub-agent, so a consult still never perturbs it; and a consult that does
+   * report a running total diffs against its OWN previous snapshot rather than
+   * against the primary agent's unrelated one.
+   *
+   * Returns the per-turn cost actually persisted (the delta for a cumulative
+   * turn, the verbatim value otherwise), so the live emit can show the same
    * figure the DB will rehydrate instead of the cumulative snapshot.
    */
   record(
@@ -137,14 +222,15 @@ export class UsageManager {
     durationMs: number,
     inputTokens?: number,
     outputTokens?: number,
-    extra?: { cacheRead?: number; cacheCreate?: number; model?: string; contextTokens?: number; subAgentId?: string },
+    extra?: RecordedTurnExtra,
   ): number {
-    const isSubAgent = extra?.subAgentId !== undefined;
+    const costSource: TurnCostSource =
+      extra?.costSource ?? (extra?.subAgentId !== undefined ? "per-turn" : "cumulative");
     let perTurnCost = costUsd;
     let cumulative: number | null = null;
-    if (!isSubAgent) {
+    if (costSource === "cumulative") {
       cumulative = costUsd;
-      const prev = this.stmtLastCumulative.get(sessionId) as
+      const prev = this.stmtLastCumulative.get(sessionId, extra?.subAgentId ?? null) as
         | { cumulative_cost_usd: number }
         | undefined;
       const prevCum = prev?.cumulative_cost_usd;
@@ -154,6 +240,9 @@ export class UsageManager {
       perTurnCost =
         prevCum !== undefined && cumulative >= prevCum ? cumulative - prevCum : cumulative;
     }
+    // All six or none — the CHECK constraint rejects anything else. Absent is
+    // the `legacy` bucket, which needs no discriminator of its own.
+    const attribution = extra?.attribution;
     this.stmtInsert.run(
       sessionId,
       perTurnCost,
@@ -167,6 +256,12 @@ export class UsageManager {
       // docs/144 — attribute to the sub-agent when the turn was a spawn.
       extra?.subAgentId ?? null,
       cumulative,
+      attribution?.serviceId ?? null,
+      attribution?.billingMode ?? null,
+      attribution?.rates.input ?? null,
+      attribution?.rates.output ?? null,
+      attribution?.rates.cacheRead ?? null,
+      attribution?.rates.cacheWrite ?? null,
     );
     return perTurnCost;
   }
