@@ -114,9 +114,9 @@ below turns on what is configured or when the flow is finished, it means the har
     This is a gate on top of whatever eligibility docs/216 defines for itself — it removes
     prompts in a case docs/216 would otherwise allow, and never adds them anywhere.
 
-    The gate is on *having been through onboarding*, not on being currently runnable. So a user
-    who completed onboarding and later removed every credential still sees prompts, above a
-    disabled composer that explains itself (req 3). Prompts are not suppressed in that state.
+    Having been through onboarding is a **necessary** condition. Whether it is also
+    *sufficient* — specifically whether prompts show when onboarding was completed but nothing
+    is currently runnable — is an open question below.
 
 ## Out of scope
 
@@ -125,9 +125,29 @@ below turns on what is configured or when the flow is finished, it means the har
 
 ## Open questions
 
-_None._
+- **Do starter prompts require a runnable chat, or only a completed onboarding?** Req 10 settles
+  that prompts never appear to a user who has *not* been through onboarding. It does not settle
+  the converse case: onboarding completed, then every credential removed. If prompts show there,
+  pressing one is incoherent — a chip seeds the composer via prefill and deliberately does not
+  auto-send (`docs/216` plan:41), so the text lands in a disabled input **and replaces the
+  placeholder that was explaining why it is disabled** (req 3). The user is left holding a
+  message they cannot send, with the explanation gone.
+
+  The clean fix is a second necessary condition — prompts appear only when the chat is actually
+  runnable — which does not contradict req 10's rule and collapses to the same behaviour in
+  every normal case, since a user who has just finished onboarding is runnable by definition.
+  The alternatives are making chips inert while disabled (a visible control that does nothing)
+  or re-pointing them at Settings in that state (a chip that means two different things).
 
 ## Resolved questions
+
+- 2026-08-09 — **Correction to the receipt below.** It recorded req 10 as clarified so that
+  "prompts are not suppressed" in the post-completion, no-credentials state. That was the
+  agent's inference from the gate's wording, not part of the answer, and review immediately
+  asked the obvious follow-up: what happens when the user presses one? Nothing in the answer
+  settles that. The clarification has been withdrawn from req 10 and the question reopened
+  above. An agent inference never closes an open question, which is precisely what happened
+  here.
 
 - 2026-08-09 — In the post-completion, no-credentials state, what does the user see and what
   does the disabled composer say? **Chosen: the composer explains itself in its own
