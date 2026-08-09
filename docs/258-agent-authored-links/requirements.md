@@ -34,9 +34,11 @@ one requirement — with no way to make that pointer clickable.
 9. A Present destination is addressed by the artifact's **file path plus a URL
    fragment**; the fragment is what names the place inside it. This works for
    **rendered HTML and for markdown** artifacts.
-10. A pointer that cannot be opened — for **any** reason — **stays clickable**
-    and, on click, says why instead of doing nothing. The explanation appears as
-    a **toast**, the same way for both destinations.
+10. A pointer that cannot be opened **stays clickable** and, on click, says why
+    instead of doing nothing. The explanation appears as a **toast**, the same
+    way for both destinations. This is **best effort**: ShipIt reports the
+    failures it can determine, and does not build machinery to detect the rest.
+    A pointer that appears to open successfully is treated as having opened.
 11. A pointer can also make the destination page **react** in its own
     JavaScript — highlight the item, open a drawer, switch a filter — rather
     than only being scrolled to an anchor. This applies to the **Preview**
@@ -66,17 +68,19 @@ respond to every click is a page that should be a preview service.
 
 ## Open questions
 
-- **Which failures must req 10's toast cover?** Req 10 currently says "for any
-  reason", and ShipIt cannot honour that literally. Some failures it can
-  determine (unknown service, artifact never presented, a refused send, a
-  service that reaches `error`). Others it cannot without a correlated
-  request/result protocol, handshake timeouts and proxy correlation — and some
-  not even then, because ShipIt cannot tell a route that opened fine from an app
-  showing its own "not found" screen. Narrow req 10 to failures ShipIt can
-  determine, or accept building that subsystem? Raised by the cross-backend
-  review. Nothing is implemented while this is open.
+_None._
 
 ## Resolved questions
+
+- **2026-08-09 — Which failures must req 10's toast cover?** Req 10 said "for
+  any reason", which ShipIt cannot honour literally: some failures need a
+  correlated request/result protocol, handshake timeouts and proxy correlation
+  to observe, and some are undetectable even then — a route that loads and shows
+  the app's own "not found" screen is indistinguishable from one that opened
+  correctly. Offered narrowing it to what ShipIt can determine, or building that
+  subsystem. Answer: *"yes best effort"*. Recorded in req 10. The failures ShipIt
+  reports are listed in [`plan.md`](./plan.md); that list is a design decision
+  and may grow without changing this requirement.
 
 - **2026-08-09 — Does the feature need a ShipIt API for page reaction, or is the
   URL enough?** The requester: *"do we actually need a special API? The page JS

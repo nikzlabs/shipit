@@ -332,10 +332,9 @@ one is the default case.
 
 ## Unopenable pointers (req 10)
 
-> **Open question.** Req 10 says "for any reason", and ShipIt cannot honour that
-> literally — see `requirements.md`. The table below is the set of failures
-> ShipIt can determine locally; it is the proposal pending that answer, not a
-> settled design.
+Req 10 is **best effort**: this table is the set of failures ShipIt can
+determine locally, and it is a design decision — it may grow without the
+requirement changing.
 
 A pointer always renders and always accepts a click; one that cannot be opened
 explains itself in a toast (`ui-store.setToast`, `variant: "error"`) rather than
@@ -356,13 +355,13 @@ silently doing nothing:
 Each names the missing thing, because "couldn't open that" gives the user
 nothing to act on. A *stopped* service is not a failure — it is req 12.
 
-**What this cannot cover, deliberately.** A route that loads and shows the app's
+**What this deliberately does not cover.** A route that loads and shows the app's
 own "not found" screen is indistinguishable from a route that opened correctly;
 so is a service that stays `starting` forever, or a `send()` that returns true
 and is lost before the server receives it. Detecting those needs a correlated
-request/result protocol, SDK acknowledgements and proxy correlation — a
-subsystem, built to preserve a phrase. The open question above is whether to
-narrow req 10 instead.
+request/result protocol, acknowledgements and proxy correlation — a subsystem
+built to preserve a phrase. Req 10 is best effort precisely so that subsystem
+never gets built: a pointer that appears to open is treated as having opened.
 
 A server-side start failure currently comes back as a generic WS error that
 renders as a transcript error bubble (`service-handlers.ts:26`, `error.ts:5`);
