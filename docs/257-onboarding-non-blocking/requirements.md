@@ -42,6 +42,13 @@ below turns on what is configured or when the flow is finished, it means the har
    cannot do. Sessions, files, previews, the terminal, navigation and settings all behave
    normally.
 
+   **A disabled composer always says why, in its own placeholder** — to the effect of "Add at
+   least one service for the chat to work". This holds **whenever** the composer is disabled for
+   want of a runnable service, not only during onboarding: while the panel is on screen it
+   restates the ask in the place the user is about to click, and in any state where the panel is
+   absent it is the only thing explaining the disabled input. Exact wording is a design
+   decision, not a requirement.
+
 4. **It is still a sequence, not a settings page.** The user is guided through the steps in an
    order, with a sense of what is done and what remains. Removing the blocking behaviour does
    not mean scattering the setup across the app for the user to find.
@@ -107,6 +114,10 @@ below turns on what is configured or when the flow is finished, it means the har
     This is a gate on top of whatever eligibility docs/216 defines for itself — it removes
     prompts in a case docs/216 would otherwise allow, and never adds them anywhere.
 
+    The gate is on *having been through onboarding*, not on being currently runnable. So a user
+    who completed onboarding and later removed every credential still sees prompts, above a
+    disabled composer that explains itself (req 3). Prompts are not suppressed in that state.
+
 ## Out of scope
 
 - **Removing the GitHub / git identity step.** Whether that step should exist at all is a fair
@@ -114,17 +125,19 @@ below turns on what is configured or when the flow is finished, it means the har
 
 ## Open questions
 
-- **In the post-completion, no-credentials state, what does the user see and what does the
-  disabled composer say?** This one is produced by the answers rather than left over from
-  before. A user who completed onboarding and later removed every credential gets: no
-  onboarding panel (req 9 — it never returns), starter prompts (req 10 — they *did* go through
-  onboarding), and a disabled composer (req 3 — nothing is runnable). So the prompts are
-  visible and clicking one seeds an input that cannot be used. Each requirement is right on its
-  own; together they describe a screen that offers an action it cannot perform. The narrow
-  question is what that state should show instead — prompts suppressed, or shown with something
-  that explains the composer and points at Settings.
+_None._
 
 ## Resolved questions
+
+- 2026-08-09 — In the post-completion, no-credentials state, what does the user see and what
+  does the disabled composer say? **Chosen: the composer explains itself in its own
+  placeholder — "Add at least one service for the chat to work" or similar — and this applies
+  whenever the composer is disabled, not only in that state.** The question offered two options,
+  suppressing the prompts or explaining the composer; the answer took the second and then
+  generalised it past the case asked about, which is why it landed on req 3 (the composer)
+  rather than on req 10 (the prompts). One consequence worth naming: the same message serves
+  both while the panel is on screen and after onboarding is long finished, so it must make sense
+  without the panel next to it. Req 3 amended, req 10 clarified that prompts are not suppressed.
 
 - 2026-08-09 — When is harness onboarding finished — a stored credential, or a runnable model?
   **Chosen: when something is runnable.** Raised by cross-backend review, which noted that
