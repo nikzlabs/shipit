@@ -114,9 +114,13 @@ below turns on what is configured or when the flow is finished, it means the har
     This is a gate on top of whatever eligibility docs/216 defines for itself — it removes
     prompts in a case docs/216 would otherwise allow, and never adds them anywhere.
 
-    Having been through onboarding is a **necessary** condition. Whether it is also
-    *sufficient* — specifically whether prompts show when onboarding was completed but nothing
-    is currently runnable — is an open question below.
+    **Prompts also require a runnable chat.** Both conditions hold: onboarding completed *and*
+    something currently runnable. In every normal case these coincide, because a user who has
+    just finished onboarding is runnable by definition; they diverge only where onboarding was
+    completed and every credential later removed, and there the prompts are hidden. A chip seeds
+    the composer rather than sending, so a chip above a disabled composer would put text into an
+    input that cannot send it — and replace the placeholder explaining why (req 3) with that
+    text. Never showing a control that cannot do its job is the simpler rule.
 
 ## Out of scope
 
@@ -125,21 +129,19 @@ below turns on what is configured or when the flow is finished, it means the har
 
 ## Open questions
 
-- **Do starter prompts require a runnable chat, or only a completed onboarding?** Req 10 settles
-  that prompts never appear to a user who has *not* been through onboarding. It does not settle
-  the converse case: onboarding completed, then every credential removed. If prompts show there,
-  pressing one is incoherent — a chip seeds the composer via prefill and deliberately does not
-  auto-send (`docs/216` plan:41), so the text lands in a disabled input **and replaces the
-  placeholder that was explaining why it is disabled** (req 3). The user is left holding a
-  message they cannot send, with the explanation gone.
-
-  The clean fix is a second necessary condition — prompts appear only when the chat is actually
-  runnable — which does not contradict req 10's rule and collapses to the same behaviour in
-  every normal case, since a user who has just finished onboarding is runnable by definition.
-  The alternatives are making chips inert while disabled (a visible control that does nothing)
-  or re-pointing them at Settings in that state (a chip that means two different things).
+_None._
 
 ## Resolved questions
+
+- 2026-08-09 — Do starter prompts require a runnable chat, or only a completed onboarding?
+  **Chosen: both — prompts require a runnable chat as well.** The two conditions coincide in
+  every normal case and diverge only where onboarding was completed and every credential later
+  removed; there, the prompts are hidden. The deciding fact is that a chip seeds the composer
+  rather than sending (`docs/216` plan:41), so a chip above a disabled composer puts text into
+  an input that cannot send it *and* replaces the placeholder explaining why (req 3) — leaving
+  the user holding an unsendable message with the explanation gone. The alternatives were inert
+  chips (a visible control that does nothing) or re-pointing them at Settings in that state (one
+  chip meaning two things). Req 10 amended.
 
 - 2026-08-09 — **Correction to the receipt below.** It recorded req 10 as clarified so that
   "prompts are not suppressed" in the post-completion, no-credentials state. That was the
