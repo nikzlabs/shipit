@@ -13,20 +13,22 @@ The requirements govern the **harness** half of first-run setup — connecting a
 the agent can run. The GitHub / git-identity step stays in the flow and is out of scope for
 removal; where this plan changes anything about it, it says so and says why.
 
-> **Two open questions are outstanding** in `requirements.md`, both raised by the
-> cross-backend review of this document: when the panel goes away relative to the GitHub
-> step, and what an install upgraded with no credentials should see. The sections
-> *GitHub: what stays* and *`harnessOnboardingCompletedAt`* are provisional until they are
-> answered; nothing else in this plan depends on either.
+**The two halves separate rather than merge.** The 2026-08-09 answers settle that the GitHub
+step keeps today's behaviour **in full, including that it blocks**: the product stays gated
+until GitHub is connected, and a later loss gates it again. Only the harness half becomes the
+inline panel. Everything below assumes that split, and it is what makes the design smaller
+than an earlier draft that tried to carry both steps in one non-blocking surface.
 
 ## The delta, stated against what is in the tree today
 
-Three things exist today and all three change.
+Three things exist today. One is preserved, two change.
 
-**1. Onboarding is a fixed overlay over the whole product.** `OnboardingWizard` renders
-`fixed inset-0 z-50` with a backdrop (`OnboardingWizard.tsx:184`), mounted by
-`AuthOverlayContainer` whenever `showOnboarding` is true (`AuthOverlay.tsx:42`). Nothing
-behind it is reachable — not the file tree, not previews, not Settings (reqs 1, 3).
+**1. Onboarding is a fixed overlay over the whole product — and for GitHub that stays.**
+`OnboardingWizard` renders `fixed inset-0 z-50` with a backdrop (`OnboardingWizard.tsx:184`),
+mounted by `AuthOverlayContainer` whenever `showOnboarding` is true (`AuthOverlay.tsx:42`).
+Nothing behind it is reachable. That gate survives, trimmed to **step 1 only**: while GitHub
+is unconnected the product is blocked exactly as today. What leaves the overlay is step 2 —
+the harness credential — which is what reqs 1 and 3 are about.
 
 **2. Its credential step is hard-coded to two providers.** It renders `ProviderAccountsCard`
 for `provider="claude"` (`OnboardingWizard.tsx:248`) and `provider="codex"` (`:255`), and
@@ -42,8 +44,11 @@ it says why (req 3).
 
 The gating logic itself lives in `App.tsx:354–377`: `noAgentReady` (any agent installed *and*
 `authConfigured`), `githubNeeded`, their disjunction `needsOnboarding`, and a latch
-(`onboardingTriggeredRef`, `onboardingDismissed`) that holds the modal open until "Get
-Started" is clicked. All of it goes.
+(`onboardingTriggeredRef`, `onboardingDismissed`) that holds the modal open until "Get Started"
+is clicked. **`githubNeeded` survives and drives the gate directly; everything else goes** —
+including the latch, whose whole purpose was to stop the modal closing reactively when agent
+auth completed mid-wizard. A GitHub-only gate should close the instant GitHub connects, which
+is what no latch does.
 
 ## Dependency on docs/252, and the sequencing decision that is not made here
 
@@ -165,15 +170,14 @@ every existing signal (`authConfigured`, the accounts list, stored keys) describ
   settings read after the upgrade finds the flag absent, finds `canRunTurns` true, and stamps
   — so every already-configured install is "completed" before it renders a frame. No separate
   migration step.
-  - **An install upgraded with no credentials is an open question, not a decision this plan
-    makes.** Req 9's condition is historical, and disconnecting deletes the record
+  - **An install upgraded with *no* credentials is treated as never-configured and does see
+    the panel** (answered 2026-08-09; req 9 now records it). Disconnecting deletes the record
     (`credential-store.ts:280`), so "completed, then removed everything" and "never
-    configured" are the same bytes on an install that predates the flag. Under the rule above
-    the first group sees the panel again, which req 9 forbids. The alternative — stamp *every*
-    pre-existing install unconditionally — hides the panel from a genuinely unconfigured
-    upgrader. See `requirements.md` → *Open questions*. An earlier draft of this section
-    resolved it by adding a second stamp condition ("also stamp if any credential record
-    exists"); that was an agent inference dressed as a narrowing, and it is withdrawn.
+    configured" are the same bytes on an install that predates the flag, and the chosen rule
+    fails toward showing a correct ask to someone who cannot run a turn rather than hiding it
+    from someone who needs it. There is **no second stamp condition** — an earlier draft added
+    "also stamp if any credential record exists" as a narrowing; that was an agent inference,
+    and it is withdrawn.
 
 Putting the stamp in the read path is a deliberate impurity. The alternative — stamping at
 each credential-mutation site — misses the migration case entirely and silently un-covers
@@ -236,23 +240,25 @@ fall out for free rather than needing the `hidden md:flex` the hero uses today.
 
 ### The steps (req 4)
 
-Two, in order, with a rail showing what is done and what remains:
+The panel's own step is one — **Add a service**, the docs/252 Services surface hosted inline
+(below), complete when `canRunTurns`. Its internal sequence is that surface's: choose a
+service, then a billing mode, then supply the credential.
 
-1. **Connect GitHub** — `GitHubTokenForm`, unchanged, exactly as the wizard uses it today
-   (`OnboardingWizard.tsx:234`). Complete when `githubStatus.authenticated`.
-2. **Add a service** — the docs/252 Services surface, hosted inline (below). Complete when
-   `canRunTurns`.
+The rail above it carries **two** entries, the first being **GitHub, already done**. That is
+always true by construction — the gate guarantees it — and it is there for req 4: a first-run
+user should see that setup has a shape and where they are in it, not a lone form that reads as
+a settings page dropped into the chat. It is a marker, not a step: nothing about it is
+interactive, and clicking it does nothing.
 
-Removing the blocking behaviour does not scatter setup across the app (req 4): the steps are
-still a sequence in one place, and the rail still says where the user is in it.
+Removing the blocking behaviour does not scatter setup across the app (req 4): what remains is
+still a sequence in one place.
 
 ### There is no completion button, and completion is not a click
 
 The wizard's "Get Started" (`OnboardingWizard.tsx:278`) exists only because the modal is a
-gate that has to be closed. Nothing is gated now, and req 9 makes the panel non-dismissible,
-so the button has nothing to do: the panel's presence is a computed fact, not a click, and it
-yields the pane the moment the server stamps `harnessOnboardingCompletedAt` (whether GitHub
-also holds the panel open is the open question above; nothing here turns on the answer).
+gate that has to be closed. The harness half is not gated any more, and req 9 makes the panel
+non-dismissible, so the button has nothing to do: the panel's presence is a computed fact, not
+a click, and it yields the pane the moment the server stamps `harnessOnboardingCompletedAt`.
 
 **What confirms success, then?** The yield itself. The pane becomes the conversation and the
 composer's placeholder goes back to normal — the thing the user was told they could not do
@@ -336,36 +342,29 @@ structural reasons, neither of which is "we made the box bigger":
   column). A full-height pane that scrolls with the page removes the constraint rather than
   budgeting within it.
 
-### GitHub: what stays, and the open question underneath it
+### GitHub stays a blocking gate, and that is what keeps this design small
 
-The step stays, and its content is unchanged (out of scope). Inside the panel it is step 1,
-before the service step, exactly as today. What is **not** settled is the panel's *lifetime*
-relative to it, and this plan does not settle it — it is under *Open questions* in
-`requirements.md`.
+The step is unchanged in every respect, including that it blocks (requirements → *Out of
+scope*, receipt of 2026-08-09). Concretely: `OnboardingWizard` is trimmed to its step 1 and
+renamed `GitHubGate` — same overlay, same `GitHubTokenForm` (`OnboardingWizard.tsx:234`), same
+`githubNeeded` condition (`App.tsx:363`), no step dots, no `initialStep`, no agent props. A
+token revoked years later re-gates the product exactly as it does now.
 
-The conflict, stated so the answer can be checked against it. The requirements' terminology
-paragraph says "when the flow is finished" means the harness half, which points at visibility
-being `harnessOnboardingCompletedAt == null` with GitHub playing no part. The *Out of scope*
-section says the GitHub step keeps today's behaviour, and today `githubNeeded` alone summons
-the whole wizard — `needsOnboarding = githubNeeded || noAgentReady` (`App.tsx:364`) — including
-for an established user whose token was later revoked. Both were true of a modal that only ever
-covered an empty product. They stop being jointly true once the panel replaces the conversation
-and is not dismissible (req 9):
+Three consequences worth naming, because each removes a problem an earlier draft had to
+argue its way around:
 
-- **Harness-only lifetime.** A user who connects a service from Settings while step 1 is on
-  screen — now reachable, because req 1 makes Settings usable — ends the flow with GitHub
-  unconnected, and a later GitHub loss never re-opens the panel.
-- **Waits on GitHub too.** The panel sits permanently and undismissibly in the conversation
-  view of a user who has a working agent and does not want GitHub, and returns over an
-  established user's real chat when a token expires.
+- **The gate and the panel are never on screen together.** The panel is only ever reached
+  after the gate has passed, so there is no ordering to define between them, and req 5's "two
+  modals at once" complaint cannot recur through this door.
+- **The panel's visibility is `harnessOnboardingCompletedAt == null`, full stop.** GitHub does
+  not appear in it. Nothing about GitHub can hold the panel open or bring it back.
+- **A user can no longer end the flow with GitHub unconnected.** Settings is not reachable
+  while the gate is up, so the "connect a service from Settings during step 1" path an earlier
+  draft had to accommodate does not exist.
 
-An earlier draft of this plan chose the first and called it forced. Review disagreed, and it
-was right to: the second reading has textual support in the requirements, so choosing between
-them is a human decision, not an inference.
-
-Whichever is chosen, GitHub keeps its existing non-panel surfaces — Settings → Integrations
-renders the same `GitHubTokenForm` (`SettingsIntegrations.tsx:120`), as does the add-repo
-dialog (`AddRepoDialog.tsx:133`) — so no answer strands a user without a way to connect it.
+The GitHub step's other surfaces are unaffected and unchanged: Settings → Integrations renders
+the same form (`SettingsIntegrations.tsx:120`), as does the add-repo dialog
+(`AddRepoDialog.tsx:133`).
 
 The add-repo dialog is itself a modal, and that is fine: req 5 binds harness onboarding, and
 adding a repository is not part of it.
@@ -435,7 +434,7 @@ Two PRs. This is a small feature and does not want more.
 | # | Phase | Reqs | Lands |
 |---|---|---|---|
 | 1 | Runnable signal + honest composer | 3, 8, 10 | `canRunTurns` on the wire; the composer is genuinely disabled and says why; the starter-prompts predicate exists and is tested. The wizard is untouched. |
-| 2 | The panel | 1, 2, 4, 5, 6, 7, 9 | `harnessOnboardingCompletedAt`; `HarnessOnboardingPanel` in the chat pane; `OnboardingWizard` and `AuthOverlay` deleted. |
+| 2 | The panel | 1, 2, 4, 5, 6, 7, 9 | `harnessOnboardingCompletedAt`; `HarnessOnboardingPanel` in the chat pane; the wizard trimmed to a GitHub-only gate. |
 
 Phase 1 is coherent alone: under today's code its predicate is `!noAgentReady`, so it makes
 the existing product honest without changing the flow. Phase 2 is where the dependency on
@@ -446,11 +445,11 @@ the split is about reviewability, not about shipping order.
 
 | File | Change |
 |---|---|
-| `client/components/OnboardingWizard.tsx` | **Deleted.** Replaced by the panel. |
-| `client/AuthOverlay.tsx` | **Deleted.** Its only job is mounting the wizard. |
-| `client/components/OnboardingWizard.test.tsx` | **Deleted**, replaced by the panel's tests. |
-| `client/components/HarnessOnboardingPanel.tsx` | **New.** The panel: lede, step rail, GitHub step, Services step. |
-| `client/App.tsx` | Drop `noAgentReady` / `needsOnboarding` / the latch (`:354–377`) and the `AuthOverlayContainer` mount (`:2039`); render the panel in the chat-pane slot (`:1892`); pass `disabledReason` to the composer (`:1985`). |
+| `client/components/OnboardingWizard.tsx` | **Trimmed to step 1 and renamed `GitHubGate.tsx`** — same blocking overlay, same `GitHubTokenForm`; step 2, `StepDots`, `initialStep` and the agent props go. |
+| `client/AuthOverlay.tsx` | **Kept**, now mounting the gate on `githubNeeded` alone. |
+| `client/components/OnboardingWizard.test.tsx` | Step-1 cases kept as the gate's tests; step-2 cases replaced by the panel's. |
+| `client/components/HarnessOnboardingPanel.tsx` | **New.** The panel: lede, rail (GitHub done + Add a service), the Services surface. |
+| `client/App.tsx` | Drop `noAgentReady` / `needsOnboarding` / the latch (`:354–377`), keeping `githubNeeded` (`:363`) as the gate's sole condition; render the panel in the chat-pane slot (`:1892`); pass `disabledReason` to the composer (`:1985`). |
 | `client/components/MessageInput/MessageInput.tsx` | `disabledReason` prop: disables the textarea (`:766`), attach (`:780`), paste/drop (`:681`), mic (`:799`), permission selector (`:820`); renders the textarea empty so a draft cannot hide the placeholder. |
 | `client/components/QuickCaptureOverlay.tsx` | Its own `disabled` (`:147`) gates on `canRunTurns` too — it renders the same composer. |
 | `client/utils/chat-runnable.ts` | **New.** `canRunTurns` reader + `starterPromptsAllowed`. |
@@ -467,6 +466,11 @@ the split is about reviewability, not about shipping order.
 
 - **Keep the modal, make it dismissible.** Req 9's receipt already disposes of it: dismissal
   only matters for something that covers the product. Removing the cover is the fix.
+- **Carry both steps in one non-blocking surface**, with the panel's lifetime defined by the
+  harness half. An earlier draft of this plan chose it and called it forced; the 2026-08-09
+  answer rejects it. Keeping GitHub a blocking gate is smaller — no ordering between two
+  surfaces, no reachable "finished with GitHub unconnected" state, and no change at all to a
+  step that was out of scope.
 - **Ask for the credential when the user tries to send.** Considered and rejected in the
   requirements (req 3's receipt): it lets a user type something that cannot run and blocks at
   submit, which is a worse moment to learn the rule than an obviously-disabled input.
@@ -493,7 +497,8 @@ not belong in `requirements.md`, and none of these is promoted there.
 | Where results and errors go, given the surface uses toasts (req 5) | Inline in the shared component for both hosts, rather than an onboarding-only branch. |
 | How far "disabled as a whole" reaches (req 3) | The whole input cluster, an empty textarea so the reason is always legible, and Quick Capture as well as the main composer. |
 | Whether the panel replaces `HomeScreen` too | Yes — req 9's "wherever they are"; add-repo stays reachable from the sidebar and the repo switcher. |
+| What the rail shows, now that GitHub is not a step in the panel | Two entries, the first a non-interactive "GitHub — done" marker, so the panel reads as a sequence rather than a form (req 4). |
 
-**Not on this list, because they are not the plan's to decide:** the panel's lifetime relative
-to the GitHub step, and what a legacy install with no credentials sees. Both are under
-*Open questions* in `requirements.md`.
+**Not on this list, because the requirements answer them:** the GitHub step keeps today's
+blocking behaviour, and a legacy install with no credentials sees the panel. Both were open
+questions and are now dated receipts in `requirements.md`.

@@ -1,21 +1,18 @@
 # Checklist
 
-> **Status: design-only, and blocked.** No implementation code is in the tree, and
-> [`requirements.md`](./requirements.md) has **two open questions** (the panel's lifetime
-> relative to the GitHub step; what an install upgraded with no credentials sees). No
-> implementation starts until both are answered by a human and receipted.
+> **Status: design-only.** No implementation code is in the tree. Both open questions are
+> answered and receipted.
 >
-> Phase 2 also depends on [`docs/252`](../252-custom-models/plan.md): phases 1–2 to exist,
-> phase 3 for req 6 to actually be delivered. See [`plan.md`](./plan.md) → *Dependency on
-> docs/252*.
+> Phase 2 depends on [`docs/252`](../252-custom-models/plan.md): phases 1–2 to exist, phase 3
+> for req 6 to actually be delivered. See [`plan.md`](./plan.md) → *Dependency on docs/252*.
 
 ## Design
 
 - [x] `requirements.md` written and reviewed cross-backend
 - [x] `plan.md` written against it
 - [x] `plan.md` reviewed cross-backend; verified findings folded in
-- [ ] Open question answered: panel lifetime vs the GitHub step (+ dated receipt)
-- [ ] Open question answered: legacy install with no credentials (+ dated receipt)
+- [x] Open question answered: GitHub keeps today's blocking behaviour in full (+ receipt)
+- [x] Open question answered: stamp only if currently runnable (+ receipt)
 
 ## Phase 1 — runnable signal + honest composer (reqs 3, 8, 10)
 
@@ -42,22 +39,27 @@
 ## Phase 2 — the panel (reqs 1, 2, 4, 5, 6, 7, 9)
 
 - [ ] `harnessOnboardingCompletedAt` on `CredentialData`; stamped when the server first sees
-      `canRunTurns === true`; never cleared; legacy behaviour per the answered open question
+      `canRunTurns === true`; never cleared; no second stamp condition
 - [ ] Field on `GlobalSettings` + every SSE `agent_list` producer
-- [ ] `HarnessOnboardingPanel`: single-column lede, step rail, step 1 GitHub
-      (`GitHubTokenForm`), step 2 Services
+- [ ] `OnboardingWizard` trimmed to step 1 and renamed `GitHubGate`; `StepDots`, `initialStep`
+      and the agent props removed; `AuthOverlay` mounts it on `githubNeeded` alone
+- [ ] `HarnessOnboardingPanel`: single-column lede, rail (GitHub done + Add a service), the
+      Services surface
 - [ ] Rendered in the chat-pane slot, replacing **both** `HomeScreen` and the conversation
 - [ ] `App.tsx:1982` composer render gate widened so the composer renders under the panel
-- [ ] Visibility rule per the answered GitHub open question; not dismissible, no "Get Started"
+- [ ] Panel visibility is `harnessOnboardingCompletedAt == null` alone; not dismissible, no
+      "Get Started"
 - [ ] docs/252's Services add-flow made host-agnostic; Settings supplies the dialog, the panel
       hosts it inline (no modal in the flow — req 5)
 - [ ] `ProviderAccountsCard` global toasts moved inline next to their row — failures (`:105`)
       **and** disconnect results (`:253`, `:258`)
-- [ ] Delete `OnboardingWizard.tsx`, `AuthOverlay.tsx`, `OnboardingWizard.test.tsx`
-- [ ] Delete `noAgentReady` / `needsOnboarding` / the onboarding latch in `App.tsx`
-- [ ] Panel tests: step order, GitHub advance, panel yields when `canRunTurns` flips, panel
-      absent once the flag is set even with no credential (req 9)
-- [ ] Test: nothing in the flow renders a modal (req 5)
+- [ ] Delete `noAgentReady` / `needsOnboarding` / the onboarding latch in `App.tsx`; keep
+      `githubNeeded`
+- [ ] Gate tests: still blocks on `githubNeeded`, closes the instant GitHub connects, re-gates
+      on a later loss (today's behaviour, unchanged)
+- [ ] Panel tests: yields when `canRunTurns` flips; absent once the flag is set even with no
+      credential (req 9); never on screen at the same time as the gate
+- [ ] Test: nothing in the harness panel renders a modal (req 5)
 - [ ] Test: the rest of the app is reachable while the panel is up (req 1)
 - [ ] `docs/216` checklist item added: the re-implementation must `&&` in
       `starterPromptsAllowed`

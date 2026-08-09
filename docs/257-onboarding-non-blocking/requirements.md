@@ -28,6 +28,10 @@ below turns on what is configured or when the flow is finished, it means the har
    onboarding is unfinished. Today the wizard is a gate in front of the whole product, and a
    user who does not complete it sees nothing of ShipIt at all.
 
+   This is the harness half, per *Terminology* above. The **GitHub step keeps its blocking
+   behaviour**: the product stays gated until GitHub is connected, and is non-blocking from
+   there on (see *Out of scope*).
+
 2. **Onboarding takes over the conversation view.** That is the surface it occupies — the panel
    where chat would be — rather than an overlay drawn on top of everything. When onboarding is
    not in progress, that space is the conversation as usual.
@@ -105,6 +109,12 @@ below turns on what is configured or when the flow is finished, it means the har
    This is specifically about the harness half. It says nothing about whether the GitHub step
    can be skipped or deferred — that step keeps whatever behaviour it has today.
 
+   Installs that predate this feature have no recorded history, and disconnecting deletes the
+   record, so "completed and then removed everything" cannot be told apart from "never
+   configured". Such an install is treated as never-configured and does see the panel. That is
+   a one-off consequence of introducing the condition, accepted knowingly; it is not a licence
+   to bring the panel back for any install where the history *is* recorded.
+
 10. **Starter prompts never appear to a user who has not been through harness onboarding.** The
     empty-session starter prompts (`docs/216-onboarding-starter-prompts`) share the conversation
     view with this flow, and they are sequential rather than simultaneous: the setup panel
@@ -125,38 +135,40 @@ below turns on what is configured or when the flow is finished, it means the har
 ## Out of scope
 
 - **Removing the GitHub / git identity step.** Whether that step should exist at all is a fair
-  question and explicitly not this change. It stays in the flow.
+  question and explicitly not this change. It stays in the flow, and it keeps **today's
+  behaviour in full** — including that it *blocks*: the product is gated until GitHub is
+  connected, and a later loss of GitHub gates it again, exactly as now. Nothing in these
+  requirements applies to it.
 
 ## Open questions
 
-Both were raised by the cross-backend review of [`plan.md`](./plan.md), which found the
-design could not be completed without them. Neither is answered here; an agent inference
-never closes one.
-
-- **When does the panel go away, given the GitHub step is inside it?** Req 9 defines the
-  panel's presence by the harness half, and the terminology paragraph says "finished" means
-  the harness half — but the *Out of scope* section also says the GitHub step keeps today's
-  behaviour, and today `githubNeeded` alone summons the whole wizard, including for an
-  established user whose token was revoked (`App.tsx:354`). The two cannot both hold now that
-  the panel replaces the conversation instead of covering an empty product. Either (a) the
-  panel's lifetime is the harness half only — a user who connects a service from Settings
-  while step 1 is on screen ends the flow with GitHub unconnected, and a later GitHub loss
-  never re-opens the panel; or (b) the panel also waits on GitHub — which, since it is not
-  dismissible (req 9), leaves it permanently in the conversation view of a user who has a
-  working agent and does not want GitHub, and puts it back over an established user's real
-  chat when a token expires.
-
-- **What should an install upgraded with no credentials see?** Req 9's condition is
-  historical, and no field in the tree records that history — account rows and stored keys are
-  deleted on disconnect (`credential-store.ts:280`), so "completed onboarding, then removed
-  everything" and "never configured anything" are indistinguishable on an install that
-  predates the flag. A user in the first group would get onboarding back, which req 9 forbids.
-  Either accept that for the one upgrade window (the panel blocks nothing, and the ask it
-  makes is the correct one for someone who cannot run a turn), or treat *every* pre-existing
-  install as already-completed (nobody who upgrades ever sees the panel, including a genuinely
-  unconfigured one, who then meets only the disabled composer's placeholder).
+_None._
 
 ## Resolved questions
+
+- 2026-08-09 — When does the panel go away, given the GitHub step is inside it? **Chosen:
+  the GitHub part of onboarding does not change at all — the UI stays blocked until GitHub is
+  connected.** The question arose because req 9 defines the panel's presence by the harness
+  half while *Out of scope* says the GitHub step is unchanged, and today `githubNeeded` alone
+  summons the whole wizard (`App.tsx:354`) — readings that stopped being jointly true once the
+  panel replaces the conversation and is not dismissible. The answer resolves it by keeping the
+  two halves genuinely separate rather than merging them into one surface: GitHub keeps its
+  blocking gate, and only the harness half becomes the inline panel. So the alternative the
+  plan had provisionally chosen — a harness-only panel lifetime, which let a user end the flow
+  with GitHub unconnected by using Settings — is rejected, and it is no longer reachable,
+  because Settings is not reachable while the GitHub gate is up. Req 1 and *Out of scope*
+  amended to say so; the plan's earlier claim that this reading was "forced" was wrong and is
+  withdrawn.
+
+- 2026-08-09 — What should an install upgraded with no credentials see? **Chosen: stamp only
+  if the install is currently runnable**, so an install that completed onboarding and had
+  already removed every credential before upgrading does see the panel again. Req 9's
+  condition is historical and no field records that history — disconnecting deletes the record
+  (`credential-store.ts:280`) — so the two states are the same bytes. The rejected alternative,
+  stamping every pre-existing install unconditionally, never violates req 9 but hides the panel
+  from a genuinely unconfigured upgrader, who would then have only the disabled composer's
+  placeholder. The divergence is bounded to one upgrade window and costs a user who cannot run
+  a turn anyway a correct ask. Req 9 amended to record it.
 
 - 2026-08-09 — Do starter prompts require a runnable chat, or only a completed onboarding?
   **Chosen: both — prompts require a runnable chat as well.** The two conditions coincide in
