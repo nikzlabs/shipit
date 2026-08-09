@@ -60,12 +60,19 @@ export function PermissionModeSelector({
   agents,
   activeAgentId,
   modelInfo,
+  disabled = false,
 }: {
   mode: PermissionMode;
   onChange: (mode: PermissionMode) => void;
   agents: AgentOption[];
   activeAgentId: AgentId;
   modelInfo?: ModelInfo | null;
+  /**
+   * docs/257 req 3 — the composer is dead as a whole (no runnable service), so
+   * there is no turn for a permission mode to govern. The control stays visible
+   * (it still reports the mode a future turn will run under) but does not open.
+   */
+  disabled?: boolean;
 }) {
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const supported = activeAgent?.supportedPermissionModes ?? [];
@@ -101,7 +108,8 @@ export function PermissionModeSelector({
         <DropdownMenuTrigger asChild>
           <button
             aria-label="Permission mode"
-            className={`flex items-center gap-1.5 rounded-lg transition-colors ${
+            disabled={disabled}
+            className={`flex items-center gap-1.5 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
               isAuto
                 ? "p-1.5 text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover)"
                 : "px-1.5 py-1.5 bg-(--color-accent)/15 text-(--color-accent) hover:bg-(--color-accent)/25"

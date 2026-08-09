@@ -472,12 +472,35 @@ places where a narrower reading leaks.
 - disables the rest of the input cluster, which is otherwise unconditionally live: the
   attach-files button (`:780`, whose comment says "always enabled"), paste and drag-drop
   ingestion (`:681`), the mic (`:799`) and the permission-mode selector (`:820`). Attaching a
-  file to a message that cannot be sent is the same category of dead input as typing one;
+  file to a message that cannot be sent is the same category of dead input as typing one.
+  **As built, the mic is hidden rather than disabled** — `MicButton` is a four-state machine
+  (idle / recording / transcribing / error popover) with no inert state worth rendering, and a
+  visible mic that does nothing is the dead control req 10 declines to show elsewhere. The
+  permission selector *is* disabled, via a new `disabled` prop matching the one the model and
+  reasoning selectors already take. The model and reasoning selectors themselves are
+  deliberately left alone: picking what a future turn will run on is not dead input;
 - **renders the textarea empty**, so the reason is always visible. The textarea is controlled
   by `value={text}`, so a retained per-session draft or a `setPrefillText` seed would hide the
   placeholder behind text the user cannot send — the exact state req 10 refuses to create with
   a starter-prompt chip. The draft is retained in the store, not destroyed; it is simply not
   rendered while the input is dead, and returns when the install becomes runnable.
+
+**Three writers reach the composer from outside it, and an empty textarea makes each of them
+worse rather than harmless.** Found by cross-backend review of the implementation; recorded
+here because "disabled as a whole" is not obviously a claim about code the composer does not
+own.
+
+- **The voice hook.** `useVoiceInput` registers *global* push-to-talk keydown listeners off its
+  `enabled` flag, so hiding the mic button leaves the hotkey recording — into a draft the user
+  cannot see. `enabled` therefore carries `&& !inert`, and an in-flight capture is aborted when
+  the install goes dead under it (another tab signing out mid-dictation).
+- **Prefill and quote-reply** (`setPrefillText`, `setQuoteReplyText`). Both are **deferred, not
+  consumed**: consuming would replace or append to the invisible draft *and* clear the source,
+  destroying the user's text with no feedback at all. Left in the store, they land the moment
+  the composer comes back.
+- **The Files panel's "Add to chat"** (`App.tsx`) attaches a file to a message that cannot be
+  sent, which is the same dead input as typing one. Its handler goes `undefined` rather than
+  no-op, so `FileTree` hides the affordance instead of offering a button that does nothing.
 
 **Three call sites, not one.**
 
@@ -542,7 +565,8 @@ the split is about reviewability, not about shipping order.
 | `client/components/OnboardingWizard.test.tsx` | Step-1 cases kept as the gate's tests; step-2 cases replaced by the panel's. |
 | `client/components/HarnessOnboardingPanel.tsx` | **New.** The panel: lede + the Services surface. No step rail. |
 | `client/App.tsx` | Drop `noAgentReady` (`:354`); `needsOnboarding` becomes `githubNeeded` (`:363`) alone; **keep the latch**, with dismissal firing on GitHub connect rather than "Get Started" (`:2084`). Render the panel in the chat-pane slot (`:1892`), suppressed while the gate is up; widen the composer render gate (`:1982`); pass `disabledReason` (`:1985`). |
-| `client/components/MessageInput/MessageInput.tsx` | `disabledReason` prop: disables the textarea (`:766`), attach (`:780`), paste/drop (`:681`), mic (`:799`), permission selector (`:820`); renders the textarea empty so a draft cannot hide the placeholder. |
+| `client/components/MessageInput/MessageInput.tsx` | `disabledReason` prop: disables the textarea (`:766`), attach (`:780`), paste/drop (`:681`), permission selector (`:820`); hides the mic (`:799`) and skips Quick Capture's hotkey mic auto-arm; renders the textarea empty so a draft cannot hide the placeholder. |
+| `client/components/PermissionModeSelector.tsx` | New `disabled` prop, matching the model and reasoning selectors' existing one. |
 | `client/components/QuickCaptureOverlay.tsx` | Passes `disabledReason` (`:254`) — `disabled` (`:147`) guards submission only, so it alone would leave the input typeable. |
 | `client/utils/chat-runnable.ts` | **New.** `canRunTurns` reader + `starterPromptsAllowed`. |
 | `client/components/Settings/ProviderAccountsCard.tsx` | Inline the global toasts next to the row that produced them — failures (`:105`) and disconnect results (`:253`, `:258`). |

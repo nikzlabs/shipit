@@ -457,7 +457,15 @@ export function useServerEvents(): void {
           reasoning?: { label: string; options: { value: string; label: string }[] };
           skillInvocationPrefix?: string;
         }[];
+        // docs/257 req 8 — the install-level "can run a turn" signal, computed
+        // server-side. Optional because an older server omits it; in that case
+        // the store keeps whatever bootstrap gave it rather than being clobbered
+        // with `false`, which would disable the composer on a runnable install.
+        canRunTurns?: boolean;
       };
+      if (typeof data.canRunTurns === "boolean") {
+        useSettingsStore.getState().setCanRunTurns(data.canRunTurns);
+      }
       const agents = data.agents.map((a) => ({
         ...a,
         models: a.models ?? [],

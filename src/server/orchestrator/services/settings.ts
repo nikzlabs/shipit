@@ -22,6 +22,59 @@ import { revokeSessionProviderCredentials } from "../session-agent-credentials.j
 
 // ---- Read operations ----
 
+/**
+ * docs/257 req 8 — "the install can actually run something".
+ *
+ * **One implementation, one owner.** Three consumers read this fact (the
+ * composer's disabled state, the starter-prompts gate, and — from phase 2 — the
+ * onboarding panel's completion stamp), and the failure this prevents is a flow
+ * that says it is finished above a composer that is still, correctly, disabled.
+ * They agree because they all read the same server-computed field, not because
+ * three derivations happen to match.
+ *
+ * **This body is the pre-docs/252-phase-3 form** and is exactly today's
+ * `noAgentReady` inverted (`App.tsx`): at least one agent installed *and*
+ * authenticated. After docs/252 phase 3 it becomes "at least one installed
+ * harness has at least one eligible model", i.e. the existential over the
+ * picker's own eligibility predicate. **This function is where the decision
+ * lives, and it is the only place that decides.**
+ *
+ * The precise guarantee, because cross-backend review was right to press on it:
+ * the *wire field* and all three *consumers* are unchanged by the swap — that is
+ * what makes phase 1 shippable ahead of the docs/252 sequencing decision. What
+ * is NOT promised is that the swap touches no other line: post-252 eligibility
+ * is keyed on `(service, billing mode)` credentials that the agent registry does
+ * not own, so this signature may need to widen. If it does, the compiler names
+ * every producer, because they all go through `buildAgentListPayload`.
+ *
+ * It is an install-level fact and deliberately NOT per-session turn admission
+ * (`agent-auth-gate.ts`), which answers a different question about the
+ * session's *own* harness. The two can legitimately disagree.
+ */
+export function computeCanRunTurns(agentRegistry: AgentRegistry): boolean {
+  return agentRegistry.list().some((a) => a.installed && a.authConfigured);
+}
+
+/**
+ * The canonical `agent_list` SSE payload (docs/257).
+ *
+ * Every producer of that event goes through here so `canRunTurns` cannot be
+ * omitted by one of them — an omission is not a missing field on the client, it
+ * is a *stale truthy* one: sign out of the last provider and a hand-rolled
+ * `{ agents }` would leave the composer enabled over an install that can no
+ * longer run anything. Hand-rolling the agent array had already caused the
+ * matching bug once (a drifted inline copy dropped `reasoning`, see
+ * `route-registry.ts`), which is why the array comes from `listAgents` too.
+ */
+export function buildAgentListPayload(
+  agentRegistry: AgentRegistry,
+): { agents: AgentInfo[]; canRunTurns: boolean } {
+  return {
+    agents: listAgents(agentRegistry),
+    canRunTurns: computeCanRunTurns(agentRegistry),
+  };
+}
+
 /** Map agent registry entries to the client-facing agent info shape. */
 export function listAgents(agentRegistry: AgentRegistry): AgentInfo[] {
   return agentRegistry.list().map((a) => ({
@@ -92,7 +145,11 @@ export async function getGlobalSettings(
       ?? { session: DEFAULT_FAILOVER_CUTOFF, weekly: DEFAULT_FAILOVER_CUTOFF };
     accountSelectionMode[agent.id] = credentialStore?.getSelectionMode(agent.id) ?? DEFAULT_SELECTION_MODE;
   }
-  return { failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts };
+  // docs/257 req 8 — the install-level "can run something" signal, computed
+  // here rather than re-derived in the browser from `agents` (see
+  // `computeCanRunTurns`).
+  const canRunTurns = computeCanRunTurns(agentRegistry);
+  return { canRunTurns, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts };
 }
 
 // ---- Mutation operations ----

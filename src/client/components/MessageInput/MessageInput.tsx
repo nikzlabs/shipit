@@ -81,6 +81,7 @@ export interface SendPayload {
 export function MessageInput({
   onSend,
   disabled,
+  disabledReason,
   isLoading = false,
   onInterrupt,
   permissionMode = "auto",
@@ -107,6 +108,20 @@ export function MessageInput({
 }: {
   onSend: (payload: SendPayload) => void;
   disabled: boolean;
+  /**
+   * docs/257 req 3 — when set, the composer is dead **as a whole** and this
+   * string is why, shown as the textarea's placeholder.
+   *
+   * Distinct from `disabled`, which only guards submission: with `disabled` the
+   * user can still type, attach files and dictate, and discovers the rule when
+   * Send does nothing. That is the "block at submit" failure req 3's receipt
+   * rejected. `disabledReason` instead disables the textarea, the attach button,
+   * paste/drag-drop ingestion, the mic and the permission selector — and renders
+   * the textarea EMPTY, so a retained draft or a prefill cannot hide the
+   * explanation behind text that cannot be sent. The draft itself is kept in the
+   * store and comes back when the input is live again.
+   */
+  disabledReason?: string;
   isLoading?: boolean;
   onInterrupt?: () => void;
   permissionMode?: PermissionMode;
@@ -150,6 +165,9 @@ export function MessageInput({
   surface?: "chat" | "overlay";
 }) {
   const isMobile = useIsMobile();
+  // docs/257 req 3 — "disabled as a whole". Every affordance below reads this
+  // rather than `disabled`, which guards submission only.
+  const inert = !!disabledReason;
   const [text, setText] = useState("");
   const [isDragging, setIsDragging] = useState(false);
   const [showAutoComplete, setShowAutoComplete] = useState(false);
@@ -204,7 +222,11 @@ export function MessageInput({
   const quickCaptureAutoMic = useUiStore((s) => s.quickCaptureAutoMic);
 
   const voice = useVoiceInput({
-    enabled: voiceInputEnabled,
+    // docs/257 req 3 — `!inert` is what actually turns dictation off. Hiding the
+    // mic button is not enough: the hook registers GLOBAL push-to-talk keydown
+    // listeners off `enabled`, so a hidden mic would still record on the hotkey
+    // and splice the transcript into a draft that cannot be sent.
+    enabled: voiceInputEnabled && !inert,
     hotkey: isOverlay ? voiceHotkeyModeB : voiceHotkeyModeA,
     cleanup: cleanupEnabled,
     language: voiceLanguage || undefined,
@@ -251,15 +273,28 @@ export function MessageInput({
     });
   }, [voice.onTranscript]);
 
+  // docs/257 req 3 — the install can lose its last credential mid-recording
+  // (another tab signs out). Dropping the hotkey listeners does not stop a
+  // capture already running, and its transcript would land in a hidden draft.
+  // eslint-disable-next-line no-restricted-syntax -- abort an external capture when the composer dies under it
+  useEffect(() => {
+    if (inert) voice.cancelRecording();
+  }, [inert]);
+
   // Mode B: when the overlay was opened via the voice hotkey, auto-start mic.
   // eslint-disable-next-line no-restricted-syntax -- one-shot auto-start on overlay open
   useEffect(() => {
     if (!isOverlay) return;
+    // docs/257 req 3 — Quick Capture can be opened by the voice hotkey, which
+    // auto-arms the mic. On an install that cannot run a turn that would start
+    // recording a message with nowhere to go, so the auto-start is skipped
+    // along with the mic itself. The pending flag is cleared either way, so a
+    // later open doesn't inherit an arm the user has forgotten about.
     if (quickCaptureAutoMic && voiceInputEnabled) {
-      voice.startRecording();
+      if (!inert) voice.startRecording();
       useUiStore.getState().setQuickCaptureAutoMic(false);
     }
-  }, [isOverlay, quickCaptureAutoMic, voiceInputEnabled]);
+  }, [isOverlay, quickCaptureAutoMic, voiceInputEnabled, inert]);
 
   // Per-session draft persistence: remember/restore typed text across session
   // switches and reloads. Skipped for the overlay surface. See `useMessageDraft`.
@@ -283,6 +318,12 @@ export function MessageInput({
     if (surface === "overlay") return undefined;
     const consume = (prefill: string | undefined) => {
       if (!prefill) return;
+      // docs/257 req 3 — DEFER while the composer is dead, don't consume. The
+      // textarea renders empty, so consuming here would silently replace the
+      // user's retained draft with text they can neither see nor send. Leaving
+      // it in the store means this effect (which depends on `inert`) picks it up
+      // the moment the install becomes runnable.
+      if (inert) return;
       setText(prefill);
       // Prefill REPLACES the draft, so whatever was dictated into it is gone.
       setDraftDictated(false);
@@ -301,7 +342,7 @@ export function MessageInput({
     return useSessionStore.subscribe((state) => {
       consume(state.prefillText);
     });
-  }, [surface]);
+  }, [surface, inert]);
 
   // planning#12 — consume a quote-reply blockquote from the store and *append* it to
   // the current draft (unlike prefill, which replaces). This lets the user
@@ -313,6 +354,10 @@ export function MessageInput({
     if (surface === "overlay") return undefined;
     const consume = (quote: string | undefined) => {
       if (!quote) return;
+      // docs/257 req 3 — deferred for the same reason as the prefill above: this
+      // one APPENDS to the draft, so consuming it into an invisible textarea
+      // would leave the user with a quote they cannot see, send, or undo.
+      if (inert) return;
       useSessionStore.getState().setQuoteReplyText(undefined);
       setText((prev) => {
         // Separate from existing draft with a blank line; the blockquote needs
@@ -334,7 +379,7 @@ export function MessageInput({
     return useSessionStore.subscribe((state) => {
       consume(state.quoteReplyText);
     });
-  }, [surface]);
+  }, [surface, inert]);
 
   // Auto-focus textarea on mount and on session change (e.g. "New Session" click,
   // session switch). The ref is intentionally seeded with `undefined` (not `focusKey`)
@@ -426,7 +471,10 @@ export function MessageInput({
 
   const handleSubmit = () => {
     const trimmed = text.trim();
-    if (!trimmed || disabled) return;
+    // `inert` as well as `disabled`: a retained draft still lives in `text`
+    // while the input is dead (it is simply not rendered), so submission has to
+    // be refused here and not just hidden behind an empty-looking textarea.
+    if (!trimmed || disabled || inert) return;
     const uploadRefs = getUploadRefs();
     const payload: SendPayload = {
       text: trimmed,
@@ -601,6 +649,9 @@ export function MessageInput({
 
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
+      // docs/257 req 3 — attaching to a message that cannot be sent is the same
+      // dead input as typing one.
+      if (inert) return;
       const items = e.clipboardData.items;
       const imageFiles: File[] = [];
       for (const item of items) {
@@ -614,17 +665,19 @@ export function MessageInput({
         addFiles(imageFiles);
       }
     },
-    [addFiles],
+    [addFiles, inert],
   );
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    // docs/257 req 3 — no drop-zone affordance over a dead input.
+    if (inert) return;
     dragCountRef.current++;
     if (dragCountRef.current === 1) {
       setIsDragging(true);
     }
-  }, []);
+  }, [inert]);
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -646,6 +699,7 @@ export function MessageInput({
       e.stopPropagation();
       dragCountRef.current = 0;
       setIsDragging(false);
+      if (inert) return;
 
       // Check for ShipIt file drag from file tree
       const fileData = e.dataTransfer?.getData("application/x-shipit-file");
@@ -663,7 +717,7 @@ export function MessageInput({
         addFiles(e.dataTransfer.files);
       }
     },
-    [addFiles, onAddFile],
+    [addFiles, onAddFile, inert],
   );
 
   const handleAttachClick = () => {
@@ -755,17 +809,24 @@ export function MessageInput({
           )}
 
           {/* Textarea — full width on top */}
+          {/* docs/257 req 3 — while `disabledReason` is set the textarea renders
+              EMPTY and disabled, with the reason as its placeholder. Empty
+              because the value is controlled: a per-session draft or a
+              `setPrefillText` seed would otherwise cover the explanation with
+              text that cannot be sent. The draft survives in the store and
+              returns the moment the install becomes runnable. */}
           <textarea
             ref={textareaRef}
             data-chat-input
-            value={text}
+            value={inert ? "" : text}
+            disabled={inert}
             onChange={handleTextChange}
             onKeyDown={handleKeyDown}
             onBlur={handleBlur}
             onPaste={handlePaste}
-            placeholder="Describe what to build... (type @ to attach files)"
+            placeholder={disabledReason ?? "Describe what to build... (type @ to attach files)"}
             rows={1}
-            className="w-full resize-none bg-transparent px-4 pt-3 pb-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none field-sizing-content max-h-[40vh] overflow-y-auto"
+            className="w-full resize-none bg-transparent px-4 pt-3 pb-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none field-sizing-content max-h-[40vh] overflow-y-auto disabled:cursor-not-allowed"
           />
 
           {/* Toolbar row — below textarea.
@@ -777,14 +838,17 @@ export function MessageInput({
               pack to the left (docs/144). The numeric `order` values leave gaps
               so items can be inserted later without renumbering. */}
           <div className="flex items-center gap-1 px-2 pb-2">
-            {/* Add files button — always enabled. Files attached before a
-                session is ready are buffered by useFileUpload and uploaded
-                once sessionId resolves. */}
+            {/* Add files button. Enabled even before a session is ready —
+                files attached then are buffered by useFileUpload and uploaded
+                once sessionId resolves — but NOT while `disabledReason` is set:
+                attaching to a message that cannot be sent is the same dead
+                input as typing one (docs/257 req 3). */}
             <div className="flex items-center shrink-0" style={{ order: 10 }}>
             <WithTooltip label="Add files">
             <button
               onClick={handleAttachClick}
-              className="flex items-center justify-center shrink-0 rounded-lg p-1.5 text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors"
+              disabled={inert}
+              className="flex items-center justify-center shrink-0 rounded-lg p-1.5 text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-(--color-text-tertiary)"
               aria-label="Add files"
             >
               <PlusIcon size={ICON_SIZE.SM} />
@@ -796,7 +860,11 @@ export function MessageInput({
                 enabled in settings, so the endpoint surface stays off for users
                 who don't opt in. On mobile it moves to the right, just left of
                 Send (order 60); on desktop it stays in the left group (20). */}
-            {voiceInputEnabled && (
+            {/* docs/257 req 3 — hidden rather than disabled while the input is
+                inert: MicButton is a state machine (recording / transcribing /
+                error popover) with nothing to disable, and a visible mic that
+                does nothing is the dead control req 10 refuses to show. */}
+            {voiceInputEnabled && !inert && (
               <div className="flex items-center shrink-0" style={{ order: isMobile ? 60 : 20 }}>
                 <MicButton
                   voice={voice}
@@ -815,7 +883,7 @@ export function MessageInput({
                 central Stop button + Cancel, shown while recording. Desktop
                 keeps the inline icon + push-to-talk hotkey. Out of flow
                 (fixed) and null when idle, so its default order is harmless. */}
-            {voiceInputEnabled && isMobile && <MobileRecordingOverlay voice={voice} />}
+            {voiceInputEnabled && !inert && isMobile && <MobileRecordingOverlay voice={voice} />}
 
             {/* Permission mode selector (3-state, agent-aware — docs/138) */}
             {onPermissionModeChange && (
@@ -826,6 +894,7 @@ export function MessageInput({
                   agents={agents}
                   activeAgentId={activeAgentId}
                   modelInfo={modelInfo}
+                  disabled={inert}
                 />
               </div>
             )}
@@ -902,7 +971,7 @@ export function MessageInput({
                 {liveSteeringActive && (
                   <button
                     onClick={handleSubmit}
-                    disabled={disabled || !text.trim()}
+                    disabled={disabled || inert || !text.trim()}
                     className={`flex items-center justify-center shrink-0 rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white hover:bg-(--color-accent-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed`}
                     aria-label="Send message"
                     data-testid="send-button"
@@ -914,7 +983,7 @@ export function MessageInput({
             ) : (
               <button
                 onClick={handleSubmit}
-                disabled={disabled || !text.trim()}
+                disabled={disabled || inert || !text.trim()}
                 className={`flex items-center justify-center shrink-0 rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white hover:bg-(--color-accent-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed`}
                 aria-label="Send message"
                 data-testid="send-button"

@@ -98,6 +98,20 @@ export const EMPTY_CLAUDE_AUTH_DIAGNOSTICS: ClaudeAuthDiagnostics = Object.freez
 const MAX_CLAUDE_AUTH_DIAGNOSTIC_ENTRIES = 200;
 
 interface SettingsState {
+  /**
+   * docs/257 req 8 — whether this install can actually run a turn, as computed
+   * by the server (`computeCanRunTurns`). Never re-derived here from
+   * `agentList`: the composer, the starter-prompts gate and (from phase 2) the
+   * onboarding panel must read one fact, and a second derivation in the browser
+   * is exactly how they come to disagree.
+   *
+   * Hydrated from `GET /api/bootstrap` and pushed on every `agent_list` SSE.
+   * The `false` default is only ever read before bootstrap lands, which is why
+   * consumers gate on `bootstrapLoaded` (see `utils/chat-runnable.ts`) rather
+   * than trusting it — a pre-bootstrap `false` would otherwise flash a disabled
+   * composer at an install that is perfectly runnable.
+   */
+  canRunTurns: boolean;
   hasSystemPrompt: boolean;
   systemPromptContent: string;
   /**
@@ -207,6 +221,8 @@ interface SettingsState {
   /** Last sign-in failure per account, same key space as `providerAccountAuths`. */
   providerAccountAuthErrors: Record<string, string>;
 
+  /** docs/257 — replace the server-computed runnable signal. */
+  setCanRunTurns: (canRun: boolean) => void;
   setHasSystemPrompt: (has: boolean) => void;
   setSystemPromptContent: (content: string) => void;
   setMaxIdleContainers: (n: number) => void;
@@ -288,6 +304,7 @@ interface SettingsState {
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
+  canRunTurns: false,
   hasSystemPrompt: false,
   systemPromptContent: "",
   permissionMode: "auto",
@@ -325,6 +342,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   providerAccounts: [],
   providerAccountAuths: {},
   providerAccountAuthErrors: {},
+
+  setCanRunTurns: (canRun) => set({ canRunTurns: canRun }),
 
   setHasSystemPrompt: (has) => set({ hasSystemPrompt: has }),
 

@@ -49,6 +49,14 @@ export interface AgentInfo {
 }
 
 export interface GlobalSettings {
+  /**
+   * docs/257 req 8 — whether this install can actually run a turn: at least one
+   * installed agent with a configured credential. Computed server-side (see
+   * `computeCanRunTurns`) because the client must not re-derive it — three
+   * consumers reading one field is what keeps the composer, the starter-prompts
+   * gate and the onboarding panel from disagreeing.
+   */
+  canRunTurns: boolean;
   gitIdentity: { name: string; email: string };
   systemPrompt: string;
   agents: AgentInfo[];

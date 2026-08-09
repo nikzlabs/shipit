@@ -204,6 +204,15 @@ export interface WsAgentListMessage {
      */
     reasoning?: AgentReasoningCapability;
   }[];
+  /**
+   * docs/257 req 8 — whether this install can actually run a turn. Rides the
+   * agent list because that is the one push channel the fact changes on: every
+   * producer of this event (sign-in, sign-out, account primary/disconnect, the
+   * reconnect snapshot) is also a producer of `canRunTurns`. Optional on the
+   * wire so a client talking to an older server leaves its value alone rather
+   * than clobbering a good one with `undefined`.
+   */
+  canRunTurns?: boolean;
 }
 
 /** Server → Client: the agent was interrupted by user. */
