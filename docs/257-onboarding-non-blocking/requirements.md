@@ -1,7 +1,7 @@
 ---
 issue: planning#335
 title: Non-blocking onboarding
-description: Harness onboarding stops being a blocking modal and becomes an inline, modal-free panel in the conversation view, so a new user can see and use ShipIt before connecting anything.
+description: Harness onboarding stops being a blocking modal over the product and becomes an inline panel in the conversation view, so a new user can see and use ShipIt before connecting a subscription.
 ---
 
 # Non-blocking onboarding — requirements
@@ -28,6 +28,10 @@ below turns on what is configured or when the flow is finished, it means the har
    onboarding is unfinished. Today the wizard is a gate in front of the whole product, and a
    user who does not complete it sees nothing of ShipIt at all.
 
+   This is the harness half, per *Terminology* above. The **GitHub step keeps its blocking
+   behaviour**: the product stays gated until GitHub is connected, and is non-blocking from
+   there on (see *Out of scope*).
+
 2. **Onboarding takes over the conversation view.** That is the surface it occupies — the panel
    where chat would be — rather than an overlay drawn on top of everything. When onboarding is
    not in progress, that space is the conversation as usual.
@@ -53,12 +57,15 @@ below turns on what is configured or when the flow is finished, it means the har
    order, with a sense of what is done and what remains. Removing the blocking behaviour does
    not mean scattering the setup across the app for the user to find.
 
-5. **No modals in harness onboarding.** Every step is resolved in place, in the panel. Today
-   two modals can be visible at once, which is confusing and busy; the fix is not to ration
-   them but to stop using them here. Nothing in this flow opens anything on top of anything
-   else.
+5. **The panel is not a modal, and at most one thing is ever on top of it.** Today two modals
+   can be visible at once, which is confusing and busy. The panel itself never covers the
+   product (req 1), and the flow never stacks one thing over another.
 
-   The one thing that legitimately leaves the panel is a provider's own sign-in page, which
+   **Adding a service opens a dialog** — the same "Add a service" dialog Settings uses. That
+   is the one dialog this flow has, and nothing else in it opens anything on top of anything
+   else. Every other step is resolved in place, in the panel.
+
+   The other thing that legitimately leaves the panel is a provider's own sign-in page, which
    ShipIt does not own and cannot host. That is a link out, not a modal.
 
    **Results and errors render inside the panel too**, next to the step that produced them —
@@ -105,6 +112,12 @@ below turns on what is configured or when the flow is finished, it means the har
    This is specifically about the harness half. It says nothing about whether the GitHub step
    can be skipped or deferred — that step keeps whatever behaviour it has today.
 
+   Installs that predate this feature have no recorded history, and disconnecting deletes the
+   record, so "completed and then removed everything" cannot be told apart from "never
+   configured". Such an install is treated as never-configured and does see the panel. That is
+   a one-off consequence of introducing the condition, accepted knowingly; it is not a licence
+   to bring the panel back for any install where the history *is* recorded.
+
 10. **Starter prompts never appear to a user who has not been through harness onboarding.** The
     empty-session starter prompts (`docs/216-onboarding-starter-prompts`) share the conversation
     view with this flow, and they are sequential rather than simultaneous: the setup panel
@@ -125,13 +138,50 @@ below turns on what is configured or when the flow is finished, it means the har
 ## Out of scope
 
 - **Removing the GitHub / git identity step.** Whether that step should exist at all is a fair
-  question and explicitly not this change. It stays in the flow.
+  question and explicitly not this change. It stays in the flow, and it keeps **today's
+  behaviour in full** — including that it *blocks*: the product is gated until GitHub is
+  connected, and a later loss of GitHub gates it again, exactly as now. Nothing in these
+  requirements applies to it.
 
 ## Open questions
 
 _None._
 
 ## Resolved questions
+
+- 2026-08-09 — Does adding a service open a dialog? **Chosen: yes — "Add a service" is a
+  dialog, in onboarding exactly as in Settings.** This reverses part of the earlier "no modals
+  in harness onboarding at all" answer below, and is a deliberate amendment rather than a
+  reinterpretation of it. What that answer was reacting to was *two modals at once*; a panel
+  that is not a modal, with one dialog over it, is one. It also makes req 7 more literal rather
+  than less: `plan.md` had been about to require docs/252 phase 2 to re-author its add-flow
+  host-agnostically so the panel could render the same steps inline, which is refactoring work
+  bought purely to avoid a dialog nobody objected to. Req 5 rewritten around "at most one thing
+  on top" instead of "nothing on top".
+
+- 2026-08-09 — When does the panel go away, given the GitHub step is inside it? **Chosen:
+  the GitHub part of onboarding does not change at all — the UI stays blocked until GitHub is
+  connected.** The question arose because req 9 defines the panel's presence by the harness
+  half while *Out of scope* says the GitHub step is unchanged, and today `githubNeeded` alone
+  summons the whole wizard (`App.tsx:354`) — readings that stopped being jointly true once the
+  panel replaces the conversation and is not dismissible. The answer resolves it by keeping the
+  two halves genuinely separate rather than merging them into one surface: GitHub keeps its
+  blocking gate, and only the harness half becomes the inline panel. So the alternative the
+  plan had provisionally chosen — a harness-only panel lifetime, which let a user end the flow
+  with GitHub unconnected by using Settings — is rejected, and it is no longer reachable,
+  because Settings is not reachable while the GitHub gate is up. Req 1 and *Out of scope*
+  amended to say so; the plan's earlier claim that this reading was "forced" was wrong and is
+  withdrawn.
+
+- 2026-08-09 — What should an install upgraded with no credentials see? **Chosen: stamp only
+  if the install is currently runnable**, so an install that completed onboarding and had
+  already removed every credential before upgrading does see the panel again. Req 9's
+  condition is historical and no field records that history — disconnecting deletes the record
+  (`credential-store.ts:280`) — so the two states are the same bytes. The rejected alternative,
+  stamping every pre-existing install unconditionally, never violates req 9 but hides the panel
+  from a genuinely unconfigured upgrader, who would then have only the disabled composer's
+  placeholder. The divergence is bounded to one upgrade window and costs a user who cannot run
+  a turn anyway a correct ask. Req 9 amended to record it.
 
 - 2026-08-09 — Do starter prompts require a runnable chat, or only a completed onboarding?
   **Chosen: both — prompts require a runnable chat as well.** The two conditions coincide in
