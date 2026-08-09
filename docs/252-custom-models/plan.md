@@ -1307,11 +1307,19 @@ suffixed "at API rates", and it is **never** summed into "You paid", which stays
 figure that is money.
 
 **The weekly chart stays a toggle and does not stack.** `UsageModal` already toggles cost vs
-turns; this adds a third option (Paid / At API rates / Turns) rather than stacking a second
+turns; this adds a third option (Paid / At API rates / Tokens) rather than stacking a second
 series on the first. Two segments in one bar carrying two different units invites reading
 them as parts of a whole, which they are not. The split still tells its story across the
 toggle — weeks where Paid rises are weeks where At API rates falls, meaning work moved *off*
-the plans rather than that there was more of it, which Turns confirms.
+the plans rather than that there was more of it, which Tokens confirms.
+
+**Volume is tokens throughout, not turns** (req 16). The existing view counts turns, so this
+is a change to an inherited surface rather than a choice about a new one: the volume column,
+the plan headline and the chart's third series all move to tokens, and the existing cost-vs-turns
+toggle becomes cost-vs-tokens. Turn counts stay where they describe a *session* rather than
+measure consumption — the header's "31 turns · 1h 12m" is session metadata and keeps its
+meaning. `RecordedTurn` already stores the token counts this needs (`usage.ts:28`), so nothing
+new is recorded; only the aggregation and the labels change.
 
 **What the dogfood data actually shows, which is less than two earlier drafts claimed.** The
 spike's turns are in `.inner-shipit/.shipit.db` (`usage_turns`): four rows on

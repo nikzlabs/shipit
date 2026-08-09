@@ -231,6 +231,16 @@ No open questions remain.
     API rates**, which is what says whether the subscription is worth keeping. It is shown as
     a comparison and never as money spent.
 
+    Volume is reported in **tokens**, not turns. A turn is not a unit of anything — one can be
+    a one-line question and the next a full refactor — so a turn count says little about what
+    was consumed, and it is not the unit either price or quota is computed in. Tokens are.
+
+    Wherever ShipIt shows a **running figure for the session in progress**, a session on a
+    subscription shows its at-API-rates estimate, labelled as such, rather than a blank or a
+    zero. The estimate is still never presented as money spent, and it is never added to a
+    metered total — but the user keeps a live sense of what the session is consuming
+    regardless of how it is paid for, which is what those surfaces are for.
+
     This holds at session scope and across all sessions, for usage recorded **from this
     feature onward**. Turns recorded before it carry no service and no billing mode — for
     sub-agent turns, not even a credential route — so the attribution is not in the data and
@@ -239,19 +249,31 @@ No open questions remain.
 
 ## Open questions
 
-- **A subscription session shows a dollar figure today. Req 16 says that figure is not money
-  spent — so what should those surfaces show instead?** Req 16 settles the reporting: plan
-  usage is "shown as a comparison and never as money spent". But ShipIt shows a session's
-  running cost in more places than the usage view — the context dial's trigger and popover, and
-  the usage modal's per-session cost, average per turn, per-turn column and by-spend session
-  ranking. Under req 16 every one of those reads zero for a subscription session, which today
-  is most sessions. The requirement does not say whether that is the intended result, whether
-  those surfaces should show the at-API-rates comparison instead, or whether a running dollar
-  figure stops being the thing they show at all. Answering it may add a requirement about what
-  a session's headline number *is*; it may equally confirm that the existing surfaces simply
-  follow req 16's split with no new requirement.
+_None._
 
 ## Resolved questions
+
+- 2026-08-09 — Should usage volume be reported in turns or tokens? **Chosen: tokens.** Stated
+  directly rather than asked: the prototypes and the design had carried turn counts as the
+  volume measure, inherited from the existing usage view. A turn is not a fixed quantity of
+  anything, so a turn count is a poor proxy for consumption and is not the unit price or quota
+  is computed in. Req 16 amended. Turn counts are not forbidden as session metadata — the
+  requirement is about the volume figure the usage split reports.
+
+- 2026-08-09 — A subscription session's running dollar figure goes to zero under req 16. What
+  should those surfaces show instead? **Chosen: the at-API-rates estimate, labelled as such.**
+  An end-to-end review of the cost story found that req 16 settles the *usage view* but that
+  ShipIt shows a running session cost in several other places — the context dial's trigger and
+  popover, and the usage modal's per-session cost, average per turn, per-turn column and
+  by-spend ranking. Every one reads zero for a subscription session, which today is most
+  sessions. The three options were: show the at-API-rates estimate, drop dollars for turns and
+  tokens, or show metered spend only and leave it blank when nothing was spent. The estimate
+  was chosen because those surfaces exist to give a live sense of what a session is consuming,
+  and that need does not change with how the session is paid for; the alternatives either go
+  quiet for the majority case or remove a running proxy users rely on. The accepted cost is
+  that a dollar figure on the dial no longer means money left the account, so the label carries
+  the distinction in ShipIt's smallest text — the mitigation is that it is never unlabelled and
+  never summed into a metered total. Req 16 amended.
 
 - 2026-08-08 — Does req 16's split cover usage recorded **before** this feature? **Chosen: no
   — a legacy group, and the requirement applies going forward.** Review found req 16's "across

@@ -139,7 +139,7 @@
   .bar .seg { border-radius: 2px; display: block; }
   .bar .seg.paid { background: var(--paid); }
   .bar .seg.worth { background: var(--incl); opacity: .55; }
-  .bar .seg.turns { background: var(--text-tertiary); opacity: .6; }
+  .bar .seg.tokens { background: var(--text-tertiary); opacity: .6; }
   .bar .cap { font-size: 10px; color: var(--text-tertiary); text-align: center; margin-top: 7px; }
   .bar .val {
     font-size: 10px; text-align: center; margin-bottom: 4px; color: var(--text-tertiary);
@@ -198,7 +198,7 @@
       <div class="hl-div"></div>
       <div class="hl">
         <div class="cap">Included in plans</div>
-        <div class="big incl num">23 turns</div>
+        <div class="big incl num">1.62M tokens</div>
         <div class="worth">&asymp; $6.90 at API rates</div>
         <div class="why">Ran against subscriptions you already pay for. No marginal cost.</div>
       </div>
@@ -211,7 +211,7 @@
           <span class="pill sub">Subscription</span>
           <span class="models">opus-5, sonnet-5</span>
         </div>
-        <div class="vol">18 turns &middot; 1.4M tokens</div>
+        <div class="vol">1.4M tokens</div>
         <div class="amt">
           <span class="v incl">Included</span>
           <span class="quota"><span class="quota-bar"><span class="quota-fill" style="width:62%"></span></span></span>
@@ -225,7 +225,7 @@
           <span class="pill sub">Subscription</span>
           <span class="models">glm-5</span>
         </div>
-        <div class="vol">5 turns &middot; 220K tokens</div>
+        <div class="vol">220K tokens</div>
         <div class="amt">
           <span class="v incl">Included</span>
           <span class="quota"><span class="quota-bar"><span class="quota-fill" style="width:41%"></span></span></span>
@@ -239,7 +239,7 @@
           <span class="pill key">API key</span>
           <span class="models">deepseek-v4-pro</span>
         </div>
-        <div class="vol">6 turns &middot; 310K tokens</div>
+        <div class="vol">310K tokens</div>
         <div class="amt"><span class="v paid num">$0.11</span><span class="s">metered</span></div>
       </div>
       <div class="r">
@@ -248,7 +248,7 @@
           <span class="pill key">API key</span>
           <span class="models">kimi-k3</span>
         </div>
-        <div class="vol">2 turns &middot; 95K tokens</div>
+        <div class="vol">95K tokens</div>
         <div class="amt"><span class="v paid num">$0.31</span><span class="s">metered</span></div>
       </div>
     </div>
@@ -265,7 +265,7 @@
       <span class="req">req 11</span><b>Two headline numbers, because there are two kinds of
       thing.</b> Dollars and quota do not add up, so they are not added up. &ldquo;You
       paid&rdquo; sums the metered rows only — the one figure that is money — and everything
-      on a plan is counted in turns beside it.
+      on a plan is counted in tokens beside it.
       <div class="callout">
         A single <b>Cost</b> stat is the current design and it is fine today, when a session
         has one provider and one way of paying. It stops being fine the moment a session
@@ -349,7 +349,7 @@
           <span class="pill sub">Subscription</span>
           <span class="models">sonnet-5</span>
         </div>
-        <div class="vol">9 turns &middot; 480K tokens</div>
+        <div class="vol">480K tokens</div>
         <div class="amt">
           <span class="v incl">Included</span>
           <span class="quota"><span class="quota-bar"><span class="quota-fill" style="width:12%"></span></span></span>
@@ -393,7 +393,7 @@
       <div class="hl-div"></div>
       <div class="hl">
         <div class="cap">Included in plans</div>
-        <div class="big incl num">612 turns</div>
+        <div class="big incl num">48.2M tokens</div>
         <div class="worth">&asymp; $243.60 at API rates</div>
         <div class="why">Across 2 subscriptions.</div>
       </div>
@@ -402,32 +402,32 @@
     <div class="rows">
       <div class="r">
         <div class="who"><span class="name">Anthropic</span><span class="pill sub">Subscription</span></div>
-        <div class="vol">486 turns</div>
+        <div class="vol">38.4M tokens</div>
         <div class="amt"><span class="v incl">Included</span><span class="s">2 accounts</span><span class="notional">&asymp; $198.20 at API rates</span></div>
       </div>
       <div class="r">
         <div class="who"><span class="name">GLM</span><span class="pill sub">Subscription</span></div>
-        <div class="vol">126 turns</div>
+        <div class="vol">9.8M tokens</div>
         <div class="amt"><span class="v incl">Included</span><span class="notional">&asymp; $45.40 at API rates</span></div>
       </div>
       <div class="r">
         <div class="who"><span class="name">OpenRouter</span><span class="pill key">API key</span></div>
-        <div class="vol">88 turns</div>
+        <div class="vol">6.1M tokens</div>
         <div class="amt"><span class="v paid num">$11.20</span><span class="s">metered</span></div>
       </div>
       <div class="r">
         <div class="who"><span class="name">DeepSeek</span><span class="pill key">API key</span></div>
-        <div class="vol">54 turns</div>
+        <div class="vol">3.7M tokens</div>
         <div class="amt"><span class="v paid num">$5.90</span><span class="s">metered</span></div>
       </div>
       <div class="r">
         <div class="who"><span class="name">Vercel AI Gateway</span><span class="pill key">API key</span></div>
-        <div class="vol">12 turns</div>
+        <div class="vol">0.9M tokens</div>
         <div class="amt"><span class="v paid num">$1.30</span><span class="s">metered</span></div>
       </div>
       <div class="r legacy">
         <div class="who"><span class="name">Before ShipIt tracked this</span><span class="pill legacy">Unattributed</span></div>
-        <div class="vol">1,204 turns</div>
+        <div class="vol">71.5M tokens</div>
         <div class="amt"><span class="v num">$31.70</span><span class="s">earlier accounting</span></div>
       </div>
     </div>
@@ -456,7 +456,7 @@
       <div class="callout">
         The story survives the split: flip between <b>Paid</b> and <b>At API rates</b> and the
         two move in opposite directions. Weeks where spend rose are weeks work moved
-        <i>off</i> the plans, not weeks with more work in them &mdash; which <b>Turns</b>
+        <i>off</i> the plans, not weeks with more work in them &mdash; which <b>Tokens</b>
         confirms.
       </div>
     </div>
@@ -485,19 +485,20 @@
 <script>
 // One series at a time — today's UsageModal already toggles cost vs turns, and stacking a
 // second series onto it was rejected as confusing. The third option exists because plan
-// usage now has a value as well as a volume.
+// usage now has a value as well as a volume. Volume is tokens, not turns (req 16): a turn
+// is not a fixed quantity of anything, so a turn count is a poor proxy for consumption.
 const WEEKS = [
-  { week:'Jun 30', paid:1.10, worth:34.20, turns:96  },
-  { week:'Jul 7',  paid:2.40, worth:29.80, turns:88  },
-  { week:'Jul 14', paid:4.80, worth:22.10, turns:104 },
-  { week:'Jul 21', paid:1.90, worth:41.60, turns:121 },
-  { week:'Jul 28', paid:5.30, worth:19.40, turns:99  },
-  { week:'Aug 4',  paid:2.90, worth:36.50, turns:110 },
+  { week:'Jun 30', paid:1.10, worth:34.20, tokens:7.4  },
+  { week:'Jul 7',  paid:2.40, worth:29.80, tokens:6.8  },
+  { week:'Jul 14', paid:4.80, worth:22.10, tokens:8.1  },
+  { week:'Jul 21', paid:1.90, worth:41.60, tokens:9.6  },
+  { week:'Jul 28', paid:5.30, worth:19.40, tokens:7.7  },
+  { week:'Aug 4',  paid:2.90, worth:36.50, tokens:8.6  },
 ];
 const METRICS = [
   { key:'paid',  label:'Paid',         fmt: v => '$' + v.toFixed(2) },
   { key:'worth', label:'At API rates', fmt: v => '≈$' + v.toFixed(0) },
-  { key:'turns', label:'Turns',        fmt: v => String(v) },
+  { key:'tokens', label:'Tokens',      fmt: v => v.toFixed(1) + 'M' },
 ];
 let metric = 'paid';
 
