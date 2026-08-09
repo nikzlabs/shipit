@@ -90,31 +90,78 @@ ordinary prose link styling.
 
 ## Flow
 
-### Step 0 — reveal the destination, always
+### Resolve first, then reveal
 
-Both flows begin by revealing the panel they are about to change: select the
-right tab, flip the mobile layout to the workspace column, close the mobile
-sidebar. Without it the click resolves a destination the user cannot see — the
-Preview renders only when its tab is selected (`App.tsx:1555`), and so does
-Present (`App.tsx:1819`). `PresentToolChip` already performs exactly this
-three-call sequence (`message-tools.tsx:436`); this feature reuses it rather
-than inventing a second way to reveal a panel.
+The click resolves the destination **before** touching the user's panel, and
+reveals only once there is something actionable to show. Revealing first would
+mean a malformed pointer or a missing artifact replaces whatever the user was
+looking at and *then* apologises with a toast.
+
+Revealing means: select the right tab, flip the mobile layout to the workspace
+column, close the mobile sidebar. `PresentToolChip` already performs exactly
+that three-call sequence (`message-tools.tsx:436`); this extracts a
+`revealWorkspaceTab(tab)` helper both use rather than duplicating three store
+calls.
+
+The two panels differ in a way that matters for delivery timing: `PreviewFrame`
+is **always mounted** and merely hidden via CSS (`App.tsx:1665`), while
+`PresentPane` is **conditionally mounted** (`App.tsx:1819`) — it does not exist
+until its tab is selected. So a Present pointer must reveal before it can expect
+any frame or DOM to deliver into.
+
+A stopped-but-valid service is actionable, so it reveals *before* the start is
+sent — that is how the user sees the service booting instead of a blank pause.
 
 ### Preview (req 2)
 
 1. `parseShipitLink` resolves the href to `{ service, path, params, hash }`.
 2. The service name is matched exactly against `preview-store.services`. No
    declared service by that name, or one with no declared port → req 10 toast.
-3. The port becomes the selected port, and the target path is written into
-   `previewPaths[sessionId:port]` — the map the iframe pool already reads when
-   it creates a slot, so a preview that is not open yet simply *starts* on the
-   target page.
+3. The click records an **intent** (below) and selects the port.
 4. A live slot is navigated by **assigning the iframe's `src`** to the resolved
    destination URL.
 5. The link event is delivered to the page (req 11) — immediately when no
    navigation was needed, otherwise on the next SDK handshake from that slot,
    since navigating tears down the old `window.shipit`.
 6. A service that is not running is started first (req 12), below.
+
+#### The intent, and why it is not `previewPaths`
+
+An earlier draft wrote the destination straight into
+`previewPaths[sessionId:port]`, reusing the map the iframe pool reads when it
+creates a slot. That map is the wrong home: it means *"the last path this page
+reported about itself"*, and a live page writes to it at any time through the
+injected `path` message (`PreviewFrame.tsx:295`). A document still on screen
+during a pending start or navigation can therefore overwrite the destination
+before it is ever used — the queued destination and the observed location are
+two different facts and must not share a slot.
+
+So a click records:
+
+```ts
+{ sessionId, slotKey, service, targetPath, payload, clickId, phase }
+```
+
+- **`sessionId`** — the intent is cancelled on a session switch. It describes a
+  destination in one session and means nothing in another.
+- **`clickId`** — every click gets a fresh one, and **last click wins**. Two
+  rapid pointers, especially to different services, resolve to the most recent;
+  an earlier intent that has not completed is dropped, not queued.
+- **`phase`** — `starting` | `navigating` | `delivering`, so a click arriving
+  during a boot can wait rather than re-sending a start.
+- Re-clicking the *same* pointer is a new intent with a new `clickId`, and
+  delivers the SDK event again. Clicks are not coalesced: clicking "requirement
+  7" twice means the user asked twice, and a page that highlights on each click
+  should highlight again.
+
+The desired path is used when creating the slot; the reported path is committed
+to `previewPaths` only after the new document loads, which keeps that map's
+existing meaning intact.
+
+**Stale service messages.** `service_list` and `service_status` handlers ignore
+their `sessionId` today (`service-list.ts:5`, `service-status.ts:5`), so an
+intent must check the session itself rather than trusting that a status belongs
+to the session it is waiting on.
 
 **On step 4.** An earlier draft added a `navigate` command to the injected
 preview script, on the belief that a parent cannot navigate a cross-origin
@@ -127,10 +174,27 @@ unauthenticated channel, to do something the parent can already do.
 ### Present (req 3)
 
 1. `parseShipitLink` resolves the href to `{ filePath, params, hash }`.
-2. The carousel is focused on the artifact with that path. No such artifact →
-   req 10 toast naming the path.
+2. The artifact with that path is focused. No such artifact → req 10 toast
+   naming the path.
 3. The fragment and payload are delivered — by a different mechanism per
    artifact kind, below.
+
+Focusing has to do more than move the carousel index, because three pane states
+can leave a pointer pointing at nothing on screen:
+
+- **The gallery.** `focusById` does not close it today (`present-store.ts:240`),
+  and with the grid open there is no rendered artifact at all — no SDK frame, no
+  markdown DOM. `focusByPath` closes the gallery.
+- **Source view.** `viewMode` is local `PresentPane` state that resets only when
+  `activePresentId` changes (`PresentPane.tsx:130`), so re-clicking a pointer to
+  the *already-active* artifact would leave it showing source and deliver
+  nothing. A pointer addresses a place in the **rendered** artifact, so
+  delivering one switches to rendered mode. This is a deliberate choice over
+  preserving the user's source view: the pointer's whole meaning is "look at
+  this thing", and honouring the view mode would silently drop the request.
+- **Content not fetched yet.** Bytes load lazily (`PresentPane.tsx:183`), and a
+  pointer commonly *is* what first shows the artifact. Delivery waits for the
+  content and the matching DOM/frame; a fetch failure is a req 10 outcome.
 
 ### Starting a stopped service (req 12)
 
@@ -151,17 +215,30 @@ click handler is nowhere near it, and a module-level `send` singleton would be a
 new global for one call site — so `App`, which already owns both the socket and
 the store, sends it off the stored intent.
 
-Nothing then needs to wait. The service comes up, `service_status` lands, the
-health poller creates the slot, and the slot's URL is built from the path the
-click already wrote into `previewPaths`. The destination survives the wait
-because the click recorded a *destination*, not a navigation to perform at click
-time — the same property that makes step 3 work for a preview that is merely not
-open yet. Req 12 needs no second mechanism and no waiting UI: step 0 already put
-the user on the Preview tab, where the service's own startup state renders.
-
 Status handling is three-way and the middle case matters: `stopped`/`error` →
 send `start_service`; `starting` → wait without re-sending (a click arriving
 during a boot must not queue a second start); `running` → navigate now.
+
+**The intent must reselect its own port when the target reaches `running`.**
+This is the part that does not fall out for free. Starting a service emits a
+`preview_status` carrying only the ports currently running
+(`container-session-runner.ts:704`), and the client's handler clears
+`selectedPort` when the selected one isn't among them
+(`preview-status.ts:22`). In a session where service A is already running and
+the pointer targets stopped service B, the panel therefore stays on A after B
+starts, unless Compose ordering happens to put B first. So the intent watches
+for *its* service reaching `running` and selects that port explicitly —
+`selectedPort` is a view of the present, never durable pending state.
+
+Guard test: A running, click a pointer to stopped B, B starts, B becomes the
+active slot at the authored path.
+
+Once the port is selected the rest follows: the health poller creates the slot,
+and the slot URL is built from the intent's `targetPath`. The destination
+survives the wait because the click recorded a *destination*, not a navigation
+to perform at click time — the same property that makes a not-yet-open preview
+work. The user watches it boot on the Preview tab, revealed before the start
+was sent.
 
 ### Present delivery — two mechanisms, by artifact kind
 
@@ -171,9 +248,22 @@ markdown support cheap:
 
 - **Markdown** renders in ShipIt's **own DOM** (`MarkdownReviewView` →
   `MarkdownSelectionComments`), not in an iframe. So the pane scrolls to the
-  fragment itself: query the rendered container for `h1`–`h6`, slugify each
+  fragment itself: query a Present-only container ref for `h1`–`h6`, slug each
   heading's text, scroll the match into view. No SDK, no postMessage, no
   handshake timing. Req 11 does not apply — a markdown artifact has no scripts.
+
+  No ref is exposed through that stack today, so this adds one — a dedicated
+  Present container ref, not a reach into `MarkdownSelectionComments`' internals.
+
+  **The slug algorithm is a contract, not an implementation detail**, because the
+  agent has to author fragments that match it. One tested function: take the
+  heading's rendered `textContent` (so inline code and emphasis contribute their
+  text), lowercase, strip anything that is not alphanumeric/space/hyphen,
+  collapse whitespace runs to single hyphens, trim leading and trailing hyphens.
+  No de-duplication suffixes — **duplicate headings resolve to the first match**,
+  which is stated in the agent-facing docs rather than left to be discovered.
+  The fragment is percent-decoded before matching. No match is a req 10 outcome,
+  never a silent success.
 
   This deliberately does **not** add `id` attributes in the markdown renderer.
   That renderer is shared with chat, PR bodies and docs, so slugging headings
@@ -188,9 +278,10 @@ markdown support cheap:
   data* and the SDK does the scroll — the same delivery req 11 needs, so the
   HTML path carries both requirements on one channel.
 
-- **Everything else** — SVG, images, the source view — is focused and nothing
-  more. There is no place inside an image to address, and req 9 says so rather
-  than inventing a behaviour nobody asked for.
+- **Everything else** — SVG, images — is focused and nothing more. There is no
+  place inside an image to address. This is a design consequence of req 9
+  naming HTML and markdown, not a requirement of its own: the human answered
+  "also markdown", and nobody asked what an anchor into a PNG would mean.
 
 ## The `links` SDK surface
 
@@ -199,35 +290,50 @@ Mirrors `visibility`, which already solves the same late-subscriber problem:
 ```ts
 await window.shipit?.ready;
 window.shipit.links.subscribe((link) => {
-  // { path, params, hash }
+  // { params, hash }
   highlightRequirement(link.params.item);
 });
 ```
 
-- `links.current` holds the last link, `null` before any.
-- `subscribe` immediately replays the current link, then fires on each new one,
-  and returns an unsubscribe function. The replay is load-bearing, not a
-  nicety: clicking a Present pointer *mounts* the artifact, so the event exists
-  before any page script has run.
+`subscribe` is the whole public surface: it replays the latest link if one has
+already arrived, fires on each new one, and returns an unsubscribe function.
+
+- **The latest link is kept privately**, not exposed as `links.current`. Replay
+  through `subscribe` covers the real need — a page cannot know whether it
+  registered before or after delivery — and a public synchronous getter adds a
+  second way to read the same state for no stated use.
+- **The payload is `{ params, hash }`.** `path` is cut: for Present it is the
+  artifact path the page already is, and for Preview it is `location.pathname`.
+  Nothing a page can do with it that it cannot already read.
 - The SDK also scrolls to `document.getElementById(hash)` itself, so a plain
   anchor works with no page code at all (req 9). A page that wants different
   behaviour scrolls where it likes in its own handler.
 
-**That scroll cannot fire on receipt.** The SDK is injected into `<head>`
-(`RenderedFrame.tsx:56`) and posts `ready` immediately (`bootstrap.ts:150`), so
-for a Present artifact — where the click is what mounts the frame — the link
-arrives before the document has parsed and `getElementById` returns null. The
-promised no-JavaScript anchor would silently do nothing, which is the whole
-point for a page with no script. So the SDK retains the hash and scrolls on
-`DOMContentLoaded`, attempting immediately only when `readyState` is already
-past loading. Both orderings need a test; the early one is the default case.
+**Why replay is required, stated correctly.** It is *not* that `ready` provably
+precedes page scripts — `postMessage` delivery is asynchronous, so later artifact
+scripts may well run before the parent's reply arrives. The guarantee that
+matters is weaker and sufficient: a subscriber may register either before or
+after delivery, and neither ordering may drop the event.
+
+**The scroll cannot fire on receipt**, though. The SDK is injected into `<head>`
+(`RenderedFrame.tsx:56`), so for a Present artifact — where the click is what
+mounts the frame — the link can arrive before the document has parsed and
+`getElementById` returns null. The promised no-JavaScript anchor would silently
+do nothing, which is the whole point for a page with no script. So the SDK
+retains the hash and scrolls on `DOMContentLoaded`, attempting immediately only
+when `readyState` is already past loading. Both orderings need a test; the early
+one is the default case.
 
 ## Unopenable pointers (req 10)
 
+> **Open question.** Req 10 says "for any reason", and ShipIt cannot honour that
+> literally — see `requirements.md`. The table below is the set of failures
+> ShipIt can determine locally; it is the proposal pending that answer, not a
+> settled design.
+
 A pointer always renders and always accepts a click; one that cannot be opened
 explains itself in a toast (`ui-store.setToast`, `variant: "error"`) rather than
-silently doing nothing. Req 10 is deliberately broad — **every** terminal
-failure of a click reaches it, not a fixed taxonomy:
+silently doing nothing:
 
 | Cause | What the toast names |
 |---|---|
@@ -237,9 +343,20 @@ failure of a click reaches it, not a fixed taxonomy:
 | `start_service` refused — `send()` returned false on a closed socket (`useWebSocket.ts:151`) | that the session is not connected |
 | The service reached `error` after a start | the service name |
 | No artifact presented from that path | the path |
+| The artifact's content fetch failed | the path |
+| Fragment matched no element / no markdown heading | the fragment |
+| No preview URL can be built for this host (raw-IP host, `usePreviewHealthPoller.ts:43`) | that previews need a wildcard host |
 
 Each names the missing thing, because "couldn't open that" gives the user
 nothing to act on. A *stopped* service is not a failure — it is req 12.
+
+**What this cannot cover, deliberately.** A route that loads and shows the app's
+own "not found" screen is indistinguishable from a route that opened correctly;
+so is a service that stays `starting` forever, or a `send()` that returns true
+and is lost before the server receives it. Detecting those needs a correlated
+request/result protocol, SDK acknowledgements and proxy correlation — a
+subsystem, built to preserve a phrase. The open question above is whether to
+narrow req 10 instead.
 
 A server-side start failure currently comes back as a generic WS error that
 renders as a transcript error bubble (`service-handlers.ts:26`, `error.ts:5`);
@@ -251,6 +368,35 @@ This is deliberately *unlike* `IssueBadge`, which degrades to plain text. That
 gate exists because issue references are pattern-matched out of ordinary prose
 and may not be references at all. Here the agent wrote the pointer on purpose,
 so hiding it would misreport the agent's intent as a rendering decision.
+
+## Where the schemes are live — an opt-in renderer capability
+
+**The schemes must not be enabled globally.** `MarkdownContent` and its
+`urlTransform` are shared far beyond assistant chat: PR descriptions and
+comments, issue descriptions and comments, plan approvals, reviews, subagent
+reports (`message-markdown.tsx:293`, `IssueDetail.tsx:342`,
+`PrConversationSection.tsx:46`). Every one of those renders text ShipIt did not
+author — a PR comment from a stranger, an issue description, a README quoted
+into a review. Enabling the schemes there would let repository- or
+tracker-authored markdown present a button that **starts a Compose service**
+when clicked (req 12), which is exactly the untrusted-input boundary ShipIt
+treats as sacred: ingested content is data, not instructions.
+
+So ShipIt links are an explicit **renderer capability, default off**, switched on
+only where the text is agent-authored — assistant chat messages
+(`MessageList.tsx:316`). Everywhere else the href falls through to the existing
+branches and renders as it does today.
+
+Mechanically this means a second pair of module-level constants — a components
+map and a `urlTransform` with the schemes enabled — selected by prop. Both must
+stay **module-level**, because `MarkdownContent` is memoised on `text` alone on
+the premise that its plugins and components are stable module constants
+(`message-markdown.tsx:363`); building either per render would silently reinstate
+the O(messages × tokens) re-parse that memo exists to prevent.
+
+This is the one finding of the review that is a genuine security hole rather
+than a gap, and it was invisible from the requirements: "the agent can write a
+link" says nothing about who else renders markdown through the same component.
 
 ## Parsing and the origin contract
 
@@ -265,16 +411,45 @@ crossing into a frame, so the parser is a gate, not a formatter:
 - Exact scheme match; strict length caps; no credentials and no port in the
   preview authority (the authority is a service name — req 8 says a port is
   never part of the address, so one appearing there is a malformed pointer).
-- Exact match against a **declared** service name; no prefix or fuzzy matching.
-- The same validated string is what gets stored in `previewPaths` and what gets
-  navigated to. Validating one and using the other is how these bugs happen.
-- `shipit-render` is allowlisted to `link|badge|button`, and it is the only
-  parameter stripped before delivery. Anything else is the page's.
+- A preview path begins with **exactly one** `/`. Backslashes and tab/CR/LF are
+  rejected *before* URL resolution, not after: WHATWG parsing folds `\` into `/`
+  and strips tab/CR/LF anywhere in the input, so `/\evil.example/x` resolves to
+  a foreign host while passing a naive "starts with one slash" test. This is the
+  same trap `sanitizePreviewPath` documents (`preview-store.ts:296`).
+- **The service authority is read from the raw href, not `URL.hostname`**, which
+  lowercases and canonicalises — that would quietly conflict with "exact
+  declared service name" for any service whose compose name has uppercase.
+  Matched exactly against the declared list; no prefix or fuzzy matching.
+- A Present path is percent-decoded once and compared to the artifact's verbatim
+  `filePath` (modulo a leading `./`). Matching only ever selects an
+  **already-presented** entry; a pointer never causes a read of an arbitrary
+  path from disk.
+- Repeated query keys are **last-wins**, matching `URLSearchParams` iteration, so
+  the parse has no case the agent can author that behaves unpredictably. A
+  repeated `shipit-render` is a malformed pointer rather than last-wins, since
+  it is ShipIt's own parameter and ambiguity there is a bug in the author.
+- `hash` is stored **without** its leading `#` and percent-decoded once before
+  `getElementById` / heading matching.
+- The same validated string is what gets stored and what gets navigated to.
+  Validating one and using the other is how these bugs happen.
+- `shipit-render` is allowlisted to `link|badge|button` and stripped from **both**
+  the SDK payload and the navigation URL. Stripping only the payload would still
+  leave it visible to the page through `location.search`, contradicting the
+  claim that a page never sees ShipIt's presentation knob.
 - Preview frames get an **exact** `targetOrigin`, as the visibility messages
-  already do (`PreviewFrame.tsx:252`). Present frames are opaque-origin, where
-  `"*"` is the only expressible target — that stays acceptable only because the
-  existing browser-supplied `event.source` check and the SDK's locked
-  `parentOrigin` (`bootstrap.ts:56`) are preserved, not loosened.
+  already do (`PreviewFrame.tsx:252`), addressed by matching the source slot.
+
+**The Present payload is explicitly non-secret.** A presented artifact is
+opaque-origin, so `"*"` is the only target that can be expressed. The existing
+`event.source` and locked-`parentOrigin` checks protect *inbound* messages and
+do **not** make outbound wildcard delivery confidential: a frame can post
+`ready`, navigate itself, and leave the same `WindowProxy` pointing at a
+different document by the time the reply lands. The honest resolution is to
+declare the limit rather than paper over it — a link payload is a fragment and
+query parameters the agent wrote into a chat message the user can already read,
+so there is nothing in it to leak. A document-bound `MessageChannel` would close
+the gap and is the answer *if* the payload ever carries anything sensitive;
+building it now would be mechanism protecting data that does not exist.
 
 ## Branch order in `MarkdownLink`
 
@@ -296,8 +471,9 @@ status bar on hover and hand it to the OS protocol handler on middle-click or
 |---|---|
 | `src/client/utils/shipit-link.ts` | Scheme constants + `parseShipitLink` |
 | `src/client/utils/open-shipit-link.ts` | The click action: reveal, resolve, navigate/focus, toast |
-| `src/client/components/message-markdown.tsx` | `urlTransform` passthrough + the `MarkdownLink` branch and its three forms |
-| `src/client/stores/preview-store.ts` | The navigation intent (service, path, payload) |
+| `src/client/components/message-markdown.tsx` | The opt-in renderer capability: scheme-enabled components + `urlTransform`, the `MarkdownLink` branch, its three forms |
+| `src/client/components/MessageList/MessageList.tsx` | Turns the capability on for assistant messages — and nowhere else |
+| `src/client/stores/preview-store.ts` | The navigation intent (session, slot, service, path, payload, clickId, phase) |
 | `src/client/App.tsx` | Sends `start_service` for an intent whose service is stopped (req 12) |
 | `src/client/stores/present-store.ts` | `focusByPath`, `pendingLink` |
 | `src/client/components/PreviewFrame/PreviewFrame.tsx` | Navigate the live slot, deliver on handshake |

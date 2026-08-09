@@ -1,26 +1,71 @@
 # Agent-authored links — checklist
 
-- [ ] `shipit-link.ts` — scheme constants, `parseShipitLink`, `shipit-render`
-      allowlist + strip, reject-don't-truncate validation
-- [ ] `open-shipit-link.ts` — reveal the panel, resolve, navigate/focus; toast on
-      every unopenable pointer (req 10)
-- [ ] `message-markdown.tsx` — `urlTransform` passthrough + a `MarkdownLink`
-      branch ordered ahead of the repo-file branch, with no real `href`
-- [ ] Link / badge / button renderers (req 1)
-- [ ] `preview-store` — navigation intent (service, path, payload)
-- [ ] `App.tsx` — `start_service` for an intent whose service is stopped;
-      `starting` waits without re-sending; `error` and a refused `send()` toast (req 12)
-- [ ] `present-store` — `focusByPath` + `pendingLink`
-- [ ] `PreviewFrame` — navigate the live slot by assigning `src`, deliver the
-      link on the next handshake
-- [ ] `PresentPane` — deliver the link to a rendered-HTML artifact frame
-- [ ] `PresentPane` — markdown fragment scroll by heading-text match, in
-      ShipIt's own DOM (req 9)
-- [ ] SDK `bootstrap.ts` — `window.shipit.links` with replay, fragment scroll
-      deferred to `DOMContentLoaded` (req 9, req 11)
-- [ ] Agent-facing docs (`chat-links.md`, SDK doc, system prompt)
-- [ ] Tests: parse + rejection cases, click action, store additions, branch
-      order vs repo-file links, markdown render of all three forms, SDK link
-      replay, early and late fragment delivery, markdown heading-match scroll
+## Parsing
+
+- [ ] `shipit-link.ts` — scheme constants, `parseShipitLink`
+- [ ] Reject-don't-truncate: length caps, one leading `/`, backslash and
+      tab/CR/LF rejected before URL resolution
+- [ ] Service authority read from the raw href (not `URL.hostname`), exact match
+- [ ] `shipit-render` allowlist; duplicate key rejected; stripped from both the
+      payload and the navigation URL
+- [ ] Last-wins repeated query keys; `hash` stored without `#`, decoded once
+
+## Rendering
+
+- [ ] Opt-in renderer capability in `message-markdown.tsx`, default off, with a
+      second pair of **module-level** components/`urlTransform` constants
+- [ ] Enabled only for assistant messages in `MessageList.tsx`
+- [ ] `MarkdownLink` branch ordered ahead of the repo-file branch, no real `href`
+- [ ] Link / badge / button forms (req 1)
+
+## Preview flow
+
+- [ ] Navigation intent in `preview-store` — session-scoped, `clickId`,
+      `phase`; kept separate from `previewPaths`
+- [ ] Resolve before reveal; `revealWorkspaceTab(tab)` helper shared with
+      `PresentToolChip`
+- [ ] `App.tsx` sends `start_service` for a stopped target; `starting` waits
+      without re-sending (req 12)
+- [ ] Intent reselects its own port when its service reaches `running`
+- [ ] Navigate the live slot by assigning `src`; deliver the link on the next
+      handshake
+- [ ] Cancel on session switch; last-click-wins on rapid clicks
+
+## Present flow
+
+- [ ] `present-store` — `focusByPath` (closes the gallery), `pendingLink`
+- [ ] Delivery switches source view to rendered, and waits for content + frame
+- [ ] Markdown fragment scroll: Present-only container ref, the tested slug
+      algorithm, first-match-wins
+- [ ] HTML delivery to the artifact frame
+
+## SDK
+
+- [ ] `window.shipit.links.subscribe` with replay; no public `links.current`
+- [ ] Payload is `{ params, hash }`
+- [ ] Fragment scroll deferred to `DOMContentLoaded`
+
+## Docs
+
+- [ ] `src/server/shipit-docs/chat-links.md`
+- [ ] `src/server/shipit-docs/agent-interface-sdk.md` — the `links` surface
+- [ ] `src/server/orchestrator/prompts/live-preview.md` — respecting the
+      prompt-cache contract (render once at module load)
+
+## Tests
+
+- [ ] Parse: both schemes, every rejection case, the render allowlist
+- [ ] Branch order vs repo-file links; all three rendered forms
+- [ ] Schemes inert in PR/issue/repo-authored markdown
+- [ ] Multi-service: A running, pointer to stopped B, B becomes active at the path
+- [ ] Session-switch cancellation; stale `service_list`/`service_status`
+- [ ] Re-click and rapid-click semantics
+- [ ] Gallery open, source view, content-fetch failure
+- [ ] Missing markdown heading and missing HTML fragment
+- [ ] SDK link replay; early and late fragment delivery
+- [ ] Wrong source/origin rejected on delivery
+
+## Quality
+
 - [ ] `lint:dev` + `typecheck` clean
 - [ ] Cross-backend review of the implementation

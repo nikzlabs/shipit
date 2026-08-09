@@ -33,9 +33,7 @@ one requirement — with no way to make that pointer clickable.
    is never required of the agent.
 9. A Present destination is addressed by the artifact's **file path plus a URL
    fragment**; the fragment is what names the place inside it. This works for
-   **rendered HTML and for markdown** artifacts. Other kinds — SVG, images, the
-   source view of any artifact — are opened by the pointer but have no inner
-   place to address.
+   **rendered HTML and for markdown** artifacts.
 10. A pointer that cannot be opened — for **any** reason — **stays clickable**
     and, on click, says why instead of doing nothing. The explanation appears as
     a **toast**, the same way for both destinations.
@@ -52,7 +50,15 @@ one requirement — with no way to make that pointer clickable.
 
 ## Open questions
 
-_None._
+- **Which failures must req 10's toast cover?** Req 10 currently says "for any
+  reason", and ShipIt cannot honour that literally. Some failures it can
+  determine (unknown service, artifact never presented, a refused send, a
+  service that reaches `error`). Others it cannot without a correlated
+  request/result protocol, handshake timeouts and proxy correlation — and some
+  not even then, because ShipIt cannot tell a route that opened fine from an app
+  showing its own "not found" screen. Narrow req 10 to failures ShipIt can
+  determine, or accept building that subsystem? Raised by the cross-backend
+  review. Nothing is implemented while this is open.
 
 ## Resolved questions
 
@@ -126,7 +132,8 @@ _None._
 
 ## Non-requirements
 
-- Linking to ShipIt-owned destinations (repo files, issues, PRs). Those already
-  work — `remarkLinkifyPaths` and `remarkLinkifyIssues` cover them.
+- Linking to ShipIt-owned destinations. Repo files and tracker issues already
+  work (`remarkLinkifyPaths`, `remarkLinkifyIssues`); PRs have their own
+  affordances and are not part of this feature either way.
 - Auto-detecting link targets in bare prose. Nothing was asked for beyond an
   explicitly authored link.
