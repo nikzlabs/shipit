@@ -317,8 +317,19 @@
         accounting, and is added into neither &ldquo;Metered spend&rdquo; nor &ldquo;at API
         rates&rdquo; &mdash; it has no persisted rates, so it could not feed the second one
         even if its provenance were known. It is colourless on purpose: tinting it as plan or
-        metered would assert the very attribution the bucket exists to admit is missing. The
-        group drains on its own as old sessions age out.
+        metered would assert the very attribution the bucket exists to admit is missing.
+      </div>
+      <div class="callout">
+        <b>It is not purely historical, and does not drain on its own</b>
+        (<code class="k">planning#343</code>). Work that genuinely resolves no model &mdash;
+        session naming falling back when nothing is eligible &mdash; writes here going
+        forward, which is why the row is named for <i>what is missing</i> rather than for
+        <i>when it was written</i>. Those rows are recorded <b>unpriced</b>: their tokens
+        join the group&rsquo;s volume and their dollar figure is a hard zero, never the
+        harness&rsquo;s own number. A group holding nothing else therefore renders
+        <b>&ldquo;Unpriced / no rates recorded&rdquo;</b> in place of the amount below &mdash;
+        printing <code class="k">$0.00</code> would be the free-work assertion arriving through
+        the display instead of the write.
       </div>
     </div>
   </div>
@@ -426,7 +437,7 @@
         <div class="amt"><span class="v paid num">$1.30</span><span class="s">metered</span></div>
       </div>
       <div class="r legacy">
-        <div class="who"><span class="name">Before ShipIt tracked this</span><span class="pill legacy">Unattributed</span></div>
+        <div class="who"><span class="name">No service recorded</span><span class="pill legacy">Unattributed</span></div>
         <div class="vol">71.5M tokens</div>
         <div class="amt"><span class="v num">$31.70</span><span class="s">earlier accounting</span></div>
       </div>

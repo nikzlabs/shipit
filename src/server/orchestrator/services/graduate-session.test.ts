@@ -478,6 +478,96 @@ describe("graduateSession", () => {
     expect(appended).toHaveLength(0);
   });
 
+  // planning#343 (req 16) — naming that resolves NO model still spends tokens,
+  // and both harnesses now report them. Gating the usage row on a resolved
+  // target dropped them silently. They belong in the legacy group: recorded for
+  // their volume, with no attribution and no price.
+  it("records an unattributed, unpriced usage row when nothing is eligible", async () => {
+    const generateSessionName = vi.fn(async () => ({
+      name: { slug: "s", title: "T" },
+      usage: { durationMs: 900, inputTokens: 1200, outputTokens: 40, cacheReadTokens: 30, costUsd: 0.02 },
+    }));
+    vi.doMock("../session-namer.js", () => ({ generateSessionName }));
+    const recorded: { sessionId: string; costUsd: number; extra?: Record<string, unknown> }[] = [];
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps } = buildDeps({
+      id: "s1", title: "placeholder", branch: "shipit/abc123", workspaceDir: "/tmp/ws",
+    });
+
+    graduateSession(
+      {
+        ...deps,
+        credentialStore: {
+          getNonTurnModel: () => undefined,
+          listCredentialRoutes: () => [],
+          getCredentialSecret: () => undefined,
+        } as never,
+        usageManager: {
+          record: (
+            sessionId: string,
+            costUsd: number,
+            _d: number,
+            _i?: number,
+            _o?: number,
+            extra?: Record<string, unknown>,
+          ) => {
+            recorded.push({ sessionId, costUsd, extra });
+            return costUsd;
+          },
+        } as never,
+      },
+      { sessionId: "s1", userText: "hi", agentId: "claude" },
+    );
+
+    await flush(() => recorded.length > 0);
+
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]!.sessionId).toBe("s1");
+    // Unpriced. NOT the harness's own $0.02: with no service there is no rate
+    // table, and the CLI's figure is not a substitute for one.
+    expect(recorded[0]!.costUsd).toBe(0);
+    // All-null attribution IS the legacy bucket — no discriminator of its own.
+    expect(recorded[0]!.extra?.attribution).toBeUndefined();
+    expect(recorded[0]!.extra?.model).toBeUndefined();
+    // The harness that actually ran it — the session's own, since none resolved.
+    expect(recorded[0]!.extra?.subAgentId).toBe("claude");
+    // `per-turn`, so this zero never becomes a cumulative baseline.
+    expect(recorded[0]!.extra?.costSource).toBe("per-turn");
+    expect(recorded[0]!.extra?.cacheRead).toBe(30);
+  });
+
+  // The volume is the whole point of the row, so a run that reports only a
+  // dollar figure has nothing left to record once the figure is discarded.
+  it("records nothing when an unattributed naming run reports no tokens", async () => {
+    const generateSessionName = vi.fn(async () => ({
+      name: { slug: "s", title: "T" },
+      usage: { durationMs: 900, costUsd: 0.02 },
+    }));
+    vi.doMock("../session-namer.js", () => ({ generateSessionName }));
+    const recorded: unknown[] = [];
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({
+      id: "s1", title: "placeholder", branch: "shipit/abc123", workspaceDir: "/tmp/ws",
+    });
+
+    graduateSession(
+      {
+        ...deps,
+        credentialStore: {
+          getNonTurnModel: () => undefined,
+          listCredentialRoutes: () => [],
+          getCredentialSecret: () => undefined,
+        } as never,
+        usageManager: { record: (...args: unknown[]) => { recorded.push(args); return 0; } } as never,
+      },
+      { sessionId: "s1", userText: "hi", agentId: "claude" },
+    );
+
+    await flush(() => state.branchRenamed === true);
+
+    expect(recorded).toHaveLength(0);
+  });
+
   // A pin the install can no longer run IS a service the user chose that went
   // away: naming stops, the placeholder title stays, and the notice says which.
   it("stops naming and persists a notice for a stale pin", async () => {

@@ -619,7 +619,10 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
     expect(within(metered).getByText("metered")).toBeInTheDocument();
   });
 
-  it("labels the legacy group as earlier accounting and never as a mode", () => {
+  // planning#343 — the name says what is missing, not when the row was written:
+  // the bucket now takes forward-generated unattributed volume too. The money
+  // label stays "earlier accounting" because those forward rows are unpriced.
+  it("names the legacy group for its missing attribution, never for a mode", () => {
     render(
       <UsageModal
         currentSessionUsage={{ ...mixed, groups: [...mixed.groups!, legacyGroup] }}
@@ -630,12 +633,36 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
     );
     const legacy = screen.getAllByTestId("usage-group-row")
       .find((r) => r.dataset.groupKey === "legacy")!;
-    expect(within(legacy).getByText("Before ShipIt tracked this")).toBeInTheDocument();
+    expect(within(legacy).getByText("No service recorded")).toBeInTheDocument();
     expect(within(legacy).getByText("Unattributed")).toBeInTheDocument();
     expect(within(legacy).getByText("earlier accounting")).toBeInTheDocument();
     expect(within(legacy).getByText("$31.70")).toBeInTheDocument();
     // Its total joins neither headline.
     expect(screen.getByTestId("usage-session-headline-metered")).toHaveTextContent("$0.11");
+  });
+
+  // planning#343 — the forward rows are unpriced, so a bucket holding only them
+  // has no dollar figure. `formatCost(0)` would print "$0.00", which asserts the
+  // work was free: the one thing req 16 exists to stop the totals saying.
+  it("says a legacy group carrying only unpriced volume has no figure", () => {
+    render(
+      <UsageModal
+        currentSessionUsage={{
+          ...mixed,
+          groups: [...mixed.groups!, { ...legacyGroup, costUsd: 0, tokens: 12_400, turns: 1 }],
+        }}
+        allUsage={null}
+        sessions={mockSessions}
+        onClose={() => {}}
+      />
+    );
+    const legacy = screen.getAllByTestId("usage-group-row")
+      .find((r) => r.dataset.groupKey === "legacy")!;
+    expect(within(legacy).getByText("Unpriced")).toBeInTheDocument();
+    expect(within(legacy).getByText("no rates recorded")).toBeInTheDocument();
+    expect(within(legacy).queryByText("$0.00")).toBeNull();
+    // The volume is still reported — that is the whole point of the row.
+    expect(within(legacy).getByText(/12\.4K tokens|12,400 tokens/)).toBeInTheDocument();
   });
 
   it("averages each figure over the turns that produced it", () => {

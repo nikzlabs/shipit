@@ -477,3 +477,91 @@ describe("dismissNonTurnFailure", () => {
     expect(ok).toBe(false);
   });
 });
+
+/**
+ * planning#343 (req 16) — the row for work that resolved **no** model.
+ *
+ * Its tokens are real; its attribution does not exist. That is the same
+ * condition as a pre-feature turn, reached forward in time rather than
+ * historically, so it goes into the legacy group — and it is never priced.
+ */
+describe("recordNonTurnUsage with no resolved target", () => {
+  function recorder() {
+    const rows: { costUsd: number; extra?: Record<string, unknown> }[] = [];
+    return {
+      rows,
+      deps: {
+        usageManager: {
+          record: (
+            _s: string,
+            costUsd: number,
+            _d: number,
+            _i?: number,
+            _o?: number,
+            extra?: Record<string, unknown>,
+          ) => {
+            rows.push({ costUsd, extra });
+            return costUsd;
+          },
+        },
+      } as never,
+    };
+  }
+
+  it("writes unattributed volume at a hard zero, not the harness's own figure", async () => {
+    const { recordNonTurnUsage } = await import("./non-turn-work.js");
+    const { rows, deps } = recorder();
+
+    recordNonTurnUsage(deps, {
+      sessionId: "s1",
+      harnessId: "claude",
+      purpose: "session-naming",
+      // Claude DOES report a dollar figure. Taking it would price a row nothing
+      // can attribute; `resolveTurnCost`'s no-attribution default would do
+      // exactly that, which is why this path does not go through it.
+      telemetry: { durationMs: 800, costUsd: 0.017, inputTokens: 900, outputTokens: 25 },
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.costUsd).toBe(0);
+    expect(rows[0]!.extra?.attribution).toBeUndefined();
+    expect(rows[0]!.extra?.model).toBeUndefined();
+    expect(rows[0]!.extra?.subAgentId).toBe("claude");
+    expect(rows[0]!.extra?.costSource).toBe("per-turn");
+  });
+
+  // Codex reports tokens and no dollar figure at all. The row is the same
+  // shape — the figure was never going to be used either way.
+  it("writes the row for a harness that reports tokens and no cost", async () => {
+    const { recordNonTurnUsage } = await import("./non-turn-work.js");
+    const { rows, deps } = recorder();
+
+    recordNonTurnUsage(deps, {
+      sessionId: "s1",
+      harnessId: "codex",
+      purpose: "session-naming",
+      telemetry: { durationMs: 800, inputTokens: 900, outputTokens: 25, cacheReadTokens: 40 },
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.costUsd).toBe(0);
+    expect(rows[0]!.extra?.subAgentId).toBe("codex");
+    expect(rows[0]!.extra?.cacheRead).toBe(40);
+  });
+
+  // Volume is the whole content of the row, so with none there is nothing to
+  // write — a cost-only report cannot carry an unattributed run on its own.
+  it("records nothing when only a dollar figure was reported", async () => {
+    const { recordNonTurnUsage } = await import("./non-turn-work.js");
+    const { rows, deps } = recorder();
+
+    recordNonTurnUsage(deps, {
+      sessionId: "s1",
+      harnessId: "claude",
+      purpose: "session-naming",
+      telemetry: { durationMs: 800, costUsd: 0.017 },
+    });
+
+    expect(rows).toHaveLength(0);
+  });
+});

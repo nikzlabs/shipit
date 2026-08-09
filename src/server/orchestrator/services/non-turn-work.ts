@@ -50,6 +50,16 @@
  * to avoid. A container-less PR generation attributes to the session whose PR
  * it is.
  *
+ * Some non-turn work resolves **no model at all** — naming falling back when
+ * nothing is eligible runs the session's own harness with no service, no
+ * billing mode and therefore no rate table. Its tokens are real and its
+ * attribution does not exist, so req 16 puts it in the legacy group: recorded
+ * for its volume, and never priced. Not priced from rates, because there are
+ * none; and not from the harness's own dollar figure either, which is the
+ * default `resolveTurnCost` applies with no attribution — Codex reports none at
+ * all, so that route lands the row at `$0` and asserts the run was free. See
+ * {@link recordNonTurnUsage}.
+ *
  * ## 3. Failure is never silent and never blocking
  *
  * The surrounding operation always completes with a fallback — a placeholder
@@ -62,7 +72,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { NonTurnFailureCard } from "../../shared/types.js";
+import type { AgentId, NonTurnFailureCard } from "../../shared/types.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { UsageManager } from "../usage.js";
 import type { CredentialStore } from "../credential-store.js";
@@ -157,50 +167,89 @@ export interface NonTurnTelemetry {
 /**
  * Record what a non-turn run consumed, against the session it was done for.
  *
+ * Two shapes, and the difference is whether a model resolved at all:
+ *
+ * - **A resolved target** carries a service, a billing mode and the rates the
+ *   catalogue holds for that model, so the row is attributed and priced under
+ *   `turn-attribution.ts`'s rule — the same one the two turn writers share.
+ * - **No target** is the `nothing_eligible` fallback (`non-turn-model.ts`): the
+ *   session's own harness, no service, no billing mode, no rate table. Req 16
+ *   puts that row in the legacy group — all six attribution columns NULL, which
+ *   the table's `CHECK` already makes the only expressible shape — and it is
+ *   **unpriced**: `cost_usd` is a hard zero rather than anything derived. It is
+ *   volume whose attribution is unknown, not spend.
+ *
+ * The unpriced rule is deliberate and is why this does not simply hand
+ * `attribution: undefined` to {@link resolveTurnCost}, whose no-attribution
+ * default is the harness's own dollar figure. Codex reports none, so that
+ * default writes `$0` under the name of a measurement — the trap this feature
+ * has hit twice already (a metered consult recorded as free in phase 3, Codex's
+ * absent telemetry in phase 6). A zero written *because there is no price* is a
+ * different fact from a zero written *because the price was zero*, and only the
+ * first is true here; what keeps it from reading as the second is that the row
+ * carries no rates, so no reader can turn it into a figure.
+ *
  * A no-op when the harness reported nothing at all: an all-zero row priced from
  * the catalogue's rates says "this was free", which is a claim, not an absence.
- * The caller logs the gap instead.
+ * The caller logs the gap instead. An unattributed run needs *tokens*
+ * specifically — its dollar figure is never consulted, so a run reporting only
+ * a cost has nothing left to record.
  */
 export function recordNonTurnUsage(
   deps: Pick<NonTurnWorkDeps, "usageManager">,
   args: {
     sessionId: string;
-    target: NonTurnTarget;
+    /**
+     * The harness that actually ran it — `target.harnessId` when a model
+     * resolved, the session's own harness when none did. Stored as
+     * `subAgentId`, so it is required even in the unattributed case.
+     */
+    harnessId: AgentId;
+    /** Absent when the run resolved no model: req 16's legacy group. */
+    target?: NonTurnTarget | undefined;
     purpose: NonTurnPurpose;
     telemetry: NonTurnTelemetry;
   },
 ): void {
   const { usageManager } = deps;
   if (!usageManager) return;
-  const { telemetry, target } = args;
+  const { telemetry, target, harnessId } = args;
   const hasTokens =
     telemetry.inputTokens !== undefined
     || telemetry.outputTokens !== undefined
     || telemetry.cacheReadTokens !== undefined
     || telemetry.cacheCreateTokens !== undefined;
-  if (!hasTokens && telemetry.costUsd === undefined) {
+  if (!hasTokens && (!target || telemetry.costUsd === undefined)) {
+    const where = target
+      ? `on ${target.selection.serviceId}/${target.selection.billingMode}`
+      : "with no model resolved";
     console.warn(
-      `[non-turn] no telemetry from ${target.harnessId} for ${args.purpose}`
-      + ` on ${target.selection.serviceId}/${target.selection.billingMode}; nothing recorded`,
+      `[non-turn] no token telemetry from ${harnessId} for ${args.purpose}`
+      + ` ${where}; nothing recorded`,
     );
     return;
   }
-  const attribution = turnAttributionFor(target.selection);
-  const cost = resolveTurnCost({
-    harnessId: target.harnessId,
-    attribution,
-    reportedCostUsd: telemetry.costUsd,
-    // Already this run's own cost — a one-shot spawn has no running
-    // conversation total to diff against. Saying so explicitly is what keeps
-    // `record()` from inferring `cumulative` and subtracting a prior snapshot.
-    reportedCostSource: "per-turn",
-    tokens: {
-      input: telemetry.inputTokens,
-      output: telemetry.outputTokens,
-      cacheRead: telemetry.cacheReadTokens,
-      cacheWrite: telemetry.cacheCreateTokens,
-    },
-  });
+  const attribution = target ? turnAttributionFor(target.selection) : undefined;
+  const cost = target
+    ? resolveTurnCost({
+        harnessId,
+        attribution,
+        reportedCostUsd: telemetry.costUsd,
+        // Already this run's own cost — a one-shot spawn has no running
+        // conversation total to diff against. Saying so explicitly is what keeps
+        // `record()` from inferring `cumulative` and subtracting a prior snapshot.
+        reportedCostSource: "per-turn",
+        tokens: {
+          input: telemetry.inputTokens,
+          output: telemetry.outputTokens,
+          cacheRead: telemetry.cacheReadTokens,
+          cacheWrite: telemetry.cacheCreateTokens,
+        },
+      })
+    // Unattributed: nothing to price against, and the harness's own figure is
+    // not a substitute. `per-turn` keeps `record()` from treating this zero as
+    // a cumulative baseline the next run of the same harness would diff against.
+    : { costUsd: 0, costSource: "per-turn" as const };
   usageManager.record(
     args.sessionId,
     cost.costUsd,
@@ -211,9 +260,12 @@ export function recordNonTurnUsage(
       // It IS a spawn of this harness rather than the pinned agent's turn, which
       // is what keeps it out of the primary delta chain and out of the context
       // dial (`usage.record`, `emitSubAgentUsageUpdate`).
-      subAgentId: target.harnessId,
+      subAgentId: harnessId,
       costSource: cost.costSource,
-      model: target.selection.modelId,
+      // No selection means no model id to record either. The split's model list
+      // simply omits it — inventing the harness's default would be the same
+      // guess the legacy group exists to refuse.
+      ...(target ? { model: target.selection.modelId } : {}),
       ...(attribution ? { attribution } : {}),
       ...(telemetry.cacheReadTokens !== undefined ? { cacheRead: telemetry.cacheReadTokens } : {}),
       ...(telemetry.cacheCreateTokens !== undefined ? { cacheCreate: telemetry.cacheCreateTokens } : {}),
@@ -358,12 +410,15 @@ export function dismissNonTurnFailure(
  * dependency req 9 exists to remove, and the notice is what reports it.
  */
 export function makeNonTurnGenerateText(
-  deps: NonTurnWorkDeps & { fallback: (prompt: string, cwd: string) => Promise<string> },
+  // `GenerateText` rather than `(prompt, cwd) => …`: the fallback needs `opts`
+  // so it can record its own usage row when it actually spends tokens (see the
+  // `nothing_eligible` branch below and `app-di.ts`).
+  deps: NonTurnWorkDeps & { fallback: GenerateText },
 ): GenerateText {
   return async (prompt, cwd, opts) => {
     const sessionId = opts?.sessionId;
     const purpose = opts?.purpose ?? "pr-description";
-    if (!sessionId) return deps.fallback(prompt, cwd);
+    if (!sessionId) return deps.fallback(prompt, cwd, opts);
 
     const resolution = resolveNonTurnModel({
       credentialStore: deps.credentialStore,
@@ -381,12 +436,21 @@ export function makeNonTurnGenerateText(
     // A stale PIN is the opposite case and keeps its hard stop below: there the
     // user chose a service and it went away, which is precisely what req 9's
     // notice reports on.
+    //
+    // Req 16 wants that fallback's tokens in the legacy group too, and this
+    // function is the wrong place to write them: the fallback is a black box
+    // returning a string, and only IT knows whether a CLI ran. In container
+    // production none does (there is no in-process agent, so the call returns
+    // "" and costs nothing); in `RUNTIME_MODE=local` one does. So `opts` is
+    // forwarded and the recording lives with the producer, in `app-di.ts` —
+    // the same shape as naming, which shells out directly and records its own
+    // row in `graduate-session.ts`.
     if (!resolution.ok && resolution.reason === "nothing_eligible") {
       console.warn(
         `[non-turn] ${purpose} session=${sessionId}: no eligible model on any installed harness;`
         + " falling back to the pre-feature generator",
       );
-      return deps.fallback(prompt, cwd);
+      return deps.fallback(prompt, cwd, opts);
     }
     if (!resolution.ok) {
       reportUnrunnable(deps, sessionId, purpose, resolution);
@@ -478,6 +542,7 @@ async function runNonTurnSpawn(
     });
     recordNonTurnUsage(deps, {
       sessionId,
+      harnessId: target.harnessId,
       target,
       purpose,
       telemetry: {

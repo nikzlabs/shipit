@@ -168,6 +168,22 @@ table — a phase is checked off when its PR has merged.
       to $0 instead of counting as no telemetry. A third — naming that resolves **no** target at
       all reports tokens nobody records — is pre-existing, harness-independent and a
       requirements question; filed as `planning#343` rather than answered here.
+- [x] **Naming that resolves no model records unattributed volume** (planning#343). Answered at
+      the requirements level, not the implementation one: req 16's legacy group takes it, because
+      the tokens are real and their attribution does not exist — a pre-feature turn's condition
+      reached forward in time. The usage gate drops `target &&`; `recordNonTurnUsage` takes the
+      harness that ran it plus an optional target and writes an all-null-attribution row, which
+      the all-or-nothing `CHECK` already makes the only expressible unattributed shape, so no
+      discriminator was invented and `BillingMode` was not widened. The row is **unpriced** — a
+      hard zero rather than `resolveTurnCost`'s no-attribution default of the harness's own
+      figure, which for Codex is nothing and would assert the run was free. Consequence
+      honoured: the legacy group is no longer purely historical and no longer drains on its own,
+      so `usage.ts`, `usage-types.ts`, the modal's group name and `mockup-usage.html` stop
+      saying it does. Cross-backend review found two defects fixed with it — a legacy group
+      holding only unpriced rows rendered `$0.00`, the free-work assertion arriving through the
+      display rather than the write (it now reads "Unpriced / no rates recorded"), and the
+      local-mode PR-description fallback spawns a real CLI and dropped its tokens the same way
+      naming did, so `opts` is forwarded and app-di's generator records its own row.
 
 ## Phases 8 and 9
 

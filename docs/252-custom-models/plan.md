@@ -658,8 +658,15 @@ go, and their true attribution is not recoverable: a historical row has a model 
 route, and sub-agent rows carry `sub_agent_id` without any billing information at all
 (`services/sub-agent.ts:457`), so the parent session cannot answer for them either. Guessing
 would produce a confidently wrong split of real money. A named bucket the UI can render as
-"before ShipIt tracked this" is the honest option, and it drains on its own as old sessions
-age out.
+"no service recorded" is the honest option.
+
+> **Superseded in part (planning#343).** This paragraph read "before ShipIt tracked this" and
+> "it drains on its own as old sessions age out". Both were true of the bucket's founding case
+> and are no longer true of the bucket: req 16 now also sends **forward**-generated
+> unattributable volume here — work that resolves no model at all. What defines the bucket is
+> the absence, not the date. Those rows are recorded unpriced, so only pre-feature rows can put
+> *money* in it; the volume is mixed and the money is not. See phase 7's paragraphs on naming
+> that resolves no model, below.
 
 So each new row stores **tokens, attribution, and the rate that was applied** — not a price
 looked up later. The rate always comes from the catalogue; which *column* that rate ends up
@@ -698,8 +705,10 @@ remember.
 
 All-null is the `legacy` bucket. It needs no extra discriminator and no widening of
 `BillingMode`, which stays `"sub" | "key"` and describes a *selection* rather than a row's
-provenance: a legacy row is one written before this existed, the aggregation groups it under
-its own heading, and it never guesses which service it belonged to. Computing money at read time from the live catalogue was this doc's first answer and
+provenance: a legacy row is **one with no attribution, whatever produced it**, the aggregation
+groups it under its own heading, and it never guesses which service it belonged to. That the
+all-or-nothing `CHECK` leaves exactly one expressible unattributed shape is what let
+planning#343 add a second producer without inventing a discriminator for it. Computing money at read time from the live catalogue was this doc's first answer and
 it is wrong in two ways that only show up with time: a price edit would silently restate every
 historical "You paid", and a retired model would have no price to look up at all — which the
 already-declared `gpt-5.6` retirement demonstrates. Req 16 asks where money *was* spent, which
@@ -1399,18 +1408,62 @@ one. The same review found that a present-but-empty usage block became `{input: 
 and so priced to $0 — the forbidden "this was free" row arriving through the back door — so
 "reported nothing" now covers an empty block as well as an absent one.
 
-**One escape remains, and it is neither Codex-specific nor this issue's.** In the
-`nothing_eligible` fallback above, `graduateSession` leaves `target` undefined and names on the
-session's own harness anyway; recording is gated on `target && result.usage`, so those tokens are
-reported by the CLI and then dropped. It predates this issue, applies to **both** harnesses
-equally, and is not fixable by measurement: with no configured route there is no service, no
-billing mode and therefore no rate table, so the run is unattributable and unpriceable by
-construction — writing the row anyway would produce exactly the $0 assertion this whole rule
-forbids. Whether an unattributable non-turn run belongs in req 16's legacy group is a
-requirements question rather than an implementation one, so it is filed rather than answered
-here. **Req 16's split is therefore exhaustive over non-turn work that resolves a model, which
-is every install that has configured a credential — not over an install running a
-hand-authenticated CLI ShipIt cannot see.**
+**One escape remained after the Codex work above, and it was neither Codex-specific nor that
+issue's** (planning#343). In the `nothing_eligible` fallback, `graduateSession` leaves `target` undefined and
+names on the session's own harness anyway; recording was gated on `target && result.usage`, so
+those tokens were reported by the CLI and then dropped. It predates the Codex issue, applies to
+**both** harnesses equally, and was not fixable by measurement: with no configured route there
+is no service, no billing mode and therefore no rate table, so the run is unattributable and
+unpriceable by construction. It was filed rather than answered, because where that volume
+belongs changes what req 16 promises.
+
+**Answered: req 16's legacy group.** The tokens are real and their attribution does not exist,
+which is the same condition as a pre-feature turn reached forward in time rather than
+historically — so the bucket that already exists for "the attribution is not in the data" is
+where it goes. The gate becomes `if (result.usage)`; `recordNonTurnUsage` takes the harness that
+actually ran it (`target?.harnessId ?? agentId`) plus an **optional** target, and with no target
+writes an all-null-attribution row. No discriminator was added and `BillingMode` was not
+widened: the all-or-nothing `CHECK` already makes "no attribution" the single expressible
+shape, which is exactly the shape these rows need.
+
+**The row is unpriced, and that is a rule rather than a coincidence.** `cost_usd` is a hard
+zero, not `resolveTurnCost`'s no-attribution default — which is the harness's own dollar figure,
+and Codex reports none, so that route lands the row at `$0` under the name of a measurement.
+That is the trap this feature has now walked into twice (a metered consult recorded as free in
+phase 3, an empty Codex usage block priced to $0 in the paragraph above). A zero written
+*because there is no price* is a different fact from a zero written *because the price was
+zero*; what keeps a reader from confusing them is that the row carries no rates at all, so
+nothing downstream can turn it into a figure. `costSource` stays `per-turn`, so the zero never
+becomes a cumulative baseline the next run of the same harness diffs against. A run that reports
+*only* a dollar figure and no tokens records nothing: volume is the entire content of the row.
+
+**Two consequences, both honoured rather than left implicit.** First, the legacy group is no
+longer purely historical and no longer drains on its own — every surface that said so is
+corrected (`usage.ts`, `usage-types.ts`, `UsageModal.tsx`'s group name, `mockup-usage.html`, and
+phase 6's paragraph above). Second, an unpriced row still has to *render*, and `formatCost(0)`
+is `$0.00` — the free-work assertion arriving through the display rather than the write. A
+legacy group whose `costUsd` is zero therefore shows **"Unpriced / no rates recorded"** instead
+of a figure; the headline, the dial and `sessionRunningFigure` were already gated on `> 0` and
+needed nothing. Cross-backend review caught this: the row was written honestly and drawn
+dishonestly.
+
+**The "earlier accounting" label is kept, and it is not a claim that the bucket's money is all
+pre-feature.** The rows this change adds are unpriced, so they add none of it — but a *sub-agent*
+consult whose stored default predates the triple resolves no attribution either
+(`services/sub-agent.ts`, where `subSelection` is `undefined` for a bare model id) and keeps the
+harness's own dollar figure. That is phase 3's shape and is left alone here; the label says what
+can be said of a legacy dollar — that its provenance is unknown — rather than when it was spent.
+
+**The PR-description half needed a second writer, in a place the first pass got wrong.** Its
+`nothing_eligible` path calls the pre-feature `fallback`, and in container production that
+spends nothing: there is no in-process agent, so the call returns the empty string
+(`app-di.ts`). Under `RUNTIME_MODE=local` there *is* one, and it spawns a real CLI — so the
+dogfood runtime had the same measured-then-dropped tokens naming did. The recording cannot live
+in `makeNonTurnGenerateText`, which sees only a returned string and cannot tell whether a CLI
+ran; it lives with the producer. `opts` is forwarded to the fallback so app-di's generator can
+read `agent_result` and write its own unattributed, unpriced row when a session was named. The
+post-interrupt commit message passes no session and so records nothing, which is correct — it
+has nothing to attribute to.
 
 **One shape carried over from the sub-agent path deliberately.** The usage row is written with
 `subAgentId` set to the **derived harness**. It is what the row is — a one-shot spawn of that
