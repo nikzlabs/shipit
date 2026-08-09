@@ -327,6 +327,24 @@ export async function executeAgentTurn(
     resetRunnerTurnState(runner);
   }
 
+  // Identity of the turn these closures belong to, captured AFTER the reset
+  // above bumped it. The `done` handler can fire long after a SUCCESSOR turn
+  // took over the runner (the failover pre-check kills the resident process and
+  // its late exit unwinds while the new turn is already running env-prep) — at
+  // that point the per-turn accumulators and the session's in-progress chat
+  // rows belong to the successor, and this turn's teardown must not write
+  // through them. Concretely: `onInterruptedTurn` finalizes ALL of the
+  // session's in-progress rows from the runner's CURRENT accumulators, so run
+  // stale it flips the successor's freshly-recorded cards (the account-failover
+  // notice) to `in_progress=0`; the successor's next boundary then re-inserts
+  // them from `recordedCards`, and the transcript keeps both copies forever.
+  // Re-captured on a self-wake (see `rearmForSelfWokenTurn`): the wake turn
+  // runs through THESE same closures, so after `agent-listeners` gave it a
+  // fresh epoch the closures adopt it.
+  let thisTurnEpoch = runner?.turnEpoch;
+  const turnIsCurrent = (): boolean =>
+    !runner || thisTurnEpoch === undefined || runner.turnEpoch === thisTurnEpoch;
+
   // docs/179 — persist the user row EXACTLY ONCE across the original attempt and
   // a possible auth-retry re-dispatch. Without a shared guard, the retry would
   // either duplicate the user bubble (resumed session: persisted synchronously
@@ -601,6 +619,12 @@ export async function executeAgentTurn(
    * review.
    */
   const willRetryOnQuotaError = (err: Error): boolean => {
+    // A STALE quota error — a successor turn already owns the runner — must not
+    // claim anything: the finalize below would flip the successor's rows, the
+    // stamp would bench the account the successor is pinned to, and the retry's
+    // fresh agent would displace the successor's. The listener checks this
+    // before calling; kept here too so no future caller ordering can reopen it.
+    if (!turnIsCurrent()) return false;
     // A turn blocked by the router is not a turn that ran out mid-flight — it is
     // req 13 already having decided there is nowhere to go. Retrying would loop.
     if (err instanceof ProviderRouteUnavailableError) return false;
@@ -1109,6 +1133,12 @@ export async function executeAgentTurn(
     streamingPostTurn = null;
     commitPromise = null;
     commitAndPrPromise = null;
+    // The wake turn now owns these closures. `agent-listeners` already gave it
+    // a fresh epoch (its `agent_self_wake` branch runs `resetRunnerTurnState`
+    // before this listener fires); adopt it so the wake turn's own teardown —
+    // e.g. `onInterruptedTurn` after a crash — is not mistaken for a stale
+    // predecessor's.
+    thisTurnEpoch = runner?.turnEpoch;
   };
 
   agent.on("event", async (event: AgentEvent) => {
@@ -1215,6 +1245,30 @@ export async function executeAgentTurn(
           // and blocking idle reclaim forever.
           runner.clearBackgroundTasks();
         }
+      }
+
+      // A STALE, result-less exit stands down entirely. `!turnIsCurrent()`
+      // means a SUCCESSOR turn owns the runner, so every remaining step — the
+      // token sync-back, the no-result row, the partial finalize, the dispatch
+      // no-result hook (which would re-run this turn's prompt beside the live
+      // one), `running = false`, the queue drain, the finished-SSE, the commit
+      // and the idle signal — now belongs to that successor and running any of
+      // them here is interference (the double-failover-notice incident; see
+      // `turnIsCurrent`). This covers the exits the docs/146 SSE relay guard
+      // never sees: a RUNTIME_MODE=local child process, or a proxy event
+      // emitted locally. The `finally` below still settles the superseded turn
+      // (planning#318 — usually a no-op after the `superseded` event already did).
+      //
+      // Deliberately conditioned on `!receivedResult`: a COMPLETED turn's late
+      // `done` legitimately lands after its own drain started the next queued
+      // turn (which bumps the epoch) and must still run its memoized commit/PR
+      // flow. `receivedResult` is what separates "finished turn, late exit"
+      // from "killed mid-flight, superseded".
+      if (!receivedResult && !turnIsCurrent()) {
+        console.warn(
+          `[turn] stale exit (code ${code}) for ${sessionId} ignored — a newer turn owns the session`,
+        );
+        return;
       }
 
       // Non-streaming captures the token here too (fallback if agent_result was

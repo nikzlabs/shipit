@@ -1133,11 +1133,32 @@ export class ChatHistoryManager {
   /**
    * Replace all in-progress messages for a session with the given set.
    * Called at each agent_tool_result boundary with the accumulated message groups.
+   *
+   * Defense-in-depth against duplicate system notices: only `in_progress=1`
+   * rows are deleted here, so a notice that some out-of-band finalize already
+   * flipped to `in_progress=0` survives the delete — and the same notice is
+   * still in the turn's `recordedCards`, so the rebuilt batch re-inserts it as
+   * a SECOND, now-permanent row (the double account-failover-notice incident;
+   * the primary fix is the turn-epoch guard on stale teardowns). Every notice
+   * carries a stable per-emit `noticeId`, so a batch entry whose id already
+   * exists on a finalized row of this session is the same emit and is skipped.
    */
   replaceInProgress(sessionId: string, messages: PersistedMessage[]): void {
     this.db.transaction(() => {
       this.stmtDeleteInProgress.run(sessionId);
+      let finalizedNoticeIds: Set<string> | null = null;
       for (const msg of messages) {
+        if (msg.noticeId) {
+          // Lazy: the query runs only for batches that carry a notice at all,
+          // and after the in-progress delete so it sees exactly the rows that
+          // will survive this rebuild.
+          finalizedNoticeIds ??= new Set(
+            (this.db.prepare(
+              "SELECT notice_id FROM messages WHERE session_id = ? AND notice_id IS NOT NULL AND in_progress = 0",
+            ).all(sessionId) as { notice_id: string }[]).map((r) => r.notice_id),
+          );
+          if (finalizedNoticeIds.has(msg.noticeId)) continue;
+        }
         this.stmtInsert.run(this.toRow(sessionId, msg));
       }
     })();

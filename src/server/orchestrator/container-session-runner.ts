@@ -105,6 +105,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _isRunning = false;
   private _systemTurnInProgress = false;
   private _wasInterrupted = false;
+  /** See `SessionRunnerInterface.turnEpoch`. */
+  turnEpoch = 0;
   private _lastTurnErrored = false;
   private _guardedUnavailable = false;
   readonly awaitingPermissionIds = new Set<string>();

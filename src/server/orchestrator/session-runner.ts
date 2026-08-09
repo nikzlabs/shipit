@@ -810,6 +810,12 @@ export interface SystemTurnDeps {
  * into the new turn's chat history. Pair with `wireAgentListeners`.
  */
 export function resetRunnerTurnState(runner: SessionRunnerInterface): void {
+  // The new turn takes ownership of the per-turn accumulators and the session's
+  // in-progress rows; any teardown still pending from an earlier turn compares
+  // its captured epoch against this and stands down (see
+  // `SessionRunnerInterface.turnEpoch`). `?? 0` keeps partial test stubs that
+  // never declared the field from poisoning the counter with NaN.
+  runner.turnEpoch = (runner.turnEpoch ?? 0) + 1;
   runner.clearTurnEventBuffer();
   runner.turnSummary = "";
   runner.accumulatedText = "";
@@ -943,6 +949,20 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    */
   systemTurnInProgress: boolean;
   wasInterrupted: boolean;
+  /**
+   * planning#318 follow-up — monotonic per-runner TURN identity, bumped by
+   * `resetRunnerTurnState` every time a turn takes ownership of the per-turn
+   * accumulators (`chatMessageGroups`, `recordedCards`, the in-progress chat
+   * rows). A teardown path that captured the epoch at its turn's start compares
+   * it against the current value before touching those accumulators or the
+   * session's in-progress rows: a mismatch means a SUCCESSOR turn owns them
+   * now, and the stale teardown must stand down. Without this, a superseded
+   * turn's late finalize (`persistInterruptedTurn`, the listener error path)
+   * flipped the successor's freshly-written rows to `in_progress=0`, and the
+   * successor's next boundary re-inserted its recorded cards as duplicates —
+   * the double account-failover notice incident.
+   */
+  turnEpoch: number;
   /**
    * Volatile per-runner flag (docs/138): set true once a turn requested guarded
    * mode but the CLI reported it unavailable (plan/admin/model constraint).
@@ -1410,6 +1430,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _isRunning = false;
   private _systemTurnInProgress = false;
   private _wasInterrupted = false;
+  /** See `SessionRunnerInterface.turnEpoch`. */
+  turnEpoch = 0;
   private _lastTurnErrored = false;
   private _guardedUnavailable = false;
   readonly awaitingPermissionIds = new Set<string>();

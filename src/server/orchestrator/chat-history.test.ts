@@ -540,6 +540,57 @@ describe("ChatHistoryManager", () => {
     });
   });
 
+  describe("replaceInProgress notice dedupe (double failover-notice incident)", () => {
+    const notice = (noticeId: string, text = "Claude2 is out of quota."): PersistedMessage => ({
+      role: "assistant",
+      text,
+      notice: true,
+      noticeLevel: "info",
+      noticeId,
+    });
+
+    it("skips a notice whose id already exists as a finalized row", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      // Turn start: the env-prep notice is written in-progress…
+      mgr.replaceInProgress("sess-1", [{ ...notice("n-1"), inProgress: true }]);
+      // …and a stale teardown finalizes it out from under the turn.
+      mgr.finalizeInProgress("sess-1");
+      // The turn's next boundary rebuilds from `recordedCards`, which still
+      // hold the notice — the finalized copy must win, not duplicate.
+      mgr.replaceInProgress("sess-1", [
+        { ...notice("n-1"), inProgress: true },
+        { role: "assistant", text: "working…", inProgress: true },
+      ]);
+      mgr.finalizeInProgress("sess-1");
+
+      const notices = mgr.load("sess-1").filter((m) => m.notice);
+      expect(notices).toHaveLength(1);
+      expect(notices[0].noticeId).toBe("n-1");
+    });
+
+    it("does not dedupe distinct notices or notices without a finalized twin", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", notice("n-old", "an earlier, unrelated notice"));
+      mgr.replaceInProgress("sess-1", [
+        { ...notice("n-a"), inProgress: true },
+        { ...notice("n-b", "a second, different notice"), inProgress: true },
+      ]);
+      mgr.finalizeInProgress("sess-1");
+
+      expect(mgr.load("sess-1").filter((m) => m.notice)).toHaveLength(3);
+    });
+
+    it("scopes the dedupe to the session", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-other", notice("n-1"));
+      mgr.replaceInProgress("sess-1", [{ ...notice("n-1"), inProgress: true }]);
+      mgr.finalizeInProgress("sess-1");
+
+      expect(mgr.load("sess-1").filter((m) => m.notice)).toHaveLength(1);
+      expect(mgr.load("sess-other").filter((m) => m.notice)).toHaveLength(1);
+    });
+  });
+
   describe("listPendingSubAgentConsultCards (planning#309)", () => {
     const consultWith = (spawnId: string, status: SubAgentConsultCard["status"]): PersistedMessage => ({
       role: "assistant",
