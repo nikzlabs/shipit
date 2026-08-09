@@ -113,6 +113,64 @@ describe("selectRouteForSelection — scoped to the SELECTED billing mode", () =
     expect(selected).toEqual(anthropicAccount);
   });
 
+  /**
+   * planning#342 — the walk is asked about the **selected service**, not about
+   * the harness's own vendor.
+   *
+   * The pair here is deliberately the one where the two answers differ:
+   * `(anthropic, sub)` selected while pinned to the **Codex** harness. Asking
+   * about the harness would walk OpenAI's accounts for a turn that named
+   * Anthropic's subscription — the conflation this feature exists to remove.
+   * A same-vendor pair cannot pin this, because there both answers are
+   * `"anthropic"` and reverting the axis stays green.
+   *
+   * The picker does not offer this state (Anthropic's subscription models are
+   * `anthropic-messages`, which Codex does not speak), so it is reachable only
+   * from a stale session row — but `acceptsAccount` does **not** rule it out:
+   * that predicate asks whether the harness can carry an account-delivered
+   * credential at all, and Codex can. So the equality this feature relies on is
+   * a property of the current catalogue, not of the code, and this is the
+   * assertion that says so out loud. A future service with an account-delivered
+   * subscription a second harness can carry breaks the equality, not this test.
+   */
+  it("asks the account walk about the selected service, not the harness's vendor", () => {
+    const asked: string[] = [];
+    selectRouteForSelection(
+      "codex",
+      { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" },
+      {
+        credentialStore: store([]),
+        providerAccountManager: {
+          selectAccountForTurn: (serviceId: string) => {
+            asked.push(serviceId);
+            return anthropicAccount;
+          },
+        },
+      },
+    );
+    expect(asked).toEqual(["anthropic"]);
+  });
+
+  /**
+   * The no-selection path keeps the pre-feature question, which IS the
+   * harness's own vendor — a session that has never had a model picked could
+   * have meant nothing else. Separate from the case above so putting the two
+   * paths on one axis fails one of them.
+   */
+  it("falls back to the harness's own vendor when there is no selection", () => {
+    const asked: string[] = [];
+    selectRouteForSelection("codex", undefined, {
+      credentialStore: store([]),
+      providerAccountManager: {
+        selectAccountForTurn: (serviceId: string) => {
+          asked.push(serviceId);
+          return noAccount;
+        },
+      },
+    });
+    expect(asked).toEqual(["openai"]);
+  });
+
   it("never hands an `anthropic:sub` selection the metered key route", () => {
     // This is the leak phase 3 closes. `selectAccountForTurn` ends with a
     // mode-blind reserved fallback, so with no account connected an INCLUDED

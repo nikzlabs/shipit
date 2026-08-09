@@ -664,13 +664,17 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
 
       expect(deleted.statusCode).toBe(200);
       const body = deleted.json() as {
-        accounts: { provider: string; id: string }[];
+        accounts: { serviceId: string; id: string }[];
         switchedSessionIds: string[];
         strandedSessionIds: string[];
       };
       expect(body.strandedSessionIds).toEqual(["pinned-session"]);
       expect(body.switchedSessionIds).toEqual([]);
-      expect(body.accounts.filter((account) => account.provider === "codex")).toEqual([]);
+      expect(body.accounts.filter((account) => account.serviceId === "openai")).toEqual([]);
+      // Rename-proof: the filter above went vacuous once already, when the wire
+      // shape lost `provider` (planning#342) and every row stopped matching.
+      // An id cannot be renamed out from under the assertion.
+      expect(body.accounts.map((account) => account.id)).not.toContain(accountId);
     });
 
     // The refusal that remains: a session mid-turn. Unlike the one above,

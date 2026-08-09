@@ -227,13 +227,17 @@ export function selectRouteForSelection(
 
   if (acceptsAccount && deps.providerAccountManager) {
     // planning#342 — the walk is asked about the **selected** service, not the
-    // harness's own vendor. Those coincide everywhere the picker can reach:
-    // `acceptsAccount` already requires the selected mode to declare an
-    // account-delivered credential, and the only modes that do are the two
-    // harnesses' own subscriptions. They diverge only for a session row naming,
-    // say, `(anthropic, sub)` while pinned to the Codex harness — a state the
-    // picker never offers, and one where asking about OpenAI's accounts (what
-    // the harness-keyed question did) was the wrong answer anyway.
+    // harness's own vendor. They diverge only for a session row naming, say,
+    // `(anthropic, sub)` while pinned to the Codex harness — a state the picker
+    // never offers, and one where asking about OpenAI's accounts (what the
+    // harness-keyed question did) was the wrong answer anyway.
+    //
+    // Note what does NOT make them equal: `acceptsAccount` asks whether this
+    // harness can carry an account-delivered credential at all, and Codex can.
+    // The equality is the catalogue's — only `anthropic:sub` and `openai:sub`
+    // declare an account credential, and each one's models are carried only by
+    // its own harness — so it is a property of today's rows rather than of this
+    // code. `service-routing.test.ts` pins the axis on the divergent pair.
     const selected = deps.providerAccountManager.selectAccountForTurn(selection.serviceId);
     // Its answer is taken only when it names an ACCOUNT. Its own trailing
     // env/key fallback is mode-blind — it is what would hand an `anthropic:sub`

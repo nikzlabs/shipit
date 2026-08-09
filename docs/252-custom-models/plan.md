@@ -1568,12 +1568,22 @@ What the retirement actually is:
   improvised `nativeServiceForHarness(...) ?? something` per site.
 - **One deliberate behaviour difference**, in `selectRouteForSelection`: the
   account walk is now asked about `selection.serviceId` rather than the harness's
-  native service. They coincide everywhere the picker can reach — `acceptsAccount`
-  already requires the selected mode to declare an account-delivered credential,
-  and only the two harnesses' own subscriptions do. They diverge only for a
-  session row naming, say, `(anthropic, sub)` while pinned to the Codex harness,
-  which the picker never offers and where the old answer (walk OpenAI's accounts)
-  was wrong anyway.
+  native service. They coincide everywhere the picker can reach, and diverge only
+  for a session row naming, say, `(anthropic, sub)` while pinned to the Codex
+  harness — which the picker never offers, and where the old answer (walk
+  OpenAI's accounts) was wrong anyway.
+
+  **State the reason precisely, because the obvious version of it is wrong.**
+  `acceptsAccount` does *not* rule the divergent state out: it asks whether the
+  harness can carry an account-delivered credential at all, and Codex can. The
+  equality holds because of the **catalogue**: only `anthropic:sub` and
+  `openai:sub` declare an account-delivered credential, and each one's models are
+  carried only by its own harness, so every picker-reachable account selection
+  has `selection.serviceId === nativeServiceForHarness(harnessId)`. That is a
+  property of today's rows, not of the code — a future service with an
+  account-delivered subscription a second harness can carry breaks it. Cross-
+  backend review caught the loose phrasing; `service-routing.test.ts` pins the
+  axis on the divergent pair, so the choice cannot be quietly reverted.
 
 **What this does *not* do, deliberately.** There are still two quota-aware walks
 — the account one here and `stringSelectionFor`'s in `service-routing.ts` — and
