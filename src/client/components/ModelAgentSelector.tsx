@@ -16,9 +16,19 @@ import type { AgentOption } from "../agent-types.js";
 import type { ModelInfo } from "../utils/model-info.js";
 
 /**
- * Models that bill per token (usage-based) instead of counting against the
- * Claude subscription plan limit. Flagged with a $ icon in the picker so the
- * cost is visible at selection time. Fable 5 is the first such model.
+ * Models flagged with a `$` icon in the picker, on the grounds that they bill
+ * per token instead of counting against the Claude subscription plan limit.
+ *
+ * **STALE as of 2026-08-09 — the one model in it no longer works that way.**
+ * Fable 5 counts against the plan like any other subscription model, so this set
+ * has no fact behind it and the icon tells the user something untrue. It is left
+ * in place only because removing it is a user-visible change and docs/252 phase 1
+ * ships none; **phase 3 deletes it** along with the rest of the hand-kept
+ * per-model state the service catalogue replaces (docs/252 plan.md).
+ *
+ * Do not add to it, and do not restore the claim above into a catalogue row:
+ * billing is a property of a `(service, billing mode)`, which is what
+ * `BillingMode` now expresses.
  */
 const METERED_MODELS = new Set(["claude-fable-5"]);
 

@@ -130,19 +130,17 @@ export const SERVICES = [
           { id: "claude-sonnet-5", label: "Sonnet 5", styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
           { id: "haiku", label: "Haiku 4.5", styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
           // Fable appears under BOTH modes, which is what phase 1's research
-          // settled (catalogue.md's checklist item 4). The repo's one-element
-          // `METERED_MODELS` set says Fable "bills per token (usage-based)
-          // rather than against the subscription plan limit" — that is a
-          // *billing* statement, not proof that a subscription credential
-          // cannot run it, and Anthropic publishes Fable on the ordinary API at
-          // the rate below. So it belongs in both modes rather than in `key`
-          // alone, at the same API rate.
+          // settled (catalogue.md's checklist item 4). Anthropic publishes it on
+          // the ordinary API at the rate below, a subscription reaches it, and
+          // it counts against the plan like any other subscription model — so it
+          // is an ordinary row in both modes rather than a `key`-only one.
           //
-          // The residual wrinkle is real and is recorded in plan.md: a `sub`
-          // row that nonetheless costs money per token is a third case req 16
-          // does not describe, and it is why `METERED_MODELS` could NOT be
-          // deleted here as catalogue.md predicted — the type still cannot
-          // express "reachable on the plan, billed per token".
+          // The `METERED_MODELS` set in `ModelAgentSelector.tsx` still claims
+          // otherwise ("bills per token (usage-based) rather than against the
+          // subscription plan limit"). That is out of date as of 2026-08-09 and
+          // is the LAST thing asserting it. Deleting the set is a user-visible
+          // change (it drives a `$` icon), so it belongs to phase 3's picker
+          // rebuild — see plan.md. Do not resurrect the claim from that comment.
           { id: "claude-fable-5", label: "Fable 5", styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
         ],
       },

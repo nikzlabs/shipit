@@ -6,9 +6,7 @@ description: Separate harness from service so a user can run any configured serv
 
 # 252 — Custom models
 
-Implements [`requirements.md`](./requirements.md), which has one open question —
-raised by phase 1's catalogue authoring, answered by nothing yet, and due before
-phase 6. Every
+Implements [`requirements.md`](./requirements.md), which has no open questions. Every
 numbered requirement is met by a phase below; where a phase's answer costs something
 (activating a container to write a PR description, an estimated rather than billed cost
 figure), the cost is stated rather than the requirement narrowed.
@@ -280,15 +278,26 @@ anticipate, recorded here because three of them change what a later phase has to
   either `ModelDef.id` becomes `string | Partial<Record<ApiStyle, string>>`, or the row
   splits into one model per style. This is the same shape of problem as OpenCode's
   `provider/model` namespace, which `catalogue.md` also leaves open — worth solving once.
-- **`METERED_MODELS` does not delete, and `catalogue.md` predicted it would.** The
-  prediction was conditional on `claude-fable-5` being unavailable under an Anthropic
-  subscription. It is not: Anthropic publishes Fable on the ordinary API, and the repo's
-  own comment says only that it "bills per token rather than against the subscription plan
-  limit" — a *billing* statement. So Fable belongs to both modes (which is what
-  `catalogue.md` says to do in that branch), and the fact the `$` icon carries — *reachable
-  on the plan, billed per token* — is a third case `BillingMode` cannot express. The
-  hand-kept set survives phase 1 for that reason, and req 16's aggregation has a case it
-  does not describe. Raised as an open question in `requirements.md`.
+- **`claude-fable-5` belongs to both billing modes, and `METERED_MODELS` is now stale
+  rather than load-bearing.** `catalogue.md` left this as checklist item 4, with the two
+  branches spelled out: if Fable is genuinely unavailable under an Anthropic subscription it
+  becomes req 5's worked example and the hand-kept `METERED_MODELS` set deletes; if not, it
+  belongs to both modes at their own rates. Phase 1 confirmed the second — Anthropic
+  publishes Fable on the ordinary API and a subscription reaches it — so it is declared under
+  both modes and the picker offers exactly what it offered before.
+
+  What the check *also* found is that `METERED_MODELS`' own comment ("bills per token
+  (usage-based) rather than against the subscription plan limit") no longer describes Fable:
+  it counts against the plan like any other subscription model (confirmed 2026-08-09). That
+  briefly looked like a third case `BillingMode` could not express — a plan-reachable model
+  that still costs money — and was raised as an open question against req 16. It is not one;
+  the premise was a stale comment, and the receipt in `requirements.md` records the closure.
+
+  **The `$` icon it drives is therefore telling users something untrue, and removing it is a
+  user-visible change phase 1 forbids.** It is left exactly as it is here and belongs to
+  **phase 3**, which is where the picker is rebuilt and where deleting a hand-kept per-model
+  set is a deletion rather than a behaviour change. Noted because the set now has no fact
+  behind it, which is the state in which something quietly acquires a new justification.
 - **`capabilities.models` is derived from the harness's `nativeService`, not from the
   join.** The join would put DeepSeek and the gateways in the picker immediately, with no
   way to give them a credential (phase 2) or route a turn to them (phase 3) — a
@@ -1503,7 +1512,7 @@ is key-authenticated.
 | `orchestrator/session-agent-env.ts` | `selectAgentEnvForPush` — credential delivery to a container |
 | `orchestrator/local-agent-home.ts` | `resolveLocalAgentHome` — why reserved routes are unscoped |
 | `shared/model-windows.ts` | First-frame context window |
-| `client/components/ModelAgentSelector.tsx` | Picker, `METERED_MODELS` — the hand-kept metered set that billing modes delete ([`catalogue.md`](./catalogue.md)) |
+| `client/components/ModelAgentSelector.tsx` | Picker, `METERED_MODELS` — the hand-kept metered set, now stale (its one model bills against the plan) and deleted in phase 3 |
 | `shared/types/usage-limits-types.ts` | `SubscriptionLimits` — already keyed by `routeId` |
 | `orchestrator/agents/*/limits-provider.ts` | Per-`AgentId` today; becomes per service (req 10) |
 | `orchestrator/usage.ts` | `RecordedTurn` — token/cost accounting, distinct from quota |

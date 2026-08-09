@@ -8,10 +8,7 @@ does today. So a requirement below is silent about an existing capability when t
 does not change it, and that silence is not permission to drop it. Where a requirement *does*
 describe something that already works, it is because this feature changes it in some way.
 
-One open question remains, found while implementing the launch catalogue rather
-than raised in conversation — see [Open questions](#open-questions). It does not
-block phase 1; it decides which column a subscription-reachable but per-token
-billed model's usage goes in (phase 6).
+No open questions remain.
 
 ## Requirements
 
@@ -252,31 +249,24 @@ billed model's usage goes in (phase 6).
 
 ## Open questions
 
-- **A subscription can include a model that is still billed per token. Which column does
-  that usage go in?** Found while authoring the launch catalogue (phase 1), not from
-  anything said in conversation. Req 16 splits usage into *money that left the account*
-  (key rows) and *what plan usage would have cost* (sub rows), and req 10 gives a
-  subscription a quota. `claude-fable-5` is neither: ShipIt's own picker already flags it
-  as billing "per token (usage-based) rather than against the subscription plan limit",
-  and Anthropic sells it on the ordinary API — so it is reachable with subscription
-  credentials *and* it costs real money, which no billing mode as specified describes. It
-  is a real case today, not a hypothetical: it is the only model in the shipped
-  `METERED_MODELS` set.
-
-  Three readings, none of them chosen: (a) a `sub` row's spend still counts as metered
-  spend when the catalogue says that model is metered — which means `BillingMode` stops
-  being the sole thing that decides the column, and req 16's clean split gets a per-model
-  exception; (b) such a model belongs only to the `key` mode, so a subscription-only user
-  simply is not offered it — honest under req 8, but a capability those users have today
-  would disappear; (c) leave it as it is — the model sits in both modes, and a
-  subscription turn on it reports zero spend, which is wrong by exactly the amount it
-  cost.
-
-  Nothing in phase 1 depends on the answer: the API rate is the same under either mode,
-  and the catalogue carries it. It bites in **phase 6**, where the aggregation has to pick
-  a column. `plan.md`'s phase-1 findings record the mechanism side.
+_None._
 
 ## Resolved questions
+
+- 2026-08-09 — Phase 1's catalogue authoring raised one: **a subscription that includes a
+  model still billed per token has no column in req 16's split.** **Chosen: the case does not
+  exist — no requirement changes.** The question rested entirely on a premise the human
+  corrected: `claude-fable-5` no longer bills "per token (usage-based) rather than against
+  the subscription plan limit", which is what ShipIt's own picker comment (and therefore the
+  question) asserted. With Fable counting against the plan like any other subscription model,
+  `BillingMode` remains the sole thing that decides the column: a `sub` row is included work,
+  a `key` row is money. Req 16's split stands unamended, and the three readings the question
+  offered are all moot.
+
+  Recorded rather than deleted because the *shape* of the question outlives its instance. If a
+  service ever does offer a plan-reachable, per-token-billed model, this is the requirement it
+  contradicts and the fact to check first — the comment in the code, not the vendor's current
+  terms. The stale claim is now corrected at its source; see the phase-1 notes in `plan.md`.
 
 - 2026-08-09 — Should usage volume be reported in turns or tokens? **Chosen: tokens.** Stated
   directly rather than asked: the prototypes and the design had carried turn counts as the
@@ -761,6 +751,10 @@ human, but most of the mechanism did not. What the human actually said, in order
 - "let's do 1, i.e. explicitly support common gateways. We can always add custom urls later"
   → req 15's launch set, and its closing paragraph deferring user-supplied endpoints instead
   of ruling them out.
+- "This is no longer the case for fable, so we can probably ignore this corner case" → the
+  2026-08-09 receipt closing the only open question phase 1 raised. It changed no requirement:
+  it withdrew the premise, which was a stale comment in ShipIt's own picker rather than
+  anything these requirements said.
 - "the default would be 'first model on the first service', something like this" → req 9's
   derived default, replacing the fixed model an earlier draft assumed. The mechanism is the
   human's sketch and is stated in `plan.md`; the requirement states only the property it
