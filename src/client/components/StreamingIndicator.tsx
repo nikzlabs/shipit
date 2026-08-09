@@ -107,9 +107,20 @@ export function activityFromTool(toolName: string, input: Record<string, unknown
     case "TaskUpdate":
     case "TaskList":
     case "TaskGet":
-    case "TaskStop":
       return {
         label: "Updating tasks...",
+        tool: toolName,
+      };
+    // Not to-do list tools despite the prefix — these act on a background task
+    // (a shell, an agent, a remote session).
+    case "TaskStop":
+      return {
+        label: "Stopping background task...",
+        tool: toolName,
+      };
+    case "TaskOutput":
+      return {
+        label: "Reading task output...",
         tool: toolName,
       };
     case "fileChange":

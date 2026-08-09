@@ -1349,6 +1349,90 @@ describe("MessageList", () => {
   });
 
 
+  describe("task panel rendering (CLI 2.1.220 Task* tools)", () => {
+    const create = (id: string, subject: string): ToolUseBlock => ({
+      type: "tool_use",
+      id,
+      name: "TaskCreate",
+      input: { subject, description: "Longer detail the panel never draws" },
+    });
+    const createResult = (id: string, taskId: string, subject: string): ToolResultBlock => ({
+      toolUseId: id,
+      content: `Task #${taskId} created successfully: ${subject}`,
+    });
+
+    it("renders the panel from TaskCreate calls instead of a raw tool line", () => {
+      const { container } = render(
+        <MessageList
+          messages={[{
+            role: "assistant",
+            text: "",
+            toolUse: [create("t1", "Read the code"), create("t2", "Write the fix")],
+            toolResults: [
+              createResult("t1", "1", "Read the code"),
+              createResult("t2", "2", "Write the fix"),
+            ],
+          }]}
+          isLoading={false}
+        />
+      );
+      expect(container.querySelector('[data-testid="todo-panel"]')).toBeInTheDocument();
+      expect(screen.getByText("Read the code")).toBeInTheDocument();
+      expect(screen.getByText("Write the fix")).toBeInTheDocument();
+      expect(screen.getByText("0/2 completed")).toBeInTheDocument();
+      // The regression: the call used to fall through to the compact tool line.
+      expect(screen.queryByText("TaskCreate")).not.toBeInTheDocument();
+    });
+
+    it("applies TaskUpdate to the task it names", () => {
+      const messages: ChatMessage[] = [
+        {
+          role: "assistant",
+          text: "",
+          toolUse: [create("t1", "Run tests")],
+          toolResults: [createResult("t1", "1", "Run tests")],
+        },
+        {
+          role: "assistant",
+          text: "",
+          toolUse: [{ type: "tool_use", id: "t2", name: "TaskUpdate", input: { taskId: "1", status: "completed" } }],
+        },
+      ];
+      render(<MessageList messages={messages} isLoading={false} />);
+      expect(screen.getByText("1/1 completed")).toBeInTheDocument();
+      expect(screen.queryByText("TaskUpdate")).not.toBeInTheDocument();
+    });
+
+    it("renders one panel however many task calls the transcript holds", () => {
+      const messages: ChatMessage[] = [
+        { role: "assistant", text: "Step 1", toolUse: [create("t1", "One")], toolResults: [createResult("t1", "1", "One")] },
+        { role: "assistant", text: "Step 2", toolUse: [create("t2", "Two")], toolResults: [createResult("t2", "2", "Two")] },
+        { role: "assistant", text: "Step 3", toolUse: [create("t3", "Three")], toolResults: [createResult("t3", "3", "Three")] },
+      ];
+      const { container } = render(<MessageList messages={messages} isLoading={false} />);
+      expect(container.querySelectorAll('[data-testid="todo-panel"]')).toHaveLength(1);
+      expect(screen.getByText("0/3 completed")).toBeInTheDocument();
+    });
+
+    it("still renders the panel when a task call shares its message with another tool", () => {
+      const { container } = render(
+        <MessageList
+          messages={[{
+            role: "assistant",
+            text: "",
+            toolUse: [
+              { type: "tool_use", id: "b1", name: "Bash", input: { command: "npm test" } },
+              create("t1", "Fix the failure"),
+            ],
+          }]}
+          isLoading={false}
+        />
+      );
+      expect(container.querySelector('[data-testid="todo-panel"]')).toBeInTheDocument();
+      expect(screen.getByText("Fix the failure")).toBeInTheDocument();
+    });
+  });
+
   describe("TodoWrite rendering", () => {
     const todoTools = (id: string): ToolUseBlock[] => [
       {

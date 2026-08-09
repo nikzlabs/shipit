@@ -38,6 +38,7 @@ export const CLAUDE_TOOL_NAMES = [
   "TaskCreate",
   "TaskGet",
   "TaskList",
+  "TaskOutput",
   "TaskStop",
   "TaskUpdate",
   "TeamCreate",

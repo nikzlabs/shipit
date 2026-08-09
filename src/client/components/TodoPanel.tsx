@@ -1,13 +1,14 @@
 import { CheckIcon } from "@phosphor-icons/react";
+import type { TaskItem } from "./task-list.js";
 
-export interface TodoItem {
-  content: string;
-  status: "pending" | "in_progress" | "completed";
-  activeForm: string;
-}
-
-export function TodoPanel({ todos }: { todos: TodoItem[] }) {
-  const completed = todos.filter((t) => t.status === "completed").length;
+/**
+ * The agent's to-do list, drawn from the folded task list (`task-list.ts`).
+ *
+ * Presentational only: it never reads a tool call. Which calls produce the list
+ * — and how the CLI's incremental task tools fold into it — is the fold's job.
+ */
+export function TodoPanel({ tasks }: { tasks: TaskItem[] }) {
+  const completed = tasks.filter((t) => t.status === "completed").length;
 
   return (
     <div
@@ -17,21 +18,21 @@ export function TodoPanel({ todos }: { todos: TodoItem[] }) {
       <div className="flex items-center justify-between mb-1.5">
         <span className="font-medium text-(--color-text-primary)">Tasks</span>
         <span className="text-(--color-text-secondary)">
-          {completed}/{todos.length} completed
+          {completed}/{tasks.length} completed
         </span>
       </div>
       <ul className="space-y-1">
-        {todos.map((todo, i) => (
-          <li key={i} className="flex items-center gap-1.5">
-            <StatusIcon status={todo.status} />
+        {tasks.map((task) => (
+          <li key={task.id} className="flex items-center gap-1.5">
+            <StatusIcon status={task.status} />
             <span
               className={
-                todo.status === "completed"
+                task.status === "completed"
                   ? "line-through text-(--color-text-secondary)"
                   : "text-(--color-text-primary)"
               }
             >
-              {todo.status === "in_progress" ? todo.activeForm : todo.content}
+              {task.status === "in_progress" ? task.activeForm ?? task.subject : task.subject}
             </span>
           </li>
         ))}
@@ -40,7 +41,7 @@ export function TodoPanel({ todos }: { todos: TodoItem[] }) {
   );
 }
 
-function StatusIcon({ status }: { status: TodoItem["status"] }) {
+function StatusIcon({ status }: { status: TaskItem["status"] }) {
   switch (status) {
     case "completed":
       return (
