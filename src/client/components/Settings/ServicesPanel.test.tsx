@@ -24,6 +24,17 @@ const route = (over: Partial<CredentialRoute> & Pick<CredentialRoute, "id" | "se
   ...over,
 });
 
+const claudeAgent = {
+  id: "claude" as const,
+  name: "Claude",
+  installed: true,
+  authConfigured: false,
+  models: [],
+  supportsReview: true,
+};
+
+const codexAgent = { ...claudeAgent, id: "codex" as const, name: "Codex" };
+
 let fetchCalls: { url: string; method: string; body: unknown }[] = [];
 
 beforeEach(() => {
@@ -105,14 +116,56 @@ describe("ServicesPanel", () => {
     expect(screen.getByTestId("add-service-step-credential")).toBeInTheDocument();
   });
 
-  it("says so, rather than offering a rejected input, when a mode takes a login", async () => {
-    render(<ServicesPanel />);
+  it("hands off to the accounts card for a mode connected only by signing in", async () => {
+    // Not a dead end: an earlier cut told the user to press "Add account on its
+    // card" while no card existed, because a card only appeared once an account
+    // already did.
+    render(<ServicesPanel agentList={[codexAgent]} />);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-openai"));
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
     expect(screen.getByTestId("add-service-account-only")).toBeInTheDocument();
+    // OpenAI's subscription takes no supplied secret, so there is no input.
     expect(screen.queryByTestId("add-service-secret")).not.toBeInTheDocument();
-    expect(screen.getByTestId("add-service-save")).toBeDisabled();
+
+    await userEvent.click(screen.getByTestId("add-service-continue"));
+    // The card the message points at now exists, with its "Add account" button.
+    expect(screen.getByTestId("provider-accounts-card-codex")).toBeInTheDocument();
+    expect(screen.getByTestId("provider-account-add-codex")).toBeInTheDocument();
+  });
+
+  it("offers BOTH a sign-in and a token for a mode that accepts both", async () => {
+    // Anthropic's subscription takes an OAuth account and an env-supplied
+    // token. Treating "takes an account" as "takes nothing else" would hide the
+    // input; the reverse left signing in unreachable from this dialog.
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+    expect(screen.getByTestId("add-service-secret")).toBeInTheDocument();
+    expect(screen.getByTestId("add-service-continue")).toBeInTheDocument();
+  });
+
+  it("reorders a subscription's credentials, which changes which one is delivered", async () => {
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_1", serviceId: "zai", billingMode: "sub", via: "string", priority: 0, isPrimary: true }),
+      route({ id: "cred_2", serviceId: "zai", billingMode: "sub", via: "string", priority: 1 }),
+    ]);
+    render(<ServicesPanel />);
+    await userEvent.click(screen.getByTestId("credential-move-up-cred_2"));
+    await waitFor(() => {
+      const put = fetchCalls.find((c) => c.method === "PUT");
+      expect(put?.url).toBe("/api/credential-routes/zai/sub/order");
+      expect(put?.body).toEqual({ routeIds: ["cred_2", "cred_1"] });
+    });
+  });
+
+  it("offers no ordering where a mode holds one credential", () => {
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_1", serviceId: "deepseek", billingMode: "key", via: "string" }),
+    ]);
+    render(<ServicesPanel />);
+    expect(screen.queryByTestId("credential-order-cred_1")).not.toBeInTheDocument();
   });
 
   it("removes a credential through the route endpoint", async () => {
@@ -153,7 +206,7 @@ describe("ServicesPanel", () => {
     useSettingsStore.getState().setProviderAccounts([
       { id: "acct_1", provider: "claude", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
-    render(<ServicesPanel agentList={[{ id: "claude", name: "Claude", installed: true, authConfigured: true, models: [], supportsReview: true }]} />);
+    render(<ServicesPanel agentList={[claudeAgent]} />);
     expect(screen.getByTestId("provider-accounts-card-claude")).toBeInTheDocument();
     // The Anthropic key is its own `(anthropic, key)` card here, so the
     // accounts card must not offer a second editor for it.

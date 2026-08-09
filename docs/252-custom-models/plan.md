@@ -470,6 +470,59 @@ does.
   first-in-order rule with resolution from the selected model's service** — until
   it does, req 12's second GLM key is stored and unreachable.
 
+**What the cross-backend review changed, recorded because four of the five are
+the same mistake.** Codex reviewed the branch under CLAUDE.md's rule; the
+findings below all held up on checking. Four of them are one shape: *a credential
+write updated some of the places that answer "is this credential live" and not
+the others*, and each one is individually plausible.
+
+- **`process.env` was written unconditionally, which destroyed a
+  deployment-supplied value.** Boot seeding deliberately skips a name that is
+  already set, so a deployment's variable is not ShipIt's to overwrite — and the
+  matching clear then deleted it, leaving the deployment unauthenticated until a
+  restart. The rule is now "only ever touch a value this process put there",
+  which costs nothing: these probes ask whether a credential is *present*, never
+  which one, and which credential a session receives comes from the route store.
+- **`AgentRegistry.authConfigured` is a cache, and the route endpoints did not
+  refresh it.** Adding a key stored it, delivered it, and left the agent
+  un-selectable; removing one left it selectable. Every credential write now
+  refreshes and re-broadcasts.
+- **`set_agent_env` wrote a credential and skipped the propagation.** It routes
+  into the credential store now, so it owes the same push — without it a key
+  saved from the Codex tab or from onboarding left a running compose-backed
+  session on its previous snapshot.
+- **A compose snapshot is only as fresh as the last *successful* sync**, and
+  that pass returns early on an unparsable compose file — so revoking a
+  credential on a session with broken YAML re-pushed the stale snapshot and the
+  worker kept the revoked key. Every push now drops catalogue credential names
+  the store no longer holds and the compose file does not declare, so revocation
+  never depends on the user's YAML being valid.
+- **The route and its secret were two writes**, leaving a window where a `ready`
+  route has no secret behind it — a credential that reports configured and
+  delivers nothing. One `save()` removes the window.
+- **The add-flow was a dead end for an account-backed subscription**: it told the
+  user to press "Add account on its card" while no card existed, because a card
+  only appeared once an account did. Choosing such a mode now reveals the card
+  and hands off to it. The same fix exposed a second error — a mode's two
+  delivery shapes are *independent*, and Anthropic's subscription accepts both,
+  so the dialog offers a token input and a sign-in rather than choosing one.
+
+**Two findings are deferred rather than fixed, and both should be said out loud:**
+
+- **A string-backed subscription has no routing controls.** `zai:sub` carries
+  cutoffs and a selection mode in the settings payload with nowhere to set them:
+  those controls live inside `ProviderAccountsCard`, keyed by provider. What
+  *is* exposed is the fallback **order**, because in phase 2 that is not
+  cosmetic — the first credential of a group is the delivered one, so moving a
+  row changes which key a session receives. The rest do nothing until **phase 5**
+  makes failover real for a string-backed subscription, which is where they
+  belong.
+- **Rollback and re-upgrade is lossy.** The frozen `providerAccounts` blob is a
+  downgrade path, not a two-way sync: changes made while rolled back are
+  discarded on the way back up, because the presence of `credentialRoutes`
+  permanently suppresses re-import. Making it two-way would mean reconciling two
+  live sources, which is the thing this design removes.
+
 **Onboarding was not broken by this phase, and the reason is worth recording**
 because the design predicted it would be. The prediction assumed phase 2 removed
 the `AgentId` keying from credentials outright; the projection above means

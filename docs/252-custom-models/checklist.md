@@ -31,8 +31,17 @@ table — a phase is checked off when its PR has merged.
 - [x] Close the compose delivery gap, and propagate a credential change to live sessions
 - [x] One writer per credential — `setApiKey` and `set_agent_env` write through
 - [x] Onboarding still connects a credential and reaches a runnable model
+- [x] Cross-backend review, findings applied (see `plan.md`)
 - [ ] GLM's `zai-plan-usage` quota reader — needs phase 6's per-`(service, mode)` quota
       machinery to report into, so req 15 is unmet on quota until then
+
+## Phase 5 — Credential-failure policy (carried from phase 2)
+
+- [ ] Routing controls for a **string-backed** subscription group. `zai:sub` already
+      carries cutoffs and a selection mode in the settings payload; the controls live
+      inside `ProviderAccountsCard` keyed by provider and need extracting. Deferred
+      because they do nothing until failover is real for these credentials — the
+      fallback *order*, which does change delivery today, already ships.
 
 ## Phase 3 — Spawn shaping and eligibility
 

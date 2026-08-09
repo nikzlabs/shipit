@@ -34,7 +34,7 @@
  */
 
 import { useState } from "react";
-import { PlusIcon, TrashIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, CaretUpIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
 import type { AgentId, CredentialRoute } from "../../../server/shared/types.js";
@@ -87,11 +87,24 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
   const routes = useSettingsStore((s) => s.credentialRoutes);
   const accounts = useSettingsStore((s) => s.providerAccounts);
   const [addOpen, setAddOpen] = useState(false);
+  /**
+   * Modes the user picked in the dialog that have no credential yet.
+   *
+   * An account-backed subscription cannot be connected by pasting anything —
+   * it needs a login, which `ProviderAccountsCard` owns. Without this the
+   * dialog was a dead end: picking OpenAI → Subscription told the user to press
+   * "Add account on its card" while no such card existed, because a card only
+   * appeared once an account already did. Revealing the card is the handoff,
+   * and it keeps the screen's "only what you configured" property for everyone
+   * who has not asked for it.
+   */
+  const [revealed, setRevealed] = useState<string[]>([]);
 
   const configured = catalogueModes().filter(({ service, billingMode }) => {
     const provider = accountProviderFor(service, billingMode);
     return routes.some((r) => r.serviceId === service.id && r.billingMode === billingMode && r.via === "string")
-      || (provider !== undefined && accounts.some((a) => a.provider === provider));
+      || (provider !== undefined && accounts.some((a) => a.provider === provider))
+      || revealed.includes(credentialModeKey(service.id, billingMode));
   });
 
   return (
@@ -151,7 +164,13 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
         </>
       )}
 
-      {addOpen && <AddServiceDialog onClose={() => setAddOpen(false)} />}
+      {addOpen && (
+        <AddServiceDialog
+          onClose={() => setAddOpen(false)}
+          onReveal={(modeKey) => setRevealed((current) =>
+            current.includes(modeKey) ? current : [...current, modeKey])}
+        />
+      )}
     </div>
   );
 }
@@ -212,8 +231,19 @@ function ServiceModeCard({
       </div>
 
       <div className="space-y-1.5">
-        {stringRoutes.map((route) => (
-          <CredentialRow key={route.id} route={route} showOrder={multiple && stringRoutes.length > 1} />
+        {stringRoutes.map((route, index) => (
+          <CredentialRow
+            key={route.id}
+            route={route}
+            order={
+              // req 2's fallback order, and in phase 2 it is not cosmetic: the
+              // FIRST credential of a group is the one delivered, so moving a
+              // row changes which key sessions receive.
+              multiple && stringRoutes.length > 1
+                ? { index, total: stringRoutes.length, ids: stringRoutes.map((r) => r.id) }
+                : undefined
+            }
+          />
         ))}
       </div>
 
@@ -233,10 +263,44 @@ function ServiceModeCard({
   );
 }
 
-function CredentialRow({ route, showOrder }: { route: CredentialRoute; showOrder: boolean }) {
+interface RowOrder {
+  index: number;
+  total: number;
+  /** Every id in the group, in current order — the reorder endpoint takes the complete set. */
+  ids: string[];
+}
+
+function CredentialRow({ route, order }: { route: CredentialRoute; order?: RowOrder }) {
   const [busy, setBusy] = useState(false);
   const [replacing, setReplacing] = useState(false);
   const [value, setValue] = useState("");
+
+  const move = async (delta: number): Promise<void> => {
+    if (!order) return;
+    const next = [...order.ids];
+    const to = order.index + delta;
+    if (to < 0 || to >= next.length) return;
+    [next[order.index], next[to]] = [next[to], next[order.index]];
+    setBusy(true);
+    try {
+      const res = await fetch(
+        `/api/credential-routes/${route.serviceId}/${route.billingMode}/order`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ routeIds: next }),
+        },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { routes: CredentialRoute[] };
+      useSettingsStore.getState().setCredentialRoutes(data.routes);
+    } catch (err) {
+      useUiStore.getState().setToast({ message: "Failed to reorder the credentials" });
+      console.error("[services] credential reorder failed:", err);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const remove = async (): Promise<void> => {
     setBusy(true);
@@ -282,8 +346,30 @@ function CredentialRow({ route, showOrder }: { route: CredentialRoute; showOrder
     >
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0 flex items-center gap-2">
+          {order && (
+            <span className="flex items-center gap-0.5" data-testid={`credential-order-${route.id}`}>
+              <button
+                onClick={() => void move(-1)}
+                disabled={busy || order.index === 0}
+                aria-label={`Move ${route.label} earlier in the fallback order`}
+                className="rounded px-1 py-0.5 text-[11px] text-(--color-text-secondary) hover:bg-(--color-bg-hover) disabled:opacity-30 disabled:hover:bg-transparent"
+                data-testid={`credential-move-up-${route.id}`}
+              >
+                <CaretUpIcon size={ICON_SIZE.XS} />
+              </button>
+              <button
+                onClick={() => void move(1)}
+                disabled={busy || order.index === order.total - 1}
+                aria-label={`Move ${route.label} later in the fallback order`}
+                className="rounded px-1 py-0.5 text-[11px] text-(--color-text-secondary) hover:bg-(--color-bg-hover) disabled:opacity-30 disabled:hover:bg-transparent"
+                data-testid={`credential-move-down-${route.id}`}
+              >
+                <CaretDownIcon size={ICON_SIZE.XS} />
+              </button>
+            </span>
+          )}
           <span className="truncate text-xs text-(--color-text-primary)">{route.label}</span>
-          {showOrder && route.isPrimary && (
+          {order && route.isPrimary && (
             <span className="rounded bg-(--color-bg-primary) px-1 py-0.5 text-[10px] text-(--color-text-tertiary)">
               Primary
             </span>
@@ -379,10 +465,17 @@ function AddServiceDialog({
   initialService,
   initialMode,
   onClose,
+  onReveal,
 }: {
   initialService?: ServiceDef;
   initialMode?: BillingMode;
   onClose: () => void;
+  /**
+   * Hand off to the accounts card for a mode that is connected by signing in
+   * rather than by pasting a secret. Absent from the "Add another" entry point,
+   * which is only ever opened on a card that already exists.
+   */
+  onReveal?: (modeKey: string) => void;
 }) {
   const [service, setService] = useState<ServiceDef | undefined>(initialService);
   const [billingMode, setBillingMode] = useState<BillingMode | undefined>(initialMode);
@@ -396,10 +489,21 @@ function AddServiceDialog({
     setError("");
   };
 
-  const accountOnly =
-    service && billingMode
-      ? !modeCredentialFor(service.id, billingMode, "string")
-      : false;
+  // A mode's two delivery shapes are independent, and Anthropic's subscription
+  // accepts BOTH — an OAuth account and an env-supplied token. Treating "takes
+  // an account" as "takes nothing else" would hide the token input; treating
+  // "takes a string" as "needs no sign-in" is what left signing in unreachable
+  // from this dialog. So both affordances render on their own terms.
+  const acceptsString =
+    service && billingMode ? !!modeCredentialFor(service.id, billingMode, "string") : false;
+  const acceptsAccount =
+    service && billingMode ? !!modeCredentialFor(service.id, billingMode, "account") : false;
+
+  const revealAccountCard = (): void => {
+    if (!service || !billingMode) return;
+    onReveal?.(credentialModeKey(service.id, billingMode));
+    onClose();
+  };
 
   const save = async (): Promise<void> => {
     if (!service || !billingMode) return;
@@ -478,16 +582,16 @@ function AddServiceDialog({
         {service && billingMode && (
           <div className="mt-3 space-y-2" data-testid="add-service-step-credential">
             <p className="text-[10px] uppercase tracking-wider text-(--color-text-tertiary)">
-              3 · Paste the key
+              3 · {acceptsString ? "Paste the key" : "Sign in"}
             </p>
-            {accountOnly ? (
-              // The mode takes a login rather than a secret. Saying so — and
-              // where the login lives — beats an input that would be rejected.
+            {acceptsAccount && (
               <p className="text-xs text-(--color-text-secondary)" data-testid="add-service-account-only">
-                {service.name}&rsquo;s {MODE_LABEL[billingMode].toLowerCase()} is connected by signing
-                in, not by pasting a key. Use <b>Add account</b> on its card.
+                {service.name}&rsquo;s {MODE_LABEL[billingMode].toLowerCase()} can be connected by
+                signing in. <b>Continue</b> opens its card, where <b>Add account</b> starts the login
+                — ShipIt never sees your password.
               </p>
-            ) : (
+            )}
+            {acceptsString && (
               <>
                 <input
                   type="password"
@@ -526,16 +630,29 @@ function AddServiceDialog({
           <Button variant="ghost" size="md" className="rounded-md" onClick={onClose}>
             Cancel
           </Button>
-          <Button
-            variant="primary"
-            size="md"
-            className="rounded-md"
-            disabled={!service || !billingMode || accountOnly || !secret.trim() || saving}
-            onClick={() => void save()}
-            data-testid="add-service-save"
-          >
-            {saving ? "Saving..." : "Save"}
-          </Button>
+          {acceptsAccount && (
+            <Button
+              variant={acceptsString ? "secondary" : "primary"}
+              size="md"
+              className="rounded-md"
+              onClick={revealAccountCard}
+              data-testid="add-service-continue"
+            >
+              Continue to sign in
+            </Button>
+          )}
+          {(acceptsString || !billingMode || !service) && (
+            <Button
+              variant="primary"
+              size="md"
+              className="rounded-md"
+              disabled={!service || !billingMode || !secret.trim() || saving}
+              onClick={() => void save()}
+              data-testid="add-service-save"
+            >
+              {saving ? "Saving..." : "Save"}
+            </Button>
+          )}
         </div>
       </DialogContent>
     </Dialog>

@@ -22,6 +22,7 @@ import {
   upsertSingleStringCredential,
 } from "./credential-routes.js";
 import { collectServiceCredentialEnv } from "../secret-resolver.js";
+import { credentialStorageEnvNames } from "../../shared/catalogue/index.js";
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "shipit-cred-routes-"));
@@ -31,7 +32,14 @@ let store: CredentialStore;
 
 beforeEach(() => {
   store = new CredentialStore(tmpDir());
+  // Creating a credential assigns the mode's variable in THIS process, so a
+  // test would otherwise inherit the previous test's value and the "only touch
+  // what we put there" rule would (correctly) refuse to write. Empty counts as
+  // absent everywhere these are read.
+  for (const name of credentialStorageEnvNames()) vi.stubEnv(name, "");
 });
+
+afterEach(() => { vi.unstubAllEnvs(); });
 
 describe("createStringCredential", () => {
   it("stores a key against its (service, billing mode)", () => {
@@ -203,9 +211,6 @@ describe("process.env is kept in step with what a mode delivers", () => {
   // orchestrator keeps counting as authentication until a restart.
   const ENV = "DEEPSEEK_API_KEY";
   const PLAN_ENV = "ZAI_CODING_PLAN_KEY";
-  // `vi.unstubAllEnvs` restores absence as absence, which a hand-rolled
-  // save/restore cannot do without a dynamic delete.
-  afterEach(() => { vi.unstubAllEnvs(); });
 
   it("sets it on create, replaces it on update, and clears it on delete", () => {
     const { route } = createStringCredential(store, {
@@ -220,18 +225,21 @@ describe("process.env is kept in step with what a mode delivers", () => {
     expect(process.env[ENV]).toBeUndefined();
   });
 
-  it("leaves a value the deployment set alone when a credential is removed", () => {
-    // Boot seeding never overwrites a name that is already present, so a
-    // deployment-set value is not ours to clear.
+  it("never touches a value the deployment set", () => {
+    // Boot seeding skips a name that is already present, so a deployment-set
+    // value is not ours to overwrite — and therefore not ours to clear either.
+    // An earlier cut wrote over it on create and then deleted it on remove,
+    // leaving the deployment unauthenticated until a restart.
     vi.stubEnv(ENV, "deployment-supplied");
     const { route } = createStringCredential(store, {
       serviceId: "deepseek", billingMode: "key", secret: "sk-user",
     });
-    // The user's credential does take precedence while it exists...
-    expect(process.env[ENV]).toBe("sk-user");
-    vi.stubEnv(ENV, "deployment-supplied");
+    expect(process.env[ENV]).toBe("deployment-supplied");
     deleteCredentialRoute(store, route.id);
     expect(process.env[ENV]).toBe("deployment-supplied");
+    // The session still receives the user's credential while it exists — these
+    // probes ask whether one is present, never which one.
+    expect(collectServiceCredentialEnv(store)[ENV]).toBeUndefined();
   });
 
   it("follows a reorder, because the first credential is the delivered one", () => {

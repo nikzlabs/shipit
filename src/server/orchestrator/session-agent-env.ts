@@ -59,7 +59,8 @@ import { emitNoticeInTurn } from "./chat-card-persistence.js";
 import { ensureCodexHomeInitialized } from "./agents/codex/home-init.js";
 import { ensureLocalAgentOpsHost } from "./local-agent-ops.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
-import { collectAccountAgentEnv } from "./secret-resolver.js";
+import { collectAccountAgentEnv, collectServiceCredentialEnv } from "./secret-resolver.js";
+import { credentialStorageEnvNames } from "../shared/catalogue/index.js";
 import { buildConversationReplay } from "./services/replay.js";
 import { getErrorMessage } from "./validation.js";
 
@@ -228,12 +229,50 @@ export function selectAgentEnvForPush(input: {
   credentialStore: AccountAgentEnvSource;
 }): Record<string, string> {
   if (input.serviceManager) {
-    return input.serviceManager.getSecretsSnapshot().agentValues;
+    return withRevokedCredentialsDropped(
+      input.serviceManager.getSecretsSnapshot(),
+      input.credentialStore,
+    );
   }
   return {
     ...input.credentialStore.getAllAgentEnv(),
     ...collectAccountAgentEnv(input.credentialStore),
   };
+}
+
+/**
+ * Drop from a compose snapshot any service credential the store no longer
+ * holds.
+ *
+ * The snapshot is only as fresh as the last successful `syncSecrets()`, and
+ * that pass **returns early** when the repo's compose file is missing or
+ * unparsable (`service-manager.ts`). Without this, revoking a credential on a
+ * session whose compose file happens to be broken re-pushes the stale snapshot
+ * and the worker keeps the revoked key — indefinitely, until some later parse
+ * succeeds. Revocation must not depend on the user's YAML being valid.
+ *
+ * Narrow on purpose, in both directions. Only names the **catalogue** claims as
+ * a `storageEnv` are candidates, and only those the compose file does **not**
+ * declare: a repo that deliberately declares `DEEPSEEK_API_KEY` as an
+ * `agent: true` secret is exercising the documented per-repo override, and that
+ * value is its own, not a stale copy of the user's. What is left is exactly the
+ * set that could only have come from the account-level loader.
+ */
+function withRevokedCredentialsDropped(
+  snapshot: { agentValues: Record<string, string>; declared: { name: string }[] },
+  credentialStore: AccountAgentEnvSource,
+): Record<string, string> {
+  const delivered = collectServiceCredentialEnv(credentialStore);
+  const declaredByCompose = new Set(snapshot.declared.map((d) => d.name));
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(snapshot.agentValues)) {
+    const isCatalogueCredential = credentialStorageEnvNames().includes(name);
+    if (isCatalogueCredential && !declaredByCompose.has(name) && delivered[name] === undefined) {
+      continue;
+    }
+    out[name] = value;
+  }
+  return out;
 }
 
 /** The `CredentialStore` surface the account-level env collection reads. */

@@ -46,6 +46,51 @@ export async function registerBootstrapRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
 ): Promise<void> {
+  /**
+   * docs/252 phase 2 — make a credential change reach the sessions already
+   * running, rather than only the next one to start.
+   *
+   * Same two steps an MCP secret write takes: re-sync every live compose
+   * stack's agent env (which is the path a compose-backed session's credentials
+   * travel, and the gap Appendix A recorded), and push the freshly-collected
+   * set to compose-less runners, whose env comes straight from the store.
+   * Fire-and-forget — a settings write must not fail because one session's
+   * stack is unhealthy.
+   */
+  const propagateCredentialChange = (): void => {
+    // The orchestrator's own view of "is this provider authenticated" is a
+    // CACHE, refreshed explicitly (`AgentRegistry.refreshAuth`) rather than
+    // recomputed on read. A credential write that updates storage and the
+    // environment but not the cache leaves the product disagreeing with itself:
+    // the key is stored and delivered, and the agent is still un-selectable
+    // until something else happens to refresh. Removal has the mirror-image
+    // false positive. Every registered agent, because a credential is no longer
+    // owned by one of them.
+    for (const agent of deps.agentRegistry.list()) deps.agentRegistry.refreshAuth(agent.id);
+    // docs/257 — `buildAgentListPayload`, not a bare `{ agents }`: a credential
+    // write can make an install runnable or stop it being runnable, so this
+    // broadcast has to carry `canRunTurns`. Sending the old shape here would
+    // leave every other tab with a stale signal and a composer that disagrees
+    // with what the server will accept.
+    deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry));
+
+    refreshAgentEnvForAllSessions(deps.serviceManagers ?? new Map<string, ServiceManager>());
+    for (const sessionId of deps.runnerRegistry.ids()) {
+      const runner = deps.runnerRegistry.get(sessionId);
+      if (!isAgentSecretsCapable(runner)) continue;
+      void runner
+        .tryPushAgentSecrets(
+          selectAgentEnvForPush({
+            serviceManager: runner.serviceManager ?? null,
+            credentialStore: deps.credentialStore,
+          }),
+        )
+        .catch((err: unknown) => {
+          console.warn(`[credentials] agent-env push failed for ${sessionId}:`, getErrorMessage(err));
+        });
+    }
+  };
+
   // ---- GET /api/bootstrap ----
   app.get("/api/bootstrap", async () => {
     return getBootstrapData(deps);
@@ -164,12 +209,20 @@ export async function registerBootstrapRoutes(
           deps.agentRegistry, deps.credentialStore,
           request.params.id as AgentId, request.body.key, request.body.value,
         );
-        // docs/257 — this route makes an install runnable (it is how a Codex
-        // API key is stored) and used to broadcast NOTHING, handing the fresh
-        // agent list only to the tab that posted it. Every other tab kept a
+        // docs/252 phase 2 — a catalogue `storageEnv` name written here IS a
+        // credential now (`setAgentEnv` routes it into the credential store), so
+        // it owes the same propagation the Services surface does. Without it a
+        // key saved from the Codex tab or from onboarding reached storage and
+        // left a running compose-backed session on its previous snapshot.
+        //
+        // docs/257 — this is also how a Codex API key is stored, so it is a
+        // producer of "the install can run something" and has to announce it:
+        // the route used to broadcast NOTHING, leaving every other tab with a
         // stale `canRunTurns: false` and a disabled composer until its next
-        // bootstrap. It is a producer of the fact, so it announces it.
-        deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry));
+        // bootstrap. `propagateCredentialChange` carries that broadcast, with
+        // the `buildAgentListPayload` shape docs/257 needs.
+        propagateCredentialChange();
+        deps.sseBroadcast("credential_routes", { routes: listCredentialRoutes(deps.credentialStore) });
         return { agentId: result.agentId, key: result.key, success: true, agents: result.agents };
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -180,35 +233,6 @@ export async function registerBootstrapRoutes(
       }
     },
   );
-
-  /**
-   * docs/252 phase 2 — make a credential change reach the sessions already
-   * running, rather than only the next one to start.
-   *
-   * Same two steps an MCP secret write takes: re-sync every live compose
-   * stack's agent env (which is the path a compose-backed session's credentials
-   * travel, and the gap Appendix A recorded), and push the freshly-collected
-   * set to compose-less runners, whose env comes straight from the store.
-   * Fire-and-forget — a settings write must not fail because one session's
-   * stack is unhealthy.
-   */
-  const propagateCredentialChange = (): void => {
-    refreshAgentEnvForAllSessions(deps.serviceManagers ?? new Map<string, ServiceManager>());
-    for (const sessionId of deps.runnerRegistry.ids()) {
-      const runner = deps.runnerRegistry.get(sessionId);
-      if (!isAgentSecretsCapable(runner)) continue;
-      void runner
-        .tryPushAgentSecrets(
-          selectAgentEnvForPush({
-            serviceManager: runner.serviceManager ?? null,
-            credentialStore: deps.credentialStore,
-          }),
-        )
-        .catch((err: unknown) => {
-          console.warn(`[credentials] agent-env push failed for ${sessionId}:`, getErrorMessage(err));
-        });
-    }
-  };
 
   // ---- Credential routes (docs/252 phase 2) ----
   //

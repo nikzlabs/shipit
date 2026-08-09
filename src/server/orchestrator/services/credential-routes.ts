@@ -164,8 +164,7 @@ export function createStringCredential(
     createdAt: now,
     updatedAt: now,
   };
-  credentialStore.upsertCredentialRoute(route);
-  credentialStore.setCredentialSecret(route.id, secret);
+  credentialStore.upsertCredentialRouteWithSecret(route, secret);
   syncProcessEnvForMode(credentialStore, service.id, billingMode, undefined);
   return { route, routes: listCredentialRoutes(credentialStore) };
 }
@@ -241,11 +240,18 @@ export function updateStringCredential(
  * orchestrator still reporting the provider as authenticated until a restart —
  * a credential the user revoked, still counted.
  *
- * **Only ever touches a value this process put there.** A variable the
- * *deployment* set is never overwritten (boot seeding skips a name that is
- * already present) and is therefore never equal to what we would clear, so it
- * survives a credential being removed. That asymmetry is the point: the user
- * owns their stored credentials, and the deployment owns its environment.
+ * **Only ever touches a value this process put there**, which is the half a
+ * first cut got wrong. Boot seeding deliberately skips a name that is already
+ * set (`app-di.ts`), so a variable the *deployment* supplied is not ours: an
+ * unconditional write would overwrite it, and the matching clear would then
+ * delete it, leaving the deployment unauthenticated until a restart. So a write
+ * happens only into an absent/empty slot or over our own previous value, and a
+ * clear only over our own previous value.
+ *
+ * Nothing is lost by leaving a deployment value in place: these probes ask
+ * whether a credential is *present*, never which one. Which credential a session
+ * actually receives comes from the route store
+ * ({@link collectServiceCredentialEnv}), not from here.
  *
  * Phase 3 should retire this along with the env probes it exists to feed.
  */
@@ -257,12 +263,15 @@ function syncProcessEnvForMode(
 ): void {
   const envName = storageEnvFor(serviceId, billingMode);
   if (!envName) return;
+  const current = process.env[envName];
+  const ours = current === undefined || current === "" || current === deliveredBefore;
+  if (!ours) return;
   const deliveredNow = collectServiceCredentialEnv(credentialStore)[envName];
   if (deliveredNow !== undefined) {
     process.env[envName] = deliveredNow;
     return;
   }
-  if (deliveredBefore !== undefined && process.env[envName] === deliveredBefore) {
+  if (deliveredBefore !== undefined && current === deliveredBefore) {
     // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- keyed by a catalogue storageEnv name
     delete process.env[envName];
   }

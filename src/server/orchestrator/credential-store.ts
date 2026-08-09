@@ -328,15 +328,21 @@ export class CredentialStore {
     const rekey = <T>(map: Record<string, T> | undefined): Record<string, T> | undefined => {
       if (!map) return map;
       const next: Record<string, T> = {};
+      // Two passes, so precedence never depends on JSON key order. An
+      // already-migrated entry wins over a legacy one for the same group: a
+      // mixed file can only arise from a rollback-and-re-upgrade, and there the
+      // new-form key is the newer write.
       for (const [key, value] of Object.entries(map)) {
-        if (key.includes(":")) {
-          next[key] = value;
-          continue;
-        }
+        if (key.includes(":")) next[key] = value;
+      }
+      for (const [key, value] of Object.entries(map)) {
+        if (key.includes(":")) continue;
         const serviceId = nativeServiceForHarness(key as AgentId);
         if (!serviceId) continue; // an agent the catalogue does not carry; drop the setting rather than guess
-        next[credentialModeKey(serviceId, "sub")] = value;
+        const target = credentialModeKey(serviceId, "sub");
         changed = true;
+        if (target in next) continue;
+        next[target] = value;
       }
       return next;
     };
@@ -556,6 +562,25 @@ export class CredentialStore {
       const { [routeId]: _removed, ...rest } = secrets;
       this.data.credentialSecrets = rest;
     }
+    this.save();
+  }
+
+  /**
+   * Add a route **and** its secret in one write.
+   *
+   * Two writes would leave a window in which a `ready` route exists with no
+   * secret behind it — a credential that reports as configured and delivers
+   * nothing. A crash there is unrecoverable by inspection, because the route
+   * looks complete. One `save()` removes the window rather than documenting it.
+   */
+  upsertCredentialRouteWithSecret(route: CredentialRoute, secret: string): void {
+    const routes = [...(this.data.credentialRoutes ?? [])];
+    const idx = routes.findIndex((r) => r.id === route.id);
+    const next = { ...route, updatedAt: Date.now() };
+    if (idx >= 0) routes[idx] = next;
+    else routes.push(next);
+    this.data.credentialRoutes = routes;
+    this.data.credentialSecrets = { ...(this.data.credentialSecrets ?? {}), [route.id]: secret };
     this.save();
   }
 
