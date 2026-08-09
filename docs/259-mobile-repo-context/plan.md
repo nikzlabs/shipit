@@ -61,10 +61,12 @@ whole point of this bar is one large mobile tap target.
 
 ### 3. Per-repo drafts (req 4)
 
-`useMessageDraft` already keys drafts off `focusKey`, saving the outgoing key's
-text and loading the incoming key's during render. The only reason a repo switch
-does not swap the draft today is that `App.tsx:1559` collapses every repo's
-new-session view onto the single key `"new"`. The fix is the key:
+Req 4 asks the switcher to respect draft behaviour the composer already has, so
+this is a key change and no new machinery. `useMessageDraft` already saves the
+outgoing `focusKey`'s text and loads the incoming key's during render, which is
+what makes per-session drafts work. The single reason a repo switch does not
+swap the draft today is that `App.tsx:1559` collapses every repo's new-session
+view onto the one constant key `"new"`:
 
 ```ts
 const messageInputFocusKey = showNewSessionView ? `new:${newSessionRepoSlug}` : wsSessionId;
@@ -81,7 +83,9 @@ repo, which is precisely when the draft *should* swap.
 No migration for the legacy `shipit-draft-message:new` key. At upgrade time
 nothing records which repo that draft was for, and guessing would drop one
 repo's text into another's composer; an unsent draft is the cheapest thing in
-the app to lose. The orphaned key is left for the existing cleanup to reap.
+the app to lose. Nothing sweeps orphaned draft keys — `saveDraftMessage` only
+removes a key when its own text goes empty — so the stale `new` entry simply
+sits in `localStorage` as a few unread bytes.
 
 ## Key files
 
