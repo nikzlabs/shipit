@@ -140,6 +140,10 @@ describe("stale turn teardown is turn-scoped", () => {
     agentA.emit("done", 143);
     await flushTurn();
 
+    // The stale exit stands down entirely: turn B is still the running turn,
+    // and its queue/commit/finished flow was not run out from under it.
+    expect(runner.running).toBe(true);
+
     // Turn B completes normally; its final persist rebuilds from
     // `recordedCards`, which still hold the notice.
     agentB.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
@@ -183,6 +187,32 @@ describe("stale turn teardown is turn-scoped", () => {
       chatHistory.load(SESSION).filter((m) => m.text === NOTICE && m.inProgress),
     ).toHaveLength(1);
     expect(chatHistory.load(SESSION).filter((m) => m.isError)).toHaveLength(0);
+
+    agentB.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agentB.emit("done", 0);
+    await flushTurn();
+
+    expect(noticeRows()).toHaveLength(1);
+  });
+
+  it("a stale QUOTA-shaped error neither benches the account nor displaces the successor", async () => {
+    // Found by cross-backend review: the listener consults the quota-retry
+    // hook before its teardown, so a stale exhaustion-shaped error would
+    // finalize the successor's rows, bench the account the successor is now
+    // pinned to, and dispatch a retry whose fresh agent takes the slot.
+    const exhausted = vi.fn();
+    deps.listenerDeps = { ...deps.listenerDeps, markSessionAccountExhausted: exhausted };
+    const agentA = await startTurn("turn A");
+    const agentB = await startTurn("turn B", { emitFailoverNotice: true });
+
+    agentA.emit("error", new Error("Claude usage limit reached · resets 5:10pm (UTC)"));
+    await flushTurn();
+
+    // No bench, no retry spawn, no displacement — turn B still owns the slot.
+    expect(exhausted).not.toHaveBeenCalled();
+    expect(agents).toHaveLength(0);
+    expect(runner.getAgent()).toBe(agentB as never);
+    expect(runner.running).toBe(true);
 
     agentB.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     agentB.emit("done", 0);

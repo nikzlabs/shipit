@@ -249,6 +249,12 @@ export async function runDispatchedTurn(
     if (deps.needsAccountFailover?.(runner.sessionId, agentId)) {
       const outgoing = runner.getAgent();
       if (outgoing) {
+        // Drop the previous turn's listeners BEFORE killing — same as the WS
+        // path's failover release and `releaseResidentOnSpawnChange`: the
+        // kill's late `done`/`error` (an SSE exit, or an in-flight worker HTTP
+        // call rejecting locally on the proxy) must not re-run that turn's
+        // terminal flow against the turn this dispatch is about to start.
+        try { outgoing.removeAllListeners(); } catch { /* already bare */ }
         try { outgoing.kill(); } catch { /* already gone */ }
         runner.setAgent(null);
       }

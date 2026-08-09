@@ -1436,12 +1436,40 @@ export function wireAgentListeners(
   wireAuthRequiredHandler(agent, runner, deps, opts, emitToViewers);
 
   agent.on("error", async (err: Error) => {
-    // docs/252 phase 5 — before anything: is this a quota failure the executor
-    // is about to fail over from? Everything below is the terminal teardown of a
-    // turn that has ended (it finalizes history, appends an error row, clears
-    // `running` and broadcasts `session_agent_finished`), and a turn about to be
-    // re-run has not ended. Same stand-down shape as the `auth_required`
-    // recovery, for the same reason.
+    // A STALE error — one whose turn a successor has already replaced — must
+    // not run ANY of this handler. The teardown below finalizes the session's
+    // in-progress rows from the runner's CURRENT accumulators, flips
+    // `running`, clears the turn-event buffer and drains the queue; every one
+    // of those now belongs to the successor turn. This shape is real: a
+    // resident process killed by the failover pre-check can reject an
+    // in-flight worker HTTP call and emit `error` LOCALLY (bypassing the SSE
+    // relay's runToken stale guard) while the next turn is inside env-prep —
+    // finalizing here flipped that turn's failover notice to `in_progress=0`,
+    // and its next boundary re-inserted the recorded card as a permanent
+    // duplicate bubble. Settlement of the superseded turn is owned by the
+    // `superseded` event (planning#318), not by this handler.
+    //
+    // Checked BEFORE `willRetryOnQuotaError`, deliberately: a stale
+    // quota-shaped error would otherwise finalize the successor's rows, bench
+    // the account the successor is currently pinned to, and dispatch a retry
+    // whose fresh agent DISPLACES the successor's — the same interference
+    // through a second door (found by cross-backend review).
+    if (
+      runner !== null &&
+      wiredTurnEpoch !== undefined &&
+      runner.turnEpoch !== wiredTurnEpoch
+    ) {
+      console.warn(
+        `[agent] stale process error ignored for ${opts.capturedSessionId} — a newer turn owns the session (${err.message})`,
+      );
+      return;
+    }
+    // docs/252 phase 5 — before the teardown: is this a quota failure the
+    // executor is about to fail over from? Everything below is the terminal
+    // teardown of a turn that has ended (it finalizes history, appends an error
+    // row, clears `running` and broadcasts `session_agent_finished`), and a
+    // turn about to be re-run has not ended. Same stand-down shape as the
+    // `auth_required` recovery, for the same reason.
     if (opts.willRetryOnQuotaError?.(err) === true) return;
     // docs/150 req 13 — a turn blocked because no connected account can serve
     // it is a routing decision, not a crashed process. It reaches this handler
@@ -1453,28 +1481,6 @@ export function wireAgentListeners(
     const display = blocked ? err.message : `Agent process error: ${err.message}`;
     console.error(blocked ? "[agent] turn blocked:" : "[agent] process error:", err.message);
     deps.broadcastLog("server", display);
-    // A STALE error — one whose turn a successor has already replaced — must
-    // not run this teardown at all. The block below finalizes the session's
-    // in-progress rows from the runner's CURRENT accumulators, flips
-    // `running`, clears the turn-event buffer and drains the queue; every one
-    // of those now belongs to the successor turn. This shape is real: a
-    // resident process killed by the failover pre-check can reject an
-    // in-flight worker HTTP call and emit `error` LOCALLY (bypassing the SSE
-    // relay's runToken stale guard) while the next turn is inside env-prep —
-    // finalizing here flipped that turn's failover notice to `in_progress=0`,
-    // and its next boundary re-inserted the recorded card as a permanent
-    // duplicate bubble. Settlement of the superseded turn is owned by the
-    // `superseded` event (planning#318), not by this handler.
-    if (
-      runner !== null &&
-      wiredTurnEpoch !== undefined &&
-      runner.turnEpoch !== wiredTurnEpoch
-    ) {
-      console.warn(
-        `[agent] stale process error ignored for ${opts.capturedSessionId} — a newer turn owns the session (${err.message})`,
-      );
-      return;
-    }
     emitToViewers({ type: "error", message: display });
     const turnSessionId = opts.capturedSessionId;
     if (turnSessionId) {
