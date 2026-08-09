@@ -410,13 +410,17 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
    *
    * This is the residue of `checkClaudeAuth` / `checkCodexAuth`, and it is
    * additive — it can only ever widen a harness's eligible set, never narrow
-   * one, so req 2's DeepSeek-only install is unaffected by it. Two callers still
-   * need it and neither is reachable from the credential store:
+   * one, so req 2's DeepSeek-only install is unaffected by it. What it is for is
+   * the **injected auth manager** the DI boundary keeps as an auth source for
+   * tests and custom runtimes that do not persist provider-account rows.
    *
-   *  - the **injected auth manager** the DI boundary keeps as an auth source for
-   *    tests and custom runtimes that do not persist provider-account rows; and
-   *  - Codex's **`auth.json` file probe**, a ChatGPT login on disk that the
-   *    orchestrator's route store does not own.
+   * **The probes must report account-shaped evidence only**, and the wiring in
+   * `app-di.ts` narrows them for exactly that reason. `hasAnyAuthForProvider`
+   * also answers true for a bare `ANTHROPIC_API_KEY` — translating that into a
+   * subscription credential would offer a "Subscription" row on a key-only
+   * install and fail `auth_required` the moment it was chosen. An env-delivered
+   * key needs no translation: `listConfiguredCredentials` already reads it, as
+   * the credential of its own mode.
    *
    * Translating rather than short-circuiting is what keeps ONE rule: eligibility
    * is a question about credentials, so a legacy credential becomes a credential

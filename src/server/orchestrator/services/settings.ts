@@ -376,7 +376,18 @@ export async function saveGlobalSettings(
             throw new ServiceError(400, `Invalid model "${value}" for ${info.name}`);
           }
         }
-        credentialStore.setAgentSubAgentDefaults(agentId, { model: value ?? null });
+        // docs/252 phase 3 — say which `(service, mode)` this id was chosen
+        // FROM. The picker still offers bare ids (a service axis there follows
+        // the session picker in phase 4), and without a hint the store resolves
+        // to the first mode of the harness's own vendor — `sub` for Anthropic —
+        // so on a key-only install every consult on that default then failed.
+        // The eligible set is the answer, and it is right here.
+        const chosen = value ? info.eligibleModels?.find((m) => m.modelId === value) : undefined;
+        credentialStore.setAgentSubAgentDefaults(
+          agentId,
+          { model: value ?? null },
+          chosen ? { serviceId: chosen.serviceId, billingMode: chosen.billingMode } : undefined,
+        );
       }
     }
   }

@@ -581,7 +581,23 @@ export async function registerRoutes(
               }
             : undefined;
         try {
-          if (seeded && selectionExists(seeded)) {
+          // docs/252 phase 3 — the seed must be ELIGIBLE, not merely present in
+          // the catalogue. The browser slot outlives a credential change, so a
+          // triple written while a subscription was connected still names a real
+          // row after it goes away; accepting it pins the session to a mode with
+          // no credential and fails its first turn. Falling through to the
+          // bare-id resolution lands on a mode that does have one. The client
+          // drops such a seed too (`isSelectionEligibleForAgent`); this is the
+          // server refusing to trust it either.
+          const seedEligible =
+            seeded
+            && (agentRegistry.get(perConnectionAgentId)?.eligibleModels ?? []).some(
+              (m) =>
+                m.serviceId === seeded.serviceId
+                && m.billingMode === seeded.billingMode
+                && m.modelId === seeded.modelId,
+            );
+          if (seeded && selectionExists(seeded) && seedEligible) {
             sessionManager.setModelSelection(sessionId, seeded);
           } else {
             sessionManager.setModel(

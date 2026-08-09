@@ -1570,6 +1570,23 @@ describe("service routing (docs/252 phase 3)", () => {
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
   });
 
+  it("refuses to spawn a redirected turn with no credential, as Codex does", () => {
+    // Spawning anyway turns ShipIt's structured `auth_required` into a raw
+    // provider 401 the user has to interpret. Reachable when a credential
+    // write's secrets push failed or timed out (both fail open) between the
+    // pick and the turn.
+    const mockProc = createMockPty();
+    mockPtySpawn.mockReturnValue(mockProc as never);
+    mockPtySpawn.mockClear();
+    delete process.env.DEEPSEEK_API_KEY;
+    const proc = new ClaudeProcess();
+    const authRequired = vi.fn();
+    proc.on("auth_required", authRequired);
+    proc.run({ prompt: "hi", cwd: "/workspace", serviceRouting: routing });
+    expect(authRequired).toHaveBeenCalledTimes(1);
+    expect(mockPtySpawn).not.toHaveBeenCalled();
+  });
+
   it("is a no-op when there is nothing to shape", () => {
     const env: Record<string, string> = { ANTHROPIC_API_KEY: "sk-ant" };
     applyServiceRouting(env, undefined);

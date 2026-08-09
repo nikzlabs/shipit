@@ -24,12 +24,14 @@ import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js
 import {
   allServices,
   harnessForNativeService,
+  modesOfferingModel,
   nativeServiceForHarness,
   resolveModelSelection,
   resolveRetiredModelId,
   retirementSuccessor,
   storageEnvFor,
 } from "../shared/catalogue/index.js";
+import type { BillingMode } from "../shared/catalogue/index.js";
 
 /**
  * docs/170 — the Linear **credential**, and nothing that identifies a
@@ -1084,7 +1086,24 @@ export class CredentialStore {
    * (or `undefined`) for a field clears it, falling back to the CLI's own
    * default. A field absent from the patch is left unchanged.
    */
-  setAgentSubAgentDefaults(agentId: string, patch: SubAgentDefaultsPatch): void {
+  setAgentSubAgentDefaults(
+    agentId: string,
+    patch: SubAgentDefaultsPatch,
+    /**
+     * docs/252 phase 3 — which `(service, mode)` the caller means, when it knows.
+     *
+     * `resolveModelSelection` picks the FIRST mode of the biased service, which
+     * for Anthropic is `sub` — so on an install whose only Anthropic credential
+     * is an API key, choosing Sonnet as a sub-agent default stored an
+     * unreachable subscription triple and every consult then failed. The service
+     * layer knows which modes are eligible; this lets it say so.
+     *
+     * A hint is a preference, not an override: it applies only when that mode
+     * actually declares the model, so the stored triple still names a real
+     * catalogue row and the invariant on {@link SubAgentDefaultsPatch} holds.
+     */
+    preferred?: { serviceId: string; billingMode: BillingMode },
+  ): void {
     const current = { ...(this.data.agentSubAgentDefaults?.[agentId] ?? {}) };
     if ("reasoningEffort" in patch) {
       if (patch.reasoningEffort) current.reasoningEffort = patch.reasoningEffort;
@@ -1096,8 +1115,16 @@ export class CredentialStore {
       // docs/252 — the service and mode belong to the model, so a model write
       // re-resolves them and a model clear drops them. Writing them independently
       // is what would let the stored triple name a row that does not exist.
+      const hinted =
+        patch.model && preferred
+          ? modesOfferingModel(patch.model).find(
+              (m) => m.serviceId === preferred.serviceId && m.billingMode === preferred.billingMode,
+            )
+          : undefined;
       const selection = patch.model
-        ? resolveModelSelection(patch.model, nativeServiceForHarness(agentId as AgentId))
+        ? (hinted
+            ? { ...hinted, modelId: patch.model }
+            : resolveModelSelection(patch.model, nativeServiceForHarness(agentId as AgentId)))
         : undefined;
       if (selection) {
         current.serviceId = selection.serviceId;

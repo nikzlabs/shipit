@@ -67,6 +67,26 @@ describe("listConfiguredCredentials", () => {
     );
     expect(credentials).toEqual([{ serviceId: "anthropic", billingMode: "sub", via: "account" }]);
   });
+
+  it("ignores an account whose login never finished", () => {
+    // An account row exists from the moment the login starts and a cancelled one
+    // stays `unavailable` forever, while turn routing accepts only `ready` or
+    // `authenticating`. Counting the rest offers a subscription whose every turn
+    // is refused — eligibility has to ask the same question routing does.
+    const credentials = listConfiguredCredentials(
+      store([
+        route({
+          id: "acct_1",
+          serviceId: "anthropic",
+          billingMode: "sub",
+          via: "account",
+          status: "unavailable",
+        }),
+      ]),
+      {} as NodeJS.ProcessEnv,
+    );
+    expect(credentials).toEqual([]);
+  });
 });
 
 describe("selectRouteForSelection — scoped to the SELECTED billing mode", () => {

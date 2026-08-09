@@ -100,6 +100,15 @@ export function listConfiguredCredentials(
     // one-write upsert removed. Treat it as absent rather than offer a model
     // whose turn cannot authenticate.
     if (route.via === "string" && !credentialStore.getCredentialSecret(route.id)) continue;
+    // An account row exists from the moment the login STARTS, and a cancelled
+    // one is left `unavailable` forever. Turn routing accepts only `ready` or
+    // `authenticating` (`provider-account-manager.selectAccountForTurn`), so
+    // counting the rest here offers a model whose every turn is refused —
+    // eligibility has to ask the same question routing does, or the picker is
+    // promising something the router will not do.
+    if (route.via === "account" && route.status !== "ready" && route.status !== "authenticating") {
+      continue;
+    }
     add(route.serviceId, route.billingMode, route.via);
   }
   for (const service of servicesWithStringCredentials()) {

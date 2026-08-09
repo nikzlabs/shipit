@@ -468,11 +468,25 @@ export class ClaudeProcess extends EventEmitter {
     // very variables this writes.
     const shaped = applyServiceRouting(spawnEnv, serviceRouting);
     if (serviceRouting) {
-      const warning = shaped.credentialDelivered ? "" : " (WARNING: no credential in the environment)";
       console.log(
         `[claude] service routing: ${serviceRouting.serviceId}/${serviceRouting.billingMode}`
-        + ` -> ${serviceRouting.baseUrl}${warning}`,
+        + ` -> ${serviceRouting.baseUrl}`,
       );
+      // A redirected spawn with no credential in the environment cannot
+      // authenticate, and spawning anyway turns ShipIt's structured
+      // `auth_required` into a raw provider 401 the user has to interpret. The
+      // Codex adapter already stops here; this is the same answer on the same
+      // question. Reachable when a credential write's secrets push failed or
+      // timed out (both are deliberately fail-open) between the pick and the
+      // turn.
+      if (!shaped.credentialDelivered) {
+        console.warn(
+          `[claude] no credential in the environment for ${serviceRouting.serviceId}`
+          + `/${serviceRouting.billingMode} (expected ${serviceRouting.credentialSourceEnv})`,
+        );
+        this.raiseAuthRequiredOnce();
+        return;
+      }
     }
     if (autoCreatePr) {
       spawnEnv.SHIPIT_AUTO_CREATE_PR = "1";
@@ -725,11 +739,25 @@ export class StreamingClaudeProcess extends EventEmitter {
     // very variables this writes.
     const shaped = applyServiceRouting(spawnEnv, serviceRouting);
     if (serviceRouting) {
-      const warning = shaped.credentialDelivered ? "" : " (WARNING: no credential in the environment)";
       console.log(
         `[claude] service routing: ${serviceRouting.serviceId}/${serviceRouting.billingMode}`
-        + ` -> ${serviceRouting.baseUrl}${warning}`,
+        + ` -> ${serviceRouting.baseUrl}`,
       );
+      // A redirected spawn with no credential in the environment cannot
+      // authenticate, and spawning anyway turns ShipIt's structured
+      // `auth_required` into a raw provider 401 the user has to interpret. The
+      // Codex adapter already stops here; this is the same answer on the same
+      // question. Reachable when a credential write's secrets push failed or
+      // timed out (both are deliberately fail-open) between the pick and the
+      // turn.
+      if (!shaped.credentialDelivered) {
+        console.warn(
+          `[claude] no credential in the environment for ${serviceRouting.serviceId}`
+          + `/${serviceRouting.billingMode} (expected ${serviceRouting.credentialSourceEnv})`,
+        );
+        this.raiseAuthRequiredOnce();
+        return;
+      }
     }
     if (autoCreatePr) {
       spawnEnv.SHIPIT_AUTO_CREATE_PR = "1";

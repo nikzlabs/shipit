@@ -471,10 +471,31 @@ export async function prepareSessionAgentEnvironment(
   // pinned to a route yet this is the decision point, so it is also the last
   // moment a turn can be stopped *before* pinning and credential provisioning
   // make it look like it ran on an account.
-  const selectedRoute =
+  const pinnedRoute =
     routedSession.providerRouteKind && routedSession.providerRouteId
       ? { kind: routedSession.providerRouteKind, id: routedSession.providerRouteId }
+      : undefined;
+  // docs/252 phase 3 — a pinned STRING credential that has since been deleted is
+  // not a route any more. Reusing it unconditionally (which is what this branch
+  // did) left the session attributing its turns to a credential that no longer
+  // exists while delivery handed the CLI whichever one of that mode's remains
+  // sorts first — the attribution and the authentication naming different
+  // credentials. Dropping it re-pins on this very turn, through the resolution
+  // below. Account routes are excluded: their own machinery owns benching and
+  // status, and a missing account is docs/150's case, not this one.
+  const pinnedIsStale =
+    pinnedRoute?.kind === "reserved"
+    && pinnedRoute.id.startsWith("cred_")
+    && !deps.credentialStore.getCredentialRoute(pinnedRoute.id);
+  const selectedRoute =
+    pinnedRoute && !pinnedIsStale
+      ? pinnedRoute
       : selectRouteForNewTurn(agentId, routedSession, deps, args.enforceAccountRouting ?? false);
+  if (pinnedIsStale) {
+    console.log(
+      `[env-prep] ${sessionId} dropped pinned route ${pinnedRoute?.id ?? "?"} — its credential was removed`,
+    );
+  }
 
   // docs/150 req 21 — stamp the account this turn actually resolved onto, which
   // is what `balanced` sorts by. Here rather than inside `selectAccountForTurn`

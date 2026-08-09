@@ -2,7 +2,7 @@ import { useState, useRef, useCallback } from "react";
 import { CaretDownIcon, CheckIcon, LockIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatModelName, resolveModelAlias } from "../utils/format-model.js";
-import { getSavedModelId } from "../utils/local-storage.js";
+import { getSavedModelId, getSavedModelSelection } from "../utils/local-storage.js";
 import { useSessionStore } from "../stores/session-store.js";
 import {
   DropdownMenu,
@@ -269,7 +269,12 @@ export function ModelSelector({
   const rows = modelRowsFor(displayAgent);
   const groups = groupRows(rows);
 
-  const savedModel = getSavedModelId();
+  // The saved slot holds a TRIPLE, and reading only its id would let the trigger
+  // and checkmark land on a different `(service, mode)` from the one Quick
+  // Capture goes on to send — with the same id under a subscription and a key,
+  // the picker would show the subscription row while the session billed the key.
+  const savedSelection = getSavedModelSelection();
+  const savedModel = savedSelection?.modelId ?? getSavedModelId();
   const seededModel = hasActiveSession ? undefined : savedModel;
   const pendingModelForCurrentSession =
     pendingSessionRef.current === sessionId ? pendingModel : undefined;
@@ -314,9 +319,11 @@ export function ModelSelector({
   // The service/mode the session actually persisted, so a duplicated model id
   // highlights the row it was chosen from rather than every row sharing the id.
   const selectedGroupKey =
-    currentSession?.serviceId && currentSession.billingMode
+    hasActiveSession && currentSession?.serviceId && currentSession.billingMode
       ? `${currentSession.serviceId}:${currentSession.billingMode}`
-      : undefined;
+      : !hasActiveSession && savedSelection
+        ? `${savedSelection.serviceId}:${savedSelection.billingMode}`
+        : undefined;
 
   const displayName = formatModelName(displayedModel ?? "");
   const displayedRow = rows.find(

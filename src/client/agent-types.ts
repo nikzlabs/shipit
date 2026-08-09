@@ -74,3 +74,35 @@ export interface AgentOption {
     options: { value: string; label: string }[];
   };
 }
+
+/**
+ * docs/252 phase 3 — is this saved selection one the install can still run on
+ * `agentId`?
+ *
+ * The browser's saved slot is the only selection that outlives a credential
+ * change: it holds a triple written when a subscription was connected, and it
+ * seeds both the WebSocket connect and Quick Capture. `selectionExists` says the
+ * catalogue still carries the row, which is a different question — the mode may
+ * have lost its credential since. A stale `sub` triple accepted here becomes a
+ * session whose very first turn fails to authenticate.
+ *
+ * Gated at the shared SOURCE rather than per ingress: both readers of the slot
+ * ask this, so a third one cannot inherit the hole by forgetting a check.
+ */
+export function isSelectionEligibleForAgent(
+  agents: AgentOption[],
+  agentId: string,
+  selection: { serviceId: string; billingMode: "sub" | "key"; modelId: string } | undefined,
+): boolean {
+  if (!selection) return false;
+  const agent = agents.find((a) => a.id === agentId);
+  // An older payload carries no eligible set, and refusing everything on that
+  // basis would be worse than the staleness this guards against.
+  if (!agent?.eligibleModels) return true;
+  return agent.eligibleModels.some(
+    (m) =>
+      m.serviceId === selection.serviceId
+      && m.billingMode === selection.billingMode
+      && m.modelId === selection.modelId,
+  );
+}

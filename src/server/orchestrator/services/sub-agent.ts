@@ -275,9 +275,30 @@ export async function runSubAgent(
   // would then be shaped — or not shaped — against the wrong credential.
   const { reasoningEffort, model, serviceId, billingMode } =
     deps.credentialStore.getAgentSubAgentDefaults(subAgentId);
+  // An UNSET default is not an absence of a selection — it means "the harness's
+  // own first model", which is what the adapter falls back to (`models[0]`). So
+  // resolve it to the first ELIGIBLE entry rather than leaving the consult
+  // selectionless, which had two consequences the phase plan rules out: every
+  // such consult wrote an unattributed `legacy` row forever (legacy is supposed
+  // to mean "before ShipIt tracked this"), and on an install whose only
+  // credential is a custom service's the spawn fell back to native-vendor
+  // routing and refused a consult the harness could perfectly well have run.
+  const fallbackModel = info.eligibleModels?.[0];
   const subSelection =
-    model && serviceId && billingMode ? { serviceId, billingMode, modelId: model } : undefined;
+    model && serviceId && billingMode
+      ? { serviceId, billingMode, modelId: model }
+      : !model && fallbackModel
+        ? {
+            serviceId: fallbackModel.serviceId,
+            billingMode: fallbackModel.billingMode,
+            modelId: fallbackModel.modelId,
+          }
+        : undefined;
   const subAttribution = turnAttributionFor(subSelection);
+  // What the spawn actually runs. The resolved triple when there is one, else
+  // the bare default (an install whose stored default predates the triple), else
+  // nothing — which lets the adapter pick its own first model, exactly as before.
+  const spawnModel = subSelection?.modelId ?? model;
 
   // §4 — resolve the sub-agent's credential route exactly as the primary turn
   // path does, so a multi-account user provisions from the freshest account
@@ -415,7 +436,11 @@ export async function runSubAgent(
       spawnId,
       depth,
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-      ...(model !== undefined ? { model } : {}),
+      // The RESOLVED model, so what runs and what is recorded are the same by
+      // construction. Letting the adapter fall back to its own `models[0]`
+      // instead would run the catalogue join's first entry, which on an install
+      // with no first-party credential is a model this install cannot run.
+      ...(spawnModel !== undefined ? { model: spawnModel } : {}),
       ...(subServiceRouting !== undefined ? { serviceRouting: subServiceRouting } : {}),
     });
     let result = await spawn();
@@ -516,7 +541,10 @@ export async function runSubAgent(
       const consultCost = resolveTurnCost({
         harnessId: subAgentId,
         attribution: subAttribution,
-        reportedCostUsd: result.costUsd,
+        // Not `result.costUsd`: that starts at zero and Codex reports no dollar
+        // figure at all, so passing it would tell the rule "the harness reported
+        // $0" and record every metered OpenAI consult as free.
+        reportedCostUsd: result.costReported ? result.costUsd : undefined,
         reportedCostSource: "per-turn",
         tokens: {
           input: result.inputTokens,
@@ -534,7 +562,7 @@ export async function runSubAgent(
         {
           subAgentId,
           costSource: consultCost.costSource,
-          ...(model !== undefined ? { model } : {}),
+          ...(spawnModel !== undefined ? { model: spawnModel } : {}),
           ...(subAttribution ? { attribution: subAttribution } : {}),
           ...(result.cacheReadTokens !== undefined ? { cacheRead: result.cacheReadTokens } : {}),
           ...(result.cacheCreateTokens !== undefined ? { cacheCreate: result.cacheCreateTokens } : {}),

@@ -807,6 +807,62 @@ the real binaries (CLI 2.1.220, codex-cli 0.146.0) driving a local HTTP recorder
   `requirements.md` and is phase 6's to build. It is the one user-visible regression this phase
   ships knowingly.
 
+**What the cross-backend review changed.** Codex reviewed the branch under CLAUDE.md's rule
+and returned nine findings; all nine held up on checking, and eight are fixed here. Three are
+worth reading as a group, because they are the same mistake in three places: **a zero, an
+absent status and a bare id were each read as more than they said.**
+
+- **A consult on a metered key was recorded as free.** `SubAgentRunResult.costUsd` starts at
+  `0` and is assigned only on a reported figure, so "the harness reported nothing" and "the
+  turn cost nothing" were the same value — and Codex reports nothing. The producer forwarded
+  that zero as a harness figure, which the native-key branch then honoured. This is the exact
+  trap the pricing rule is written to avoid, walked into at the one site the rule's own
+  docstring does not sit next to. `costReported` now carries the distinction.
+- **An API key was translated into a subscription that does not exist.** The legacy auth
+  probes are turned into an *account* credential of the harness's native service, and
+  `hasAnyAuthForProvider` answers true for a bare `ANTHROPIC_API_KEY` — so a key-only install
+  offered a "Subscription" row that failed `auth_required` when chosen. The probes are narrowed
+  at the DI boundary to account-shaped evidence; an env key needs no translation, because
+  `listConfiguredCredentials` already reads it as the credential of its own mode.
+- **An unfinished account login counted as a credential.** An account row exists from the
+  moment a login starts and a cancelled one stays `unavailable`, while routing accepts only
+  `ready` or `authenticating`. Eligibility now asks the same question routing does — otherwise
+  the picker promises something the router will not do.
+
+Two more were real and are fixed:
+
+- **A rotated or deleted credential survived in a resident process.** Phase 2's propagation
+  updates the worker's *environment*; a CLI already running in it read its credential at spawn
+  and never re-reads. So rotating a key in place kept the old one — the route id does not
+  change, so neither does the spawn identity — and *deleting* one left it authenticating turns
+  for the rest of that process's life, defeating the revocation phase 2 built. Every credential
+  write now releases resident agents that are not mid-turn
+  (`releaseResidentForCredentialChange`), so revocation takes effect at the next spawn
+  boundary. A runner mid-turn is skipped deliberately: killing it would abort work the user is
+  waiting on to shorten a window that closes at the end of that turn anyway. Separately, a
+  pinned route whose stored credential has been *deleted* is dropped at env prep, so the
+  session re-pins instead of attributing turns to a credential that no longer exists while
+  delivery hands the CLI a different one.
+- **New-session ingress accepted a catalogue-valid but ineligible triple.** The browser slot
+  outlives a credential change, so a triple written while a subscription was connected still
+  names a real row after it goes away. Gated at the slot's shared *source* on the client
+  (`isSelectionEligibleForAgent`) so both readers ask, with the WS seed refusing to trust it
+  server-side as well.
+
+Three were narrower and are also fixed: Claude spawning a redirected turn with no credential
+in the environment (it now raises `auth_required` as Codex already did); an **unset** sub-agent
+default writing an unattributed `legacy` row forever *and* falling back to native-vendor
+routing on an install that has no first-party credential (it resolves to the first eligible
+entry, which is what "the harness's own first model" means); and the sub-agent defaults picker
+storing an unreachable `sub` triple on a key-only install, because the store re-resolved a bare
+id to the first mode of the biased service — the service layer now passes the mode the id was
+chosen *from*.
+
+**One finding is recorded rather than fixed**, because it is pre-existing rather than
+introduced: the new-session picker reads the globally-active session for its *harness* display,
+as the pre-split picker did. The half this phase did introduce — reading only the saved bare id
+and so highlighting the wrong `(service, mode)` — is fixed.
+
 **Phase 4 — In-session switching.** The resident process's identity was widened in phase 3 — to the whole spawn-relevant tuple: harness, service, billing mode, API style,
 endpoint, credential route, model — because phase 3 is where a same-id/different-service
 switch first becomes reachable. Phase 4 is only the mid-session *interaction* on top of it:

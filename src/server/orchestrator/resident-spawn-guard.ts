@@ -86,3 +86,49 @@ export function releaseResidentOnSpawnChange(
   );
   return true;
 }
+
+/**
+ * docs/252 phase 3 — release a resident agent so its next turn respawns with
+ * the credentials the store now holds.
+ *
+ * A resident CLI reads its credential from the environment it was **spawned**
+ * with, and phase 2's propagation updates the worker's environment without
+ * touching a process already running in it. So without this, rotating a key in
+ * place kept the old one in use — the route id does not change, so the spawn
+ * identity does not either — and *deleting* one left it authenticating turns
+ * for the rest of that process's life, which defeats the revocation phase 2
+ * went to some length to make reach live sessions.
+ *
+ * **A runner mid-turn is skipped**, deliberately: killing it would abort work
+ * the user is waiting on, to shorten a window that closes at the end of that
+ * turn anyway. The honest statement is that revocation takes effect at the next
+ * spawn boundary, not that it is instantaneous.
+ *
+ * Returns true when a process was released.
+ */
+export function releaseResidentForCredentialChange(
+  runner: SessionRunnerInterface | null | undefined,
+): boolean {
+  if (!runner || runner.running) return false;
+  const resident = runner.getAgent();
+  if (!resident) return false;
+  try {
+    resident.removeAllListeners();
+  } catch {
+    // An adapter without listeners is already in the state we want.
+  }
+  try {
+    resident.kill();
+  } catch {
+    // Already gone is the state we wanted.
+  }
+  if (runner.getAgent() === resident) runner.setAgent(null);
+  runner.isStreamingActive = false;
+  runner.appliedSpawnIdentity = undefined;
+  runner.clearBackgroundTasks();
+  console.log(
+    `[credentials] released resident agent for ${runner.sessionId} — a credential changed, `
+    + `so the next turn respawns with the credentials the store now holds`,
+  );
+  return true;
+}

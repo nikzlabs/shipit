@@ -104,6 +104,13 @@ export interface SubAgentRunResult {
   durationMs: number;
   costUsd: number;
   /**
+   * docs/252 phase 3 — true when the harness reported a dollar figure. Distinct
+   * from `costUsd > 0`: a harness that reports nothing (Codex) leaves this
+   * false, and the cost rule must price such a turn from the catalogue's rates
+   * rather than record it as free.
+   */
+  costReported?: boolean;
+  /**
    * Turn-wide token totals from the sub-agent's `agent_result` (docs/144 usage
    * attribution). Carried so the consult's usage is recorded with the same
    * fidelity as a primary turn — without these the spawn's tokens were dropped
@@ -199,6 +206,12 @@ export function runAgentToCompletion(
   const completedMessages: string[] = [];
   let lastFullText = "";
   let costUsd = 0;
+  // docs/252 phase 3 — whether the harness reported a dollar figure AT ALL,
+  // which `costUsd` alone cannot say: it starts at 0 and Codex reports nothing,
+  // so "reported nothing" and "cost nothing" are the same value. Reading the
+  // zero as a real figure is what recorded every metered OpenAI consult as free,
+  // in the one column req 16 exists to make honest.
+  let costReported = false;
   let reportedDurationMs: number | undefined;
   let inputTokens: number | undefined;
   let outputTokens: number | undefined;
@@ -240,6 +253,7 @@ export function runAgentToCompletion(
           truncated,
           durationMs: reportedDurationMs ?? Math.max(0, Date.now() - startedAtMs),
           costUsd,
+          costReported,
           ...(inputTokens !== undefined ? { inputTokens } : {}),
           ...(outputTokens !== undefined ? { outputTokens } : {}),
           ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
@@ -275,7 +289,10 @@ export function runAgentToCompletion(
             lastFullText = text;
           }
         } else if (event.type === "agent_result") {
-          if (event.cost?.totalUsd) costUsd = event.cost.totalUsd;
+          if (event.cost?.totalUsd !== undefined) {
+            costUsd = event.cost.totalUsd;
+            costReported = true;
+          }
           if (typeof event.durationMs === "number") reportedDurationMs = event.durationMs;
           if (event.tokens) {
             inputTokens = event.tokens.input;

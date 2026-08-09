@@ -56,7 +56,7 @@ table — a phase is checked off when its PR has merged.
 - [x] Sub-agent usage writer widened; Codex token semantics measured and normalized
 - [x] Composer picker split into harness and model, model rows grouped by service
 - [x] Delete `nativeModelIdsForHarness` and the hand-kept `METERED_MODELS` set
-- [x] Cross-backend review, findings applied (see `plan.md`)
+- [x] Cross-backend review — nine findings, eight fixed (see `plan.md`)
 - [ ] Delete the `ProviderAccount` projection. Still load-bearing: the docs/150 account
       machinery — the quota-aware walk, cutoffs, benching, failover — is keyed by `AgentId`
       and phase 3 delegates to it rather than reimplementing it. Retiring the projection
@@ -64,11 +64,14 @@ table — a phase is checked off when its PR has merged.
 - [ ] Replace the first-credential delivery within one mode. Delivery hands the worker the
       first credential in order and the turn now authenticates with exactly that one, so the
       two agree; choosing a *different* one is req 12's failover and belongs to **phase 5**.
-- [ ] The **sub-agent defaults** picker still has no service axis. Its list is now
-      credential-filtered (it reads the same eligible ids), and the store re-resolves a
-      written id to a real triple biased toward the harness's own vendor — so it cannot
-      store a row that names nothing. What it cannot yet express is "this id, from THAT
-      service", which follows the session picker in **phase 4**.
+- [ ] The **sub-agent defaults** picker still has no service axis. Its list is
+      credential-filtered, and the service layer now tells the store which `(service, mode)`
+      the id was chosen from, so a key-only install no longer stores an unreachable `sub`
+      triple. What it still cannot express is a deliberate choice *between* two services
+      offering the same id, which follows the session picker in **phase 4**.
+- [ ] The new-session picker reads the globally-active session for its **harness** display.
+      Pre-existing (the combined picker did the same); found by review and recorded rather
+      than fixed here, since untangling it is composer work with no bearing on billing.
 - [ ] `authConfigured` leaves `AgentInfo`. Its MEANING moved here — "this harness has at least
       one eligible model" — which is the part req 2 needed; the rename across its six call
       sites is churn with no behaviour change and was not taken.

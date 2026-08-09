@@ -118,6 +118,23 @@ describe("resolveTurnCost — the column has ONE meaning: money that left the ac
     ).toEqual({ costUsd: 0, costSource: "cumulative" });
   });
 
+  it("a consult on a metered key that reported NOTHING is priced from the rates, not free", () => {
+    // The sub-agent runner starts `costUsd` at 0 and only assigns on a reported
+    // figure, so a caller that forwards it blindly tells this rule "the harness
+    // said $0". Codex reports no dollar figure at all, so every metered OpenAI
+    // consult would have been recorded as free — `services/sub-agent.ts` passes
+    // `undefined` unless `costReported` is set.
+    expect(
+      resolveTurnCost({
+        harnessId: "codex",
+        attribution: attribution({ serviceId: "openai", billingMode: "key" }),
+        reportedCostUsd: undefined,
+        reportedCostSource: "per-turn",
+        tokens: { input: 1_000_000 },
+      }),
+    ).toEqual({ costUsd: 10, costSource: "per-turn" });
+  });
+
   it("a one-shot consult says its figure is per-turn rather than letting it be inferred", () => {
     expect(
       resolveTurnCost({
