@@ -245,13 +245,40 @@ No open questions remain.
     feature onward**. Turns recorded before it carry no service and no billing mode — for
     sub-agent turns, not even a credential route — so the attribution is not in the data and
     cannot be reconstructed. Those are shown as their own group rather than split, guessed at,
-    or dropped from the totals; the group empties by itself as old sessions age out.
+    or dropped from the totals.
+
+    **The same group also holds work that is unattributable going forward.** Some work
+    genuinely resolves no model — session naming falling back when nothing is eligible runs on
+    the session's own harness with no service, no billing mode and therefore no rate. Its
+    tokens are real and its attribution does not exist, which is the same condition as a
+    pre-feature turn arrived at from the other direction. It goes in the same group rather
+    than being dropped, and it is never priced: a $0 row would assert the work was free, which
+    is the one thing this requirement exists to stop the totals saying.
+
+    So the group is **not** purely historical and does not empty by itself. It is the honest
+    home for volume whose attribution is unknown, whatever the reason.
 
 ## Open questions
 
 _None._
 
 ## Resolved questions
+
+- 2026-08-09 — Where does non-turn work that resolves **no** model belong — session naming's
+  `nothing_eligible` fallback, whose tokens are real but whose attribution does not exist?
+  **Chosen: req 16's legacy group.** Raised as `planning#343` while closing `planning#341`;
+  the finding is harness-independent and predates both. The group already exists to hold rows
+  whose attribution cannot be reconstructed, and this is that condition arrived at forward in
+  time rather than historically. The rejected alternative was leaving the tokens unrecorded
+  and narrowing the requirement's claim; recording them as unattributable volume keeps the
+  totals complete without pricing them. Pricing them was never an option — a $0 row asserts
+  the work was free, which is the trap this feature has now walked into twice (a metered
+  consult recorded as free in phase 3, and Codex's absent telemetry in phase 6).
+
+  **The consequence is that the group stops being purely historical and no longer drains on
+  its own**, which contradicts the earlier receipt below saying it "empties by itself as old
+  sessions age out". That sentence is superseded rather than merely extended, and req 16 now
+  says so.
 
 - 2026-08-09 — Phase 1's catalogue authoring raised one: **a subscription that includes a
   model still billed per token has no column in req 16's split.** **Chosen: the case does not
