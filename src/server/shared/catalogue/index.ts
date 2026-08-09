@@ -215,6 +215,136 @@ export function resolveModelSelection(
   return { serviceId: chosen.serviceId, billingMode: chosen.billingMode, modelId };
 }
 
+// ---- Retirement (req 13) ---------------------------------------------------
+//
+// Curation (req 6) makes removal routine, so a model leaving the catalogue must
+// not strand the sessions pinned to it. Each `(service, billing mode)` records
+// the models it retired — their ids, the styles they were declared under, and a
+// successor per style — and a pinned session resolves through that record.
+//
+// The three axes req 13 fixes are all held by construction here rather than
+// checked: the record lives INSIDE a `(service, mode)`, so a successor can
+// cross neither, and the style is resolved against the harness's own styles, so
+// it can only land on a model the session's harness can speak to.
+
+/**
+ * Every `(service, mode)` whose retirement record names this model id, in
+ * catalogue order — the mirror of {@link modesOfferingModel} for a model that
+ * has left. Internal: the exported entry points below all take a harness, so no
+ * caller has to decide what to do with a bare list.
+ */
+function modesRetiringModel(modelId: string): { serviceId: ServiceId; billingMode: BillingMode }[] {
+  const out: { serviceId: ServiceId; billingMode: BillingMode }[] = [];
+  for (const service of SERVICES) {
+    for (const mode of service.modes) {
+      if (mode.retired.some((r) => r.id === modelId)) {
+        out.push({ serviceId: service.id, billingMode: mode.kind });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The successor a session pinned to `selection` moves onto, or `undefined` when
+ * there is nothing to move it to: the selection's `(service, mode)` never
+ * retired that id, or `harnessId` speaks none of the styles the retired model
+ * was declared under.
+ *
+ * The style is resolved by the same rule as {@link resolveStyle} — the first of
+ * the harness's styles the model declares — except that it reads the *record's*
+ * styles, because the model itself is gone from `models` and its styles went
+ * with it. That is the whole reason `RetiredModel` carries them.
+ *
+ * `undefined` for a still-current model falls out of the lookup: a mode may not
+ * hold one id as both current and retired (`catalogue.test.ts` enforces it), so
+ * a current selection is never found in `retired`.
+ *
+ * A retirement with no successor for this harness is a **catalogue mistake**,
+ * not a runtime case req 13 asks us to fall back from — falling back to the
+ * other mode is the silent shift onto metered billing req 12 refuses, and
+ * falling back to another service changes the credential the session needs. So
+ * this returns nothing and the caller leaves the session where it is, which is
+ * the state a catalogue fix repairs.
+ */
+export function retirementSuccessor(
+  harnessId: AgentId,
+  selection: ModelSelection,
+): ModelSelection | undefined {
+  const mode = getMode(selection.serviceId, selection.billingMode);
+  const retired = mode?.retired.find((r) => r.id === selection.modelId);
+  const harness = getHarness(harnessId);
+  if (!mode || !retired || !harness) return undefined;
+  const style = harness.styles.find((s) => retired.styles.includes(s));
+  if (!style) return undefined;
+  const successorId = retired.successors[style];
+  if (!successorId) return undefined;
+  // Defence in depth. `catalogue.test.ts` already asserts that every successor
+  // is a current model of the same mode declared under that style, so this can
+  // only fire on a row that shipped with the test disabled — in which case
+  // returning nothing beats returning a triple that names no row.
+  const successor = mode.models.find((m) => m.id === successorId);
+  if (!successor?.styles.includes(style)) return undefined;
+  return {
+    serviceId: selection.serviceId,
+    billingMode: selection.billingMode,
+    modelId: successorId,
+  };
+}
+
+/**
+ * The bare-id form, for a caller holding a model id and no service — a session
+ * row written before the triple existed, or the turn boundary inside a session
+ * container, which is handed a model id and nothing else.
+ *
+ * Candidate `(service, mode)` pairs are tried in catalogue order, biased by
+ * `preferredServiceId` exactly as {@link resolveModelSelection} biases a current
+ * id, and the first that yields a successor for this harness wins. Iterating
+ * rather than committing to the first candidate matters because two modes of one
+ * service can retire the same id while only one of them declares it under a
+ * style this harness speaks.
+ */
+export function resolveRetiredModelId(
+  harnessId: AgentId,
+  modelId: string | undefined,
+  preferredServiceId?: string,
+): ModelSelection | undefined {
+  if (!modelId) return undefined;
+  const candidates = modesRetiringModel(modelId);
+  const ordered = preferredServiceId
+    ? [
+        ...candidates.filter((c) => c.serviceId === preferredServiceId),
+        ...candidates.filter((c) => c.serviceId !== preferredServiceId),
+      ]
+    : candidates;
+  for (const candidate of ordered) {
+    const successor = retirementSuccessor(harnessId, { ...candidate, modelId });
+    if (successor) return successor;
+  }
+  return undefined;
+}
+
+/**
+ * The model id `harnessId` should actually run for `modelId` — the successor
+ * when the id has been retired, and `modelId` itself otherwise.
+ *
+ * This is the generalization of the old `normalizeCodexModelId` shim, which
+ * hard-coded one service, one style and one harness. Keep it at a boundary that
+ * has no session to write through to; anywhere a session IS in hand, resolve
+ * through `applyModelRetirement` instead so the picker and the attribution agree
+ * with what is running (req 11).
+ */
+export function effectiveModelIdForHarness(
+  harnessId: AgentId,
+  modelId: string | undefined,
+): string | undefined {
+  if (!modelId) return modelId;
+  return (
+    resolveRetiredModelId(harnessId, modelId, nativeServiceForHarness(harnessId))?.modelId ??
+    modelId
+  );
+}
+
 /** Whether two selections name the same catalogue row. */
 export function sameSelection(a: ModelSelection | undefined, b: ModelSelection | undefined): boolean {
   if (!a || !b) return a === b;

@@ -10,11 +10,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { EventEmitter } from "node:events";
 import type { AgentId, AgentCapabilities } from "./types/agent-types.js";
-import {
-  HARNESSES,
-  getService,
-  nativeModelIdsForHarness,
-} from "./catalogue/index.js";
+import { HARNESSES, nativeModelIdsForHarness } from "./catalogue/index.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -49,26 +45,12 @@ export const CLAUDE_MODELS = nativeModelIdsForHarness("claude");
 /** See {@link CLAUDE_MODELS} — derived from the `openai` service's rows. */
 export const CODEX_MODELS = nativeModelIdsForHarness("codex");
 
-/**
- * Compatibility shim for rows/session state written before ShipIt stopped
- * surfacing the invalid unsuffixed GPT-5.6 slug. Keep this at the boundary
- * before Codex turns so legacy sessions run the intended Sol model.
- *
- * docs/252 phase 1 — the mapping itself now comes from the catalogue's
- * `retired` record for the `openai` service rather than from a literal here, so
- * the two cannot drift. Behaviour is unchanged; **generalizing this into the
- * per-service retirement resolver req 13 describes is phase 8**, which is why
- * this still takes and returns a bare model id and still only speaks for Codex.
- */
-export function normalizeCodexModelId(model: string | undefined): string | undefined {
-  if (!model) return model;
-  for (const mode of getService("openai")?.modes ?? []) {
-    const retired = mode.retired.find((r) => r.id === model);
-    const successor = retired?.successors["openai-responses"];
-    if (successor) return successor;
-  }
-  return model;
-}
+// docs/252 phase 8 — `normalizeCodexModelId` lived here: a shim that mapped the
+// retired unsuffixed GPT-5.6 slug onto Sol for one service, one style and one
+// harness. It is now `effectiveModelIdForHarness` in `catalogue/index.ts`, which
+// resolves every retirement the catalogue declares for any harness, and
+// `applyModelRetirement` (orchestrator), which additionally persists the
+// successor onto the session so the picker agrees with what is running (req 13).
 
 export interface AgentInfo {
   id: AgentId;

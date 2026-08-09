@@ -617,6 +617,39 @@ resolved where the session's model is read, generalizing the existing
 `normalizeCodexModelId` shim. Small, but it is what lets curation happen without stranding
 sessions, so it should land before the catalogue is trimmed in anger.
 
+**Phase 8 has landed.** The resolver is `retirementSuccessor` / `resolveRetiredModelId` /
+`effectiveModelIdForHarness` in `catalogue/index.ts` (pure catalogue lookups) plus
+`applyModelRetirement` in `orchestrator/model-retirement.ts`, which resolves a session and
+**persists** the successor. The `RetiredModel` rows and their authoring-time invariants came
+with phase 1, so this phase added no catalogue shape; what it added is the resolution and its
+call sites. `normalizeCodexModelId` is **deleted** rather than left beside the new mechanism:
+the container's Codex turn boundary now calls `effectiveModelIdForHarness`, which is the same
+shim generalized off its one hard-coded service, style and harness.
+
+Where it resolves, and why each site:
+
+- **WS connect** (`route-registry.ts`) — before the connect-time self-heal, which otherwise
+  sees an id no harness lists and drops the session onto `models[0]`: a model the user never
+  chose, re-resolved onto whichever mode sorts first. The integration guard uses exactly that
+  difference — a session on `(openai, key, gpt-5.6)` must come back on the **key** mode, since
+  the self-heal would silently move it to `sub`.
+- **The system-turn reader** (`runner-registry-factory.ts`, both `getSelectedModel` closures)
+  — a Fix-CI, child-session or dispatched turn never connects a WebSocket. Resolved at the
+  *source* rather than inside `buildAgentRunParams` because that same reader feeds usage
+  attribution, so normalizing later would record a turn against a model that never ran it
+  (req 11).
+- **Sub-agent defaults** (`credential-store.ts`) — the third persisted selection phase 1
+  flagged. Not literally "the session's model", but it strands identically: the spawn would
+  forward an id the CLI can no longer run. `agentId` there *is* the harness, which is what
+  makes the successor check well-defined.
+
+**Two things deliberately not resolved.** The browser's `vibe-model-id` slot seeds a *new*
+session rather than pinning an existing one, and a seed the catalogue cannot place already
+degrades to req 9's first-eligible default — a default, not a stranding — and the reader has
+no harness to check a successor against. And a retirement with no successor for the session's
+harness leaves the row **untouched**: that is a catalogue mistake to fix (req 13), and moving
+the session somewhere arbitrary would hide it.
+
 **Phase 9 — Harness install selection.** Which harnesses a deployment installs becomes a
 build input, defaulting to Claude Code and Codex. This supersedes the never-implemented
 sketch in `docs/154-cursor-agent-adapter`, which proposed the same mechanism
@@ -1345,12 +1378,13 @@ metered billing req 12 exists to refuse. Two services retiring the same model id
 different successors is still handled — each states its own successor in its own row, and
 now each mode does too.
 
-There is precedent to copy rather than a mechanism to invent: `normalizeCodexModelId`
-(`agent-registry.ts:141`) already does exactly this for one model, mapping the retired
+There was precedent to copy rather than a mechanism to invent: `normalizeCodexModelId`
+(then at `agent-registry.ts:141`) already did exactly this for one model, mapping the retired
 `gpt-5.6` slug onto `gpt-5.6-sol` "at the boundary before Codex turns so legacy sessions
 run the intended Sol model". Req 13 generalizes that one-off shim from a hardcoded
 per-`AgentId` special case into a per-service catalogue field resolved at the same
-boundary.
+boundary — and phase 8 **subsumed** it: the shim is gone, and the boundary calls
+`effectiveModelIdForHarness`, so there is one mechanism rather than two.
 
 **The remap writes through to the session's stored selection; it is not a read-time
 normalization.** The precedent this generalizes, `normalizeCodexModelId`, rewrites the model

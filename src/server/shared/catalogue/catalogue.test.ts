@@ -22,9 +22,12 @@ import {
   modesOfferingModel,
   nativeModelIdsForHarness,
   parseSelection,
+  effectiveModelIdForHarness,
   resolveEndpoint,
   resolveModelSelection,
+  resolveRetiredModelId,
   resolveStyle,
+  retirementSuccessor,
   sameCredentialOwner,
   sameSelection,
   selectionExists,
@@ -202,6 +205,117 @@ describe("retirement records keep a session able to take a turn (req 13)", () =>
         }
       }
     }
+  });
+});
+
+describe("resolving a retired model (req 13, phase 8)", () => {
+  // The shipped catalogue declares exactly one retirement, `gpt-5.6 →
+  // gpt-5.6-sol` under both OpenAI modes. It is the worked example throughout;
+  // the invariant tests above are what keep any future row resolvable.
+  const RETIRED: ModelSelection = { serviceId: "openai", billingMode: "sub", modelId: "gpt-5.6" };
+
+  it("moves a pinned selection onto the successor of its OWN service and mode", () => {
+    expect(retirementSuccessor("codex", RETIRED)).toEqual({
+      serviceId: "openai",
+      billingMode: "sub",
+      modelId: "gpt-5.6-sol",
+    });
+    // Same id under the key mode resolves through the key mode's own record —
+    // which is why the map is keyed per mode and not per service: the two are
+    // free to name different successors, and neither may answer for the other.
+    expect(retirementSuccessor("codex", { ...RETIRED, billingMode: "key" })).toEqual({
+      serviceId: "openai",
+      billingMode: "key",
+      modelId: "gpt-5.6-sol",
+    });
+  });
+
+  it("never crosses the service or the billing mode", () => {
+    for (const harness of HARNESSES) {
+      for (const service of CATALOGUE) {
+        for (const mode of service.modes) {
+          for (const retired of mode.retired) {
+            const successor = retirementSuccessor(harness.id, {
+              serviceId: service.id,
+              billingMode: mode.kind,
+              modelId: retired.id,
+            });
+            if (!successor) continue;
+            expect(successor.serviceId, `${service.id}/${mode.kind}`).toBe(service.id);
+            expect(successor.billingMode, `${service.id}/${mode.kind}`).toBe(mode.kind);
+          }
+        }
+      }
+    }
+  });
+
+  it("only ever lands on a model the harness can actually run", () => {
+    // The third axis, and the one two earlier drafts of req 13 missed. Stated
+    // over every harness × every declared retirement rather than over the one
+    // row that exists today, so a future retirement declared under a style no
+    // shipped harness speaks cannot pass by being unreachable.
+    for (const harness of HARNESSES) {
+      for (const service of CATALOGUE) {
+        for (const mode of service.modes) {
+          for (const retired of mode.retired) {
+            const successor = retirementSuccessor(harness.id, {
+              serviceId: service.id,
+              billingMode: mode.kind,
+              modelId: retired.id,
+            });
+            if (!successor) continue;
+            const model = getModel(successor);
+            expect(model, `${harness.id}: ${successor.modelId}`).toBeDefined();
+            expect(
+              resolveStyle(harness.id, model!),
+              `${harness.id} cannot speak to successor ${successor.modelId}`,
+            ).toBeDefined();
+          }
+        }
+      }
+    }
+  });
+
+  it("offers nothing to a harness that speaks none of the retired model's styles", () => {
+    // Claude Code speaks `anthropic-messages`; OpenAI's retirement is declared
+    // under `openai-responses`. Stranding a session there would be worse than
+    // saying nothing, so the answer is nothing — and the caller leaves the
+    // session where it is rather than moving it somewhere arbitrary.
+    expect(retirementSuccessor("claude", RETIRED)).toBeUndefined();
+  });
+
+  it("says nothing about a model that is still current, or that never existed", () => {
+    expect(
+      retirementSuccessor("codex", { ...RETIRED, modelId: "gpt-5.6-sol" }),
+    ).toBeUndefined();
+    expect(retirementSuccessor("codex", { ...RETIRED, modelId: "nope" })).toBeUndefined();
+    expect(
+      retirementSuccessor("codex", { ...RETIRED, serviceId: "nope" }),
+    ).toBeUndefined();
+  });
+
+  it("resolves a BARE retired id for a caller that has no service", () => {
+    // The session-container turn boundary and any row written before the triple
+    // existed. The vendor bias is the frozen fact for a legacy id: before this
+    // feature a harness could reach nothing but its own vendor.
+    expect(resolveRetiredModelId("codex", "gpt-5.6", "openai")).toEqual({
+      serviceId: "openai",
+      billingMode: "sub",
+      modelId: "gpt-5.6-sol",
+    });
+    expect(resolveRetiredModelId("claude", "gpt-5.6", "openai")).toBeUndefined();
+    expect(resolveRetiredModelId("codex", undefined)).toBeUndefined();
+  });
+
+  it("passes a current or unknown id through untouched at the boundary", () => {
+    // `effectiveModelIdForHarness` replaces the old `normalizeCodexModelId`
+    // shim, so it must keep that shim's contract exactly: undefined in,
+    // undefined out; anything it cannot place is returned as it arrived.
+    expect(effectiveModelIdForHarness("codex", "gpt-5.6")).toBe("gpt-5.6-sol");
+    expect(effectiveModelIdForHarness("codex", "gpt-5.4")).toBe("gpt-5.4");
+    expect(effectiveModelIdForHarness("codex", "claude-opus-5")).toBe("claude-opus-5");
+    expect(effectiveModelIdForHarness("codex", undefined)).toBeUndefined();
+    expect(effectiveModelIdForHarness("claude", "gpt-5.6")).toBe("gpt-5.6");
   });
 });
 

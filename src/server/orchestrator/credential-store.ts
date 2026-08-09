@@ -12,7 +12,12 @@ import { DEFAULT_SELECTION_MODE } from "../shared/types.js";
 import { DEFAULT_FAILOVER_CUTOFF } from "../shared/types.js";
 import type { VoiceDeliveryMode } from "../shared/types/voice-note-types.js";
 import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js";
-import { nativeServiceForHarness, resolveModelSelection } from "../shared/catalogue/index.js";
+import {
+  nativeServiceForHarness,
+  resolveModelSelection,
+  resolveRetiredModelId,
+  retirementSuccessor,
+} from "../shared/catalogue/index.js";
 
 /**
  * docs/170 — the Linear **credential**, and nothing that identifies a
@@ -744,14 +749,60 @@ export class CredentialStore {
 
   // ---- Sub-agent defaults (docs/217) ----
 
-  /** Read the per-agent sub-agent defaults (empty object when unset). */
+  /**
+   * Read the per-agent sub-agent defaults (empty object when unset).
+   *
+   * docs/252 phase 8 — a sub-agent default is the third persisted model
+   * selection, and it strands on a retired model exactly as a session does: the
+   * spawn would forward an id the CLI can no longer run. It resolves here, at
+   * the read, because `agentId` IS the harness the sub-agent spawns — which is
+   * what req 13 requires a successor to be runnable on — and the successor is
+   * written back so Settings shows what will actually run rather than the id it
+   * moved off. A default on a current model writes nothing.
+   */
   getAgentSubAgentDefaults(agentId: string): SubAgentDefaults {
-    return this.data.agentSubAgentDefaults?.[agentId] ?? {};
+    const defaults = this.data.agentSubAgentDefaults?.[agentId] ?? {};
+    if (!defaults.model) return defaults;
+    const successor =
+      defaults.serviceId && defaults.billingMode
+        ? retirementSuccessor(agentId as AgentId, {
+            serviceId: defaults.serviceId,
+            billingMode: defaults.billingMode,
+            modelId: defaults.model,
+          })
+        : resolveRetiredModelId(
+            agentId as AgentId,
+            defaults.model,
+            nativeServiceForHarness(agentId as AgentId),
+          );
+    if (!successor) return defaults;
+    const moved: SubAgentDefaults = {
+      ...defaults,
+      model: successor.modelId,
+      serviceId: successor.serviceId,
+      billingMode: successor.billingMode,
+    };
+    this.data.agentSubAgentDefaults = {
+      ...(this.data.agentSubAgentDefaults ?? {}),
+      [agentId]: moved,
+    };
+    this.save();
+    return moved;
   }
 
-  /** Read the full per-agent sub-agent-defaults map (for the settings payload). */
+  /**
+   * Read the full per-agent sub-agent-defaults map (for the settings payload).
+   *
+   * Goes through the per-agent getter so the payload carries the same resolved
+   * value the spawn will use — a Settings tab showing an id that has been
+   * retired out from under it is the display half of the same bug.
+   */
   getAllAgentSubAgentDefaults(): Record<string, SubAgentDefaults> {
-    return { ...(this.data.agentSubAgentDefaults ?? {}) };
+    const out: Record<string, SubAgentDefaults> = {};
+    for (const agentId of Object.keys(this.data.agentSubAgentDefaults ?? {})) {
+      out[agentId] = this.getAgentSubAgentDefaults(agentId);
+    }
+    return out;
   }
 
   /**

@@ -172,6 +172,7 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
   let lastCodex: FakeCodexProcess = null as any;
   let savedOpenAIKey: string | undefined;
   let dbManager: DatabaseManager;
+  let sessions: SessionManager;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -181,6 +182,7 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-codex-agent-"));
 
     const sessionManager = new SessionManager(dbManager);
+    sessions = sessionManager;
     const chatHistoryManager = new ChatHistoryManager(dbManager);
     const registry = await makeRegistry();
 
@@ -272,6 +274,43 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
     const claude = await waitForClaude(() => lastClaude);
     expect(claude.runCalled).toBe(true);
     expect(lastCodex).toBeNull();
+
+    client.close();
+  });
+
+  it("carries a session pinned to a RETIRED model onto its successor (docs/252 req 13)", async () => {
+    // The catalogue drops models on purpose (req 6), and a session already
+    // pinned to one must keep working. `gpt-5.6` is the retirement the shipped
+    // catalogue declares; a row holding it is what a session written before the
+    // removal looks like.
+    //
+    // The discriminator is the BILLING MODE, not the model id. Without the
+    // retirement resolver the connect-time self-heal drops the session onto the
+    // harness's first model and re-resolves its service — landing on OpenAI's
+    // `sub` mode, i.e. silently moving a metered session onto a subscription.
+    // Resolving through the retirement record holds the mode fixed, which is
+    // the whole point of keying the record per `(service, billing mode)`.
+    sessions.track("s-retired");
+    sessions.setAgentId("s-retired", "codex" as AgentId);
+    sessions.setAgentPinned("s-retired");
+    sessions.setModelSelection("s-retired", {
+      serviceId: "openai",
+      billingMode: "key",
+      modelId: "gpt-5.6",
+    });
+
+    const client = await TestClient.connect(port, "s-retired");
+    await client.receive(); // preview_status
+
+    const session = sessions.get("s-retired");
+    expect(session?.model).toBe("gpt-5.6-sol");
+    expect(session?.serviceId).toBe("openai");
+    expect(session?.billingMode).toBe("key");
+
+    // …and the turn actually runs on the successor, not on the retired id.
+    client.send({ type: "send_message", text: "Hello" });
+    const codex = await waitForCodex(() => lastCodex);
+    expect(codex.lastParams?.model).toBe("gpt-5.6-sol");
 
     client.close();
   });
