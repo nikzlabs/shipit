@@ -115,7 +115,13 @@ table — a phase is checked off when its PR has merged.
       dismiss endpoint, history round-trip test
 - [x] Settings → Services → **Background work**: the visible setting, with the derived
       default labelled and the derived harness shown as a fact rather than a control
-- [ ] Cross-backend review, findings applied
+- [x] Cross-backend review — nine findings, eight fixed (see `plan.md`)
+- [ ] **Codex-harness non-turn work spends money and records no usage row.** `codex exec`
+      reports no telemetry through the orchestrator's shell-out, and an all-zero row priced
+      from the catalogue's rates would assert "this was free" — a wrong number rather than a
+      missing one. Closing it means either measuring `codex exec --json`'s event stream
+      (unverified here) or narrowing req 16's label. **Phase 6** owns the usage view and the
+      decision.
 
 ## Phases 4 and 6
 

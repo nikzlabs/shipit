@@ -1076,7 +1076,9 @@ Services grew a **Background work** row (`BackgroundWorkSection.tsx`).
   through this path, and an all-zero row priced through the catalogue's rates says "this was
   free", which is a *wrong* number rather than a missing one — the exact trap
   `turn-attribution.ts`'s docstring is written around. The honest gap is logged instead. This
-  narrows the phase's "record it" answer: naming on Codex is recorded as nothing, not as $0.
+  narrows the phase's "record it" answer: naming on Codex is recorded as nothing, not as $0 —
+  a real gap the cross-backend review flagged, carried as a phase-6 checklist item rather than
+  closed with a number nobody can stand behind.
 - **The notice needs two failure shapes, and only one of them names a service.** A pin the
   install can no longer run names the service that went away; an install with **no** eligible
   model anywhere names nothing, because no service failed — a notice there would fire on every
@@ -1093,6 +1095,62 @@ Services grew a **Background work** row (`BackgroundWorkSection.tsx`).
   container is up. Where it does not, the generator raises the notice and returns empty rather
   than starting a container as a side effect of formatting prose. Stated because it is a
   narrowing of "this is the ordinary activation path".
+
+**What the cross-backend review changed.** Codex reviewed the branch under CLAUDE.md's rule and
+returned nine findings; all nine held up on checking, and eight are fixed here. Three are worth
+reading as a group, because they are the same mistake in three places: **a guard, a helper and a
+window that each belonged to the turn path were not carried across to the non-turn one.**
+
+- **The retirement path was dead before it ran.** `getNonTurnModel` filtered the stored pin
+  through `selectionExists`, and a retired model is in `mode.retired` rather than `mode.models` —
+  so the pin read as *unset*, the derived default silently took over, and `resolveNonTurnModel`'s
+  successor lookup was unreachable. A retirement therefore discarded the user's choice instead of
+  following it through, which is the opposite of what req 13 promises. The store now accepts a
+  pin that names a retired row too; deciding what to *run* stays the resolver's job. The unit
+  test that "passed" was testing the resolver with a fake store, which is exactly how a dead
+  production path survives a green suite.
+- **The credential window was missing entirely.** `runSubAgent` provisions the spawned harness's
+  credential subtree, syncs the token back and wipes it; the non-turn spawn did none of that.
+  Non-turn work is chosen *independently of the session*, so its harness and its account are
+  routinely not the ones the session's container holds — and Anthropic's subscription is the
+  **first catalogue row**, so an account-backed background model is the default install rather
+  than a corner. The full `provision → spawn → sync-back → wipe → restore-the-session's-account`
+  cycle is now here too.
+- **Naming inherited the orchestrator's own environment credentials.** It copies `process.env`,
+  and an account-delivered selection has no `ServiceRouting` to shape, so nothing cleared an
+  ambient `ANTHROPIC_API_KEY` — which both CLIs prefer over the login on disk. The dogfood `dev`
+  service sets one. Phase 3 fixed exactly this for turns; `scrubHarnessEnvCredentials`
+  (`shared/spawn-routing.ts`) is the same rule for the orchestrator's own shell-out. Phase 7 made
+  it sharper than it was, because the run is now *attributed* to the selected mode — so the
+  mismatch became a wrong record and not just a wrong bill.
+
+Three more were real and are fixed: the secret was re-derived by walking storage order while
+routing picks by priority, so a naming run could authenticate with a different credential from
+the route its usage row named (it now comes from the resolved route); dismissal patched only the
+database, so a notice dismissed while its turn was still running was rebuilt away by that turn's
+finalize (`persistCardTransition` now, the same fix docs/164, docs/177 and docs/193 each needed);
+and the direct `POST /pr/description` endpoint still returned the empty string for a blank
+generation, which is the exact behaviour req 9 calls a change.
+
+Two were client-side and are fixed: a pin the install can no longer run was absent from the
+select's options, so the control read as *the default* while the server still held and failed the
+hidden pin — it now renders as unavailable, with the warning beside it; and the card's dismissed
+flag was seeded into `useState` at mount, so a dismissal arriving from another attached viewer
+left that copy expanded until a remount.
+
+**One finding is recorded rather than fixed, and it is a real gap.** `recordNonTurnUsage` writes
+nothing when the harness reported no telemetry — and `codex exec` reports none through this path,
+so **naming on a metered OpenAI key spends money and records no row**. The reviewer is right that
+this collides with req 16's split reading as exhaustive. It is not fixed here because both
+available answers are wrong in different directions: an all-zero row priced through the
+catalogue's rates asserts "this was free", which is a *wrong* number rather than a missing one,
+and the only way to get Codex's real figures is to parse `codex exec --json`'s event stream —
+whose shape could not be verified in this environment, and shipping an unverified parser in front
+of session naming risks breaking naming outright on every Codex install to fix a metric. The
+honest status is that **phase 7 records Claude-harness non-turn work and not Codex-harness
+non-turn work**; closing it is a checklist item against phase 6, which owns the usage view and can
+either carry the measurement or narrow the label ("this covers agent turns", the plan's own
+second option above).
 
 **One shape carried over from the sub-agent path deliberately.** The usage row is written with
 `subAgentId` set to the **derived harness**. It is what the row is — a one-shot spawn of that

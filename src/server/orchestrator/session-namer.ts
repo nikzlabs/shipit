@@ -2,7 +2,11 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import type { AgentId, ServiceRouting } from "../shared/types.js";
 import { isHarnessInstalled } from "../shared/installed-harnesses.js";
-import { applyServiceRouting, codexProviderArgs } from "../shared/spawn-routing.js";
+import {
+  applyServiceRouting,
+  codexProviderArgs,
+  scrubHarnessEnvCredentials,
+} from "../shared/spawn-routing.js";
 import { ensureCodexHomeInitialized } from "./agents/codex/home-init.js";
 
 export interface SessionName {
@@ -281,6 +285,14 @@ function callCli(
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v;
     env.HOME = credentialRoot ?? process.env.HOME ?? "/root";
+    // docs/150 / docs/252 — a run scoped to a provider-account root must not
+    // inherit the orchestrator's own environment credentials: both CLIs prefer
+    // the variable over the login on disk, so a host that has one configured
+    // (the dogfood `dev` service does) would bill metered API usage while this
+    // run is attributed to the selected subscription. The adapters already scrub
+    // at their spawn sites; this is the same rule where the orchestrator builds
+    // the environment itself. Found by cross-backend review.
+    if (credentialRoot) scrubHarnessEnvCredentials(env, harnessId);
     if (serviceRouting) {
       // The secret has to be in the environment under its STORAGE name before
       // shaping runs — that is the variable `applyServiceRouting` reads from and

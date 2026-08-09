@@ -141,4 +141,22 @@ describe("BackgroundWorkSection", () => {
     expect(body.nonTurnModel).toBeNull();
     vi.unstubAllGlobals();
   });
+
+  // Cross-backend review: a pin the install can no longer run is not among the
+  // eligible choices, so the select fell back to "" and read as the DEFAULT —
+  // while the server still held the pin and failed it on every session. The two
+  // have to agree, and the honest way is to show the pin as unavailable.
+  it("shows a stale pin as unavailable instead of silently reading as the default", () => {
+    useSettingsStore.getState().setNonTurnModel(
+      { serviceId: "openai", billingMode: "key", modelId: "gpt-5.4-mini" },
+      null,
+    );
+
+    render(<BackgroundWorkSection agentList={agents} />);
+
+    const select = screen.getByTestId("background-work-model") as HTMLSelectElement;
+    expect(select.value).toBe("openai|key|gpt-5.4-mini");
+    expect(screen.getByTestId("background-work-stale-pin").textContent).toContain("unavailable");
+    expect(screen.getByText(/no longer available/)).toBeTruthy();
+  });
 });

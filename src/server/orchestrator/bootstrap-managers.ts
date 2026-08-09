@@ -256,6 +256,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     getRunnerRegistry: () => registryHolder.ref ?? undefined,
     chatHistoryManager,
     usageManager,
+    // The credential window a background spawn needs: its harness and account
+    // are chosen independently of the session, so they are routinely not the
+    // ones the session's container already holds.
+    ...(credentialsDir ? { credentialsDir } : {}),
+    sessionManager,
     // A call with no session is not non-turn *work* — it is the post-interrupt
     // commit message, which has no session to attribute to and no notice to
     // raise. It keeps app-di's generator, which is the in-process agent in local

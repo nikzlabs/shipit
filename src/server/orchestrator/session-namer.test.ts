@@ -432,4 +432,63 @@ describe("generateSessionName", () => {
 
     expect(result.name).toEqual({ slug: "bare", title: "Bare" });
   });
+
+  // docs/150 / docs/252 — a run scoped to a provider-account root must not
+  // inherit the orchestrator's own environment credentials: both CLIs prefer
+  // the variable over the login on disk, so the dogfood host (which has one
+  // configured) would bill metered API usage while this run is attributed to
+  // the selected subscription. Found by cross-backend review.
+  it("drops the orchestrator's ambient credentials for an account-scoped run", async () => {
+    let seenEnv: Record<string, string> = {};
+    vi.doMock("node:child_process", () => ({
+      execFile: (
+        _file: string,
+        _args: string[],
+        opts: { env?: Record<string, string> },
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        seenEnv = opts.env ?? {};
+        setImmediate(() => cb(null, '{"slug": "s", "title": "T"}\n', ""));
+        return { on: () => {}, stdin: { end: () => {} } } as unknown;
+      },
+    }));
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ambient");
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "tok-ambient");
+
+    const mod = await import("./session-namer.js");
+    await mod.generateSessionName("hi", {
+      harnessId: "claude",
+      credentialRoot: "/credentials/provider-accounts/claude/acct_work",
+    });
+
+    expect(seenEnv.HOME).toBe("/credentials/provider-accounts/claude/acct_work");
+    expect(seenEnv.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(seenEnv.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    vi.unstubAllEnvs();
+  });
+
+  // The other half of that rule: a reserved env/API-key route resolves no
+  // account root and its variables ARE its auth, so they must survive.
+  it("keeps the environment credential when no account root applies", async () => {
+    let seenEnv: Record<string, string> = {};
+    vi.doMock("node:child_process", () => ({
+      execFile: (
+        _file: string,
+        _args: string[],
+        opts: { env?: Record<string, string> },
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        seenEnv = opts.env ?? {};
+        setImmediate(() => cb(null, '{"slug": "s", "title": "T"}\n', ""));
+        return { on: () => {}, stdin: { end: () => {} } } as unknown;
+      },
+    }));
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ambient");
+
+    const mod = await import("./session-namer.js");
+    await mod.generateSessionName("hi", { harnessId: "claude" });
+
+    expect(seenEnv.ANTHROPIC_API_KEY).toBe("sk-ambient");
+    vi.unstubAllEnvs();
+  });
 });

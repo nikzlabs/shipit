@@ -125,6 +125,14 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
     groups.set(key, group);
   }
 
+  // A pin the install can no longer run is NOT in `choices` — its credential or
+  // its harness went away. Without a row for it the select falls back to "" and
+  // silently reads as the default, while the server still holds the pin and
+  // fails it on every session. Showing it as unavailable is what makes the two
+  // agree; found by cross-backend review.
+  const pinnedKey = pinned ? encode(pinned) : "";
+  const pinnedIsStale = !!pinned && !choices.some((m) => encode(m) === pinnedKey);
+
   return (
     <div className="space-y-2" data-testid="background-work-section">
       <h3 className="text-sm font-medium text-(--color-text-primary)">Background work</h3>
@@ -144,7 +152,13 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
               {agentList.find((a) => a.id === resolved.harnessId)?.name ?? resolved.harnessId}
             </p>
           )}
-          {!resolved && (
+          {!resolved && pinnedIsStale && (
+            <p className="mt-1 text-[11px] text-(--color-warning)">
+              The model you chose is no longer available — its credential or its harness is
+              gone. Background work is failing until you pick another.
+            </p>
+          )}
+          {!resolved && !pinnedIsStale && (
             <p className="mt-1 text-[11px] text-(--color-text-tertiary)">
               Nothing to run it on yet — add a service credential above.
             </p>
@@ -158,6 +172,11 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
           aria-label="Model for background work"
         >
           <option value="">{defaultLabel}</option>
+          {pinnedIsStale && pinned && (
+            <option value={pinnedKey} data-testid="background-work-stale-pin">
+              {pinned.modelId} — unavailable on this install
+            </option>
+          )}
           {[...groups.entries()].map(([key, group]) => (
             <optgroup key={key} label={group.label}>
               {group.models.map((m) => (

@@ -62,10 +62,15 @@ export function NonTurnFailureCard({
   dismissedAt,
   onDismiss,
 }: NonTurnFailureCardProps) {
-  const [dismissed, setDismissed] = useState(!!dismissedAt);
+  // Local optimism ORed with the persisted stamp, never seeded from it. Seeding
+  // `useState` from a prop freezes the value at mount, so a dismissal arriving
+  // from another attached viewer (or from this session's own reload path) would
+  // leave the notice expanded until a remount. Cross-backend review found it.
+  const [dismissedHere, setDismissedHere] = useState(false);
+  const dismissed = dismissedHere || !!dismissedAt;
 
   const dismiss = () => {
-    setDismissed(true);
+    setDismissedHere(true);
     if (onDismiss) {
       onDismiss(cardId);
       return;

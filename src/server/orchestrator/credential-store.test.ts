@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -701,5 +701,79 @@ describe("CredentialStore", () => {
       new CredentialStore(dir, new SecretCipher(crypto.randomBytes(32)));
       expect(fs.statSync(file).mode & 0o777).toBe(0o600);
     });
+  });
+});
+
+/**
+ * docs/252 phase 7 (req 9 + req 13) — the non-turn pin.
+ *
+ * The store's job is only to say what the user chose; deciding what to RUN is
+ * `resolveNonTurnModel`'s. The distinction is load-bearing for a **retired**
+ * model: filtering it out here made req 13's read-time successor resolution
+ * unreachable, so a retirement silently discarded the user's choice instead of
+ * following it through. Found by cross-backend review.
+ */
+describe("CredentialStore — non-turn model (docs/252 phase 7)", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-nonturn-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("round-trips a pin and clears it with null", () => {
+    const store = new CredentialStore(dir);
+    expect(store.getNonTurnModel()).toBeUndefined();
+
+    store.setNonTurnModel({ serviceId: "anthropic", billingMode: "sub", modelId: "haiku" });
+    expect(store.getNonTurnModel()).toEqual({
+      serviceId: "anthropic",
+      billingMode: "sub",
+      modelId: "haiku",
+    });
+
+    store.setNonTurnModel(null);
+    expect(store.getNonTurnModel()).toBeUndefined();
+  });
+
+  it("refuses a triple the catalogue does not carry", () => {
+    const store = new CredentialStore(dir);
+    expect(() =>
+      store.setNonTurnModel({ serviceId: "anthropic", billingMode: "sub", modelId: "not-a-model" }),
+    ).toThrow();
+  });
+
+  // The read has to SURVIVE a retirement, because `resolveNonTurnModel` is where
+  // req 13's successor lookup lives. Reading it as unset would silently hand the
+  // user the derived default instead.
+  it("still reports a pin whose model has been retired", () => {
+    const store = new CredentialStore(dir);
+    store.setNonTurnModel({ serviceId: "openai", billingMode: "key", modelId: "gpt-5.4-mini" });
+    // Write a retired id straight into the file the store reads, since `set`
+    // (correctly) refuses one — this is the shape an install carries after a
+    // catalogue revision, not something the API can produce.
+    const file = path.join(dir, "shipit-credentials.json");
+    const data = JSON.parse(fs.readFileSync(file, "utf-8")) as Record<string, unknown>;
+    data.nonTurnModel = { serviceId: "openai", billingMode: "key", modelId: "gpt-5.6" };
+    fs.writeFileSync(file, JSON.stringify(data));
+
+    expect(new CredentialStore(dir).getNonTurnModel()).toEqual({
+      serviceId: "openai",
+      billingMode: "key",
+      modelId: "gpt-5.6",
+    });
+  });
+
+  it("reads a pin naming nothing at all as unset", () => {
+    const store = new CredentialStore(dir);
+    store.setNonTurnModel({ serviceId: "openai", billingMode: "key", modelId: "gpt-5.4-mini" });
+    const file = path.join(dir, "shipit-credentials.json");
+    const data = JSON.parse(fs.readFileSync(file, "utf-8")) as Record<string, unknown>;
+    data.nonTurnModel = { serviceId: "no-such-service", billingMode: "key", modelId: "nope" };
+    fs.writeFileSync(file, JSON.stringify(data));
+
+    expect(new CredentialStore(dir).getNonTurnModel()).toBeUndefined();
   });
 });

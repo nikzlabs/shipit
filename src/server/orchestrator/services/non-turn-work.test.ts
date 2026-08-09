@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import type { CredentialRoute, WsServerMessage } from "../../shared/types.js";
+import type { CredentialRoute, NonTurnFailureCard, WsServerMessage } from "../../shared/types.js";
 import type { PersistedMessage } from "../chat-history.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
 
@@ -250,6 +250,118 @@ describe("makeNonTurnGenerateText", () => {
   });
 });
 
+/**
+ * Cross-backend review found the credential window missing entirely. Non-turn
+ * work is chosen INDEPENDENTLY of the session, so its harness and its account
+ * are routinely not the ones the session's container holds — and Anthropic's
+ * subscription is the first catalogue row, so that is the default install
+ * rather than a corner.
+ */
+/**
+ * A runner that passes `instanceof ContainerSessionRunner` — the discriminator
+ * the credential window keys on — without constructing a real container.
+ *
+ * Own data properties rather than `Object.assign`, because the real class
+ * exposes most of this surface as accessors backed by collaborators a bare
+ * `Object.create` does not have; an own property shadows the prototype's
+ * accessor cleanly.
+ */
+function fakeContainerRunner(
+  ctor: new (...args: never[]) => unknown,
+  over: Record<string, unknown>,
+): unknown {
+  const runner = Object.create(ctor.prototype) as object;
+  const fields: Record<string, unknown> = {
+    emitMessage: () => {},
+    running: false,
+    chatMessageGroups: [],
+    recordedCards: [],
+    steeredMessages: [],
+    getTurnEventBuffer: () => [],
+    lastPersistedBufferIndex: 0,
+    ...over,
+  };
+  for (const [key, value] of Object.entries(fields)) {
+    Object.defineProperty(runner, key, { value, writable: true, configurable: true });
+  }
+  return runner;
+}
+
+describe("makeNonTurnGenerateText — credential window", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doMock("../../shared/installed-harnesses.js", () => ({
+      isHarnessInstalled: () => true,
+      readInstalledHarnesses: () => ["claude", "codex"],
+    }));
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock("../../shared/installed-harnesses.js");
+    vi.doUnmock("../session-credentials.js");
+  });
+
+  it("provisions the run's credentials before the spawn and wipes them after", async () => {
+    const calls: string[] = [];
+    vi.doMock("../session-credentials.js", () => ({
+      provisionSubAgentCredentials: () => calls.push("provision"),
+      removeSubAgentCredentials: () => calls.push("wipe"),
+      syncAgentTokenBack: () => calls.push("sync"),
+      syncProviderAccountTokenBack: () => calls.push("sync-account"),
+      provisionProviderAccountCredentials: () => calls.push("restore"),
+    }));
+    // The runner has to BE a ContainerSessionRunner for the window to open —
+    // local mode provisions nothing, by design (docs/138).
+    const { ContainerSessionRunner } = await import("../container-session-runner.js");
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const runner = fakeContainerRunner(ContainerSessionRunner, {
+      spawnSubAgent: async () => {
+        calls.push("spawn");
+        return OK_RESULT;
+      },
+    });
+    const { deps } = buildDeps({});
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      getRunnerRegistry: () => ({ get: () => runner }),
+      credentialsDir: "/credentials",
+      fallback: async () => "unused",
+    } as never);
+
+    await generate("prompt", "/ws", { sessionId: "s1", purpose: "pr-description" });
+
+    // Provision BEFORE the spawn, wipe AFTER — a background generation must not
+    // leave a credential behind in the session's container.
+    expect(calls).toEqual(["provision", "spawn", "sync", "wipe"]);
+  });
+
+  it("still wipes when the spawn throws", async () => {
+    const calls: string[] = [];
+    vi.doMock("../session-credentials.js", () => ({
+      provisionSubAgentCredentials: () => calls.push("provision"),
+      removeSubAgentCredentials: () => calls.push("wipe"),
+      syncAgentTokenBack: () => calls.push("sync"),
+      syncProviderAccountTokenBack: () => calls.push("sync-account"),
+      provisionProviderAccountCredentials: () => calls.push("restore"),
+    }));
+    const { ContainerSessionRunner } = await import("../container-session-runner.js");
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const runner = fakeContainerRunner(ContainerSessionRunner, {
+      spawnSubAgent: () => Promise.reject(new Error("worker gone")),
+    });
+    const { deps } = buildDeps({});
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      getRunnerRegistry: () => ({ get: () => runner }),
+      credentialsDir: "/credentials",
+      fallback: async () => "unused",
+    } as never);
+
+    expect(await generate("prompt", "/ws", { sessionId: "s1" })).toBe("");
+    expect(calls).toContain("wipe");
+  });
+});
+
 describe("dismissNonTurnFailure", () => {
   it("patches the persisted row and broadcasts rather than deleting it", async () => {
     const { dismissNonTurnFailure } = await import("./non-turn-work.js");
@@ -273,6 +385,62 @@ describe("dismissNonTurnFailure", () => {
     expect(patches[0].cardId).toBe("card-1");
     expect(patches[0].patch.dismissedAt).toBeTruthy();
     expect(emitted[0].type).toBe("non_turn_failure_dismissed");
+  });
+
+  // The clobber docs/164, docs/177 and docs/193 each hit: `recordedCards` is not
+  // cleared until the NEXT turn starts, so a database-only patch applied while
+  // the proposing turn is still running is rebuilt away when it finalizes, and
+  // the notice reappears on the next reload.
+  it("patches the recorded card, not just the row, while its turn is still running", async () => {
+    const { dismissNonTurnFailure } = await import("./non-turn-work.js");
+    const dbPatches: string[] = [];
+    const replaced: PersistedMessage[][] = [];
+    const runner = {
+      emitMessage: () => {},
+      running: true,
+      chatMessageGroups: [],
+      steeredMessages: [],
+      recordedCards: [
+        {
+          afterGroupIndex: 0,
+          message: {
+            role: "assistant" as const,
+            text: "",
+            nonTurnFailure: {
+              cardId: "card-1",
+              purpose: "session-naming",
+              fallback: "kept the placeholder",
+              createdAt: "2026-08-09T00:00:00.000Z",
+            } as NonTurnFailureCard,
+          },
+        },
+      ],
+      getTurnEventBuffer: () => [],
+      lastPersistedBufferIndex: 0,
+    };
+
+    const ok = dismissNonTurnFailure(
+      {
+        getRunnerRegistry: () => ({ get: () => runner }),
+        chatHistoryManager: {
+          replaceInProgress: (_s: string, ms: PersistedMessage[]) => replaced.push(ms),
+          updateNonTurnFailureCard: () => {
+            dbPatches.push("db");
+            return true;
+          },
+        },
+      } as never,
+      "s1",
+      "card-1",
+    );
+
+    expect(ok).toBe(true);
+    // The recorded card carries the dismissal, so the turn's own final persist
+    // writes it too rather than reverting it.
+    const patched = runner.recordedCards[0].message.nonTurnFailure as { dismissedAt?: string };
+    expect(patched.dismissedAt).toBeTruthy();
+    expect(replaced).toHaveLength(1);
+    expect(dbPatches).toHaveLength(0);
   });
 
   it("reports false for a card that is not in this session", async () => {

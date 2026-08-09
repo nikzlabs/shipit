@@ -23,6 +23,7 @@ import type { VoiceDeliveryMode } from "../shared/types/voice-note-types.js";
 import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js";
 import {
   allServices,
+  getMode,
   harnessForNativeService,
   modesOfferingModel,
   nativeServiceForHarness,
@@ -1195,7 +1196,18 @@ export class CredentialStore {
     // invariant forbids ("a stored selection either names a real catalogue row,
     // or carries no service and mode at all"). Reading it as unset degrades to
     // the derived default rather than to a triple nothing can resolve.
-    return selectionExists(stored) ? { ...stored } : undefined;
+    //
+    // A **retired** model is not that state. It named a real row when it was
+    // written and the catalogue still carries its retirement record, so req 13
+    // has a successor to move it to — and `resolveNonTurnModel` is where that
+    // resolution lives. Refusing it here made that whole path unreachable: the
+    // pin read as unset, the derived default silently took over, and the user's
+    // choice was discarded by a retirement rather than followed through it.
+    // Found by cross-backend review.
+    if (selectionExists(stored)) return { ...stored };
+    const retired = getMode(stored.serviceId, stored.billingMode)
+      ?.retired.some((r) => r.id === stored.modelId);
+    return retired ? { ...stored } : undefined;
   }
 
   /** Pin non-turn work to a selection, or clear the pin with `null`. */

@@ -444,7 +444,16 @@ export async function generatePrDescription(
     ...(sessionId ? { sessionId } : {}),
     purpose: "pr-description",
   });
-  return { description: description.trim() };
+  // docs/252 phase 7 (req 9) — the same normalization the conversation-aware
+  // path applies. Cross-backend review found this endpoint still returning the
+  // empty string, which is the exact behaviour the requirement calls a change:
+  // the user pressed "generate a description" and got nothing, with nothing
+  // saying why. The notice comes from the generator; the generic text comes
+  // from here.
+  const trimmed = description.trim();
+  if (trimmed) return { description: trimmed };
+  console.warn("[pr] Description generation returned nothing; using the generic fallback");
+  return { description: await basicPrDescription(git) };
 }
 
 /** One-click PR creation — push, generate description, create PR. */

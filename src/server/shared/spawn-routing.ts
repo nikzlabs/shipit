@@ -18,11 +18,41 @@
  * a naming turn ends up authenticating differently from the turn it names.
  */
 
-import type { ServiceRouting } from "./types.js";
+import type { AgentId, ServiceRouting } from "./types.js";
 import type { ApiStyle } from "./catalogue/types.js";
 
 /** Every Anthropic credential variable the CLI will read, in preference order. */
 const ANTHROPIC_CREDENTIAL_VARS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] as const;
+
+/** Every environment credential each harness's CLI prefers over its on-disk login. */
+const HARNESS_CREDENTIAL_VARS: Record<AgentId, readonly string[]> = {
+  claude: ANTHROPIC_CREDENTIAL_VARS,
+  codex: ["OPENAI_API_KEY"],
+};
+
+/**
+ * docs/150 / docs/252 — drop the environment credentials a CLI would prefer over
+ * the account login on disk, for a spawn scoped to a provider-account root.
+ *
+ * Pointing `HOME` at an account root is not enough on its own: both CLIs prefer
+ * their environment variable over the OAuth credentials on disk, so a host that
+ * has one configured — the dogfood `dev` service does, see `CLAUDE.md` — keeps
+ * billing metered API usage while the router believes the run is on the selected
+ * subscription. The adapters already do this at their own spawn sites
+ * (`scrubEnvAuthForScopedHome`, and Codex's `delete env.OPENAI_API_KEY`); this is
+ * the same rule for the **orchestrator's** own CLI shell-out, which builds its
+ * environment itself.
+ *
+ * Deliberately only when a scoped home applies: a run on a reserved env/API-key
+ * route resolves no account root and must keep exactly those variables — they
+ * are its auth.
+ */
+export function scrubHarnessEnvCredentials(env: Record<string, string>, harnessId: AgentId): void {
+  for (const name of HARNESS_CREDENTIAL_VARS[harnessId]) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- the key set is the module-level literal above, not caller input.
+    delete env[name];
+  }
+}
 
 /**
  * docs/252 phase 3 — point this spawn at the selected model's service.

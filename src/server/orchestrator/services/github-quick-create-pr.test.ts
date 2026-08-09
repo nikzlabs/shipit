@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { quickCreatePr } from "./github.js";
+import { generatePrDescription, quickCreatePr } from "./github.js";
 import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { ChatHistoryManager } from "../chat-history.js";
@@ -136,6 +136,42 @@ describe("quickCreatePr description fallback (docs/252 req 9)", () => {
       "s1", "Title", "/ws/s1", REMOTE,
     );
 
+    expect(generate).toHaveBeenCalledWith(
+      expect.any(String),
+      "/ws/s1",
+      { sessionId: "s1", purpose: "pr-description" },
+    );
+  });
+});
+
+/**
+ * docs/252 phase 7 (req 9) — the DIRECT "generate a description" endpoint
+ * (`POST /api/sessions/:id/pr/description`) needs the same normalization.
+ *
+ * Cross-backend review found it still returning the empty string: the user
+ * pressed the button and got nothing back, which is exactly the behaviour the
+ * requirement calls a change rather than one to preserve.
+ */
+describe("generatePrDescription fallback (docs/252 req 9)", () => {
+  it("returns the generic description when generation returns nothing", async () => {
+    const git = makeGit();
+    const { description } = await generatePrDescription(git, async () => "  ", "/ws/s1", "s1");
+    expect(description).toContain("## Summary");
+    expect(description).toContain("c1");
+  });
+
+  it("returns nothing at all when the branch has no commits to describe", async () => {
+    const git = makeGit({ log: vi.fn(async () => []) });
+    const { description } = await generatePrDescription(git, async () => "", "/ws/s1", "s1");
+    // No commits means there is nothing to summarize — the pre-existing
+    // short-circuit, unchanged.
+    expect(description).toBe("");
+  });
+
+  it("forwards the session id and purpose so the generation is routed and attributed", async () => {
+    const git = makeGit();
+    const generate = vi.fn(async () => "## Summary\nbody");
+    await generatePrDescription(git, generate, "/ws/s1", "s1");
     expect(generate).toHaveBeenCalledWith(
       expect.any(String),
       "/ws/s1",

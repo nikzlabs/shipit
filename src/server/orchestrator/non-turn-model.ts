@@ -218,7 +218,7 @@ export function resolveNonTurnModel(deps: NonTurnModelDeps): NonTurnResolution {
   const route = account.ok ? account.route : null;
   const serviceRouting = serviceRoutingForSelection(harnessId, selection, route);
   const secret = serviceRouting
-    ? secretFor(deps, selection, serviceRouting.credentialSourceEnv)
+    ? secretFor(deps, selection, serviceRouting.credentialSourceEnv, route)
     : undefined;
 
   return {
@@ -236,24 +236,27 @@ export function resolveNonTurnModel(deps: NonTurnModelDeps): NonTurnResolution {
 }
 
 /**
- * The secret behind this mode's string-delivered credential.
+ * The secret behind the credential this run **authenticates with**.
  *
- * Stored routes first, in the user's own order, then the deployment's
- * environment — the same two sources and the same precedence
- * `service-routing.ts` resolves a turn's route from, so a naming spawn cannot
- * authenticate with a different credential than the route it recorded.
+ * Keyed off the resolved `route`, not off the mode's credential list. A mode can
+ * hold several string credentials and `service-routing.ts` picks among them in
+ * the user's own priority order (`orderCredentialRoutes`); re-deriving the
+ * secret by walking storage order here could hand the CLI a *different*
+ * credential from the one the usage row attributes the run to. Cross-backend
+ * review found exactly that. The route is the answer; this only fetches it.
+ *
+ * Falls back to the deployment's environment for an env-delivered route, which
+ * is the other source `service-routing.ts` resolves from.
  */
 function secretFor(
   deps: NonTurnModelDeps,
   selection: ModelSelection,
   sourceEnv: string,
+  route: ProviderRoute | null,
 ): string | undefined {
-  const stored = deps.credentialStore
-    .listCredentialRoutes(selection.serviceId, selection.billingMode)
-    .filter((route) => route.via === "string");
-  for (const route of stored) {
-    const secret = deps.credentialStore.getCredentialSecret(route.id);
-    if (secret) return secret;
+  if (route?.kind === "reserved") {
+    const stored = deps.credentialStore.getCredentialSecret(route.id);
+    if (stored) return stored;
   }
   const storageEnv = storageEnvFor(selection.serviceId, selection.billingMode);
   if (storageEnv !== sourceEnv) return undefined;

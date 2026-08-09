@@ -66,11 +66,24 @@ import type { NonTurnFailureCard } from "../../shared/types.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { UsageManager } from "../usage.js";
 import type { CredentialStore } from "../credential-store.js";
+import type { SessionManager } from "../sessions.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { PersistedMessage } from "../chat-history.js";
-import { emitChatCard, type InProgressPersister } from "../chat-card-persistence.js";
+import {
+  emitChatCard,
+  persistCardTransition,
+  type InProgressPersister,
+} from "../chat-card-persistence.js";
 import { resolveTurnCost, turnAttributionFor } from "../turn-attribution.js";
 import { getErrorMessage } from "../validation.js";
+import { ContainerSessionRunner } from "../container-session-runner.js";
+import {
+  provisionProviderAccountCredentials,
+  provisionSubAgentCredentials,
+  removeSubAgentCredentials,
+  syncAgentTokenBack,
+  syncProviderAccountTokenBack,
+} from "../session-credentials.js";
 import {
   resolveNonTurnModel,
   type GenerateText,
@@ -110,6 +123,24 @@ export interface NonTurnWorkDeps {
   getRunnerRegistry: () => SessionRunnerRegistry | undefined;
   chatHistoryManager: NonTurnFailurePersister;
   usageManager?: UsageManager | undefined;
+  /**
+   * Source-of-truth credentials root (`/credentials`). Omitted in local mode and
+   * in tests, where credential provisioning is a no-op (docs/138).
+   *
+   * Required for the case cross-backend review found: non-turn work is chosen
+   * **independently of the session**, so its derived harness is routinely not
+   * the session's, and its account is routinely not the one the session's
+   * container holds. Without provisioning, an account-backed background model
+   * spawns against missing or stale credentials — and Anthropic's subscription
+   * is the FIRST catalogue row, so that is the default install rather than a
+   * corner.
+   */
+  credentialsDir?: string | undefined;
+  /**
+   * The session's own pinned account, so a same-harness spawn can put it back
+   * after borrowing the subtree. Mirrors `runSubAgent`'s restore step.
+   */
+  sessionManager?: Pick<SessionManager, "get"> | undefined;
 }
 
 /** What a harness reported back about a non-turn run, when it reported anything. */
@@ -270,6 +301,14 @@ export function emitNonTurnFailure(
 /**
  * Mark a notice dismissed. Patches the persisted row and broadcasts, so a second
  * attached viewer stops showing it too. Returns false when no such card exists.
+ *
+ * Through `persistCardTransition`, never a bare `updateNonTurnFailureCard`. The
+ * card can be recorded on a RUNNING turn — naming finishes inside the session's
+ * first turn more often than not — and `recordedCards` is not cleared until the
+ * next turn starts, so a database-only patch is rebuilt away when that turn
+ * finalizes and the notice reappears on the next reload. That is the recurring
+ * clobber docs/164, docs/177 and docs/193 each hit; cross-backend review caught
+ * this one before it shipped.
  */
 export function dismissNonTurnFailure(
   deps: Pick<NonTurnWorkDeps, "getRunnerRegistry" | "chatHistoryManager">,
@@ -277,14 +316,25 @@ export function dismissNonTurnFailure(
   cardId: string,
 ): boolean {
   const dismissedAt = new Date().toISOString();
-  const patched = deps.chatHistoryManager.updateNonTurnFailureCard(sessionId, cardId, { dismissedAt });
+  const runner = deps.getRunnerRegistry()?.get(sessionId);
+  let patched = true;
+  if (runner) {
+    persistCardTransition(
+      runner,
+      { chatHistoryManager: deps.chatHistoryManager, sessionId },
+      (m) => m.nonTurnFailure?.cardId === cardId,
+      (m) => (m.nonTurnFailure
+        ? { ...m, nonTurnFailure: { ...m.nonTurnFailure, dismissedAt } }
+        : m),
+      () => {
+        patched = deps.chatHistoryManager.updateNonTurnFailureCard(sessionId, cardId, { dismissedAt });
+      },
+    );
+  } else {
+    patched = deps.chatHistoryManager.updateNonTurnFailureCard(sessionId, cardId, { dismissedAt });
+  }
   if (!patched) return false;
-  deps.getRunnerRegistry()?.get(sessionId)?.emitMessage({
-    type: "non_turn_failure_dismissed",
-    sessionId,
-    cardId,
-    dismissedAt,
-  });
+  runner?.emitMessage({ type: "non_turn_failure_dismissed", sessionId, cardId, dismissedAt });
   return true;
 }
 
@@ -383,6 +433,17 @@ async function runNonTurnSpawn(
 ): Promise<string> {
   const { sessionId, purpose, target, runner } = args;
   const spawnId = randomUUID();
+  // The credential window, exactly as `runSubAgent` opens it. Non-turn work is
+  // chosen independently of the session, so its harness and its account are
+  // routinely NOT the session's — which is the whole reason this is not
+  // optional: without it an account-backed background model spawns into a
+  // container that holds someone else's credentials, or none.
+  const credentialsDir = deps.credentialsDir;
+  const provisioned = runner instanceof ContainerSessionRunner && !!credentialsDir;
+  const accountId = target.route?.kind === "account" ? target.route.id : undefined;
+  if (provisioned && credentialsDir) {
+    provisionSubAgentCredentials(credentialsDir, sessionId, target.harnessId, accountId);
+  }
   try {
     const result = await runner.spawnSubAgent({
       agentId: target.harnessId,
@@ -422,5 +483,35 @@ async function runNonTurnSpawn(
   } catch (err) {
     emitNonTurnFailure(deps, { sessionId, purpose, target, detail: getErrorMessage(err) });
     return "";
+  } finally {
+    // Token-sync-back THEN wipe, both targeting the same resolved account root —
+    // and then put the session's own pinned account back, because a
+    // same-harness run borrows the subtree the primary agent reads from.
+    // `runSubAgent`'s `finally` in full, for the same reasons: a background
+    // generation must not leave a credential behind, and must not leave the
+    // session's next turn pointed at someone else's.
+    if (provisioned && credentialsDir) {
+      try {
+        if (accountId) syncProviderAccountTokenBack(credentialsDir, sessionId, target.harnessId, accountId);
+        else syncAgentTokenBack(credentialsDir, sessionId, target.harnessId);
+      } catch {
+        // Best-effort: a failed sync-back at worst makes the next provision
+        // start from a slightly older token, which heals on its own refresh.
+      }
+      removeSubAgentCredentials(credentialsDir, sessionId, target.harnessId);
+      const session = deps.sessionManager?.get(sessionId);
+      if (
+        session?.agentId === target.harnessId
+        && session?.providerRouteKind === "account"
+        && session.providerRouteId
+      ) {
+        provisionProviderAccountCredentials(
+          credentialsDir,
+          sessionId,
+          target.harnessId,
+          session.providerRouteId,
+        );
+      }
+    }
   }
 }
