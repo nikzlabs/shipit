@@ -669,7 +669,7 @@ export function saveHiddenReposCollapsed(collapsed: boolean): void {
 
 const DRAFT_MESSAGE_KEY_PREFIX = "shipit-draft-message:";
 
-/** Read the saved draft message text for a session (or `"new"` for the new-session view). */
+/** Read the saved draft message text for a session (or `"new:{repo-slug}"` for the new-session view). */
 export function getSavedDraftMessage(sessionKey: string): string | undefined {
   try {
     const value = localStorage.getItem(DRAFT_MESSAGE_KEY_PREFIX + sessionKey);

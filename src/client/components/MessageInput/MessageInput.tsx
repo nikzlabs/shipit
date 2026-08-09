@@ -384,8 +384,8 @@ export function MessageInput({
   // Auto-focus textarea on mount and on session change (e.g. "New Session" click,
   // session switch). The ref is intentionally seeded with `undefined` (not `focusKey`)
   // so the very first render with a defined focusKey triggers focus — otherwise focus
-  // would be deferred until claimSession() resolves and focusKey transitions from
-  // "new" to the real session ID, which causes a visible delay on "New Session" clicks.
+  // would be deferred until focusKey transitions from the new-session view's key
+  // to the real session ID, which causes a visible delay on "New Session" clicks.
   //
   // Skip on mobile: focusing the textarea pops the on-screen keyboard, which is
   // intrusive when the user is just navigating between sessions. The user can tap

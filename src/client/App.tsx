@@ -97,6 +97,7 @@ const DiffPanel = lazy(() => {
 });
 import { PrLifecycleCard } from "./components/PrLifecycleCard.js";
 import { SandboxBanner } from "./components/SandboxBanner.js";
+import { NewSessionRepoBar } from "./components/NewSessionRepoBar.js";
 import { PrDetailPanel } from "./components/PrDetailPanel.js";
 import { PresentPane } from "./components/PresentPane.js";
 import { HostPanel } from "./components/HostPanel.js";
@@ -1560,14 +1561,28 @@ export default function App() {
     !isLoading &&
     (historyLoaded || showNewSessionView);
   // MessageInput's per-session draft persistence is keyed on focusKey. While the
-  // user is on the new-session view (`/{slug}/new`) we MUST keep this stable as
-  // "new", even after `claimSession()` resolves and `wsSessionId` becomes the
-  // real session ID. Otherwise focusKey flips mid-typing and the draft-swap
-  // logic loads the (empty) draft for the brand-new session, wiping whatever
-  // the user has typed. The graduation to the real session ID happens when the
-  // URL transitions to `/session/{id}` inside handleSend — at that point the
+  // user is on the new-session view (`/{slug}/new`) we MUST keep this stable
+  // across `claimSession()` resolving and `wsSessionId` becoming the real
+  // session ID. Otherwise focusKey flips mid-typing and the draft-swap logic
+  // loads the (empty) draft for the brand-new session, wiping whatever the user
+  // has typed. The graduation to the real session ID happens when the URL
+  // transitions to `/session/{id}` inside handleSend — at that point the
   // textarea has already been cleared by setText("") so there's nothing to lose.
-  const messageInputFocusKey = showNewSessionView ? "new" : wsSessionId;
+  //
+  // docs/259 req 4 — scoped to the ROUTE'S REPO rather than a single constant
+  // "new", so a draft written for one repo doesn't follow the user into the
+  // next one when they switch repos from the new-session repo bar.
+  // `useMessageDraft` already saves the outgoing key and loads the incoming one,
+  // so the swap is that hook's existing behavior, not new machinery.
+  //
+  // Keyed on the SLUG, never on `newSessionRepoUrl`: the URL is resolved against
+  // the loaded repo list and is `undefined` until it arrives, so a URL-derived
+  // key would flip from `new:undefined` to `new:owner/repo` mid-typing — exactly
+  // the draft-wipe the paragraph above exists to prevent. The slug comes
+  // straight off the pathname and only changes on a deliberate repo switch.
+  const messageInputFocusKey = showNewSessionView
+    ? `new:${newSessionRepoSlug}`
+    : wsSessionId;
 
   // ── Right panel ──
   // Whether the always-mounted PreviewFrame (+ Services drawer) is the visible
@@ -1883,6 +1898,19 @@ export default function App() {
       {/* docs/211 — for a sandbox session the PR-card slot holds the orientation
           banner instead (derived chrome from kind/capabilities — never a chat
           card). Other sessions keep the PR lifecycle card as their top chrome. */}
+      {/* docs/259 — and on mobile, before the session exists, the same slot names
+          the repo the session will be created in. Mutually exclusive with the
+          card below (whose condition already includes `!showNewSessionView`), so
+          the slot never has two occupants and the handover at graduation needs
+          no extra state. */}
+      {showNewSessionView && isMobile && newSessionRepoSlug && (
+        <NewSessionRepoBar
+          repoSlug={newSessionRepoSlug}
+          repo={repos.find((r) => r.url === newSessionRepoUrl)}
+          repos={repos}
+          onSelectRepo={(url) => void handleNewSessionForRepo(url)}
+        />
+      )}
       {!showHomeScreen &&
         !showNewSessionView &&
         wsSessionId &&
