@@ -59,11 +59,17 @@ below turns on what is configured or when the flow is finished, it means the har
    layout must accommodate that without becoming unreadable — the current problem is a lot of
    functionality inside a small dialog, in fact inside one part of a dialog.
 
-7. **Setup happens in a panel in the middle of the conversation view, and it is the same
-   credential surface Settings uses.** Connecting a harness during onboarding and connecting
-   one later from Settings are the same act, so they are not two implementations of it. A
-   second copy would drift, and the two would disagree about what a connected credential looks
-   like.
+7. **Setup happens in a panel in the middle of the conversation view, and connecting a harness
+   there behaves exactly as it does in Settings.** The same credential kinds are offered, the
+   same states are shown, the same actions are available, and a harness connected during
+   onboarding is afterwards indistinguishable from one connected later in Settings. The two are
+   the same act and must not drift into disagreeing about what a connected credential is.
+
+   Identical *behaviour* is the requirement; identical *layout* is not, and the existing shared
+   surface already varies its density for onboarding. Whether behavioural identity is achieved
+   by literally reusing one implementation is a design decision for `plan.md` — it is the
+   obvious way and it is what the reason given ("to avoid duplication") points at, but it is
+   not itself an observable requirement.
 
 8. **Harness onboarding is not dismissible, because it does not need to be.** It occupies the
    conversation view rather than covering the product, so there is nothing for a dismissal to
@@ -86,19 +92,80 @@ below turns on what is configured or when the flow is finished, it means the har
 
 ## Open questions
 
-_None._
+Raised by a cross-backend review of this document (2026-08-09). Every one was checked against
+the code before being recorded here.
+
+- **When is harness onboarding finished — a credential, or a runnable model?** Req 8 says "once
+  at least one harness credential is configured", and docs/252 makes those different things: a
+  credential belongs to a `(service, billing mode)`, while whether any model is *selectable*
+  also depends on which harnesses are installed (docs/252 reqs 8 and 14). So onboarding could
+  finish having stored a credential for a service no installed harness can run, leaving the
+  composer correctly disabled on a flow that says it is done. The same distinction is already
+  live in today's code, which gates on `installed && authConfigured` rather than on a
+  credential alone.
+
+- **Does the panel replace the conversation in *every* session, or only an empty one?** Reqs 1–3
+  pull in different directions: onboarding "takes over the conversation view", yet sessions and
+  navigation "work normally" and the composer is the *single* thing unavailable. Nothing says
+  what a user sees when they open a second session, or one that already has a transcript.
+  Today's eligibility is global, not per-session. And wherever the panel is *not* shown, the
+  disabled composer has nothing next to it explaining why.
+
+- **What happens if the last credential is removed after onboarding has completed?** Req 8 says
+  onboarding never returns; req 9 says starter prompts appear only after harness setup. Remove
+  the last credential and neither surface is selected — the empty conversation view has no
+  defined content. (This is about deliberate removal in Settings. A credential *failing*
+  mid-session is already settled by docs/252 req 12 and is not reopened here.)
+
+- **Must credential errors surface inside the panel, or may they use toasts?** Req 5 bans
+  modals. A toast is not a modal, so the ban does not settle it — but the surface req 7 points
+  at reports several failures through global toasts today. Given that the whole point of the
+  panel is that the ask is on screen while everything else works, an error that appears
+  somewhere else and then disappears may be the wrong shape.
+
+- **What scale must req 6 accommodate — exactly docs/252's launch set, or more?** "Room to grow"
+  and "without becoming unreadable" are not testable as written. docs/252 names a concrete
+  launch set of services, each with up to two billing modes, so binding req 6 to that set would
+  make it checkable; promising open-ended growth would not.
+
+- **Does req 9 order this flow against docs/216, or change docs/216's scope?** docs/216's own
+  documents disagree about where starter prompts appear at all: its plan describes prompts on
+  every empty session including sandbox ones, while its checklist records the scope as "regular
+  repo sessions only (no sandbox)" and the implementation as reverted. Req 9 does not say which
+  it assumes.
 
 ## Resolved questions
+
+- 2026-08-09 — **Provenance of reqs 1, 2, 4 and 6**, which have no receipt of their own because
+  they were not answers to questions. They come from Nik's original description of what is
+  wrong with onboarding today, given in one statement: that it is *"a lot of functionality in a
+  small dialog, actually even in part of the dialog"* (→ req 6); that *"the user cannot actually
+  see anything before they finish onboarding, before they connect a subscription, so people will
+  just stop there"* (→ reqs 1 and 3); that *"there are already two modals visible at the same
+  time, so it's a bit confusing and a bit busy — if we add more to the same screen it would be
+  very hard to understand what's going on"* (→ req 5); and that it should *"not be part of the
+  dialog, but part of replacing the conversation view with this … so it would still be some kind
+  of wizard, but it would not be blocking other elements — previews would work, files would
+  work"* (→ reqs 1, 2 and 4). The Git step being possibly removable but *"out of scope for this
+  change"* is the *Out of scope* section. Recorded because a review could not otherwise tell
+  these apart from agent inference.
 
 - 2026-08-09 — May a step open a modal? **Chosen: no modals in harness onboarding at all.**
   Review asked what the use case was, and there is none: the requirement said "at most one at a
   time" without naming a single step that needed one. It came from an over-reading of an
   ambiguous phrase in the original description, not from a step that requires one. The Settings
-  credential surface req 7 reuses already resolves everything in place — including disconnect,
-  deliberately inline rather than by toast (`ProviderAccountsCard.tsx:223`) — and the OAuth step
-  is a link to the provider's own sign-in page (`:477`), which is a link-out and not a modal.
-  Rationing modals would also have left the door open to the exact "busy, confusing" problem the
-  requirement was reacting to. Req 5 rewritten.
+  credential surface behaves without one: the OAuth step is a link to the provider's own sign-in
+  page (`ProviderAccountsCard.tsx:470`), and the one genuine question it asks — where a pinned
+  session should go when its account is disconnected — is answered by a row-local picker
+  (`:223`). Rationing modals would also have left the door open to the exact "busy, confusing"
+  problem the requirement was reacting to. Req 5 rewritten.
+
+  **Correction:** an earlier version of this receipt said that surface "resolves everything in
+  place, including disconnect". That is wrong — it has a `toast()` helper (`:105`) and reports
+  several failures through global toasts; only the pinned-session question is inline. A toast is
+  not a modal, so it does not contradict req 5, but the claim as written was broader than the
+  code supports. Whether errors *should* surface in-panel is now an open question rather than
+  something this receipt quietly settled.
 
 - 2026-08-09 — Which half of first-run setup do these requirements govern? **Clarified: the
   harness half.** Review noted that "onboarding" was doing double duty for both the GitHub /
