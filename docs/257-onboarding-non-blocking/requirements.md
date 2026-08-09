@@ -54,10 +54,16 @@ below turns on what is configured or when the flow is finished, it means the har
    The one thing that legitimately leaves the panel is a provider's own sign-in page, which
    ShipIt does not own and cannot host. That is a link out, not a modal.
 
-6. **The flow has room to grow.** Once a user is choosing among several services rather than
-   two providers (docs/252), the credential step carries materially more than it does now. The
-   layout must accommodate that without becoming unreadable — the current problem is a lot of
-   functionality inside a small dialog, in fact inside one part of a dialog.
+   **Results and errors render inside the panel too**, next to the step that produced them —
+   not as a toast elsewhere on screen. The point of the panel is that the ask is in front of
+   the user while everything else keeps working; an error that appears somewhere else and then
+   disappears defeats that.
+
+6. **The flow accommodates every service and billing mode docs/252 ships.** Once a user is
+   choosing among several services rather than two providers, the credential step carries
+   materially more than it does now — the current problem is a lot of functionality inside a
+   small dialog, in fact inside one part of a dialog. The bar is docs/252's launch set, which
+   is a concrete list, rather than open-ended future growth.
 
 7. **Setup happens in a panel in the middle of the conversation view, and connecting a harness
    there behaves exactly as it does in Settings.** The same credential kinds are offered, the
@@ -71,19 +77,35 @@ below turns on what is configured or when the flow is finished, it means the har
    obvious way and it is what the reason given ("to avoid duplication") points at, but it is
    not itself an observable requirement.
 
-8. **Harness onboarding is not dismissible, because it does not need to be.** It occupies the
-   conversation view rather than covering the product, so there is nothing for a dismissal to
-   uncover. Once at least one harness credential is configured it is finished and does not
-   return; adding or changing credentials after that is Settings' job. There is no
-   "re-run harness onboarding".
+8. **Harness onboarding is finished when the install can actually run something.** Not when a
+   credential has been stored: docs/252 makes those different, because a credential belongs to
+   a service and billing mode while whether any model is *selectable* also depends on which
+   harnesses are installed. Storing a credential no installed harness can use has not finished
+   anything — it would leave a flow saying it is done above a composer that is still, correctly,
+   disabled.
+
+9. **Harness onboarding is shown when nothing is configured and never was, and it is not
+   dismissible because it does not need to be.** It occupies the conversation view rather than
+   covering the product, so there is nothing for a dismissal to uncover.
+
+   The condition is historical, not current. A user who has completed it and then removes every
+   credential does **not** get onboarding back — they are not a new user, and Settings is where
+   they undo what they did there. What brings the panel back is nothing: there is no "re-run
+   harness onboarding". The condition is also **global rather than per-session** — it is a
+   property of the install, so adding a second repository does not re-ask a user who is already
+   set up, and a user who is not set up meets the same panel wherever they are.
 
    This is specifically about the harness half. It says nothing about whether the GitHub step
    can be skipped or deferred — that step keeps whatever behaviour it has today.
 
-9. **Starter prompts appear only after harness setup.** The empty-session starter prompts
-   (`docs/216-onboarding-starter-prompts`) share the conversation view with this flow, and they
-   are sequential rather than simultaneous: the setup panel until a credential exists, the
-   prompts once one does. They never occupy the panel at the same time.
+10. **Starter prompts never appear to a user who has not been through harness onboarding.** The
+    empty-session starter prompts (`docs/216-onboarding-starter-prompts`) share the conversation
+    view with this flow, and they are sequential rather than simultaneous: the setup panel
+    first, the prompts only once onboarding has been completed. They never occupy the panel at
+    the same time.
+
+    This is a gate on top of whatever eligibility docs/216 defines for itself — it removes
+    prompts in a case docs/216 would otherwise allow, and never adds them anywhere.
 
 ## Out of scope
 
@@ -92,49 +114,52 @@ below turns on what is configured or when the flow is finished, it means the har
 
 ## Open questions
 
-Raised by a cross-backend review of this document (2026-08-09). Every one was checked against
-the code before being recorded here.
-
-- **When is harness onboarding finished — a credential, or a runnable model?** Req 8 says "once
-  at least one harness credential is configured", and docs/252 makes those different things: a
-  credential belongs to a `(service, billing mode)`, while whether any model is *selectable*
-  also depends on which harnesses are installed (docs/252 reqs 8 and 14). So onboarding could
-  finish having stored a credential for a service no installed harness can run, leaving the
-  composer correctly disabled on a flow that says it is done. The same distinction is already
-  live in today's code, which gates on `installed && authConfigured` rather than on a
-  credential alone.
-
-- **Does the panel replace the conversation in *every* session, or only an empty one?** Reqs 1–3
-  pull in different directions: onboarding "takes over the conversation view", yet sessions and
-  navigation "work normally" and the composer is the *single* thing unavailable. Nothing says
-  what a user sees when they open a second session, or one that already has a transcript.
-  Today's eligibility is global, not per-session. And wherever the panel is *not* shown, the
-  disabled composer has nothing next to it explaining why.
-
-- **What happens if the last credential is removed after onboarding has completed?** Req 8 says
-  onboarding never returns; req 9 says starter prompts appear only after harness setup. Remove
-  the last credential and neither surface is selected — the empty conversation view has no
-  defined content. (This is about deliberate removal in Settings. A credential *failing*
-  mid-session is already settled by docs/252 req 12 and is not reopened here.)
-
-- **Must credential errors surface inside the panel, or may they use toasts?** Req 5 bans
-  modals. A toast is not a modal, so the ban does not settle it — but the surface req 7 points
-  at reports several failures through global toasts today. Given that the whole point of the
-  panel is that the ask is on screen while everything else works, an error that appears
-  somewhere else and then disappears may be the wrong shape.
-
-- **What scale must req 6 accommodate — exactly docs/252's launch set, or more?** "Room to grow"
-  and "without becoming unreadable" are not testable as written. docs/252 names a concrete
-  launch set of services, each with up to two billing modes, so binding req 6 to that set would
-  make it checkable; promising open-ended growth would not.
-
-- **Does req 9 order this flow against docs/216, or change docs/216's scope?** docs/216's own
-  documents disagree about where starter prompts appear at all: its plan describes prompts on
-  every empty session including sandbox ones, while its checklist records the scope as "regular
-  repo sessions only (no sandbox)" and the implementation as reverted. Req 9 does not say which
-  it assumes.
+- **In the post-completion, no-credentials state, what does the user see and what does the
+  disabled composer say?** This one is produced by the answers rather than left over from
+  before. A user who completed onboarding and later removed every credential gets: no
+  onboarding panel (req 9 — it never returns), starter prompts (req 10 — they *did* go through
+  onboarding), and a disabled composer (req 3 — nothing is runnable). So the prompts are
+  visible and clicking one seeds an input that cannot be used. Each requirement is right on its
+  own; together they describe a screen that offers an action it cannot perform. The narrow
+  question is what that state should show instead — prompts suppressed, or shown with something
+  that explains the composer and points at Settings.
 
 ## Resolved questions
+
+- 2026-08-09 — When is harness onboarding finished — a stored credential, or a runnable model?
+  **Chosen: when something is runnable.** Raised by cross-backend review, which noted that
+  docs/252 separates the two: a credential belongs to a `(service, billing mode)`, while
+  selectability also depends on which harnesses are installed (docs/252 reqs 8 and 14). The
+  rejected reading would let onboarding declare itself finished above a still-disabled composer.
+  Req 8 rewritten around runnability rather than storage.
+
+- 2026-08-09 — What scale must the flow accommodate? **Chosen: docs/252's launch set.** "Room
+  to grow" and "without becoming unreadable" were not testable as written. Binding the bar to a
+  concrete shipped list makes it checkable, and declines to promise open-ended growth. Req 6
+  amended.
+
+- 2026-08-09 — Does the starter-prompts requirement order this flow against docs/216, or
+  change docs/216's scope?
+  **Chosen: a hard gate — starter prompts never appear to a user who has not been through
+  harness onboarding.** The question arose because docs/216's own plan and checklist disagree
+  about which sessions are eligible, and its implementation was reverted. The answer sidesteps
+  that: this requirement only ever *removes* prompts, on top of whatever eligibility docs/216
+  settles for itself, so the two do not need reconciling first. Req 9 renumbered to 10 and
+  restated as a gate rather than a sequence.
+
+- 2026-08-09 — Does the panel replace the conversation in every session, or only an empty one,
+  and what happens after the last credential is removed? **Answered together: the panel is
+  shown when nothing is configured *and never was*.** The question's premise was queried first —
+  how would a user reach a second session without configuring a harness? — and the real case is
+  adding another repository. So the condition is a property of the install rather than of a
+  session, and it is *historical*: a user who set things up and later removed every credential
+  is not a new user and does not get onboarding back. Req 9 rewritten; this closed the separate
+  deconfiguration question too.
+
+- 2026-08-09 — Must credential errors surface inside the panel, or may they use toasts?
+  **Chosen: inside.** The surface req 7 points at reports several failures through global
+  toasts today (`ProviderAccountsCard.tsx:105`), so this is a change to inherited behaviour
+  within this flow rather than a restatement of it. Req 5 amended.
 
 - 2026-08-09 — **Provenance of reqs 1, 2, 4 and 6**, which have no receipt of their own because
   they were not answers to questions. They come from Nik's original description of what is
@@ -203,4 +228,5 @@ the code before being recorded here.
 
 - 2026-08-09 — What happens to the empty-session starter prompts? **Chosen: shown only after
   harness setup.** They share the conversation view with this flow, so they are sequential:
-  setup panel until a credential exists, prompts once one does. Req 9 added.
+  setup panel until a credential exists, prompts once one does. Req 9 added — renumbered to
+  req 10 and restated as a gate later the same day, see the receipt above.
