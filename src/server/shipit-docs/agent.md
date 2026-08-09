@@ -196,6 +196,11 @@ id or a bad flag, since neither condition can ever clear.
 
 - **Opt-in.** The feature only works when the user has enabled **Settings →
   Multi-agent sessions**. Otherwise the command returns a clear "disabled" error.
+- **Only harnesses this deployment installed.** Which agent CLIs an install has is
+  chosen when ShipIt is deployed, so a backend may simply not be present here —
+  the command then fails with "<name> is not installed in this deployment". That
+  is not something you or the user can fix from inside a session; report it and
+  carry on without the second opinion.
 - **No recursion.** A spawned sub-agent cannot itself spawn a sub-agent.
 - **At most 3 spawns per turn.** Enough for "review with both other models" or a
   couple of delegations. A 4th returns an error without spawning. The budget

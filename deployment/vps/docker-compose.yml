@@ -15,6 +15,15 @@ services:
     build:
       context: ../..
       dockerfile: docker/Dockerfile.prod
+      args:
+        # docs/252 req 14 — the harnesses this deployment installs. A build
+        # input, not a setting: changing it means editing SHIPIT_HARNESSES in
+        # /etc/shipit/shipit.env (deploy.sh sources it) and redeploying. The
+        # SAME value must reach the session-worker build below — the
+        # orchestrator decides what the picker offers and runs session naming
+        # locally, the worker is where turns run, and a harness present in one
+        # image but not the other is offered and then cannot run.
+        SHIPIT_HARNESSES: ${SHIPIT_HARNESSES:-claude,codex}
     restart: unless-stopped
     ports:
       - "127.0.0.1:4123:4123"   # Orchestrator API — only via Caddy
@@ -141,6 +150,9 @@ services:
     build:
       context: ../..
       dockerfile: docker/Dockerfile.session-worker.prod
+      args:
+        # docs/252 req 14 — must match the orchestrator's value above.
+        SHIPIT_HARNESSES: ${SHIPIT_HARNESSES:-claude,codex}
     image: shipit-session-worker:prod
     profiles:
       - build-only

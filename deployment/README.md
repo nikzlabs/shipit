@@ -117,6 +117,40 @@ updating in place (no host-side systemd watcher locally).
 
 ---
 
+## Choosing which agent harnesses to install
+
+A **harness** is an agent CLI plus the adapter that normalizes its event stream. ShipIt installs
+**Claude Code and Codex** by default; `SHIPIT_HARNESSES` selects a different set:
+
+```bash
+SHIPIT_HARNESSES=codex        # this install runs Codex only
+SHIPIT_HARNESSES=claude,codex # the default
+```
+
+It is a **build input, not a setting** — the CLIs are baked into the images — so changing it means
+editing the env file and re-running the deploy, and there is nothing in Settings that adds or
+removes a harness:
+
+- **VPS**: the installer asks once and persists your answer as `SHIPIT_HARNESSES` in
+  `/etc/shipit/shipit.env`. To change it later, edit that line and run
+  `bash /opt/shipit/deployment/vps/deploy.sh`. Presetting the variable
+  (`SHIPIT_HARNESSES=codex bash setup.sh`) skips the prompt.
+- **Local**: set it in `~/.shipit/.shipit.env` and re-run `deployment/local/update.sh`.
+
+A harness that is not installed offers no models and does not appear in the model picker; a
+deployment must install at least one, and an unrecognized name fails the build rather than quietly
+producing an image without it. Credentials are a separate question — an installed harness still
+needs an account or key connected in Settings before it can run a turn.
+
+> **After changing the set, let existing sessions rotate.** A deploy deliberately does not kill
+> running session containers, and they keep their old image until they go idle — so a session that
+> was already open when you *added* a harness is running a container that does not have it yet, and
+> a turn on the new harness there fails until that container is replaced. New sessions get the new
+> image immediately. Nothing is lost either way; close (or wait out) the open sessions if a
+> just-added harness reports a missing CLI.
+
+---
+
 ## Deploying ShipIt to a VPS
 
 Self-host ShipIt on any Linux VPS with Cloudflare Tunnel plus required Zero Trust access control, Tailscale access, or both.

@@ -224,9 +224,18 @@ export function ModelAgentSelector({
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent side="top" align="end" className="w-56" data-testid="model-agent-dropdown">
-            {agents.map((agent) => {
+            {/*
+              docs/252 phase 9 (req 14) — a harness this deployment did not install
+              "offers no models and appears nowhere in the picker". It used to render
+              as a group header tagged "not installed" over a list of disabled rows,
+              which is right for a harness that is *present but unauthenticated* and
+              wrong for one that does not exist here: there is nothing the user can do
+              about it, and the deploy-time choice is not a state to nudge them out of.
+              "Needs auth" is the case that stays visible, because it is actionable.
+            */}
+            {agents.filter((agent) => agent.installed).map((agent) => {
               const isActiveAgent = agent.id === activeAgentId;
-              const isAvailable = agent.installed && agent.authConfigured;
+              const isAvailable = agent.authConfigured;
               // docs/138: when the session has pinned an agent, models from
               // other agents are locked (the agent can't be swapped). Pre-pin
               // there is no restriction.
@@ -237,10 +246,7 @@ export function ModelAgentSelector({
                   {/* Provider header */}
                   <DropdownMenuLabel className="flex items-center gap-2">
                     <span>{agent.name}</span>
-                    {!agent.installed && (
-                      <span className="text-(--color-text-tertiary) normal-case tracking-normal font-normal">not installed</span>
-                    )}
-                    {agent.installed && !agent.authConfigured && (
+                    {!agent.authConfigured && (
                       <span className="text-(--color-warning) normal-case tracking-normal font-normal">needs auth</span>
                     )}
                     {isAgentLocked && (

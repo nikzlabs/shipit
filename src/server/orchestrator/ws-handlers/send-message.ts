@@ -11,7 +11,7 @@ import { resolveRunner } from "./resolve-runner.js";
 import { shouldSteerMessage } from "../dispatch-steering.js";
 import { resetSubAgentSpawnBudget } from "../session-runner.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
-import { agentAuthenticationError, isAgentAuthenticated } from "../services/agent-auth-gate.js";
+import { agentAdmissionError } from "../services/agent-auth-gate.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
 
 // Re-export all public symbols from sub-modules for backwards compatibility
@@ -48,8 +48,13 @@ function ensureActiveAgentAuthenticated(ctx: FullCtx): boolean {
   // so it sees every connected subscription account. The former Claude-only
   // gate consulted the legacy singleton AuthManager and rejected a turn before
   // routing whenever the usable credential lived in an added account row.
-  if (!isAgentAuthenticated(ctx.agentRegistry, activeAgentId)) {
-    ctx.send({ type: "error", message: agentAuthenticationError(activeAgentId) });
+  // docs/252 phase 9 — `agentAdmissionError` also refuses a harness this
+  // deployment did not install, which is the only gate the effective-agent paths
+  // (a pre-existing pin, a stale browser selection, Quick Capture) all pass
+  // through.
+  const refusal = agentAdmissionError(ctx.agentRegistry, activeAgentId);
+  if (refusal) {
+    ctx.send({ type: "error", message: refusal });
     return false;
   }
   return true;

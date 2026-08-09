@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
 import type { AgentId } from "../shared/types.js";
+import { isHarnessInstalled } from "../shared/installed-harnesses.js";
 import { ensureCodexHomeInitialized } from "./agents/codex/home-init.js";
 
 export interface SessionName {
@@ -40,6 +41,16 @@ export async function generateSessionName(
    */
   credentialRoot?: string,
 ): Promise<SessionName | null> {
+  // docs/252 phase 9 (req 14) — naming runs on the ORCHESTRATOR's own CLIs, not in
+  // the session container, so a deployment that did not install this harness has
+  // nothing to shell out to. Skip explicitly rather than spawning a missing binary
+  // and reading the failure back out of stderr; `null` is already "keep the
+  // placeholder title", so the surrounding operation is unaffected.
+  if (!isHarnessInstalled(agentId)) {
+    console.warn(`[session-namer] ${agentId} is not installed in this deployment; skipping naming`);
+    return null;
+  }
+
   const truncated = userMessage.slice(0, 200);
   const prompt = PROMPT_TEMPLATE.replace("{MESSAGE}", truncated);
 

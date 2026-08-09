@@ -210,6 +210,15 @@ export async function runSubAgent(
   deps.agentRegistry.refreshAuth(subAgentId);
   const info = deps.agentRegistry.get(subAgentId);
   if (!info) throw rejectSpawn(sessionId, subAgentId, 400, "unknown_agent", `Unknown agent: ${subAgentId}`);
+  // docs/252 phase 9 (req 14) — a harness this deployment did not install offers
+  // nothing, credentials or not. The other two spawn-adjacent gates (the HTTP
+  // `set_agent` in services/settings.ts and its WS twin) already check this; this
+  // one did not, so `shipit agent run --agent <uninstalled>` reached the spawn and
+  // failed as a missing binary deep inside the worker.
+  if (!info.installed) {
+    throw rejectSpawn(sessionId, subAgentId, 400, "not_installed",
+      `${info.name} is not installed in this deployment.`);
+  }
   if (!info.authConfigured) {
     throw rejectSpawn(sessionId, subAgentId, 400, "not_signed_in",
       `${info.name} is not signed in. Connect it in Settings before spawning it.`);

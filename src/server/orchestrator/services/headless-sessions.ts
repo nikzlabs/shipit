@@ -10,6 +10,7 @@ import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { toggleAutoMerge } from "./github.js";
 import { agentIdForModel, getAgentCapabilities } from "../../shared/agent-registry.js";
+import { isHarnessInstalled } from "../../shared/installed-harnesses.js";
 import { generateBranchPrefix } from "../git-utils.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
@@ -196,7 +197,21 @@ export async function createHeadlessSession(
   // session to the wrong agent (the pin is write-once). Fall back to the
   // explicit agent only when no model is given or the model is unrecognized.
   // See docs/166-quick-capture-agent-pin.
-  const agentId = agentIdForModel(opts.model) ?? opts.agent ?? defaultAgentId;
+  const requestedAgentId = agentIdForModel(opts.model) ?? opts.agent ?? defaultAgentId;
+
+  // docs/252 phase 9 (req 14) — and the same defense one step further: the model
+  // above is matched against the whole catalogue, and `opts.agent` is whatever
+  // the caller sent, so either can name a harness this deployment did not
+  // install. Nothing offers one, so reaching here means a stale browser
+  // selection — pinning it would create a session whose first turn cannot run,
+  // and the pin is write-once. Fall back to the install's default rather than
+  // rejecting a capture the user cannot re-aim from here.
+  const agentId = isHarnessInstalled(requestedAgentId) ? requestedAgentId : defaultAgentId;
+  if (agentId !== requestedAgentId) {
+    console.warn(
+      `[headless] requested agent '${requestedAgentId}' is not installed in this deployment; using '${agentId}'`,
+    );
+  }
 
   // docs/217 — validate the requested reasoning effort against the resolved
   // agent's options; drop silently if invalid (mirrors the WS connect-param
