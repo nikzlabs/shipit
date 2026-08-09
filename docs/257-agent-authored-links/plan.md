@@ -283,37 +283,30 @@ markdown support cheap:
   naming HTML and markdown, not a requirement of its own: the human answered
   "also markdown", and nobody asked what an anchor into a PNG would mean.
 
-## The `links` SDK surface
+## The `links` SDK channel
 
-Mirrors `visibility`, which already solves the same late-subscriber problem:
+The **surface** is specified in `requirements.md` → *The page-facing API*; it is
+a public contract, so it is not restated here. This section is the mechanism
+behind it.
 
-```ts
-await window.shipit?.ready;
-window.shipit.links.subscribe((link) => {
-  // { params, hash }
-  highlightRequirement(link.params.item);
-});
-```
+The channel exists for one reason: a presented HTML artifact is mounted from
+`srcDoc` with `sandbox="allow-scripts"` and no `allow-same-origin`
+(`RenderedFrame.tsx:88`), so its document URL is `about:srcdoc` on an opaque
+origin. There is no query string or fragment to write, and the parent cannot
+navigate it to one. Everything the URL would have carried has to arrive as data.
 
-`subscribe` is the whole public surface: it replays the latest link if one has
-already arrived, fires on each new one, and returns an unsubscribe function.
-
-- **The latest link is kept privately**, not exposed as `links.current`. Replay
-  through `subscribe` covers the real need — a page cannot know whether it
-  registered before or after delivery — and a public synchronous getter adds a
-  second way to read the same state for no stated use.
-- **The payload is `{ params, hash }`.** `path` is cut: for Present it is the
-  artifact path the page already is, and for Preview it is `location.pathname`.
-  Nothing a page can do with it that it cannot already read.
-- The SDK also scrolls to `document.getElementById(hash)` itself, so a plain
-  anchor works with no page code at all (req 9). A page that wants different
-  behaviour scrolls where it likes in its own handler.
+Delivery reuses the existing host→page envelope (`source: "shipit-preview"`),
+alongside `visibility` and `agent_message_result`, and the SDK keeps the latest
+link privately so `subscribe` can replay it.
 
 **Why replay is required, stated correctly.** It is *not* that `ready` provably
 precedes page scripts — `postMessage` delivery is asynchronous, so later artifact
 scripts may well run before the parent's reply arrives. The guarantee that
 matters is weaker and sufficient: a subscriber may register either before or
 after delivery, and neither ordering may drop the event.
+
+The SDK also scrolls to `document.getElementById(hash)` itself, so a plain
+anchor works with no page code at all (req 9).
 
 **The scroll cannot fire on receipt**, though. The SDK is injected into `<head>`
 (`RenderedFrame.tsx:56`), so for a Present artifact — where the click is what

@@ -48,7 +48,51 @@ one requirement — with no way to make that pointer clickable.
     first** and then opens the destination. A stopped service is not by itself a
     reason to report a pointer as unopenable (req 10); a start that *fails* is.
 
+## The page-facing API
+
+What a user's page can code against. This is a **public contract** — once
+documented, artifacts and apps are written against it and it cannot be
+withdrawn — so it lives here with the requirements rather than inside the
+design.
+
+Where the destination has a real URL (the Preview), the payload is **the URL
+itself**: a page reads `location.search` and `location.hash` and listens for
+`hashchange`, with no ShipIt-specific API involved.
+
+A presented HTML artifact has no URL to read — it is mounted from `srcDoc` in a
+sandboxed, opaque-origin frame — so there it arrives through the SDK:
+
+```ts
+await window.shipit?.ready;
+window.shipit.links.subscribe((link) => {
+  // link.params — the query parameters the agent wrote
+  // link.hash   — the fragment, without its "#"
+  highlightRequirement(link.params.item);
+});
+```
+
+- `subscribe` replays the latest link if one already arrived, fires on each new
+  one, and returns an unsubscribe function. The replay matters because clicking
+  a pointer is usually what *mounts* the artifact: a page cannot know whether it
+  subscribed before or after the link was delivered, and neither ordering may
+  drop it.
+- There is no synchronous `links.current`. A link is an event, not a state to
+  poll, and a synchronous read invites exactly the race replay exists to remove.
+- The payload is `{ params, hash }` and nothing more.
+
+Whether the Preview *also* gets the SDK channel is open, below.
+
 ## Open questions
+
+- **Does the Preview need the SDK link channel at all, or is the URL enough?**
+  A preview pointer navigates the frame to the authored URL, so page JS can read
+  `location.search` / `location.hash` and listen for `hashchange` — standard web
+  APIs, nothing to learn. The SDK channel would add exactly one thing the URL
+  cannot express: **a repeat click on an identical pointer**, which changes no
+  URL and so fires no event. Dropping it also removes the deliver-on-handshake
+  machinery from the Preview flow. Presented HTML needs the SDK either way,
+  since a `srcDoc` frame has no URL. Raised by the requester ("do we actually
+  need a special API? The page JS could use the location API, no?").
 
 - **Which failures must req 10's toast cover?** Req 10 currently says "for any
   reason", and ShipIt cannot honour that literally. Some failures it can
