@@ -1,4 +1,5 @@
 ---
+issue: planning#334
 title: Agent-authored links into the Preview and the Present tab
 description: A markdown link the agent writes that opens a place in the user's own app or presented artifact, and tells that page about the click.
 ---
@@ -25,6 +26,7 @@ point at ShipIt-owned destinations. Nothing points into the user's own app
 
 Two URL schemes, written as ordinary markdown links (req 7):
 
+
 ```markdown
 [requirement 7](shipit-preview://web/requirements/7?highlight=7)
 [REQ-7](shipit-present:/persist/requirements.html?item=7#req-7)
@@ -43,8 +45,37 @@ Both accept a query string and a fragment, and those two carry the payload:
   `link` event on `window.shipit` (req 11).
 
 That is the whole syntax. No new tool, no new card, no new persisted message
-type — a link is text in an existing assistant message, so it survives history
-reload for free.
+type — a pointer is text in an existing assistant message, so it survives
+history reload for free.
+
+### Choosing the rendered form (req 1)
+
+One reserved query parameter, `shipit-render=link|badge|button`, defaulting to
+`link`:
+
+```markdown
+Two need attention: [REQ-7](shipit-present:/persist/reqs.html#req-7) and
+[REQ-9](shipit-present:/persist/reqs.html#req-9).
+
+[Open the failing one](shipit-present:/persist/reqs.html?shipit-render=button#req-7)
+```
+
+It is stripped before the payload reaches the page, so a page never sees ShipIt's
+own presentation knob among its parameters. The `shipit-` prefix is what makes
+that strip safe to state as a rule rather than a special case.
+
+Markdown gives no other place to put this. The link *title* is a tooltip and
+already used; a scheme variant (`shipit-present+button:`) multiplies the schemes;
+and a distinct markdown syntax would not survive the existing remark pipeline.
+A reserved parameter costs one line in the parser and reads acceptably in raw
+markdown, which is what the agent authors.
+
+**Badge and button are presentation only.** All three forms parse, resolve and
+click identically; the form selects a component in `MarkdownLink` and nothing
+else. A button renders as a block-level affordance, a badge as an inline pill
+matching `IssueBadge`'s line-box discipline (`text-[0.85em]`, `leading-none`, no
+vertical padding — a badge must not push prose lines apart), and a link as
+ordinary prose link styling.
 
 ### Why the payload rides the URL
 
@@ -59,8 +90,9 @@ SDK. One thing for the agent to author, one thing to document.
 ### Preview (req 2)
 
 1. `parseShipitLink` resolves the href to `{ service, path, params, hash }`.
-2. The service name is resolved to a port against `preview-store.services`.
-   Unknown or stopped service → a toast saying which (req 10).
+2. The service name is resolved against `preview-store.services`. A name no
+   declared service matches → a toast saying so (req 10). A **declared but
+   stopped** service is started instead (req 12) — see below.
 3. The port becomes the selected port, and the target path is written into
    `previewPaths[sessionId:port]` — the map the iframe pool already reads when
    it creates a slot, so a preview that is not open yet simply *starts* on the
@@ -80,6 +112,34 @@ SDK. One thing for the agent to author, one thing to document.
    a toast saying it was never presented (req 10).
 3. The link event is delivered to the artifact's sandboxed frame, on its SDK
    handshake if it is still mounting.
+
+### Starting a stopped service (req 12)
+
+A stopped service has no port yet, so there is nothing to resolve and nothing to
+navigate. The click therefore records the *intent* — service name, path, payload
+— and starting is a separate step that the intent outlives.
+
+`start_service` is a **WebSocket** message, and the socket is held by `App`,
+which threads `send` down as props (`PreviewServicesDrawer.tsx:526`). A markdown
+link click handler is nowhere near it, and a module-level `send` singleton would
+be a new global for one call site. So the intent goes into the preview store and
+`App` — which already owns both the socket and the store — sends
+`{ type: "start_service", name }` when it sees an intent naming a stopped
+service.
+
+Nothing then needs to wait: the service comes up, `service_status` lands, the
+health poller creates the slot, and the slot's URL is built from the path the
+intent already wrote into `previewPaths`. The user's destination survives the
+wait because it was recorded as a *destination*, not as a navigation to perform
+at click time. That is the same property that makes step 3 above work for a
+preview that is merely not open yet — req 12 needs no second mechanism, only a
+`start_service` send.
+
+A start can fail (a bad compose file, a missing secret). That surfaces where
+service failures already surface — `composeError`, the service's own error state
+in the drawer — not as a second toast from this feature.
+
+### Present rendering
 
 A presented artifact renders from `srcDoc` in an opaque-origin iframe, so the
 parent cannot set `location.hash` on it and a fragment in the frame URL would do
@@ -110,8 +170,12 @@ window.shipit.links.subscribe((link) => {
 
 ## Unavailable destinations (req 10)
 
-The link always renders as a link and always accepts a click; a dead one
-explains itself in a toast rather than silently doing nothing. This is
+A pointer always renders and always accepts a click; a dead one explains itself
+in a toast (`ui-store.setToast`, `variant: "error"`) rather than silently doing
+nothing. Two cases reach it — a service name nothing declares, and an artifact
+path that was never presented — and both name the thing that was missing, since
+"couldn't open that" tells the user nothing they can act on. A *stopped* service
+is not one of these cases (req 12). This is
 deliberately *unlike* `IssueBadge`, which degrades to plain text — that gate
 exists because issue references are pattern-matched out of ordinary prose and
 may not be references at all. Here the agent wrote the link on purpose, so
@@ -124,7 +188,8 @@ hiding it would misreport the agent's intent as a rendering decision.
 | `src/client/utils/shipit-link.ts` | Scheme constants + `parseShipitLink` |
 | `src/client/utils/open-shipit-link.ts` | The click action: resolve, focus, navigate, deliver |
 | `src/client/components/message-markdown.tsx` | `urlTransform` passthrough + the `MarkdownLink` branch |
-| `src/client/stores/preview-store.ts` | `pendingNavigation` handoff to the iframe pool |
+| `src/client/stores/preview-store.ts` | `pendingNavigation` handoff to the iframe pool + `App` |
+| `src/client/App.tsx` | Sends `start_service` for an intent naming a stopped service (req 12) |
 | `src/client/stores/present-store.ts` | `focusByPath`, `pendingLink` |
 | `src/client/components/PreviewFrame/PreviewFrame.tsx` | Navigate the live slot, deliver on handshake |
 | `src/client/components/PresentPane.tsx` | Deliver to the artifact frame |
@@ -136,6 +201,7 @@ hiding it would misreport the agent's intent as a rendering decision.
 
 - Auto-linkifying bare prose. Both schemes are explicit; there is no pattern to
   guess and no false-positive gate to build.
-- Starting a stopped service on click. A click that boots a container is a
-  bigger action than the link's appearance promises; req 10 says explain, and
-  the explanation names the service so the user can ask for it.
+
+An earlier draft listed "starting a stopped service on click" here, reasoning
+that booting a container exceeds what a link's appearance promises. The
+requester overruled it; it is req 12.

@@ -33,24 +33,37 @@ one requirement — with no way to make that pointer clickable.
    is never required of the agent.
 9. A Present destination is addressed by the artifact's **file path plus a URL
    fragment**; the fragment is what names the place inside it.
-10. A link whose destination is unavailable **stays clickable** and, on click,
-    says why instead of doing nothing.
+10. A pointer whose destination is unavailable **stays clickable** and, on
+    click, says why instead of doing nothing. The explanation appears as a
+    **toast**, the same way for both destinations.
 11. A link can also **deliver a message to the destination page**, observable by
     that page's own JavaScript, so the page can respond to the click itself —
     highlight the item, open a drawer, switch a filter — rather than only being
     scrolled to an anchor. This applies to both destinations (req 2, req 3).
+12. If the pointer names a service that is **not running, ShipIt starts it
+    first** and then opens the destination. A stopped service is not an
+    unavailable destination; req 10 covers only what cannot be reached at all —
+    no such service, or an artifact that was never presented.
 
 ## Open questions
 
-- **Where does the "why" appear when a destination is unavailable (req 10)?**
-  Raised by the requester against req 10, which says a dead link explains itself
-  but never said where the explanation lands. Candidates: a transient toast
-  (ShipIt already has one); an inline note next to the clicked pointer in chat,
-  where the user's attention already is; or the destination panel's own empty
-  state, which is where the click promised to take them. Nothing is implemented
-  while this is open.
+_None._
 
 ## Resolved questions
+
+- **2026-08-09 — Should a click start a stopped service?** The design had
+  recorded the opposite as a non-goal, on the agent's own reasoning that a click
+  which boots a container is a bigger action than a link's appearance promises.
+  The requester overrode it: *"another requirement: if the service is not
+  running, it is started first"*. Recorded as req 12, and the non-goal is
+  withdrawn.
+
+- **2026-08-09 — Where does the "why" appear when a destination is unavailable
+  (req 10)?** Raised by the requester against req 10, which said a dead pointer
+  explains itself but not where the explanation lands. Offered a transient
+  toast, an inline note beside the clicked pointer, or the destination panel's
+  own empty state. Answer: **a toast**. Folded into req 10, including that both
+  destinations report the same way.
 
 - **2026-08-09 — Should the agent choose how a pointer renders?** The first
   draft of req 1 said only "renders as a link". The requester: *"maybe could be
