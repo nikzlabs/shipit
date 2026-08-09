@@ -1,5 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: drives a Compose service start and port selection from store state (external system sync)
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import {
   usePreviewStore,
   PREVIEW_LINK_INTENT_TTL_MS,
@@ -35,6 +35,21 @@ export function usePreviewLinkIntent(
 ): void {
   const intent = usePreviewStore((s) => s.previewLinkIntent);
   const services = usePreviewStore((s) => s.services);
+  /**
+   * Services this feature has asked to start, by name — the one durable fact
+   * the flow needs, and the thing that tells req 12's case apart from req 10's:
+   * a service sitting in `error` that we have NOT asked about is simply not
+   * running (so start it), while one that reaches `error` after our request is
+   * a start that failed (so report it).
+   *
+   * A ref rather than a field on the intent, deliberately. Writing it to the
+   * store would re-run this effect with the service status unchanged — still
+   * `stopped`, because the server has not answered yet — and the "did it take?"
+   * branch would fire against its own write every single time. It also survives
+   * a second click replacing the intent, which is what stops two rapid clicks
+   * on one stopped service from sending two starts.
+   */
+  const startRequested = useRef<Set<string>>(new Set());
 
   // eslint-disable-next-line no-restricted-syntax -- reacts to service status arriving over WS
   useEffect(() => {
@@ -66,26 +81,37 @@ export function usePreviewLinkIntent(
     }
 
     if (service.status === "running") {
+      startRequested.current.delete(service.name);
       store.setSelectedPort(intent.port);
-      if (intent.phase !== "navigating") store.setPreviewLinkIntentPhase(intent.clickId, "navigating");
       return;
     }
 
+    // A boot is in flight — ours or the user's. Waiting rather than re-sending
+    // is the point: a click arriving during a start must not queue a second one.
+    if (service.status === "starting") return;
+
+    // `stopped` and `error` both mean "not running", and req 12 says a pointer
+    // to a service that is not running starts it — including one sitting in
+    // `error` from an earlier attempt of its own. Refusing that would leave the
+    // user holding a link that can never work again.
+    if (!startRequested.current.has(service.name)) {
+      if (!send({ type: "start_service", name: intent.service })) {
+        fail(store, intent.clickId, "That link can't be opened — this session isn't connected.");
+        return;
+      }
+      startRequested.current.add(service.name);
+      return;
+    }
+
+    // We asked, and it is not running. `error` is a definite verdict, so it is
+    // reported (req 10). `stopped` is not: it is also what the service reads as
+    // in the moment before the server answers, and a start that quietly never
+    // takes is the undetectable class req 10 is best-effort about. The intent's
+    // TTL clears that case rather than a timeout built to preserve a phrase.
     if (service.status === "error") {
+      startRequested.current.delete(service.name);
       fail(store, intent.clickId, `Service "${intent.service}" failed to start.`);
-      return;
     }
-
-    // A boot is already in flight — from this intent or from the user. Waiting
-    // rather than re-sending is the point: a click arriving during a start must
-    // not queue a second one.
-    if (service.status === "starting" || intent.phase === "starting") return;
-
-    if (!send({ type: "start_service", name: intent.service })) {
-      fail(store, intent.clickId, "That link can't be opened — this session isn't connected.");
-      return;
-    }
-    store.setPreviewLinkIntentPhase(intent.clickId, "starting");
   }, [intent, services, sessionId, send]);
 }
 

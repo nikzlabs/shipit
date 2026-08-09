@@ -121,8 +121,18 @@ sent — that is how the user sees the service booting instead of a blank pause.
    declared service by that name, or one with no declared port → req 10 toast.
 3. The click records an **intent** (below) and selects the port.
 4. A live slot is navigated by **assigning the iframe's `src`** to the resolved
-   destination URL.
+   destination URL — unless the page is already there.
 5. A service that is not running is started first (req 12), below.
+
+**"Already there" is decided against the path the page REPORTED, not the slot's
+entry URL.** `previewPaths` is written by the injected script on load and on
+every history change, so it tracks client-side routing; the slot URL is only
+where the page started. Comparing against the entry URL breaks both directions —
+a slot created at `/x` whose app has since routed to `/y` refuses to go back, and
+a slot created at `/` reloads the app on every repeat click. The decision is
+`resolvePointerNavigation`, split out of `PreviewFrame` because the component
+around it (iframe pool, health poller, postMessage bridge) is not testable in
+isolation while the comparison is.
 
 There is no delivery step. The page's reaction (req 11) is the URL it is now
 at — `location.search`, `location.hash`, `hashchange` — so navigating *is* the
@@ -161,8 +171,22 @@ So a click records:
 - There is no `payload` field. Once the SDK channel was cut, the parsed query
   and fragment had no destination other than the URL itself — so `targetPath`
   carries them and nothing needs to survive alongside it.
-- Re-clicking the *same* pointer is a new intent with a new `clickId`. Clicks are
-  not coalesced: clicking "requirement 7" twice means the user asked twice.
+- There is no `phase` field either. The one durable fact the flow needs is
+  *"have we asked this service to start?"*, and it lives in a **ref inside
+  `usePreviewLinkIntent`**, not on the intent. Writing it to the store would
+  re-run the effect with the service status unchanged — still `stopped`, because
+  the server has not answered yet — and the "did the start take?" branch would
+  fire against its own write every time. Keyed by service name, it also survives
+  a second click replacing the intent, which is what stops two rapid clicks on
+  one stopped service from sending two starts.
+
+**Re-clicking the same pointer.** A repeat click re-runs whatever is cheap and
+idempotent — focusing an artifact, scrolling a markdown heading — and never
+reloads or rebuilds a page to do it. A Preview page already at the destination
+is left alone, and a rendered HTML artifact already showing the fragment is not
+remounted. Both would mean discarding state the user's own scripts hold in order
+to repeat something the requirements already say produces nothing (see
+"the page-facing contract" in `requirements.md`).
 
 The desired path is used when creating the slot; the reported path is committed
 to `previewPaths` only after the new document loads, which keeps that map's
@@ -217,6 +241,15 @@ stopped service: the slot key `sessionId:port` is computable at click time, and
 
 So req 12 adds exactly one thing to the flow: when the resolved service's status
 is not `running` or `starting`, send `{ type: "start_service", name }`.
+
+**`error` counts as "not running".** A service sitting in `error` from some
+earlier attempt of its own is not this pointer's failure, and refusing it would
+leave the user holding a link that can never work again — so it is started like
+any other stopped service. What makes an `error` a req 10 failure is reaching it
+*after* our own start request, which is exactly the distinction the
+start-requested ref draws. A return to `stopped` is deliberately not reported:
+it is also what the service reads as in the moment before the server answers,
+and telling the two apart is the undetectable class req 10 is best-effort about.
 
 `start_service` is a **WebSocket** message and the socket is held by `App`, which
 threads `send` down as props (`PreviewServicesDrawer.tsx:526`). A markdown link
@@ -357,6 +390,7 @@ silently doing nothing:
 | No artifact presented from that path | the path |
 | The artifact's content fetch failed | the path |
 | No markdown heading matched the fragment | the fragment |
+| The service reached `error` after ShipIt asked it to start | the service name |
 | The resolved destination is not on the preview's origin | that it points outside the preview |
 
 Each names the missing thing, because "couldn't open that" gives the user
@@ -420,6 +454,23 @@ broken link at all — react-markdown's default sanitiser rewrites an unknown
 scheme to `""`, which would have left an untrusted-surface pointer rendering as
 an anchor to nowhere. Passing it through is not what enables it: without the
 opt-in the scheme never reaches the DOM, so there is no href and no handler.
+
+That pass-through is restricted to the **`href`** property, which is the only one
+`MarkdownLink` guards. Unrestricted, `![x](shipit-present:…)` emits a literal
+`<img src="shipit-present:…">` on every surface — inert, but a direct
+contradiction of the invariant above and the sort of gap that grows into a real
+one later.
+
+**A pointer is also scoped to the transcript that rendered it.** `MessageList`
+paints a `useDeferredValue` of the messages, so during a session switch React can
+keep the OUTGOING transcript on screen for a frame or more after the stores have
+moved to the incoming session — and every resolution above reads those stores, so
+a click landing in that window could start a same-named service in a session the
+user never pointed at. The messages and their session id are deferred as one
+value and the id is published through a context that `ShipitPointer` reads;
+a mismatch is ignored silently, because the user clicked a message on its way off
+screen. Context rather than a prop: the components map has to stay a module-level
+constant for the memo to hold.
 
 This is the one finding of the review that is a genuine security hole rather
 than a gap, and it was invisible from the requirements: "the agent can write a
@@ -498,7 +549,8 @@ status bar on hover and hand it to the OS protocol handler on middle-click or
 | `src/client/utils/reveal-workspace-tab.ts` | Select the tab + flip the mobile panel + close the mobile sidebar |
 | `src/client/components/message-markdown.tsx` | The opt-in renderer capability: scheme-enabled components + `urlTransform`, the `MarkdownLink` branch, its three forms |
 | `src/client/components/MessageList/MessageList.tsx` | Turns the capability on for assistant messages — and nowhere else |
-| `src/client/stores/preview-store.ts` | The navigation intent (session, service, port, slot, path, clickId, phase, startedAt) |
+| `src/client/stores/preview-store.ts` | The navigation intent (session, service, port, slot, path, clickId, startedAt) |
+| `src/client/utils/preview-link-navigation.ts` | Navigate / already-there / outside-preview, against the page's reported path |
 | `src/client/App.tsx` | Sends `start_service` for an intent whose service is stopped (req 12) |
 | `src/client/stores/present-store.ts` | `focusByPath` (closes the gallery), `linkTarget` |
 | `src/client/components/PreviewFrame/PreviewFrame.tsx` | Navigate the live slot |

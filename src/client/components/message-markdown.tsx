@@ -1,4 +1,4 @@
-import { useMemo, memo } from "react";
+import { useMemo, memo, createContext, useContext } from "react";
 import hljs from "highlight.js";
 import Markdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -107,6 +107,27 @@ function IssueBadge({ token, children }: { token: string; children?: React.React
 }
 
 /**
+ * The session the surrounding transcript belongs to, for agent-authored
+ * pointers (docs/258). `null` outside a transcript, which means "unscoped".
+ *
+ * It exists because `MessageList` renders a `useDeferredValue` of the messages:
+ * during a session switch React can keep painting the OUTGOING session's
+ * transcript for a frame or more after the stores have moved to the incoming
+ * one. A click in that window would resolve against the new session's services
+ * and could start a same-named service in a session the user never pointed at.
+ * The provider carries the id that belongs to the messages actually on screen,
+ * so the click can refuse.
+ *
+ * Context rather than a prop: `MarkdownContent`'s memo assumes stable
+ * module-level component maps, and threading a session id through them would
+ * mean rebuilding one per session. Context reaches consumers inside a memoised
+ * subtree without re-parsing any markdown.
+ */
+const ShipitPointerSessionContext = createContext<string | null>(null);
+
+export const ShipitPointerSessionProvider = ShipitPointerSessionContext.Provider;
+
+/**
  * An agent-authored pointer into the user's own app or a presented artifact
  * (docs/258). All three forms — inline link, badge, block button — parse,
  * resolve and click **identically**; the form the agent picked selects styling
@@ -129,7 +150,8 @@ function ShipitPointer({ link, title, children }: {
   title?: string;
   children?: React.ReactNode;
 }) {
-  const open = () => openShipitLink(link);
+  const owningSession = useContext(ShipitPointerSessionContext);
+  const open = () => openShipitLink(link, owningSession);
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key !== "Enter" && e.key !== " ") return;
     e.preventDefault();
@@ -460,8 +482,16 @@ const remarkPlugins = [remarkGfm, remarkBreaks, remarkLinkifyPaths, remarkLinkif
 // one as plain text unless the surface opted in, so the scheme never reaches the
 // DOM on a surface that didn't ask for it. Recognising it here is what lets that
 // branch tell a pointer apart from an ordinary broken link at all.
-function urlTransform(url: string): string {
-  if (url.startsWith(ISSUE_LINK_SCHEME) || isShipitLinkHref(url)) return url;
+//
+// The pass-through is restricted to **`href`**, which is the only property
+// `MarkdownLink` guards. Without that check `![x](shipit-present:…)` would emit
+// a literal `<img src="shipit-present:…">` on every surface — inert (no handler,
+// and the browser cannot load it) but a direct contradiction of the invariant
+// above, and the sort of gap that grows into a real one later. An image keeps
+// the default sanitiser, which rewrites the unknown scheme to `""`.
+function urlTransform(url: string, key: string): string {
+  if (url.startsWith(ISSUE_LINK_SCHEME)) return url;
+  if (key === "href" && isShipitLinkHref(url)) return url;
   return defaultUrlTransform(url);
 }
 

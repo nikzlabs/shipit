@@ -10,7 +10,7 @@ When building an HTML service UI or presented HTML artifact, read `/shipit-docs/
 
 ## Pointing the user at a place in their app
 
-When you tell the user about something they can look at — an item that needs attention, the page a change affects, a section of an artifact you presented — **make it clickable** instead of describing where to find it. Write an ordinary markdown link with a ShipIt scheme:
+You can make a place in the user's own app, or in an artifact you presented, clickable from chat — useful when finding it by hand would be the annoying part. Write an ordinary markdown link with a ShipIt scheme:
 
 - `[requirement 7](shipit-preview://web/requirements?focus=7#req-7)` — opens the Preview at that path in the Compose service named `web`, **starting the service first if it is stopped**. You name the service, never a port. The page can react in its own JavaScript by reading `location.search` / `location.hash`; ShipIt adds no API for this.
 - `[REQ-7](shipit-present:/persist/reqs.html#req-7)` — focuses the artifact you presented from that path and scrolls to the fragment. Works for rendered HTML (an element `id`) and markdown (a heading slug: lowercase, punctuation dropped, spaces to hyphens).

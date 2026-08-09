@@ -20,25 +20,31 @@
 
 ## Preview flow
 
-- [x] Navigation intent in `preview-store` — session-scoped, `clickId`,
-      `phase`, TTL; kept separate from `previewPaths`
+- [x] Navigation intent in `preview-store` — session-scoped, `clickId`, TTL;
+      kept separate from `previewPaths`
 - [x] Resolve before reveal; `revealWorkspaceTab(tab)` helper shared with
       `PresentToolChip`
-- [x] `usePreviewLinkIntent` sends `start_service` for a stopped target;
-      `starting` waits without re-sending (req 12)
+- [x] `usePreviewLinkIntent` starts a target that is `stopped` **or** `error`
+      (both mean "not running", req 12); `starting` waits without re-sending,
+      and two rapid clicks send one start
 - [x] Intent reselects its own port when its service reaches `running`
 - [x] A new slot is created at the destination; a live slot is navigated by
-      assigning `src`
+      assigning `src`, and left alone when the page already reports it is there
 - [x] Cancel on session switch; last-click-wins on rapid clicks
+- [x] A click is scoped to the transcript's own session, so a deferred render of
+      the outgoing one cannot act on the incoming session's services
 
 ## Present flow
 
 - [x] `present-store` — `focusByPath` (closes the gallery), `linkTarget`
 - [x] Delivery switches source view to rendered, and waits for content
+- [x] The fetch error is keyed to its artifact; a handled target is released so
+      reopening the tab does not replay it
 - [x] Markdown fragment scroll: Present-only container ref, the tested slug
       algorithm, first-match-wins
 - [x] HTML fragment: scroll script injected into the `srcDoc`, fragment
-      escaped for HTML as well as JSON, scroll on `DOMContentLoaded`
+      escaped for HTML as well as JSON, scroll on `DOMContentLoaded`, and no
+      remount for an identical repeat click
 
 ## Docs
 
@@ -51,16 +57,21 @@
 
 - [x] Parse: both schemes, every rejection case, the render allowlist
 - [x] Branch order vs repo-file links; all three rendered forms
-- [x] Schemes inert in PR/issue/repo-authored markdown
+- [x] Schemes inert in PR/issue/repo-authored markdown, including image syntax
+- [x] Inert in error/notice bubbles and in messages a preview page composed
 - [x] Multi-service: A running, pointer to stopped B, B's port becomes selected
 - [x] Session-switch cancellation; a service that vanished after the click
 - [x] Re-click and rapid-click semantics
 - [x] Gallery open, source view, content-fetch failure
-- [x] Missing markdown heading
+- [x] Missing markdown heading; a stale fetch error is not blamed on the next
+      artifact
+- [x] Navigation decision: already-there, back after the app routed away,
+      off-origin refusal
+- [x] A malformed pointer keeps the badge/button form the agent authored
 - [x] Injected scroll script: a fragment with quotes, backslashes or a closing
       script tag cannot break out
 
 ## Quality
 
 - [x] `lint:dev` + `typecheck` clean
-- [ ] Cross-backend review of the implementation
+- [x] Cross-backend review of the implementation (Codex) — findings applied

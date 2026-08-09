@@ -197,10 +197,19 @@ describe("parseShipitLink — the render form (req 1)", () => {
   });
 
   it("keeps a rejected pointer's requested form, so it renders as authored", () => {
-    // Req 10: an unopenable pointer still renders — as the form the agent chose.
-    const link = parseShipitLink("shipit-present:?shipit-render=button");
-    expect(link?.kind).toBe("invalid");
-    expect(link?.render).toBe("button");
+    // Req 10: an unopenable pointer still renders — as the form the agent chose,
+    // not silently demoted to an inline link. True on both schemes, which means
+    // the form has to be read BEFORE the rest of the address is validated.
+    for (const href of [
+      "shipit-present:?shipit-render=button",
+      "shipit-preview://web:3000/x?shipit-render=button",
+      "shipit-preview:///x?shipit-render=button",
+      "shipit-preview://web//evil.example/x?shipit-render=button",
+    ]) {
+      const link = parseShipitLink(href);
+      expect(link?.kind, href).toBe("invalid");
+      expect(link?.render, href).toBe("button");
+    }
   });
 
   it("does not mistake a page's own similarly-named parameter for ShipIt's", () => {

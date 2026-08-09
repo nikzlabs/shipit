@@ -41,13 +41,6 @@ export interface PreviewLinkIntent {
   targetPath: string;
   /** Fresh per click, and **last click wins** — an incomplete earlier intent is dropped, never queued. */
   clickId: number;
-  /**
-   * `pending` — the service needs starting and nothing has been sent yet.
-   * `starting` — a start is in flight, so a click arriving now must wait rather
-   * than queue a second one. `navigating` — the port is selected and the panel
-   * can take over.
-   */
-  phase: "pending" | "starting" | "navigating";
   /** `Date.now()` at the click, so an intent that never resolves cannot fire much later. */
   startedAt: number;
 }
@@ -251,8 +244,6 @@ interface PreviewState {
   clearPreviewPaths: () => void;
   /** Record where an agent-authored pointer wants the preview to go (docs/258). */
   setPreviewLinkIntent: (intent: PreviewLinkIntent) => void;
-  /** Advance a live intent's phase. No-op once a newer click has replaced it. */
-  setPreviewLinkIntentPhase: (clickId: number, phase: PreviewLinkIntent["phase"]) => void;
   /**
    * Drop the intent. With a `clickId`, only when it still owns the intent — so a
    * late resolution of a superseded click can't cancel the current one.
@@ -566,13 +557,6 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   },
 
   setPreviewLinkIntent: (previewLinkIntent) => set({ previewLinkIntent }),
-
-  setPreviewLinkIntentPhase: (clickId, phase) =>
-    set((state) => (
-      state.previewLinkIntent?.clickId === clickId
-        ? { previewLinkIntent: { ...state.previewLinkIntent, phase } }
-        : state
-    )),
 
   clearPreviewLinkIntent: (clickId) =>
     set((state) => (

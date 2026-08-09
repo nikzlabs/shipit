@@ -11,9 +11,8 @@ and [REQ-9](shipit-present:/persist/reqs.html#req-9).
 The failing check is on [the run detail page](shipit-preview://web/runs/1183?highlight=step-4).
 ```
 
-Use these when you are telling the user about something they can *look at* in
-their own app or in an artifact you presented. Prose that names an item without
-linking it makes them go find it by hand.
+Reach for these when the user would otherwise have to go find the thing by
+hand — a specific item, a specific route, a section of a long artifact.
 
 ## The two schemes
 
@@ -37,9 +36,10 @@ whole mechanism — standard web APIs, and ShipIt adds no API of its own. When y
 build a page that should highlight or filter in response to a pointer, have it
 read its own URL.
 
-One consequence worth knowing: clicking the *same* pointer twice changes no URL,
-so the page sees no second event. A page that must respond to every click should
-key off something that varies (e.g. include a changing parameter).
+One consequence worth knowing: clicking the *same* pointer twice is a no-op —
+the page is already at that URL, so ShipIt does not navigate (reloading would
+throw away whatever state the app holds) and the page sees no second event. A
+page that must respond to every click should key off something that varies.
 
 ### `shipit-present:<file path>#<fragment>` — a place in a presented artifact
 
@@ -62,6 +62,11 @@ Fragments work for **rendered HTML** and **markdown** artifacts:
   hyphens from the ends. So `## Open questions?` is `#open-questions`.
   **Duplicate headings resolve to the first one** — there are no `-1`/`-2`
   suffixes.
+
+Pointing at the *same* place twice in a rendered HTML artifact does nothing the
+second time, for the same reason: re-scrolling would mean rebuilding the
+document and discarding any state its own scripts hold. A different fragment
+always works.
 
 A presented artifact **cannot react in JavaScript** to a click; it is scrolled,
 nothing more. If you need a page that reacts, build it as a Compose service and

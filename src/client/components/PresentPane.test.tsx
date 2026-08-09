@@ -355,3 +355,66 @@ describe("PresentPane — agent-authored pointers", () => {
     await screen.findByTitle("Rendered content");
   });
 });
+
+describe("PresentPane — pointer lifecycle", () => {
+  const html = (id: string) => `<html><body><h1 id="${id}">x</h1></body></html>`;
+
+  it("does not blame a new artifact for the previous one's failed fetch", () => {
+    // The fetch error is keyed to the artifact that produced it. Unkeyed, it
+    // outlives that artifact for one render — long enough for the pointer
+    // effect to toast about A while pointing at B, and mark B's click handled.
+    useSessionStore.getState().setSessionId("sess-1");
+    usePresentStore.getState().hydrate([
+      meta({ presentId: "bad", filePath: "/persist/bad.html" }),
+      meta({ presentId: "good", filePath: "/persist/good.html" }),
+    ]);
+    mockContentFetch({ good: html("top") }); // "bad" 404s
+    render(<PresentPane isActiveTab />);
+
+    return vi.waitFor(async () => {
+      expect(useUiStore.getState().toast).toBeNull();
+      usePresentStore.getState().focusByPath("/persist/good.html");
+      usePresentStore.getState().setLinkTarget({ presentId: "good", fragment: "top", clickId: 9 });
+      await screen.findByTitle("Rendered content");
+      expect(useUiStore.getState().toast).toBeNull();
+    });
+  });
+
+  it("releases a handled markdown target, so reopening the tab does not replay it", async () => {
+    // `PresentPane` is only mounted while its tab is selected, so the local
+    // "already handled" ref dies on every switch away.
+    useSessionStore.getState().setSessionId("sess-1");
+    usePresentStore.getState().hydrate([
+      meta({ presentId: "p1", filePath: "/persist/a.md", mimeType: "text/markdown" }),
+    ]);
+    mockContentFetch({ p1: "# Only heading\n" }, "text/markdown");
+    const view = render(<PresentPane isActiveTab />);
+    await screen.findByText("Only heading");
+
+    usePresentStore.getState().setLinkTarget({ presentId: "p1", fragment: "nope", clickId: 11 });
+    await vi.waitFor(() => expect(useUiStore.getState().toast).not.toBeNull());
+    expect(usePresentStore.getState().linkTarget).toBeNull();
+
+    useUiStore.setState({ toast: null });
+    view.unmount();
+    render(<PresentPane isActiveTab />);
+    await screen.findByText("Only heading");
+    expect(useUiStore.getState().toast).toBeNull();
+  });
+
+  it("keeps an HTML target, which is what the injected scroll is built from", async () => {
+    // Clearing it would rebuild the `srcDoc` and remount the frame, undoing the
+    // scroll it just performed.
+    useSessionStore.getState().setSessionId("sess-1");
+    usePresentStore.getState().hydrate([meta({ presentId: "p1", filePath: "/persist/a.html" })]);
+    mockContentFetch({ p1: html("req-7") });
+    render(<PresentPane isActiveTab />);
+    await screen.findByTitle("Rendered content");
+
+    usePresentStore.getState().setLinkTarget({ presentId: "p1", fragment: "req-7", clickId: 12 });
+    await vi.waitFor(() => {
+      expect(screen.getByTitle("Rendered content").getAttribute("srcdoc")).toContain("scrollIntoView");
+    });
+    expect(usePresentStore.getState().linkTarget).not.toBeNull();
+  });
+});

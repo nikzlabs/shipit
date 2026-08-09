@@ -1828,3 +1828,44 @@ describe("MessageList", () => {
     });
   });
 });
+
+/**
+ * docs/258 — agent-authored pointers are live in assistant messages and nowhere
+ * else. Worth guarding here rather than only at `MarkdownContent`: this is the
+ * one call site that turns the capability on, and the messages it renders
+ * include ones ShipIt did not author.
+ */
+describe("MessageList — agent-authored pointers", () => {
+  const POINTER = "[start it](shipit-preview://web/x?shipit-render=button)";
+
+  it("renders a pointer in an assistant message", () => {
+    render(<MessageList messages={[msg("assistant", POINTER)]} isLoading={false} />);
+    expect(screen.getByRole("button", { name: "start it" })).toBeInTheDocument();
+  });
+
+  it("does not render one in a message a preview page composed", () => {
+    // The Agent Interface SDK lets an arbitrary page the user built compose a
+    // message into this transcript. It arrives as `role: "user"`, which renders
+    // as plain text — no markdown, so no pointer and no way to start a service.
+    render(<MessageList messages={[{
+      role: "user",
+      text: POINTER,
+      agentInterface: { source: "agent_interface_sdk", surface: "preview" },
+    }]} isLoading={false} />);
+    expect(screen.queryByRole("button", { name: "start it" })).toBeNull();
+    expect(screen.getByText(POINTER, { exact: false })).toBeInTheDocument();
+  });
+
+  it("does not render one in an error or notice bubble", () => {
+    render(
+      <MessageList
+        messages={[
+          { role: "assistant", text: POINTER, isError: true },
+          { role: "assistant", text: POINTER, notice: true },
+        ]}
+        isLoading={false}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "start it" })).toBeNull();
+  });
+});

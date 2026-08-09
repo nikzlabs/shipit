@@ -12,7 +12,7 @@
 
 import { MarkdownReviewView } from "./MarkdownReviewView.js";
 import { CodeEditor } from "./CodeEditor.js";
-import { RenderedFrame, svgToMarkup, type ScrollToFragment } from "./RenderedFrame.js";
+import { RenderedFrame, svgToMarkup } from "./RenderedFrame.js";
 import type { ContentKind } from "../../utils/file-content-kind.js";
 import type { ViewMode } from "./SourceToggle.js";
 import type { SelectionCommentData } from "../MarkdownSelectionComments.js";
@@ -35,12 +35,12 @@ export interface FileContentViewProps {
   codeComments: { id: string; kind: "line"; line: number; text: string }[];
   agentInterfaceFrameRef?: Ref<HTMLIFrameElement>;
   /**
-   * docs/258 — scroll a rendered HTML artifact to the element an agent-authored
+   * docs/258 — the element id in a rendered HTML artifact that an agent-authored
    * pointer named. Only the Present tab passes this; other kinds ignore it
    * (markdown scrolls in ShipIt's own DOM, and there is no place inside an image
    * to address).
    */
-  scrollTo?: ScrollToFragment;
+  scrollTo?: string;
 }
 
 export function FileContentView({

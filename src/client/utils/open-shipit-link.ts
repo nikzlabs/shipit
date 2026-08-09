@@ -41,7 +41,15 @@ function reportUnopenable(message: string): void {
  * outcome including `invalid` — a pointer always accepts a click, and one that
  * cannot be opened says why rather than doing nothing.
  */
-export function openShipitLink(link: ShipitLink): void {
+export function openShipitLink(link: ShipitLink, owningSession?: string | null): void {
+  // The pointer was rendered in one session's transcript and must not act on
+  // another. `MessageList` paints a deferred copy of the messages, so during a
+  // switch the OUTGOING transcript can still be on screen and clickable after
+  // the stores have moved on — and every resolution below reads those stores.
+  // Silently ignoring is right: the user clicked a message that is on its way
+  // off screen, and a toast about it would be noise.
+  if (owningSession && owningSession !== useSessionStore.getState().sessionId) return;
+
   if (link.kind === "invalid") {
     reportUnopenable(`That link can't be opened — ${link.reason}.`);
     return;
@@ -97,7 +105,6 @@ function openPreviewLink(link: Extract<ShipitLink, { kind: "preview" }>): void {
   }
 
   revealWorkspaceTab("preview");
-  const running = service.status === "running";
   preview.setPreviewLinkIntent({
     sessionId,
     service: service.name,
@@ -105,12 +112,11 @@ function openPreviewLink(link: Extract<ShipitLink, { kind: "preview" }>): void {
     slotKey: `${sessionId}:${service.port}`,
     targetPath: link.target,
     clickId: nextShipitLinkClickId(),
-    phase: running ? "navigating" : "pending",
     startedAt: Date.now(),
   });
   // Selecting the port is what makes this slot the active one. For a service
-  // that is still stopped the reselection happens when it reaches `running`
+  // that is not yet running the reselection happens when it reaches `running`
   // (`usePreviewLinkIntent`) — `preview_status` clears `selectedPort` when the
   // chosen port isn't among the running ones, so it cannot be set up front.
-  if (running) preview.setSelectedPort(service.port);
+  if (service.status === "running") preview.setSelectedPort(service.port);
 }

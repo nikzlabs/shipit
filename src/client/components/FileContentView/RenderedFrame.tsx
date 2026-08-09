@@ -82,12 +82,16 @@ function jsonForScript(value: unknown): string {
  * exist yet. Defer to `DOMContentLoaded`, running immediately only when the
  * document has already parsed.
  *
- * `nonce` changes on every click, which changes the `srcDoc` and remounts the
- * frame. That is what makes a repeat click on the same pointer scroll again:
- * clicks are deliberately not coalesced.
+ * A *different* fragment changes the `srcDoc` and so remounts the frame, which
+ * is how a second pointer into the same artifact scrolls. An identical repeat
+ * click deliberately does **not**: an earlier draft varied the script per click
+ * to force that remount, which threw away whatever state the artifact's own
+ * scripts held — a disproportionate price for re-running a scroll, and the
+ * requirements already accept that a repeat click on an identical pointer does
+ * nothing.
  */
-function injectScrollToFragment(html: string, fragment: string, nonce: number): string {
-  const script = `<script>/* shipit-link ${nonce} */(function(){var id=${jsonForScript(fragment)};`
+function injectScrollToFragment(html: string, fragment: string): string {
+  const script = `<script>(function(){var id=${jsonForScript(fragment)};`
     + `function go(){var el=document.getElementById(id);if(el)el.scrollIntoView();}`
     + `if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",go);else go();})()</script>`;
   const head = /<head[^>]*>/i.exec(html);
@@ -107,14 +111,6 @@ function injectAgentInterface(html: string): string {
   return `${AGENT_INTERFACE_SDK_SCRIPT}${html}`;
 }
 
-/** Where an agent-authored pointer asked this artifact to scroll (docs/258). */
-export interface ScrollToFragment {
-  /** An element id in the artifact. */
-  fragment: string;
-  /** Changes per click, so an identical repeat click still re-scrolls. */
-  nonce: number;
-}
-
 export function RenderedFrame({
   kind,
   content,
@@ -126,8 +122,11 @@ export function RenderedFrame({
   content: string;
   enableAgentInterface?: boolean;
   frameRef?: Ref<HTMLIFrameElement>;
-  /** Only honoured for `html` — there is no place inside an SVG to address. */
-  scrollTo?: ScrollToFragment;
+  /**
+   * docs/258 — an element id an agent-authored pointer addressed. Only honoured
+   * for `html`; there is no place inside an SVG to address.
+   */
+  scrollTo?: string;
 }) {
   let srcDoc: string;
   if (kind === "svg") {
@@ -139,7 +138,7 @@ export function RenderedFrame({
   } else {
     const secured = injectCsp(content);
     const withSdk = enableAgentInterface ? injectAgentInterface(secured) : secured;
-    srcDoc = scrollTo ? injectScrollToFragment(withSdk, scrollTo.fragment, scrollTo.nonce) : withSdk;
+    srcDoc = scrollTo ? injectScrollToFragment(withSdk, scrollTo) : withSdk;
   }
 
   return (

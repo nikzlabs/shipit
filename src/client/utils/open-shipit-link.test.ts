@@ -40,7 +40,6 @@ describe("openShipitLink — preview (req 2, req 8)", () => {
       port: 5173,
       slotKey: "sess-1:5173",
       targetPath: "/runs/1?highlight=4#step-4",
-      phase: "navigating",
     });
     expect(usePreviewStore.getState().selectedPort).toBe(5173);
     expect(toast()).toBeUndefined();
@@ -61,7 +60,7 @@ describe("openShipitLink — preview (req 2, req 8)", () => {
     usePreviewStore.setState({ services: [WEB_STOPPED] });
     openShipitLink(link("shipit-preview://web/x"));
 
-    expect(usePreviewStore.getState().previewLinkIntent?.phase).toBe("pending");
+    expect(usePreviewStore.getState().previewLinkIntent?.service).toBe("web");
     expect(usePreviewStore.getState().selectedPort).toBeNull();
     // Still revealed — that is how the user watches it boot.
     expect(useUiStore.getState().rightTab).toBe("preview");

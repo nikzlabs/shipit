@@ -240,31 +240,36 @@ function parsePreview(rest: string): ShipitLink {
   const end = afterAuthority.search(/[/?#]/);
   const service = end < 0 ? afterAuthority : afterAuthority.slice(0, end);
   const remainder = end < 0 ? "" : afterAuthority.slice(end);
+  const { path, query, fragment } = splitParts(remainder);
 
-  if (service === "") return invalid("the address names no service");
-  if (service.length > MAX_SERVICE_LENGTH) return invalid("the service name is too long");
+  // The render form is read FIRST, so that everything below can report its
+  // failure in the form the agent asked for. A pointer that can't be opened
+  // still renders (req 10), and it should render as the badge or button the
+  // author wrote — not silently demote itself to an inline link.
+  const split = extractRenderParam(query);
+  if ("error" in split) return invalid(split.error);
+  const { render } = split;
+
+  if (service === "") return invalid("the address names no service", render);
+  if (service.length > MAX_SERVICE_LENGTH) return invalid("the service name is too long", render);
   if (!SERVICE_NAME_RE.test(service)) {
     // `user@host` and `host:3000` both land here: req 8 says the address carries
     // a service name and never a port, so either is a malformed pointer.
-    return invalid(`"${service}" is not a valid service name`);
+    return invalid(`"${service}" is not a valid service name`, render);
   }
 
-  const { path, query, fragment } = splitParts(remainder);
   // A pointer with no path addresses the app as a whole, which req 5 permits.
   const normalizedPath = path === "" ? "/" : path;
   if (!normalizedPath.startsWith("/") || normalizedPath.startsWith("//")) {
-    return invalid("a preview path must begin with a single /");
+    return invalid("a preview path must begin with a single /", render);
   }
-
-  const split = extractRenderParam(query);
-  if ("error" in split) return invalid(split.error);
 
   const target =
     normalizedPath +
     (split.rest === "" ? "" : `?${split.rest}`) +
     (fragment === "" ? "" : `#${fragment}`);
 
-  return { kind: "preview", service, target, render: split.render };
+  return { kind: "preview", service, target, render };
 }
 
 /** Parse everything after `shipit-present:` — a presented artifact's file path. */

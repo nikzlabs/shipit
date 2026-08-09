@@ -11,13 +11,13 @@ import { RenderedFrame } from "./RenderedFrame.js";
 
 afterEach(cleanup);
 
-function srcDoc(fragment: string | undefined, nonce = 1): string {
+function srcDoc(fragment?: string): string {
   cleanup();
   render(
     <RenderedFrame
       kind="html"
       content="<html><head></head><body><h1 id='a'>A</h1></body></html>"
-      {...(fragment !== undefined ? { scrollTo: { fragment, nonce } } : {})}
+      {...(fragment !== undefined ? { scrollTo: fragment } : {})}
     />,
   );
   return screen.getByTitle("Rendered content").getAttribute("srcdoc") ?? "";
@@ -37,10 +37,13 @@ describe("RenderedFrame — fragment scrolling", () => {
     expect(html).toContain("DOMContentLoaded");
   });
 
-  it("changes with the nonce, so a repeat click re-scrolls", () => {
-    // Identical `srcDoc` would not remount the frame, and clicks are
-    // deliberately not coalesced.
-    expect(srcDoc("req-7", 1)).not.toBe(srcDoc("req-7", 2));
+  it("remounts for a different fragment, and not for the same one", () => {
+    // A changed fragment must rebuild the document so the new scroll runs. An
+    // identical one must NOT: remounting would discard whatever state the
+    // artifact's own scripts hold, to re-run a scroll the requirements already
+    // accept a repeat click need not perform.
+    expect(srcDoc("req-7")).not.toBe(srcDoc("req-9"));
+    expect(srcDoc("req-7")).toBe(srcDoc("req-7"));
   });
 
   it("keeps the CSP meta and lands the script inside <head>", () => {
@@ -74,7 +77,7 @@ describe("RenderedFrame — fragment scrolling", () => {
   });
 
   it("ignores a fragment for SVG — there is no place inside one to address", () => {
-    render(<RenderedFrame kind="svg" content="<svg/>" scrollTo={{ fragment: "x", nonce: 1 }} />);
+    render(<RenderedFrame kind="svg" content="<svg/>" scrollTo="x" />);
     expect(screen.getByTitle("Rendered content").getAttribute("srcdoc"))
       .not.toContain("scrollIntoView");
   });

@@ -3,9 +3,9 @@
  * and (the security-critical part) where the schemes are live at all.
  */
 import { describe, it, expect, afterEach, vi, beforeEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MarkdownContent } from "./message-markdown.js";
+import { MarkdownContent, ShipitPointerSessionProvider } from "./message-markdown.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePresentStore } from "../stores/present-store.js";
@@ -94,6 +94,53 @@ describe("agent-authored pointers — where the schemes are live", () => {
       <MarkdownContent text="[x](shipit-present:/persist/r.html)" />,
     );
     expect(container.innerHTML).not.toContain("shipit-present");
+  });
+
+  it("does not let image syntax put the scheme in the DOM either", () => {
+    // `urlTransform` passes the schemes through so `MarkdownLink` can recognise
+    // them — but that pass-through is `href`-only. Without the restriction this
+    // emits a literal `<img src="shipit-present:…">` on every surface.
+    for (const shipitLinks of [false, true]) {
+      cleanup();
+      const { container } = render(
+        <MarkdownContent text="![x](shipit-present:/persist/r.html)" shipitLinks={shipitLinks} />,
+      );
+      expect(container.innerHTML, `shipitLinks=${shipitLinks}`).not.toContain("shipit-present");
+    }
+  });
+});
+
+describe("agent-authored pointers — transcript session scoping", () => {
+  it("ignores a click on a transcript belonging to another session", () => {
+    // `MessageList` paints a deferred copy of the messages, so during a switch
+    // the outgoing session's transcript is briefly still on screen and
+    // clickable — while every store the click reads has already moved on.
+    usePreviewStore.setState({
+      services: [{ name: "web", status: "stopped", port: 5173, preview: "auto" }],
+    });
+    render(
+      <ShipitPointerSessionProvider value="sess-OLD">
+        <MarkdownContent text="[go](shipit-preview://web/x)" shipitLinks />
+      </ShipitPointerSessionProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "go" }));
+
+    expect(usePreviewStore.getState().previewLinkIntent).toBeNull();
+    // Silently — the user clicked a message on its way off screen.
+    expect(useUiStore.getState().toast).toBeNull();
+  });
+
+  it("acts when the transcript is the session on screen", () => {
+    usePreviewStore.setState({
+      services: [{ name: "web", status: "running", port: 5173, preview: "auto" }],
+    });
+    render(
+      <ShipitPointerSessionProvider value="sess-1">
+        <MarkdownContent text="[go](shipit-preview://web/x)" shipitLinks />
+      </ShipitPointerSessionProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "go" }));
+    expect(usePreviewStore.getState().previewLinkIntent?.targetPath).toBe("/x");
   });
 });
 

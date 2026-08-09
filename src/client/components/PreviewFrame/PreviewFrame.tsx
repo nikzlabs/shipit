@@ -6,6 +6,7 @@ import { ICON_SIZE } from "../../design-tokens.js";
 import { Button } from "../ui/button.js";
 import type { PreviewError } from "../../hooks/usePreviewErrors.js";
 import { usePreviewStore } from "../../stores/preview-store.js";
+import { resolvePointerNavigation } from "../../utils/preview-link-navigation.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { resolvePreviewHost, suggestWildcardHost } from "../../utils/preview-host.js";
 import { StartupSteps } from "../StartupSteps.js";
@@ -403,27 +404,20 @@ export function PreviewFrame({
     const clearIntent = () =>
       usePreviewStore.getState().clearPreviewLinkIntent(previewLinkIntent.clickId);
 
-    let destination: string;
-    try {
-      const resolved = new URL(previewLinkIntent.targetPath, activeSlotUrl);
-      // The parser already rejected everything that could escape the origin;
-      // this re-checks the resolved value rather than inheriting that guarantee,
-      // because what follows is an iframe navigation.
-      if (resolved.origin !== new URL(activeSlotUrl).origin) throw new Error("cross-origin");
-      destination = resolved.href;
-    } catch {
-      clearIntent();
+    const outcome = resolvePointerNavigation(
+      previewLinkIntent.targetPath,
+      activeSlotUrl,
+      usePreviewStore.getState().previewPaths[activeSlotKey],
+    );
+    clearIntent();
+
+    if (outcome.kind === "navigate") el.src = outcome.url;
+    else if (outcome.kind === "outside-preview") {
       useUiStore.getState().setToast({
         message: "That link can't be opened — it points outside the preview.",
         variant: "error",
       });
-      return;
     }
-
-    // The slot was created at the destination (a first visit, or a service that
-    // was just started) — re-assigning would reload the page we just loaded.
-    if (activeSlotUrl !== destination) el.src = destination;
-    clearIntent();
   }, [previewLinkIntent, activeSlotKey, activeSlotUrl, sessionId, iframeRefs]);
 
   // Force-reload the active iframe on refresh click

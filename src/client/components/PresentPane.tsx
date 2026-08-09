@@ -65,7 +65,11 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
   const setGalleryOpen = usePresentStore((s) => s.setGalleryOpen);
   const markSeen = usePresentStore((s) => s.markSeen);
 
-  const [fetchError, setFetchError] = useState<string | null>(null);
+  // Keyed by the artifact it belongs to. An unkeyed error outlives the artifact
+  // that produced it for one render — long enough for the pointer effect below
+  // to blame artifact B for artifact A's failed fetch, mark B's click handled,
+  // and never deliver it.
+  const [fetchError, setFetchError] = useState<{ presentId: string; message: string } | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("rendered");
   // Ids with an in-flight content fetch, so a re-render doesn't double-fetch.
   const fetching = useRef<Set<string>>(new Set());
@@ -86,6 +90,8 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
   const active = hasEntries ? presentations[safeIndex] : undefined;
   const activePresentId = active?.presentId;
   const activeContent = active?.content;
+
+  const activeError = fetchError && fetchError.presentId === activePresentId ? fetchError.message : null;
 
   const kind = kindFromMimeType(active?.mimeType ?? "", active?.filePath ?? "");
   const agentInterfaceActive = isActiveTab && !galleryOpen && kind === "html" && viewMode === "rendered";
@@ -169,25 +175,46 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
     if (!linkTarget || !linkTargetIsActive) return;
     if (handledClickRef.current === linkTarget.clickId) return;
 
+    // Mark the click acted on, and release the store's target so returning to
+    // this tab later cannot replay it. `handledClickRef` alone is not enough:
+    // `PresentPane` is only mounted while its tab is selected, so a switch away
+    // and back gives a fresh component with an empty ref and would re-toast.
+    //
+    // A rendered HTML fragment is the exception — there the target IS the render
+    // input (`scrollTo` below), so clearing it would rebuild the `srcDoc` and
+    // remount the frame, undoing the very scroll it just performed. Keeping it
+    // costs nothing: an HTML artifact has no toast to repeat, and a remount
+    // re-runs the injected scroll, which is what returning to the tab should do.
+    const done = (keepTarget = false) => {
+      handledClickRef.current = linkTarget.clickId;
+      if (!keepTarget) usePresentStore.getState().clearLinkTarget(linkTarget.clickId);
+    };
+
     // A pointer is commonly what first shows an artifact, so the bytes are
     // usually still loading. Wait; a failed fetch is a req 10 outcome.
-    if (fetchError) {
-      handledClickRef.current = linkTarget.clickId;
+    if (activeError) {
+      done();
       useUiStore.getState().setToast({
-        message: `Could not open ${active?.filePath ?? "that artifact"} — ${fetchError}`,
+        message: `Could not open ${active?.filePath ?? "that artifact"} — ${activeError}`,
         variant: "error",
       });
       return;
     }
     if (activeContent === undefined) return;
 
-    handledClickRef.current = linkTarget.clickId;
     // No fragment addresses the artifact as a whole (req 5) — focusing it, which
     // already happened, is the entire action.
-    if (linkTarget.fragment === undefined) return;
+    if (linkTarget.fragment === undefined) {
+      done();
+      return;
+    }
     // HTML scrolls itself from the injected script; nothing to do here, and
     // whether its fragment matched is not observable across an opaque origin.
-    if (kind !== "markdown") return;
+    if (kind !== "markdown") {
+      done(kind === "html");
+      return;
+    }
+    done();
 
     const root = contentRef.current;
     const wanted = slugifyHeading(linkTarget.fragment);
@@ -203,7 +230,7 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
       return;
     }
     match.scrollIntoView({ block: "start", behavior: "smooth" });
-  }, [linkTarget, linkTargetIsActive, activeContent, fetchError, kind, active?.filePath]);
+  }, [linkTarget, linkTargetIsActive, activeContent, activeError, kind, active?.filePath]);
 
   // Discard the outgoing artifact's empty draft on carousel nav / tab blur /
   // unmount — the Present analogue of the modal's close. `discardEmptyDraftNow`
@@ -270,7 +297,7 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
         }
         if (!cancelled) usePresentStore.getState().setContent(id, body.content);
       } catch (err) {
-        if (!cancelled) setFetchError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setFetchError({ presentId: id, message: err instanceof Error ? err.message : String(err) });
       } finally {
         fetching.current.delete(id);
       }
@@ -381,9 +408,9 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
           // gallery, not on every ◀/▶); mounting fresh on gallery→single makes
           // `animate-in` cross-fade it back in over the closing gallery.
           <div ref={contentRef} className="absolute inset-0 animate-in fade-in duration-200">
-            {fetchError ? (
+            {activeError ? (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-sm text-(--color-text-tertiary) p-6 text-center">
-                <p className="max-w-xs">{fetchError}</p>
+                <p className="max-w-xs">{activeError}</p>
                 <p className="max-w-xs text-xs">
                   The artifact may no longer be on disk. Ask the agent to present it again.
                 </p>
@@ -405,9 +432,7 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
                 codeComments={review.codeComments}
                 agentInterfaceFrameRef={kind === "html" ? agentInterfaceFrameRef : undefined}
                 scrollTo={
-                  linkTargetIsActive && linkTarget?.fragment !== undefined
-                    ? { fragment: linkTarget.fragment, nonce: linkTarget.clickId }
-                    : undefined
+                  linkTargetIsActive && kind === "html" ? linkTarget?.fragment : undefined
                 }
               />
             )}
