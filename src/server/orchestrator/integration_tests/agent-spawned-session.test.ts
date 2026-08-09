@@ -235,6 +235,46 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(reloaded?.branch).toBe(body.branch);
   });
 
+  it("docs/252 — a child inherits the parent's SELECTION, retirement resolved", { timeout: 15_000 }, async () => {
+    // Two things at once, because the spawn path is where they compound.
+    //
+    // The parent is on a RETIRED model under OpenAI's **key** mode — a row
+    // written before the model left the catalogue. Copying its bare model id
+    // would lose the triple twice over: `setModel` cannot place a retired id at
+    // all, so the child would start with no service, and the id would then
+    // re-resolve to whichever mode sorts first — OpenAI's `sub`. A parent paying
+    // per token would silently seed a child onto a subscription, which is the
+    // cross-mode move reqs 12 and 13 both refuse, arriving through the spawn.
+    //
+    // No WebSocket is involved here, which is the point: this path resolves
+    // before any connect-time reader runs.
+    const parentId = await createParentSession("Retired parent");
+    sessionManager.setAgentId(parentId, "codex");
+    sessionManager.setModelSelection(parentId, {
+      serviceId: "openai",
+      billingMode: "key",
+      modelId: "gpt-5.6",
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "Do the thing", title: "Child of a retired parent" },
+    });
+    expect(res.statusCode).toBe(200);
+    const { sessionId: childId } = res.json() as { sessionId: string };
+
+    const child = sessionManager.get(childId);
+    expect(child?.model).toBe("gpt-5.6-sol");
+    expect(child?.serviceId).toBe("openai");
+    expect(child?.billingMode).toBe("key");
+
+    // …and the parent moved too, since resolving its row is what produced the
+    // seed. Both sessions now report what they actually run (req 11).
+    expect(sessionManager.get(parentId)?.model).toBe("gpt-5.6-sol");
+    expect(sessionManager.get(parentId)?.billingMode).toBe("key");
+  });
+
   it("docs/201 — a grandchild inherits the root ancestor, not its immediate parent", { timeout: 20_000 }, async () => {
     const rootId = await createParentSession();
 

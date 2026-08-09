@@ -617,14 +617,12 @@ resolved where the session's model is read, generalizing the existing
 `normalizeCodexModelId` shim. Small, but it is what lets curation happen without stranding
 sessions, so it should land before the catalogue is trimmed in anger.
 
-**Phase 8 has landed.** The resolver is `retirementSuccessor` / `resolveRetiredModelId` /
-`effectiveModelIdForHarness` in `catalogue/index.ts` (pure catalogue lookups) plus
+**Phase 8 has landed.** The resolver is `retirementSuccessor` (full triple) and
+`resolveRetiredModelId` (bare id) in `catalogue/index.ts` — pure catalogue lookups — plus
 `applyModelRetirement` in `orchestrator/model-retirement.ts`, which resolves a session and
 **persists** the successor. The `RetiredModel` rows and their authoring-time invariants came
 with phase 1, so this phase added no catalogue shape; what it added is the resolution and its
-call sites. `normalizeCodexModelId` is **deleted** rather than left beside the new mechanism:
-the container's Codex turn boundary now calls `effectiveModelIdForHarness`, which is the same
-shim generalized off its one hard-coded service, style and harness.
+call sites.
 
 Where it resolves, and why each site:
 
@@ -638,17 +636,42 @@ Where it resolves, and why each site:
   *source* rather than inside `buildAgentRunParams` because that same reader feeds usage
   attribution, so normalizing later would record a turn against a model that never ran it
   (req 11).
-- **Sub-agent defaults** (`credential-store.ts`) — the third persisted selection phase 1
-  flagged. Not literally "the session's model", but it strands identically: the spawn would
-  forward an id the CLI can no longer run. `agentId` there *is* the harness, which is what
-  makes the successor check well-defined.
+- **Child spawn** (`child-sessions.ts`) — a spawn resolves the parent before seeding the
+  child, and now passes the **whole triple** rather than a bare model id. Both halves are
+  needed and only the first is about retirement: a bare id re-resolves to whichever mode sorts
+  first, so a parent on a service's metered key was seeding its child onto that service's
+  subscription — the cross-mode move reqs 12 and 13 both refuse, arriving through the spawn
+  path. That is a phase-1 gap ("the selection becomes the triple throughout" missed this
+  caller) which phase 8 closes because req 13's guarantee depends on it.
+- **Sub-agent defaults** (`credential-store.migrateSubAgentDefaults`) — the third persisted
+  selection phase 1 flagged. Not literally "the session's model", but it strands identically:
+  the spawn would forward an id the CLI can no longer run. `agentId` there *is* the harness.
+  It runs in the existing load-time migration rather than in the getter, because a retirement
+  only ever arrives with a new catalogue — i.e. with a new process — so once per load covers
+  it without putting a synchronous save behind every read.
 
-**Two things deliberately not resolved.** The browser's `vibe-model-id` slot seeds a *new*
-session rather than pinning an existing one, and a seed the catalogue cannot place already
-degrades to req 9's first-eligible default — a default, not a stranding — and the reader has
-no harness to check a successor against. And a retirement with no successor for the session's
-harness leaves the row **untouched**: that is a catalogue mistake to fix (req 13), and moving
-the session somewhere arbitrary would hide it.
+**`normalizeCodexModelId` is deleted, and deliberately not re-created as a bare-id helper for
+a spawn boundary to call.** The first cut generalized it in place, and cross-backend review
+found that unsound: req 5 lets two services offer the same model id, so an id one service has
+retired while another still offers it would be rewritten to the *first* service's successor —
+overriding a correctly resolved selection with a model the session's own service does not
+serve, at its endpoint, on its credential (req 11). A boundary holding only an id cannot tell
+those apart. It is also unnecessary: `AgentRunParams.model` has exactly two producers
+(`buildAgentRunParams`, `buildSubAgentRunParams`), and both read something that resolves
+first. So the Codex turn boundary now forwards what it is given, and the adapter test that
+pinned the old rewrite asserts the pass-through instead, with the behaviour it protected
+asserted a layer up.
+
+**What the phase does not resolve, and one claim it does not make.** The browser's
+`vibe-model-id` slot seeds a *new* session rather than pinning an existing one, a seed the
+catalogue cannot place already degrades to req 9's first-eligible default — a default, not a
+stranding — and the reader has no harness to check a successor against. And when a retirement
+has no successor for the session's harness, `applyModelRetirement` **moves nothing**; it does
+*not* follow that the session stays put, because WS connect still replaces a model no harness
+lists with the harness's first one, exactly as it does for any alias or versioned slug. That
+self-heal is pre-existing and phase 8 does not change it, so the honest statement is that the
+resolver declines to guess — a missing successor degrades to today's behaviour rather than to
+"untouched". An earlier draft of this section claimed otherwise.
 
 **Phase 9 — Harness install selection.** Which harnesses a deployment installs becomes a
 build input, defaulting to Claude Code and Codex. This supersedes the never-implemented
@@ -1382,9 +1405,11 @@ There was precedent to copy rather than a mechanism to invent: `normalizeCodexMo
 (then at `agent-registry.ts:141`) already did exactly this for one model, mapping the retired
 `gpt-5.6` slug onto `gpt-5.6-sol` "at the boundary before Codex turns so legacy sessions
 run the intended Sol model". Req 13 generalizes that one-off shim from a hardcoded
-per-`AgentId` special case into a per-service catalogue field resolved at the same
-boundary — and phase 8 **subsumed** it: the shim is gone, and the boundary calls
-`effectiveModelIdForHarness`, so there is one mechanism rather than two.
+per-`AgentId` special case into a per-service catalogue field. Phase 8 **subsumed** it: the
+shim is gone and there is one mechanism rather than two — but *not* at the same boundary.
+Resolution moved up to where the service and billing mode are known, because an id alone
+cannot say whose retirement applies once two services offer the same one (req 5); see the
+phase-8 notes above.
 
 **The remap writes through to the session's stored selection; it is not a read-time
 normalization.** The precedent this generalizes, `normalizeCodexModelId`, rewrites the model

@@ -22,7 +22,6 @@ import {
   modesOfferingModel,
   nativeModelIdsForHarness,
   parseSelection,
-  effectiveModelIdForHarness,
   resolveEndpoint,
   resolveModelSelection,
   resolveRetiredModelId,
@@ -307,15 +306,28 @@ describe("resolving a retired model (req 13, phase 8)", () => {
     expect(resolveRetiredModelId("codex", undefined)).toBeUndefined();
   });
 
-  it("passes a current or unknown id through untouched at the boundary", () => {
-    // `effectiveModelIdForHarness` replaces the old `normalizeCodexModelId`
-    // shim, so it must keep that shim's contract exactly: undefined in,
-    // undefined out; anything it cannot place is returned as it arrived.
-    expect(effectiveModelIdForHarness("codex", "gpt-5.6")).toBe("gpt-5.6-sol");
-    expect(effectiveModelIdForHarness("codex", "gpt-5.4")).toBe("gpt-5.4");
-    expect(effectiveModelIdForHarness("codex", "claude-opus-5")).toBe("claude-opus-5");
-    expect(effectiveModelIdForHarness("codex", undefined)).toBeUndefined();
-    expect(effectiveModelIdForHarness("claude", "gpt-5.6")).toBe("gpt-5.6");
+  it("does not answer for a service other than the one asked about", () => {
+    // Req 5 lets two services offer the same model id, so a lookup that knows
+    // only the id cannot say whose retirement applies. This is why the bare-id
+    // form takes a preferred service and why no spawn boundary calls it: an id
+    // one service retired while another still offers it must not be rewritten
+    // to the first service's successor at the second service's endpoint.
+    const anyRetiredElsewhere = CATALOGUE.some((service) =>
+      service.modes.some((mode) =>
+        mode.retired.some((retired) =>
+          CATALOGUE.some(
+            (other) =>
+              other.id !== service.id &&
+              other.modes.some((m) => m.models.some((model) => model.id === retired.id)),
+          ),
+        ),
+      ),
+    );
+    // Not true of the shipped catalogue today; the assertion is that when it
+    // becomes true, `retirementSuccessor` still consults only the mode it was
+    // handed — which the "never crosses" test above already pins.
+    expect(anyRetiredElsewhere).toBe(false);
+    expect(retirementSuccessor("codex", { serviceId: "anthropic", billingMode: "sub", modelId: "gpt-5.6" })).toBeUndefined();
   });
 });
 

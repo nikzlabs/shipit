@@ -47,10 +47,13 @@ export const CODEX_MODELS = nativeModelIdsForHarness("codex");
 
 // docs/252 phase 8 — `normalizeCodexModelId` lived here: a shim that mapped the
 // retired unsuffixed GPT-5.6 slug onto Sol for one service, one style and one
-// harness. It is now `effectiveModelIdForHarness` in `catalogue/index.ts`, which
-// resolves every retirement the catalogue declares for any harness, and
-// `applyModelRetirement` (orchestrator), which additionally persists the
+// harness. Retirement is now resolved once, where the service and billing mode
+// are known: `retirementSuccessor` (`catalogue/index.ts`) reads the catalogue's
+// per-mode record, and `applyModelRetirement` (orchestrator) persists the
 // successor onto the session so the picker agrees with what is running (req 13).
+// Deliberately NOT re-created as a bare-id helper for a spawn boundary to call —
+// see the note beside `retirementSuccessor` for why an id alone cannot say whose
+// retirement applies.
 
 export interface AgentInfo {
   id: AgentId;

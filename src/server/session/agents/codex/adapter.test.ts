@@ -402,14 +402,25 @@ describe("CodexAdapter", () => {
     });
   });
 
-  it("normalizes legacy GPT-5.6 alias before reporting or starting a Codex turn", async () => {
+  it("forwards the model it is given, without re-mapping a retired id", async () => {
+    // docs/252 phase 8 — this used to assert the opposite: the boundary rewrote
+    // `gpt-5.6` to `gpt-5.6-sol` via `normalizeCodexModelId`. It must not, and
+    // the reason is req 5: two services may offer the same model id, so a
+    // boundary holding only an id cannot say whose retirement applies and would
+    // rewrite a model the session's own service still serves.
+    //
+    // The behaviour that test protected is preserved a layer up and asserted
+    // there — `applyModelRetirement` resolves and PERSISTS the successor before
+    // the turn is built, so a session on `gpt-5.6` reaches this point already
+    // holding `gpt-5.6-sol` (see `model-retirement.test.ts` and the retirement
+    // case in `integration_tests/codex-agent.test.ts`).
     await createAndInit("Hello", undefined, "/workspace", "gpt-5.6");
 
     const initEvent = events.find((e) => e.type === "agent_init");
-    expect(initEvent).toMatchObject({ model: "gpt-5.6-sol" });
+    expect(initEvent).toMatchObject({ model: "gpt-5.6" });
 
     const turnStart = fakeProc.getRequests().find((r) => r.method === "turn/start");
-    expect((turnStart!.params as any).model).toBe("gpt-5.6-sol");
+    expect((turnStart!.params as any).model).toBe("gpt-5.6");
   });
 
   it("maps an agentMessage item to agent_assistant text", async () => {

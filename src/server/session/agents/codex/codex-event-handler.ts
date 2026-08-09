@@ -36,7 +36,6 @@ import {
   unwrapShellCommand,
   type CodexItem,
 } from "./codex-tool-normalizer.js";
-import { effectiveModelIdForHarness } from "../../../shared/catalogue/index.js";
 
 /** Inbound request (app-server → client) — has BOTH an id and a method. */
 interface JsonRpcServerRequest {
@@ -722,13 +721,15 @@ export class CodexEventHandler {
       this.threadId = resolvedThreadId;
     }
 
-    // docs/252 phase 8 — last line of defence for a model the catalogue has
-    // retired (req 13). The orchestrator resolves and PERSISTS the successor
-    // wherever it holds the session, so a turn normally arrives already
-    // remapped; this boundary has only a model id, which is why it uses the
-    // bare-id form. It is what the old `normalizeCodexModelId` shim did for one
-    // hard-coded id, generalized to every retirement the catalogue declares.
-    const model = effectiveModelIdForHarness("codex", params.model) ?? "gpt-5.6-sol";
+    // docs/252 phase 8 — this used to re-map a retired model id
+    // (`normalizeCodexModelId`). It no longer does, and must not: retirement is
+    // declared per `(service, billing mode)` and two services may offer the same
+    // model id (req 5), so a boundary holding only an id cannot tell whose
+    // retirement applies — it would rewrite a model the session's own service
+    // still serves. The orchestrator resolves and persists the successor before
+    // the turn is built (`applyModelRetirement`), so what arrives here is
+    // already the model the session should run. Forward it verbatim.
+    const model = params.model ?? "gpt-5.6-sol";
 
     // Emit agent_init so the server can track the session
     this.ctx.emitEvent({

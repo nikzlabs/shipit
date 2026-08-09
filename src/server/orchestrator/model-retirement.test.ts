@@ -96,12 +96,17 @@ describe("applyModelRetirement", () => {
     expect(applyModelRetirement(mgr, null, "codex")).toBeUndefined();
   });
 
-  it("leaves the session alone when the successor is unreachable from its harness", () => {
+  it("moves nothing when the successor is unreachable from the session's harness", () => {
     // A successor must be runnable on the session's pinned harness (req 13).
     // Claude Code speaks `anthropic-messages` and OpenAI's retirement is
     // declared under `openai-responses`, so there is nothing to move to — and a
     // retirement with no successor for a harness is a catalogue mistake to fix,
-    // not a case to fall back from. Leaving the row untouched keeps it visible.
+    // not a case to fall back from. This resolver declines to guess.
+    //
+    // Scoped to THIS function on purpose: downstream, WS connect still replaces
+    // a model the harness cannot list with its first one, exactly as it does for
+    // any alias or versioned slug. That is pre-existing behaviour phase 8 does
+    // not change, so "moves nothing" is the claim here, not "nothing moves".
     pinRetired({ serviceId: "openai", billingMode: "sub", modelId: "gpt-5.6" });
 
     expect(applyModelRetirement(mgr, mgr.get("s1"), "claude")).toBe("gpt-5.6");

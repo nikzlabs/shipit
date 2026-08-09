@@ -324,26 +324,19 @@ export function resolveRetiredModelId(
   return undefined;
 }
 
-/**
- * The model id `harnessId` should actually run for `modelId` — the successor
- * when the id has been retired, and `modelId` itself otherwise.
- *
- * This is the generalization of the old `normalizeCodexModelId` shim, which
- * hard-coded one service, one style and one harness. Keep it at a boundary that
- * has no session to write through to; anywhere a session IS in hand, resolve
- * through `applyModelRetirement` instead so the picker and the attribution agree
- * with what is running (req 11).
- */
-export function effectiveModelIdForHarness(
-  harnessId: AgentId,
-  modelId: string | undefined,
-): string | undefined {
-  if (!modelId) return modelId;
-  return (
-    resolveRetiredModelId(harnessId, modelId, nativeServiceForHarness(harnessId))?.modelId ??
-    modelId
-  );
-}
+// There is deliberately NO harness-and-bare-id-only "normalize this model"
+// helper for a spawn boundary to call. Phase 8's first cut had one, generalizing
+// the old `normalizeCodexModelId` shim in place, and cross-backend review found
+// it unsound: req 5 lets two services offer the same model id, so an id one
+// service has retired while another still offers it would be rewritten to the
+// FIRST service's successor — overriding a correctly resolved selection with a
+// model the session's actual service does not serve, at its endpoint, on its
+// credential (req 11). A boundary holding only an id cannot tell those apart.
+//
+// It is also unnecessary: `AgentRunParams.model` has exactly two producers
+// (`buildAgentRunParams` and `buildSubAgentRunParams`), and both read a session
+// or a sub-agent default that resolves through `applyModelRetirement` first. So
+// resolution happens once, where the service and mode are known.
 
 /** Whether two selections name the same catalogue row. */
 export function sameSelection(a: ModelSelection | undefined, b: ModelSelection | undefined): boolean {

@@ -48,8 +48,16 @@ export interface RetirementSessionWriter {
  * is every session on a current model, a session whose model the catalogue never
  * carried at all (a versioned slug the picker never surfaced), and a retirement
  * whose successor this harness cannot speak to. That last one is a catalogue
- * mistake rather than a case to fall back from (req 13), and leaving the session
- * where it is keeps the mistake visible instead of moving it somewhere arbitrary.
+ * mistake rather than a case to fall back from (req 13), so this function moves
+ * nothing.
+ *
+ * **It does not follow that the session stays put.** A model no harness lists is
+ * already handled downstream — WS connect replaces it with the harness's first
+ * model and persists that — and this function deliberately does not change that
+ * pre-existing self-heal, which exists for every unlistable id (aliases,
+ * versioned slugs), not for retirement. So a missing successor degrades to
+ * today's behaviour rather than to "untouched": the honest statement is that
+ * this resolver declines to guess, not that nothing else will.
  *
  * `harnessId` is the session's pinned harness, and it is load-bearing: a
  * successor must be one that harness can run, or the remap strands the session
@@ -88,9 +96,15 @@ export function applyModelRetirement(
   try {
     sessions.setModelSelection(session.id, successor);
   } catch (err) {
-    // A failed write is not a reason to spawn a retired model. The session runs
-    // the successor and the row is retried on the next read; the cost is that
-    // the picker keeps showing the retired id until then.
+    // A failed write is not a reason to spawn a model the service has retired,
+    // so the session runs the successor anyway — req 13's promise is the one
+    // worth keeping when the database is the thing that is broken.
+    //
+    // Stated plainly because it IS a breach of the write-through contract above:
+    // for the length of this connection the picker shows the retired id while
+    // the successor runs, and the per-connection selection already holds the
+    // successor so nothing re-attempts the write until the next connect. The
+    // alternative — spawning the retired model — fails the turn outright.
     console.warn(
       `[model-retirement] could not persist ${session.id}: ${modelId} → ${successor.modelId}`,
       err,
