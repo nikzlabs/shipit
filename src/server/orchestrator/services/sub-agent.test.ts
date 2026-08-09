@@ -23,6 +23,7 @@ import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { persistTurnInProgress } from "../chat-card-persistence.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
+import type * as InstalledHarnesses from "../../shared/installed-harnesses.js";
 import { SUB_AGENT_TRANSPORT_TIMEOUT_MS } from "../../shared/sub-agent-run.js";
 import { WorkerAbortedError, WorkerTimeoutError } from "../worker-http.js";
 import type { AccountSelection } from "../provider-account-manager.js";
@@ -37,12 +38,24 @@ interface FakeSession {
   agentPinned?: boolean;
 }
 
+/**
+ * docs/252 phase 9 — harnesses this "deployment" declares it does NOT have.
+ * Empty by default: with no declaration nothing is refused for not being
+ * installed, which is the report-less (CI, dev checkout) case.
+ */
+const uninstalledHarnesses = new Set<string>();
+vi.mock("../../shared/installed-harnesses.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof InstalledHarnesses>();
+  return { ...actual, isHarnessInstalled: (id: string) => !uninstalledHarnesses.has(id) };
+});
+
+afterEach(() => uninstalledHarnesses.clear());
+
 function makeDeps(opts: {
   enableSubAgents?: boolean;
   session?: FakeSession | null;
   sessions?: FakeSession[];
   authConfigured?: boolean;
-  agentInstalled?: boolean;
   agentKnown?: boolean;
   subAgentSpawnsThisTurn?: number;
   spawnResult?: SubAgentRunResult;
@@ -113,7 +126,7 @@ function makeDeps(opts: {
       refreshAuth: vi.fn(),
       get: vi.fn(() => (opts.agentKnown === false
         ? undefined
-        : { name: "Codex", installed: opts.agentInstalled ?? true, authConfigured: opts.authConfigured ?? true })),
+        : { name: "Codex", installed: true, authConfigured: opts.authConfigured ?? true })),
     } as never,
     runnerRegistry: { get: vi.fn(() => (opts.runnerPresent === false ? undefined : runner)) } as never,
     providerAccountManager: { selectAccountForTurn, markAccountExhausted } as never,
@@ -154,7 +167,8 @@ describe("runSubAgent — authorization gates", () => {
   // nothing, credentials or not. Checked BEFORE auth: "connect it in Settings"
   // would be a dead end for a harness that is not here.
   it("rejects a harness this deployment did not install (400)", async () => {
-    const { deps, runner } = makeDeps({ agentInstalled: false });
+    uninstalledHarnesses.add("codex");
+    const { deps, runner } = makeDeps({});
     const err = await expectServiceError(
       runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 }), 400);
     expect(err.message).toMatch(/not installed in this deployment/);

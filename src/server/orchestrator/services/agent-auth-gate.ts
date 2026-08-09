@@ -1,4 +1,5 @@
 import type { AgentRegistry } from "../../shared/agent-registry.js";
+import { isHarnessInstalled } from "../../shared/installed-harnesses.js";
 import type { AgentId } from "../../shared/types.js";
 
 const AUTH_ERROR: Record<AgentId, string> = {
@@ -42,14 +43,25 @@ export function isAgentAuthenticated(
  *
  * The order matters for the message, not just the check: "sign in to Claude" is
  * a dead end on an install that has no Claude Code to sign into.
+ *
+ * **It asks the DECLARED set, not `AgentInfo.installed`** — the one place in this
+ * feature where the two must not be conflated. They agree in any real
+ * deployment, because the image build always writes a report; they differ where
+ * there is no report and `installed` is a `which` probe of the current
+ * container's `$PATH`. Refusing a turn is far stronger than greying a picker row
+ * (which is all `installed` drove before), and a probe miss does not support the
+ * claim "this deployment does not have it": an injected agent factory, a
+ * local-mode in-process adapter, or a `$PATH` that differs at spawn time all
+ * probe as absent and run fine. So a turn is refused only when the deployment
+ * said so, and every no-report environment keeps its previous behaviour.
  */
 export function agentAdmissionError(
   agentRegistry: Pick<AgentRegistry, "refreshAuth" | "get">,
   agentId: AgentId,
 ): string | null {
-  const info = agentRegistry.get(agentId);
-  if (info && !info.installed) {
-    return `${info.name} is not installed in this deployment. Pick another agent, or ask the operator to add it and redeploy.`;
+  if (!isHarnessInstalled(agentId)) {
+    const name = agentRegistry.get(agentId)?.name ?? agentId;
+    return `${name} is not installed in this deployment. Pick another agent, or ask the operator to add it and redeploy.`;
   }
   return isAgentAuthenticated(agentRegistry, agentId) ? null : agentAuthenticationError(agentId);
 }

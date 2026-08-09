@@ -725,6 +725,17 @@ What phase 9 found:
   Quick Capture is the one path that cannot use it — it dispatches straight onto the
   runner — and so falls back to the install's default agent with a warning rather than
   pinning a session, write-once, to a harness that cannot run.
+
+  **Every gate that says "not installed in this deployment" asks the declared set, never
+  `AgentInfo.installed`.** They agree wherever an image build wrote a report, and differ
+  exactly where none did and the flag is a `which` probe. Refusing a *turn* is far
+  stronger than greying a picker row — all `installed` drove before — and a probe miss
+  does not support the claim the message makes: an injected agent factory, a local-mode
+  in-process adapter, or a `$PATH` that differs at spawn time all probe as absent and run
+  fine. CI found this the direct way: the first cut read `installed`, and every dispatch
+  integration test 401'd on a runner with no agent CLIs on `$PATH`. The picker's own
+  filter still reads `installed`, which is the long-standing behaviour for a harness that
+  cannot be found.
 - **"Appears nowhere in the picker" was a real UI change, not a consequence.** An
   uninstalled harness used to render as a group header tagged *not installed* over a list
   of disabled rows. That treatment is right for *installed but unauthenticated* — which is

@@ -17,8 +17,7 @@ describe("dispatchAgentMessage authentication", () => {
       runnerRegistry: { get: () => runner },
       agentRegistry: {
         refreshAuth,
-        // docs/252 phase 9 — admission now asks "installed?" before "authed?".
-        get: () => ({ name: "Claude Code", installed: true, authConfigured: true }),
+        get: () => ({ authConfigured: true }),
       },
       credentialStore: {},
       // Regression boundary: this is the obsolete value that rejected added

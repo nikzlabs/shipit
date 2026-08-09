@@ -36,6 +36,7 @@ import type { AgentId, SubAgentConsultCard, WsServerMessage } from "../../shared
 import type { SessionManager } from "../sessions.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
+import { isHarnessInstalled } from "../../shared/installed-harnesses.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { UsageManager } from "../usage.js";
@@ -215,7 +216,11 @@ export async function runSubAgent(
   // `set_agent` in services/settings.ts and its WS twin) already check this; this
   // one did not, so `shipit agent run --agent <uninstalled>` reached the spawn and
   // failed as a missing binary deep inside the worker.
-  if (!info.installed) {
+  //
+  // Asks the DECLARED set rather than `info.installed`, for the reason spelled
+  // out on `agentAdmissionError`: a `which` miss in a report-less environment is
+  // not the deployment saying no, and this message claims that it is.
+  if (!isHarnessInstalled(subAgentId)) {
     throw rejectSpawn(sessionId, subAgentId, 400, "not_installed",
       `${info.name} is not installed in this deployment.`);
   }

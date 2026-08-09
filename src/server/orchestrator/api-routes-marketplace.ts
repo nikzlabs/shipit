@@ -20,6 +20,7 @@ import {
   readPluginSkillBody,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
+import { isHarnessInstalled } from "../shared/installed-harnesses.js";
 
 export interface MarketplaceRouteDeps {
   marketplaceStore: MarketplaceStore;
@@ -102,7 +103,7 @@ export async function registerMarketplaceRoutes(
       // every agent the catalogue knows: an install session pins the agent it is
       // given, so accepting a harness this deployment does not have would create
       // a session whose first turn cannot run.
-      const installedAgents = deps.agentRegistry.list().filter((agent) => agent.installed);
+      const installedAgents = deps.agentRegistry.list().filter((agent) => isHarnessInstalled(agent.id));
       const agentId = requestedAgentId
         ? installedAgents.find((agent) => agent.id === requestedAgentId)?.id ?? null
         : null;
