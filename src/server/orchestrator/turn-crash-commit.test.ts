@@ -322,6 +322,58 @@ describe("post-turn commit when the agent process dies", () => {
   });
 
   /**
+   * The fallback must stand down after the ERROR path already finalized the
+   * turn: an adapter can emit `error` and then `done`, the error listener
+   * finalizes the rows but leaves the accumulator populated, and a second
+   * `replaceInProgress` from the fallback would append a duplicate copy of the
+   * turn (the finalized rows are no longer `in_progress`, so nothing is
+   * replaced — only added).
+   */
+  it("does not re-finalize (duplicate) a turn the error path already finalized when done follows error", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const listenerDeps = makeListenerDeps();
+    const chm = listenerDeps.chatHistoryManager as unknown as {
+      replaceInProgress: ReturnType<typeof vi.fn>;
+    };
+
+    const deps: SystemTurnDeps = {
+      agentFactory: () => {
+        const a = makeFakeAgent();
+        agents.push(a);
+        return a as unknown as ReturnType<SystemTurnDeps["agentFactory"]>;
+      },
+      autoCommit: realAutoCommit,
+      scheduleAutoPush: vi.fn(),
+      steerInputs: () => ({ liveSteering: true, steeringCapable: true }),
+      listenerDeps,
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "long-running work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "turn started");
+
+    agents[0]!.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "streamed partial work" }] });
+    agents[0]!.emit("error", new Error("adapter blew up"));
+    await waitFor(() => chm.replaceInProgress.mock.calls.length > 0, "error path finalized the turn");
+    const callsAfterError = chm.replaceInProgress.mock.calls.length;
+
+    // The process exit trails the error; `wasInterrupted` keeps the dispatch
+    // no-result hook out of the way so the fallback's own guard is what's
+    // under test.
+    runner.wasInterrupted = true;
+    agents[0]!.emit("done", 1);
+    await waitFor(() => !runner.running, "turn settled");
+    await flush();
+    await flush();
+
+    expect(chm.replaceInProgress.mock.calls.length).toBe(callsAfterError);
+
+    runner.dispose({ force: true });
+  });
+
+  /**
    * The normal streaming turn end is unchanged: `agent_result` runs the whole
    * post-turn flow, and the resident process's later `done` must not re-run it
    * (a second `postTurnPrFlow` means a duplicate PR round-trip and card).

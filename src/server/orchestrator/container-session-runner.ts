@@ -1053,7 +1053,25 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken, deliveryId }, { timeoutMs: 0 });
         } catch (retryErr) {
           if (retryErr instanceof Error && retryErr.message === "Agent already running") {
-            await workerPost(this.workerUrl, "/agent/kill").catch(() => { /* may already be gone */ });
+            // Name the stale resident as the kill's victim when the worker can
+            // tell us who it is. This kill is the desync clear, so it must
+            // still fire — but untargeted, a kill that TIMES OUT client-side
+            // and executes on a wedged worker minutes later (the 2026-08-09
+            // incident had a ~9-minute-late kill) would land on whatever spawn
+            // is resident by then, including the one the retry below starts.
+            // Targeted at the reported resident, a late execution against a
+            // reused slot no-ops. Status probe failure → untargeted, exactly
+            // today's behavior.
+            let staleResidentToken: string | undefined;
+            try {
+              const status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as WorkerAgentStatus;
+              staleResidentToken = status.runToken;
+            } catch { /* fall back to the untargeted clear */ }
+            await workerPost(
+              this.workerUrl,
+              "/agent/kill",
+              staleResidentToken !== undefined ? { runToken: staleResidentToken } : undefined,
+            ).catch(() => { /* may already be gone */ });
             await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken, deliveryId }, { timeoutMs: 0 });
           } else {
             throw retryErr;
@@ -2570,9 +2588,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // transcript with no terminal card.
     this.cancelInFlightSubAgents("runner disposed");
 
-    // Kill agent on worker (fire and forget)
+    // Kill agent on worker (fire and forget). Names ITS OWN spawn as the
+    // victim: the container outlives this runner (a new runner may reconnect
+    // and adopt or start a fresh spawn), so an untargeted kill delayed on a
+    // slow worker could land on that successor's live process — the 2026-08-09
+    // incident class. Targeted, a late execution against a reused slot no-ops.
     if (this._agent) {
-      workerPost(this.workerUrl, "/agent/kill").catch(() => {});
+      workerPost(this.workerUrl, "/agent/kill", { runToken: this._agent.runToken }).catch(() => {});
       this._agent = null;
     }
 

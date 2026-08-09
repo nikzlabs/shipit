@@ -1331,13 +1331,18 @@ export async function executeAgentTurn(
       // — the user watched the turn's messages vanish on reload. Finalize here
       // whenever no caller hook did, so a turn that dies without an
       // `agent_result` can never leave rows behind for a later turn to sweep
-      // away. Two stand-downs: a SUPERSEDED turn's accumulator now belongs to
-      // the newer turn (rebuilding history from it would clobber that turn's
-      // live rows), and a non-null agent slot means another turn is already
-      // live on this runner for the same reason.
+      // away. Three stand-downs: a SUPERSEDED turn's accumulator now belongs
+      // to the newer turn (rebuilding history from it would clobber that
+      // turn's live rows); a non-null agent slot means another turn is already
+      // live on this runner for the same reason; and an ERRORED turn was
+      // already finalized by the `error` listener (`agent-listeners.ts`),
+      // which leaves the accumulator populated — an adapter can emit `error`
+      // and then `done`, and re-running `replaceInProgress` here after the
+      // rows were finalized would append a duplicate copy of the turn.
       if (
         !receivedResult
         && !sawAuthRequired
+        && !agentErrored
         && !input.onInterruptedTurn
         && !wasSuperseded
         && runner !== null
