@@ -251,6 +251,20 @@ export function OnboardingWizard({
                 from here. `!== false` rather than a truthiness test so the cards
                 still render while the agent list is loading (the pre-list state is
                 "unknown", not "absent").
+
+                docs/252 phase 2 — what these two cards now write is the credential
+                of `(anthropic, sub)` and `(openai, sub)`: the store is keyed by
+                `(service, billing mode)`, and `ProviderAccountsCard` resolves its
+                routing settings through the harness's `nativeService`. They keep
+                their API-key disclosure, unlike the copies in Settings → Services,
+                because this is the one screen a user cannot skip and a user with no
+                subscription needs a way in (req 2).
+
+                Both notes describe the same INTERIM, not the final design: the step
+                is still hard-coded to two providers and lists every other agent
+                read-only, which is the `AgentId` keying this feature removes,
+                surviving on the first-run screen.
+                `docs/257-onboarding-non-blocking` is the replacement.
               */}
               <div className="space-y-5">
                 {claudeAgent?.installed !== false && (

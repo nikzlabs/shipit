@@ -12,7 +12,11 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { EventEmitter } from "node:events";
 import type { AgentId, AgentCapabilities } from "./types/agent-types.js";
-import { HARNESSES, nativeModelIdsForHarness } from "./catalogue/index.js";
+import {
+  HARNESSES,
+  credentialStorageEnvNames,
+  nativeModelIdsForHarness,
+} from "./catalogue/index.js";
 import { readInstalledHarnesses } from "./installed-harnesses.js";
 
 const execFileAsync = promisify(execFile);
@@ -165,7 +169,18 @@ export function getAuthEnvKey(agentId: AgentId): string | null {
  * `.has()` checks. The set is kept exported because tests and re-export sites
  * still reference it directly.
  */
-export const ALLOWED_ENV_KEYS = new Set(["OPENAI_API_KEY"]);
+export const ALLOWED_ENV_KEYS = new Set<string>([
+  // docs/252 phase 2 — every `storageEnv` the catalogue declares, so a new
+  // service's key name is one catalogue edit rather than an edit here as well.
+  // `ALLOWED_ENV_KEYS` stays a compile-time constant (Appendix A): the
+  // requirement that once justified a runtime mechanism — "trying a new service
+  // needs no release" — disappeared when the catalogue itself started shipping
+  // with ShipIt, so the mechanism should not survive it.
+  ...credentialStorageEnvNames(),
+  // Kept explicitly rather than left to the catalogue: this is the historical
+  // entry, and `set_agent_env` writes flowing through it predate the catalogue.
+  "OPENAI_API_KEY",
+]);
 
 /** Prefix reserved for MCP server secrets (docs/088-mcp-integration). */
 const MCP_ENV_KEY_PREFIX = "mcp__";

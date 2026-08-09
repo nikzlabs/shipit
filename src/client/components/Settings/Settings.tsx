@@ -8,6 +8,7 @@ import { SkillsTab } from "../SkillsTab.js";
 import { KeybindingSettings } from "../KeybindingSettings.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { ClaudeTab } from "./tabs/ClaudeTab.js";
+import { ServicesPanel } from "./ServicesPanel.js";
 import { CodexTab } from "./tabs/CodexTab.js";
 import { InstructionsTab } from "./tabs/InstructionsTab.js";
 import { GitTab } from "./tabs/GitTab.js";
@@ -19,7 +20,7 @@ import { AdvancedTab } from "./tabs/AdvancedTab.js";
 // so it reads as a tab bar rather than a stretched menu row.
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
-type Tab = "agent-claude" | "agent-codex" | "integrations" | "git" | "instructions" | "skills" | "keyboard" | "voice" | "network" | "advanced";
+type Tab = "agent-claude" | "agent-codex" | "services" | "integrations" | "git" | "instructions" | "skills" | "keyboard" | "voice" | "network" | "advanced";
 
 export interface SettingsProps {
   initialContent: string;
@@ -95,11 +96,12 @@ export function Settings({
   const claudeAgent = agentList.find((a) => a.id === "claude");
   const codexAgent = agentList.find((a) => a.id === "codex");
 
-  const generalTabs = ["integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
+  const generalTabs = ["services", "integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
   const tabLabel = (tab: Tab) => {
     switch (tab) {
       case "agent-claude": return "Claude";
       case "agent-codex": return "Codex";
+      case "services": return "Services";
       case "integrations": return "Integrations";
       case "git": return "Git";
       case "instructions": return "Instructions";
@@ -198,6 +200,13 @@ export function Settings({
 
           <TabsContent value="voice">
             <VoiceTab />
+          </TabsContent>
+
+          {/* docs/252 phase 2 — the one place credentials live. Rendered as a
+              self-contained panel taking no Settings props, because docs/257's
+              onboarding hosts the same component. */}
+          <TabsContent value="services">
+            <ServicesPanel agentList={agentList} />
           </TabsContent>
 
           <TabsContent value="integrations">

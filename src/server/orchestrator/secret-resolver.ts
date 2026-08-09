@@ -41,7 +41,13 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ComposeService } from "./compose-generator.js";
 import { AGENT_ENV_FILE, sessionStateDirForWorkspace } from "./session-state-dir.js";
-import type { SecretRequirement } from "../shared/types/domain-types.js";
+import type { CredentialRoute, SecretRequirement } from "../shared/types/domain-types.js";
+import {
+  credentialModeKey,
+  orderCredentialRoutes,
+  parseCredentialModeKey,
+} from "../shared/types/domain-types.js";
+import { storageEnvFor } from "../shared/catalogue/index.js";
 import type { CredentialStore } from "./credential-store.js";
 
 // ---------------------------------------------------------------------------
@@ -282,7 +288,7 @@ export function resolveSecrets(opts: {
  *      substitutes both forms in `mcp-resolve.ts`.
  *
  * Token refresh is **not** performed here — this function is called from
- * synchronous code paths (the `mcpAgentEnvLoader` plumbed into
+ * synchronous code paths (the `accountAgentEnvLoader` plumbed into
  * `ServiceManager`). Near-expired tokens are refreshed by a separate
  * async path (`refreshExpiredMcpOAuthTokens()` in `mcp-oauth.ts`),
  * triggered at orchestrator startup and before each agent turn.
@@ -318,6 +324,76 @@ export function collectMcpAgentEnv(
     out[`MCP_PLATFORM_${source.toUpperCase()}`] = tokens.accessToken;
   }
   return out;
+}
+
+/**
+ * docs/252 phase 2 — the env values a session should receive for the service
+ * credentials the user has stored.
+ *
+ * One entry per `(service, billing mode)` that has a secret, under the
+ * catalogue's `storageEnv` name, taking that group's **first** credential in
+ * selection order.
+ *
+ * Taking the first is deliberately not a routing decision. Phase 2 delivers
+ * exactly what today's single-slot storage would have delivered; phase 3
+ * replaces this with per-turn resolution from the selected model's service, at
+ * which point a subscription's second and third credentials become reachable
+ * (req 12). Storing them per instance now is what makes that possible;
+ * delivering only the first is what keeps this phase from quietly changing
+ * which credential a turn authenticates with.
+ *
+ * Note `storageEnv` is where the value is **materialized**, and is not the same
+ * as where the harness's CLI reads it from — that is the harness's
+ * `CredentialTargets`, and writing the value into it is phase 3's spawn
+ * shaping. A CLI seeing `DEEPSEEK_API_KEY` in its environment and ignoring it
+ * is the expected state until then.
+ */
+export function collectServiceCredentialEnv(
+  credentialStore: Pick<CredentialStore, "listCredentialRoutes" | "getCredentialSecret">,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  const byMode = new Map<string, CredentialRoute[]>();
+  for (const route of credentialStore.listCredentialRoutes()) {
+    if (route.via !== "string") continue;
+    const key = credentialModeKey(route.serviceId, route.billingMode);
+    byMode.set(key, [...(byMode.get(key) ?? []), route]);
+  }
+  for (const [key, routes] of byMode) {
+    const parsed = parseCredentialModeKey(key);
+    if (!parsed) continue;
+    const envName = storageEnvFor(parsed.serviceId, parsed.billingMode);
+    // A route whose service or mode has left the catalogue has nowhere to be
+    // delivered. Skipping is right — inventing a variable name would put a live
+    // secret into the agent's environment under a name nothing reads.
+    if (!envName) continue;
+    const first = orderCredentialRoutes(routes)[0];
+    const secret = first ? credentialStore.getCredentialSecret(first.id) : undefined;
+    if (secret) out[envName] = secret;
+  }
+  return out;
+}
+
+/**
+ * Every **account-level** secret the agent should see: MCP secrets and OAuth
+ * tokens ({@link collectMcpAgentEnv}) plus the service credentials above.
+ *
+ * This is the single entry point both delivery paths use, which is what closes
+ * the gap Appendix A recorded: `collectMcpAgentEnv` filtered to `mcp__*`, so a
+ * top-level key stored in Settings reached a compose-less session (through
+ * `getAllAgentEnv`) and **not** a compose-backed one, whose agent env is the
+ * ServiceManager snapshot. Adding a key name was never going to be enough; the
+ * pipe had to widen.
+ */
+export function collectAccountAgentEnv(
+  credentialStore: Pick<
+    CredentialStore,
+    "getAllAgentEnv" | "getAllMcpOAuthTokens" | "listCredentialRoutes" | "getCredentialSecret"
+  >,
+): Record<string, string> {
+  return {
+    ...collectMcpAgentEnv(credentialStore),
+    ...collectServiceCredentialEnv(credentialStore),
+  };
 }
 
 /**

@@ -4,7 +4,7 @@
 
 import type { AgentId, PermissionMode } from "../../shared/types.js";
 import type { AgentReasoningCapability, SubAgentDefaults } from "../../shared/types/agent-types.js";
-import type { AccountSelectionMode, FailoverCutoffs, ProviderAccount, SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
+import type { AccountSelectionMode, CredentialRoute, FailoverCutoffs, ProviderAccount, SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
 
 // ---- Types for service function results ----
@@ -78,13 +78,17 @@ export interface GlobalSettings {
   /** docs/169 — when true, the PR poller's auto-fix-CI loop fires on FAILURE while the agent is idle. */
   autoFixCi: boolean;
   /**
-   * docs/150 reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent
-   * id. Reaching either window's cutoff moves new work to the next eligible
-   * account; both default to 90%. Always populated for every registered agent,
-   * so the client never has to know the default.
+   * docs/150 reqs 4-6 — proactive failover cutoffs. Reaching either window's
+   * cutoff moves new work to the next eligible credential; both default to 90%.
+   *
+   * docs/252 phase 2 — keyed by `credentialModeKey(serviceId, billingMode)`,
+   * not by agent id, and populated for every **subscription** mode in the
+   * catalogue (a `key` mode has no entry: keys do not fail over, so there is no
+   * group to order). Always populated, so the client never has to know the
+   * default.
    */
   failoverCutoffs: Record<string, FailoverCutoffs>;
-  /** docs/150 req 21 — per-provider account selection mode, one entry per registered agent. */
+  /** docs/150 req 21 — selection mode, keyed exactly as {@link GlobalSettings.failoverCutoffs}. */
   accountSelectionMode: Record<string, AccountSelectionMode>;
   /** docs/218 — when true, resuming a merged, untouched session resets its branch to the latest base before the turn. Default on. */
   autoResetMergedBranch: boolean;
@@ -111,6 +115,16 @@ export interface GlobalSettings {
    * env/API-key routes are not represented here.
    */
   providerAccounts: ProviderAccount[];
+  /**
+   * docs/252 phase 2 — every credential the user holds, keyed by
+   * `(serviceId, billingMode)` and in selection order within each group.
+   *
+   * A superset of {@link GlobalSettings.providerAccounts}: an account row IS a
+   * `via: "account"` credential of its vendor's subscription mode, and appears
+   * in both while the docs/150 routing machinery still reads the account shape.
+   * Carries **no secret** — see `CredentialRoute`.
+   */
+  credentialRoutes: CredentialRoute[];
 }
 
 export interface GitHubStatus {

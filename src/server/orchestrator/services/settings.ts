@@ -7,7 +7,9 @@ import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { getAuthEnvKey, isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
 import type { AccountSelectionMode, AgentId, FailoverCutoffs, ProviderAccount, SubAgentDefaultsPatch } from "../../shared/types.js";
-import { DEFAULT_FAILOVER_CUTOFF, DEFAULT_SELECTION_MODE } from "../../shared/types.js";
+import { credentialModeKey, DEFAULT_FAILOVER_CUTOFF, DEFAULT_SELECTION_MODE, parseCredentialModeKey } from "../../shared/types.js";
+import { allServices, credentialModeForStorageEnv, getMode, getService } from "../../shared/catalogue/index.js";
+import { listCredentialRoutes, upsertSingleStringCredential } from "./credential-routes.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
 import { getGitIdentity, setGitIdentity as writeGitIdentity } from "../git-config.js";
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
@@ -153,23 +155,36 @@ export async function getGlobalSettings(
   const providerAccounts = providerAccountManager?.list() ?? credentialStore?.listProviderAccounts() ?? [];
   const voiceDeliveryMode = credentialStore?.getVoiceDeliveryMode() ?? "native";
   const voiceWebhookConfigured = !!credentialStore?.getVoiceWebhook();
-  // docs/150 reqs 4-6 — per-provider proactive failover cutoffs, one entry per
-  // registered agent so the Settings control can render a row per provider
-  // without the client knowing the default.
+  // docs/150 reqs 4-6 / req 21, re-keyed by docs/252 phase 2 — the routing
+  // settings, one entry per **subscription mode in the catalogue** rather than
+  // one per registered agent. Both settings answer "which of these credentials
+  // next?", which only exists where there is a group to choose from, and req 12
+  // says that group is a subscription mode. A `key` mode gets no entry at all —
+  // not an empty one — because keys do not fail over.
+  //
+  // Emitted for every such mode, credentialed or not, so the client can render
+  // the control without knowing the default. The client keys these maps with
+  // `credentialModeKey(serviceId, billingMode)`.
   const failoverCutoffs: Record<string, FailoverCutoffs> = {};
-  // docs/150 req 21 — same shape and the same reason: one entry per registered
-  // agent so the client renders the control without knowing the default.
   const accountSelectionMode: Record<string, AccountSelectionMode> = {};
-  for (const agent of agentRegistry.list()) {
-    failoverCutoffs[agent.id] = credentialStore?.getFailoverCutoffs(agent.id)
-      ?? { session: DEFAULT_FAILOVER_CUTOFF, weekly: DEFAULT_FAILOVER_CUTOFF };
-    accountSelectionMode[agent.id] = credentialStore?.getSelectionMode(agent.id) ?? DEFAULT_SELECTION_MODE;
+  for (const service of allServices()) {
+    for (const mode of service.modes) {
+      if (mode.kind !== "sub") continue;
+      const key = credentialModeKey(service.id, mode.kind);
+      failoverCutoffs[key] = credentialStore?.getFailoverCutoffs(service.id, mode.kind)
+        ?? { session: DEFAULT_FAILOVER_CUTOFF, weekly: DEFAULT_FAILOVER_CUTOFF };
+      accountSelectionMode[key] = credentialStore?.getSelectionMode(service.id, mode.kind)
+        ?? DEFAULT_SELECTION_MODE;
+    }
   }
   // docs/257 req 8 — the install-level "can run something" signal, computed
   // here rather than re-derived in the browser from `agents` (see
   // `computeCanRunTurns`).
   const canRunTurns = computeCanRunTurns(agentRegistry);
-  return { canRunTurns, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts };
+  // docs/252 phase 2 — every credential the user holds, in selection order per
+  // group. Safe to return verbatim: `CredentialRoute` carries no secret.
+  const credentialRoutes = credentialStore ? listCredentialRoutes(credentialStore) : [];
+  return { canRunTurns, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts, credentialRoutes };
 }
 
 // ---- Mutation operations ----
@@ -303,32 +318,36 @@ export async function saveGlobalSettings(
   // carrying 0 or 150 is a caller bug, and silently accepting it as 1 or 100
   // would hide it. The store still clamps on read, which covers a config file
   // edited by hand.
+  //
+  // docs/252 phase 2 — keys are `serviceId:billingMode`, and the mode must be a
+  // subscription: a cutoff on a `key` mode is meaningless (keys do not fail
+  // over), so accepting one would persist a setting nothing can ever read.
   if (failoverCutoffs !== undefined) {
-    for (const [agentId, patch] of Object.entries(failoverCutoffs)) {
-      if (!agentRegistry.get(agentId as AgentId)) throw new ServiceError(400, `Unknown agent: ${agentId}`);
-      for (const key of ["session", "weekly"] as const) {
-        const value = patch[key];
+    for (const [key, patch] of Object.entries(failoverCutoffs)) {
+      const target = requireSubscriptionModeKey(key);
+      for (const window of ["session", "weekly"] as const) {
+        const value = patch[window];
         if (value === undefined) continue;
         if (!Number.isInteger(value) || value < 1 || value > 100) {
-          throw new ServiceError(400, `${key} failover cutoff must be an integer between 1 and 100`);
+          throw new ServiceError(400, `${window} failover cutoff must be an integer between 1 and 100`);
         }
       }
-      credentialStore.setFailoverCutoffs(agentId as AgentId, patch);
+      credentialStore.setFailoverCutoffs(target.serviceId, target.billingMode, patch);
     }
   }
 
   // docs/150 req 21 — validated the same way as the cutoffs above: reject an
-  // unknown agent or an unrecognized mode rather than coercing it. The store
+  // unknown group or an unrecognized mode rather than coercing it. The store
   // falls back to the default on *read*, which covers a hand-edited config
   // file; a bad value arriving through the API is a caller bug and should say
   // so.
   if (accountSelectionMode !== undefined) {
-    for (const [agentId, mode] of Object.entries(accountSelectionMode)) {
-      if (!agentRegistry.get(agentId as AgentId)) throw new ServiceError(400, `Unknown agent: ${agentId}`);
+    for (const [key, mode] of Object.entries(accountSelectionMode)) {
+      const target = requireSubscriptionModeKey(key);
       if (mode !== "strict" && mode !== "balanced") {
         throw new ServiceError(400, `Account selection mode must be "strict" or "balanced"`);
       }
-      credentialStore.setSelectionMode(agentId as AgentId, mode);
+      credentialStore.setSelectionMode(target.serviceId, target.billingMode, mode);
     }
   }
 
@@ -430,7 +449,15 @@ export function setAgentEnv(
     throw new ServiceError(400, "Value cannot be empty");
   }
   process.env[key] = value;
-  credentialStore.setAgentEnv(key, value);
+  // docs/252 phase 2 — a name the catalogue claims as a mode's `storageEnv` is
+  // that mode's credential, so it goes to the credential-route store rather
+  // than to `agentEnv`'s single slot. Without this branch `set_agent_env`
+  // (Codex's `OPENAI_API_KEY`, and the Settings control behind it) would be a
+  // second writer for the same fact, and the boot migration would keep moving
+  // its writes across. Everything else — every `mcp__*` secret — is unchanged.
+  const owner = credentialModeForStorageEnv(key);
+  if (owner) upsertSingleStringCredential(credentialStore, owner.serviceId, owner.billingMode, value);
+  else credentialStore.setAgentEnv(key, value);
   agentRegistry.refreshAuth(agentId);
   return { agentId, key, agents: listAgents(agentRegistry) };
 }
@@ -441,18 +468,35 @@ export function setAgentEnv(
 // `submitProviderAccountCode`), which take the account whose credentials the
 // flow will write.
 
-/** Set API key. Returns true if valid. */
-export function setApiKey(
-  key: string,
-): void {
+/**
+ * Store the Anthropic API key.
+ *
+ * docs/252 phase 2 — **this used to persist nothing.** It assigned
+ * `process.env.ANTHROPIC_API_KEY` and returned, so the key survived exactly as
+ * long as the orchestrator process, while Codex's equivalent went into
+ * `CredentialData.agentEnv` and outlived a restart. That asymmetry is what the
+ * catalogue's `storageEnv` names away: the key is now a credential of
+ * `(anthropic, key)` like any other, written through the same service the
+ * Settings → Services surface uses.
+ *
+ * `process.env` is still assigned, and has to be: `reservedRouteFor` and
+ * `AgentRegistry.isAuthConfigured` probe the environment, so skipping it would
+ * persist the key and simultaneously report the provider as unauthenticated.
+ * `app-di` does the same seeding at boot from the stored routes.
+ */
+export function setApiKey(credentialStore: CredentialStore, key: string): void {
   const trimmed = typeof key === "string" ? key.trim() : "";
   if (!trimmed) throw new ServiceError(400, "API key cannot be empty");
   if (!trimmed.startsWith("sk-ant-")) throw new ServiceError(400, "Invalid API key format");
+  upsertSingleStringCredential(credentialStore, "anthropic", "key", trimmed);
   process.env.ANTHROPIC_API_KEY = trimmed;
 }
 
-/** Clear API key. Returns whether still authenticated. */
-export function clearApiKey(): void {
+/** Remove the stored Anthropic API key, from persistence and the environment. */
+export function clearApiKey(credentialStore: CredentialStore): void {
+  for (const route of credentialStore.listCredentialRoutes("anthropic", "key")) {
+    if (route.via === "string") credentialStore.deleteCredentialRoute(route.id);
+  }
   delete process.env.ANTHROPIC_API_KEY;
 }
 
@@ -863,6 +907,28 @@ export function submitProviderAccountCode(
   } catch (err) {
     throw providerAccountServiceError(err);
   }
+}
+
+/**
+ * docs/252 phase 2 — resolve a routing-settings key to the `(service,
+ * subscription mode)` it names, or reject it.
+ *
+ * Three ways to be wrong and each gets its own message, because they are three
+ * different mistakes: a malformed key, a service the catalogue does not carry,
+ * and a `key` mode — which is well-formed and real and still has no routing
+ * settings, since keys never fail over (req 12).
+ */
+function requireSubscriptionModeKey(key: string): { serviceId: string; billingMode: "sub" } {
+  const parsed = parseCredentialModeKey(key);
+  if (!parsed) throw new ServiceError(400, `Malformed credential mode key: ${key}`);
+  if (!getService(parsed.serviceId)) throw new ServiceError(400, `Unknown service: ${parsed.serviceId}`);
+  if (parsed.billingMode !== "sub") {
+    throw new ServiceError(400, `Routing settings apply to subscriptions only, not to ${key}`);
+  }
+  if (!getMode(parsed.serviceId, "sub")) {
+    throw new ServiceError(400, `${parsed.serviceId} has no subscription mode`);
+  }
+  return { serviceId: parsed.serviceId, billingMode: "sub" };
 }
 
 function validateProvider(provider: AgentId): void {

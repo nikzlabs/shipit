@@ -20,6 +20,7 @@ import type {
   BillingMode,
   BillingModeDef,
   HarnessDef,
+  ModeCredential,
   ModelDef,
   ModelSelection,
   ServiceDef,
@@ -66,6 +67,23 @@ export function nativeServiceForHarness(harnessId: AgentId | undefined): string 
   return harnessId ? getHarness(harnessId)?.nativeService : undefined;
 }
 
+/**
+ * The harness whose own vendor provides this service — the inverse of
+ * {@link nativeServiceForHarness}.
+ *
+ * It exists for exactly one job and should not grow others: bridging the
+ * docs/150 account machinery, which is still keyed by `AgentId`, to the
+ * `(service, billing mode)` key credentials are now stored under. Anthropic's
+ * subscription accounts are Claude Code's `claude` accounts and OpenAI's are
+ * Codex's `codex` accounts, and that correspondence is exactly what phase 3
+ * removes when eligibility and routing stop asking "which vendor's agent is
+ * this?". A caller reaching for this to answer anything else is reintroducing
+ * the conflation.
+ */
+export function harnessForNativeService(serviceId: string): AgentId | undefined {
+  return HARNESSES.find((h) => h.nativeService === serviceId)?.id;
+}
+
 export function getMode(serviceId: string, billingMode: BillingMode): BillingModeDef | undefined {
   return getService(serviceId)?.modes.find((m) => m.kind === billingMode);
 }
@@ -108,6 +126,88 @@ export function resolveEndpoint(harnessId: AgentId, selection: ModelSelection): 
   if (!mode || !model) return undefined;
   const style = resolveStyle(harnessId, model);
   return style ? mode.endpoints[style] : undefined;
+}
+
+// ---- Credentials (phase 2) -------------------------------------------------
+
+/**
+ * Every environment-variable name the catalogue names as a credential's
+ * `storageEnv`, de-duplicated, in catalogue order.
+ *
+ * This is the "compile-time env-key name per `(service, billing mode)`" phase 2
+ * owes: `ALLOWED_ENV_KEYS` derives from it, so adding a service to the
+ * catalogue is the *only* edit its key name needs. Per mode and not per
+ * service, deliberately — GLM declares one name for its coding plan and another
+ * for its ordinary key, and a per-service name could not say that.
+ */
+export function credentialStorageEnvNames(): string[] {
+  const out: string[] = [];
+  for (const service of SERVICES) {
+    for (const mode of service.modes) {
+      for (const credential of mode.credentials) {
+        if (credential.via !== "string") continue;
+        if (!out.includes(credential.storageEnv)) out.push(credential.storageEnv);
+      }
+    }
+  }
+  return out;
+}
+
+/** The credential shape a mode accepts for a given delivery, if it accepts one. */
+export function modeCredentialFor(
+  serviceId: string,
+  billingMode: BillingMode,
+  via: "account" | "string",
+): ModeCredential | undefined {
+  return getMode(serviceId, billingMode)?.credentials.find((c) => c.via === via);
+}
+
+/**
+ * The variable a credential of this mode is materialized into at spawn, before
+ * any per-harness `targetOverride`. `undefined` when the mode accepts no
+ * string-delivered credential at all (an OAuth-only subscription).
+ */
+export function storageEnvFor(serviceId: string, billingMode: BillingMode): string | undefined {
+  const credential = modeCredentialFor(serviceId, billingMode, "string");
+  return credential?.via === "string" ? credential.storageEnv : undefined;
+}
+
+/**
+ * The `(service, billing mode)` that claims an environment-variable name as its
+ * credential's `storageEnv`, if any. The inverse of {@link storageEnvFor}.
+ *
+ * First match wins in catalogue order. The catalogue does not currently reuse a
+ * name across two modes, and it should not: the same variable meaning two
+ * different credentials is the single-slot collision this design removes. It is
+ * not expressible as a type constraint, so `catalogue.test.ts` asserts it.
+ */
+export function credentialModeForStorageEnv(
+  envName: string,
+): { serviceId: ServiceId; billingMode: BillingMode } | undefined {
+  for (const service of SERVICES) {
+    for (const mode of service.modes) {
+      for (const credential of mode.credentials) {
+        if (credential.via === "string" && credential.storageEnv === envName) {
+          return { serviceId: service.id, billingMode: mode.kind };
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * May this mode hold more than one credential?
+ *
+ * **Yes exactly when it is a subscription**, and the rule keys on billing and
+ * not on delivery for the reason the whole design exists: req 12 fails over
+ * between subscriptions of one service and never between keys, so a `key` mode
+ * can only ever use one credential — a second would be dead storage that no
+ * routing rule can reach. A `sub` mode needs several whether its credentials
+ * arrive as accounts (Anthropic, OpenAI) or as strings (GLM's coding plan).
+ */
+export function modeAllowsMultipleCredentials(billingMode: BillingMode): boolean {
+  return billingMode === "sub";
 }
 
 /** A catalogue row paired with the identity that names it. */

@@ -32,6 +32,7 @@ type MobilePanel = "chat" | "preview";
 type SettingsTab =
   | "agent-claude"
   | "agent-codex"
+  | "services"
   | "integrations"
   | "git"
   | "instructions"

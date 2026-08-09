@@ -329,7 +329,7 @@ describe("provider route pinning (docs/150)", () => {
 
       // The same 60% against a user-configured 50% cutoff does move it. This is
       // the whole of req 4 end to end: the stored setting reaches the router.
-      store.setFailoverCutoffs("claude", { session: 50 });
+      store.setFailoverCutoffs("anthropic", "sub", { session: 50 });
       await runEnvPrep("s1", "claude");
       expect(sessions.get("s1")?.providerRouteId).toBe(second);
     });

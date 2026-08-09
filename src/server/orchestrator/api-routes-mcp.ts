@@ -31,7 +31,12 @@ import {
   InMemoryOAuthStateStore,
   refreshOAuthTokens,
 } from "./services/index.js";
-import { selectAgentEnvForPush } from "./session-agent-env.js";
+import {
+  isAgentSecretsCapable,
+  refreshAgentEnvForAllSessions,
+  selectAgentEnvForPush,
+  type AccountAgentEnvSource,
+} from "./session-agent-env.js";
 import { getErrorMessage } from "./validation.js";
 
 export interface McpRoutesDeps {
@@ -61,22 +66,10 @@ interface McpTestCapableRunner {
   proxyMcpTest(config: unknown): Promise<unknown>;
 }
 
-interface AgentSecretsCapableRunner {
-  serviceManager?: Pick<ServiceManager, "getSecretsSnapshot"> | null;
-  tryPushAgentSecrets(values: Record<string, string>): Promise<void>;
-}
-
 function isMcpTestCapable(runner: unknown): runner is McpTestCapableRunner {
   return (
     !!runner &&
     typeof (runner as McpTestCapableRunner).proxyMcpTest === "function"
-  );
-}
-
-function isAgentSecretsCapable(runner: unknown): runner is AgentSecretsCapableRunner {
-  return (
-    !!runner &&
-    typeof (runner as AgentSecretsCapableRunner).tryPushAgentSecrets === "function"
   );
 }
 
@@ -109,26 +102,10 @@ function isMcpAuthFailure(result: unknown): boolean {
   return /\b401\b/.test(error) || /invalid[_ -]?token|unauthori[sz]ed/i.test(error);
 }
 
-/**
- * Trigger the agent-env refresh on every active session's ServiceManager.
- * Each `refreshSecrets()` re-runs `syncSecrets()`, which re-reads the
- * `mcp__*` keys from CredentialStore, rewrites the state dir's `.env.agent`, and
- * pushes the full set to the worker via `PUT /secrets`. The worker REPLACES
- * its tracked set on every push, so deleted/renamed keys are dropped without
- * an explicit clear list. Fire-and-forget per session.
- */
-function refreshAgentEnvForAllSessions(serviceManagers: Map<string, ServiceManager>): void {
-  for (const [sessionId, mgr] of serviceManagers) {
-    mgr.refreshSecrets().catch((err: unknown) => {
-      console.warn(`[mcp] agent-env refresh failed for session ${sessionId}:`, getErrorMessage(err));
-    });
-  }
-}
-
 async function pushAgentEnvToRunner(
   runner: unknown,
   deps: {
-    credentialStore: Pick<CredentialStore, "getAllAgentEnv" | "getAllMcpOAuthTokens">;
+    credentialStore: AccountAgentEnvSource;
   },
 ): Promise<void> {
   if (!isAgentSecretsCapable(runner)) return;

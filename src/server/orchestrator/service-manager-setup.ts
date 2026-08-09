@@ -13,7 +13,7 @@ import type { LogStore } from "./log-store.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { resolveDepsHashInputs } from "../shared/deps-hash.js";
 import { agentLogAppend } from "./log-emit.js";
-import { collectMcpAgentEnv } from "./secret-resolver.js";
+import { collectAccountAgentEnv } from "./secret-resolver.js";
 import { getErrorMessage } from "./validation.js";
 import { formatOverlayMeasurement, type DepDirPublishOutcome } from "./overlay-publish.js";
 import { isOverlayEligible } from "./overlay-session.js";
@@ -464,11 +464,16 @@ export function setupServiceManager(
       }
     : undefined;
 
-  // docs/088 — account-level MCP secrets (`mcp__*` keys). Read fresh from
-  // CredentialStore on every compose start/reconcile so a server added while
-  // the session was idle is picked up on next sync.
-  const mcpAgentEnvLoader = credentialStore
-    ? () => collectMcpAgentEnv(credentialStore)
+  // docs/088 — account-level MCP secrets (`mcp__*` keys), and docs/252 phase 2
+  // — the user's stored service credentials under their catalogue `storageEnv`
+  // names. Read fresh from CredentialStore on every compose start/reconcile so
+  // anything added while the session was idle is picked up on the next sync.
+  //
+  // The service credentials are the half that was MISSING: this loader used to
+  // be `mcp__*`-only, which is precisely why a key saved in Settings reached a
+  // compose-less session and not a compose-backed one (Appendix A).
+  const accountAgentEnvLoader = credentialStore
+    ? () => collectAccountAgentEnv(credentialStore)
     : undefined;
 
   // ---- Adoption path: orphaned ServiceManager from a previous runner ----
@@ -513,7 +518,7 @@ export function setupServiceManager(
     stackName: process.env.DOCKER_STACK,
     opsSession: session?.kind === "ops",
     secretsLoader,
-    mcpAgentEnvLoader,
+    accountAgentEnvLoader,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
     ...(logStore ? { logStore } : {}),

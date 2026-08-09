@@ -7,6 +7,8 @@ import { CaretDownIcon, CaretUpIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
 import type { AgentId, ProviderAccount } from "../../../server/shared/types.js";
+import { credentialModeKey } from "../../../server/shared/types/domain-types/credential-route.js";
+import { nativeServiceForHarness } from "../../../server/shared/catalogue/index.js";
 import { Button } from "../ui/button.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import type { ClaudeAuthDiagnostics } from "../../stores/settings-store.js";
@@ -15,6 +17,19 @@ import {
   providerAccountAuthKey,
   EMPTY_CLAUDE_AUTH_DIAGNOSTICS,
 } from "../../stores/settings-store.js";
+
+/**
+ * docs/252 phase 2 — the key the routing settings for this provider's accounts
+ * are stored under.
+ *
+ * Always the SUBSCRIPTION mode of the harness's own vendor: order, spreading
+ * and the cutoffs are answers to "which of these accounts next?", and req 12
+ * keeps that question inside one subscription mode. Mirrors
+ * `routingSettingsKeyFor` on the server, which is what writes these entries.
+ */
+function routingKeyFor(provider: AgentId): string {
+  return credentialModeKey(nativeServiceForHarness(provider) ?? provider, "sub");
+}
 
 const providerNames: Record<AgentId, string> = {
   claude: "Claude",
@@ -58,6 +73,7 @@ export function ProviderAccountsCard({
   onSubmitApiKey,
   onClearApiKey,
   compact = false,
+  showApiKeyFallback = true,
 }: {
   provider: AgentId;
   agent: AgentOption | undefined;
@@ -71,6 +87,12 @@ export function ProviderAccountsCard({
    * diverging, and this changes only how much prose sits above it.
    */
   compact?: boolean;
+  /**
+   * docs/252 phase 2 — render the collapsed API-key disclosure. Default true so
+   * every existing caller is unchanged; Settings → Services passes false,
+   * because there the key is a first-class `(service, key)` card of its own.
+   */
+  showApiKeyFallback?: boolean;
 }) {
   const allAccounts = useSettingsStore((s) => s.providerAccounts);
   const setProviderAccounts = useSettingsStore((s) => s.setProviderAccounts);
@@ -646,7 +668,14 @@ export function ProviderAccountsCard({
         </div>
       )}
 
-      {/* Metered-billing fallback — deliberately not an "account". */}
+      {/* Metered-billing fallback — deliberately not an "account".
+          docs/252 phase 2 — Settings → Services renders this same credential as
+          its own `(service, key)` card, so this disclosure is suppressed there
+          rather than offering a second editor for one fact. It stays wherever
+          the accounts card is the ONLY credential surface: the per-agent tabs,
+          and first-run onboarding, where a user with no subscription needs a
+          way in (req 2). */}
+      {showApiKeyFallback && (
       <div className="px-1">
         <button
           onClick={() => setShowApiKeyPanel((v) => !v)}
@@ -688,6 +717,7 @@ export function ProviderAccountsCard({
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }
@@ -705,24 +735,24 @@ export function ProviderAccountsCard({
  * an account drops out of the rotation, rather than the point work leaves it.
  */
 function SelectionModeControl({ provider, name }: { provider: AgentId; name: string }) {
-  const stored = useSettingsStore((s) => s.accountSelectionMode[provider]);
+  const stored = useSettingsStore((s) => s.accountSelectionMode[routingKeyFor(provider)]);
   const mode = stored ?? "strict";
   const [saving, setSaving] = useState(false);
 
   const save = async (next: "strict" | "balanced"): Promise<void> => {
     if (next === mode) return;
     const previous = mode;
-    useSettingsStore.getState().setAccountSelectionMode(provider, next);
+    useSettingsStore.getState().setAccountSelectionMode(routingKeyFor(provider), next);
     setSaving(true);
     try {
       const res = await fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountSelectionMode: { [provider]: next } }),
+        body: JSON.stringify({ accountSelectionMode: { [routingKeyFor(provider)]: next } }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
     } catch (err) {
-      useSettingsStore.getState().setAccountSelectionMode(provider, previous);
+      useSettingsStore.getState().setAccountSelectionMode(routingKeyFor(provider), previous);
       useUiStore.getState().setToast({ message: `Failed to update ${name} account order` });
       console.error("[settings] account selection mode save failed:", err);
     } finally {
@@ -772,7 +802,7 @@ type CutoffKey = (typeof CUTOFF_KEYS)[number];
 const DEFAULT_CUTOFFS: Record<CutoffKey, number> = { session: 90, weekly: 90 };
 
 const currentCutoffs = (provider: AgentId): Record<CutoffKey, number> =>
-  useSettingsStore.getState().failoverCutoffs[provider] ?? DEFAULT_CUTOFFS;
+  useSettingsStore.getState().failoverCutoffs[routingKeyFor(provider)] ?? DEFAULT_CUTOFFS;
 
 /**
  * Persist one cutoff. Deliberately a module-level function over the store,
@@ -791,12 +821,12 @@ async function saveCutoff(
   if (!Number.isInteger(value) || value < 1 || value > 100) return;
   const before = currentCutoffs(provider);
   if (value === before[key]) return;
-  useSettingsStore.getState().setFailoverCutoffs(provider, { ...before, [key]: value });
+  useSettingsStore.getState().setFailoverCutoffs(routingKeyFor(provider), { ...before, [key]: value });
   try {
     const res = await fetch("/api/settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ failoverCutoffs: { [provider]: { [key]: value } } }),
+      body: JSON.stringify({ failoverCutoffs: { [routingKeyFor(provider)]: { [key]: value } } }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
   } catch (err) {
@@ -805,7 +835,7 @@ async function saveCutoff(
     // other field, both of which can land while this request is in flight.
     const now = currentCutoffs(provider);
     if (now[key] === value) {
-      useSettingsStore.getState().setFailoverCutoffs(provider, { ...now, [key]: before[key] });
+      useSettingsStore.getState().setFailoverCutoffs(routingKeyFor(provider), { ...now, [key]: before[key] });
     }
     useUiStore.getState().setToast({ message: `Failed to update ${name} failover cutoff` });
     console.error("[settings] failover cutoff save failed:", err);
@@ -835,7 +865,7 @@ async function saveCutoff(
  * behind a stale uncontrolled DOM value.
  */
 function FailoverCutoffControls({ provider, name }: { provider: AgentId; name: string }) {
-  const stored = useSettingsStore((s) => s.failoverCutoffs[provider]);
+  const stored = useSettingsStore((s) => s.failoverCutoffs[routingKeyFor(provider)]);
   const cutoffs = stored ?? DEFAULT_CUTOFFS;
   const [drafts, setDrafts] = useState<Partial<Record<CutoffKey, string>>>({});
 

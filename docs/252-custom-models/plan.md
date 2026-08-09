@@ -411,6 +411,69 @@ and used by nothing. Shipping this alone is deliberate: credential storage and d
 where the security-relevant review is, and it deserves a PR that isn't also changing how
 turns run.
 
+**Phase 2 has landed, apart from GLM's quota integration.** `CredentialRoute`
+(`shared/types/domain-types/credential-route.ts`) is the storage shape;
+`credential-store.ts` holds the routes and a per-instance `credentialSecrets`
+map; `services/credential-routes.ts` is the CRUD with the catalogue's rules;
+`ServicesPanel.tsx` is the add-flow. GLM's coding plan can be stored, delivered
+and removed like any other string-delivered subscription — what has **not**
+been built is `zai-plan-usage`, its quota reader, which needs phase 6's
+per-`(service, mode)` quota machinery to have somewhere to report into. Req 15
+is met on catalogue contents and credentials, and unmet on GLM's quota.
+
+**What phase 2 found.** Five things, three of which change what a later phase
+does.
+
+- **`CredentialRoute` did not have to replace `ProviderAccount` at ~70 call
+  sites to replace it in storage.** The store holds routes; `listProviderAccounts`
+  / `upsertProviderAccount` are a lossless projection over them
+  (`providerAccountToRoute` and its inverse), because an account row *is* a
+  `via: "account"` credential of its vendor's subscription mode and `provider`
+  is recoverable from `serviceId` through the catalogue's `nativeService`. **Phase
+  3 deletes the projection** when eligibility and turn routing stop asking
+  "which vendor's agent is this?" — until then the docs/150 machinery keeps its
+  shape and nothing about routing changed in a credentials PR.
+- **There were three writers for one API key, not one, and the third was
+  invisible.** `setApiKey` (Anthropic) wrote only `process.env`; `set_agent_env`
+  (Codex's `OPENAI_API_KEY`) wrote `CredentialData.agentEnv`; the new surface
+  writes routes. Both legacy writers now go through
+  `upsertSingleStringCredential`, and a load-time migration moves any catalogue
+  `storageEnv` name out of `agentEnv` — moved, not copied, because a copy keeps
+  being delivered from the old slot after the user removes the credential. The
+  asymmetry the phase description names is closed in that direction: Anthropic's
+  key now persists.
+- **`process.env` is still load-bearing and must keep being seeded.**
+  `reservedRouteFor` and `AgentRegistry.isAuthConfigured` probe the environment,
+  so a key that lives only in the route store would persist correctly and report
+  the provider as unauthenticated. `app-di` seeds `process.env` from the stored
+  routes at boot, and the two writers assign it on write. **Phase 3 should remove
+  that coupling rather than inherit it** — those probes are exactly the
+  per-`AgentId` eligibility it replaces.
+- **The compose gap needed a wider pipe *and* a propagation step.**
+  `collectAccountAgentEnv` (MCP secrets + service credentials) replaces the
+  `mcp__*`-only loader on both delivery paths, which is the gap Appendix A
+  recorded. That alone only reaches the *next* sync, so every credential write
+  also calls `refreshAgentEnvForAllSessions` and pushes to compose-less runners
+  — the same two steps an MCP secret write already took, lifted out of
+  `api-routes-mcp.ts` now that they have a second caller.
+- **Delivery takes each mode's FIRST credential, and that is a placeholder.**
+  A subscription can now hold several, but choosing between them is a per-turn
+  routing decision phase 3 owns; phase 2 delivers what the old single slot would
+  have delivered so this phase cannot change which credential a turn
+  authenticates with. **Phase 3 replaces `collectServiceCredentialEnv`'s
+  first-in-order rule with resolution from the selected model's service** — until
+  it does, req 12's second GLM key is stored and unreachable.
+
+**Onboarding was not broken by this phase, and the reason is worth recording**
+because the design predicted it would be. The prediction assumed phase 2 removed
+the `AgentId` keying from credentials outright; the projection above means
+`OnboardingWizard`'s two hard-coded cards keep working unchanged, now writing
+`(anthropic, sub)` and `(openai, sub)`. They keep their API-key disclosure — the
+copies in Settings → Services do not, since there the key is a first-class card —
+so a user with no subscription still has a way in (req 2). It is still the
+interim: the step is hard-coded to two providers and lists every other agent
+read-only, which `docs/257-onboarding-non-blocking` replaces.
+
 **Phase 3 — Spawn shaping and eligibility.** Both spawn sites set the base URL and
 credential from the selected model's service, after the scrub. **There is no existing
 base-URL seam to extend** — no field on `AgentRunParams`, no Claude flag or env assignment,

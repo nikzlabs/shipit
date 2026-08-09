@@ -17,6 +17,7 @@ import { EventEmitter } from "node:events";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SessionManager } from "./sessions.js";
+import type { CredentialRoute } from "../shared/types.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import {
   prepareSessionAgentEnvironment,
@@ -50,15 +51,26 @@ class FakeContainerRunner extends EventEmitter {
 Object.setPrototypeOf(FakeContainerRunner.prototype, ContainerSessionRunner.prototype);
 
 function makeFakeCredentialStore(
-  initial: { agentEnv?: Record<string, string> } = {},
+  initial: {
+    agentEnv?: Record<string, string>;
+    // docs/252 phase 2 — the stored service credentials, which are collected
+    // separately from `agentEnv` and land under their catalogue `storageEnv`
+    // names.
+    credentialRoutes?: CredentialRoute[];
+    credentialSecrets?: Record<string, string>;
+  } = {},
 ): CredentialStore {
   const agentEnv = { ...(initial.agentEnv ?? {}) };
+  const routes = initial.credentialRoutes ?? [];
+  const secrets = { ...(initial.credentialSecrets ?? {}) };
   const stub = {
     getAllAgentEnv: () => ({ ...agentEnv }),
     getAllMcpOAuthTokens: () => ({}),
     getAllMcpServers: () => ({}),
     getAgentSystemInstructionsEnabled: () => true,
     getAutoCreatePr: () => false,
+    listCredentialRoutes: () => routes.map((r) => ({ ...r })),
+    getCredentialSecret: (routeId: string) => secrets[routeId],
   };
   return stub as unknown as CredentialStore;
 }

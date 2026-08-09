@@ -17,22 +17,27 @@
  */
 import { describe, it, expect } from "vitest";
 import type { ServiceManager } from "../service-manager.js";
-import type { CredentialStore } from "../credential-store.js";
 import type { OAuthTokens } from "../../shared/types/mcp-types.js";
+import type { CredentialRoute } from "../../shared/types.js";
+import type { AccountAgentEnvSource } from "../session-agent-env.js";
 import { selectAgentEnvForPush } from "./agent-execution.js";
 
 interface FakeCredentialStoreOptions {
   agentEnv?: Record<string, string>;
   oauthTokens?: Record<string, OAuthTokens>;
+  credentialRoutes?: CredentialRoute[];
+  credentialSecrets?: Record<string, string>;
 }
 
-/** Minimal fake — `selectAgentEnvForPush` only touches these two methods. */
+/** Minimal fake — `selectAgentEnvForPush` only touches these readers. */
 function makeFakeCredentialStore(
   opts: FakeCredentialStoreOptions = {},
-): Pick<CredentialStore, "getAllAgentEnv" | "getAllMcpOAuthTokens"> {
+): AccountAgentEnvSource {
   return {
     getAllAgentEnv: () => ({ ...(opts.agentEnv ?? {}) }),
     getAllMcpOAuthTokens: () => ({ ...(opts.oauthTokens ?? {}) }),
+    listCredentialRoutes: () => (opts.credentialRoutes ?? []).map((r) => ({ ...r })),
+    getCredentialSecret: (routeId: string) => opts.credentialSecrets?.[routeId],
   };
 }
 

@@ -116,6 +116,10 @@ export async function getBootstrapData(deps: {
         voiceDeliveryMode: "native",
         voiceWebhookConfigured: false,
         providerAccounts: [],
+        // docs/252 — same reasoning again: "settings could not be read" must not
+        // be reported as "you have no credentials", so this stays empty rather
+        // than being reconstructed from a store the read above already failed on.
+        credentialRoutes: [],
       };
     }),
     readTailnetPreviewHost(),

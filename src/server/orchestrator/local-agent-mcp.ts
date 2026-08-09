@@ -49,8 +49,7 @@ import type {
   AgentMcpWriteResult,
   AgentRunParams,
 } from "../shared/types/agent-types.js";
-import type { CredentialStore } from "./credential-store.js";
-import { selectAgentEnvForPush } from "./session-agent-env.js";
+import { selectAgentEnvForPush, type AccountAgentEnvSource } from "./session-agent-env.js";
 import { localAgentOpsSpawnEnv } from "./local-agent-ops.js";
 import { getErrorMessage } from "../shared/utils.js";
 
@@ -81,7 +80,7 @@ export const LOCAL_SHIPIT_BRIDGE: AgentMcpBridge | null = null;
 
 export interface LocalAgentMcpDeps {
   /** Source of the MCP env — the same store the worker push reads from. */
-  credentialStore: Pick<CredentialStore, "getAllAgentEnv" | "getAllMcpOAuthTokens">;
+  credentialStore: AccountAgentEnvSource;
   /**
    * Session whose `/agent-ops` host address should reach the spawn (docs/251).
    * Omit and no `SHIPIT_AGENT_OPS_URL` is set, which is the pre-docs/251

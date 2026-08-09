@@ -59,12 +59,18 @@ function renderCard() {
   );
 }
 
+/**
+ * docs/252 phase 2 — the routing settings for Claude's accounts live under
+ * Anthropic's SUBSCRIPTION mode, not under the agent id.
+ */
+const CLAUDE_ROUTING_KEY = "anthropic:sub";
+
 const settingsCalls = (calls: { url: string; method: string; body: unknown }[]) =>
   calls.filter((c) => c.url === "/api/settings" && c.method === "PUT");
 
 beforeEach(() => {
   useSettingsStore.getState().setProviderAccounts([account("a", true), account("b")]);
-  useSettingsStore.getState().setFailoverCutoffs("claude", { session: 90, weekly: 90 });
+  useSettingsStore.getState().setFailoverCutoffs(CLAUDE_ROUTING_KEY, { session: 90, weekly: 90 });
   useUiStore.getState().setToast(null);
 });
 
@@ -85,9 +91,9 @@ describe("ProviderAccountsCard failover cutoffs", () => {
 
     await waitFor(() => expect(settingsCalls(calls)).toHaveLength(1));
     expect(settingsCalls(calls)[0]?.body).toEqual({
-      failoverCutoffs: { claude: { session: 80 } },
+      failoverCutoffs: { [CLAUDE_ROUTING_KEY]: { session: 80 } },
     });
-    expect(useSettingsStore.getState().failoverCutoffs.claude).toEqual({ session: 80, weekly: 90 });
+    expect(useSettingsStore.getState().failoverCutoffs[CLAUDE_ROUTING_KEY]).toEqual({ session: 80, weekly: 90 });
   });
 
   it("saves a typed value on blur", async () => {
@@ -100,7 +106,7 @@ describe("ProviderAccountsCard failover cutoffs", () => {
 
     await waitFor(() => expect(settingsCalls(calls)).toHaveLength(1));
     expect(settingsCalls(calls)[0]?.body).toEqual({
-      failoverCutoffs: { claude: { weekly: 75 } },
+      failoverCutoffs: { [CLAUDE_ROUTING_KEY]: { weekly: 75 } },
     });
   });
 
@@ -117,7 +123,7 @@ describe("ProviderAccountsCard failover cutoffs", () => {
 
     await waitFor(() => expect(settingsCalls(calls)).toHaveLength(1));
     expect(settingsCalls(calls)[0]?.body).toEqual({
-      failoverCutoffs: { claude: { session: 60 } },
+      failoverCutoffs: { [CLAUDE_ROUTING_KEY]: { session: 60 } },
     });
   });
 
@@ -135,10 +141,10 @@ describe("ProviderAccountsCard failover cutoffs", () => {
 
     await waitFor(() => expect(settingsCalls(calls)).toHaveLength(2));
     expect(settingsCalls(calls).map((c) => c.body)).toEqual([
-      { failoverCutoffs: { claude: { session: 60 } } },
-      { failoverCutoffs: { claude: { weekly: 70 } } },
+      { failoverCutoffs: { [CLAUDE_ROUTING_KEY]: { session: 60 } } },
+      { failoverCutoffs: { [CLAUDE_ROUTING_KEY]: { weekly: 70 } } },
     ]);
-    expect(useSettingsStore.getState().failoverCutoffs.claude).toEqual({ session: 60, weekly: 70 });
+    expect(useSettingsStore.getState().failoverCutoffs[CLAUDE_ROUTING_KEY]).toEqual({ session: 60, weekly: 70 });
   });
 
   it("does not double-submit when a blur follows Enter for the same edit", async () => {
@@ -170,7 +176,7 @@ describe("ProviderAccountsCard failover cutoffs", () => {
 
     await Promise.resolve();
     expect(settingsCalls(calls)).toHaveLength(0);
-    expect(useSettingsStore.getState().failoverCutoffs.claude).toEqual({ session: 90, weekly: 90 });
+    expect(useSettingsStore.getState().failoverCutoffs[CLAUDE_ROUTING_KEY]).toEqual({ session: 90, weekly: 90 });
   });
 
   it("sends nothing when the value is retyped unchanged", async () => {
@@ -194,7 +200,7 @@ describe("ProviderAccountsCard failover cutoffs", () => {
     fireEvent.keyDown(input, { key: "Enter" });
 
     await waitFor(() =>
-      expect(useSettingsStore.getState().failoverCutoffs.claude).toEqual({ session: 90, weekly: 90 }),
+      expect(useSettingsStore.getState().failoverCutoffs[CLAUDE_ROUTING_KEY]).toEqual({ session: 90, weekly: 90 }),
     );
     await waitFor(() => expect(input.value).toBe("90"));
     expect(useUiStore.getState().toast?.message).toContain("failover cutoff");

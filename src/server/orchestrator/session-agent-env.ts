@@ -59,7 +59,7 @@ import { emitNoticeInTurn } from "./chat-card-persistence.js";
 import { ensureCodexHomeInitialized } from "./agents/codex/home-init.js";
 import { ensureLocalAgentOpsHost } from "./local-agent-ops.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
-import { collectMcpAgentEnv } from "./secret-resolver.js";
+import { collectAccountAgentEnv } from "./secret-resolver.js";
 import { buildConversationReplay } from "./services/replay.js";
 import { getErrorMessage } from "./validation.js";
 
@@ -202,29 +202,86 @@ function armConversationReplay(deps: SessionAgentEnvDeps, sessionId: string): vo
  *
  *   * Compose-less session (`serviceManager` is `null`) — pull directly from
  *     `CredentialStore`. The account-level set covers `mcp__*` secrets,
- *     `MCP_PLATFORM_*` OAuth tokens, and `OPENAI_API_KEY`-style top-level
- *     keys. `collectMcpAgentEnv` returns both `mcp__*` and `MCP_PLATFORM_*`
- *     entries; the `mcp__*` ones overlap with `getAllAgentEnv()` but the
- *     values are identical, so spread order doesn't matter.
+ *     `MCP_PLATFORM_*` OAuth tokens, `OPENAI_API_KEY`-style top-level keys,
+ *     and (docs/252 phase 2) every stored service credential materialized into
+ *     its catalogue `storageEnv` name. `collectAccountAgentEnv` returns all of
+ *     those; the `mcp__*` ones overlap with `getAllAgentEnv()` but the values
+ *     are identical, so spread order doesn't matter there.
  *
  *   * Compose session — return the snapshot's `agentValues` map. The snapshot
- *     is the merged set (compose-declared + MCP) produced inside the most
- *     recent `ServiceManager.syncSecrets()` pass. The worker REPLACES its
+ *     is the merged set (compose-declared + account-level) produced inside the
+ *     most recent `ServiceManager.syncSecrets()` pass. The worker REPLACES its
  *     tracked set on every `PUT /secrets` call, so we MUST carry the *full*
  *     merged set here — pushing just the account-level subset would clobber
  *     the compose-declared `agent: true` secrets.
+ *
+ *     docs/252 phase 2 closes the gap that made a stored service key unreachable
+ *     here: the loader `ServiceManager` merges from is now
+ *     `collectAccountAgentEnv`, not the `mcp__*`-only `collectMcpAgentEnv`. A
+ *     credential saved while a compose session is running reaches it on the
+ *     next secrets sync, which every credential-route write triggers
+ *     ({@link refreshAgentEnvForAllSessions}) — exactly the path an MCP secret
+ *     already takes.
  */
 export function selectAgentEnvForPush(input: {
   serviceManager: Pick<ServiceManager, "getSecretsSnapshot"> | null;
-  credentialStore: Pick<CredentialStore, "getAllAgentEnv" | "getAllMcpOAuthTokens">;
+  credentialStore: AccountAgentEnvSource;
 }): Record<string, string> {
   if (input.serviceManager) {
     return input.serviceManager.getSecretsSnapshot().agentValues;
   }
   return {
     ...input.credentialStore.getAllAgentEnv(),
-    ...collectMcpAgentEnv(input.credentialStore),
+    ...collectAccountAgentEnv(input.credentialStore),
   };
+}
+
+/** The `CredentialStore` surface the account-level env collection reads. */
+export type AccountAgentEnvSource = Pick<
+  CredentialStore,
+  "getAllAgentEnv" | "getAllMcpOAuthTokens" | "listCredentialRoutes" | "getCredentialSecret"
+>;
+
+/**
+ * A runner that can accept a credential push. Structural rather than an
+ * `instanceof ContainerSessionRunner` check, so a local-mode runner and a test
+ * double satisfy it on the same terms the container runner does.
+ */
+export interface AgentSecretsCapableRunner {
+  sessionId: string;
+  serviceManager?: Pick<ServiceManager, "getSecretsSnapshot"> | null;
+  tryPushAgentSecrets(values: Record<string, string>): Promise<void>;
+}
+
+export function isAgentSecretsCapable(runner: unknown): runner is AgentSecretsCapableRunner {
+  return (
+    !!runner
+    && typeof (runner as AgentSecretsCapableRunner).tryPushAgentSecrets === "function"
+  );
+}
+
+/**
+ * Re-run every live compose stack's secrets sync so a credential change reaches
+ * the sessions already running.
+ *
+ * Each `refreshSecrets()` re-reads the account-level set, rewrites the state
+ * dir's `.env.agent`, and pushes the full set to the worker via `PUT /secrets`.
+ * The worker REPLACES its tracked set on every push, so a removed credential is
+ * dropped without an explicit clear list. Fire-and-forget per session: a
+ * settings write must not fail because one session's stack is unhealthy.
+ *
+ * Lifted out of `api-routes-mcp.ts`, which had the only copy, when docs/252
+ * gave it a second caller — the credential-route endpoints. Two copies of "how
+ * a credential reaches a running session" is how one of them ends up stale.
+ */
+export function refreshAgentEnvForAllSessions(
+  serviceManagers: Map<string, Pick<ServiceManager, "refreshSecrets">>,
+): void {
+  for (const [sessionId, mgr] of serviceManagers) {
+    mgr.refreshSecrets().catch((err: unknown) => {
+      console.warn(`[credentials] agent-env refresh failed for session ${sessionId}:`, getErrorMessage(err));
+    });
+  }
 }
 
 /**

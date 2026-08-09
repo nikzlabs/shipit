@@ -1,6 +1,6 @@
 import type { ChatMessage } from "../components/MessageList.js";
 import type { GitCommit } from "../components/GitHistory.js";
-import type { SessionInfo, RepoInfo, FileTreeNode, TurnUsage, SessionUsage, RuntimeMode, ProviderAccount } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, FileTreeNode, TurnUsage, SessionUsage, RuntimeMode, ProviderAccount, CredentialRoute } from "../../server/shared/types.js";
 import { turnContextTokens } from "../../server/shared/types.js";
 import { getContextWindowForModel } from "../../server/shared/model-windows.js";
 import type { AgentOption } from "../agent-types.js";
@@ -101,6 +101,7 @@ interface BootstrapResponse {
     autoResetMergedBranch?: boolean;
     enableSubAgents?: boolean;
     providerAccounts?: ProviderAccount[];
+    credentialRoutes?: CredentialRoute[];
     /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent id. */
     failoverCutoffs?: Record<string, { session: number; weekly: number }>;
     accountSelectionMode?: Record<string, "strict" | "balanced">;
@@ -391,6 +392,7 @@ export async function loadBootstrapData(): Promise<void> {
   if (data.settings.autoResetMergedBranch !== undefined) useSettingsStore.getState().setAutoResetMergedBranch(data.settings.autoResetMergedBranch);
   if (data.settings.enableSubAgents !== undefined) useSettingsStore.getState().setEnableSubAgents(data.settings.enableSubAgents);
   if (data.settings.providerAccounts) useSettingsStore.getState().setProviderAccounts(data.settings.providerAccounts);
+  if (data.settings.credentialRoutes) useSettingsStore.getState().setCredentialRoutes(data.settings.credentialRoutes);
   useUiStore.getState().setRuntimeMode(data.runtimeMode ?? "containerized");
   useUiStore.getState().setTailnetPreviewHost(data.tailnetPreviewHost ?? null);
   useUiStore.getState().setBootstrapLoaded(true);
