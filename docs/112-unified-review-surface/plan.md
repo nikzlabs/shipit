@@ -358,7 +358,7 @@ A single new pair of tables (migration 7) replaces the per-feature
 `doc_reviews` / `review_comments` tables from `049`:
 
 - `file_reviews(id, session_id, file_path, file_type, status, doc_snapshot_hash, section_headings, created_at, updated_at, sent_at)`
-- `file_review_comments(id, review_id, kind, line, section_heading, section_index, text, source, created_at)` — `kind` discriminates line vs. section comments so both code and markdown reviews share storage.
+- `file_review_comments(id, review_id, kind, line, section_heading, section_index, text, source, created_at)` — `kind` discriminates line vs. section comments so both code and markdown reviews share storage. The `source` column (`human` / `ai`) is **vestigial**: every comment is human-authored since the AI write path was removed (docs/203, docs/220), so runtime CRUD neither reads nor writes it (the append-only migration 21 sweep still references it, as migrations must). It keeps its `NOT NULL DEFAULT 'human'` so inserts can omit it and a downgrade to an older ShipIt still works.
 
 Drafts are unique per `(session, file)`. Sending freezes the draft and a
 fresh one is created on next open.

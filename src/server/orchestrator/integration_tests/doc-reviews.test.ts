@@ -195,7 +195,6 @@ Unit and integration tests.
     const comment = res.json() as ReviewComment;
     expect(comment.kind).toBe("selection");
     expect(comment.text).toBe("Consider a registry pattern");
-    expect(comment.source).toBe("human");
   });
 
   // ----------------------------------------------------------------

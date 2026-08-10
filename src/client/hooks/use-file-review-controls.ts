@@ -123,7 +123,6 @@ export function useFileReviewControls({
         contextBefore: c.contextBefore,
         contextAfter: c.contextAfter,
         text: c.text,
-        source: c.source,
       }));
   }, [draft]);
 

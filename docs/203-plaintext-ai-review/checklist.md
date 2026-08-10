@@ -8,9 +8,14 @@
 - [x] Remove `agent-review-store.ts`
 - [x] `chat-history.ts`: `agentReview` → `aiReview` (+ column, toRow/fromRow, migration)
 - [x] `domain-types.ts`: remove `AgentReview*` + AI branch of `ReviewComment`; keep human types
-  - Note: `AgentReview*` removed. `ReviewCommentSource` (`human`/`ai`) was **kept** intentionally —
-    the AI write path that produced `source:"ai"` is gone (no new ai rows), and dropping the field
-    type would destabilize the kept user-comment storage. Decoupling is achieved by removing the writer.
+  - Note: `AgentReview*` removed. `ReviewCommentSource` (`human`/`ai`) was **kept** at the time —
+    the AI write path that produced `source:"ai"` was gone (no new ai rows), and dropping the field
+    type looked like it would destabilize the kept user-comment storage. Decoupling was achieved by
+    removing the writer.
+  - **Follow-up (done):** with docs/220 removing the last `submit_review` write path, `source` could
+    only ever be `"human"`, so the discriminator and every AI branch hanging off it (the purple "AI"
+    comment style, the AI label) were deleted end to end. The `file_review_comments.source` **column
+    stays** (`NOT NULL DEFAULT 'human'`), unread and unwritten — see `review-store.ts`.
 - [x] `ws-server-messages.ts`: `ai_review_added`
 
 ## Client
