@@ -30,7 +30,11 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
  * Build deps around one session row, plus a prep hook that records the
  * `PrepareRunParamsInput` it was called with.
  */
-function setup(session: SessionInfo | undefined, connectionModel?: string) {
+function setup(
+  session: SessionInfo | undefined,
+  connectionModel?: string,
+  connectionReasoning?: string,
+) {
   const captured: PrepareRunParamsInput[] = [];
   const prep: PrepareRunParamsFn = (params, input) => {
     captured.push(input);
@@ -49,6 +53,7 @@ function setup(session: SessionInfo | undefined, connectionModel?: string) {
     },
     readSystemPrompt: async () => undefined,
     getSelectedModel: () => connectionModel,
+    getSelectedReasoning: () => connectionReasoning,
     runParamsPreps: new Map<AgentId, PrepareRunParamsFn>([["claude", prep]]),
   } as unknown as BuildAgentRunParamsDeps;
 
@@ -132,5 +137,34 @@ describe("buildAgentRunParams — the model comes from the session row", () => {
     const { run } = setup(makeSession({}), "claude-sonnet-5");
     const params = await run();
     expect(params.model).toBe("claude-sonnet-5");
+  });
+});
+
+/**
+ * docs/217 — the reasoning level had the shape the model was fixed out of.
+ *
+ * `getSelectedReasoning` is per-CONNECTION, resolved once at connect for the
+ * session the socket was opened on. A `send_message` carrying an explicit
+ * `sessionId` retargets that socket without recomputing it, so the turn ran at
+ * the other session's depth — the level being an argument to the CLI, not
+ * something the row is consulted for. Found by cross-backend review (Codex).
+ */
+describe("buildAgentRunParams — the reasoning level comes from the session row", () => {
+  it("prefers the row over a stale per-connection selection", async () => {
+    const { run } = setup(
+      makeSession({ reasoningEffort: "high" }),
+      undefined,
+      "low", // what the connection still holds for the session it was opened on
+    );
+    const params = await run();
+    expect(params.reasoningEffort).toBe("high");
+  });
+
+  it("falls back to the connection when the row holds no level yet", async () => {
+    // The connect param seeds an as-yet-unpinned session, so the fallback is
+    // still load-bearing for the very first turn.
+    const { run } = setup(makeSession({}), undefined, "low");
+    const params = await run();
+    expect(params.reasoningEffort).toBe("low");
   });
 });

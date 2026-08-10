@@ -204,6 +204,24 @@ rule the connect param and the quick-capture path follow. There is no
 `--reasoning` spawn flag: the parent's level is the only source. Guarded in
 `integration_tests/agent-spawned-session.test.ts`.
 
+A level *does* survive a harness switch that the **model** does not: `high`
+means the same thing on either backend whenever the target offers it, while a
+model id names one backend's catalogue. (Cross-backend review found that the
+model was carrying across such a switch — `--agent codex` from a Claude parent
+pinned the child to Codex *and* to the parent's Claude model. Fixed in the same
+change, in `child-sessions.ts`.)
+
+### Control B on a retargeted socket
+
+`buildAgentRunParams` reads the level from the **session row**, falling back to
+the per-connection value only when the row carries none. It previously read the
+connection value alone, which is resolved once at connect for the session the
+socket was opened on — and a `send_message` carrying an explicit `sessionId`
+retargets that socket (`ws-handlers/send-message.ts`) without recomputing it, so
+the turn ran at the other session's depth. This is the same defect docs/252
+phase 4 fixed for the model, in the same function, missed because the level had
+no second reader to disagree with. Guarded in `session-agent-run-params.test.ts`.
+
 ## Notes / known limitation
 
 Reasoning is a spawn-time argument. Codex (one app-server per turn) and the non-streaming Claude path
