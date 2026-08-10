@@ -88,6 +88,15 @@ requirement below contradicts it.
     user's forceful retry — there must be no state in which ShipIt believes
     every account is out of quota and refuses to try any of them.
 
+13. A resident agent process with background work in progress — a sub-agent
+    review, or any background process the agent started — is not killed for
+    an account move. Killing it would lose the tokens already spent on that
+    work, which costs more than one turn on a less-preferred account. The
+    move waits until the process is clean; this refines requirement 8, and
+    it applies to disconnect as well: the account cannot be taken away from
+    under such a process, so the user is asked to wait, exactly as for a
+    running turn.
+
 ## Design context — constraints, not requirements
 
 The agent supplied these during the diagnosis; they bound the design but are
@@ -161,6 +170,10 @@ None — design and implementation are unblocked.
   the next turn still tries all the accounts using the strategy, so a
   wrong "out of quota" belief can never deadlock routing; resending is the
   user's forceful retry. Recorded as requirement 12.
+- 2026-08-10 (during design) — Nik: a resident process with an in-progress
+  sub-agent review or agent-started background processes must not be killed
+  for an account move — the cost would be the tokens already spent on that
+  work. Recorded as requirement 13.
 - 2026-08-10 — Scope across credential shapes? Nik: all subscription-shaped
   credentials — Claude accounts, Codex accounts, string-delivered
   subscriptions. Recorded as requirement 11.
