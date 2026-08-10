@@ -82,6 +82,36 @@ describe("applyTemplate (service) — ops session", () => {
     );
   });
 
+  // docs/128 / docs/211 — the auto-commit gate (`auto-commit-gate.ts`) stops
+  // ShipIt committing an ops session, and `setKind(…, "ops")` has already run by
+  // the time the template commit fires. Template application is deliberately NOT
+  // gated: it is session CREATION, not a turn, and skipping it would hand the
+  // agent a workspace that is dirty from its first second with the template's own
+  // files showing as unstaged changes.
+  it("still commits the applied template for an ops session", async () => {
+    const state: FakeSessionState = { kinds: {}, sessions: {} };
+    const sessionDir = freshSessionDir();
+    const subjects: string[] = [];
+    const recordingGit = {
+      init: async () => {},
+      autoCommit: async (summary: string) => { subjects.push(summary); },
+    } as unknown as GitManager;
+
+    await applyTemplate(
+      fakeSessionManager(state),
+      () => recordingGit,
+      async (title: string) => {
+        state.sessions["new-sess"] = { id: "new-sess", title, workspaceDir: sessionDir };
+        return { appSessionId: "new-sess", sessionDir, workspaceDir: sessionDir };
+      },
+      "ops",
+    );
+
+    expect(state.kinds["new-sess"]).toBe("ops");
+    expect(subjects).toHaveLength(1);
+    expect(subjects[0]).toContain("Apply template:");
+  });
+
   it("SECURITY: refuses to retrofit an existing session into an ops session", async () => {
     const state: FakeSessionState = {
       kinds: {},

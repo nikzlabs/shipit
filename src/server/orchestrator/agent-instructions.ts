@@ -73,6 +73,14 @@ export interface AgentSystemInstructionOptions {
    *     and stops treating a privileged host-debug box like an app workspace;
    *   - swaps the aggressive "always open a PR" guidance for a read-only
    *     variant — an ops session investigates, it doesn't ship features;
+   *   - swaps the auto-commit Git guidance for the ops "you own git" variant.
+   *     ShipIt does not auto-commit an ops session (`services/auto-commit-gate.ts`),
+   *     so the standard fragment's "do NOT run git commit — this is handled for
+   *     you" would be false AND harmful: it tells the agent not to commit work
+   *     that nothing else will commit. Ops gets its OWN fragment rather than
+   *     reusing the sandbox one, because the sandbox text assumes no root repo
+   *     and free branch creation — an ops workspace is a repo, on a branch, with
+   *     branch creation blocked;
    *   - drops the "scaffold a new project" best-practice bullet, which is
    *     nonsense in a host-debugging context.
    *
@@ -116,9 +124,15 @@ const SKELETON = loadPrompt(import.meta.url, "./prompts/skeleton.md");
 const OPS_SECTION = loadPrompt(import.meta.url, "./prompts/ops-session.md");
 // docs/211 — sandbox orientation overlay, in the same Environment-adjacent slot.
 const SANDBOX_SECTION = loadPrompt(import.meta.url, "./prompts/sandbox-session.md");
-// Git workflow: ShipIt's auto-commit guidance vs the sandbox "you own git" variant.
+// Git workflow: ShipIt's auto-commit guidance vs the two "you own git" variants.
+// One per privileged kind — they are NOT interchangeable. The sandbox text is
+// written around having no root repo at all ("work inside the clone you created
+// under /workspace/<name>", "create branches yourself"); an ops workspace IS a
+// repo, on a branch, with branch creation blocked by the `block-branch-ops`
+// hook. See `services/auto-commit-gate.ts` for the invariant both describe.
 const GIT_WORKFLOW_STANDARD = loadPrompt(import.meta.url, "./prompts/git-workflow.md");
 const GIT_WORKFLOW_SANDBOX = loadPrompt(import.meta.url, "./prompts/git-workflow-sandbox.md");
+const GIT_WORKFLOW_OPS = loadPrompt(import.meta.url, "./prompts/git-workflow-ops.md");
 // Pull requests: full action-oriented guidance vs the read-only ops / per-repo sandbox variants.
 const PULL_REQUESTS_STANDARD = loadPrompt(import.meta.url, "./prompts/pull-requests.md");
 const PULL_REQUESTS_OPS = loadPrompt(import.meta.url, "./prompts/pull-requests-ops.md");
@@ -187,7 +201,7 @@ function renderInstructions(
 
   return fillPromptTokens(SKELETON, {
     OPS_SECTION: isOps ? OPS_SECTION : isSandbox ? SANDBOX_SECTION : "",
-    GIT_WORKFLOW: isSandbox ? GIT_WORKFLOW_SANDBOX : GIT_WORKFLOW_STANDARD,
+    GIT_WORKFLOW: isOps ? GIT_WORKFLOW_OPS : isSandbox ? GIT_WORKFLOW_SANDBOX : GIT_WORKFLOW_STANDARD,
     // Sandbox renders no preview pane, so it drops the section entirely; ops
     // swaps it for the compose-services clarification; std keeps Live preview.
     LIVE_PREVIEW: isOps ? COMPOSE_SERVICES_OPS : isSandbox ? "" : LIVE_PREVIEW,

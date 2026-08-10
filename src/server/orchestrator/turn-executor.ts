@@ -40,6 +40,7 @@ import { resetRunnerTurnState } from "./session-runner.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
+import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
 import { emitChatCard, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { TURN_COMPLETED, turnErrored, turnInterrupted, turnNoResult, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
@@ -902,6 +903,14 @@ export async function executeAgentTurn(
       // is where the planning#317 banner state + remediation turn live; this path
       // keeps the notice only, and deliberately has no `sessionManager` to
       // persist block state into.
+      //
+      // docs/128 / docs/211 — but it must not become the hole around the
+      // auto-commit gate: `postTurnCommit` refuses ops/sandbox at its top, and
+      // this fallback reaches `git.autoCommit` without going through it. Gated
+      // HERE, at the one call site, rather than inside the two identical
+      // `SystemTurnDeps.autoCommit` wirings (`agent-execution.ts` and
+      // `runner-registry-factory.ts`) — one check instead of two.
+      if (!sessionAutoCommitAllowed(deps.listenerDeps.sessionManager, sessionId)) return null;
       const result = await deps.autoCommit(runner.sessionDir, summary);
       if (result.secretFindings.length > 0) {
         emitNoticePostTurn(

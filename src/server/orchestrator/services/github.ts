@@ -685,6 +685,17 @@ async function removePrLabels(
  * `secretBlocked`: the secret-bearing change was NOT committed, so proceeding
  * would silently push/PR the prior (stale) branch state, hiding the agent's
  * just-made edit. The redacted warning notice is already emitted/persisted here.
+ *
+ * Deliberately carries NO session-kind gate of its own, because its two callers
+ * want opposite answers and the helper cannot tell them apart:
+ *
+ *  - `agentCreatePr` — the agent explicitly ran `gh pr create`. A PR without the
+ *    edits it is meant to contain is meaningless, so this flush is part of the
+ *    agent's own deliberate action, not one of ShipIt's automatic commits. It
+ *    stays available to every kind.
+ *  - `services/sub-agent-commit.ts` — a consult landing after its parent turn IS
+ *    an automatic commit, so that caller consults
+ *    `services/auto-commit-gate.ts` before it gets here.
  */
 export async function flushPendingTurnCommit(
   git: GitManager,

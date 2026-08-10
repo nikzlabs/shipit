@@ -147,6 +147,23 @@ dropped unless the session was created as an ops session.
   developer with push access can pick the issue up as a fix session. See
   `bug-filing.md` for the tool contract and what never goes in the body.
 
+## Your workspace git — ShipIt does not commit it
+
+An ops workspace **is** a real git repo on its own branch, but ShipIt runs **no**
+automatic commit and **no** automatic push for it. The auto-commit guidance in
+`environment.md` and `github.md` describes ordinary sessions and does **not**
+apply here.
+
+- Nothing sweeps up your edits at the end of a turn. `git add` and `git commit`
+  yourself when a change is worth keeping (a new or corrected `prompts/` recipe);
+  investigation scratch can stay uncommitted, and will.
+- Stay on the current branch — `git checkout -b` / `git switch -c` are blocked.
+- There is no remote, so a commit here does not travel. A finding that must
+  outlive this workspace belongs in an issue, in a `report_shipit_bug` filing, or
+  in the `--shipit-source` fix session that owns the code change.
+- `git status` / `git diff` / `git log` are trustworthy here, unlike in an
+  ordinary session: the tree is exactly what you left it.
+
 ## What you CANNOT do (by design)
 
 - **No Docker writes.** `docker stop`, `docker rm`, `docker kill`,

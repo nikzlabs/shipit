@@ -216,6 +216,45 @@ describe("buildAgentSystemInstructions", () => {
     expect(buildAgentSystemInstructions({ isOps: true })).not.toContain(fragment);
   });
 
+  // docs/128 / docs/211 — ShipIt does not auto-commit ops or sandbox sessions
+  // (`services/auto-commit-gate.ts`), so neither may be told "ShipIt commits for
+  // you". That instruction is not merely stale for ops, it is harmful: it tells
+  // the agent not to commit work nothing else will commit. Asserted by
+  // COMPOSITION (which fragment is spliced), never by wording.
+  it("gives each kind its own Git fragment, and keeps auto-commit guidance out of ops and sandbox", () => {
+    const read = (name: string) =>
+      fs.readFileSync(new URL(`./prompts/${name}`, import.meta.url), "utf8").trim();
+    const standard = read("git-workflow.md");
+    const ops = read("git-workflow-ops.md");
+    const sandbox = read("git-workflow-sandbox.md");
+
+    // The three fragments are genuinely different documents. Ops does NOT reuse
+    // the sandbox text: a sandbox has no root repo and creates branches freely,
+    // an ops workspace is a repo on a branch it may not leave.
+    expect(new Set([standard, ops, sandbox]).size).toBe(3);
+
+    for (const opts of [{}, { agentId: "claude" as const }, { agentId: "codex" as const }]) {
+      expect(buildAgentSystemInstructions(opts)).toContain(standard);
+      expect(buildAgentSystemInstructions({ ...opts, isOps: true })).toContain(ops);
+      expect(buildAgentSystemInstructions({ ...opts, isSandbox: true })).toContain(sandbox);
+      // ...and the auto-commit fragment reaches neither privileged kind.
+      expect(buildAgentSystemInstructions({ ...opts, isOps: true })).not.toContain(standard);
+      expect(buildAgentSystemInstructions({ ...opts, isSandbox: true })).not.toContain(standard);
+    }
+  });
+
+  // The one sentence that would actively mislead an ops agent, pinned on its
+  // own: it must not survive anywhere in the ops rendering, however the
+  // fragments are later reshuffled.
+  it("never tells an ops or sandbox agent that ShipIt commits for it", () => {
+    const claim = "ShipIt automatically commits your changes";
+    expect(buildAgentSystemInstructions()).toContain(claim);
+    expect(buildAgentSystemInstructions({ isOps: true })).not.toContain(claim);
+    expect(buildAgentSystemInstructions({ isSandbox: true })).not.toContain(claim);
+    expect(buildAgentSystemInstructions({ agentId: "claude", isOps: true })).not.toContain(claim);
+    expect(buildAgentSystemInstructions({ agentId: "codex", isOps: true })).not.toContain(claim);
+  });
+
   it("composes each overlay with the per-agent axis into a distinct variant", () => {
     const opsClaude = buildAgentSystemInstructions({ agentId: "claude", isOps: true });
     const sandboxClaude = buildAgentSystemInstructions({ agentId: "claude", isSandbox: true });

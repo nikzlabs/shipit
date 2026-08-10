@@ -29,6 +29,7 @@ import {
 } from "./disk-utils.js";
 import { emitNoticePostTurn } from "./chat-card-persistence.js";
 import { formatEvictBlockedNotice, type EvictBlockReason } from "./services/evict-blocked-notice.js";
+import { autoCommitAllowed } from "./services/auto-commit-gate.js";
 
 /**
  * docs/161 — dependencies for the disk-tier escalation pass. Distinct from the
@@ -382,6 +383,28 @@ async function reclaimToEvicted(
       //    dirty behind a successful commit) by construction. The returned
       //    fields only explain the block.
       if (!(await git.isClean())) {
+        // docs/128 / docs/211 — ShipIt does not auto-commit an ops or sandbox
+        // session (`services/auto-commit-gate.ts`), and this remediation is no
+        // exception: an idle ops session whose investigation left scratch files
+        // is exactly the common case, so leaving it ungated would keep writing
+        // "Auto-commit before disk eviction" commits into the very history the
+        // gate exists to keep ShipIt out of.
+        //
+        // Nothing is lost by refusing. The dirty tree simply fails the gate
+        // below, so the session stays at `light` with its checkout intact —
+        // which is where these kinds ended up anyway: step 3's durability gate
+        // requires the tip to be on `origin`, and neither kind has a remote, so
+        // an ops/sandbox session was never evictable. All this changes is that
+        // the refusal is now explicit instead of being preceded by a commit
+        // nobody asked for. No `reason` is passed: the commit was never
+        // attempted, so a "auto-commit refused" notice would be a lie.
+        if (!autoCommitAllowed(session)) {
+          console.warn(
+            `[disk-janitor] evict blocked for ${session.id} — kind=${session.kind} sessions are `
+            + "never auto-committed, and the tree is dirty; keeping the checkout at light",
+          );
+          return await blockedEvict(session, deps, "blocked-by-dirty");
+        }
         const { secretFindings, conflictedFiles, rebaseInProgress } =
           await git.autoCommit("Auto-commit before disk eviction (docs/161)");
         if (!(await git.isClean())) {

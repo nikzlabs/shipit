@@ -417,4 +417,70 @@ describe("post-turn commit when the agent process dies", () => {
 
     runner.dispose({ force: true });
   });
+
+  /**
+   * docs/128 / docs/211 — the executor's `autoCommit` fallback is the OTHER way
+   * a turn reaches `git.autoCommit`: `postTurnCommit` (which carries the
+   * auto-commit gate) is only used when `commitTurn` is wired, and this path
+   * bypasses it entirely. Left ungated it would be the hole around the
+   * invariant, and this crash path is exactly where it fires. Gated at the one
+   * call site in `turn-executor.ts`, so both `SystemTurnDeps.autoCommit`
+   * wirings inherit it.
+   */
+  for (const kind of ["ops", "sandbox"] as const) {
+    it(`makes no fallback commit for a ${kind} session, even when the process dies`, async () => {
+      const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
+      const filePath = path.join(repoDir, "file.txt");
+      const autoCommit = vi.fn(realAutoCommit);
+      const scheduleAutoPush = vi.fn();
+      const listenerDeps = makeListenerDeps();
+      (listenerDeps.sessionManager as unknown as { get: ReturnType<typeof vi.fn> }).get =
+        vi.fn(() => ({ id: "s1", kind }));
+
+      const agent = makeFakeAgent(() => fs.writeFileSync(filePath, "ops scratch the agent wrote\n"));
+      const deps: SystemTurnDeps = {
+        agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
+        autoCommit,
+        scheduleAutoPush,
+        postTurnPrFlow: vi.fn(async () => {}),
+        listenerDeps,
+        buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+      };
+
+      await executeAgentTurn(runner, deps, agent as never, {
+        agentId: "claude" as AgentId,
+        sessionId: "s1",
+        prompt: "p",
+        userText: "look at something",
+        emitUserEcho: false,
+        persistUserMessage: vi.fn(),
+        isNewSession: false,
+        fallbackTitle: "t",
+        turnStartHeadHash: null,
+        drainNext: async () => {},
+        emit: () => {},
+        useStreaming: true,
+        emitErrorOnNoResult: true,
+      });
+      await waitFor(() => agent.run.mock.calls.length === 1, "turn started");
+      agent.emit("done", 143);
+      await waitFor(() => !runner.running, "turn settled");
+      await flush();
+      await flush();
+
+      // The gate short-circuits before the dep is even called…
+      expect(autoCommit).not.toHaveBeenCalled();
+      expect(scheduleAutoPush).not.toHaveBeenCalled();
+      // …so history is untouched and the agent's edit is still in the tree,
+      // where the agent (which owns git in these kinds) can commit it itself.
+      expect(
+        execFileSync("git", ["log", "--oneline"], { cwd: repoDir, encoding: "utf8" }).split("\n").filter(Boolean),
+      ).toHaveLength(1);
+      expect(
+        execFileSync("git", ["status", "--porcelain"], { cwd: repoDir, encoding: "utf8" }),
+      ).toContain("file.txt");
+
+      runner.dispose({ force: true });
+    });
+  }
 });

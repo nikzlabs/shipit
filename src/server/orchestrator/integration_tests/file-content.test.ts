@@ -241,6 +241,29 @@ describe("Integration: File content viewer", () => {
     expect(log[0]?.message).toBe("Edit hello.ts");
   });
 
+  // docs/128 / docs/211 — the manual-edit commit is one of ShipIt's automatic
+  // commits (the agent asked for nothing), so `services/auto-commit-gate.ts`
+  // refuses it for ops and sandbox. The SAVE still happens: only the commit is
+  // withheld, leaving the change for the agent — which owns git in those kinds —
+  // to commit itself.
+  for (const kind of ["ops", "sandbox"] as const) {
+    it(`saves but does not commit a manual edit in a ${kind} session`, async () => {
+      fs.writeFileSync(path.join(sessionDir, "hello.ts"), "const x = 1;\n");
+      const before = (await new GitManager(sessionDir).log()).length;
+      sessionManager.setKind(sessionId, kind);
+
+      const res = await app.inject({
+        method: "PUT",
+        url: `/api/sessions/${sessionId}/files/hello.ts`,
+        payload: { content: "const x = 2;\n" },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(fs.readFileSync(path.join(sessionDir, "hello.ts"), "utf8")).toBe("const x = 2;\n");
+      expect((await new GitManager(sessionDir).log()).length).toBe(before);
+    });
+  }
+
   it("rejects edits on a warm (not-yet-graduated) session", async () => {
     fs.writeFileSync(path.join(sessionDir, "hello.ts"), "old");
     // Let the one-shot startup sweep (startup-tasks.ts) run while this session

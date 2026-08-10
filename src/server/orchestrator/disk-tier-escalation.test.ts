@@ -486,6 +486,52 @@ describe("escalateDiskTiers", () => {
   // two halves never appear adjacent.
   const FIXTURE_AWS_KEY = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
 
+  // docs/128 / docs/211 — the disk janitor's commit-before-eviction is an
+  // automatic commit like any other, so `services/auto-commit-gate.ts` refuses
+  // it for ops and sandbox. Nothing is lost: the tree stays dirty, which fails
+  // the same durability gate that already made these kinds un-evictable (they
+  // have no remote), so the checkout is kept at `light` either way. All that
+  // changes is that ShipIt stops writing "Auto-commit before disk eviction"
+  // commits into a history it is supposed to keep out of.
+  for (const kind of ["ops", "sandbox"] as const) {
+    it(`does not auto-commit a ${kind} session before eviction, and keeps the checkout`, async () => {
+      setup();
+      const sm = new SessionManager(dbManager!);
+      const wsDir = path.join(tmpDir, `ws-${kind}`);
+      await initRepo(wsDir, { dirty: true, noRemote: true });
+      insertSession({
+        id: `${kind}-light`,
+        lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+        diskTier: "light",
+        workspaceDir: wsDir,
+        branch: "main",
+      });
+      sm.setKind(`${kind}-light`, kind);
+
+      const { registry } = fakeRegistry();
+      const { appended, chatHistory } = fakeChatHistory();
+      const before = (await new GitManager(wsDir).log()).length;
+      const result = await escalateDiskTiers({
+        ...baseDeps(sm, registry),
+        createGitManager: (dir) => new GitManager(dir),
+        chatHistory,
+        notifiedEvictBlocked: new Set<string>(),
+      });
+
+      expect(result.toEvicted).toBe(0);
+      expect(result.evictBlockedByDirty).toBe(1);
+      // No commit was made — the history is exactly as the agent left it…
+      expect((await new GitManager(wsDir).log()).length).toBe(before);
+      expect(await new GitManager(wsDir).isClean()).toBe(false);
+      // …and the uncommitted work is still on disk at `light`.
+      expect(sm.get(`${kind}-light`)?.diskTier).toBe("light");
+      expect(fs.existsSync(path.join(wsDir, "b.txt"))).toBe(true);
+      // No "auto-commit refused" notice: no commit was ever attempted, so
+      // claiming one was refused would be a lie.
+      expect(appended).toHaveLength(0);
+    });
+  }
+
   it("planning#296: a secret-refused auto-commit blocks the wipe (keeps the checkout)", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
