@@ -34,10 +34,26 @@ fi
 # they idle out (lazy rotation); the wire contract stays additive-only, guarded
 # by src/server/shared/types/worker-wire-contract.test.ts.
 
-# Prune orphaned networks from previous sessions to reclaim address space.
-# Safe for surviving sessions: `network prune` only removes networks with no
-# containers attached, and live session networks have their containers on them.
-docker network prune -f
+# NO `docker network prune -f` here. It used to sit at this line to reclaim
+# per-session address space, arguing it was safe because prune only removes
+# networks with nothing attached and a live session's containers are attached
+# to its network. That holds in steady state. It does NOT hold during an update:
+#
+#   - a session created inside the build window has had its network created
+#     (`createContainer` makes it before the container joins) but not yet
+#     joined, so the prune deletes it out from under the session. Every child
+#     container it later spawns then logs
+#     `joinSessionNetwork failed: network shipit-session-<id> not found`.
+#     On the 2026-08-10 update this removed 18 session networks in one shot;
+#   - an idle-EVICTED session's network is deliberately kept for warm resume
+#     (`sweepOrphanSessionNetworks` preserves any session whose `diskTier` is
+#     not `evicted`) and has nothing attached, so a blind prune reclaims exactly
+#     what the janitor is holding on to.
+#
+# Nothing is leaked by dropping it: `sweepOrphanSessionNetworks`
+# (`startup-janitor.ts`) does this job properly on the boot that immediately
+# follows this deploy — same `dangling=true` set, but cross-referenced against
+# the live session list first.
 
 # Reclaim dangling images + stale BuildKit cache. Defined as a function and
 # fired from an EXIT trap (below) so it runs REGARDLESS of build outcome.
