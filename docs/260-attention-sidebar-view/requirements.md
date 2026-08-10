@@ -18,7 +18,8 @@ terms. Design lives in `plan.md` (not written yet); the visual reference is
 3. The second view does not group sessions by repository, and shows no
    repository headers.
 4. The switch is an icon control in the sidebar's existing header row, carrying a
-   count of the sessions that need attention.
+   count of the sessions that need attention. It sits next to the control that
+   collapses the sidebar, not among the controls that create sessions.
 5. The count is visible in both views, so the second view is discoverable from
    the first.
 6. The second view is a single flat list — no sections, no sub-groups.
@@ -32,6 +33,10 @@ terms. Design lives in `plan.md` (not written yet); the visual reference is
    and notifications.
 10. The icon is the only chrome the second view adds. Nothing else appears above
     the list — no band, no label, no separate exit control.
+11. A session's row looks the same in the second view as it does in the first.
+    In particular, why a session needs attention is shown exactly the way the
+    current build shows it, and is not restated as text on the row.
+12. Each row in the second view shows the name of its repository.
 
 ## Open questions
 
@@ -57,6 +62,23 @@ terms. Design lives in `plan.md` (not written yet); the visual reference is
   place, shouldn't move to the separate section."* → requirement 8. Both the
   immediate removal (mockup C3) and the "Settled just now" section that the first
   C2 drawing used are out: the row stays exactly where it is.
+- **2026-08-10 · Where in the header row?** Next to the collapse control. Nik:
+  *"what do you think about putting it next to the hiding sidebar button?
+  Because otherwise it is in the row with a lot of other buttons on desktop,
+  which is confusing"* — with a screenshot of the real bar. → requirement 4. The
+  right-hand cluster is four create/act controls; the switch and the collapse
+  button are both controls for the sidebar itself.
+- **2026-08-10 · Does the row show the attention reason as text?** No. Nik, on
+  the invented "Waiting for your input" / "PR has merge conflicts" labels:
+  *"let's not change it. So it is already shown in some way in the current
+  build, and we should show it in exactly the same way."* → requirement 11. The
+  row keeps `SessionStatusDot`, the docs/187 marker and the tooltip, unchanged.
+  The colored reason text and the repo color chip drawn in the earlier version
+  are both dropped.
+- **2026-08-10 · Does the row show the repository?** Yes. Nik: *"showing the
+  repository name, I think it is good."* → requirement 12. Uses the `repoLabel`
+  prop `SessionItem` already takes, exactly as `AllSessionsDialog` passes it for
+  its cross-repo list — plain tertiary text, not a new chip.
 - **2026-08-10 · Is there a band above the list?** No. Nik, on the first
   drawing's amber "Needs you · 4 — Show all" strip: *"why do we need a separate
   bar? I thought I chose the option with an icon only."* → requirement 10. The

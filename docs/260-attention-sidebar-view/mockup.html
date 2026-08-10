@@ -5,40 +5,36 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Sidebar "Needs you" view — mock (docs/260)</title>
 <!--
+  GENERATED — edit build-mockup.py, not this file.
+
   Static, self-contained visual reference for docs/260-attention-sidebar-view.
-  Nothing is wired up — this exists so the layout decisions survive next to
-  requirements.md instead of only in an ephemeral Present-tab artifact. Open in
-  a browser to view.
+  Nothing is wired up; it exists so the layout decisions survive next to
+  requirements.md instead of only in an ephemeral Present-tab artifact.
 
-  The top half draws the DECIDED design (requirements 4-10, all answered
-  2026-08-10). The strip at the foot keeps the rejected alternatives at thumbnail
-  size, with the one-line reason each lost, so the exploration stays reviewable.
-
-  Colors are the real ShipIt `dark` theme values (src/client/themes/dark.css)
+  The candidate glyphs use the real path data from @phosphor-icons/react, and
+  the colors are the real ShipIt `dark` theme values (src/client/themes/dark.css)
   plus the repo-identity palette (src/client/index.css, --repo-color-N).
 -->
 <style>
   :root{
     --bg-primary:#030712; --bg-secondary:#111827; --bg-tertiary:#1f2937;
-    --bg-hover:rgba(255,255,255,.05);
     --text-1:#f3f4f6; --text-2:#9ca3af; --text-3:#6b7280;
     --border-1:#1f2937; --border-2:#374151;
-    --accent:#3b82f6; --success:#22c55e; --error:#ef4444; --warning:#f59e0b;
-    --pr:#a78bfa; --attention:#f59e0b; --autofix:#fb923c;
-    --repo-6:#6cc4dd; --repo-9:#a99ad8; --repo-3:#a8c46a; --repo-11:#e08aa0; --repo-0:#e09a6a;
+    --success:#22c55e; --error:#ef4444; --attention:#f59e0b; --pr:#a78bfa;
+    --repo-6:#6cc4dd; --repo-9:#a99ad8; --repo-3:#a8c46a; --repo-11:#e08aa0;
     --page:#0b0d13;
   }
   *{box-sizing:border-box}
   html,body{margin:0}
-  body{
-    background:var(--page);color:var(--text-1);
+  body{background:var(--page);color:var(--text-1);
     font:13px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-    -webkit-font-smoothing:antialiased;padding:32px 24px 64px;
-  }
+    -webkit-font-smoothing:antialiased;padding:32px 24px 64px}
   h1{font-size:20px;margin:0 0 4px;font-weight:600;letter-spacing:-.01em}
   h2{font-size:14px;margin:40px 0 4px;font-weight:600}
   .lede{color:var(--text-2);max-width:960px;margin:0 0 8px}
   .note{color:var(--text-3);font-size:12px;max-width:960px;margin:0 0 18px}
+  .note code,.legend code,.swcell code{background:var(--bg-secondary);border:1px solid var(--border-1);
+    border-radius:4px;padding:0 4px;font-size:11px}
   .row{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
   .cap{color:var(--text-3);font-size:11px;margin:0 0 8px;max-width:264px}
   .cap b{color:var(--text-2);font-weight:600}
@@ -47,28 +43,23 @@
   /* ---- sidebar shell ---- */
   .side{width:264px;background:var(--bg-primary);border:1px solid var(--border-1);
     border-radius:8px;overflow:hidden;box-shadow:0 14px 44px rgba(0,0,0,.5);
-    min-height:492px;display:flex;flex-direction:column}
-  .hdr{display:flex;align-items:center;gap:6px;padding:0 10px;height:41px;border-bottom:1px solid var(--border-1)}
+    min-height:470px;display:flex;flex-direction:column}
+  .hdr{display:flex;align-items:center;gap:4px;padding:0 8px;height:41px;
+    border-bottom:1px solid var(--border-1)}
   .hdr .sp{flex:1}
-  .ico{width:26px;height:26px;border-radius:5px;display:grid;place-items:center;color:var(--text-3);position:relative}
-  .ico.on{color:var(--attention);background:var(--bg-tertiary)}
+  .ico{width:26px;height:26px;border-radius:5px;display:grid;place-items:center;color:var(--text-3)}
+  .scroll{flex:1;padding:4px 0;overflow:hidden}
 
   /* ---- the switch ----
-     A PILL, not an icon with a badge stuck on it: glyph and count sit side by
-     side, so the count can never occlude the glyph. The pressed state follows
-     the house pattern for a toggled ghost button (IssuesViewer.tsx) — the glyph
-     switches to `fill` weight and takes the accent color over a bg-tertiary
-     chip — rather than inventing a saturated amber button the header has
-     nowhere else. */
+     A PILL, not an icon wearing a badge: glyph and count sit side by side, so
+     the count can never occlude the glyph. Pressed state follows the house
+     pattern for a toggled ghost button (IssuesViewer.tsx) — glyph to `fill`
+     weight, accent color, quiet chip — not a saturated amber button. */
   .sw{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 6px;
-    border-radius:6px;color:var(--text-3);--knock:var(--bg-primary)}
+    border-radius:6px;color:var(--text-3)}
   .sw .n{font-size:10px;font-weight:700;line-height:1;color:var(--attention)}
-  .sw.on{background:var(--bg-tertiary);color:var(--attention);--knock:var(--bg-tertiary)}
+  .sw.on{background:var(--bg-tertiary);color:var(--attention)}
   .sw svg{display:block}
-  .badge{position:absolute;top:-1px;right:-2px;min-width:14px;height:14px;padding:0 3px;
-    background:var(--attention);color:#231a05;border-radius:7px;font-size:9px;font-weight:700;
-    line-height:14px;text-align:center;border:2px solid var(--bg-primary);box-sizing:content-box}
-  .scroll{flex:1;padding:4px 0;overflow:hidden}
 
   /* ---- repo group header (All view only) ---- */
   .grp{display:flex;align-items:center;gap:6px;padding:5px 10px 5px 12px;font-size:11px;
@@ -77,51 +68,47 @@
     border-radius:0 2px 2px 0;background:var(--gc,var(--repo-6))}
   .grp .c{margin-left:auto;color:var(--text-3);font-weight:500;font-size:10px}
 
-  /* ---- session row ---- */
+  /* ---- session row — IDENTICAL in both views (SessionItem.tsx) ---- */
   .it{display:flex;align-items:flex-start;gap:6px;margin:0 4px;padding:6px 8px;border-radius:5px;
     position:relative;font-size:12px;color:var(--text-2)}
   .it.sel{background:var(--bg-secondary);color:var(--text-1)}
-  .it .ttl{display:block;color:var(--text-1);line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .it .meta{display:flex;align-items:center;gap:6px;margin-top:3px;font-size:10px;color:var(--text-3);white-space:nowrap;overflow:hidden}
+  .it .ttl{display:block;color:var(--text-1);line-height:1.3;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis}
+  .it .meta{display:flex;align-items:center;gap:6px;margin-top:3px;font-size:10px;
+    color:var(--text-3);white-space:nowrap;overflow:hidden}
   .it .body{min-width:0;flex:1}
+  .it .repo{min-width:0;overflow:hidden;text-overflow:ellipsis}
   .it .when{margin-left:auto;padding-left:4px;color:var(--text-3);flex:0 0 auto}
   .it .prico{color:var(--pr);flex:0 0 auto;margin-top:1px}
   .it .prico.none{opacity:0}
   .it.child{margin-left:20px}
-  /* repo identity edge — LEFT, free because docs/187 put attention on the right */
-  .it.edge::before{content:"";position:absolute;left:-4px;top:3px;bottom:3px;width:3px;
-    border-radius:2px;background:var(--rc,var(--repo-6))}
-  /* docs/187 attention marker — All view only */
+  .sd{display:inline-flex;flex:0 0 auto}
+  .sd.run{width:8px;height:8px;border-radius:50%;background:var(--success)}
+  /* docs/187 attention marker — unchanged, and kept INSIDE the view */
   .it.attn{box-shadow:inset -3px 0 0 var(--attention);
     background-image:linear-gradient(90deg,transparent 62%,rgba(245,158,11,.2))}
-  /* settled in place — requirement 8 */
-  .it.settled .ttl{color:var(--text-2);text-decoration:line-through}
-  .it.settled{opacity:.55}
+  /* settled: the marker simply goes away. No new styling. */
+  .it.settled{opacity:.6}
 
-  /* the repo chip is the row's first sacrifice when width runs out — the reason
-     it is in the list must never be the thing that truncates */
-  .chip{display:inline-flex;align-items:center;gap:4px;color:var(--text-3);
-    min-width:0;overflow:hidden;text-overflow:ellipsis}
-  .chip .dot{width:6px;height:6px;border-radius:2px;background:var(--rc,var(--repo-6));flex:0 0 auto}
-  .r-blocked,.r-broken,.r-wait,.r-done{flex:0 0 auto}
-  .r-blocked{color:var(--attention);font-weight:600}
-  .r-broken{color:var(--error);font-weight:600}
-  .r-wait{color:var(--text-3)}
-  .r-done{color:var(--success);font-weight:600}
+  .tip{position:absolute;left:26px;top:100%;margin-top:2px;z-index:5;
+    background:var(--bg-tertiary);border:1px solid var(--border-2);border-radius:5px;
+    padding:3px 7px;font-size:10px;color:var(--text-1);white-space:nowrap;
+    box-shadow:0 6px 18px rgba(0,0,0,.5)}
+  .it.hov{background:rgba(255,255,255,.05)}
 
   .empty{display:flex;flex-direction:column;align-items:center;gap:8px;padding:52px 22px;text-align:center}
   .empty p{margin:0;font-size:12px;color:var(--text-2)}
   .empty small{color:var(--text-3);font-size:11px}
 
-  /* ---- anatomy callouts ---- */
-  .anat{width:596px;background:var(--bg-primary);border:1px solid var(--border-1);border-radius:8px;padding:22px 26px 18px;overflow:hidden}
+  /* ---- anatomy ---- */
+  .anat{width:596px;background:var(--bg-primary);border:1px solid var(--border-1);
+    border-radius:8px;padding:22px 26px 18px;overflow:hidden}
   .anat .zoom{transform:scale(2);transform-origin:left top;width:264px}
   .anat .pad{height:78px}
   .anat ol{margin:0;padding-left:18px;color:var(--text-2);font-size:12px;line-height:1.75}
   .anat ol b{color:var(--text-1);font-weight:600}
-  .anat code{background:var(--bg-secondary);border:1px solid var(--border-1);border-radius:4px;padding:0 4px;font-size:11px}
 
-  /* ---- switch state board ---- */
+  /* ---- boards ---- */
   .swdemo{display:flex;gap:16px;flex-wrap:wrap}
   .swcell{width:158px}
   .swcell .tile{height:104px;background:var(--bg-primary);border:1px solid var(--border-1);
@@ -133,13 +120,23 @@
   .swdemo.wide .tile{height:96px}
   .swdemo.wide .z{transform:scale(2.4)}
   .swcell.pick .tile{border-color:rgba(34,197,94,.45)}
-  .swcell .tag{font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
-    color:var(--success);background:rgba(34,197,94,.14);border-radius:8px;padding:1px 5px}
   .swcell.bad .tile{border-color:rgba(239,68,68,.4)}
   .swcell.bad h4{color:var(--error)}
-  /* the rejected treatment, kept so the defect is visible rather than described */
-  .ico.bad{color:#231a05;background:var(--attention)}
-  .ico.bad .badge{background:#2b1f05;color:#fde68a;border-color:var(--attention)}
+  .swcell .tag{font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+    color:var(--success);background:rgba(34,197,94,.14);border-radius:8px;padding:1px 5px}
+
+  /* ---- header placement board ---- */
+  .hb{width:420px}
+  .hb .frame{background:var(--bg-primary);border:1px solid var(--border-1);border-radius:8px;
+    padding:16px 0;overflow:hidden}
+  .hb .z{transform:scale(1.5);transform-origin:left center;width:264px;margin-left:14px}
+  .hb .side{min-height:0;box-shadow:none}
+  .hb .scroll{display:none}
+  .hb h4{margin:10px 0 2px;font-size:11px;font-weight:600;color:var(--text-1)}
+  .hb p{margin:0;font-size:11px;color:var(--text-3);line-height:1.55;max-width:420px}
+  .hb.bad h4{color:var(--error)}
+  .hb.bad .frame{border-color:rgba(239,68,68,.4)}
+  .hb.pick .frame{border-color:rgba(34,197,94,.45)}
 
   /* ---- rejected thumbnails ---- */
   .thumbs{display:flex;gap:16px;flex-wrap:wrap}
@@ -153,34 +150,50 @@
   .th .band.blocked{color:var(--attention)} .th .band.broken{color:var(--error)}
   .th .band hr{flex:1;border:0;border-top:1px solid var(--border-1);margin:0}
   .th .seg{display:flex;gap:2px;margin:5px 6px;padding:2px;background:var(--bg-secondary);border-radius:6px}
-  .th .seg span{flex:1;text-align:center;font-size:9px;font-weight:600;color:var(--text-3);padding:3px;border-radius:4px}
+  .th .seg span{flex:1;text-align:center;font-size:9px;font-weight:600;color:var(--text-3);
+    padding:3px;border-radius:4px}
   .th .seg span.sel{background:var(--bg-tertiary);color:var(--text-1)}
+  .th .mode{padding:4px 8px;font-size:9px;font-weight:700;text-transform:uppercase;
+    color:var(--attention);background:rgba(245,158,11,.08);
+    border-bottom:1px solid rgba(245,158,11,.22)}
   .th p{color:var(--text-3);font-size:11px;margin:8px 0 0;line-height:1.5}
   .th p b{color:var(--text-2)}
 
   .legend{max-width:960px;color:var(--text-2);font-size:12px;line-height:1.65;margin-top:10px}
   .legend p{margin:0 0 10px}
   .legend b{color:var(--text-1)}
-  .legend code{background:var(--bg-secondary);border:1px solid var(--border-1);border-radius:4px;padding:0 4px;font-size:11px}
 </style>
 </head>
 <body>
 
 <h1>Sidebar view switch — “Needs you”</h1>
-<p class="lede">A second sidebar view that drops the repo tree and lists only the sessions whose ball is in the user’s court. Attention is <b>not a new signal</b> — it is <code>computeAttentionReason()</code> (<code>useAttentionInfo.ts</code>), already the single source of truth for the amber rail, the row tooltip and notifications (req 9).</p>
-<p class="note">Drawn as decided: header icon + count badge (req 4–5) · one flat list, stable order (req 6–7) · a row that stops needing you settles where it stands (req 8). Rejected alternatives are kept at thumbnail size at the foot.</p>
+<p class="lede">A second sidebar view that drops the repo tree and lists only the sessions whose ball is in the user’s court. It introduces <b>no new row UI and no new signal</b>: the rows are the existing <code>SessionItem</code> with its <code>repoLabel</code> set — the same thing <code>AllSessionsDialog</code> already renders for its cross-repo list — and membership is <code>computeAttentionReason()</code>, which already drives the amber marker, the row tooltip and notifications.</p>
+
+<h2>Where the switch sits</h2>
+<p class="note">The header has two natural groups. On the left sits the control for <em>the sidebar itself</em>; on the right, a cluster of four <em>create/act</em> controls (new session, quick session, voice quick session, repo). The view switch belongs to the first group, so it goes beside the collapse button. Dropped into the right-hand cluster it becomes the fifth small glyph in a row of small glyphs, and its count reads as decoration on a toolbar.</p>
+<div class="row">
+  <div class="hb pick">
+    <div class="frame"><div class="z"><div class="side"><div class="hdr"><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sw"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M216,80H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8V96A16,16,0,0,0,216,80ZM66.55,137.78,40,159.25V48H168v88H71.58A8,8,0,0,0,66.55,137.78ZM216,207.25l-26.55-21.47a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32Z"/></svg><span class="n">4</span></span><span class="sp"></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3.2v9.6M3.2 8h9.6"/></svg></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span><span class="ico"><span style="position:relative;display:inline-flex"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg><svg width="8" height="8" viewBox="0 0 16 16" fill="currentColor" style="position:absolute;right:-3px;bottom:-1px"><rect x="5.5" y="2" width="5" height="8" rx="2.5"/><path d="M3.5 8a4.5 4.5 0 0 0 9 0h-1.4a3.1 3.1 0 0 1-6.2 0z"/></svg></span></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div></div></div></div>
+    <h4>Beside the collapse button &nbsp;<span class="tag" style="font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--success);background:rgba(34,197,94,.14);border-radius:8px;padding:1px 5px">chosen</span></h4>
+    <p>Both controls change what the sidebar shows, so they sit together and read as a pair. The switch gets clear space on both sides, and the amber count is the only amber in the bar — nothing competes with it.</p>
+  </div>
+  <div class="hb bad">
+    <div class="frame"><div class="z"><div class="side"><div class="hdr"><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sp"></span><span class="sw"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M216,80H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8V96A16,16,0,0,0,216,80ZM66.55,137.78,40,159.25V48H168v88H71.58A8,8,0,0,0,66.55,137.78ZM216,207.25l-26.55-21.47a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32Z"/></svg><span class="n">4</span></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3.2v9.6M3.2 8h9.6"/></svg></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span><span class="ico"><span style="position:relative;display:inline-flex"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg><svg width="8" height="8" viewBox="0 0 16 16" fill="currentColor" style="position:absolute;right:-3px;bottom:-1px"><rect x="5.5" y="2" width="5" height="8" rx="2.5"/><path d="M3.5 8a4.5 4.5 0 0 0 9 0h-1.4a3.1 3.1 0 0 1-6.2 0z"/></svg></span></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div></div></div></div>
+    <h4>Rejected · in the right-hand cluster</h4>
+    <p>Five glyphs in a row, four of which create something. A view switch among them is a category error, and the count competes with the icons on either side instead of standing out.</p>
+  </div>
+</div>
 
 <h2>Which glyph?</h2>
-<p class="note">The first drawing used a warning circle. It is the wrong word twice over: <code>WarningCircleIcon</code> already appears about forty times across the client for genuine warnings, and “something is wrong” is not what the switch means — most of the list is an agent quietly waiting for you. Five candidates from the pack we already ship (<code>@phosphor-icons/react</code>), each drawn off the real path data, off state then on state. None of the five is used for anything else in the app.</p>
+<p class="note">The first draft used a warning circle. Wrong twice over: <code>WarningCircleIcon</code> already appears about forty times across the client for genuine warnings, and “something is broken” is not what the switch means — most of the list is an agent quietly waiting for you. Five candidates from the pack we already ship (<code>@phosphor-icons/react</code>), each drawn from its real path data, off state then on state. None of the five is used anywhere else in the client.</p>
 <div class="swdemo wide">
-
   <div class="swcell pick">
     <div class="tile"><span class="z" style="display:inline-flex;gap:8px;align-items:center">
       <span class="sw"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M216,80H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8V96A16,16,0,0,0,216,80ZM66.55,137.78,40,159.25V48H168v88H71.58A8,8,0,0,0,66.55,137.78ZM216,207.25l-26.55-21.47a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32Z"/></svg><span class="n">4</span></span>
       <span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></svg><span class="n">4</span></span>
     </span></div>
-    <h4>Chats &nbsp;<span class="tag">recommended</span></h4>
-    <p>A session <em>is</em> a chat. The glyph names the objects being listed, not what is wrong with them — and the singular <code>ChatCircle</code> already means “conversation” elsewhere in the app, so the plural reads as “several of those”.</p>
+    <h4>Chats &nbsp;<span class="tag">chosen</span></h4>
+    <p>A session <em>is</em> a chat. The glyph names the objects being listed, not a fault in them — and the singular <code>ChatCircle</code> already means “conversation” elsewhere in the app, so the plural reads as “several of those”.</p>
   </div>
   <div class="swcell">
     <div class="tile"><span class="z" style="display:inline-flex;gap:8px;align-items:center">
@@ -204,7 +217,7 @@
       <span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M227.81,66.76l-.08.09L160,139.17v55.49A16,16,0,0,1,152.87,208l-32,21.34A16,16,0,0,1,96,216V139.17L28.27,66.85l-.08-.09A16,16,0,0,1,40,40H216a16,16,0,0,1,11.84,26.76Z"/></svg><span class="n">4</span></span>
     </span></div>
     <h4>Funnel</h4>
-    <p>Honest and generic: this is a filter. It says a filter is applied but nothing about <em>which</em> one, and it would be the fifth grey outline glyph in a header of grey outline glyphs.</p>
+    <p>Honest and generic: this is a filter. It says a filter is applied but nothing about <em>which</em> one, and it would be another grey outline glyph among grey outline glyphs.</p>
   </div>
   <div class="swcell">
     <div class="tile"><span class="z" style="display:inline-flex;gap:8px;align-items:center">
@@ -217,251 +230,156 @@
 </div>
 
 <h2>The switch, at 3×</h2>
-<p class="note">The switch carries the whole mode on its own (req 10), so its four states have to be told apart at 26 px. It is a <b>pill</b>, not an icon wearing a badge: glyph and count sit side by side, so the count can never sit on top of the glyph. The pressed state follows the house pattern for a toggled ghost button (<code>IssuesViewer.tsx</code>: glyph to <code>fill</code> weight, accent color, quiet chip behind it) instead of a saturated amber button, which the header has nowhere else. The glyph is <code>ChatsIcon</code> — see the board above for why.</p>
+<p class="note">The switch carries the whole mode on its own (req 10), so its four states have to be told apart at 26 px. It is a <b>pill</b>, not an icon wearing a badge: glyph and count sit side by side, so the count can never sit on top of the glyph.</p>
 <div class="swdemo">
-
   <div class="swcell">
     <div class="tile"><span class="z"><span class="sw"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M216,80H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8V96A16,16,0,0,0,216,80ZM66.55,137.78,40,159.25V48H168v88H71.58A8,8,0,0,0,66.55,137.78ZM216,207.25l-26.55-21.47a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32Z"/></svg><span class="n">4</span></span></span></div>
     <h4>Off · 4 waiting</h4>
-    <p>Grey glyph, amber count. This is the discovery state — the only amber in the All view’s header.</p>
+    <p>Grey glyph, amber count. The discovery state — the only amber in the All view’s header.</p>
   </div>
-
   <div class="swcell">
     <div class="tile"><span class="z"><span class="sw"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M216,80H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8V96A16,16,0,0,0,216,80ZM66.55,137.78,40,159.25V48H168v88H71.58A8,8,0,0,0,66.55,137.78ZM216,207.25l-26.55-21.47a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32Z"/></svg></span></span></div>
     <h4>Off · nothing waiting</h4>
     <p>The count disappears and the pill shrinks to the glyph. No permanent amber mark in the header.</p>
   </div>
-
   <div class="swcell">
     <div class="tile"><span class="z"><span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></svg><span class="n">4</span></span></span></div>
     <h4>On · 4 waiting</h4>
-    <p>Filled glyph, amber, on a quiet chip. Three things change at once — weight, color, background — so the state reads without a label.</p>
+    <p>Filled glyph, amber, on a quiet chip. Weight, color and background change together, so the state reads without a label.</p>
   </div>
-
   <div class="swcell">
     <div class="tile"><span class="z"><span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></svg></span></span></div>
     <h4>On · inbox zero</h4>
     <p>Still lit — you are still in the view — but with no count. Pairs with the “Nothing needs you” empty state.</p>
   </div>
-
   <div class="swcell bad">
-    <div class="tile"><span class="z"><span class="ico bad"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M216,80H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8V96A16,16,0,0,0,216,80ZM66.55,137.78,40,159.25V48H168v88H71.58A8,8,0,0,0,66.55,137.78ZM216,207.25l-26.55-21.47a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32Z"/></svg><span class="badge">4</span></span></span></div>
+    <div class="tile"><span class="z"><span style="position:relative;display:inline-grid;place-items:center;width:26px;height:26px;border-radius:5px;background:var(--attention);color:#231a05"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></svg><span style="position:absolute;top:-1px;right:-2px;min-width:14px;height:14px;padding:0 3px;background:#2b1f05;color:#fde68a;border-radius:7px;font-size:9px;font-weight:700;line-height:14px;text-align:center;border:2px solid var(--attention)">4</span></span></span></div>
     <h4>Rejected · filled square + badge</h4>
-    <p>The first attempt. The badge lands on the glyph and eats it, so the control reads as an amber blob — and a saturated fill is louder than anything else in the header.</p>
+    <p>The first attempt. The badge lands on the glyph and eats it, and a saturated fill is louder than anything else in the header.</p>
   </div>
 </div>
 
 <h2>The two views</h2>
 <div class="row">
-
-  <!-- ALL VIEW -->
   <div>
-    <p class="cap"><b>All sessions</b> — today’s view, unchanged except for one new header icon. The badge is the only thing announcing that a second view exists.</p>
-    <div class="side">
-      <div class="hdr">
-        <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span>
-        <span class="sp"></span>
-        <span class="sw"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M216,80H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8V96A16,16,0,0,0,216,80ZM66.55,137.78,40,159.25V48H168v88H71.58A8,8,0,0,0,66.55,137.78ZM216,207.25l-26.55-21.47a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32Z"/></svg><span class="n">4</span></span>
-        <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span>
-        <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span>
-      </div>
-      <div class="scroll">
-        <div class="grp" style="--gc:var(--repo-6)">shipit <span class="c">5</span></div>
-        <div class="it edge attn" style="--rc:var(--repo-6)"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="r-broken">CI fix failed ×3</span><span class="when">14m</span></span></span></div>
-        <div class="it edge" style="--rc:var(--repo-6)"><span class="prico none"></span><span class="body"><span class="ttl">Queued message visibility</span><span class="meta"><span class="r-wait">running</span><span class="when">now</span></span></span></div>
-        <div class="it edge child" style="--rc:var(--repo-6)"><span class="prico none"></span><span class="body"><span class="ttl">↳ Fixture cleanup</span><span class="meta"><span class="r-wait">running</span><span class="when">now</span></span></span></div>
-        <div class="it edge attn" style="--rc:var(--repo-6)"><span class="prico none"></span><span class="body"><span class="ttl">Mobile composer overflow</span><span class="meta"><span class="r-wait">idle</span><span class="when">1h</span></span></span></div>
-        <div class="it edge" style="--rc:var(--repo-6)"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Preview path display</span><span class="meta"><span class="r-wait">merged</span><span class="when">2d</span></span></span></div>
-        <div class="grp" style="--gc:var(--repo-9)">android-overlay <span class="c">2</span></div>
-        <div class="it edge attn" style="--rc:var(--repo-9)"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Snapshot diff viewer</span><span class="meta"><span class="r-broken">conflicts</span><span class="when">3h</span></span></span></div>
-        <div class="it edge" style="--rc:var(--repo-9)"><span class="prico none"></span><span class="body"><span class="ttl">Gradle cache warmup</span><span class="meta"><span class="r-wait">running</span><span class="when">now</span></span></span></div>
-        <div class="grp" style="--gc:var(--repo-3)">docs-site <span class="c">1</span></div>
-        <div class="it edge attn" style="--rc:var(--repo-3)"><span class="prico none"></span><span class="body"><span class="ttl">Bump vite to 7.1.4</span><span class="meta"><span class="r-wait">idle</span><span class="when">2d</span></span></span></div>
-      </div>
-    </div>
-    <p class="cap after">Four flagged rows are scattered across three repo groups, two of them below the fold on a real workspace. That scatter is the problem.</p>
+    <p class="cap"><b>All sessions</b> — today’s view, unchanged except for the switch beside the collapse button.</p>
+    <div class="side"><div class="hdr"><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sw"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M216,80H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8V96A16,16,0,0,0,216,80ZM66.55,137.78,40,159.25V48H168v88H71.58A8,8,0,0,0,66.55,137.78ZM216,207.25l-26.55-21.47a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32Z"/></svg><span class="n">4</span></span><span class="sp"></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3.2v9.6M3.2 8h9.6"/></svg></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span><span class="ico"><span style="position:relative;display:inline-flex"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg><svg width="8" height="8" viewBox="0 0 16 16" fill="currentColor" style="position:absolute;right:-3px;bottom:-1px"><rect x="5.5" y="2" width="5" height="8" rx="2.5"/><path d="M3.5 8a4.5 4.5 0 0 0 9 0h-1.4a3.1 3.1 0 0 1-6.2 0z"/></svg></span></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div><div class="scroll"><div class="grp" style="--gc:var(--repo-6)">shipit <span class="c">5</span></div><div class="it attn"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="sd" style="color:var(--error)"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.4"/><path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4"/></svg></span><span class="when">14m</span></span></span></div><div class="it"><span class="prico none"></span><span class="body"><span class="ttl">Queued message visibility</span><span class="meta"><span class="sd run"></span><span class="when">now</span></span></span></div><div class="it child"><span class="prico none"></span><span class="body"><span class="ttl">↳ Fixture cleanup</span><span class="meta"><span class="sd run"></span><span class="when">now</span></span></span></div><div class="it attn"><span class="prico none"></span><span class="body"><span class="ttl">Mobile composer overflow</span><span class="meta"><span class="when">1h</span></span></span></div><div class="it"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Preview path display</span><span class="meta"><span class="sd" style="color:var(--success)"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.4"/><path d="M5.2 8.2 7.2 10.2l3.6-4"/></svg></span><span class="when">2d</span></span></span></div><div class="grp" style="--gc:var(--repo-9)">android-overlay <span class="c">2</span></div><div class="it attn"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Snapshot diff viewer</span><span class="meta"><span class="sd" style="color:var(--success)"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.4"/><path d="M5.2 8.2 7.2 10.2l3.6-4"/></svg></span><span class="when">3h</span></span></span></div><div class="it"><span class="prico none"></span><span class="body"><span class="ttl">Gradle cache warmup</span><span class="meta"><span class="sd run"></span><span class="when">now</span></span></span></div><div class="grp" style="--gc:var(--repo-3)">docs-site <span class="c">1</span></div><div class="it attn"><span class="prico none"></span><span class="body"><span class="ttl">Bump vite to 7.1.4</span><span class="meta"><span class="when">2d</span></span></span></div></div></div>
+    <p class="cap after">Four marked rows scattered across three repo groups, two of them below the fold on a real workspace. That scatter is the problem.</p>
   </div>
 
-  <!-- NEEDS YOU -->
   <div>
-    <p class="cap"><b>Needs you</b> — same four sessions, one flat list, and <b>nothing above it</b>. No repo headers, no child indent, no ops/sandbox pins, no mode band: those groupings exist to give a repo tree its shape, and there is no tree here.</p>
-    <div class="side">
-      <div class="hdr">
-        <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span>
-        <span class="sp"></span>
-        <span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></svg><span class="n">4</span></span>
-        <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span>
-        <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span>
-      </div>
-      <div class="scroll">
-        <div class="it edge sel" style="--rc:var(--repo-6)"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="r-broken">CI fix failed ×3</span><span class="chip"><span class="dot"></span>shipit</span><span class="when">14m</span></span></span></div>
-        <div class="it edge" style="--rc:var(--repo-6)"><span class="prico none"></span><span class="body"><span class="ttl">Mobile composer overflow</span><span class="meta"><span class="r-wait">Waiting for your input</span><span class="chip"><span class="dot"></span>shipit</span><span class="when">1h</span></span></span></div>
-        <div class="it edge" style="--rc:var(--repo-9)"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Snapshot diff viewer</span><span class="meta"><span class="r-broken">PR has merge conflicts</span><span class="chip"><span class="dot"></span>android-overlay</span><span class="when">3h</span></span></span></div>
-        <div class="it edge" style="--rc:var(--repo-3)"><span class="prico none"></span><span class="body"><span class="ttl">Bump vite to 7.1.4</span><span class="meta"><span class="r-wait">Waiting for your input</span><span class="chip"><span class="dot"></span>docs-site</span><span class="when">2d</span></span></span></div>
-      </div>
-    </div>
-    <p class="cap after">Order is <b>session creation time, newest first</b> — the same key the All view already sorts on within a repo, and the only one in the model that never changes (req 7). A row therefore holds its slot even as its reason changes.</p>
+    <p class="cap"><b>Needs you</b> — the same four sessions, one flat list, and <b>nothing above it</b>. No repo headers, no child indent, no ops/sandbox pins, no mode band.</p>
+    <div class="side"><div class="hdr"><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></svg><span class="n">4</span></span><span class="sp"></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3.2v9.6M3.2 8h9.6"/></svg></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span><span class="ico"><span style="position:relative;display:inline-flex"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg><svg width="8" height="8" viewBox="0 0 16 16" fill="currentColor" style="position:absolute;right:-3px;bottom:-1px"><rect x="5.5" y="2" width="5" height="8" rx="2.5"/><path d="M3.5 8a4.5 4.5 0 0 0 9 0h-1.4a3.1 3.1 0 0 1-6.2 0z"/></svg></span></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div><div class="scroll"><div class="it attn sel"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="sd" style="color:var(--error)"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.4"/><path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4"/></svg></span><span class="repo">shipit</span><span class="when">14m</span></span></span></div><div class="it attn"><span class="prico none"></span><span class="body"><span class="ttl">Mobile composer overflow</span><span class="meta"><span class="repo">shipit</span><span class="when">1h</span></span></span></div><div class="it attn"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Snapshot diff viewer</span><span class="meta"><span class="sd" style="color:var(--success)"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.4"/><path d="M5.2 8.2 7.2 10.2l3.6-4"/></svg></span><span class="repo">android-overlay</span><span class="when">3h</span></span></span></div><div class="it attn"><span class="prico none"></span><span class="body"><span class="ttl">Bump vite to 7.1.4</span><span class="meta"><span class="repo">docs-site</span><span class="when">2d</span></span></span></div></div></div>
+    <p class="cap after">Order is <b>session creation time, newest first</b> — the same key the All view sorts on within a repo, and the only one in the model that never changes (req 7). A row holds its slot even as its reason changes.</p>
   </div>
 
-  <!-- ANATOMY -->
   <div class="anat">
-    <p class="cap"><b>Row anatomy</b> — shown at 2×</p>
-    <div class="zoom">
-      <div class="it edge" style="--rc:var(--repo-9)"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Snapshot diff viewer</span><span class="meta"><span class="r-broken">PR has merge conflicts</span><span class="chip"><span class="dot"></span>android-overlay</span><span class="when">3h</span></span></span></div>
-    </div>
+    <p class="cap"><b>Row anatomy</b> — shown at 2×. Every part of it already exists.</p>
+    <div class="zoom"><div class="it attn"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Snapshot diff viewer</span><span class="meta"><span class="sd" style="color:var(--success)"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.4"/><path d="M5.2 8.2 7.2 10.2l3.6-4"/></svg></span><span class="repo">android-overlay</span><span class="when">3h</span></span></span></div></div>
     <div class="pad"></div>
     <ol>
-      <li><b>Repo color, left edge.</b> The docs/254 identity color moves off the group header onto the row. Left is free precisely because docs/187 chose the <em>right</em> edge for the attention marker.</li>
-      <li><b>PR state badge</b> — unchanged from the All view.</li>
-      <li><b>Session title</b> — unchanged. It stays the primary line; the reason is metadata, not a replacement.</li>
-      <li><b>Reason</b>, verbatim from <code>computeAttentionReason()</code>. Amber for a block on you, red for something broken, grey for an idle agent. It is the same string the All view already shows as the row’s <code>title</code> tooltip.</li>
-      <li><b>Repo chip</b> — color swatch + short name, carrying the identity the removed group header used to.</li>
-      <li><b>No amber rail.</b> When every row needs attention a per-row marker carries no information and degrades to a texture, so the docs/187 treatment is dropped inside this view and the right edge stays clean.</li>
+      <li><b>PR state badge</b> — unchanged.</li>
+      <li><b>Session title</b> — unchanged.</li>
+      <li><b>Status dot</b> — unchanged <code>SessionStatusDot</code>: auto-fix, agent running, CI failed/pending/passed, and nothing at all when there is no CI. The same vocabulary as the All view, so a row looks the same in both.</li>
+      <li><b>Repo name</b> — the <code>repoLabel</code> prop <code>SessionItem</code> already takes, which <code>AllSessionsDialog</code> already passes for its cross-repo list. Plain tertiary text, not a new chip.</li>
+      <li><b>Relative time</b> — unchanged.</li>
+      <li><b>The amber marker</b> — unchanged docs/187 treatment on the right edge, and deliberately kept inside this view: the row must not change appearance just because it is being listed somewhere else.</li>
     </ol>
+    <p class="cap" style="max-width:none;margin-top:12px">The reason itself stays where it is today — in the row’s tooltip. No reason text is added to the row.</p>
+    <div style="position:relative;height:84px;margin-top:6px;width:264px">
+      <div class="it attn hov"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Snapshot diff viewer</span><span class="meta"><span class="sd" style="color:var(--success)"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.4"/><path d="M5.2 8.2 7.2 10.2l3.6-4"/></svg></span><span class="repo">android-overlay</span><span class="when">3h</span></span></span></div>
+      <span class="tip" style="top:46px">PR has merge conflicts</span>
+    </div>
   </div>
 </div>
 
 <h2>States</h2>
 <div class="row">
-
   <div>
-    <p class="cap"><b>Settled in place</b> (req 8) — the second row’s agent picked the work back up while the list was open. It keeps its slot and its neighbours; only the reason and the styling change.</p>
-    <div class="side">
-      <div class="hdr">
-        <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span>
-        <span class="sp"></span>
-        <span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></svg><span class="n">3</span></span>
-        <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span>
-        <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span>
-      </div>
-      <div class="scroll">
-        <div class="it edge sel" style="--rc:var(--repo-6)"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="r-broken">CI fix failed ×3</span><span class="chip"><span class="dot"></span>shipit</span><span class="when">14m</span></span></span></div>
-        <div class="it edge settled" style="--rc:var(--repo-6)"><span class="prico none"></span><span class="body"><span class="ttl">Mobile composer overflow</span><span class="meta"><span class="r-done">Agent picked it up</span><span class="chip"><span class="dot"></span>shipit</span><span class="when">now</span></span></span></div>
-        <div class="it edge" style="--rc:var(--repo-9)"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Snapshot diff viewer</span><span class="meta"><span class="r-broken">PR has merge conflicts</span><span class="chip"><span class="dot"></span>android-overlay</span><span class="when">3h</span></span></span></div>
-        <div class="it edge" style="--rc:var(--repo-3)"><span class="prico none"></span><span class="body"><span class="ttl">Bump vite to 7.1.4</span><span class="meta"><span class="r-wait">Waiting for your input</span><span class="chip"><span class="dot"></span>docs-site</span><span class="when">2d</span></span></span></div>
-      </div>
-    </div>
-    <p class="cap after">The header count drops to 3 immediately; the <em>list</em> still holds 4 rows. The settled row is dropped the next time the view is entered — never under the pointer.</p>
+    <p class="cap"><b>Settled in place</b> (req 8) — the second row’s agent picked the work back up while the list was open. It keeps its slot; the amber marker simply goes away and the status dot turns green, exactly as it would in the All view.</p>
+    <div class="side"><div class="hdr"><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></svg><span class="n">3</span></span><span class="sp"></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3.2v9.6M3.2 8h9.6"/></svg></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span><span class="ico"><span style="position:relative;display:inline-flex"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg><svg width="8" height="8" viewBox="0 0 16 16" fill="currentColor" style="position:absolute;right:-3px;bottom:-1px"><rect x="5.5" y="2" width="5" height="8" rx="2.5"/><path d="M3.5 8a4.5 4.5 0 0 0 9 0h-1.4a3.1 3.1 0 0 1-6.2 0z"/></svg></span></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div><div class="scroll"><div class="it attn sel"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="sd" style="color:var(--error)"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.4"/><path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4"/></svg></span><span class="repo">shipit</span><span class="when">14m</span></span></span></div><div class="it settled"><span class="prico none"></span><span class="body"><span class="ttl">Mobile composer overflow</span><span class="meta"><span class="sd run"></span><span class="repo">shipit</span><span class="when">now</span></span></span></div><div class="it attn"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Snapshot diff viewer</span><span class="meta"><span class="sd" style="color:var(--success)"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.4"/><path d="M5.2 8.2 7.2 10.2l3.6-4"/></svg></span><span class="repo">android-overlay</span><span class="when">3h</span></span></span></div><div class="it attn"><span class="prico none"></span><span class="body"><span class="ttl">Bump vite to 7.1.4</span><span class="meta"><span class="repo">docs-site</span><span class="when">2d</span></span></span></div></div></div>
+    <p class="cap after">The switch count drops to 3 at once; the <em>list</em> still holds 4 rows. The settled row is dropped the next time the view is entered — never under the pointer. No “settled” styling had to be invented: losing the marker <em>is</em> the signal.</p>
   </div>
 
   <div>
-    <p class="cap"><b>A long list</b> — keeping one shared definition of attention (req 9) means an idle agent on an open PR counts, so on a busy workspace most rows read “Waiting for your input”. Drawn honestly.</p>
-    <div class="side">
-      <div class="hdr">
-        <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span>
-        <span class="sp"></span>
-        <span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></svg><span class="n">9</span></span>
-        <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span>
-        <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span>
-      </div>
-      <div class="scroll">
-        <div class="it edge" style="--rc:var(--repo-11)"><span class="prico none"></span><span class="body"><span class="ttl">Issue tracker filters</span><span class="meta"><span class="r-blocked">Needs your approval</span><span class="chip"><span class="dot"></span>shipit</span><span class="when">2m</span></span></span></div>
-        <div class="it edge" style="--rc:var(--repo-6)"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="r-broken">CI fix failed ×3</span><span class="chip"><span class="dot"></span>shipit</span><span class="when">14m</span></span></span></div>
-        <div class="it edge" style="--rc:var(--repo-6)"><span class="prico none"></span><span class="body"><span class="ttl">Mobile composer overflow</span><span class="meta"><span class="r-wait">Waiting for your input</span><span class="chip"><span class="dot"></span>shipit</span><span class="when">1h</span></span></span></div>
-        <div class="it edge" style="--rc:var(--repo-9)"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Snapshot diff viewer</span><span class="meta"><span class="r-broken">PR has merge conflicts</span><span class="chip"><span class="dot"></span>android-overlay</span><span class="when">3h</span></span></span></div>
-        <div class="it edge" style="--rc:var(--repo-6)"><span class="prico none"></span><span class="body"><span class="ttl">Chat history paging</span><span class="meta"><span class="r-wait">Waiting for your input</span><span class="chip"><span class="dot"></span>shipit</span><span class="when">5h</span></span></span></div>
-        <div class="it edge" style="--rc:var(--repo-0)"><span class="prico none"></span><span class="body"><span class="ttl">Landing page hero</span><span class="meta"><span class="r-wait">Waiting for your input</span><span class="chip"><span class="dot"></span>marketing</span><span class="when">1d</span></span></span></div>
-        <div class="it edge" style="--rc:var(--repo-3)"><span class="prico none"></span><span class="body"><span class="ttl">Bump vite to 7.1.4</span><span class="meta"><span class="r-wait">Waiting for your input</span><span class="chip"><span class="dot"></span>docs-site</span><span class="when">2d</span></span></span></div>
-        <div class="it edge" style="--rc:var(--repo-9)"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Emulator boot flake</span><span class="meta"><span class="r-blocked">Auto-merge needs config</span><span class="chip"><span class="dot"></span>android-overlay</span><span class="when">3d</span></span></span></div>
-        <div class="it edge" style="--rc:var(--repo-11)"><span class="prico none"></span><span class="body"><span class="ttl">Ops inventory table</span><span class="meta"><span class="r-wait">Waiting for your input</span><span class="chip"><span class="dot"></span>shipit</span><span class="when">6d</span></span></span></div>
-      </div>
-    </div>
-    <p class="cap after">Colour does the triage that grouping no longer does: red and amber reasons stand out of a grey field without re-ordering anything.</p>
+    <p class="cap"><b>A long list</b> — keeping one shared definition of attention (req 9) means an idle agent on an open PR counts, so on a busy workspace the list gets long and most rows carry no status dot at all. Drawn honestly.</p>
+    <div class="side"><div class="hdr"><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></svg><span class="n">9</span></span><span class="sp"></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3.2v9.6M3.2 8h9.6"/></svg></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span><span class="ico"><span style="position:relative;display:inline-flex"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg><svg width="8" height="8" viewBox="0 0 16 16" fill="currentColor" style="position:absolute;right:-3px;bottom:-1px"><rect x="5.5" y="2" width="5" height="8" rx="2.5"/><path d="M3.5 8a4.5 4.5 0 0 0 9 0h-1.4a3.1 3.1 0 0 1-6.2 0z"/></svg></span></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div><div class="scroll"><div class="it attn"><span class="prico none"></span><span class="body"><span class="ttl">Issue tracker filters</span><span class="meta"><span class="repo">shipit</span><span class="when">2m</span></span></span></div><div class="it attn"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="sd" style="color:var(--error)"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.4"/><path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4"/></svg></span><span class="repo">shipit</span><span class="when">14m</span></span></span></div><div class="it attn"><span class="prico none"></span><span class="body"><span class="ttl">Mobile composer overflow</span><span class="meta"><span class="repo">shipit</span><span class="when">1h</span></span></span></div><div class="it attn"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Snapshot diff viewer</span><span class="meta"><span class="sd" style="color:var(--success)"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.4"/><path d="M5.2 8.2 7.2 10.2l3.6-4"/></svg></span><span class="repo">android-overlay</span><span class="when">3h</span></span></span></div><div class="it attn"><span class="prico none"></span><span class="body"><span class="ttl">Chat history paging</span><span class="meta"><span class="repo">shipit</span><span class="when">5h</span></span></span></div><div class="it attn"><span class="prico none"></span><span class="body"><span class="ttl">Landing page hero</span><span class="meta"><span class="repo">marketing</span><span class="when">1d</span></span></span></div><div class="it attn"><span class="prico none"></span><span class="body"><span class="ttl">Bump vite to 7.1.4</span><span class="meta"><span class="repo">docs-site</span><span class="when">2d</span></span></span></div><div class="it attn"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Emulator boot flake</span><span class="meta"><span class="repo">android-overlay</span><span class="when">3d</span></span></span></div><div class="it attn"><span class="prico none"></span><span class="body"><span class="ttl">Ops inventory table</span><span class="meta"><span class="repo">shipit</span><span class="when">6d</span></span></span></div></div></div>
+    <p class="cap after">With no reason text, the amber edge is what makes it a list of problems, and the status dots pick out the broken ones.</p>
   </div>
 
   <div>
-    <p class="cap"><b>Empty</b> — inbox zero. The badge disappears from the header in this state, so the All view carries no permanent amber mark. The icon stays lit, because you are still in the view.</p>
-    <div class="side">
-      <div class="hdr">
-        <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span>
-        <span class="sp"></span>
-        <span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></svg></span>
-        <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span>
-        <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span>
-      </div>
+    <p class="cap"><b>Empty</b> — inbox zero. The count disappears from the switch, so the All view carries no permanent amber mark. The glyph stays lit, because you are still in the view.</p>
+    <div class="side"><div class="hdr"><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></svg></span><span class="sp"></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3.2v9.6M3.2 8h9.6"/></svg></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span><span class="ico"><span style="position:relative;display:inline-flex"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg><svg width="8" height="8" viewBox="0 0 16 16" fill="currentColor" style="position:absolute;right:-3px;bottom:-1px"><rect x="5.5" y="2" width="5" height="8" rx="2.5"/><path d="M3.5 8a4.5 4.5 0 0 0 9 0h-1.4a3.1 3.1 0 0 1-6.2 0z"/></svg></span></span><span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div>
       <div class="empty">
         <span style="color:var(--success)"><svg width="30" height="30" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="8" cy="8" r="6.6"/><path d="M4.8 8.3 7 10.5l4.2-4.6"/></svg></span>
         <p>Nothing needs you</p>
-        <small>4 sessions are working. You’ll get a badge here when one stops.</small>
+        <small>4 sessions are working. You’ll get a count here when one stops.</small>
       </div>
     </div>
   </div>
 </div>
 
 <h2>Considered and rejected</h2>
-<p class="note">Kept at thumbnail size so the alternatives stay reviewable next to what was chosen. Each lost for the reason under it.</p>
+<p class="note">Kept at thumbnail size so the alternatives stay reviewable beside what was chosen. Each lost for the reason under it.</p>
 <div class="thumbs">
-
   <div class="th">
     <div class="side">
-      <div class="hdr" style="height:34px"><span class="ico" style="width:22px;height:22px"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sp"></span><span class="ico" style="width:22px;height:22px"><svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div>
+      <div class="hdr" style="height:34px"><span class="ico" style="width:22px;height:22px"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sp"></span><span class="ico" style="width:22px;height:22px"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div>
       <div class="seg"><span class="sel">All</span><span>Needs you</span></div>
-      <div class="scroll">
-        <div class="it edge" style="--rc:var(--repo-6)"><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="r-wait">idle</span></span></span></div>
-        <div class="it edge" style="--rc:var(--repo-6)"><span class="body"><span class="ttl">Mobile composer</span><span class="meta"><span class="r-wait">idle</span></span></span></div>
-      </div>
+      <div class="scroll"><div class="it"><span class="prico none"></span><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="when">14m</span></span></span></div><div class="it"><span class="prico none"></span><span class="body"><span class="ttl">Mobile composer overflow</span><span class="meta"><span class="when">1h</span></span></span></div></div>
     </div>
-    <p><b>A1 · Segmented control.</b> Costs ~30 px of list height on every session, forever, to state a mode the header icon can hold for free.</p>
+    <p><b>Segmented control.</b> Costs ~30 px of list height on every session, forever, to state a mode the switch holds for free.</p>
   </div>
 
   <div class="th">
     <div class="side">
-      <div class="hdr" style="height:34px"><span class="ico" style="width:22px;height:22px"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sp"></span><span class="ico" style="width:22px;height:22px"><svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div>
-      <div class="scroll">
-        <div class="it edge" style="--rc:var(--repo-6)"><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="r-broken">CI failed</span></span></span></div>
-        <div class="grp" style="--gc:var(--repo-6);font-size:9px">shipit</div>
-        <div class="it edge" style="--rc:var(--repo-6)"><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="r-broken">CI failed</span></span></span></div>
-      </div>
+      <div class="hdr" style="height:34px"><span class="ico" style="width:22px;height:22px"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sp"></span><span class="ico" style="width:22px;height:22px"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div>
+      <div class="mode">Needs you · 4 — show all</div>
+      <div class="scroll"><div class="it attn"><span class="prico none"></span><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="when">14m</span></span></span></div><div class="it attn"><span class="prico none"></span><span class="body"><span class="ttl">Bump vite to 7.1.4</span><span class="meta"><span class="when">2d</span></span></span></div></div>
     </div>
-    <p><b>A3 · Pinned band, no mode.</b> Never leaves the tree, but the same session is on screen twice.</p>
+    <p><b>A band above the list.</b> Same ~28 px cost, and everything on it was already on screen: the count is on the switch, the exit is a second click on it.</p>
   </div>
 
   <div class="th">
     <div class="side">
-      <div class="hdr" style="height:34px"><span class="ico" style="width:22px;height:22px"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sp"></span><span class="ico" style="width:22px;height:22px"><svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div>
+      <div class="hdr" style="height:34px"><span class="ico" style="width:22px;height:22px"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sp"></span><span class="ico" style="width:22px;height:22px"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div>
       <div class="scroll">
         <div class="band blocked">Blocked <span>1</span><hr/></div>
-        <div class="it edge" style="--rc:var(--repo-11)"><span class="body"><span class="ttl">Issue tracker filters</span></span></div>
+        <div class="it attn"><span class="prico none"></span><span class="body"><span class="ttl">Issue tracker filters</span><span class="meta"><span class="when">2m</span></span></span></div>
         <div class="band broken">Broken <span>1</span><hr/></div>
-        <div class="it edge" style="--rc:var(--repo-6)"><span class="body"><span class="ttl">Repo group separation</span></span></div>
-        <div class="band">Waiting <span>2</span><hr/></div>
-        <div class="it edge" style="--rc:var(--repo-3)"><span class="body"><span class="ttl">Bump vite to 7.1.4</span></span></div>
+        <div class="it attn"><span class="prico none"></span><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="when">14m</span></span></span></div>
       </div>
     </div>
-    <p><b>B2 · Bands by reason.</b> Trades one grouping for another — and a row jumps band the moment its reason changes, which is the instability req 7 rules out.</p>
+    <p><b>Bands by reason.</b> Trades one grouping for another — and a row jumps band the moment its reason changes, which is the instability req 7 rules out.</p>
   </div>
 
   <div class="th">
     <div class="side">
-      <div class="hdr" style="height:34px"><span class="ico" style="width:22px;height:22px"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sp"></span><span class="ico" style="width:22px;height:22px"><svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div>
+      <div class="hdr" style="height:34px"><span class="ico" style="width:22px;height:22px"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sp"></span><span class="ico" style="width:22px;height:22px"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div>
       <div class="scroll">
-        <div class="it edge" style="--rc:var(--repo-11)"><span class="body"><span class="ttl" style="color:var(--attention)">Approve a tool call</span><span class="meta">Issue tracker filters</span></span></div>
-        <div class="it edge" style="--rc:var(--repo-6)"><span class="body"><span class="ttl" style="color:var(--error)">CI fix failed ×3</span><span class="meta">Repo group separation</span></span></div>
-        <div class="it edge" style="--rc:var(--repo-9)"><span class="body"><span class="ttl" style="color:var(--text-2)">Waiting for your input</span><span class="meta">Snapshot diff viewer</span></span></div>
+        <div class="it"><span class="body"><span class="ttl" style="color:var(--attention)">Approve a tool call</span><span class="meta">Issue tracker filters</span></span></div>
+        <div class="it"><span class="body"><span class="ttl" style="color:var(--error)">CI fix failed ×3</span><span class="meta">Repo group separation</span></span></div>
       </div>
     </div>
-    <p><b>B3 · Reason as the title.</b> Reads as a task inbox; the session name — the thing you actually recognise — demotes to metadata.</p>
+    <p><b>Reason as the title.</b> Reads as a task inbox, and it restates in words what the row already says with a marker and a dot.</p>
   </div>
 
   <div class="th">
     <div class="side">
-      <div class="hdr" style="height:34px"><span class="ico" style="width:22px;height:22px"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sp"></span><span class="ico" style="width:22px;height:22px"><svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div>
-      <div class="scroll">
-        <div class="it edge" style="--rc:var(--repo-6)"><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="r-broken">CI fix failed ×3</span></span></span></div>
-        <div class="it edge" style="--rc:var(--repo-3)"><span class="body"><span class="ttl">Bump vite to 7.1.4</span><span class="meta"><span class="r-wait">Waiting for your input</span></span></span></div>
-      </div>
+      <div class="hdr" style="height:34px"><span class="ico" style="width:22px;height:22px"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sp"></span><span class="ico" style="width:22px;height:22px"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div>
+      <div class="scroll"><div class="it attn"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="sd" style="color:var(--error)"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.4"/><path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4"/></svg></span><span class="when">14m</span></span></span></div><div class="it attn"><span class="prico none"></span><span class="body"><span class="ttl">Bump vite to 7.1.4</span><span class="meta"><span class="when">2d</span></span></span></div></div>
     </div>
-    <p><b>C3 · Yank the row immediately.</b> Always-correct list, hostile pointer: a row vanishes mid-hover. The sidebar already avoids exactly this by refusing to sort on <code>lastUsedAt</code>.</p>
+    <p><b>Yank the row immediately.</b> Always-correct list, hostile pointer: a row vanishes mid-hover. The sidebar already avoids exactly this by refusing to sort on <code>lastUsedAt</code>.</p>
   </div>
 </div>
 
 <h2>Notes carried by the drawings</h2>
 <div class="legend">
-  <p><b>Attention is not redefined</b> (req 9). The view filters on <code>computeAttentionReason() !== null</code> — the function that already drives the amber rail, the row tooltip and notifications. A session is in the list for exactly the reason the tooltip already gives, so the two surfaces cannot disagree, and no new state, store or server field is introduced.</p>
-  <p><b>Nothing sits above the list.</b> An earlier draft put an amber <em>“NEEDS YOU · 4 — Show all”</em> strip under the header. It is cut. It costs about 28 px — the same height that ruled out the segmented control, so it gave back the one thing the icon was chosen to save — and everything on it was already on screen: the count is on the badge, the exit is a second click on the same icon, and every row states its own reason, which no row in the All view does. The switch is therefore the whole mode indicator, which is what the state board above has to earn.</p>
-  <p><b>The amber rail is dropped inside the view.</b> When every row needs attention, a per-row marker carries no information — it degrades to a texture. The reason word on the meta line does the work instead, and the right edge frees up.</p>
-  <p><b>Repo identity survives without repo headers</b> as the docs/254 color on the row’s left edge plus a text chip. Left is free precisely because docs/187 chose the right edge for attention.</p>
-  <p><b>Stability has two halves</b> (req 7–8): the sort key never changes, <em>and</em> a row that stops qualifying holds its slot until the view is re-entered. Either one alone still lets the list move under the cursor.</p>
+  <p><b>The row does not change</b>. It is <code>SessionItem</code> with <code>repoLabel</code> set — the same call <code>AllSessionsDialog</code> already makes for its cross-repo list. No reason text, no new chip, no new colors, and the amber marker stays exactly as docs/187 drew it. A session must look the same wherever it is listed.</p>
+  <p><b>Attention is not redefined</b> (req 9). The view filters on <code>computeAttentionReason() !== null</code> — the function that already drives the marker, the tooltip and notifications. The reason stays in the tooltip, where it lives today.</p>
+  <p><b>Nothing sits above the list</b> (req 10). No band, no label, no separate exit. The switch is the whole mode indicator, which is what the state board has to earn.</p>
+  <p><b>Repo identity comes from the name, not a color.</b> With the group headers gone the repo edge goes too; <code>repoLabel</code> carries the identity, exactly as it does in the All-sessions dialog today.</p>
+  <p><b>Stability has two halves</b> (req 7–8): the sort key never changes, <em>and</em> a row that stops qualifying holds its slot until the view is re-entered. Either alone still lets the list move under the cursor.</p>
   <p><b>Parent/child nesting collapses.</b> A spawned child that needs you is a first-class row here; the tree relationship is a property of the All view.</p>
   <p><b>Ops, sandbox and hidden-repo sessions are ordinary rows.</b> Their pinned groups exist to give repo-less sessions a home in a repo tree — a problem this view does not have.</p>
   <p><b>Archived rows never appear</b> — <code>needsAttention</code> is already gated on <code>!isArchived</code> today.</p>
