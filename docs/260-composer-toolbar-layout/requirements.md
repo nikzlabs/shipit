@@ -63,6 +63,10 @@ The row already contained three controls that had been collapsed to icons to buy
 
 16. The attach button stays in the compact row. Attaching a file is an action taken while composing, not a setting, and it does not move behind the settings control.
 
+17. A non-default permission mode is named by the mode alone — "Guarded", "Plan" — not "Guarded mode". This is the label in the composer row; the menu that offers the choice may still spell it out.
+
+18. The composer's model control shows the model's name only. It does not append the service or billing mode ("Subscription", "API key") to that name, even when the same model id is offered under more than one.
+
 ## Requirement provenance
 
 Requirements 1–8 and 10–13 were stated by the human in chat, most of them in direct response to a rendered mock-up.
@@ -75,9 +79,13 @@ No requirement is an unreviewed agent inference.
 
 ## Open questions
 
-- **Should the permission mode be an icon rather than a labelled pill in the wide row?** Today a non-auto mode renders as an icon plus its name — "Guarded mode" measures 123.5 px, which is the single widest contributor to the wide row's worst case and half the reason that row can need an 808 px panel. The human's expectation on 2026-08-10 was "guarded mode is an icon at most", which would cut it to roughly 28 px and take the worst case with it. Held open rather than written in because the human asked to see it first: a mock of the wide row in the 700–808 px band, in the guarded and ambiguous-model states, is the evidence this should be decided against. **(a)** Icon only, with the name in `title` / `aria-label`, matching what the harness and reasoning controls already do in that row. **(b)** Icon plus name, as today. *Recommendation: (a), pending the mock.*
+None. Implementation is unblocked.
 
 ## Resolved questions
+
+- 2026-08-10 — Should the permission mode be an icon in the wide row, given that "Guarded mode" at 123.5 px is the widest single contributor to the row's worst case? Chosen: **keep the icon and the word, but the word alone** — "Guarded", not "Guarded mode". The human's first reaction was "an icon at most"; shown the mock, the call was the shorter label rather than dropping the label. Requirement 17 follows. The menu that offers the choice still spells out "Guarded mode", where there is room and the extra word reads as a description rather than a badge.
+
+- 2026-08-10 — Should the model control keep the service pill that disambiguates a model id offered under two `(service, billing)` pairs? Chosen: **no, drop it.** Requirement 18 follows. Stated consequence, accepted: with the same id under both a subscription and an API key, the composer no longer says which one this session bills — the honest answer moves one tap away, into the model panel, where the grouping and the checkmark still show it. That reverses a docs/252 decision which put the pill there precisely because "a bare id cannot say who is billing you"; the pill was disclosure-on-demand, and it turned out to cost 80.5 px in the state that was already overflowing.
 
 - 2026-08-10 — The cross-backend review found requirements 1 and 3 incompatible between 700 px and ~808 px: the un-compacted row can need up to 808 px, and requirement 3 hands back to it at 700 px, so guarded mode and an ambiguous model id could still push Send off the edge in that band. Chosen: **clipping is the universal rule** — "if something is overflown, it is clipped, never affecting mic/send/cancel". The wide row gets the same pinned action cluster as the compact one, so a label is cut off instead of Send disappearing. Requirements 1, 3 and 8 were rewritten to say this: requirement 3's "as today" now describes what the user sees *whenever the row fits*, and is explicitly outranked by requirement 1. The rejected alternatives were raising the threshold to ~810 px (contradicts the 700 px the human chose, and puts more desktops on the compact row) and narrowing requirement 1 to "below 700 px" (leaves the original bug alive in a band nobody would think to test).
 

@@ -101,30 +101,6 @@ function groupRows(rows: ModelRow[]): ModelGroup[] {
 }
 
 /**
- * True when this model id is offered by more than one eligible group — the sole
- * case where the id alone cannot say who is billing you.
- *
- * That is exactly why the service pill is disclosure-on-demand rather than
- * permanent: it appears when the ambiguity is real and costs nothing otherwise.
- */
-function isAmbiguous(rows: ModelRow[], modelId: string | undefined): boolean {
-  if (!modelId) return false;
-  return rows.filter((r) => r.modelId === modelId).length > 1;
-}
-
-/**
- * The label that disambiguates a duplicated model id: the **billing mode** when
- * the duplicate rows are within one service, the **service** when they cross
- * services — because that is the axis that actually differs.
- */
-function disambiguator(rows: ModelRow[], row: ModelRow): string {
-  const duplicates = rows.filter((r) => r.modelId === row.modelId);
-  const crossesServices = duplicates.some((r) => r.serviceId !== row.serviceId);
-  if (crossesServices) return row.serviceName;
-  return row.billingMode === "sub" ? "Subscription" : "API key";
-}
-
-/**
  * The session this composer is bound to, or `undefined` when it is bound to
  * none.
  *
@@ -503,11 +479,6 @@ export function useModelPickerState({
     chosenGroupKey ?? rows.find((r) => r.modelId === selectedModel)?.groupKey;
 
   const displayName = formatModelName(displayedModel ?? "");
-  const displayedRow = rows.find(
-    (r) => r.modelId === displayedModel && (!selectedGroupKey || r.groupKey === selectedGroupKey),
-  ) ?? rows.find((r) => r.modelId === displayedModel);
-  const triggerPill =
-    displayedRow && isAmbiguous(rows, displayedModel) ? disambiguator(rows, displayedRow) : undefined;
 
   const handleModelSelect = useCallback(
     (row: ModelRow) => {
@@ -563,8 +534,6 @@ export function useModelPickerState({
     /** The row the checkmark belongs on, as a `(model, group)` pair. */
     selectedModel,
     selectedGroupKey,
-    /** Set only when one model id is offered by more than one group. */
-    triggerPill,
     handleModelSelect,
   };
 }
@@ -591,7 +560,6 @@ export function ModelSelector({
     displayName,
     selectedModel,
     selectedGroupKey,
-    triggerPill,
     handleModelSelect,
   } = useModelPickerState({
     agents,
@@ -615,11 +583,6 @@ export function ModelSelector({
             data-testid="model-trigger"
           >
             <span>{displayName || "Loading..."}</span>
-            {triggerPill && (
-              <span className="text-(--color-text-tertiary)" data-testid="model-trigger-service">
-                {triggerPill}
-              </span>
-            )}
             {!disabled && <CaretDownIcon size={ICON_SIZE.XS} />}
           </button>
         </DropdownMenuTrigger>

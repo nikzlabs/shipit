@@ -25,6 +25,12 @@
       filed as planning#350
 - [x] Mock of the wide row at 700–808 px, presented — today's overflow, the clipping fix, and
       guarded-as-an-icon side by side
-- [ ] **Open question**: guarded as an icon in the wide row (mock presented, awaiting the call)
-- [ ] Implement the clipping rule in the wide row (pinned action cluster), once the guarded
-      question is closed — both touch the same lines
+- [x] Requirements 17 and 18 taken from the mock: "Guarded mode" → "Guarded", and the model
+      control drops the service pill
+- [x] Wide row: clipping group around the four labelled controls, both ends pinned (the mic is
+      on the LEFT in that row, so the middle is what gives way)
+- [x] Tests for the wide-row clipping and the shortened mode label; the four ModelPicker tests
+      that observed the group through the removed pill now observe the menu's checkmark
+- [x] Re-verified against the real component: nothing past the composer's edge at 700 / 760 /
+      808 / 900 px in the guarded + ambiguous state, nor at 520 px on the compact row
+- [x] `lint:dev`, `typecheck`, full client suite (3358) green

@@ -14,7 +14,7 @@ One threshold, one branch, measured on the composer's own width rather than the 
 
 | Composer width | Row |
 |---|---|
-| **≥ 700 px** | Untouched — the row exactly as it shipped before this feature |
+| **≥ 700 px** | The row as it shipped, plus a clipping group and two shorter labels (below) |
 | **< 700 px** | `+ · [⚙ model-name ⌄] · ◕` ⟶ spacer ⟶ `mic · stop · send` |
 
 Below the threshold the permission mode, harness, model and reasoning controls leave the row and live behind one control, which also carries the model name (req 4, req 6). The context ring stays beside it (req 7). The attach button stays too (req 16).
@@ -59,9 +59,33 @@ Measured room for the model name, and what fits (req 4, req 5, req 13):
 | `Opus 5` (43 px) | … | ✓ | ✓ | ✓ | ✓ |
 | `GPT-5 Codex` (77 px) | … | … | ✓ | ✓ | ✓ |
 
+## The wide row is pinned too — but it clips its middle
+
+The compact row pins its actions and clips its left. The wide row cannot copy that literally: **in the wide layout the mic sits on the far left**, and req 1 protects the mic as well as Stop and Send. So the wide row pins *both* ends and clips what is between them — the four labelled controls (context dial, harness, model, reasoning) live in a `min-w-0 overflow-hidden` group, and their labels are what gets cut.
+
+```
++   mic   mode   ——spacer——   [ dial  harness  model  reasoning ]   stop  send
+└─ pinned ─┘                  └──── clips ────┘                     └─ pinned ─┘
+```
+
+This exists because the threshold at 700 px (req 3) does not on its own satisfy req 1: the wide row needs **595–808 px** depending on state, so guarded mode and an ambiguous model id could still push Send off the edge between 700 and ~808 px — the original bug in a narrower band. The cross-backend review found it; the receipts in `requirements.md` record why clipping was chosen over raising the threshold.
+
+The group's children carry no `order` of their own. Their DOM order is already what both the mobile and desktop orderings asked for, so the group takes the `order` the first of them used to have and the rest follow it.
+
+## Two labels got shorter, which removed the overflow outright
+
+Independent of the clipping, and worth more than it in the states that actually reached the band:
+
+- **"Guarded mode" → "Guarded"** (req 17). The pill was 123.5 px; the second word carried no information the first did not. The menu that offers the choice still spells out "Guarded mode", where it reads as a description rather than a badge.
+- **The model's service pill is gone** (req 18). "Opus 5 · Subscription" was 142.9 px against "Opus 5" at 62.4. This reverses a docs/252 decision, and the receipt records the cost: with one model id under both a subscription and an API key, the composer no longer says which is billing this session. The model panel still does, one tap away, through its grouping and checkmark.
+
+Together these two take the worst case from **757.1 px to ~581 px** — under what a 700 px composer has. Measured after the change: nothing extends past the composer's edge at 700, 760, 808 or 900 px in the guarded + ambiguous state. The clipping group is therefore a backstop rather than a routinely-visible behaviour, which is the right relationship: the labels fix today's states, the clipping guarantees the next control added cannot reintroduce the bug.
+
 ## Touch targets are not on this axis
 
 Hit-area size keeps following the viewport media query (`useIsMobile`), not the container (req 14). The two questions are different: how *dense* the layout is depends on how much room there is, but whether a target needs to be thumb-sized depends on whether it is being touched. So a 600 px chat panel on a desktop gets the narrow row with compact buttons, and a 600 px tablet gets the narrow row with large ones.
+
+`useIsMobile()` is a **window-width** query, which is a proxy for "is this being touched" and an imperfect one — an iPad at 768 px gets compact targets. Req 14 says viewport for that reason rather than claiming more than the code does. Replacing it with `pointer: coarse` is planning#350; it would change hit areas in the wide row too, for every user, which is why it is not in this feature.
 
 ## The settings menu
 

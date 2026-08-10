@@ -1054,8 +1054,29 @@ export function MessageInput({
              * and its popover row opens the usage modal. The standalone cost
              * pill was removed to eliminate a stale-vs-authoritative
              * discrepancy between the two. */}
+            {/* docs/260 req 1 / req 8 — the wide row's clipping group. The four
+                labelled controls (dial, harness, model, reasoning) sit inside a
+                `min-w-0 overflow-hidden` box so that when the row runs out of
+                width their LABELS are cut, instead of the row overflowing and
+                carrying Send off the right edge — which is what shipped, and
+                what still happened between 700 and ~808px after the compact row
+                was added below 700.
+
+                Note this clips the MIDDLE, not the left, which is the difference
+                from the compact row: in the wide layout the mic sits on the far
+                left, and req 1 protects the mic as well as Stop and Send. So
+                both ends are pinned and the labels in between give way.
+
+                The children keep no `order` of their own — their DOM order is
+                already the order both layouts asked for — and the group takes
+                the order the first of them used to have. */}
+            <div
+              className="flex min-w-0 items-center gap-1 overflow-hidden"
+              style={{ order: isMobile ? 30 : 50 }}
+              data-testid="wide-row-clip-group"
+            >
             {surface === "chat" && (modelInfo ?? contextTokens > 0) && (
-              <div className="flex items-center shrink-0" style={{ order: isMobile ? 30 : 50 }}>
+              <div className="flex items-center shrink-0">
                 <ContextDialMount
                   modelInfo={modelInfo ?? null}
                   contextTokensFallback={contextTokens}
@@ -1069,7 +1090,7 @@ export function MessageInput({
                 pins it and the model is not, so the asymmetry is structural
                 rather than a lock badge inside a menu. */}
             {onAgentChange && (
-              <div className="flex items-center shrink-0" style={{ order: isMobile ? 39 : 59 }}>
+              <div className="flex items-center shrink-0">
                 <HarnessSelector
                   agents={agents}
                   activeAgentId={activeAgentId}
@@ -1085,7 +1106,7 @@ export function MessageInput({
               </div>
             )}
             {onAgentChange && (
-              <div className="flex items-center shrink-0" style={{ order: isMobile ? 40 : 60 }}>
+              <div className="flex items-center shrink-0">
                 <ModelSelector
                   agents={agents}
                   activeAgentId={activeAgentId}
@@ -1101,7 +1122,7 @@ export function MessageInput({
             {/* docs/217 — Control B: per-session reasoning effort, beside the
                 model selector. Self-hides when the active agent has no knob. */}
             {onReasoningChange && (
-              <div className="flex items-center shrink-0" style={{ order: isMobile ? 41 : 61 }}>
+              <div className="flex items-center shrink-0">
                 <ReasoningSelector
                   // Key on the session so the optimistic pick never lingers across a switch.
                   key={sessionId ?? "__new__"}
@@ -1113,6 +1134,8 @@ export function MessageInput({
                 />
               </div>
             )}
+
+            </div>
 
             {/* Send / Stop button — pinned right (order 80) with a small gap
                 from the item before it. On mobile the icon (MD) and hit area

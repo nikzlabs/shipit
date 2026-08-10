@@ -259,17 +259,19 @@ describe("ModelSelector", () => {
     );
   });
 
-  it("shows the disambiguating pill only when the model id is genuinely ambiguous", () => {
-    // `claude-sonnet-5` is offered by two modes of one service, so the pill
-    // names the MODE. `deepseek-v4-flash` is offered once, so there is nothing
-    // to disclose and no pill.
+  it("never puts the service or billing mode on the trigger, even when the id is ambiguous (docs/260 req 18)", () => {
+    // docs/252 put a disambiguating pill here, because a bare id cannot say who
+    // is billing you. docs/260 req 18 removed it: it cost 80.5px in exactly the
+    // state that was already pushing Send off the edge. The fact is still in the
+    // MENU — the grouping and the checkmark — one tap away.
     setSessionState(
       makeSession({ model: "claude-sonnet-5", serviceId: "anthropic", billingMode: "key" }),
     );
     const { unmount } = render(
       <ModelSelector agents={agents} activeAgentId="claude" modelInfo={null} hasActiveSession />,
     );
-    expect(screen.getByTestId("model-trigger-service")).toHaveTextContent("API key");
+    expect(screen.queryByTestId("model-trigger-service")).toBeNull();
+    expect(screen.getByTestId("model-trigger")).not.toHaveTextContent("API key");
     unmount();
 
     setSessionState(
@@ -420,8 +422,8 @@ describe("ModelSelector", () => {
     expect(rows[0]!.className).toContain("color-accent-subtle");
     await user.click(rows[1]!);
 
-    // The trigger's disambiguating pill is the visible half of the same fact.
-    expect(screen.getByTestId("model-trigger-service")).toHaveTextContent("API key");
+    // The checkmark is now the only visible half of this fact (req 18 dropped
+    // the trigger pill), so the menu is where the group has to be observed.
     await user.click(screen.getByTestId("model-trigger"));
     const after = screen.getAllByTestId("model-option-claude-sonnet-5");
     expect(after[1]!.className).toContain("color-accent-subtle");
@@ -452,7 +454,10 @@ describe("ModelSelector", () => {
     );
     await user.click(screen.getByTestId("model-trigger"));
     await user.click(screen.getAllByTestId("model-option-claude-sonnet-5")[1]!);
-    expect(screen.getByTestId("model-trigger-service")).toHaveTextContent("API key");
+    await user.click(screen.getByTestId("model-trigger"));
+    expect(screen.getAllByTestId("model-option-claude-sonnet-5")[1]!.className)
+      .toContain("color-accent-subtle");
+    await user.keyboard("{Escape}");
 
     // The server confirms; the session row catches up with the whole triple.
     rerender(
@@ -491,12 +496,17 @@ describe("ModelSelector", () => {
     const { rerender } = render(view);
     await user.click(screen.getByTestId("model-trigger"));
     await user.click(screen.getAllByTestId("model-option-claude-sonnet-5")[1]!);
-    expect(screen.getByTestId("model-trigger-service")).toHaveTextContent("API key");
+    await user.click(screen.getByTestId("model-trigger"));
+    expect(screen.getAllByTestId("model-option-claude-sonnet-5")[1]!.className)
+      .toContain("color-accent-subtle");
+    await user.keyboard("{Escape}");
 
     // The refusal: the row is untouched, and the only thing that arrives is the
     // server's answer.
     useSessionStore.getState().bumpModelSelectionEcho(session.id);
     rerender(view);
-    expect(screen.getByTestId("model-trigger-service")).toHaveTextContent("Subscription");
+    await user.click(screen.getByTestId("model-trigger"));
+    expect(screen.getAllByTestId("model-option-claude-sonnet-5")[0]!.className)
+      .toContain("color-accent-subtle");
   });
 });

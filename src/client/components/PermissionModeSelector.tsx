@@ -30,22 +30,28 @@ import type { ModelInfo } from "../utils/model-info.js";
  * entirely — auto is the only behavior and there's nothing to toggle.
  */
 
+/**
+ * docs/260 req 17 — `label` is the mode ALONE ("Guarded"), because it renders as
+ * a badge in the composer row where the second word was 34px of nothing. The
+ * menu below spells out "<label> mode", where it reads as a description and
+ * there is room for it.
+ */
 const MODE_META: Record<
   PermissionMode,
   { label: string; icon: typeof NotepadIcon; description: string }
 > = {
   plan: {
-    label: "Plan mode",
+    label: "Plan",
     icon: NotepadIcon,
     description: "Read-only — research and plan, no edits.",
   },
   guarded: {
-    label: "Guarded mode",
+    label: "Guarded",
     icon: ShieldCheckIcon,
     description: "Autonomous — commands are safety-checked by Claude before running; risky ones are blocked. Slightly slower and costs a bit more than auto.",
   },
   auto: {
-    label: "Auto mode",
+    label: "Auto",
     icon: FastForwardIcon,
     description: "Autonomous — no command safety check.",
   },
@@ -157,7 +163,7 @@ export function PermissionModeSelector({
               <Icon size={ICON_SIZE.SM} className="mt-0.5 shrink-0" weight={isCurrent ? "fill" : "regular"} />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-sm font-medium">{meta.label}</span>
+                  <span className="text-sm font-medium">{meta.label} mode</span>
                   {isCurrent && <CheckIcon size={ICON_SIZE.XS} className="text-(--color-accent)" />}
                 </div>
                 <p className="text-xs text-(--color-text-tertiary) mt-0.5">

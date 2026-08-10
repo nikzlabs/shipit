@@ -891,6 +891,37 @@ describe("MessageInput", () => {
       renderComposer(320);
       expect(screen.getByLabelText("Add files")).toBeInTheDocument();
     });
+
+    it("pins the wide row's actions too, clipping its labels instead (req 1, req 8)", () => {
+      // The wide row can still need up to 808px, so between 700 and 808 it used
+      // to push Send off the edge — the original bug in a narrower band. Both
+      // ends are now pinned and the four labelled controls in the middle give
+      // way, rather than the left, because in THIS row the mic is on the left
+      // and req 1 protects it too.
+      // The mic only renders with voice input on, and it is the point of this
+      // test: in the WIDE row it sits on the left, so clipping the left would
+      // eat it.
+      useSettingsStore.setState({ voiceInputEnabled: true });
+      renderComposer(760, { isLoading: true, onInterrupt: vi.fn(), liveSteeringActive: true });
+      const group = screen.getByTestId("wide-row-clip-group");
+      expect(group.className).toContain("min-w-0");
+      expect(group.className).toContain("overflow-hidden");
+      for (const id of ["stop-button", "send-button"]) {
+        expect(group.contains(screen.getByTestId(id))).toBe(false);
+      }
+      // The mic is pinned as well — it sits outside the group in this layout.
+      expect(group.contains(screen.getByTestId("mic-button"))).toBe(false);
+      // ...and the labelled controls are the ones inside it.
+      expect(group.contains(screen.getByTestId("model-trigger"))).toBe(true);
+      expect(group.contains(screen.getByTestId("harness-trigger"))).toBe(true);
+    });
+
+    it("names a non-default permission mode by the mode alone (req 17)", () => {
+      renderComposer(760, { permissionMode: "guarded" });
+      const mode = screen.getByTestId("permission-mode-selector");
+      expect(mode).toHaveTextContent("Guarded");
+      expect(mode).not.toHaveTextContent("Guarded mode");
+    });
   });
 
 });
