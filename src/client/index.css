@@ -403,6 +403,68 @@ html, body {
   animation: preview-line-flash 0.6s ease-out;
 }
 
+/* ── Monaco comment gutter (MonacoCommentWidgets.ts) ──
+   Monaco stamps these classes onto its glyph-margin overlays, which live
+   outside the React tree, so they cannot be styled with Tailwind utilities.
+   `monaco-comment-add-glyph` is the hover affordance that makes the
+   add-a-comment click discoverable; `monaco-comment-glyph` marks a line that
+   already carries a comment. */
+.monaco-comment-add-glyph,
+.monaco-comment-glyph {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+/* readOnly surfaces (agent-review snapshots) suppress the click. */
+.monaco-comment-glyph--static {
+  cursor: default;
+}
+
+.monaco-comment-add-glyph::before {
+  content: "+";
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  background-color: var(--color-accent);
+  color: var(--color-accent-text);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  transition: background-color var(--duration-fast) var(--ease-default);
+}
+
+.monaco-comment-add-glyph:hover::before {
+  background-color: var(--color-accent-hover);
+}
+
+/* Same badge as the `+`, with a dot instead. The badge carries its own
+   contrast pair (accent fill, accent-text dot) rather than relying on the
+   fill reading against the editor background — both surfaces pin Monaco to
+   `vs-dark` regardless of the app theme, so a theme with a dark accent
+   (cool-light) would leave a bare accent-colored dot barely visible. */
+.monaco-comment-glyph::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  background-color: var(--color-accent);
+}
+
+.monaco-comment-glyph::after {
+  content: "";
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background-color: var(--color-accent-text);
+}
+
 /* Resize handle — vertical divider between panels */
 .resize-handle {
   width: 8px;

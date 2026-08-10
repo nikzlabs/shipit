@@ -7,7 +7,11 @@
  * instead of force-disposing the runner and leaking the container.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { adoptRunningContainer, type DiscoveryDeps } from "./container-discovery.js";
+import {
+  adoptRunningContainer,
+  isTrackedContainerRunning,
+  type DiscoveryDeps,
+} from "./container-discovery.js";
 import {
   CONTAINER_SESSION_ID_LABEL,
   CONTAINER_STANDBY_LABEL,
@@ -25,6 +29,8 @@ interface FakeContainerSpec {
   standby?: boolean;
   buildId?: string;
   inspectThrows?: boolean;
+  /** When set, `inspect` rejects with an error carrying this HTTP status. */
+  inspectStatus?: number;
 }
 
 function makeFakeDocker(specs: FakeContainerSpec[]) {
@@ -48,7 +54,11 @@ function makeFakeDocker(specs: FakeContainerSpec[]) {
       inspect: async () => {
         const spec = specs.find((s) => s.id === id);
         if (!spec || spec.inspectThrows) throw new Error("inspect failed");
+        if (spec.inspectStatus !== undefined) {
+          throw Object.assign(new Error("docker says no"), { statusCode: spec.inspectStatus });
+        }
         return {
+          State: { Running: spec.state === "running" },
           NetworkSettings: {
             Networks: spec.ip ? { [NETWORK]: { IPAddress: spec.ip } } : {},
           },
@@ -179,5 +189,88 @@ describe("adoptRunningContainer", () => {
 
     expect(await adoptRunningContainer(deps, "sess-1", resolver)).toBe(false);
     expect(containers.has("sess-1")).toBe(false);
+  });
+});
+
+/**
+ * `isTrackedContainerRunning` — the docs/121 gap E liveness probe.
+ *
+ * The manager map is only ever corrected by the Docker event stream, so a
+ * `die` delivered while that stream was down leaves an entry claiming
+ * `running` for a container that no longer exists. This is the one call that
+ * re-verifies it, and the distinction between "Docker says not running" and
+ * "Docker could not answer" is the whole point: the caller declares a session
+ * dead on the former.
+ */
+describe("isTrackedContainerRunning", () => {
+  let errSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    errSpy.mockRestore();
+  });
+
+  function track(
+    containers: Map<string, SessionContainer>,
+    sessionId: string,
+    id: string,
+  ): void {
+    containers.set(sessionId, {
+      id,
+      sessionId,
+      containerIp: "172.18.0.4",
+      workerUrl: "http://172.18.0.4:9100",
+      status: "running",
+    } as SessionContainer);
+  }
+
+  it("reports true for a container Docker still lists as running", async () => {
+    const { deps, containers } = makeDeps([
+      { id: "c1", sessionId: "sess-1", state: "running", ip: "172.18.0.4" },
+    ]);
+    track(containers, "sess-1", "c1");
+
+    expect(await isTrackedContainerRunning(deps, "sess-1")).toBe(true);
+  });
+
+  it("reports false for a tracked container Docker says has exited", async () => {
+    // The exact shape of a missed `die`: our map still says running, Docker
+    // does not.
+    const { deps, containers } = makeDeps([
+      { id: "c1", sessionId: "sess-1", state: "exited" },
+    ]);
+    track(containers, "sess-1", "c1");
+
+    expect(await isTrackedContainerRunning(deps, "sess-1")).toBe(false);
+  });
+
+  it("reports false when the container is gone entirely (404)", async () => {
+    const { deps, containers } = makeDeps([
+      { id: "c1", sessionId: "sess-1", state: "running", inspectStatus: 404 },
+    ]);
+    track(containers, "sess-1", "c1");
+
+    // A 404 is proof of death, not an ambiguous failure — no breadcrumb needed.
+    expect(await isTrackedContainerRunning(deps, "sess-1")).toBe(false);
+    expect(errSpy).not.toHaveBeenCalled();
+  });
+
+  it("reports undefined — never false — when Docker cannot answer", async () => {
+    // A daemon outage must not be readable as "every session is dead".
+    const { deps, containers } = makeDeps([
+      { id: "c1", sessionId: "sess-1", state: "running", inspectThrows: true },
+    ]);
+    track(containers, "sess-1", "c1");
+
+    expect(await isTrackedContainerRunning(deps, "sess-1")).toBeUndefined();
+    expect(errSpy).toHaveBeenCalled();
+  });
+
+  it("reports undefined for a session with no tracked container", async () => {
+    const { deps } = makeDeps([]);
+
+    expect(await isTrackedContainerRunning(deps, "sess-unknown")).toBeUndefined();
   });
 });

@@ -4,16 +4,59 @@
  * Used by FilePreviewModal (code files, server-persisted via the unified
  * file-review store) and DiffPanel (modified side, client-side via the
  * legacy comment-store). Renders:
- * - Glyph margin `+` affordance on hover
+ * - Glyph margin `+` affordance on the hovered line, which is the only visible
+ *   entry point to the add-comment gesture (suppressed in `readOnly` mode)
+ * - Glyph margin dot on lines that already carry a comment
  * - Comment input ViewZone below a line
  * - Comment card ViewZones for saved comments
  *
  * Accepts a minimal `LineCommentLike` shape so the same widget works with
  * either store. Callers are responsible for filtering to comments that
  * belong on the current editor before passing them in.
+ *
+ * The glyph-margin affordances (`monaco-comment-add-glyph`,
+ * `monaco-comment-glyph`) are styled in `src/client/index.css` — Monaco's DOM
+ * is outside the React tree, so its decoration classes cannot use Tailwind
+ * utilities.
  */
 
 import type * as monaco from "monaco-editor";
+
+/** Glyph-margin hover text. Says what the click does, since the `+` alone doesn't. */
+export const ADD_COMMENT_TOOLTIP = "Click to add a comment on this line";
+
+/** Glyph-margin hover text on a line that already carries a comment. */
+export const HAS_COMMENT_TOOLTIP = "This line has a comment";
+
+/**
+ * Monaco `MouseTargetType` values that count as "the pointer is on this line".
+ * Literals because the monaco import is type-only — the editor instance is
+ * passed in by the caller, so the runtime enum is not in scope.
+ *
+ * GUTTER_GLYPH_MARGIN(2), GUTTER_LINE_NUMBERS(3), GUTTER_LINE_DECORATIONS(4),
+ * CONTENT_TEXT(6), CONTENT_EMPTY(7). The view-zone types (5, 8) are excluded
+ * so hovering a comment card does not mark the line it hangs off.
+ */
+const LINE_HOVER_TYPES: ReadonlySet<number> = new Set([2, 3, 4, 6, 7]);
+
+/**
+ * True when the pointer is in the blank space past the end of the file.
+ *
+ * Monaco still reports the last line's position there, so without this check
+ * hovering empty space 300px below a short file marks its final line, and
+ * clicking it opens a comment input on a line the pointer is nowhere near.
+ * The flag rides on the margin and content-empty detail objects only, hence
+ * the property probing rather than a cast.
+ */
+function isPastEndOfFile(target: monaco.editor.IMouseTarget): boolean {
+  return (
+    "detail" in target &&
+    typeof target.detail === "object" &&
+    target.detail !== null &&
+    "isAfterLines" in target.detail &&
+    target.detail.isAfterLines
+  );
+}
 
 /**
  * Minimal shape of comments the widget consumes. The widget filters to
@@ -90,6 +133,19 @@ export function createCommentWidgetManager(
   const commentZones: ViewZoneEntry[] = [];
   let inputZone: { id: string; domNode: HTMLDivElement } | null = null;
   let decorationCollection: monaco.editor.IEditorDecorationsCollection | null = null;
+  /**
+   * Separate from `decorationCollection` on purpose: the hover `+` changes on
+   * every mouse move, while the saved-comment dots only change on
+   * `setComments()`. Sharing one collection would make each mouse move
+   * re-render every comment decoration.
+   */
+  let hoverCollection: monaco.editor.IEditorDecorationsCollection | null = null;
+  /** Line the pointer is on, whether or not a `+` is drawn there. */
+  let pointerLine: number | null = null;
+  /** Line the `+` is currently drawn on — `null` when nothing is drawn. */
+  let renderedHoverLine: number | null = null;
+  /** Lines that already show a saved-comment glyph, so they skip the `+`. */
+  let commentedLines = new Set<number>();
   /** Ids of comments whose in-card edit form is currently open. */
   const editingIds = new Set<string>();
   let lastOpenState = false;
@@ -123,6 +179,50 @@ export function createCommentWidgetManager(
       decorationCollection.clear();
       decorationCollection = null;
     }
+  }
+
+  /**
+   * Draw the `+` on `pointerLine`, or nothing. A line that already carries a
+   * comment keeps its own glyph instead — two markers cannot both be legible
+   * in a 16px strip. Derived rather than set directly so that `setComments()`
+   * can re-run it: a line that gains a comment while hovered must drop its
+   * `+`, and one that loses its last comment must get it back, neither of
+   * which involves a mouse move.
+   */
+  function renderHoverMarker(): void {
+    const next =
+      pointerLine !== null && !commentedLines.has(pointerLine) ? pointerLine : null;
+    if (next === renderedHoverLine) return;
+    renderedHoverLine = next;
+
+    if (next === null) {
+      hoverCollection?.clear();
+      return;
+    }
+
+    const decoration: monaco.editor.IModelDeltaDecoration = {
+      range: {
+        startLineNumber: next,
+        startColumn: 1,
+        endLineNumber: next,
+        endColumn: 1,
+      },
+      options: {
+        glyphMarginClassName: "monaco-comment-add-glyph",
+        glyphMarginHoverMessage: { value: ADD_COMMENT_TOOLTIP },
+        stickiness: 1, // NeverGrowsWhenTypingAtEdges
+      },
+    };
+    if (hoverCollection) {
+      hoverCollection.set([decoration]);
+    } else {
+      hoverCollection = editor.createDecorationsCollection([decoration]);
+    }
+  }
+
+  function setPointerLine(line: number | null): void {
+    pointerLine = line;
+    renderHoverMarker();
   }
 
   function removeInputZone(): void {
@@ -399,11 +499,35 @@ export function createCommentWidgetManager(
     if (options.readOnly) return;
     if (
       e.target.type === GLYPH_MARGIN_TYPE &&
-      e.target.position
+      e.target.position &&
+      !isPastEndOfFile(e.target)
     ) {
       createInputZone(e.target.position.lineNumber);
     }
   });
+
+  // Hover affordance. Without it the glyph margin is an unmarked 16px strip
+  // and the gesture is undiscoverable. Tracking the whole line (not just the
+  // margin) means the marker appears before the pointer reaches the target.
+  // `readOnly` suppresses the click, so it must suppress the `+` too.
+  const hoverDisposables: monaco.IDisposable[] = [];
+  if (!options.readOnly) {
+    hoverDisposables.push(
+      editor.onMouseMove((e) => {
+        const position = e.target.position;
+        setPointerLine(
+          position && LINE_HOVER_TYPES.has(e.target.type) && !isPastEndOfFile(e.target)
+            ? position.lineNumber
+            : null,
+        );
+      }),
+      editor.onMouseLeave(() => { setPointerLine(null); }),
+      // Wheel scrolling fires no mouse event, and decorations are anchored to
+      // the model — so the marker would ride its old line out from under a
+      // stationary pointer. Drop it; the next mouse move re-derives it.
+      editor.onDidScrollChange(() => { setPointerLine(null); }),
+    );
+  }
 
   // Enable glyph margin
   editor.updateOptions({ glyphMargin: true });
@@ -438,11 +562,19 @@ export function createCommentWidgetManager(
             endColumn: 1,
           },
           options: {
-            glyphMarginClassName: "monaco-comment-glyph",
+            // In readOnly mode the glyph-margin click is suppressed, so the
+            // marker must not offer a pointer cursor it cannot honour.
+            glyphMarginClassName: options.readOnly
+              ? "monaco-comment-glyph monaco-comment-glyph--static"
+              : "monaco-comment-glyph",
+            glyphMarginHoverMessage: { value: HAS_COMMENT_TOOLTIP },
             stickiness: 1, // NeverGrowsWhenTypingAtEdges
           },
         });
       }
+
+      commentedLines = new Set(lineComments.map((c) => c.line));
+      renderHoverMarker();
 
       if (newDecorations.length > 0) {
         decorationCollection = editor.createDecorationsCollection(newDecorations);
@@ -457,7 +589,10 @@ export function createCommentWidgetManager(
     dispose() {
       clearAllZones();
       clearDecorations();
+      setPointerLine(null);
+      hoverCollection = null;
       glyphDisposable.dispose();
+      for (const disposable of hoverDisposables) disposable.dispose();
       // clearAllZones() already emitted `false`; belt-and-braces so a surface
       // can never be left with Send disabled by a torn-down editor.
       editingIds.clear();

@@ -155,12 +155,14 @@ automatic commit and **no** automatic push for it. The auto-commit guidance in
 apply here.
 
 - Nothing sweeps up your edits at the end of a turn. `git add` and `git commit`
-  yourself when a change is worth keeping (a new or corrected `prompts/` recipe);
-  investigation scratch can stay uncommitted, and will.
+  yourself when a change is worth keeping for the rest of *this* investigation;
+  scratch can stay uncommitted, and will.
 - Stay on the current branch — `git checkout -b` / `git switch -c` are blocked.
-- There is no remote, so a commit here does not travel. A finding that must
-  outlive this workspace belongs in an issue, in a `report_shipit_bug` filing, or
-  in the `--shipit-source` fix session that owns the code change.
+- There is no remote, so a commit here does not travel: this history has exactly
+  one reader, this session. A finding that must outlive this workspace belongs in
+  an issue, in a `report_shipit_bug` filing, or in the `--shipit-source` fix
+  session that owns the code change. A new or corrected `prompts/` recipe goes
+  upstream too — see "Adding a recipe" below.
 - `git status` / `git diff` / `git log` are trustworthy here, unlike in an
   ordinary session: the tree is exactly what you left it.
 
@@ -191,9 +193,27 @@ apply here.
 - `prompts/investigate-loop.md` — a container stuck in a SIGTERM/recreate loop.
 - `prompts/diagnose-stuck-session.md` — one misbehaving session container.
 - `prompts/daily-health.md` — a quick host-health snapshot.
+- `prompts/remediate-shipit-bug.md` — turn a diagnosis into a fix session or a
+  filed bug.
+- `prompts/verify-ops-access.md` — check that the privileges above actually work.
 
 These are paste-and-go recipes. The session's chat history doubles as the
 incident log, so investigations are self-documenting for the next time.
+
+### Adding a recipe
+
+These files are **not** authored in this workspace. Each one is a string constant
+in `src/server/orchestrator/templates-ops.ts`, listed in `OPS_TEMPLATE.files` and
+written into every ops workspace at session creation. A `prompts/*.md` you write
+and commit here is therefore read by this session only — the next ops session gets
+a fresh workspace from the template and never sees it.
+
+So when an investigation produces a command sequence worth keeping — and that is
+worth doing — draft it locally, then send it upstream through a `--shipit-source`
+fix session (see "Spawn a ShipIt fix session" above): add the constant to
+`templates-ops.ts`, register it in `OPS_TEMPLATE.files`, and add a line to the
+list above. That is the same channel as any other ShipIt code change, and it gives
+a file shipped to every future ops session a review step before it lands.
 
 ## Why read-only
 

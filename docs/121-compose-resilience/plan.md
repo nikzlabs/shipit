@@ -54,20 +54,103 @@ requirement — stop claiming `running`, stop routing, name the cause. The messa
 says plainly that the container may still be running, because we are reporting a
 failure to *observe*, not an observed failure.
 
-### E — SSE reconnect retries forever, capped at 10s
+### E — A dead worker can look alive forever (fixed)
 
-`container-session-runner.ts:783-797` schedules SSE reconnect with
-exponential backoff capped at 10s, but never gives up. If the worker is
-permanently gone (e.g., container destroyed but runner not yet
-disposed), the orchestrator burns CPU on retries forever and the UI
-keeps the session looking "alive."
+Satisfies requirement 6: *when the session worker is permanently
+unreachable, ShipIt says so; it does not keep presenting the session as
+alive.*
 
-**Fix**: bound retries to N attempts (maybe 12 = ~2 minutes of
-attempts), then emit a `worker_unreachable` server message. The
-SessionHealthStrip already shows the Restart Container button — this
-new event surfaces a banner pointing the user at it. Also: clear stuck
-state (`_isRunning = false`, dispose the agent reference) so the user
-isn't stuck waiting on a turn that will never complete.
+The gap was originally written as "SSE reconnect retries forever". The
+unbounded reconnect turned out to be a symptom, not the defect — most of
+the paths that were meant to make it harmless do work, and one does not.
+
+**What already covers a dead worker.** Both verified in the code, not
+inherited from a doc:
+
+- Docker emits `die` → `container-health.ts` deletes the map entry and
+  emits `container_exited` → `handleContainerExited`
+  (`startup-tasks.ts`) writes a log-ring breadcrumb, finalizes the
+  interrupted turn's chat rows, emits a visible notice and
+  `session_status {running:false}`, and force-disposes the runner. Dispose
+  calls `sse.disconnect()`, so the retry loop stops as a consequence. The
+  worker is PID 1 in the container, so worker death *is* container death
+  and this is the common case.
+- A map entry deleted while the runner survives (a `die` attributed to a
+  replacement incarnation) is caught by the missing-container reconciler
+  in `app-lifecycle.ts`, which re-adopts a live container or force-disposes
+  the runner.
+
+**What did not.** `SessionContainerManager`'s `containers` map is mutated
+only by that `die` handler and by explicit `destroy()`. The Docker event
+stream reconnects on a 5s debounce and goes down entirely on a daemon
+restart, and missed events are never replayed — so a `die` delivered
+during a gap leaves an entry claiming `status: "running"` for a container
+that no longer exists. Nothing re-verified the map after startup, and the
+reconciler's `if (containerManager.get(sid)) continue` skipped exactly
+those sessions. Everything else declines by design: `runReconcileCheck`
+and `verifyRunningState` (`container-session-runner.ts`) deliberately keep
+`running=true` when the worker is unreachable rather than penalize a
+transient failure, and `health_monitor_resumed` only writes a breadcrumb.
+Net effect: the session rendered as alive indefinitely, the parked turn
+never resolved, and the SSE loop retried for the life of the process.
+
+**Fix**: teach the reconciler that a map entry is not proof of life.
+
+- `SseConnectionManager.streamDownSince` — a timestamp latched when the
+  stream goes down and cleared when one opens — is surfaced on the runner
+  as `workerStreamDownSince`. Deliberately a timestamp and *not* the
+  reconnect counter: `onDisconnect` can abort the reconnect schedule
+  entirely (the runner does exactly that once the terminal-only reconnect
+  cap is exhausted), which freezes any attempt count forever — an
+  attempt-count gate would never fire in precisely the sessions that are
+  most thoroughly stuck. It is latched before `onDisconnect` for the same
+  reason.
+- A runner whose stream has been down for `WORKER_UNREACHABLE_MS` (90s)
+  has its container checked against Docker via `isTrackedContainerRunning`.
+  The gate keeps the probe off healthy sessions entirely — an open stream
+  keeps the timestamp at 0 — and off the slow-image-build case the
+  requirements exclude, which happens before the runner has a worker URL at
+  all (`awaitingContainer`, checked first).
+- Docker saying "not running" (or 404) is treated as the missed `die`:
+  `markContainerGone` does what that handler would have — reap the
+  incarnation's egress sidecars, then drop the entry — and the session
+  falls through to the reconciler's existing vanished path. It refuses to
+  act on a container id other than the one that was probed, so a rescue
+  that swaps the container during the inspect cannot have its replacement
+  deleted. Docker *failing to answer* returns `undefined` and is never read
+  as death, so a daemon outage cannot reap the fleet.
+- Docker saying "running" is not the end of it. Requirement 6 is about an
+  unreachable **worker**, so a live container gets one confirming
+  `/health` probe; a worker that does not answer that either is reported
+  the same way, with a notice pointing at Restart rather than "send a
+  message" (a fresh message would reconnect to the same wedged worker).
+  Its map entry is deliberately kept — the container is alive, and
+  forgetting it would have the next activation build a second one beside
+  it.
+
+No new WS message type and no new banner: `session_status
+{running:false}` already clears the client's running state, and what the
+user actually reads is a transcript row. That row is the second half of
+the fix — the vanished path previously wrote only a log-ring entry
+(`session_status.error` is rendered nowhere), so it stopped the spinner
+without saying why and let the next turn's `replaceInProgress` delete the
+interrupted turn's rows. It now calls the same
+`preservePartialTurnOnWorkerLoss` rescue `handleContainerExited` uses, and
+that rescue was corrected in two ways that fix the `die` path too: it
+persists the **canonical** turn snapshot (`persistTurnInProgress`, which
+re-interleaves live-steered user messages and recorded cards) instead of a
+groups-only rebuild that `replaceInProgress` would have silently dropped,
+and it delivers the explanation with `emitNoticePostTurn` — emit **and**
+persist — instead of an append the attached viewer never sees until a
+reload.
+
+**Known and pre-existing, not fixed here**: force-disposing a runner
+mid-turn tears down the proxy without running the turn's post-turn commit,
+so edits can sit uncommitted in the session dir. (`dispatchOnRunner` does
+settle the external `TurnHandle` as dropped, so nothing hangs — but the
+commit is skipped.) This is identical on the Docker-`die` path and wants
+a fix at the dispose boundary that covers both; it is not specific to this
+gap.
 
 ### F — Compose log streamer doesn't restart when service comes back (fixed)
 
@@ -225,9 +308,9 @@ each would cost more mechanism than the requirement it serves.
 
 ## Sequence
 
-D, F, H and I have shipped. E (the SSE reconnect bound) is the remaining gap and
-is tracked in `checklist.md`; it touches `container-session-runner.ts` rather
-than the compose stack.
+D, F, H and I have shipped. E has shipped too; it was independent of the compose
+stack, living in the runner's SSE channel and the container map rather than in
+`service-manager.ts`.
 
 ## Out of scope
 
@@ -249,10 +332,21 @@ than the compose stack.
   (gap H); `stoppedByUser` / `upSettled` and `stopService` (gap I).
 - `src/server/orchestrator/compose-cli.ts` — `ComposeOutputSink`, the output
   stream gap H's silence bound reads (gap G).
-- `src/server/orchestrator/container-session-runner.ts` — SSE retry
-  bound, `worker_unreachable` emission (gap E, not yet built).
+- `src/server/orchestrator/app-lifecycle.ts` — missing-container
+  reconciler; the gap E liveness gate and vanished path.
+- `src/server/orchestrator/container-discovery.ts` —
+  `isTrackedContainerRunning`, the Docker liveness probe.
+- `src/server/orchestrator/session-container.ts` — `markContainerGone`.
+- `src/server/orchestrator/sse-connection-manager.ts` —
+  `streamDownSince`, the "worker stopped answering" signal.
+- `src/server/orchestrator/startup-tasks.ts` —
+  `handleContainerExited` and the shared
+  `preservePartialTurnOnWorkerLoss` rescue.
+- `src/server/orchestrator/chat-card-persistence.ts` —
+  `persistTurnInProgress` / `emitNoticePostTurn`, reused by that rescue.
 
-No client, WS-type or `ServiceStatus` changes: D, F, H and I are all expressed in
-the existing `ServiceStatus` union and the existing `ManagedService.error`
-string, which the services drawer, `shipit service list` and
-`GET /api/sessions/:id/services` already render.
+No client, WS-type or `ServiceStatus` changes anywhere in this feature: D, F, H
+and I are all expressed in the existing `ServiceStatus` union and the existing
+`ManagedService.error` string, which the services drawer, `shipit service list`
+and `GET /api/sessions/:id/services` already render — and E reuses
+`session_status` plus the existing `system_notice`.
