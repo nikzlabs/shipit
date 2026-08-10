@@ -189,7 +189,7 @@ describe("MessageInput", () => {
 
   describe("permission mode selector", () => {
     const claudeWithModes = [{
-      id: "claude", name: "Claude Code", installed: true, authConfigured: true,
+      id: "claude", name: "Claude Code", installed: true, hasRunnableModels: true,
       models: ["claude-sonnet-4"], supportsReview: true,
       supportedPermissionModes: ["auto", "plan", "guarded"] as PermissionMode[],
     }];
@@ -218,7 +218,7 @@ describe("MessageInput", () => {
           onSend={vi.fn()}
           disabled={false}
           onPermissionModeChange={vi.fn()}
-          agents={[{ id: "codex", name: "Codex", installed: true, authConfigured: true, models: ["gpt-5"], supportsReview: false, supportedPermissionModes: [] }]}
+          agents={[{ id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5"], supportsReview: false, supportedPermissionModes: [] }]}
           activeAgentId="codex"
         />,
       );
@@ -234,7 +234,7 @@ describe("MessageInput", () => {
           onSend={vi.fn()}
           disabled={false}
           onAgentChange={vi.fn()}
-          agents={[{ id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-opus-4-8"], supportsReview: true }]}
+          agents={[{ id: "claude", name: "Claude Code", installed: true, hasRunnableModels: true, models: ["claude-opus-4-8"], supportsReview: true }]}
           modelInfo={{ model: "claude-opus-4-8", contextWindowTokens: 200000 }}
         />,
       );
@@ -671,7 +671,7 @@ describe("MessageInput", () => {
       render(
         <MessageInput
           onSend={vi.fn()} disabled={false} skills={skills} activeAgentId="codex"
-          agents={[{ id: "codex", name: "Codex", installed: true, authConfigured: true, models: ["gpt-5"], supportsReview: false, skillInvocationPrefix: "$" }]}
+          agents={[{ id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5"], supportsReview: false, skillInvocationPrefix: "$" }]}
         />,
       );
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
@@ -685,7 +685,7 @@ describe("MessageInput", () => {
       render(
         <MessageInput
           onSend={vi.fn()} disabled={false} skills={skills} activeAgentId="codex"
-          agents={[{ id: "codex", name: "Codex", installed: true, authConfigured: true, models: ["gpt-5"], supportsReview: false, skillInvocationPrefix: "$" }]}
+          agents={[{ id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5"], supportsReview: false, skillInvocationPrefix: "$" }]}
         />,
       );
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;

@@ -50,22 +50,22 @@ describe("AgentRegistry", () => {
   it("checks Claude auth via checkClaudeAuth callback", async () => {
     const registry = createRegistry({ claudeAuth: false });
     await registry.detect();
-    expect(registry.get("claude")!.authConfigured).toBe(false);
+    expect(registry.get("claude")!.hasRunnableModels).toBe(false);
 
     const registry2 = createRegistry({ claudeAuth: true });
     await registry2.detect();
-    expect(registry2.get("claude")!.authConfigured).toBe(true);
+    expect(registry2.get("claude")!.hasRunnableModels).toBe(true);
   });
 
   it("checks Codex auth via OPENAI_API_KEY", async () => {
     const registry = createRegistry({ installedBinaries: ["codex"] });
     await registry.detect();
-    expect(registry.get("codex")!.authConfigured).toBe(false);
+    expect(registry.get("codex")!.hasRunnableModels).toBe(false);
 
     process.env.OPENAI_API_KEY = "sk-test-key";
     const registry2 = createRegistry({ installedBinaries: ["codex"] });
     await registry2.detect();
-    expect(registry2.get("codex")!.authConfigured).toBe(true);
+    expect(registry2.get("codex")!.hasRunnableModels).toBe(true);
   });
 
   it("available() returns only installed + auth-configured agents", async () => {
@@ -84,11 +84,11 @@ describe("AgentRegistry", () => {
   it("refreshAuth() updates auth status for a specific agent", async () => {
     const registry = createRegistry({ installedBinaries: ["codex"] });
     await registry.detect();
-    expect(registry.get("codex")!.authConfigured).toBe(false);
+    expect(registry.get("codex")!.hasRunnableModels).toBe(false);
 
     process.env.OPENAI_API_KEY = "sk-test";
     registry.refreshAuth("codex");
-    expect(registry.get("codex")!.authConfigured).toBe(true);
+    expect(registry.get("codex")!.hasRunnableModels).toBe(true);
   });
 
   it("get() returns undefined for unknown agent", async () => {

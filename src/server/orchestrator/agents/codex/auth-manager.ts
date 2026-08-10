@@ -327,7 +327,7 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
    * Quick check: does `auth.json` exist on disk?
    *
    * Wired into `AgentRegistry.checkCodexAuth` so a Codex agent reports
-   * `authConfigured: true` whenever a ChatGPT login is on disk, regardless
+   * `hasRunnableModels: true` whenever a ChatGPT login is on disk, regardless
    * of whether `OPENAI_API_KEY` is also set.
    */
   checkCredentials(credentialDir?: string): boolean {

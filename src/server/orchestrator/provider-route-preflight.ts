@@ -17,7 +17,7 @@
  *     this is what makes that refusal visible rather than a silent stall.
  *
  * `auth_required` is deliberately NOT a blocking failure here. "You are not
- * signed in" already has its own surface — `authConfigured`, the auth prompts,
+ * signed in" already has its own surface — `hasRunnableModels`, the auth prompts,
  * the Settings account rows — and turning it into a thrown turn error at
  * env-prep would replace a guided sign-in flow with a bare error string.
  * Selection returning `auth_required` keeps today's behavior: fall through to

@@ -55,7 +55,7 @@ function makeDeps(opts: {
   enableSubAgents?: boolean;
   session?: FakeSession | null;
   sessions?: FakeSession[];
-  authConfigured?: boolean;
+  hasRunnableModels?: boolean;
   agentKnown?: boolean;
   subAgentSpawnsThisTurn?: number;
   spawnResult?: SubAgentRunResult;
@@ -134,7 +134,7 @@ function makeDeps(opts: {
         : {
             name: "Codex",
             installed: true,
-            authConfigured: opts.authConfigured ?? true,
+            hasRunnableModels: opts.hasRunnableModels ?? true,
             // docs/252 phase 3 — a real registry entry carries the eligible set,
             // and an UNSET sub-agent default resolves to its first entry rather
             // than leaving the consult selectionless.
@@ -197,7 +197,7 @@ describe("runSubAgent — authorization gates", () => {
   });
 
   it("rejects an unauthed agent (400)", async () => {
-    const { deps } = makeDeps({ authConfigured: false });
+    const { deps } = makeDeps({ hasRunnableModels: false });
     await expectServiceError(runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 }), 400);
   });
 
@@ -957,7 +957,7 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
     const deps = {
       sessionManager: { get: () => ({ id: "s1", agentId: "claude", agentPinned: true }), list: () => [] },
       credentialStore: { getEnableSubAgents: () => true, getAgentSubAgentDefaults: () => ({}) },
-      agentRegistry: { refreshAuth: vi.fn(), get: () => ({ name: "Codex", installed: true, authConfigured: true }) },
+      agentRegistry: { refreshAuth: vi.fn(), get: () => ({ name: "Codex", installed: true, hasRunnableModels: true }) },
       runnerRegistry: { get: () => runner },
       usageManager: { record: vi.fn(), getSessionUsage: () => null, getSessionTokenTotals: () => null },
       chatHistoryManager,
@@ -1078,7 +1078,7 @@ describe("runSubAgent — committing work a consult left after its turn ended (p
     const deps = {
       sessionManager: { get: () => ({ id: "s1", kind: "repo", agentId: "claude", agentPinned: true }), list: () => [] },
       credentialStore: { getEnableSubAgents: () => true, getAgentSubAgentDefaults: () => ({}) },
-      agentRegistry: { refreshAuth: vi.fn(), get: () => ({ name: "Codex", installed: true, authConfigured: true }) },
+      agentRegistry: { refreshAuth: vi.fn(), get: () => ({ name: "Codex", installed: true, hasRunnableModels: true }) },
       runnerRegistry: { get: () => runner },
       usageManager: { record: vi.fn(), getSessionUsage: () => null, getSessionTokenTotals: () => null },
       chatHistoryManager: { replaceInProgress: vi.fn(), append: vi.fn(), updateSubAgentConsultCard: vi.fn(() => true) },

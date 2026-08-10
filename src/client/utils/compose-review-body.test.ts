@@ -6,12 +6,12 @@ import {
   type ReviewComposition,
 } from "./compose-review-body.js";
 
-function agent(id: string, over: Partial<{ installed: boolean; authConfigured: boolean }> = {}) {
+function agent(id: string, over: Partial<{ installed: boolean; hasRunnableModels: boolean }> = {}) {
   return {
     id,
     name: `${id} CLI`,
     installed: over.installed ?? true,
-    authConfigured: over.authConfigured ?? true,
+    hasRunnableModels: over.hasRunnableModels ?? true,
   };
 }
 
@@ -42,7 +42,7 @@ describe("resolveReviewer", () => {
   it("falls back to subagent when the other agent is not auth-configured", () => {
     const r = resolveReviewer({
       enableSubAgents: true,
-      agentList: [agent("claude"), agent("codex", { authConfigured: false })],
+      agentList: [agent("claude"), agent("codex", { hasRunnableModels: false })],
       activeAgentId: "claude",
     });
     expect(r).toEqual({ mode: "subagent", selfName: "Claude" });

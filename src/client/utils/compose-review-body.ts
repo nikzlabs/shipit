@@ -29,7 +29,7 @@ interface RegistryAgent {
   id: string;
   name: string;
   installed: boolean;
-  authConfigured: boolean;
+  hasRunnableModels: boolean;
 }
 
 export type ReviewerMode = "cross-agent" | "subagent";
@@ -64,7 +64,7 @@ export function resolveReviewer(args: {
   const selfName = displayAgentName(args.activeAgentId);
   if (args.enableSubAgents) {
     const other = args.agentList.find(
-      (a) => a.id !== args.activeAgentId && a.installed && a.authConfigured,
+      (a) => a.id !== args.activeAgentId && a.installed && a.hasRunnableModels,
     );
     if (other) {
       return {

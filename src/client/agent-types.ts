@@ -24,7 +24,14 @@ export interface AgentOption {
   id: string;
   name: string;
   installed: boolean;
-  authConfigured: boolean;
+  /**
+   * docs/252 phase 3 (req 8) — this harness has at least one model this install
+   * can run. Called `authConfigured` until the meaning moved: under req 2 a
+   * harness is runnable with no account at its own vendor at all, so an
+   * auth-shaped name described the wrong axis. Mirrors `AgentInfo` on the
+   * server, whose docstring carries the full note.
+   */
+  hasRunnableModels: boolean;
   models: string[];
   /**
    * The credential-filtered join for this install (req 8). Optional for

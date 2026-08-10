@@ -12,7 +12,7 @@ const claude: AgentOption = {
   id: "claude",
   name: "Claude Code",
   installed: true,
-  authConfigured: true,
+  hasRunnableModels: true,
   models: ["claude-opus-4-8"],
   supportsReview: true,
   reasoning: {
@@ -29,7 +29,7 @@ const noReasoningAgent: AgentOption = {
   id: "other",
   name: "Other",
   installed: true,
-  authConfigured: true,
+  hasRunnableModels: true,
   models: ["m"],
   supportsReview: false,
 };

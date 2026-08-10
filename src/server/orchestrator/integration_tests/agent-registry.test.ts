@@ -69,7 +69,7 @@ describe("Integration: Agent registry — list_agents", () => {
 
     const claude = data.agents.find((a: any) => a.id === "claude");
     expect(claude.installed).toBe(true);
-    expect(claude.authConfigured).toBe(true);
+    expect(claude.hasRunnableModels).toBe(true);
 
     const codex = data.agents.find((a: any) => a.id === "codex");
     expect(codex.installed).toBe(true);

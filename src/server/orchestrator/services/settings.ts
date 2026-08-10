@@ -77,7 +77,7 @@ import { revokeSessionProviderCredentials } from "../session-agent-credentials.j
  * the semantics instead of a stand-in's.
  */
 export function computeCanRunTurns(agentRegistry: AgentRegistry): boolean {
-  return agentRegistry.list().some((a) => a.installed && a.authConfigured);
+  return agentRegistry.list().some((a) => a.installed && a.hasRunnableModels);
 }
 
 /**
@@ -161,7 +161,7 @@ export function listAgents(agentRegistry: AgentRegistry): AgentInfo[] {
     id: a.id,
     name: a.name,
     installed: a.installed,
-    authConfigured: a.authConfigured,
+    hasRunnableModels: a.hasRunnableModels,
     models: a.capabilities.models,
     eligibleModels: a.eligibleModels,
     supportsReview: a.capabilities.supportsReview,
@@ -594,12 +594,11 @@ export function setAgent(
   const info = agentRegistry.get(agentId);
   if (!info) throw new ServiceError(400, `Unknown agent: ${agentId}`);
   if (!info.installed) throw new ServiceError(400, `${info.name} CLI is not installed in this environment`);
-  // docs/252 phase 3 — `authConfigured` now means "this harness has at least
-  // one model it can run" (req 8), so the message names that condition rather
-  // than one vendor's environment variable: on an install whose only credential
-  // is a DeepSeek key, "OPENAI_API_KEY is not set" would be both true and beside
-  // the point.
-  if (!info.authConfigured) {
+  // docs/252 phase 3 — the gate is "this harness has at least one model it can
+  // run" (req 8), so the message names that condition rather than one vendor's
+  // environment variable: on an install whose only credential is a DeepSeek key,
+  // "OPENAI_API_KEY is not set" would be both true and beside the point.
+  if (!info.hasRunnableModels) {
     throw new ServiceError(
       400,
       `${info.name} has no models available. Add a credential for a service it can reach in Settings → Services.`,
@@ -657,7 +656,7 @@ export function setAgentEnv(
  * Settings → Services surface uses.
  *
  * `process.env` is still assigned, and has to be: `reservedRouteFor` and
- * `AgentRegistry.isAuthConfigured` probe the environment, so skipping it would
+ * `AgentRegistry.deriveHasRunnableModels` probe the environment, so skipping it would
  * persist the key and simultaneously report the provider as unauthenticated.
  * `app-di` does the same seeding at boot from the stored routes.
  */

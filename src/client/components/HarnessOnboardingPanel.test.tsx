@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 const agentList = [
-  { id: "claude" as const, name: "Claude Code", installed: true, authConfigured: false, models: ["sonnet"], supportsReview: true },
+  { id: "claude" as const, name: "Claude Code", installed: true, hasRunnableModels: false, models: ["sonnet"], supportsReview: true },
 ];
 
 describe("HarnessOnboardingPanel (docs/257 reqs 1, 2, 5, 7)", () => {

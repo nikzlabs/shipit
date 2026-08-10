@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useWebSocket, type UseWebSocketReturn } from "./useWebSocket.js";
-import { getSavedAgentId, getSavedModelId, getSavedModelSelection, getSavedReasoning } from "../utils/local-storage.js";
-import { agentIdForModel } from "../utils/agent-for-model.js";
+import { getSavedModelId, getSavedModelSelection, getSavedReasoning } from "../utils/local-storage.js";
+import { newSessionAgentId } from "../utils/new-session-agent.js";
 import { useUiStore } from "../stores/ui-store.js";
 
 /**
@@ -16,13 +16,9 @@ export function useSessionWebSocket(sessionId: string | undefined): UseWebSocket
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = (import.meta.env.VITE_API_HOST as string | undefined) || window.location.host;
     const model = getSavedModelId();
-    // The model is the single source of truth; derive the agent from it so a
-    // stale `vibe-agent-id` can't override the user's model pick (the server
-    // would otherwise treat the agent as authoritative and rewrite the model —
-    // e.g. opus → gpt-5.5). Fall back to the saved agent only when the model is
-    // unknown or the agent list hasn't loaded yet. See docs/142 (Problem C).
-    const agent =
-      agentIdForModel(model, useUiStore.getState().agentList) ?? getSavedAgentId();
+    // The rule lives in `newSessionAgentId` so the composer's harness selector
+    // displays exactly what this connect creates the session with.
+    const agent = newSessionAgentId(useUiStore.getState().agentList);
     const params = new URLSearchParams({ agent });
     if (model) params.set("model", model);
     // docs/252 — the seed's service and billing mode ride ALONGSIDE the model id

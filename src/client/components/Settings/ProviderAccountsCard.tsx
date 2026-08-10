@@ -464,7 +464,7 @@ export function ProviderAccountsCard({
   };
 
   const installed = agent?.installed ?? true;
-  const authed = agent?.authConfigured ?? false;
+  const authed = agent?.hasRunnableModels ?? false;
 
   /**
    * docs/150 — the provider runs ONE login process, so only one row can be

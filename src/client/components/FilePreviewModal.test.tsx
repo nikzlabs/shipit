@@ -32,7 +32,7 @@ const claudeOption: AgentOption = {
   id: "claude",
   name: "Claude Code",
   installed: true,
-  authConfigured: true,
+  hasRunnableModels: true,
   models: ["sonnet"],
   supportsReview: true,
 };
@@ -40,7 +40,7 @@ const codexOption: AgentOption = {
   id: "codex",
   name: "Codex",
   installed: true,
-  authConfigured: true,
+  hasRunnableModels: true,
   models: ["gpt-5.4"],
   supportsReview: false,
 };

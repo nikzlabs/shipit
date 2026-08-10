@@ -1262,15 +1262,15 @@ describe("markProviderAccountUnauthenticated", () => {
       const providerAccountManager = new ProviderAccountManager({ credentialsDir: tmp, credentialStore });
       const account = providerAccountManager.create("anthropic", "Work");
       providerAccountManager.setAccountStatus("anthropic", account.id, "ready");
-      let authConfigured = true;
-      const refreshAuth = vi.fn(() => { authConfigured = false; });
+      let hasRunnableModels = true;
+      const refreshAuth = vi.fn(() => { hasRunnableModels = false; });
       const agentRegistry = {
         refreshAuth,
         list: () => [{
           id: "claude",
           name: "Claude Code",
           installed: true,
-          authConfigured,
+          hasRunnableModels,
           capabilities: {
             models: ["sonnet"],
             supportsReview: true,
@@ -1297,7 +1297,7 @@ describe("markProviderAccountUnauthenticated", () => {
       expect(events.find((e) => e.event === "provider_accounts")?.data.accounts)
         .toEqual(expect.arrayContaining([expect.objectContaining({ id: account.id, status: "auth_failed" })]));
       expect(events.find((e) => e.event === "agent_list")?.data.agents)
-        .toEqual(expect.arrayContaining([expect.objectContaining({ id: "claude", authConfigured: false })]));
+        .toEqual(expect.arrayContaining([expect.objectContaining({ id: "claude", hasRunnableModels: false })]));
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -1306,15 +1306,15 @@ describe("markProviderAccountUnauthenticated", () => {
 
 describe("markProviderAccountReauthenticated", () => {
   function buildRegistry(initialAuth: boolean): { agentRegistry: AgentRegistry; refreshAuth: ReturnType<typeof vi.fn>; getAuth: () => boolean } {
-    let authConfigured = initialAuth;
-    const refreshAuth = vi.fn(() => { authConfigured = true; });
+    let hasRunnableModels = initialAuth;
+    const refreshAuth = vi.fn(() => { hasRunnableModels = true; });
     const agentRegistry = {
       refreshAuth,
       list: () => [{
         id: "claude",
         name: "Claude Code",
         installed: true,
-        authConfigured,
+        hasRunnableModels,
         capabilities: {
           models: ["sonnet"],
           supportsReview: true,
@@ -1325,7 +1325,7 @@ describe("markProviderAccountReauthenticated", () => {
         },
       }],
     } as unknown as AgentRegistry;
-    return { agentRegistry, refreshAuth, getAuth: () => authConfigured };
+    return { agentRegistry, refreshAuth, getAuth: () => hasRunnableModels };
   }
 
   it("flips a auth_failed account back to ready, refreshes registry auth, and broadcasts the agent list", () => {
@@ -1352,7 +1352,7 @@ describe("markProviderAccountReauthenticated", () => {
       expect(events.find((e) => e.event === "provider_accounts")?.data.accounts)
         .toEqual(expect.arrayContaining([expect.objectContaining({ id: account.id, status: "ready" })]));
       expect(events.find((e) => e.event === "agent_list")?.data.agents)
-        .toEqual(expect.arrayContaining([expect.objectContaining({ id: "claude", authConfigured: true })]));
+        .toEqual(expect.arrayContaining([expect.objectContaining({ id: "claude", hasRunnableModels: true })]));
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

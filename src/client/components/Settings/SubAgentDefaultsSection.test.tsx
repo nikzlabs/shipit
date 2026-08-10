@@ -19,7 +19,7 @@ const agent: AgentOption = {
   id: "claude",
   name: "Claude Code",
   installed: true,
-  authConfigured: true,
+  hasRunnableModels: true,
   models: ["anthropic/claude-opus-5"],
   eligibleModels: [
     {

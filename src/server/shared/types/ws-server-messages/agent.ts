@@ -219,7 +219,7 @@ export interface WsAgentListMessage {
     id: AgentId;
     name: string;
     installed: boolean;
-    authConfigured: boolean;
+    hasRunnableModels: boolean;
     models: string[];
     /**
      * docs/252 phase 3 (req 8) — the models this install can run on this

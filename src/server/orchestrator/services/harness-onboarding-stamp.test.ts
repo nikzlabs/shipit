@@ -32,13 +32,13 @@ afterEach(() => {
   }
 });
 
-function registry(authConfigured: boolean): AgentRegistry {
+function registry(hasRunnableModels: boolean): AgentRegistry {
   return {
     list: () => [{
       id: "claude",
       name: "Claude Code",
       installed: true,
-      authConfigured,
+      hasRunnableModels,
       capabilities: {
         models: ["sonnet"],
         supportsReview: true,

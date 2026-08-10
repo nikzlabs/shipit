@@ -21,7 +21,7 @@ import { computeCanRunTurns, buildAgentListPayload } from "./settings.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 
 function registry(
-  agents: { id: string; installed: boolean; authConfigured: boolean }[],
+  agents: { id: string; installed: boolean; hasRunnableModels: boolean }[],
 ): AgentRegistry {
   return {
     list: () =>
@@ -29,7 +29,7 @@ function registry(
         id: a.id,
         name: a.id,
         installed: a.installed,
-        authConfigured: a.authConfigured,
+        hasRunnableModels: a.hasRunnableModels,
         capabilities: {
           models: ["sonnet"],
           supportsReview: true,
@@ -45,15 +45,15 @@ function registry(
 describe("computeCanRunTurns (docs/257 req 8)", () => {
   it("is false when no agent has a credential", () => {
     expect(computeCanRunTurns(registry([
-      { id: "claude", installed: true, authConfigured: false },
-      { id: "codex", installed: true, authConfigured: false },
+      { id: "claude", installed: true, hasRunnableModels: false },
+      { id: "codex", installed: true, hasRunnableModels: false },
     ]))).toBe(false);
   });
 
   it("is true once one installed agent has a credential", () => {
     expect(computeCanRunTurns(registry([
-      { id: "claude", installed: true, authConfigured: true },
-      { id: "codex", installed: true, authConfigured: false },
+      { id: "claude", installed: true, hasRunnableModels: true },
+      { id: "codex", installed: true, hasRunnableModels: false },
     ]))).toBe(true);
   });
 
@@ -61,7 +61,7 @@ describe("computeCanRunTurns (docs/257 req 8)", () => {
     // The pre-docs/252 shape of the thing req 8 is really about: storing a
     // credential has not finished anything if nothing can run on it.
     expect(computeCanRunTurns(registry([
-      { id: "codex", installed: false, authConfigured: true },
+      { id: "codex", installed: false, hasRunnableModels: true },
     ]))).toBe(false);
   });
 
@@ -73,11 +73,11 @@ describe("computeCanRunTurns (docs/257 req 8)", () => {
 describe("buildAgentListPayload", () => {
   it("carries the agent list and the runnable signal together", () => {
     const payload = buildAgentListPayload(registry([
-      { id: "claude", installed: true, authConfigured: true },
+      { id: "claude", installed: true, hasRunnableModels: true },
     ]), undefined);
     expect(payload.canRunTurns).toBe(true);
     expect(payload.agents).toEqual([
-      expect.objectContaining({ id: "claude", installed: true, authConfigured: true }),
+      expect.objectContaining({ id: "claude", installed: true, hasRunnableModels: true }),
     ]);
   });
 
@@ -85,7 +85,7 @@ describe("buildAgentListPayload", () => {
     // The state a fresh install is in: agents are registered and installed,
     // nothing is connected. The composer must be able to tell these apart.
     const payload = buildAgentListPayload(registry([
-      { id: "claude", installed: true, authConfigured: false },
+      { id: "claude", installed: true, hasRunnableModels: false },
     ]), undefined);
     expect(payload.canRunTurns).toBe(false);
     expect(payload.agents).toHaveLength(1);

@@ -20,7 +20,7 @@ describe("isTurnBlockingFailure", () => {
     expect(isTurnBlockingFailure({ reason: "all_exhausted", earliestResetAt: null })).toBe(true);
   });
 
-  // Not-signed-in already has a guided surface (authConfigured, the Settings
+  // Not-signed-in already has a guided surface (hasRunnableModels, the Settings
   // account rows). Turning it into a thrown turn error would replace that flow
   // with a dead end.
   it("does not block the turn when the user simply has not connected an account", () => {

@@ -121,7 +121,7 @@ export interface AgentAuthManager extends EventEmitter {
   /**
    * Whether credentials are present (file on disk OR an env var). The
    * matching `AgentRegistry.refreshAuth` consults this to flip the agent's
-   * `authConfigured` flag. Pass a `credentialDir` to check a specific
+   * `hasRunnableModels` flag. Pass a `credentialDir` to check a specific
    * provider account's credentials instead of the singleton path.
    */
   isConfigured(opts?: AgentAuthScopeOptions): boolean;

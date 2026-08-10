@@ -930,6 +930,11 @@ export function MessageInput({
                   activeAgentId={activeAgentId}
                   onAgentChange={onAgentChange}
                   hasActiveSession={hasActiveSession}
+                  // No session bound to this composer at all (Quick Capture, or
+                  // the new-session route before its warm session is claimed),
+                  // so the picker previews what the next session inherits rather
+                  // than describing whichever session is active behind it.
+                  seedFromHistory={!sessionId}
                   disabled={disabled || isLoading}
                   compactTrigger={isMobile}
                 />
@@ -943,6 +948,7 @@ export function MessageInput({
                   onModelChange={onModelChange}
                   modelInfo={modelInfo ?? null}
                   hasActiveSession={hasActiveSession}
+                  seedFromHistory={!sessionId}
                   disabled={disabled || isLoading}
                 />
               </div>

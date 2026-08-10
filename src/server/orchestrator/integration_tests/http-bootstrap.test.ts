@@ -214,6 +214,6 @@ describe("Integration: GET /api/bootstrap", () => {
     expect(claude).toBeDefined();
     expect(claude).toHaveProperty("name");
     expect(claude).toHaveProperty("installed");
-    expect(claude).toHaveProperty("authConfigured");
+    expect(claude).toHaveProperty("hasRunnableModels");
   });
 });

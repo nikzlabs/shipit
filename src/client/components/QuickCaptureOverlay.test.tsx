@@ -84,7 +84,7 @@ describe("QuickCaptureOverlay", () => {
         id: "claude",
         name: "Claude",
         installed: true,
-        authConfigured: true,
+        hasRunnableModels: true,
         models: [],
         supportsReview: true,
       }],
@@ -286,8 +286,8 @@ describe("QuickCaptureOverlay", () => {
     localStorage.setItem("vibe-model-id", "claude-opus-4-8");
     useUiStore.setState({
       agentList: [
-        { id: "claude", name: "Claude", installed: true, authConfigured: true, models: ["sonnet", "haiku", "claude-opus-4-8"], supportsReview: true },
-        { id: "codex", name: "Codex", installed: true, authConfigured: true, models: ["gpt-5.5", "gpt-5.3-codex"], supportsReview: true },
+        { id: "claude", name: "Claude", installed: true, hasRunnableModels: true, models: ["sonnet", "haiku", "claude-opus-4-8"], supportsReview: true },
+        { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5.5", "gpt-5.3-codex"], supportsReview: true },
       ],
     });
     useRepoStore.setState({

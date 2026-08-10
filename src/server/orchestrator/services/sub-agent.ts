@@ -234,7 +234,7 @@ export async function runSubAgent(
     throw rejectSpawn(sessionId, subAgentId, 400, "not_installed",
       `${info.name} is not installed in this deployment.`);
   }
-  if (!info.authConfigured) {
+  if (!info.hasRunnableModels) {
     throw rejectSpawn(sessionId, subAgentId, 400, "not_signed_in",
       `${info.name} is not signed in. Connect it in Settings before spawning it.`);
   }

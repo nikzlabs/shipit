@@ -33,7 +33,7 @@ function registry(eligibleModels: EligibleModel[]): AgentRegistry {
     id: "claude",
     name: "Claude Code",
     installed: true,
-    authConfigured: eligibleModels.length > 0,
+    hasRunnableModels: eligibleModels.length > 0,
     eligibleModels,
     capabilities: {
       models: [...new Set(eligibleModels.map((m) => m.modelId))],
@@ -45,7 +45,7 @@ function registry(eligibleModels: EligibleModel[]): AgentRegistry {
   return {
     get: (id: string) => (id === "claude" ? info : undefined),
     list: () => [info],
-    available: () => (info.authConfigured ? [info] : []),
+    available: () => (info.hasRunnableModels ? [info] : []),
   } as unknown as AgentRegistry;
 }
 
@@ -121,7 +121,7 @@ describe("sub-agent defaults — model selection", () => {
       id: "claude",
       name: "Claude Code",
       installed: true,
-      authConfigured: true,
+      hasRunnableModels: true,
       eligibleModels: [],
       capabilities: { models: ["claude-opus-5"], supportedPermissionModes: ["auto"] },
     };
