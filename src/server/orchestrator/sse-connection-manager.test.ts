@@ -49,18 +49,20 @@ async function deadPort(): Promise<number> {
 function makeManager(
   getUrl: () => string,
   onDisconnect: (attempt: number) => boolean = () => true,
-): { manager: SseConnectionManager; disconnects: number[] } {
+): { manager: SseConnectionManager; disconnects: number[]; opens: () => number } {
   const disconnects: number[] = [];
+  let openCount = 0;
   const manager = new SseConnectionManager({
     logLabel: "test",
     getWorkerUrl: getUrl,
     workerReady: async () => undefined,
     onEvent: () => undefined,
+    onOpen: () => { openCount++; },
     onDisconnect: (attempt) => { disconnects.push(attempt); return onDisconnect(attempt); },
     isDisposed: () => false,
     resourcesStarted: () => true,
   });
-  return { manager, disconnects };
+  return { manager, disconnects, opens: () => openCount };
 }
 
 /** Poll until `predicate` holds or the deadline passes. */
@@ -125,7 +127,7 @@ describe("SseConnectionManager.streamDownSince", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const port = await deadPort();
     let url = `http://127.0.0.1:${port}`;
-    const { manager, disconnects } = makeManager(() => url);
+    const { manager, disconnects, opens } = makeManager(() => url);
     managers.push(manager);
 
     void manager.connect();
@@ -135,7 +137,10 @@ describe("SseConnectionManager.streamDownSince", () => {
     // Point the manager at a live worker; the next scheduled attempt succeeds.
     const server = await startServer();
     url = server.url;
-    await until(() => manager.isConnected);
+    // Wait on `onOpen`, NOT on `isConnected`: the handle is assigned when the
+    // request is issued, so `isConnected` flips one tick before the response
+    // opens and the reset runs.
+    await until(() => opens() >= 1);
 
     // This is what keeps a long-lived healthy session away from the
     // reconciler's threshold.
