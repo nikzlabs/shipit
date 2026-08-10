@@ -490,15 +490,41 @@ export async function spawnChildSession(
       ...(fresh.billingMode ? { billingMode: fresh.billingMode } : {}),
     };
   })();
+  // Precedence: the resolved `agentOverride` (an explicit `--agent`, or the
+  // agent derived from `--model` above) wins; otherwise inherit the parent's
+  // pinned `agentId` so a child spawned from a Codex session stays on Codex (the
+  // orchestrator's `defaultAgentId` is global and may point at a provider the
+  // user hasn't authenticated). Fall back to `defaultAgentId` only when the
+  // parent hasn't been pinned yet (fresh parent, no turn taken). Resolved BEFORE
+  // graduation because the row written there is pinned to it, and because the
+  // reasoning level below is only valid relative to it.
+  const childAgentId: AgentId = agentOverride ?? parent.agentId ?? defaultAgentId;
+  // docs/217 — the reasoning level is the third half of the parent's selection
+  // (Control B), and it inherits for the same reason the harness and the model
+  // do: a fan-out the parent set to `high` must not quietly drop to the harness
+  // default, which is what an unset child row means at turn time
+  // (`getSelectedReasoning` reads the row and nothing else — there is no global
+  // to fall back to). Validated against the CHILD's harness, not the parent's:
+  // an explicit `--agent` / `--model` can move the child to a backend whose
+  // levels differ, and an unlisted value would reach the CLI as a bad flag.
+  // Dropped rather than remapped when it doesn't fit — the same rule the
+  // `?reasoning=` connect param and the quick-capture path already follow.
+  const inheritedReasoning = ((): string | undefined => {
+    const level = parent.reasoningEffort;
+    if (!level) return undefined;
+    const options = getAgentCapabilities(childAgentId)?.reasoning?.options;
+    return options?.some((o) => o.value === level) ? level : undefined;
+  })();
   graduateSession(graduationDeps, {
     sessionId: newSessionId,
     userText: trimmedPrompt,
-    agentId: agentOverride ?? parent.agentId ?? defaultAgentId,
+    agentId: childAgentId,
     skipBranchRename: true,
     ...(explicitTitle ? { explicitTitle } : {}),
     ...(inherited.model ? { model: inherited.model } : {}),
     ...(inherited.serviceId ? { serviceId: inherited.serviceId } : {}),
     ...(inherited.billingMode ? { billingMode: inherited.billingMode } : {}),
+    ...(inheritedReasoning ? { reasoning: inheritedReasoning } : {}),
     ...(opts.detached ? {} : { parentSessionId, rootSessionId }),
     ...(opts.spawnedByTurn ? { spawnedByTurn: opts.spawnedByTurn } : {}),
   });
@@ -509,15 +535,9 @@ export async function spawnChildSession(
   // Enqueue the first prompt. `getOrCreate` on the runner registry creates a
   // container-backed runner (in production) or a SessionRunner (in tests);
   // `runner.dispatch` then either starts the turn directly (when
-  // SystemTurnDeps are wired) or enqueues for the next agent start.
-  //
-  // Precedence: the resolved `agentOverride` (an explicit `--agent`, or the
-  // agent derived from `--model` above) wins; otherwise inherit the parent's
-  // pinned `agentId` so a child spawned from a Codex session stays on Codex (the
-  // orchestrator's `defaultAgentId` is global and may point at a provider the
-  // user hasn't authenticated). Fall back to `defaultAgentId` only when the
-  // parent hasn't been pinned yet (fresh parent, no turn taken).
-  const childAgentId: AgentId = agentOverride ?? parent.agentId ?? defaultAgentId;
+  // SystemTurnDeps are wired) or enqueues for the next agent start. `childAgentId`
+  // is the one resolved above graduation — the same value the child's row was
+  // pinned to.
   const runner = runnerRegistry.getOrCreate(newSessionId, newWorkspaceDir, childAgentId);
 
   // docs/149 — bring the child to full env-prep parity with the WS path

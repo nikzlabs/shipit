@@ -750,6 +750,12 @@ export class FakeClaudeProcess extends EventEmitter {
   /** docs/149 — captures full AgentRunParams the orchestrator handed to `run()`. */
   public lastSettingsPath: string | undefined;
   public lastModel: string | undefined;
+  /**
+   * docs/217 — the reasoning level this spawn was shaped with. Captured
+   * alongside the model because the two are separate halves of one selection:
+   * a child session can inherit the right model at the wrong depth.
+   */
+  public lastReasoningEffort: string | undefined;
   public lastMcpServers: unknown[] | undefined;
   public lastAutoCreatePr: boolean | undefined;
   /**
@@ -810,6 +816,7 @@ export class FakeClaudeProcess extends EventEmitter {
     useStreaming?: boolean;
     settingsPath?: string;
     model?: string;
+    reasoningEffort?: string;
     mcpServers?: unknown[];
     autoCreatePr?: boolean;
     compact?: boolean;
@@ -826,6 +833,7 @@ export class FakeClaudeProcess extends EventEmitter {
     this.lastUseStreaming = params.useStreaming === true;
     this.lastSettingsPath = params.settingsPath;
     this.lastModel = params.model;
+    this.lastReasoningEffort = params.reasoningEffort;
     this.lastMcpServers = params.mcpServers;
     this.lastAutoCreatePr = params.autoCreatePr;
     this.lastServiceRouting = params.serviceRouting;

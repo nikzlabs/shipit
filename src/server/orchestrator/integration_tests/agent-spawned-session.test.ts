@@ -950,6 +950,55 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(cp.lastModel).toBe("claude-opus-4-7");
   });
 
+  it("docs/217 — spawned session inherits the parent's reasoning level", { timeout: 15_000 }, async () => {
+    // The level has to reach the CHILD'S FIRST TURN, not just its row: a child
+    // never connects a WebSocket, so the `?reasoning=` connect param that seeds
+    // a browser-driven session cannot cover this path. An unset row means the
+    // harness default, so "not inherited" is silently quieter thinking.
+    const parentId = await createParentSession();
+    sessionManager.setModel(parentId, "claude-opus-4-7");
+    sessionManager.setReasoning(parentId, "high");
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Inherit reasoning" },
+    });
+    expect(res.statusCode).toBe(200);
+    const childId = (res.json() as { sessionId: string }).sessionId;
+    expect(sessionManager.get(childId)?.reasoningEffort).toBe("high");
+
+    const deadline = Date.now() + 3000;
+    while (createdClaudes.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const cp = createdClaudes[createdClaudes.length - 1];
+    const runDeadline = Date.now() + 3000;
+    while (!cp.runCalled && Date.now() < runDeadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(cp.lastReasoningEffort).toBe("high");
+  });
+
+  it("docs/217 — a level the child's harness doesn't offer is dropped, not forwarded", { timeout: 15_000 }, async () => {
+    // `max` is a Claude level; Codex's set stops at `xhigh`. The child is routed
+    // to Codex by the model, so forwarding the parent's level verbatim would put
+    // an unknown value on the CLI's config flag. Dropping falls back to the
+    // harness default, which is the same rule the connect param follows.
+    const parentId = await createParentSession();
+    sessionManager.setReasoning(parentId, "max");
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Cross-harness reasoning", model: "gpt-5.5" },
+    });
+    expect(res.statusCode).toBe(200);
+    const childId = (res.json() as { sessionId: string }).sessionId;
+    expect(sessionManager.get(childId)?.agentId).toBe("codex");
+    expect(sessionManager.get(childId)?.reasoningEffort).toBeUndefined();
+  });
+
   it("POST /spawn rejects an unknown agent id with 400", { timeout: 15_000 }, async () => {
     const parentId = await createParentSession();
     const res = await app.inject({

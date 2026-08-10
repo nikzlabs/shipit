@@ -186,6 +186,24 @@ the connect-param validation in `route-registry.ts`. Key files:
 `api-routes-session-crud.ts`, `services/headless-sessions.ts`,
 `services/graduate-session.ts`.
 
+### Control B across a child spawn
+
+An agent-spawned child session (`shipit session create`, docs/117) inherits the
+parent's level along with its harness and its model selection, in
+`services/child-sessions.ts`. It is the same gap the quick-capture path has, for
+the same reason: a child's first turn is dispatched server-side and the child
+never connects a WebSocket, so the `?reasoning=` connect param cannot reach it
+and an unset row means the harness default — a fan-out the user set to `high`
+silently dropped to it.
+
+The level is validated against the **child's** harness, not the parent's:
+`--agent` / `--model` can route the child to a backend whose option set differs
+(Claude's `max` has no Codex equivalent), and an unlisted value would reach the
+CLI as a bad flag. A level that doesn't fit is dropped, not remapped — the same
+rule the connect param and the quick-capture path follow. There is no
+`--reasoning` spawn flag: the parent's level is the only source. Guarded in
+`integration_tests/agent-spawned-session.test.ts`.
+
 ## Notes / known limitation
 
 Reasoning is a spawn-time argument. Codex (one app-server per turn) and the non-streaming Claude path
