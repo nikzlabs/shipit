@@ -53,6 +53,9 @@ docs/240 and is kept as the option analysis of record):
   `killStaleContainers()`, which force-removes every `shipit-parent-session`
   container before `compose up`, so the next orchestrator rebuilds the stack
   whether or not it survived — only the agent container is adopted. Guards:
+  `integration_tests/container-lifecycle.test.ts` → *leaves containers running
+  when the app shuts down* (which asserted the exact opposite until this fix,
+  and is why the bug had a green build for a year),
   `container-session-runner.test.ts` → *dispose({ preserveAgent })*,
   `shutdown-manager.test.ts`,
   `session-container.test.ts` → *dispose*. docs/212 asserted the correct
