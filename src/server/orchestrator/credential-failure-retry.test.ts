@@ -164,6 +164,40 @@ describe("same-turn quota failover (docs/252 phase 5, req 12)", () => {
     runner.dispose({ force: true });
   });
 
+  it("captures quota ownership after environment preparation moves the route", async () => {
+    const oldSession = {
+      billingMode: "sub",
+      providerRouteBillingMode: "sub",
+      serviceId: "anthropic",
+      providerRouteKind: "account",
+      providerRouteId: "acct-old",
+    } as Partial<SessionInfo>;
+    const { deps, runner } = harness(oldSession);
+    const getSession = deps.listenerDeps.sessionManager.get as ReturnType<typeof vi.fn>;
+    deps.prepareAgentEnv = vi.fn(async () => {
+      getSession.mockReturnValue({ id: "s1", agentId: "claude", ...oldSession, providerRouteId: "acct-new" });
+    });
+    const recordAgentRateLimits = vi.fn();
+    deps.listenerDeps.recordAgentRateLimits = recordAgentRateLimits;
+    const first = makeFakeAgent();
+
+    await start(runner, deps, first);
+    first.emit("event", {
+      type: "agent_rate_limits",
+      session: { usedPct: 5, resetAt: "2026-09-01T00:00:00.000Z" },
+      weekly: { usedPct: 7, resetAt: "2026-09-07T00:00:00.000Z" },
+    });
+
+    expect(recordAgentRateLimits).toHaveBeenCalledWith(
+      undefined,
+      expect.objectContaining({ usedPct: 5 }),
+      expect.objectContaining({ usedPct: 7 }),
+      "s1",
+      "acct-new",
+    );
+    runner.dispose({ force: true });
+  });
+
   it("fails over from an adapter-level error too, and benches the credential", async () => {
     // The Codex shape: a rejected `turn/start` never produces an `agent_result`.
     const session = { billingMode: "sub", providerRouteBillingMode: "sub", serviceId: "openai" };
@@ -176,7 +210,11 @@ describe("same-turn quota failover (docs/252 phase 5, req 12)", () => {
 
     // Stamped here rather than in `agent-listeners`, which only stamps on
     // `agent_result` — without it the retry re-selects the spent credential.
-    expect(markSessionAccountExhausted).toHaveBeenCalledWith("s1", Date.parse("2026-09-01T00:00:00.000Z"));
+    expect(markSessionAccountExhausted).toHaveBeenCalledWith(
+      "s1",
+      Date.parse("2026-09-01T00:00:00.000Z"),
+      undefined,
+    );
     runner.dispose({ force: true });
   });
 

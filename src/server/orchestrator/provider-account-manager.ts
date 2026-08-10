@@ -19,6 +19,7 @@ import {
   nativeServiceForHarness,
 } from "../shared/catalogue/index.js";
 import { credentialModeKey, orderCredentialRoutes } from "../shared/types/domain-types/credential-route.js";
+import { probeNestedString } from "./agents/agent-auth-base.js";
 
 /**
  * The billing mode an account-delivered credential always has.
@@ -316,6 +317,36 @@ export class ProviderAccountManager {
     // the invariant. Idempotent, so the second call is free.
     this.backfillPriority();
     this.removeLegacyAliases();
+  }
+
+  /**
+   * Quarantine Claude rows whose account roots contain the exact same OAuth
+   * access token. Two distinct connected accounts cannot legitimately share
+   * one bearer; this means a stale session subtree was written back to the
+   * wrong account root. There is no safe way to infer which label owns the
+   * token, so every row in the duplicate group must be reconnected.
+   *
+   * Returns opaque route-id groups for diagnostics. Token material never
+   * leaves this method and is never logged.
+   */
+  quarantineDuplicateClaudeCredentials(): string[][] {
+    const byToken = new Map<string, string[]>();
+    for (const account of this.list("anthropic")) {
+      const root = this.resolveCredentialRoot("claude", account.id);
+      const token = LEGACY_CREDENTIAL_MARKERS.claude
+        .map((rel) => readClaudeAccessToken(path.join(root, rel)))
+        .find((candidate): candidate is string => candidate !== null);
+      if (!token) continue;
+      const ids = byToken.get(token) ?? [];
+      ids.push(account.id);
+      byToken.set(token, ids);
+    }
+
+    const duplicates = [...byToken.values()].filter((ids) => ids.length > 1);
+    for (const ids of duplicates) {
+      for (const id of ids) this.setAccountStatus("anthropic", id, "auth_failed");
+    }
+    return duplicates;
   }
 
   /**
@@ -1362,6 +1393,20 @@ function exhaustedUntil(
   }
   if (resets.length === 0) return null;
   return Math.min(...resets);
+}
+
+function readClaudeAccessToken(file: string): string | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object") return null;
+    return probeNestedString(
+      parsed as Record<string, unknown>,
+      ["accessToken", "access_token"],
+      "claudeAiOauth",
+    );
+  } catch {
+    return null;
+  }
 }
 
 

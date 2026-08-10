@@ -484,6 +484,12 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     credentialStore,
   });
   providerAccountManager.migrateDefaultAccounts();
+  const duplicateClaudeCredentials = providerAccountManager.quarantineDuplicateClaudeCredentials();
+  for (const ids of duplicateClaudeCredentials) {
+    console.error(
+      `[provider-accounts] quarantined Claude accounts with duplicated OAuth credentials: ${ids.join(", ")}; reconnect each account`,
+    );
+  }
 
   // ---- Auth manager ----
   const authManager = deps.authManager ?? new AuthManager();

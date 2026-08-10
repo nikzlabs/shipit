@@ -71,6 +71,45 @@ describe("ProviderAccountManager", () => {
     else process.env.SHIPIT_SESSION_ID = savedSessionId;
   });
 
+  it("quarantines distinct Claude rows that contain the same OAuth token", () => {
+    const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+    const first = mgr.create("anthropic", "Claude 1");
+    const second = mgr.create("anthropic", "Claude 2");
+    const writeToken = (id: string, token: string, filename = ".credentials.json") => {
+      const dir = path.join(mgr.resolveCredentialRoot("claude", id), ".claude");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, filename),
+        JSON.stringify({ claudeAiOauth: { accessToken: token } }),
+      );
+      mgr.setAccountStatus("anthropic", id, "ready");
+    };
+    writeToken(first.id, "shared-token");
+    writeToken(second.id, "shared-token", "auth.json");
+
+    expect(mgr.quarantineDuplicateClaudeCredentials()).toEqual([[first.id, second.id]]);
+    expect(mgr.get("anthropic", first.id)?.status).toBe("auth_failed");
+    expect(mgr.get("anthropic", second.id)?.status).toBe("auth_failed");
+  });
+
+  it("does not quarantine independent Claude account tokens", () => {
+    const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+    const first = mgr.create("anthropic", "Claude 1");
+    const second = mgr.create("anthropic", "Claude 2");
+    for (const [id, token] of [[first.id, "token-a"], [second.id, "token-b"]]) {
+      const dir = path.join(mgr.resolveCredentialRoot("claude", id), ".claude");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, ".credentials.json"),
+        JSON.stringify({ claudeAiOauth: { accessToken: token } }),
+      );
+      mgr.setAccountStatus("anthropic", id, "ready");
+    }
+
+    expect(mgr.quarantineDuplicateClaudeCredentials()).toEqual([]);
+    expect(mgr.list("anthropic").map((account) => account.status)).toEqual(["ready", "ready"]);
+  });
+
   it("migrates legacy Claude credentials into a primary default account", () => {
     fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
     fs.writeFileSync(path.join(root, ".claude", ".credentials.json"), "{}");

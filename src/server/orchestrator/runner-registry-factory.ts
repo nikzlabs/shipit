@@ -476,10 +476,11 @@ export function createRunnerRegistry(
         // docs/149 — write back any CLI-rotated OAuth token after a system
         // turn lands. Mirrors the WS-path `syncTokenBackAfterTurn` discipline.
         ...(credentialsDir && credentialStore ? {
-          finalizeAgentEnv: (sessionId, agentId) => {
+          finalizeAgentEnv: (sessionId, agentId, capturedRoute) => {
             finalizeSessionAgentEnvironment(runner, {
               sessionId,
               agentId,
+              ...(capturedRoute ? { capturedRoute } : {}),
               deps: { credentialsDir, credentialStore, sessionManager },
             });
           },

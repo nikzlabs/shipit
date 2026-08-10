@@ -1052,6 +1052,46 @@ describe("finalizeSessionAgentEnvironment", () => {
     expect(sourceCreds).toContain("rotated");
   });
 
+  it("writes back to the route captured for the turn, not a later session route", () => {
+    const accountRoot = (id: string) =>
+      path.join(tmpDir, "provider-accounts", "claude", id, ".claude");
+    for (const [id, token] of [["acct-a", "A"], ["acct-b", "B"]] as const) {
+      fs.mkdirSync(accountRoot(id), { recursive: true });
+      fs.writeFileSync(
+        path.join(accountRoot(id), ".credentials.json"),
+        JSON.stringify({ claudeAiOauth: { expiresAt: 1_000_000_000_000, accessToken: token } }),
+      );
+    }
+    const sessionDir = path.join(tmpDir, "sessions", "s1", ".claude");
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionDir, ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { expiresAt: 2_000_000_000_000, accessToken: "A-rotated" } }),
+    );
+
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    // The persisted row moved after this process started. Re-reading it here
+    // used to copy A's token into B's account root.
+    const { sm } = makeFakeSessionManager({
+      agentPinned: true,
+      providerRouteKind: "account",
+      providerRouteId: "acct-b",
+    });
+
+    finalizeSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      capturedRoute: { providerRouteKind: "account", providerRouteId: "acct-a" },
+      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+    });
+
+    expect(fs.readFileSync(path.join(accountRoot("acct-a"), ".credentials.json"), "utf8"))
+      .toContain("A-rotated");
+    expect(fs.readFileSync(path.join(accountRoot("acct-b"), ".credentials.json"), "utf8"))
+      .toContain('"accessToken":"B"');
+  });
+
   it("is a no-op when the runner is not a ContainerSessionRunner", () => {
     const runner = new EventEmitter();
     const credentialStore = makeFakeCredentialStore();

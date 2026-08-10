@@ -1019,7 +1019,12 @@ export function repushSessionAgentToken(
  */
 export function finalizeSessionAgentEnvironment(
   runner: SessionRunnerInterface | null,
-  args: { sessionId: string; agentId: AgentId; deps: SessionAgentEnvDeps },
+  args: {
+    sessionId: string;
+    agentId: AgentId;
+    deps: SessionAgentEnvDeps;
+    capturedRoute?: Pick<SessionInfo, "providerRouteKind" | "providerRouteId">;
+  },
 ): void {
   // docs/153 — the turn is over, so the CLI can no longer rotate. Drop the
   // mid-turn watch (and any debounced publish still pending) first; the
@@ -1028,15 +1033,16 @@ export function finalizeSessionAgentEnvironment(
   stopTokenWriteBackWatch(args.sessionId);
   if (!(runner instanceof ContainerSessionRunner)) return;
   const session = args.deps.sessionManager.get(args.sessionId);
+  const route = args.capturedRoute ?? session;
   try {
-    if (session?.providerRouteKind === "account" && session.providerRouteId) {
+    if (route?.providerRouteKind === "account" && route.providerRouteId) {
       syncProviderAccountTokenBack(
         args.deps.credentialsDir,
         args.sessionId,
         args.agentId,
-        session.providerRouteId,
+        route.providerRouteId,
       );
-    } else if (session?.providerRouteId !== "claude-env-oauth") {
+    } else if (route?.providerRouteId !== "claude-env-oauth") {
       syncAgentTokenBack(args.deps.credentialsDir, args.sessionId, args.agentId);
     }
   } catch (err) {
