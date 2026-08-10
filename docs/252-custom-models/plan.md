@@ -1729,6 +1729,25 @@ picked there. The gate is the narrower "is a session bound at all", passed as
 `seedFromHistory` (`!sessionId` in `MessageInput`), which is the shape and the name
 `ReasoningSelector` already used for the same distinction.
 
+**A bound session is not necessarily a *visible* one, and that is where the same bug survived
+its first fix.** `SessionManager.list()` filters `warm = 0`, so the claimed warm session is
+bound but absent from the store's `sessions` — the composer has a session it cannot look up,
+and falls back to `activeAgentId`. That fallback has to stay: it is the only channel carrying
+an explicit harness pick made on this route, which the seed cannot carry when the saved model
+belongs to the other harness (`newSessionAgentId` puts the model first, by docs/142). So the
+fix is to keep the fallback *truthful* rather than to remove it — `useUiStore.reset()`, which
+`resetSessionState` runs on exactly the "no session behind it any more" transition, returns
+`activeAgentId` to `newSessionAgentId`. Without that the route displayed the seeded harness
+before the claim landed and then flipped to the previous session's, while still creating the
+seeded one. Found by the cross-backend review; the first version of this fix shipped the flip.
+
+**`modelInfo` is global too, and scoping it by harness is not enough.** The live model is
+scoped to the displayed agent, which was sufficient while every composer had a session. Quick
+Capture is handed the *background* session's `modelInfo`, so when that session runs the seeded
+harness the id passes the agent check and outranks the seed — the overlay showed the background
+session's model while creating with the saved one. A session that does not exist yet has no
+live model, so `seedFromHistory` drops it outright.
+
 One wart is left as pre-existing and out of scope: in Quick Capture a harness pick alone does
 not move the display when the saved model belongs to the other harness — because the overlay
 derives the agent it *sends* from the model too (docs/166). The display is now honest about

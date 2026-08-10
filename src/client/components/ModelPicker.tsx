@@ -415,7 +415,14 @@ export function ModelSelector({
   // UI state, so it is trusted only when the reported model belongs to the
   // active session's agent; otherwise a session switch could show the previous
   // session's model.
-  const liveModel = modelInfo?.model ?? undefined;
+  //
+  // Scoping by AGENT is not enough for a composer with no session of its own:
+  // Quick Capture is handed the *background* session's `modelInfo`, and when
+  // that session happens to run the seeded harness the id passes the agent check
+  // and outranks the seed below — so the overlay showed the background session's
+  // model while creating with the saved one. There is no live model for a
+  // session that does not exist yet, so drop it outright.
+  const liveModel = seedFromHistory ? undefined : (modelInfo?.model ?? undefined);
   const liveModelAlias = liveModel ? resolveModelAlias(liveModel) : undefined;
   const knownIds = rows.map((r) => r.modelId);
   const liveModelRow =

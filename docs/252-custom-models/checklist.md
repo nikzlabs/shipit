@@ -97,7 +97,12 @@ table — a phase is checked off when its PR has merged.
       store's `activeAgentId` (which `useConnectionSync` syncs to whichever session is
       connected). `hasActiveSession` turned out to be the wrong gate: the new-session route
       claims a warm session up front and talks to it, so it is `hasActiveSession: false`
-      **and** bound at once, and must keep following that session.
+      **and** bound at once, and must keep following that session. Cross-backend review then
+      found the bug surviving in a narrower window — a claimed warm session is bound but
+      **invisible** (`SessionManager.list` filters `warm = 0`), so the composer fell back to a
+      stale `activeAgentId`; `useUiStore.reset()` now returns that field to the seed. A second
+      finding with it: global `modelInfo` outranked the seed in Quick Capture whenever the
+      background session ran the seeded harness.
 - [x] `authConfigured` leaves `AgentInfo`. Its MEANING moved here — "this harness has at
       least one eligible model" — which is the part req 2 needed; the rename was deferred as
       churn. Taken after phase 9 as **`hasRunnableModels`**: an auth-shaped name describes

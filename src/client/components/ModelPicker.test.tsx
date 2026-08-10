@@ -201,6 +201,23 @@ describe("HarnessSelector", () => {
     expect(screen.getByTestId("harness-trigger")).toHaveTextContent("Codex");
   });
 
+  it("falls back to activeAgentId while the bound session is a WARM one, invisible in `sessions`", () => {
+    // The claimed warm session is bound (`sessionId` is set, `set_agent` goes
+    // over its socket) but `SessionManager.list` filters `warm = 0`, so it never
+    // appears in `sessions` — the composer has a session it cannot see, and the
+    // fallback is the caller's `activeAgentId`. That is deliberate: the fallback
+    // has to carry an explicit harness pick made on the new-session route, which
+    // the seed cannot when the saved model belongs to the other harness. Keeping
+    // that fallback truthful is `useUiStore.reset()`'s job, pinned in
+    // `ui-store.test.ts` — this pins that the picker does use it.
+    useSessionStore.setState({ sessionId: "warm-1", sessions: [] });
+    localStorage.setItem("vibe-agent-id", "claude");
+    render(
+      <HarnessSelector agents={agents} activeAgentId="codex" onAgentChange={vi.fn()} />,
+    );
+    expect(screen.getByTestId("harness-trigger")).toHaveTextContent("Codex");
+  });
+
   it("still follows the bound session's harness when there IS one", () => {
     // The new-session route claims a warm session up front and talks to it, so
     // `hasActiveSession` is false while a session is nonetheless bound. Its
@@ -309,6 +326,26 @@ describe("ModelSelector", () => {
     await user.click(screen.getByTestId("model-trigger"));
     expect(screen.getByTestId("model-dropdown")).toHaveTextContent("DeepSeek");
     expect(screen.queryByTestId("model-option-gpt-5.6-sol")).toBeNull();
+  });
+
+  it("ignores the background session's live model even when it runs the seeded harness", async () => {
+    // Scoping `modelInfo` by AGENT is not enough with no session of its own:
+    // Quick Capture is handed the background session's live model, and when that
+    // session runs the seeded harness the id passes the agent check and outranks
+    // the seed — so the overlay showed Sonnet while creating DeepSeek.
+    setSessionState(makeSession({ agentId: "claude", model: "claude-sonnet-5" }));
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem("vibe-model-id", "deepseek:key:deepseek-v4-flash");
+    render(
+      <ModelSelector
+        agents={agents}
+        activeAgentId="claude"
+        modelInfo={{ model: "claude-sonnet-5" } as never}
+        onModelChange={vi.fn()}
+        seedFromHistory
+      />,
+    );
+    expect(screen.getByTestId("model-trigger")).toHaveTextContent("V4 Flash");
   });
 
   it("checks exactly one row when nothing has pinned a group yet", async () => {
