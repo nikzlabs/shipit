@@ -47,7 +47,9 @@ Mic, Stop and Send are **outside** the clipping group and are `shrink-0`, so no 
 
 Measured: the ring is only ever cut below **≈280 px** of composer width, narrower than any phone. The clip is a backstop, not a routine state.
 
-**The exact bound, because "structural" overclaims if left unqualified.** What this construction guarantees is that *no amount of content on the left can displace the action buttons* — the left group collapses to zero before they are touched, and that part needs no arithmetic. It does not by itself prove the actions fit: below roughly **190 px** of composer width the action cluster alone (three 44 px targets plus their 4 px gaps, inside 16 px of row padding, 2 px of border and 32 px of composer padding) is wider than the composer, and nothing further can give. That floor is well under req 13's 360 px and under any real chat panel, and it is a property of the buttons' own sizes rather than of anything the row does — but it is the honest edge of the claim, so a future editor adding a fourth pinned action knows where the budget actually ends.
+**The exact bound, because "structural" overclaims if left unqualified.** What this construction guarantees is that *no amount of content on the left can displace the action buttons* — the left group collapses to zero before they are touched, and that part needs no arithmetic. It does not by itself prove the actions fit: below some floor the action cluster alone is wider than the composer, and nothing further can give.
+
+That floor is **not a single number**, which is worth stating precisely because the first version of this paragraph got it wrong. With an idle mic it is ≈190 px (three 44 px targets, their 4 px gaps, 16 px of row padding, 2 px of border, 32 px of composer padding). **While recording, `MicButton` swaps to an auto-width pill carrying an elapsed timer**, so the floor becomes `146 px + the mic's rendered width` — roughly 218 px at first, and a few px more each time the timer gains a digit. Both are far below req 13's 360 px and below any real chat panel, and both are properties of the buttons' own sizes rather than of anything this row does. It is stated so a future editor adding a fourth pinned action, or widening the recording pill, knows where the budget actually ends.
 
 Measured room for the model name, and what fits (req 4, req 5, req 13):
 
@@ -99,6 +101,11 @@ So the state is extracted into hooks used by both:
 - The permission mode is not stated in the row. See the requirements' receipt for the trade and how to reverse it.
 
 Everything else keeps its accessible name (req 9): the anchor's `aria-label` names the model and the fact that it opens settings, and each menu row is a normal, labelled item.
+
+## Known limitations
+
+- **Optimistic picker state does not survive a resize across 700 px.** The two rows are different component trees, so a pending model or reasoning pick — the optimistic value held until the server echoes — is lost if the panel is dragged across the boundary inside that window. The next echo restores the true value, so it self-heals within a turn and cannot persist a wrong answer. Hoisting the pending state above the branch would fix it and was judged not worth the coupling for a case that needs a splitter drag within a one-echo window.
+- **Below ≈768 px of *viewport*, a composer of ≥700 px now renders full harness and reasoning labels** where it previously rendered the icon-only `compactTrigger` variants. Reachable on a tablet in portrait. See the open question in `requirements.md`.
 
 ## Key files
 

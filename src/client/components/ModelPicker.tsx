@@ -557,7 +557,6 @@ export function useModelPickerState({
   prevLiveRef.current = liveModel;
 
   return {
-    rows,
     groups,
     /** The name on the trigger / anchor. Empty only before the catalogue arrives. */
     displayName,

@@ -6,7 +6,7 @@ description: What the composer's control row must do when it is narrower than it
 
 # 260 — Composer toolbar layout: requirements
 
-The design that implements these requirements will be in `plan.md`. It is not written yet: requirements come first, and three questions below are still open.
+The design that implements these requirements is in [`plan.md`](./plan.md).
 
 ## Why this exists
 
@@ -59,7 +59,7 @@ The row already contained three controls that had been collapsed to icons to buy
 
 14. How large the mic, Stop and Send targets are follows the device, not the composer. On a phone or a tablet they stay large enough to hit with a thumb at every composer width; on a desktop they stay compact even when the chat panel is narrow.
 
-15. In the compact layout the context ring shows as a ring alone. Its token count and running cost are not shown beside it, and remain available inside the settings menu.
+15. In the compact layout the context ring shows as a ring alone. Its token count and running cost are not shown beside it, and remain one tap away in the ring's own popover.
 
 16. The attach button stays in the compact row. Attaching a file is an action taken while composing, not a setting, and it does not move behind the settings control.
 
@@ -75,13 +75,19 @@ No requirement is an unreviewed agent inference.
 
 ## Open questions
 
-None. Implementation is unblocked.
+Both raised by the cross-backend review of the implementation (2026-08-10), and both are conflicts between requirements rather than gaps in them — so neither can be settled by the agent.
+
+- **Requirements 1 and 3 are incompatible between 700 px and ~808 px, and requirement 1 currently loses.** "Why this exists" records that the un-compacted row needs a panel of 595–808 px depending on state; requirement 3 hands back to that row at exactly 700 px. So in the guarded-mode and ambiguous-model states a composer of 700–808 px still pushes Send off the edge — the original bug, in a narrower band. This band also got slightly worse: with the icon-only `compactTrigger` variants removed, a viewport under 768 px now renders full harness and reasoning labels where it used to render icons, which is reachable on a tablet in portrait. Three ways out. **(a)** Raise the threshold to ~810 px, so the wide row is only used where it demonstrably fits — one number, contradicts the 700 you chose, and puts more desktops on the compact row. **(b)** Keep 700 px and give the wide row the same pinned action cluster, so its *labels* clip instead of Send disappearing — preserves requirement 1 absolutely and is invisible whenever the row fits, but it does modify the wide row, which requirement 3 promises is untouched. **(c)** Accept it and narrow requirement 1 to "below 700 px". *Recommendation: (b) — requirement 1 is the whole point of the feature, and the change is invisible in every state that fits today.*
+
+- **Requirement 14 says the target size follows "the device"; the code follows the viewport width.** `useIsMobile()` is `(max-width: 767px)`, a window-width proxy rather than an input-modality test, so a landscape tablet at 768 px gets compact targets and a narrow desktop window gets thumb-sized ones. This is pre-existing behaviour that the feature inherited rather than introduced. **(a)** Reword requirement 14 to say the viewport, as the proxy it is — honest, no code change. **(b)** Switch to a `pointer: coarse` media query — actually implements what requirement 14 says, but changes hit-area behaviour for the wide row too, beyond this feature's scope. *Recommendation: (a) now, (b) as its own change if you want it.*
 
 ## Resolved questions
 
 - 2026-08-10 — Should touch-target size follow the composer's width, like everything else, or the input device? Chosen: **the input device**. Layout density follows the composer width (requirement 3), but hit-area size keeps following the screen, because whether a target needs to be thumb-sized is a question about fingers and not about panel width. Requirement 14 follows. Visible consequence, accepted: a 600 px chat panel on a desktop keeps compact buttons while a 600 px tablet keeps large ones — the two look different at the same composer width, deliberately.
 
-- 2026-08-10 — May the context ring lose its token-count and cost labels on a narrow desktop panel? Chosen: **yes, ring alone below 700 px.** Those labels show today whenever the *window* is 768 px or wider, so a desktop user with the panel at 520 px loses them — but that is already what every phone sees, and the figures stay one tap away in the menu. Requirement 15 follows. The alternative considered and rejected was a third size band keeping the labels between roughly 480 and 700 px: it removes nothing from anyone, at the cost of a third state to build and test.
+- 2026-08-10 — *(corrected 2026-08-10, after the cross-backend review)* Requirement 15 originally said the ring's figures "remain available inside the settings menu". That clause was written while the ring itself was going to live inside the menu; once the human moved the ring back into the row it became wrong, and the review caught the code not matching it. The figures are in the **ring's own popover** — the ring is right there in the row, so its popover is the same single tap the menu would have been. The requirement now says so. No code changed.
+
+- 2026-08-10 — May the context ring lose its token-count and cost labels on a narrow desktop panel? Chosen: **yes, ring alone below 700 px.** Those labels show today whenever the *window* is 768 px or wider, so a desktop user with the panel at 520 px loses them — but that is already what every phone sees, and the figures stay one tap away in the ring's own popover. Requirement 15 follows. The alternative considered and rejected was a third size band keeping the labels between roughly 480 and 700 px: it removes nothing from anyone, at the cost of a third state to build and test.
 
 - 2026-08-10 — Does the attach button stay in the compact row, or move behind the settings control? Chosen: **stays in the row**, because attaching a file is an action taken while composing rather than a setting. Requirement 16 follows. The 28 px it costs would otherwise have gone to the model name — enough to make "GPT-5 Codex" fit at 360 px — so this is a deliberate trade of name width for keeping attach one tap away.
 

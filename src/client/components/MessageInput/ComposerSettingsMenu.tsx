@@ -21,12 +21,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "../ui/dropdown-menu.js";
-import {
-  useHarnessPickerState,
-  useModelPickerState,
-  lockedHarnessReason,
-  modelRowsFor,
-} from "../ModelPicker.js";
+import { useHarnessPickerState, useModelPickerState, modelRowsFor } from "../ModelPicker.js";
 import { useReasoningPickerState } from "../ReasoningSelector.js";
 import { formatModelName } from "../../utils/format-model.js";
 import type { AgentId, PermissionMode } from "../../../server/shared/types.js";
@@ -103,7 +98,13 @@ function RootRow({
         e.preventDefault();
         onSelect?.();
       }}
-      className={`px-3 py-2 text-sm ${onSelect ? "" : "cursor-default"}`}
+      // A row with nothing to open is inert, and must SAY so: without this it
+      // keeps enabled menu-item semantics and a screen reader announces a
+      // pinned harness (or a picker locked mid-turn) as actionable, where
+      // activating it silently does nothing. `aria-disabled` rather than
+      // `disabled` so the row stays focusable and its value is still readable.
+      aria-disabled={onSelect ? undefined : true}
+      className={`px-3 py-2 text-sm ${onSelect ? "" : "cursor-default opacity-60"}`}
       data-testid={testId}
     >
       {icon}
@@ -478,6 +479,3 @@ export function ComposerSettingsMenu({
     </DropdownMenu>
   );
 }
-
-/** Exported for the composer's `title` on a pinned harness. */
-export { lockedHarnessReason };
