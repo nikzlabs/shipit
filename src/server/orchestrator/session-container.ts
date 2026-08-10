@@ -892,11 +892,21 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     return destroyContainer(this.lifecycleDeps(), sessionId, { preserveChildResources: true });
   }
 
-  /** Stop and remove all session containers. Used for full_reset and shutdown. */
-  async destroyAll(): Promise<void> {
-    const sessionIds = [...this.containers.keys()];
-    await Promise.allSettled(sessionIds.map((id) => this.destroy(id)));
-  }
+  // NOTE: there is deliberately no `destroyAll()`. It existed for the shutdown
+  // path (docs/051) and `dispose()` was its only caller — which is exactly how
+  // docs/113 zero-downtime updates got defeated: `deploy.sh` stopped killing
+  // session containers, and the orchestrator's own shutdown hook kept doing it.
+  // Teardown is per-session and explicit (`destroy(sessionId)`), owned by the
+  // idle enforcer, archive/repo-delete, tier escalation and Rescue.
+  //
+  // `full_reset` is the one path that arguably wants a sweep and never had one:
+  // `fullReset()` (`services/misc.ts`) disposes the runners and wipes the
+  // workspace but takes no container manager, so the containers run on against
+  // a deleted workspace until the idle enforcer's capacity limit or the next
+  // boot's `cleanupOrphanContainers()` reaps them. That is pre-existing — this
+  // method was never wired there despite its old "for full_reset" docstring —
+  // and fixing it means giving `fullReset` a container manager, not resurrecting
+  // an all-sessions sweep on a path that doesn't need one.
 
   /**
    * Forcibly reap any compose-child resources still labeled
@@ -1278,11 +1288,34 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
 
   // --- Dispose ---
 
+  /**
+   * Release this manager's orchestrator-side resources — the Docker event
+   * health monitor and every listener attached to it.
+   *
+   * It **must not touch the containers**. `dispose()` is reached from exactly
+   * one place: the Fastify `onClose` hook (`shutdown-manager.ts`), i.e. the
+   * orchestrator is going down — most often because `deploy.sh` is swapping it
+   * for a new build. docs/113 makes updates zero-downtime by leaving session
+   * containers alive across that swap; the new orchestrator re-adopts them at
+   * boot (`rediscoverContainers()`), and `reattachInFlightTurns()` (docs/240)
+   * picks up turns that were mid-flight. Destroying them here defeats both, and
+   * it kills running agents mid-tool-call — the 2026-08-10 incident, where six
+   * session containers were destroyed 9 seconds before the orchestrator itself
+   * was replaced.
+   *
+   * This is the same contract CLAUDE.md states for the WebSocket lifecycle:
+   * container teardown belongs to the idle enforcer and to explicit user
+   * actions (archive, repo delete, full reset, Rescue), each of which calls
+   * `destroy(sessionId)` itself. Process shutdown is none of those.
+   *
+   * The container map is deliberately NOT cleared: the containers are still
+   * running, and the map is the record of that. The process is about to exit
+   * and take it with them.
+   */
   async dispose(): Promise<void> {
     if (this._disposed) return;
     this._disposed = true;
     this.stopHealthMonitor();
-    await this.destroyAll();
     this.removeAllListeners();
   }
 }

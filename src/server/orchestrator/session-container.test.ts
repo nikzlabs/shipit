@@ -1036,20 +1036,6 @@ describe("SessionContainerManager", () => {
     });
   });
 
-  // --- destroyAll ---
-
-  describe("destroyAll", () => {
-    it("destroys all containers", async () => {
-      await manager.create(buildConfig({ sessionId: "s1", sessionDir: "/ws/s1" }));
-      await manager.create(buildConfig({ sessionId: "s2", sessionDir: "/ws/s2" }));
-      expect(manager.size).toBe(2);
-
-      await manager.destroyAll();
-
-      expect(manager.size).toBe(0);
-    });
-  });
-
   // --- cleanupOrphans ---
 
   describe("cleanupOrphans", () => {
@@ -1327,14 +1313,37 @@ describe("SessionContainerManager", () => {
   // --- dispose ---
 
   describe("dispose", () => {
-    it("destroys all containers and stops health monitor", async () => {
+    // docs/113 — `dispose()` is the orchestrator-shutdown path. It must leave
+    // every session container running so the next orchestrator can re-adopt it
+    // (`rediscoverContainers()` + `reattachInFlightTurns()`). It used to call
+    // `destroyAll()`, which silently defeated zero-downtime updates and killed
+    // running agents mid-turn on every deploy (2026-08-10 incident).
+    it("leaves every container running and only stops the health monitor", async () => {
       await manager.create(buildConfig({ sessionId: "s1", sessionDir: "/ws/s1" }));
       await manager.create(buildConfig({ sessionId: "s2", sessionDir: "/ws/s2" }));
       await manager.startHealthMonitor();
+      expect(manager.size).toBe(2);
 
       await manager.dispose();
 
-      expect(manager.size).toBe(0);
+      // Nothing was stopped or removed on the Docker side...
+      const live = [...mockDocker._containers.values()];
+      expect(live).toHaveLength(2);
+      expect(live.every((c) => !c.removed)).toBe(true);
+      // ...and the manager still records them as the survivors they are.
+      expect(manager.size).toBe(2);
+      expect(manager.get("s1")?.status).toBe("running");
+      expect(manager.get("s2")?.status).toBe("running");
+    });
+
+    it("emits no container_destroyed", async () => {
+      const destroyed = vi.fn();
+      await manager.create(buildConfig({ sessionId: "s1", sessionDir: "/ws/s1" }));
+      manager.on("container_destroyed", destroyed);
+
+      await manager.dispose();
+
+      expect(destroyed).not.toHaveBeenCalled();
     });
 
     it("is idempotent", async () => {

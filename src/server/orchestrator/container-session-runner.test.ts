@@ -210,3 +210,115 @@ describe("ContainerSessionRunner — background-work marker", () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 });
+
+/**
+ * docs/113 — the orchestrator-shutdown dispose must not reach into the worker.
+ *
+ * Keeping the container alive across an update is only half of "running turns
+ * survive it". An ordinary forced dispose posts `/agent/kill`, which clears the
+ * worker's `turnActive` (`agent-controller.ts` → `endTurn()`), and
+ * `reattachInFlightTurns()` (docs/240) adopts a turn only while that flag is
+ * true — so the CLI died inside a healthy container, its transcript tail was
+ * never persisted and its post-turn commit never ran. That is the second half
+ * of the 2026-08-10 incident, and it survived the first fix (containers stopped
+ * being destroyed, turns kept dying).
+ */
+describe("ContainerSessionRunner — dispose({ preserveAgent }) (docs/113)", () => {
+  /** A worker that records every path it is called on. */
+  async function startRecordingWorker(): Promise<{
+    url: string;
+    paths: string[];
+    close: () => Promise<void>;
+  }> {
+    const paths: string[] = [];
+    const sockets: Socket[] = [];
+    const server = http.createServer((req, res) => {
+      paths.push(req.url ?? "");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ killed: true }));
+    });
+    server.on("connection", (s) => sockets.push(s));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no server address");
+    return {
+      url: `http://127.0.0.1:${addr.port}`,
+      paths,
+      close: async () => {
+        for (const s of sockets) s.destroy();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      },
+    };
+  }
+
+  /** Install a minimal live agent proxy in the runner's slot. */
+  function installAgent(runner: ContainerSessionRunner): void {
+    runner.setAgent({ runToken: "run-token-1" } as never);
+  }
+
+  it("does not kill the worker-side agent, so the next orchestrator can adopt the turn", async () => {
+    const worker = await startRecordingWorker();
+    const runner = makeRunner();
+    runner.setWorkerUrl(worker.url);
+    installAgent(runner);
+
+    runner.dispose({ force: true, preserveAgent: true });
+
+    // Give a fire-and-forget post every chance to land before asserting it didn't.
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(worker.paths).toEqual([]);
+    expect(runner.disposed).toBe(true);
+    // The local proxy is still dropped — it cannot outlive this process.
+    expect(runner.getAgent()).toBeNull();
+
+    await worker.close();
+  });
+
+  it("still kills the agent on an ordinary forced dispose (full reset, archive, Rescue)", async () => {
+    const worker = await startRecordingWorker();
+    const runner = makeRunner();
+    runner.setWorkerUrl(worker.url);
+    installAgent(runner);
+
+    runner.dispose({ force: true });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(worker.paths).toEqual(["/agent/kill"]);
+
+    await worker.close();
+  });
+
+  it("leaves an in-flight sub-agent consult running on the preserve path", async () => {
+    const server = http.createServer(() => { /* never respond */ });
+    const sockets: Socket[] = [];
+    server.on("connection", (s) => sockets.push(s));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no server address");
+
+    const runner = makeRunner();
+    runner.setWorkerUrl(`http://127.0.0.1:${addr.port}`);
+    const spawn = runner.spawnSubAgent({
+      agentId: "codex", prompt: "review", spawnId: "spawn-1", depth: 0,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+
+    let settled = false;
+    void (async () => {
+      try { await spawn; } catch { /* rejection settles it too */ }
+      settled = true;
+    })();
+
+    runner.dispose({ force: true, preserveAgent: true });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Not aborted: the consult keeps running in the container and stays
+    // readable via `shipit agent result`. The awaiting promise dies with this
+    // process, which is the point — nothing is left to hang.
+    expect(settled).toBe(false);
+
+    for (const s of sockets) s.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+});

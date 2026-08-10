@@ -18,6 +18,49 @@ docs/240 and is kept as the option analysis of record):
   (`cleanupOrphanContainers()` / `cleanupOrphanComposeResources()`), which
   already existed. (Paths in the plan below say `deployment/hetzner/` — the
   deployment dir has since moved to `deployment/vps/`.)
+- **Follow-up (2026-08-10): the orchestrator was still killing the containers
+  itself.** §1 removed the `docker rm -f` sweep from `deploy.sh` but not the
+  *second* kill path, inside the orchestrator process:
+  `shutdown-manager.ts`'s `onClose` hook → `containerManager.dispose()` →
+  `destroyAll()` (wired that way by docs/051, before this feature existed). So
+  every update destroyed every session container ~9 s *before* Compose even
+  killed the orchestrator, and the boot-time re-adoption below had nothing left
+  to adopt — it looked healthy because `rediscoverContainers()` and
+  `reattachInFlightTurns()` both ran and both found zero survivors. Two live
+  turns died mid-flight on the 2026-08-10 update, one mid-tool-call.
+  `destroyAll()` is deleted (`dispose()` now only stops the health monitor and
+  drops listeners), and `deploy.sh` no longer runs the blind
+  `docker network prune -f` that deleted 18 live session networks in the same
+  window.
+
+  **The surviving container was only half of it.** A cross-backend review of the
+  first fix caught the rest: `runnerRegistry.disposeAll()` force-disposes every
+  runner, and `ContainerSessionRunner.dispose()` posts `/agent/kill` to the
+  worker — which clears its `turnActive` (`agent-controller.ts` → `endTurn()`).
+  `reattachInFlightTurns()` adopts a turn ONLY while `turnActive === true`, so
+  the CLI died inside a perfectly healthy container, unadoptable, with its
+  transcript tail unpersisted and its post-turn commit unrun (CLAUDE.md's
+  "every terminal path runs the commit" invariant, defeated from outside the
+  turn executor). The claim in this doc that docs/240 makes mid-flight turns
+  survive the swap was therefore true only for a *crash* — docs/240's own
+  incident — and never for the graceful path an `Update Now` actually takes.
+  Shutdown now passes `disposeAll({ preserveAgent: true })`, which spares the
+  `/agent/kill` post and the sub-agent aborts; everything else about disposal is
+  unchanged, and full reset deliberately does not pass it.
+
+  The session's *Compose stack* is deliberately still torn down by the
+  runner's `disposed` handler: `ServiceManager.start()` opens with
+  `killStaleContainers()`, which force-removes every `shipit-parent-session`
+  container before `compose up`, so the next orchestrator rebuilds the stack
+  whether or not it survived — only the agent container is adopted. Guards:
+  `integration_tests/container-lifecycle.test.ts` → *leaves containers running
+  when the app shuts down* (which asserted the exact opposite until this fix,
+  and is why the bug had a green build for a year),
+  `container-session-runner.test.ts` → *dispose({ preserveAgent })*,
+  `shutdown-manager.test.ts`,
+  `session-container.test.ts` → *dispose*. docs/212 asserted the correct
+  behavior as fact and was never checked against the code — that wrong
+  paragraph is corrected in place.
 - **§2 (drain mode) is unnecessary and was not built.** The plan assumed a
   mid-turn agent would lose work across the swap, so updates had to wait for
   turns to finish. docs/240 removed that premise: session containers keep

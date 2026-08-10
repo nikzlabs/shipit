@@ -285,6 +285,51 @@ describe("runDiskJanitor", () => {
     expect(result.orphanNetworksRemoved).toBe(2);
   });
 
+  it("spares a network whose session is created after the listing (docs/113)", async () => {
+    // The sweep is fire-and-forget from boot and paced, so it can still be
+    // running once the server accepts session creates. A session's network
+    // exists BEFORE its container attaches, so it is `dangling` and would be
+    // reaped by a one-shot snapshot of the live set — the same create-vs-prune
+    // race that made `docker network prune -f` in deploy.sh delete 18 live
+    // session networks on 2026-08-10.
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const racingSessionId = "aaaabbbbcccc-dddd-eeee-ffff-000000000000";
+    const rmRequests: string[] = [];
+    const runDocker = (args: string[]): Promise<string> => {
+      if (args[0] === "network" && args[1] === "ls") {
+        // Decoy FIRST so its removal is what opens the race window; the racing
+        // session's network is still an orphan at listing time.
+        return Promise.resolve([
+          "shipit-session-fed987654321",
+          `shipit-session-${racingSessionId.slice(0, 12)}`,
+        ].join("\n"));
+      }
+      if (args[0] === "network" && args[1] === "rm") {
+        rmRequests.push(args[2]);
+        // The session is created DURING the sweep — after the listing and the
+        // candidate computation, before the second removal. Only a re-check
+        // immediately before `network rm` can see it.
+        underlyingDb!.prepare(
+          "INSERT OR IGNORE INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
+        ).run(racingSessionId, "Racing", "2026-08-10", "2026-08-10", "https://github.com/example/repo.git");
+      }
+      return Promise.resolve("");
+    };
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker,
+    });
+
+    expect(rmRequests).toEqual(["shipit-session-fed987654321"]);
+    expect(result.orphanNetworksRemoved).toBe(1);
+  });
+
   it("preserves networks for idle-evicted (still-tracked) sessions", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
