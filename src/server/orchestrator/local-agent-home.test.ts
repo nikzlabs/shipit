@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { resolveLocalAgentHome } from "./local-agent-home.js";
 import type { LocalAgentHomeDeps } from "./local-agent-home.js";
-import type { AgentId, SessionInfo } from "../shared/types.js";
+import type { SessionInfo } from "../shared/types.js";
 
 const CREDENTIALS = "/credentials";
 
@@ -75,8 +75,8 @@ describe("resolveLocalAgentHome (docs/150)", () => {
   // nothing about which Codex account to use, so the provider's own selection
   // answers — the same resolution session naming uses.
   it("selects the other provider's account for a cross-provider spawn", () => {
-    const selectRouteForTurn = vi.fn((provider: AgentId) =>
-      provider === "codex" ? { kind: "account" as const, id: "acct-codex" } : null);
+    const selectRouteForTurn = vi.fn((serviceId: string) =>
+      serviceId === "openai" ? { kind: "account" as const, id: "acct-codex" } : null);
     const home = resolveLocalAgentHome(
       "s1",
       "codex",
@@ -86,7 +86,7 @@ describe("resolveLocalAgentHome (docs/150)", () => {
       ),
     );
     expect(home).toBe(`${CREDENTIALS}/provider-accounts/codex/acct-codex`);
-    expect(selectRouteForTurn).toHaveBeenCalledWith("codex");
+    expect(selectRouteForTurn).toHaveBeenCalledWith("openai");
   });
 
   it("falls back to the provider's selection for a session not pinned yet", () => {

@@ -43,9 +43,9 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     lastClaude = null as unknown as FakeClaudeProcess;
     credentialStore = createTestCredentialStore(tmpDir);
     const now = Date.now();
-    credentialStore.upsertProviderAccount({
+    credentialStore.upsertCredentialRoute({
       id: "acct-added-claude",
-      provider: "claude",
+      serviceId: "anthropic", billingMode: "sub", via: "account",
       label: "Added Claude subscription",
       isPrimary: true,
       status: "ready",
@@ -267,8 +267,8 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     // accounts are created through the same store `buildApp` was handed, so the
     // app's own `ProviderAccountManager` sees them.
     const accounts = new ProviderAccountManager({ credentialsDir, credentialStore });
-    const x = accounts.create("claude", "Account X");
-    const y = accounts.create("claude", "Account Y");
+    const x = accounts.create("anthropic", "Account X");
+    const y = accounts.create("anthropic", "Account Y");
     writeToken(accountRoot(x.id), "fresh-x");
     writeToken(accountRoot(y.id), "source-y");
 
@@ -290,6 +290,6 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     // The session pinned to Y is untouched in BOTH directions: it did not get
     // X's token, and Y's own source was not pushed on X's event either.
     expect(readToken(sessionRoot("sess-y"))).toBe("stale-sess-y");
-    expect(accounts.get("claude", x.id)?.status).toBe("ready");
+    expect(accounts.get("anthropic", x.id)?.status).toBe("ready");
   });
 });

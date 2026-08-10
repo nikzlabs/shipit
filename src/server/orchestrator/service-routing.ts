@@ -26,6 +26,7 @@ import type {
   ProviderAccountManager,
   ProviderRoute,
 } from "./provider-account-manager.js";
+import { accountServiceForHarness, orderForSelectionMode } from "./provider-account-manager.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
 import {
@@ -211,9 +212,11 @@ export function selectRouteForSelection(
   const mode = selection ? getMode(selection.serviceId, selection.billingMode) : undefined;
   if (!selection || !mode) {
     // No selection to scope by. Keep the pre-feature question so a session that
-    // has never had a model picked still routes exactly as it did.
+    // has never had a model picked still routes exactly as it did — which means
+    // asking about the harness's OWN vendor, the only service a session with no
+    // selection could ever have meant.
     return (
-      deps.providerAccountManager?.selectAccountForTurn(harnessId)
+      deps.providerAccountManager?.selectAccountForTurn(accountServiceForHarness(harnessId))
       ?? { ok: false, reason: "auth_required" }
     );
   }
@@ -223,7 +226,19 @@ export function selectRouteForSelection(
     && harnessCanCarry(harnessId, { ...selection, via: "account" });
 
   if (acceptsAccount && deps.providerAccountManager) {
-    const selected = deps.providerAccountManager.selectAccountForTurn(harnessId);
+    // planning#342 — the walk is asked about the **selected** service, not the
+    // harness's own vendor. They diverge only for a session row naming, say,
+    // `(anthropic, sub)` while pinned to the Codex harness — a state the picker
+    // never offers, and one where asking about OpenAI's accounts (what the
+    // harness-keyed question did) was the wrong answer anyway.
+    //
+    // Note what does NOT make them equal: `acceptsAccount` asks whether this
+    // harness can carry an account-delivered credential at all, and Codex can.
+    // The equality is the catalogue's — only `anthropic:sub` and `openai:sub`
+    // declare an account credential, and each one's models are carried only by
+    // its own harness — so it is a property of today's rows rather than of this
+    // code. `service-routing.test.ts` pins the axis on the divergent pair.
+    const selected = deps.providerAccountManager.selectAccountForTurn(selection.serviceId);
     // Its answer is taken only when it names an ACCOUNT. Its own trailing
     // env/key fallback is mode-blind — it is what would hand an `anthropic:sub`
     // selection the metered `claude-api-key` — so the env-delivered case is
@@ -320,17 +335,18 @@ function isBenched(exhaustedUntil: number | null | undefined, now: number): bool
 
 /**
  * The user's fallback order, or least-recently-used under `balanced` — the
- * string-credential twin of `orderForSelectionMode`, and the reason phase 2's
- * *Use in order / Spread across accounts* control now does something for a
- * string-delivered subscription.
+ * reason phase 2's *Use in order / Spread across accounts* control does
+ * something for a string-delivered subscription.
+ *
+ * `orderForSelectionMode` is the account walk's own step, shared rather than
+ * re-implemented (planning#342): the mode means one thing, so a change to what
+ * `balanced` sorts by must not have two places to land.
  */
 function orderStringCredentials(
   routes: readonly CredentialRoute[],
   mode: AccountSelectionMode,
 ): CredentialRoute[] {
-  const ordered = orderCredentialRoutes(routes);
-  if (mode !== "balanced") return ordered;
-  return [...ordered].sort((a, b) => (a.lastUsedAt ?? 0) - (b.lastUsedAt ?? 0));
+  return orderForSelectionMode(orderCredentialRoutes(routes), mode);
 }
 
 /**

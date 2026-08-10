@@ -5,7 +5,6 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { useApi } from "../hooks/useApi.js";
 import { Badge } from "./ui/badge.js";
 import type {
-  AgentId,
   LimitsRefreshOutcome,
   LimitsRefreshResult,
   SubscriptionLimits,
@@ -163,15 +162,16 @@ export function useSubscriptionPillCount(limits: SubscriptionLimitsMap): number 
 
 function buildPills(
   limits: SubscriptionLimitsMap,
-  accounts: { id: string; provider: AgentId; label: string }[],
+  accounts: { id: string; serviceId: string; label: string }[],
 ): SubscriptionPill[] {
   const pills: SubscriptionPill[] = [];
   for (const modeKey of pillOrder()) {
     const serviceId = modeKey.slice(0, modeKey.lastIndexOf(":"));
     const byRoute = limits[modeKey];
-    const modeAccounts = accounts.filter(
-      (account) => nativeServiceForHarness(account.provider) === serviceId,
-    );
+    // planning#342 — an account row IS a credential of its service now, so
+    // the pill matches on the service directly instead of mapping the row's
+    // harness back to one.
+    const modeAccounts = accounts.filter((account) => account.serviceId === serviceId);
 
     // Connected accounts define pill presence, not cached snapshots. A quiet
     // account may have no quota event yet, but its pill must remain available

@@ -49,7 +49,7 @@ import type { AgentId } from "../shared/types/agent-types.js";
 import type { AgentProcess, SessionInfo } from "../shared/types.js";
 import type { AgentHomeResolver } from "../shared/agent-home.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
-import { providerAccountCredentialRoot } from "./provider-account-manager.js";
+import { accountServiceForHarness, providerAccountCredentialRoot } from "./provider-account-manager.js";
 
 /**
  * The local-mode agent factory (`app-di.ts` → `buildLocalAgentFactory`).
@@ -114,7 +114,7 @@ export function resolveLocalAgentHome(
   // sub-agent spawn (`shipit agent run`, docs/144). Its account is chosen the
   // same way session naming chooses one (`graduate-session.ts`) — the route a
   // turn for that provider would take right now.
-  const route = deps.providerAccountManager?.selectRouteForTurn(agentId);
+  const route = deps.providerAccountManager?.selectRouteForTurn(accountServiceForHarness(agentId));
   if (route?.kind === "account") {
     return providerAccountCredentialRoot(deps.credentialsDir, agentId, route.id);
   }

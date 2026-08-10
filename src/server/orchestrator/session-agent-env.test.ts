@@ -322,7 +322,7 @@ describe("prepareSessionAgentEnvironment", () => {
       },
     });
 
-    expect(selectAccountForTurn).toHaveBeenCalledWith("claude");
+    expect(selectAccountForTurn).toHaveBeenCalledWith("anthropic");
     expect(state.setProviderRouteCalls).toEqual([
       { id: "s1", kind: "account", routeId: "acct-primary" },
     ]);
@@ -422,7 +422,7 @@ describe("prepareSessionAgentEnvironment", () => {
       },
     });
 
-    expect(selectAccountForTurn).toHaveBeenCalledWith("claude");
+    expect(selectAccountForTurn).toHaveBeenCalledWith("anthropic");
   });
 
   // Not-signed-in has its own guided surface; env-prep must not convert it

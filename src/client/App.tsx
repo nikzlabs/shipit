@@ -110,8 +110,8 @@ import { StaleContainerBanner } from "./components/StaleContainerBanner.js";
 import type { AgentOption, EligibleModelOption } from "./agent-types.js";
 import type {
   AgentId,
+  CredentialRoute,
   DocEntry,
-  ProviderAccount,
   TrackerIssue,
   ReleaseMechanism,
   SubAgentDefaults,
@@ -1140,7 +1140,7 @@ export default function App() {
             agentSubAgentDefaults?: Record<string, SubAgentDefaults>;
             voiceDeliveryMode?: "native" | "external" | "both";
             voiceWebhookConfigured?: boolean;
-            providerAccounts?: ProviderAccount[];
+            providerAccounts?: CredentialRoute[];
             /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs. */
             failoverCutoffs?: Record<string, { session: number; weekly: number }>;
             /** docs/150 req 21 — per-provider account selection mode. */

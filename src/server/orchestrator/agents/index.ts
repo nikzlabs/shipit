@@ -68,12 +68,12 @@ export function buildAgentRuntime(deps: BuildAgentRuntimeDeps): AgentRuntime {
       ...(deps.providerAccountManager
         ? {
             listAccountRouteIds: () =>
-              deps.providerAccountManager!.list("claude").map((account) => account.id),
+              deps.providerAccountManager!.list("anthropic").map((account) => account.id),
             // Reserved routes (`claude-env-oauth`, `claude-api-key`) are not
             // account rows; `undefined` sends them down the env/legacy path,
             // which is the correct source for them.
             credentialDirForRoute: (routeId: string) =>
-              deps.providerAccountManager!.get("claude", routeId)
+              deps.providerAccountManager!.get("anthropic", routeId)
                 ? deps.providerAccountManager!.resolveCredentialRoot("claude", routeId)
                 : undefined,
           }

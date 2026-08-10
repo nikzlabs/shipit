@@ -1,6 +1,6 @@
 import type { ChatMessage } from "../components/MessageList.js";
 import type { GitCommit } from "../components/GitHistory.js";
-import type { SessionInfo, RepoInfo, FileTreeNode, TurnUsage, SessionUsage, RuntimeMode, ProviderAccount, CredentialRoute } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, FileTreeNode, TurnUsage, SessionUsage, RuntimeMode, CredentialRoute } from "../../server/shared/types.js";
 import { turnContextTokens } from "../../server/shared/types.js";
 import { getContextWindowForModel } from "../../server/shared/model-windows.js";
 import type { AgentOption } from "../agent-types.js";
@@ -102,7 +102,7 @@ interface BootstrapResponse {
     autoFixCi?: boolean;
     autoResetMergedBranch?: boolean;
     enableSubAgents?: boolean;
-    providerAccounts?: ProviderAccount[];
+    providerAccounts?: CredentialRoute[];
     credentialRoutes?: CredentialRoute[];
     /** docs/252 phase 7 (req 9) — the pinned non-turn model, absent for "follow the install". */
     nonTurnModel?: { serviceId: string; billingMode: "sub" | "key"; modelId: string };

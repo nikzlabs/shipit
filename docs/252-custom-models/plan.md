@@ -429,10 +429,13 @@ does.
   / `upsertProviderAccount` are a lossless projection over them
   (`providerAccountToRoute` and its inverse), because an account row *is* a
   `via: "account"` credential of its vendor's subscription mode and `provider`
-  is recoverable from `serviceId` through the catalogue's `nativeService`. **Phase
-  3 deletes the projection** when eligibility and turn routing stop asking
-  "which vendor's agent is this?" — until then the docs/150 machinery keeps its
-  shape and nothing about routing changed in a credentials PR.
+  is recoverable from `serviceId` through the catalogue's `nativeService`. Phase 2
+  expected **phase 3** to delete the projection once eligibility and turn routing
+  stopped asking "which vendor's agent is this?"; phase 3 re-keyed what it read
+  and left the router built on the projection, so the deletion became its own
+  change — see [Retiring the `ProviderAccount` projection](#retiring-the-provideraccount-projection-planning342)
+  below. The judgement itself held: nothing about routing changed in a
+  credentials PR.
 - **There were three writers for one API key, not one, and the third was
   invisible.** `setApiKey` (Anthropic) wrote only `process.env`; `set_agent_env`
   (Codex's `OPENAI_API_KEY`) wrote `CredentialData.agentEnv`; the new surface
@@ -1571,6 +1574,77 @@ What phase 9 found:
   set a second staleness axis for a change that is rare, loud when it bites, and
   self-healing on the next container rotation. Cross-backend review found this; the first
   draft claimed the images "cannot disagree" and left the container case unsaid.
+
+## Retiring the `ProviderAccount` projection (planning#342)
+
+Phase 2 said "phase 3 deletes the projection" and phase 3 did not, for a reason
+worth recording because it generalizes: **each phase re-keyed what it *read*, not
+what the router is *built from*.** Phase 3 re-keyed eligibility, phase 5 the
+failure policy, phase 6 the quota map — none of them needed the account walk
+itself in route terms to meet its own requirement, so the projection survived as
+the seam between the new credential model and the old routing model. A
+compatibility layer that nothing owns is how a temporary seam becomes permanent,
+which is why it was tracked on its own rather than left to the next phase to
+notice.
+
+What the retirement actually is:
+
+- **The router splits into two axes instead of one.** `serviceId: string` for
+  every question about a credential *row* — which exist, their order, which one
+  a turn takes, benching, cutoffs, status — and `provider: AgentId` for the three
+  places a *harness* is genuinely the subject: the on-disk credential root
+  (`provider-accounts/<harness>/<id>`, unchanged so no install's credentials
+  move), the login flow (one `AgentAuthManager` per CLI), and "does this harness
+  have any credential of its own vendor's". `accountServiceForHarness` is the one
+  named conversion between them.
+- **The projection and `ProviderAccount` are gone**, along with the four
+  `CredentialStore` methods and the two adapters. The only thing that still needs
+  the old shape is the one-time read of the frozen `providerAccounts` blob, which
+  is a *disk format* and now says so: a private `LegacyProviderAccountRow` in
+  `credential-store.ts` rather than a live domain type.
+- **The wire keeps its names and changes its type.** `providerAccounts`,
+  `provider_accounts` and `/api/provider-accounts/:provider/...` are the
+  *account-connection UI's* vocabulary, and `via: "account"` is a concept this
+  feature kept; what it removed was the storage/routing type. So the payload is
+  `CredentialRoute[]` and the endpoints are untouched.
+
+**Two things a reader should not have to re-derive.**
+
+- **The hazard the compiler cannot catch.** `serviceId` and `AgentId` are both
+  bare strings, so `list("claude")` compiles and answers `[]` — which reads as
+  "no accounts connected", an ordinary state. The `AgentId` union protects the
+  harness direction; the service direction is protected by a guard test and by
+  routing every `AgentId`-holding caller through one conversion rather than an
+  improvised `nativeServiceForHarness(...) ?? something` per site.
+- **One deliberate behaviour difference**, in `selectRouteForSelection`: the
+  account walk is now asked about `selection.serviceId` rather than the harness's
+  native service. They coincide everywhere the picker can reach, and diverge only
+  for a session row naming, say, `(anthropic, sub)` while pinned to the Codex
+  harness — which the picker never offers, and where the old answer (walk
+  OpenAI's accounts) was wrong anyway.
+
+  **State the reason precisely, because the obvious version of it is wrong.**
+  `acceptsAccount` does *not* rule the divergent state out: it asks whether the
+  harness can carry an account-delivered credential at all, and Codex can. The
+  equality holds because of the **catalogue**: only `anthropic:sub` and
+  `openai:sub` declare an account-delivered credential, and each one's models are
+  carried only by its own harness, so every picker-reachable account selection
+  has `selection.serviceId === nativeServiceForHarness(harnessId)`. That is a
+  property of today's rows, not of the code — a future service with an
+  account-delivered subscription a second harness can carry breaks it. Cross-
+  backend review caught the loose phrasing; `service-routing.test.ts` pins the
+  axis on the divergent pair, so the choice cannot be quietly reverted.
+
+**What this does *not* do, deliberately.** There are still two quota-aware walks
+— the account one here and `stringSelectionFor`'s in `service-routing.ts` — and
+unifying them is a separate change, because today they differ in ways that are
+only *coincidentally* equal: the string walk consults no limits snapshot and no
+cutoffs, which matches the account walk exactly as long as nothing reports quota
+for a string credential (planning#339 is what changes that), and a mixed group
+would interleave differently than today's "accounts first, then strings". Both
+walks now speak `CredentialRoute` and share `orderForSelectionMode`, so the
+unification is a small change rather than a translation — but it is a behaviour
+change, and this one was not.
 
 ## What a third harness could break
 

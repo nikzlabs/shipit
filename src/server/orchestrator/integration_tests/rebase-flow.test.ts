@@ -356,9 +356,9 @@ describe("rebase flow: API + WS events", () => {
     const accounts = new ProviderAccountManager({ credentialsDir, credentialStore });
     const resetAt = Date.now() + 45 * 60 * 1000;
     for (const label of ["Work", "Personal"]) {
-      const acct = accounts.create("claude", label);
-      accounts.setAccountStatus("claude", acct.id, "ready");
-      accounts.markAccountExhausted("claude", acct.id, resetAt);
+      const acct = accounts.create("anthropic", label);
+      accounts.setAccountStatus("anthropic", acct.id, "ready");
+      accounts.markAccountExhausted("anthropic", acct.id, resetAt);
     }
     const spawnedBefore = allClaudes.length;
 

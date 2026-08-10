@@ -20,14 +20,16 @@ import type { ChildProcess } from "node:child_process";
 import { ClaudeOAuthRefresher } from "./oauth-refresher.js";
 import type { ClaudeOAuthRefresherDeps, RefreshResult } from "./oauth-refresher.js";
 import type { ProviderAccountManager } from "../../provider-account-manager.js";
-import type { ProviderAccount, AgentId } from "../../../shared/types.js";
+import type { CredentialRoute, AgentId } from "../../../shared/types.js";
 
 // ---- helpers ----
 
-function makeAccount(id: string, overrides: Partial<ProviderAccount> = {}): ProviderAccount {
+function makeAccount(id: string, overrides: Partial<CredentialRoute> = {}): CredentialRoute {
   return {
     id,
-    provider: "claude" as AgentId,
+    serviceId: "anthropic",
+    billingMode: "sub",
+    via: "account",
     label: id,
     isPrimary: true,
     status: "ready",
@@ -39,11 +41,11 @@ function makeAccount(id: string, overrides: Partial<ProviderAccount> = {}): Prov
 
 function makeProviderAccountManager(opts: {
   rootDir: string;
-  accounts: ProviderAccount[];
+  accounts: CredentialRoute[];
 }): ProviderAccountManager {
   return {
-    list: (provider?: AgentId): ProviderAccount[] => {
-      if (provider && provider !== "claude") return [];
+    list: (serviceId?: string): CredentialRoute[] => {
+      if (serviceId && serviceId !== "anthropic") return [];
       return opts.accounts;
     },
     resolveCredentialRoot: (provider: AgentId, accountId: string): string => {
@@ -155,7 +157,7 @@ interface TestRig {
 }
 
 function buildRig(opts: {
-  accounts: ProviderAccount[];
+  accounts: CredentialRoute[];
   initialExpiries?: Record<string, number>;
   initialNow?: number;
   safetyMarginMs?: number;

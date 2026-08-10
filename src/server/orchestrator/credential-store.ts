@@ -13,7 +13,6 @@ import type {
   CredentialBillingMode,
   CredentialRoute,
   FailoverCutoffs,
-  ProviderAccount,
   SubAgentDefaults,
   SubAgentDefaultsPatch,
 } from "../shared/types.js";
@@ -24,7 +23,6 @@ import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js
 import {
   allServices,
   getMode,
-  harnessForNativeService,
   modesOfferingModel,
   nativeServiceForHarness,
   resolveModelSelection,
@@ -51,6 +49,21 @@ import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
  */
 interface LinearTrackerConfig {
   token?: string;
+}
+
+/**
+ * The pre-docs/252 account row, as it still sits in `credentials.json` on an
+ * install that has not yet been through {@link
+ * CredentialStore.migrateProviderAccountsToRoutes}.
+ *
+ * A **disk format**, not a domain type — which is why it is declared here and
+ * not in `shared/types`. The live domain type it becomes is `CredentialRoute`;
+ * planning#342 deleted the `ProviderAccount` interface that used to serve as
+ * both, so the only thing that still needs this shape is the one-time read
+ * below.
+ */
+interface LegacyProviderAccountRow extends Omit<CredentialRoute, "serviceId" | "billingMode" | "via"> {
+  provider: AgentId;
 }
 
 interface CredentialData {
@@ -162,7 +175,7 @@ interface CredentialData {
    * downgrade path for an install that rolls back before it connects anything
    * new. It is not a second live source: nothing writes it after the migration.
    */
-  providerAccounts?: Partial<Record<AgentId, ProviderAccount[]>>;
+  providerAccounts?: Partial<Record<AgentId, LegacyProviderAccountRow[]>>;
   /**
    * docs/252 phase 2 — every credential the user holds, keyed by
    * `(serviceId, billingMode)` on each record. One flat array rather than a map
@@ -343,8 +356,12 @@ export class CredentialStore {
         );
         continue;
       }
-      for (const account of accounts ?? []) {
-        routes.push({ ...providerAccountToRoute(account, serviceId) });
+      for (const { provider: _provider, ...rest } of accounts ?? []) {
+        // Every other field survives verbatim — including the four that look
+        // like clutter and are not: selection filters on `status` and
+        // `exhaustedUntil`, balanced routing reads `lastUsedAt`, and duplicate
+        // detection and label adoption use `externalId` and `labelIsGenerated`.
+        routes.push({ ...rest, serviceId, billingMode: "sub", via: "account" });
       }
     }
     this.data.credentialRoutes = routes;
@@ -706,47 +723,6 @@ export class CredentialStore {
     const route = this.getCredentialRoute(routeId);
     if (!route) return;
     this.upsertCredentialRoute({ ...route, lastUsedAt: Date.now() });
-  }
-
-  // ---- Provider accounts (docs/150) — a projection over credential routes ----
-  //
-  // docs/252 phase 2 makes `CredentialRoute` the storage shape and leaves these
-  // four as the account-shaped view the docs/150 routing machinery still reads.
-  // The projection is total and lossless in both directions: an account row IS
-  // a `via: "account"` credential of its vendor's subscription mode, and
-  // `provider` is recoverable from `serviceId` through the catalogue's
-  // `nativeService`. Phase 3 — which moves eligibility and turn routing off
-  // `AgentId` — is what deletes this pair of adapters; re-keying ~70 call sites
-  // here would have bought nothing this phase can use.
-
-  listProviderAccounts(provider?: AgentId): ProviderAccount[] {
-    if (!provider) {
-      return (["claude", "codex"] as AgentId[]).flatMap((id) => this.listProviderAccounts(id));
-    }
-    const serviceId = nativeServiceForHarness(provider);
-    if (!serviceId) return [];
-    return this.listCredentialRoutes(serviceId, "sub")
-      .filter((route) => route.via === "account")
-      .map((route) => routeToProviderAccount(route, provider));
-  }
-
-  getProviderAccount(provider: AgentId, accountId: string): ProviderAccount | undefined {
-    return this.listProviderAccounts(provider).find((a) => a.id === accountId);
-  }
-
-  upsertProviderAccount(account: ProviderAccount): void {
-    const serviceId = nativeServiceForHarness(account.provider);
-    if (!serviceId) {
-      throw new Error(`No catalogue service for provider ${account.provider}`);
-    }
-    this.upsertCredentialRoute(providerAccountToRoute(account, serviceId));
-  }
-
-  deleteProviderAccount(provider: AgentId, accountId: string): void {
-    const route = this.getCredentialRoute(accountId);
-    if (route?.via !== "account") return;
-    if (route.serviceId !== nativeServiceForHarness(provider)) return;
-    this.deleteCredentialRoute(accountId);
   }
 
   // ---- Agent environment variables ----
@@ -1309,36 +1285,6 @@ export class CredentialStore {
     this.data = {};
     this.save();
   }
-}
-
-/**
- * docs/252 phase 2 — the two halves of the account↔route projection.
- *
- * Kept as free functions next to the store rather than as methods so they are
- * obviously pure and obviously each other's inverse, which is the property the
- * round-trip test asserts. Every field of `ProviderAccount` other than
- * `provider` survives verbatim — including the four that look like clutter and
- * are not: selection filters on `status` and `exhaustedUntil`, balanced routing
- * reads `lastUsedAt`, and duplicate detection and label adoption use
- * `externalId` and `labelIsGenerated`.
- */
-export function providerAccountToRoute(account: ProviderAccount, serviceId: string): CredentialRoute {
-  const { provider: _provider, ...rest } = account;
-  return { ...rest, serviceId, billingMode: "sub", via: "account" };
-}
-
-export function routeToProviderAccount(route: CredentialRoute, provider: AgentId): ProviderAccount {
-  const { serviceId: _serviceId, billingMode: _billingMode, via: _via, ...rest } = route;
-  return { ...rest, provider };
-}
-
-/**
- * The `AgentId` an account-backed route belongs to, or `undefined` when the
- * service is not any harness's own vendor — which is every custom service, and
- * why this is the projection's only partial step.
- */
-export function providerForRoute(route: CredentialRoute): AgentId | undefined {
-  return harnessForNativeService(route.serviceId);
 }
 
 /**

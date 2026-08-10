@@ -77,12 +77,12 @@ table — a phase is checked off when its PR has merged.
 - [x] A stale pin stops naming with a notice; "nothing eligible" falls back to the pre-feature
       path instead, so an install whose CLI is authenticated outside ShipIt's credential store
       keeps naming its sessions
-- [ ] Delete the `ProviderAccount` projection. Phase 6 re-keyed the **quota** map to
-      `(service, mode) → route`, and `ProviderAccountManager` now reads it under that key —
-      but the account machinery itself (the quota-aware walk, cutoffs, benching, failover)
-      is still keyed by `AgentId` and still consumes `ProviderAccount`. Retiring the
-      projection means re-keying *that*, which no phase has needed to do: each re-keyed
-      what it read, not what the router is built from.
+- [x] Delete the `ProviderAccount` projection. Closed as **planning#342**, on its own,
+      because no phase needed it: each re-keyed what it *read*, not what the router is
+      *built from*. The router's credential-row verbs now take a `serviceId`, the harness
+      survives only where a login flow or a credential root is the subject, and
+      `ProviderAccount` and both adapters are gone. See `plan.md` →
+      *Retiring the `ProviderAccount` projection*.
 - [x] Replace the first-credential delivery within one mode. Closed in **phase 5**: every
       stored credential is delivered under a name of its own and spawn shaping sources the
       pinned route's, so choosing a different one no longer means authenticating with the

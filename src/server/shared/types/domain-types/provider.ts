@@ -1,5 +1,3 @@
-import type { AgentId } from "../agent-types.js";
-
 /**
  * Where a turn's credential came from.
  *
@@ -17,71 +15,6 @@ import type { AgentId } from "../agent-types.js";
  * and so the classification is stated once.
  */
 export type ProviderRouteKind = "account" | "reserved" | "string";
-
-export type ProviderAccountStatus = "ready" | "authenticating" | "auth_failed" | "unavailable";
-
-export interface ProviderAccountCapabilities {
-  models?: string[];
-  supportsImages?: boolean;
-  supportsReview?: boolean;
-  supportedPermissionModes?: string[];
-  source: "provider_profile" | "agent_init" | "manual_default";
-  refreshedAt: number;
-}
-
-export interface ProviderAccount {
-  id: string;
-  provider: AgentId;
-  label: string;
-  isPrimary: boolean;
-  /**
-   * docs/150 req 2 — the user's fallback order for this provider, ascending
-   * (0 is tried first). Authoritative for selection.
-   *
-   * Optional so rows written before this existed still load; those are ordered
-   * the old way (primary first, then stored order) until the user reorders,
-   * at which point every row gets an explicit value. A newly connected account
-   * is appended rather than inserted, so connecting one never silently changes
-   * which account existing work runs on.
-   */
-  priority?: number;
-  /**
-   * docs/150 req 22 — the provider's own id for this account
-   * (Claude `oauthAccount.accountUuid`, Codex `chatgpt_account_id`), recorded
-   * when a sign-in completes.
-   *
-   * This is what makes two rows distinguishable as *accounts* rather than as
-   * labels. Optional because it is unknowable for a row that has never
-   * completed a sign-in, and for an install whose CLI does not report one —
-   * both degrade to the pre-req-22 behaviour rather than failing the connect.
-   */
-  externalId?: string;
-  /**
-   * req 22 — true while `label` is ShipIt's, not the user's.
-   *
-   * A connect replaces a generated label with the email the provider reports,
-   * and must not touch one the user typed. `undefined` (every row written
-   * before this field existed) is treated as user-owned: leaving a stale label
-   * alone is recoverable, overwriting a deliberate one is not.
-   */
-  labelIsGenerated?: boolean;
-  status: ProviderAccountStatus;
-  /**
-   * docs/150 — there is deliberately **no** persisted quota snapshot or plan
-   * label here. The pill's numbers and its plan label both come from the live
-   * per-account snapshot in `LimitsRegistry`, and selection reads that same
-   * live snapshot; a stored copy would be a second source of truth for a fact
-   * that changes every turn. The one quota fact that must outlive a restart —
-   * a hard exhaustion — is `exhaustedUntil` below, which is a scalar with a
-   * built-in expiry rather than a snapshot that never goes stale. See
-   * `plan.md` → "Struck: persisting quota snapshots onto accounts".
-   */
-  capabilities?: ProviderAccountCapabilities;
-  lastUsedAt?: number;
-  exhaustedUntil?: number | null;
-  createdAt: number;
-  updatedAt: number;
-}
 
 /**
  * docs/150 reqs 4–6 — per-provider proactive failover cutoffs, as percentages

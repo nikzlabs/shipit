@@ -451,8 +451,8 @@ describe("createHeadlessSession", () => {
       credentialStore,
     });
     providerAccountManager.migrateDefaultAccounts();
-    expect(providerAccountManager.getPrimary("claude")?.id).toBe("claude-default");
-    expect(providerAccountManager.getPrimary("codex")?.id).toBe("codex-default");
+    expect(providerAccountManager.getPrimary("anthropic")?.id).toBe("claude-default");
+    expect(providerAccountManager.getPrimary("openai")?.id).toBe("codex-default");
 
     await createHeadlessSession(
       sessionManager,

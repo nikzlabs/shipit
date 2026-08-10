@@ -458,9 +458,9 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     // cannot see — a connected account, and the injected auth manager tests and
     // custom runtimes rely on.
     checkClaudeAuth: () =>
-      providerAccountManager.list("claude").some((a) => a.status === "ready")
+      providerAccountManager.list("anthropic").some((a) => a.status === "ready")
       || (deps.authManager?.authenticated ?? false),
-    checkCodexAuth: () => providerAccountManager.list("codex").some((a) => a.status === "ready"),
+    checkCodexAuth: () => providerAccountManager.list("openai").some((a) => a.status === "ready"),
   });
   await agentRegistry.detect();
   const detectedAgents = agentRegistry.list();

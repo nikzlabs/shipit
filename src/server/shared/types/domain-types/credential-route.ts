@@ -1,19 +1,19 @@
 /**
  * docs/252 phase 2 — the user's credentials, keyed by `(service, billing mode)`.
  *
- * This is the type that replaces {@link ProviderAccount} as the *storage* shape.
- * `ProviderAccount` survives as the account-shaped projection the docs/150
- * routing machinery still speaks (see `credential-store.ts`), and phase 3 —
- * which moves eligibility and turn routing off `AgentId` — is what retires it.
+ * This is the **only** credential shape. It replaced the `ProviderAccount`
+ * record docs/150 stored, which survived for a while as an account-shaped
+ * projection over these rows and was deleted by planning#342 once the routing
+ * machinery (`provider-account-manager.ts`) was re-keyed off `AgentId`.
  *
- * Two things change from `ProviderAccount` (`provider.ts`):
+ * Two things changed from that record:
  *
  *   - keyed by `(serviceId, billingMode)` instead of `provider: AgentId`, which
  *     is the conflation this feature removes; and
  *   - `via` distinguishes a login-flow account from a supplied secret, so
  *     plural string-delivered subscriptions (GLM's coding plan) become
- *     expressible. A supplied secret today occupies a single named slot that
- *     the next write overwrites, which would leave req 12 with nothing to fail
+ *     expressible. A supplied secret used to occupy a single named slot that
+ *     the next write overwrote, which would leave req 12 with nothing to fail
  *     over to.
  *
  * **`via` is delivery, never billing.** A subscription can be delivered as a
@@ -29,10 +29,30 @@
  * happens today (`services/settings.ts`).
  */
 
-import type { ProviderAccountCapabilities, ProviderAccountStatus } from "./provider.js";
-
 /** How a credential reaches the CLI. Delivery only — see the file docstring. */
 export type CredentialVia = "account" | "string";
+
+/**
+ * Whether this credential can authenticate a turn right now.
+ *
+ * The two middle states only ever apply to a `via: "account"` credential, which
+ * is the only kind with a login flow behind it: a row exists from the moment
+ * "Add account" is clicked (`unavailable`), goes `authenticating` while the
+ * CLI's sign-in runs, and lands on `ready` or `auth_failed`. A supplied secret
+ * is `ready` the moment it is stored — there is nothing to wait for and nothing
+ * that can half-succeed.
+ */
+export type CredentialStatus = "ready" | "authenticating" | "auth_failed" | "unavailable";
+
+/** What the provider reports this credential can do, refreshed on sign-in. */
+export interface CredentialCapabilities {
+  models?: string[];
+  supportsImages?: boolean;
+  supportsReview?: boolean;
+  supportedPermissionModes?: string[];
+  source: "provider_profile" | "agent_init" | "manual_default";
+  refreshedAt: number;
+}
 
 /** `sub` is an allowance (a subscription or plan); `key` is metered per token. */
 export type CredentialBillingMode = "sub" | "key";
@@ -59,8 +79,18 @@ export interface CredentialRoute {
   isPrimary: boolean;
   /** docs/150 req 2 — authoritative fallback order, ascending. */
   priority?: number;
-  status: ProviderAccountStatus;
-  capabilities?: ProviderAccountCapabilities;
+  status: CredentialStatus;
+  /**
+   * docs/150 — there is deliberately **no** persisted quota snapshot or plan
+   * label here. The pill's numbers and its plan label both come from the live
+   * per-credential snapshot in `LimitsRegistry`, and selection reads that same
+   * live snapshot; a stored copy would be a second source of truth for a fact
+   * that changes every turn. The one quota fact that must outlive a restart —
+   * a hard exhaustion — is `exhaustedUntil` below, which is a scalar with a
+   * built-in expiry rather than a snapshot that never goes stale. See
+   * docs/150's `plan.md` → "Struck: persisting quota snapshots onto accounts".
+   */
+  capabilities?: CredentialCapabilities;
   lastUsedAt?: number;
   exhaustedUntil?: number | null;
   createdAt: number;

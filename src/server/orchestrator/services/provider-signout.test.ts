@@ -61,8 +61,8 @@ describe("signOutProvider", () => {
 
   /** A connected account with credentials on disk. */
   function connectAccount(label: string): string {
-    const account = accounts.create("claude", label);
-    accounts.setAccountStatus("claude", account.id, "ready");
+    const account = accounts.create("anthropic", label);
+    accounts.setAccountStatus("anthropic", account.id, "ready");
     seedAccount(account.id, `token-${label}`);
     return account.id;
   }
@@ -106,7 +106,7 @@ describe("signOutProvider", () => {
 
     signOutProvider(accounts, sessions, registry(), "claude", { credentialsDir: root });
 
-    expect(accounts.list("claude")).toEqual([]);
+    expect(accounts.list("anthropic")).toEqual([]);
     expect(fs.existsSync(accountRoot)).toBe(false);
     expect(signedOutProviders).toEqual(["claude"]);
   });
@@ -176,7 +176,7 @@ describe("signOutProvider", () => {
     signOutProvider(accounts, sessions, registry(), "claude", { credentialsDir: root });
 
     expect(sessions.get("s1")?.providerRouteId).toBe(a);
-    expect(accounts.isRouteUsableForTurn("claude", { kind: "account", id: a })).toBe(false);
+    expect(accounts.isRouteUsableForTurn("anthropic", { kind: "account", id: a })).toBe(false);
   });
 
   /**
@@ -199,8 +199,8 @@ describe("signOutProvider", () => {
   /** Signing out of one provider must not touch the other's sessions. */
   it("leaves the other provider's pinned sessions alone", () => {
     const claudeAccount = connectAccount("A");
-    const codexAccount = accounts.create("codex", "Codex A");
-    accounts.setAccountStatus("codex", codexAccount.id, "ready");
+    const codexAccount = accounts.create("openai", "Codex A");
+    accounts.setAccountStatus("openai", codexAccount.id, "ready");
     pinSession("s1", claudeAccount);
     pinSession("s2", codexAccount.id, "codex");
     seedSessionCredentials("s1", "token-A");
@@ -212,7 +212,7 @@ describe("signOutProvider", () => {
 
     expect(fs.existsSync(sessionTokenPath("s1"))).toBe(false);
     expect(fs.readFileSync(codexAuth, "utf-8")).toBe("codex-token");
-    expect(accounts.list("codex").map((account) => account.id)).toEqual([codexAccount.id]);
+    expect(accounts.list("openai").map((account) => account.id)).toEqual([codexAccount.id]);
   });
 
   /**
@@ -246,7 +246,7 @@ describe("signOutProvider", () => {
       .toThrow(/mid-turn/i);
 
     expect(fs.existsSync(sessionTokenPath("s1"))).toBe(true);
-    expect(accounts.list("claude").map((account) => account.id)).toEqual([a]);
+    expect(accounts.list("anthropic").map((account) => account.id)).toEqual([a]);
     expect(signedOutProviders).toEqual([]);
   });
 });

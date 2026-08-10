@@ -5,7 +5,7 @@
 import type { AgentId, PermissionMode } from "../../shared/types.js";
 import type { AgentReasoningCapability, SubAgentDefaults } from "../../shared/types/agent-types.js";
 import type { EligibleModel } from "../../shared/agent-registry.js";
-import type { AccountSelectionMode, CredentialRoute, FailoverCutoffs, ProviderAccount, SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
+import type { AccountSelectionMode, CredentialRoute, FailoverCutoffs, SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
 import type { BillingMode } from "../../shared/catalogue/types.js";
 
@@ -153,7 +153,7 @@ export interface GlobalSettings {
    * Provider subscription accounts grouped by provider (docs/150). Reserved
    * env/API-key routes are not represented here.
    */
-  providerAccounts: ProviderAccount[];
+  providerAccounts: CredentialRoute[];
   /**
    * docs/252 phase 2 — every credential the user holds, keyed by
    * `(serviceId, billingMode)` and in selection order within each group.

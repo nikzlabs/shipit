@@ -117,7 +117,7 @@ describe("Settings - Agent → Claude tab", () => {
     const now = Date.now();
     const created = {
       id: "acct-1",
-      provider: "claude" as const,
+      serviceId: "anthropic" as const, billingMode: "sub" as const, via: "account" as const,
       label: "Claude account 1",
       isPrimary: true,
       status: "authenticating" as const,
@@ -148,7 +148,7 @@ describe("Settings - Agent → Claude tab", () => {
   // than letting the user click into the refusal.
   it("blocks a second concurrent sign-in while one account is authenticating", () => {
     const now = Date.now();
-    const base = { provider: "claude" as const, isPrimary: false, createdAt: now, updatedAt: now };
+    const base = { serviceId: "anthropic" as const, billingMode: "sub" as const, via: "account" as const, isPrimary: false, createdAt: now, updatedAt: now };
     useSettingsStore.getState().setProviderAccounts([
       { ...base, id: "acct-a", label: "Account A", isPrimary: true, status: "authenticating" as const },
       { ...base, id: "acct-b", label: "Account B", status: "unavailable" as const },
@@ -169,7 +169,7 @@ describe("Settings - Agent → Claude tab", () => {
   // second concurrent per-provider sign-in; the scoping now lives in the data.
   it("renders a row's Claude CLI output only on the account that produced it", () => {
     const now = Date.now();
-    const base = { provider: "claude" as const, isPrimary: false, status: "ready" as const, createdAt: now, updatedAt: now };
+    const base = { serviceId: "anthropic" as const, billingMode: "sub" as const, via: "account" as const, isPrimary: false, status: "ready" as const, createdAt: now, updatedAt: now };
     useSettingsStore.getState().setProviderAccounts([
       { ...base, id: "acct-a", label: "Account A", isPrimary: true },
       { ...base, id: "acct-b", label: "Account B" },
@@ -200,7 +200,7 @@ describe("Settings - Agent → Claude tab", () => {
 
   it("asks which account to move pinned sessions to instead of dead-ending on the refusal", async () => {
     const now = Date.now();
-    const base = { provider: "claude" as const, isPrimary: false, status: "ready" as const, createdAt: now, updatedAt: now };
+    const base = { serviceId: "anthropic" as const, billingMode: "sub" as const, via: "account" as const, isPrimary: false, status: "ready" as const, createdAt: now, updatedAt: now };
     useSettingsStore.getState().setProviderAccounts([
       { ...base, id: "acct-a", label: "Account A", isPrimary: true },
       { ...base, id: "acct-b", label: "Account B" },
@@ -240,7 +240,7 @@ describe("Settings - Agent → Claude tab", () => {
   it("disconnects the last account and reports the sessions left without one", async () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
-      { provider: "claude", id: "acct-a", label: "Account A", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { serviceId: "anthropic", billingMode: "sub", via: "account", id: "acct-a", label: "Account A", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
 
     const fetchMock = vi.fn().mockResolvedValue({
@@ -301,7 +301,7 @@ describe("Settings - Agent → Claude tab", () => {
     useSettingsStore.getState().setProviderAccounts([
       {
         id: "acct-primary",
-        provider: "claude",
+        serviceId: "anthropic", billingMode: "sub", via: "account",
         label: "Primary Anthropic",
         isPrimary: true,
         status: "ready",
@@ -310,7 +310,7 @@ describe("Settings - Agent → Claude tab", () => {
       },
       {
         id: "acct-backup",
-        provider: "claude",
+        serviceId: "anthropic", billingMode: "sub", via: "account",
         label: "Backup Anthropic",
         isPrimary: false,
         status: "unavailable",
@@ -330,7 +330,7 @@ describe("Settings - Agent → Claude tab", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([{
       id: "acct-secondary",
-      provider: "claude",
+      serviceId: "anthropic", billingMode: "sub", via: "account",
       label: "Claude account 2",
       isPrimary: false,
       status: "authenticating",
@@ -605,7 +605,7 @@ describe("Settings - Agent → Codex tab", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([{
       id: "acct-codex-2",
-      provider: "codex",
+      serviceId: "openai", billingMode: "sub", via: "account",
       label: "Codex account 2",
       isPrimary: false,
       status: "authenticating",
@@ -634,7 +634,7 @@ describe("Settings - Agent → Codex tab", () => {
 
   it("keeps two concurrent row sign-ins independent", async () => {
     const now = Date.now();
-    const base = { provider: "codex" as const, isPrimary: false, createdAt: now, updatedAt: now };
+    const base = { serviceId: "openai" as const, billingMode: "sub" as const, via: "account" as const, isPrimary: false, createdAt: now, updatedAt: now };
     useSettingsStore.getState().setProviderAccounts([
       { ...base, id: "acct-a", label: "Codex A", status: "authenticating" },
       { ...base, id: "acct-b", label: "Codex B", status: "authenticating" },

@@ -52,7 +52,7 @@ import {
 import { repoUrlToHash } from "./git-utils.js";
 import { agentHome } from "../shared/agent-home.js";
 import type { ProviderAccountManager, ProviderRoute } from "./provider-account-manager.js";
-import { providerAccountCredentialRoot } from "./provider-account-manager.js";
+import { accountServiceForHarness, providerAccountCredentialRoot } from "./provider-account-manager.js";
 import { routeFromSelection } from "./provider-route-preflight.js";
 import {
   markCredentialRouteUsed,
@@ -581,7 +581,7 @@ export async function prepareSessionAgentEnvironment(
   // been used. Covers the pinned branch too, deliberately: an account carrying
   // an active session should keep sorting last while that work continues.
   if (selectedRoute?.kind === "account" && deps.providerAccountManager) {
-    deps.providerAccountManager.markAccountUsed(agentId, selectedRoute.id);
+    deps.providerAccountManager.markAccountUsed(accountServiceForHarness(agentId), selectedRoute.id);
   }
   // docs/252 phase 5 — the same stamp for a string-delivered credential, which
   // is what makes `balanced` mean anything for a subscription authenticated by a

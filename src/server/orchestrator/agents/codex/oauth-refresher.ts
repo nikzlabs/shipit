@@ -18,7 +18,7 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { spawn as nodeSpawn } from "node:child_process";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
-import type { AgentId, ProviderAccount } from "../../../shared/types.js";
+import type { AgentId } from "../../../shared/types.js";
 import { killChild } from "../../../shared/kill-child.js";
 import type { ProviderAccountManager } from "../../provider-account-manager.js";
 import type { RuntimeMode } from "../../app-di.js";
@@ -106,7 +106,7 @@ export class CodexOAuthRefresher extends EventEmitter {
       console.log("[codex-oauth-refresh] skipping start: runtimeMode != containerized");
       return;
     }
-    for (const account of this.deps.providerAccountManager.list("codex")) {
+    for (const account of this.deps.providerAccountManager.list("openai")) {
       this.scheduleAccount(account.id);
     }
   }
@@ -124,7 +124,7 @@ export class CodexOAuthRefresher extends EventEmitter {
   async refreshNow(accountId?: string): Promise<CodexRefreshResult[]> {
     if (this.deps.runtimeMode !== "containerized") return [];
     if (accountId) return [await this.runTickForAccount(accountId)];
-    const accounts = this.deps.providerAccountManager.list("codex");
+    const accounts = this.deps.providerAccountManager.list("openai");
     return Promise.all(accounts.map((a) => this.runTickForAccount(a.id)));
   }
 
@@ -411,5 +411,3 @@ export class CodexOAuthRefresher extends EventEmitter {
     return Array.from(this.accounts.keys());
   }
 }
-
-export type { ProviderAccount };

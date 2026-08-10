@@ -176,8 +176,8 @@ describe("SubscriptionLimitsBadge group", () => {
   it("keeps every connected provider visible before either has reported usage", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
-      { id: "acct-claude", provider: "claude", label: "Claude work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
-      { id: "acct-codex", provider: "codex", label: "Codex work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-claude", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Claude work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-codex", serviceId: "openai", billingMode: "sub", via: "account", label: "Codex work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
 
     render(<SubscriptionLimitsBadge limits={{}} />);
@@ -204,8 +204,8 @@ describe("SubscriptionLimitsBadge group", () => {
   it("renders one labelled pill per connected account (docs/150 req 10)", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
-      { id: "acct-work", provider: "claude", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
-      { id: "acct-personal", provider: "claude", label: "Personal", isPrimary: false, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-personal", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Personal", isPrimary: false, status: "ready", createdAt: now, updatedAt: now },
     ]);
     const limits: SubscriptionLimitsMap = {
       "anthropic:sub": {
@@ -234,7 +234,7 @@ describe("SubscriptionLimitsBadge group", () => {
   it("lets a pill shrink by truncating its label, not by overflowing the row", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
-      { id: "acct-work", provider: "claude", label: "nicolas.zherebtsov@gmail.com", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "nicolas.zherebtsov@gmail.com", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
     const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "acct-work" })) };
     const { container } = render(<SubscriptionLimitsBadge limits={limits} />);
@@ -252,7 +252,7 @@ describe("SubscriptionLimitsBadge group", () => {
   it("labels a single account's pill with the account name", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
-      { id: "acct-work", provider: "claude", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
     const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "acct-work" })) };
     render(<SubscriptionLimitsBadge limits={limits} />);
@@ -262,8 +262,8 @@ describe("SubscriptionLimitsBadge group", () => {
   it("renders the quiet account alongside an account with a snapshot", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
-      { id: "acct-work", provider: "claude", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
-      { id: "acct-personal", provider: "claude", label: "Personal", isPrimary: false, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-personal", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Personal", isPrimary: false, status: "ready", createdAt: now, updatedAt: now },
     ]);
     const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "acct-work" })) };
     render(<SubscriptionLimitsBadge limits={limits} />);
@@ -634,8 +634,8 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
     // allows a handful of calls per ~30 min, so pressing the pill that showed
     // no numbers spent the other subscription's budget and locked it out too.
     useSettingsStore.getState().setProviderAccounts([
-      { id: "acct-one", provider: "claude", label: "Claude", status: "ready" },
-      { id: "acct-two", provider: "claude", label: "Claude2", status: "ready" },
+      { id: "acct-one", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Claude", status: "ready" },
+      { id: "acct-two", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Claude2", status: "ready" },
     ] as never);
     render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap({ routeId: "acct-two" })) }} />);
 

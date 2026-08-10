@@ -14,7 +14,7 @@ import { ProviderAccountsCard } from "./ProviderAccountsCard.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import type { AgentOption } from "../../agent-types.js";
-import type { ProviderAccount } from "../../../server/shared/types.js";
+import type { CredentialRoute } from "../../../server/shared/types.js";
 
 const agent: AgentOption = {
   id: "claude",
@@ -25,10 +25,10 @@ const agent: AgentOption = {
   supportsReview: true,
 };
 
-function account(id: string, isPrimary = false): ProviderAccount {
+function account(id: string, isPrimary = false): CredentialRoute {
   return {
     id,
-    provider: "claude",
+    serviceId: "anthropic", billingMode: "sub", via: "account",
     label: id,
     isPrimary,
     status: "ready",

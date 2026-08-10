@@ -128,7 +128,7 @@ describe("account selection mode at pin time (req 21)", () => {
     // ProviderAccount from the start but written by nothing, so an LRU order
     // over it would sort `undefined` against `undefined` forever.
     const { markAccountUsed } = await pinNewSession("balanced");
-    expect(markAccountUsed).toHaveBeenCalledWith("claude", "acct-second");
+    expect(markAccountUsed).toHaveBeenCalledWith("anthropic", "acct-second");
   });
 
   it("does not re-route a session that is already pinned", async () => {
@@ -161,6 +161,6 @@ describe("account selection mode at pin time (req 21)", () => {
     // Still stamped, deliberately — an account carrying a long-lived busy
     // session must keep sorting last under `balanced` rather than ageing into
     // looking idle.
-    expect(markAccountUsed).toHaveBeenCalledWith("claude", "acct-first");
+    expect(markAccountUsed).toHaveBeenCalledWith("anthropic", "acct-first");
   });
 });

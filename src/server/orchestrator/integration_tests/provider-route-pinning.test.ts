@@ -26,7 +26,7 @@ import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { CredentialStore } from "../credential-store.js";
-import { ProviderAccountManager } from "../provider-account-manager.js";
+import { accountServiceForHarness, ProviderAccountManager } from "../provider-account-manager.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { SessionRunner, SessionRunnerRegistry } from "../session-runner.js";
@@ -119,8 +119,9 @@ describe("provider route pinning (docs/150)", () => {
   });
 
   function readyAccount(provider: AgentId, label: string, token = "t"): string {
-    const acct = accounts.create(provider, label);
-    accounts.setAccountStatus(provider, acct.id, "ready");
+    const serviceId = accountServiceForHarness(provider);
+    const acct = accounts.create(serviceId, label);
+    accounts.setAccountStatus(serviceId, acct.id, "ready");
     seedAccountCredentials(root, provider, acct.id, token);
     return acct.id;
   }
@@ -173,11 +174,11 @@ describe("provider route pinning (docs/150)", () => {
     // the real manager, which is what `balanced` depends on.
     const accountId = readyAccount("claude", "Work");
     sessions.track("s1", "Test", path.join(root, "sessions", "s1"));
-    expect(accounts.get("claude", accountId)?.lastUsedAt).toBeUndefined();
+    expect(accounts.get("anthropic", accountId)?.lastUsedAt).toBeUndefined();
 
     await runEnvPrep("s1", "claude");
 
-    expect(accounts.get("claude", accountId)?.lastUsedAt).toBeGreaterThan(0);
+    expect(accounts.get("anthropic", accountId)?.lastUsedAt).toBeGreaterThan(0);
   });
 
   it("keeps the pinned route on later turns instead of re-selecting", async () => {
@@ -197,7 +198,7 @@ describe("provider route pinning (docs/150)", () => {
   it("pins a healthy secondary when the first account is exhausted", async () => {
     const first = readyAccount("claude", "Spent");
     const second = readyAccount("claude", "Healthy");
-    accounts.markAccountExhausted("claude", first, Date.now() + 3_600_000);
+    accounts.markAccountExhausted("anthropic", first, Date.now() + 3_600_000);
     sessions.track("s1", "Test", path.join(root, "sessions", "s1"));
 
     await runEnvPrep("s1", "claude");
@@ -209,8 +210,8 @@ describe("provider route pinning (docs/150)", () => {
     const resetAt = Date.now() + 30 * 60 * 1000;
     const first = readyAccount("claude", "A");
     const second = readyAccount("claude", "B");
-    accounts.markAccountExhausted("claude", first, resetAt);
-    accounts.markAccountExhausted("claude", second, resetAt);
+    accounts.markAccountExhausted("anthropic", first, resetAt);
+    accounts.markAccountExhausted("anthropic", second, resetAt);
     const sessionDir = path.join(root, "sessions", "s1");
     sessions.track("s1", "Test", sessionDir);
 
@@ -233,8 +234,8 @@ describe("provider route pinning (docs/150)", () => {
     // Deliberately spend the LATER-resetting account first, so a bug that
     // reports "the first exhausted account's reset" rather than the minimum
     // would surface.
-    accounts.markAccountExhausted("claude", first, later);
-    accounts.markAccountExhausted("claude", second, soon);
+    accounts.markAccountExhausted("anthropic", first, later);
+    accounts.markAccountExhausted("anthropic", second, soon);
     sessions.track("s1", "Test", path.join(root, "sessions", "s1"));
 
     await expect(runEnvPrep("s1", "claude")).rejects.toThrow(
@@ -245,7 +246,7 @@ describe("provider route pinning (docs/150)", () => {
   it("does not roll an exhausted subscription onto a configured API key (req 12)", async () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
     const only = readyAccount("claude", "Subscription");
-    accounts.markAccountExhausted("claude", only, Date.now() + 3_600_000);
+    accounts.markAccountExhausted("anthropic", only, Date.now() + 3_600_000);
     sessions.track("s1", "Test", path.join(root, "sessions", "s1"));
 
     // The API key would work. Spending the user's money because a subscription
@@ -476,10 +477,10 @@ describe("detached system turns reuse the persisted agent and route (docs/150)",
    * name the first (primary) account.
    */
   function codexSessionPinnedToSecondary(): { primary: string; pinned: string } {
-    const primary = accounts.create("codex", "Codex primary");
-    const pinned = accounts.create("codex", "Codex secondary");
+    const primary = accounts.create("openai", "Codex primary");
+    const pinned = accounts.create("openai", "Codex secondary");
     for (const id of [primary.id, pinned.id]) {
-      accounts.setAccountStatus("codex", id, "ready");
+      accounts.setAccountStatus("openai", id, "ready");
       seedAccountCredentials(root, "codex", id);
     }
     sessions.track(SESSION, "Detached", path.join(root, "workspaces", SESSION));
@@ -513,8 +514,8 @@ describe("detached system turns reuse the persisted agent and route (docs/150)",
     // ...on the account the session is pinned to, not the one the router would
     // pick for a fresh session.
     expect(sessions.get(SESSION)?.providerRouteId).toBe(pinned);
-    expect(accounts.get("codex", pinned)?.lastUsedAt).toBeGreaterThan(0);
-    expect(accounts.get("codex", primary)?.lastUsedAt).toBeUndefined();
+    expect(accounts.get("openai", pinned)?.lastUsedAt).toBeGreaterThan(0);
+    expect(accounts.get("openai", primary)?.lastUsedAt).toBeUndefined();
   });
 
   it("recreates a disposed runner from the persisted agent, not defaultAgentId", async () => {
@@ -527,6 +528,6 @@ describe("detached system turns reuse the persisted agent and route (docs/150)",
 
     expect(registry.get(SESSION)?.agentId).toBe("codex");
     expect(sessions.get(SESSION)?.providerRouteId).toBe(pinned);
-    expect(accounts.get("codex", primary)?.lastUsedAt).toBeUndefined();
+    expect(accounts.get("openai", primary)?.lastUsedAt).toBeUndefined();
   });
 });

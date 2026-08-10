@@ -115,7 +115,8 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
   const configured = catalogueModes().filter(({ service, billingMode }) => {
     const provider = accountProviderFor(service, billingMode);
     return routes.some((r) => r.serviceId === service.id && r.billingMode === billingMode && r.via === "string")
-      || (provider !== undefined && accounts.some((a) => a.provider === provider))
+      || (provider !== undefined
+        && accounts.some((a) => a.serviceId === service.id && a.billingMode === billingMode))
       || (provider !== undefined && notices[provider] !== undefined)
       || revealed.includes(credentialModeKey(service.id, billingMode));
   });

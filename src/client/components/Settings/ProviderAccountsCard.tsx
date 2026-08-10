@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { CaretDownIcon, CaretUpIcon, XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
-import type { AgentId, ProviderAccount } from "../../../server/shared/types.js";
+import type { AgentId, CredentialRoute } from "../../../server/shared/types.js";
 import { credentialModeKey } from "../../../server/shared/types/domain-types/credential-route.js";
 import { nativeServiceForHarness } from "../../../server/shared/catalogue/index.js";
 import { Button } from "../ui/button.js";
@@ -136,7 +136,11 @@ export function ProviderAccountsCard({
   const setProviderAccountAuth = useSettingsStore((s) => s.setProviderAccountAuth);
   const allDiagnostics = useSettingsStore((s) => s.claudeAuthDiagnostics);
 
-  const accounts = allAccounts.filter((account) => account.provider === provider);
+  // planning#342 — the store now holds `CredentialRoute`s, keyed by service.
+  // This card is still per-harness (the login flow is the CLI's), so it narrows
+  // the list to the harness's own vendor rather than to the harness.
+  const serviceId = nativeServiceForHarness(provider);
+  const accounts = allAccounts.filter((account) => account.serviceId === serviceId);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [draftLabels, setDraftLabels] = useState<Record<string, string>>({});
   const [adding, setAdding] = useState(false);
@@ -240,13 +244,13 @@ export function ProviderAccountsCard({
     setCardNotice(provider, null);
     try {
       const known = new Set(accounts.map((account) => account.id));
-      const result = await request<{ accounts: ProviderAccount[] }>("/api/provider-accounts", {
+      const result = await request<{ accounts: CredentialRoute[] }>("/api/provider-accounts", {
         method: "POST",
         body: JSON.stringify({ provider }),
       });
       setProviderAccounts(result.accounts);
       const created = result.accounts.find(
-        (account) => account.provider === provider && !known.has(account.id),
+        (account) => account.serviceId === serviceId && !known.has(account.id),
       );
       if (created) await startLogin(created.id);
     } catch (err) {
@@ -257,13 +261,13 @@ export function ProviderAccountsCard({
     }
   };
 
-  const saveLabel = async (account: ProviderAccount) => {
+  const saveLabel = async (account: CredentialRoute) => {
     const label = (draftLabels[account.id] ?? account.label).trim();
     if (!label || label === account.label) return;
     setSavingId(account.id);
     clearRow(account.id);
     try {
-      const result = await request<{ accounts: ProviderAccount[] }>(`/api/provider-accounts/${provider}/${account.id}`, {
+      const result = await request<{ accounts: CredentialRoute[] }>(`/api/provider-accounts/${provider}/${account.id}`, {
         method: "PATCH",
         body: JSON.stringify({ label }),
       });
@@ -278,12 +282,12 @@ export function ProviderAccountsCard({
     }
   };
 
-  const makePrimary = async (account: ProviderAccount) => {
+  const makePrimary = async (account: CredentialRoute) => {
     if (account.isPrimary) return;
     setSavingId(account.id);
     clearRow(account.id);
     try {
-      const result = await request<{ accounts: ProviderAccount[] }>(`/api/provider-accounts/${provider}/${account.id}/primary`, {
+      const result = await request<{ accounts: CredentialRoute[] }>(`/api/provider-accounts/${provider}/${account.id}/primary`, {
         method: "POST",
       });
       setProviderAccounts(result.accounts);
@@ -301,7 +305,7 @@ export function ProviderAccountsCard({
    * partial list, so a card rendered before another tab added an account fails
    * visibly instead of quietly demoting it to the end.
    */
-  const moveAccount = async (account: ProviderAccount, direction: -1 | 1) => {
+  const moveAccount = async (account: CredentialRoute, direction: -1 | 1) => {
     const ids = accounts.map((a) => a.id);
     const from = ids.indexOf(account.id);
     const to = from + direction;
@@ -311,7 +315,7 @@ export function ProviderAccountsCard({
     setSavingId(account.id);
     clearRow(account.id);
     try {
-      const result = await request<{ accounts: ProviderAccount[] }>(`/api/provider-accounts/${provider}/order`, {
+      const result = await request<{ accounts: CredentialRoute[] }>(`/api/provider-accounts/${provider}/order`, {
         method: "PUT",
         body: JSON.stringify({ accountIds: next }),
       });
@@ -338,7 +342,7 @@ export function ProviderAccountsCard({
    * and the last account was precisely the case that used to have no way
    * through.
    */
-  const disconnect = async (account: ProviderAccount, replacementAccountId?: string) => {
+  const disconnect = async (account: CredentialRoute, replacementAccountId?: string) => {
     setSavingId(account.id);
     clearRow(account.id);
     setCardNotice(provider, null);
@@ -347,7 +351,7 @@ export function ProviderAccountsCard({
         ? `?replacementAccountId=${encodeURIComponent(replacementAccountId)}`
         : "";
       const result = await request<{
-        accounts: ProviderAccount[];
+        accounts: CredentialRoute[];
         switchedSessionIds: string[];
         strandedSessionIds?: string[];
       }>(
@@ -386,7 +390,7 @@ export function ProviderAccountsCard({
     }
   };
 
-  const connect = async (account: ProviderAccount) => {
+  const connect = async (account: CredentialRoute) => {
     setSavingId(account.id);
     clearRow(account.id);
     setCardNotice(provider, null);
@@ -399,7 +403,7 @@ export function ProviderAccountsCard({
     }
   };
 
-  const cancelLogin = async (account: ProviderAccount) => {
+  const cancelLogin = async (account: CredentialRoute) => {
     setSavingId(account.id);
     clearRow(account.id);
     try {
@@ -412,7 +416,7 @@ export function ProviderAccountsCard({
     }
   };
 
-  const submitAuthCode = async (account: ProviderAccount) => {
+  const submitAuthCode = async (account: CredentialRoute) => {
     const code = authCodes[account.id]?.trim();
     if (!code) return;
     setSavingId(account.id);

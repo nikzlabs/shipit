@@ -8,7 +8,7 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { useEgressStore } from "../stores/egress-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, ProviderAccount, CredentialRoute, AgentId, EgressSettings } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, AgentId, EgressSettings } from "../../server/shared/types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
 import { getSavedModelId, saveAgentId, saveModelId } from "../utils/local-storage.js";
 import { resolveAuthedSelection } from "../utils/resolve-authed-selection.js";
@@ -513,7 +513,7 @@ export function useServerEvents(): void {
     });
 
     es.addEventListener("provider_accounts", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { accounts: ProviderAccount[] };
+      const data = JSON.parse(e.data as string) as { accounts: CredentialRoute[] };
       useSettingsStore.getState().setProviderAccounts(data.accounts);
     });
 
