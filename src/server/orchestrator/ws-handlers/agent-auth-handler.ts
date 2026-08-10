@@ -84,7 +84,9 @@ export function wireAuthRequiredHandler(
     const setAsideCredential =
       !failurePolicy.stopsOnFailure
       && !failurePolicy.vendorOwnedRecovery
-      && turnSession?.providerRouteKind === "reserved"
+      // docs/260 — reserved-ness comes from the TURN'S OWN captured route,
+      // not a session row (which records no route any more).
+      && opts.getCapturedRouteKind?.() === "reserved"
       && !!turnSessionId;
 
     // docs/179 — decide SYNCHRONOUSLY (before the teardown below kills the agent
@@ -186,7 +188,11 @@ export function wireAuthRequiredHandler(
       // transient blip costs minutes, not a day — and
       // `markSessionAccountExhausted` still refuses a metered key (req 12).
       if (setAsideCredential && turnSessionId) {
-        deps.markSessionAccountExhausted?.(turnSessionId, Date.now() + UNKNOWN_RESET_LOCKOUT_MS);
+        deps.markSessionAccountExhausted?.(
+          turnSessionId,
+          Date.now() + UNKNOWN_RESET_LOCKOUT_MS,
+          opts.getCapturedRouteId?.(),
+        );
       }
       persistAuthErrorRow();
       // docs/153, docs/155 — let the per-agent module decide its side effect on

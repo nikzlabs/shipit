@@ -24,6 +24,7 @@
  * facade.
  */
 
+import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess, WorkerAgentStatus } from "../shared/types.js";
 import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionMode, PermissionDecision } from "../shared/types.js";
@@ -126,7 +127,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   /** See `SessionRunnerInterface.appliedSpawnIdentity` — the resident CLI's whole spawn tuple. */
   private _appliedSpawnIdentity: string | undefined = undefined;
   /** See `SessionRunnerInterface.residentRoute` — the resident CLI's credential route. */
-  private _residentRoute: { kind: "account" | "reserved"; id: string } | undefined = undefined;
+  private _residentRoute: { kind: ProviderRouteKind; id: string } | undefined = undefined;
 
   // Per-runner mutex for `_startAgentViaProxy`. Concurrent callers chain on
   // this promise so docs/142's B2 kill+restart cannot interleave with another
@@ -439,8 +440,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   set appliedPermissionMode(v: PermissionMode | undefined) { this._appliedPermissionMode = v; }
   get appliedSpawnIdentity(): string | undefined { return this._appliedSpawnIdentity; }
   set appliedSpawnIdentity(v: string | undefined) { this._appliedSpawnIdentity = v; }
-  get residentRoute(): { kind: "account" | "reserved"; id: string } | undefined { return this._residentRoute; }
-  set residentRoute(v: { kind: "account" | "reserved"; id: string } | undefined) { this._residentRoute = v; }
+  get residentRoute(): { kind: ProviderRouteKind; id: string } | undefined { return this._residentRoute; }
+  set residentRoute(v: { kind: ProviderRouteKind; id: string } | undefined) { this._residentRoute = v; }
 
   get accumulatedText(): string { return this.turn.accumulatedText; }
   set accumulatedText(s: string) { this.turn.accumulatedText = s; }

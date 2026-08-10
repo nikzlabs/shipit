@@ -41,8 +41,7 @@ import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
-import { sessionAccountId, sessionNeedsAccountFailover } from "./services/provider-account-switch.js";
-import { sessionNeedsCredentialFailover } from "./service-routing.js";
+import { residentRouteNeedsRelease} from "./service-routing.js";
 import type { GenerateText } from "./non-turn-model.js";
 
 // ---- Runner registry setup ----
@@ -447,7 +446,7 @@ export function createRunnerRegistry(
         // model, no MCP, no autoCreatePr). When `credentialStore` is absent
         // (extreme-minimal test setup) we fall back to the minimal shape
         // so we don't regress those callers.
-        buildRunParams: async (sessionId, agentId, prompt) => {
+        buildRunParams: async (sessionId, agentId, prompt, turnRoute) => {
           const session = sessionManager.get(sessionId);
           if (!credentialStore) {
             return {
@@ -469,6 +468,7 @@ export function createRunnerRegistry(
             sessionId,
             agentId,
             prompt,
+            ...(turnRoute ? { turnRoute } : {}),
             sessionDir: runner.sessionDir,
             ...(session?.agentSessionId !== undefined ? { agentSessionId: session.agentSessionId } : {}),
           });
@@ -523,19 +523,15 @@ export function createRunnerRegistry(
           routeLabel: (routeId: string) =>
             providerAccountManager?.getByRouteId(routeId)?.label
             ?? credentialStore.getCredentialRoute(routeId)?.label,
-          // docs/252 phase 5 — a benched string-delivered subscription credential
-          // retires the resident process on the same terms an exhausted account
-          // does, so this is no longer gated on there being an account manager at
-          // all: a GLM-only install has none, and its failover has to work.
-          // `sessionNeedsAccountFailover` answers false without one.
+          // docs/260 — the dispatched-turn twin of the WS pre-capture check:
+          // release the resident process only when selection would land this
+          // turn on a DIFFERENT credential, and never while the process holds
+          // background work (req 13 — the check itself answers false then).
           needsAccountFailover: (sessionId: string) =>
-            sessionNeedsAccountFailover(sessionManager.get(sessionId), providerAccountManager)
-            || sessionNeedsCredentialFailover(sessionManager.get(sessionId), credentialStore),
-          ...(providerAccountManager ? {
-            // docs/150 — scope the runtime-401 heal to this turn's account.
-            resolveTurnAccountId: (sessionId: string) =>
-              sessionAccountId(sessionManager.get(sessionId)),
-          } : {}),
+            residentRouteNeedsRelease(sessionManager.get(sessionId), runner.agentId, runner, {
+              credentialStore,
+              ...(providerAccountManager ? { providerAccountManager } : {}),
+            }),
         } : {}),
         // Single shared commit helper — same `postTurnCommit` the WS path uses
         // (workspace-locked auto-commit + conflict notice + auto-push + commit

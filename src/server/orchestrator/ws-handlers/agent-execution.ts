@@ -6,7 +6,6 @@ import { postTurnCommit } from "./post-turn.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { emitResetEligible } from "../services/pre-turn-reset.js";
 import { applyPreTurnReset, type PreTurnResetHookResult } from "../pre-turn-reset-hook.js";
-import { sessionAccountId } from "../services/provider-account-switch.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
 import { startQueuedMessage } from "../queue-drain.js";
@@ -481,9 +480,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     agentFactory: (id) => ctx.agentFactory(id),
     // docs/179 — token healer for the runtime-401 auto-retry.
     ...(ctx.ensureAgentTokenFresh ? { ensureAgentTokenFresh: ctx.ensureAgentTokenFresh } : {}),
-    // docs/150 — and the account to heal, so a revoked sibling account can't
-    // make a healthy account's turn look unhealable.
-    resolveTurnAccountId: (sid: string) => sessionAccountId(ctx.sessionManager.get(sid)),
     autoCommit: async (sessionDir, summary) => {
       const git = ctx.createGitManager(sessionDir);
       const parentHash = await git.getHeadHash();
@@ -494,7 +490,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     // (which drives its own push via postTurnCommit → ctx.scheduleAutoPush).
     scheduleAutoPush: (sessionDir) => ctx.scheduleAutoPush(ctx.createGitManager(sessionDir)),
     listenerDeps,
-    buildRunParams: async (sessionId, id, p) => {
+    buildRunParams: async (sessionId, id, p, turnRoute) => {
       // Read agentSessionId fresh from the DB — env-prep's docs/153 leak repair
       // (run by the executor immediately before this) updates it there.
       const session = ctx.sessionManager.get(sessionId);
@@ -511,6 +507,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         sessionId,
         agentId: id,
         prompt: p,
+        ...(turnRoute ? { turnRoute } : {}),
         sessionDir: activeDir,
         ...(session?.agentSessionId !== undefined ? { agentSessionId: session.agentSessionId } : {}),
         ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),

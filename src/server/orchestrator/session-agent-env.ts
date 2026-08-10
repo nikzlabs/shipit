@@ -18,6 +18,7 @@
  * is about to run.
  */
 
+import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
 import path from "node:path";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
@@ -32,6 +33,7 @@ import {
   ensureSessionAccountCredentials,
   provisionAgentCredentials,
   provisionRepoMemory,
+  readSessionAccountMarker,
   syncAgentTokenIn,
   syncProviderAccountTokenIn,
   syncAgentTokenBack,
@@ -429,7 +431,7 @@ function selectTurnRoute(
   deps: SessionAgentEnvDeps,
   opts: {
     excludeRouteIds?: readonly string[] | undefined;
-    residentRoute?: { kind: "account" | "reserved"; id: string } | undefined;
+    residentRoute?: { kind: ProviderRouteKind; id: string } | undefined;
     requireResidentRoute?: boolean;
   },
 ): ProviderRoute | undefined {
@@ -534,7 +536,7 @@ export async function prepareSessionAgentEnvironment(
      * turns — req 8); under `strict` it is only a preference when
      * `requireResidentRoute` forces it.
      */
-    residentRoute?: { kind: "account" | "reserved"; id: string };
+    residentRoute?: { kind: ProviderRouteKind; id: string };
     /**
      * docs/260 reqs 8/13 — the turn MUST run on `residentRoute`: the process
      * is being reused (its token is in memory), or it holds background work
@@ -582,6 +584,14 @@ export async function prepareSessionAgentEnvironment(
         requireResidentRoute: args.requireResidentRoute === true,
       })
     : undefined;
+
+  // docs/260 §5 — stamp the selection onto the runner BEFORE the spawn: the
+  // local-mode HOME resolver and the pre-capture release check read this, and
+  // the spawn that follows may resolve synchronously, before the executor's
+  // own post-run stamp could land.
+  if (isTurn && runner && selectedRoute) {
+    runner.residentRoute = { kind: selectedRoute.kind, id: selectedRoute.id };
+  }
 
   // docs/150 req 21 — stamp the credential this turn actually resolved onto,
   // which is what `balanced` sorts by. An account merely *considered* has not
@@ -1031,7 +1041,16 @@ export function finalizeSessionAgentEnvironment(
   stopTokenWriteBackWatch(args.sessionId);
   if (!(runner instanceof ContainerSessionRunner)) return;
   const session = args.deps.sessionManager.get(args.sessionId);
-  const route = args.capturedRoute ?? session;
+  // docs/260 — the write-back target is the TURN'S OWN captured route; with
+  // no capture (a path that never ran env-prep), the subtree's recorded
+  // account marker decides. The old fallback read the session row, and a
+  // missing row value sent an account session's token to the FLAT root —
+  // the exact cross-account write-back that poisoned installs pre-260.
+  const markerAccountId = readSessionAccountMarker(args.deps.credentialsDir, args.sessionId)[args.agentId];
+  const route = args.capturedRoute
+    ?? (markerAccountId
+      ? { providerRouteKind: "account" as const, providerRouteId: markerAccountId }
+      : undefined);
   try {
     if (route?.providerRouteKind === "account" && route.providerRouteId) {
       syncProviderAccountTokenBack(

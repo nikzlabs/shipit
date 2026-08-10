@@ -28,7 +28,9 @@ import type { ChatHistoryManager } from "./chat-history.js";
 import type { UsageManager } from "./usage.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SessionManager } from "./sessions.js";
-import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
+import { repushAgentToken, repushProviderAccountToken,
+  readSessionAccountMarker,
+} from "./session-credentials.js";
 import type { RepoGit } from "./repo-git.js";
 import type { GitManager } from "../shared/git.js";
 import type { AgentAuthManager, AgentAuthFailedPayload } from "./agent-auth-manager.js";
@@ -600,6 +602,9 @@ export function buildRunnerFactory(
         const homeDeps = {
           sessionManager,
           credentialsDir,
+          // docs/260 — env-prep stamps the turn's selected route on THIS
+          // runner before the spawn resolves its HOME.
+          getTurnRoute: () => runner.residentRoute,
           ...(providerAccountManager ? { providerAccountManager } : {}),
         };
         runner.createAgent = (agentId: AgentId): AgentProcess => {
@@ -1372,7 +1377,12 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
     let healed = 0;
     for (const session of sessionManager.list()) {
       if (!session.agentPinned || session.agentId !== agentId) continue;
-      if (accountId && (session.providerRouteKind !== "account" || session.providerRouteId !== accountId)) continue;
+      // docs/260 — whose token a session's subtree holds is the subtree's own
+      // recorded identity (the account marker), never a session row. A pre-260
+      // subtree with no marker keeps the legacy flat repush below, which only
+      // overwrites a token file the session already has.
+      const marked = readSessionAccountMarker(credentialsDir, session.id)[agentId];
+      if (accountId && marked !== undefined && marked !== accountId) continue;
       try {
         // docs/179 §4 — a sign-in can complete at any moment, including while
         // a streaming CLI is resident. Deliver the fresh token, but leave

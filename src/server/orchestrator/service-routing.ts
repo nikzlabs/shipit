@@ -48,7 +48,7 @@ import {
   orderCredentialRoutes,
   refusalBlockedUntil,
 } from "../shared/types/domain-types/credential-route.js";
-import type { AccountSelectionMode } from "../shared/types/domain-types/provider.js";
+import type { AccountSelectionMode, ProviderRouteKind } from "../shared/types/domain-types/provider.js";
 
 /** The `CredentialStore` surface this module reads. Narrow so tests can fake it. */
 export type ServiceRoutingCredentialSource = Pick<
@@ -397,7 +397,7 @@ export function residentRouteNeedsRelease(
   harnessId: AgentId,
   runner:
     | {
-        residentRoute?: { kind: "account" | "reserved"; id: string } | undefined;
+        residentRoute?: { kind: ProviderRouteKind; id: string } | undefined;
         backgroundWorkDescriptions?: readonly string[];
       }
     | null

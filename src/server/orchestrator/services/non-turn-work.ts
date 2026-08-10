@@ -90,6 +90,7 @@ import { ContainerSessionRunner } from "../container-session-runner.js";
 import {
   provisionProviderAccountCredentials,
   provisionSubAgentCredentials,
+  readSessionAccountMarker,
   removeSubAgentCredentials,
   syncAgentTokenBack,
   syncProviderAccountTokenBack,
@@ -586,16 +587,18 @@ async function runNonTurnSpawn(
       }
       removeSubAgentCredentials(credentialsDir, sessionId, target.harnessId);
       const session = deps.sessionManager?.get(sessionId);
-      if (
-        session?.agentId === target.harnessId
-        && session?.providerRouteKind === "account"
-        && session.providerRouteId
-      ) {
+      // docs/260 — which account to put back is the credential subtree's own
+      // recorded identity (the marker), not a session row: the row records no
+      // route any more, and the marker survives the consult because a borrow
+      // provisions through `provisionSubAgentCredentials`, which never touches
+      // it.
+      const restoreAccountId = readSessionAccountMarker(credentialsDir, sessionId)[target.harnessId];
+      if (session?.agentId === target.harnessId && restoreAccountId) {
         provisionProviderAccountCredentials(
           credentialsDir,
           sessionId,
           target.harnessId,
-          session.providerRouteId,
+          restoreAccountId,
         );
       }
     }

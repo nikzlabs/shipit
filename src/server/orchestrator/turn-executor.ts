@@ -70,7 +70,7 @@ import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
 import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
-import { emitChatCard, emitNoticePostTurn } from "./chat-card-persistence.js";
+import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { TURN_COMPLETED, turnErrored, turnInterrupted, turnNoResult, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 
@@ -441,14 +441,22 @@ export async function executeAgentTurn(
       // beside them: every heal was a no-op that reported success, the turn
       // was re-dispatched ~120ms later on byte-identical credentials, and the
       // one shared recovery budget was spent for nothing.
-      if (deps.resolveTurnAccountId) {
-        const turnAccountId = deps.resolveTurnAccountId(sessionId);
-        healed = turnAccountId && deps.ensureAgentTokenFresh
-          ? await deps.ensureAgentTokenFresh(agentId, turnAccountId, { force: true })
+      // docs/260 — the account to heal is the TURN'S OWN capture (set after
+      // env-prep), never a session row: the row records no route any more, and
+      // the 401 being healed came from the process this capture describes.
+      // A RESERVED route stays unhealable here, as before — a bad API key or
+      // env token is not something the account refresher owns. No capture at
+      // all (tests / local runtime / no routing in play) keeps the
+      // provider-wide heal rather than silently disabling recovery.
+      if (capturedCredentialRoute?.providerRouteKind === "account") {
+        healed = deps.ensureAgentTokenFresh
+          ? await deps.ensureAgentTokenFresh(
+              agentId, capturedCredentialRoute.providerRouteId, { force: true },
+            )
           : false;
+      } else if (capturedCredentialRoute) {
+        healed = false;
       } else {
-        // No resolver wired (tests / local runtime): keep the pre-docs/150
-        // provider-wide behaviour rather than silently disabling recovery.
         healed = deps.ensureAgentTokenFresh
           ? await deps.ensureAgentTokenFresh(agentId, undefined, { force: true })
           : false;
@@ -757,6 +765,7 @@ export async function executeAgentTurn(
     fallbackTitle: input.fallbackTitle,
     capturedSessionId: sessionId,
     getCapturedRouteId: () => capturedCredentialRoute?.providerRouteId,
+    getCapturedRouteKind: () => capturedCredentialRoute?.providerRouteKind,
     // docs/179 — auto-recovery hooks: the listener calls `willRecoverAuth`
     // synchronously to decide whether to suppress the sign-in card, then
     // `recoverAuth` to heal + re-dispatch. Omitted when this turn can't recover
@@ -1647,7 +1656,7 @@ export async function executeAgentTurn(
       // started AFTER this turn what delivery the surviving turn belongs to.
       if (input.deliveryId !== undefined) agent.setDeliveryId?.(input.deliveryId);
       const paramsBegan = Date.now();
-      const runParams = await deps.buildRunParams(sessionId, agentId, prompt);
+      const runParams = await deps.buildRunParams(sessionId, agentId, prompt, turnRoute);
       console.log(`[turn] build-run-params for ${sessionId} took ${Date.now() - paramsBegan}ms; spawning agent`);
       // WS always carries `useStreaming` (true or false); dispatch leaves it
       // undefined so the run params are unchanged from the system-turn shape.

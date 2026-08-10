@@ -173,6 +173,8 @@ export interface WireListenersOpts {
    * session row while wiring captures the outgoing route on a retry.
    */
   getCapturedRouteId?: () => string | undefined;
+  /** docs/260 — the captured route's kind, for reserved-vs-account branches. */
+  getCapturedRouteKind?: () => "account" | "reserved" | "string" | undefined;
   /**
    * The permission mode this turn actually requested from the CLI (docs/138),
    * AFTER any guarded→auto downgrade. When this is `"guarded"`, the
@@ -441,7 +443,7 @@ export function wireAgentListeners(
         event.session,
         event.weekly,
         opts.capturedSessionId,
-        opts.getCapturedRouteId?.() ?? sessionAtTurnStart?.providerRouteId,
+        opts.getCapturedRouteId?.(),
       );
       return;
     }
@@ -805,7 +807,7 @@ export function wireAgentListeners(
         deps.markSessionAccountExhausted(
           exhaustedSessionId,
           exhaustionLockoutUntil(detected),
-          opts.getCapturedRouteId?.() ?? sessionAtTurnStart?.providerRouteId,
+          opts.getCapturedRouteId?.(),
         );
       }
       // A turn the provider refused for quota is a FAILED turn even when the
