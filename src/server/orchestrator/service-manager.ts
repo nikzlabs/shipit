@@ -208,6 +208,47 @@ export const STARTING_TIMEOUT_MESSAGE =
   "the service to re-probe.";
 
 /**
+ * How long a `docker compose up` may produce NO output at all while a service
+ * waits on it, before the manager stops treating it as a reason to keep the
+ * service at `starting` (docs/121, requirement 2).
+ *
+ * The exemption {@link ServiceManager.withUpInFlight} grants an in-flight `up`
+ * is correct and stays: an image build has no time limit, and requirement 2's
+ * non-requirements say so explicitly. But the exemption was unconditional, so a
+ * `docker compose up` that never returns — a wedged daemon, a dead socket proxy,
+ * a `docker` process that outlives its connection — re-armed the
+ * {@link STARTING_WATCHDOG_MS} watchdog forever and pinned the service at
+ * `starting` for the rest of the session with no diagnostic anywhere.
+ *
+ * The bound is therefore on SILENCE, not on elapsed time. Requirement 2 asks
+ * that a service be "making progress the user can see, or reported as failed",
+ * and since PR #2121 the `up`'s own output is exactly that visible progress: it
+ * streams into the service's log panel through {@link ServiceManager.composeLogSink}.
+ * A ten-minute build that keeps printing keeps its exemption indefinitely; a
+ * build that has said nothing at all for this long is not one the user can watch.
+ *
+ * Chosen well above the quietest stretch a real build produces — a single silent
+ * `RUN npm install …` layer — because the cost of being wrong is a service
+ * reported as failed while it is in fact still building. That error is not
+ * terminal: the `up` is never cancelled, and the poll that follows its success
+ * restores `running`.
+ */
+export const UP_SILENCE_TIMEOUT_MS = 300_000;
+
+/**
+ * Reason recorded on a service whose `docker compose up` went silent for
+ * {@link UP_SILENCE_TIMEOUT_MS}. Names the command as the thing that stalled,
+ * because that is the actionable fact — the service's own container may not
+ * exist yet — and, like {@link STARTING_TIMEOUT_MESSAGE}, does not claim more
+ * than we observed.
+ */
+export const UP_STALLED_MESSAGE =
+  `\`docker compose up\` has produced no output for over ${Math.round(UP_SILENCE_TIMEOUT_MS / 60_000)} minutes ` +
+  "and has not returned — Docker may be unresponsive. The command has not been cancelled, so a build that is " +
+  "merely slow will still finish and the service will recover on its own; check `shipit service logs <name>` " +
+  "for build output, or restart the service to retry.";
+
+/**
  * Reject-after-`ms` wrapper. The underlying promise is NOT cancelled (nothing in
  * the Docker paths this guards is cancellable) — the caller simply stops waiting
  * on it, which is the whole point: a best-effort step must not hold up the work
@@ -465,6 +506,52 @@ export class ServiceManager extends EventEmitter {
   private upInFlight = new Map<string, number>();
 
   /**
+   * `Date.now()` of the last output byte the in-flight `docker compose up`
+   * produced for a service — seeded when the exemption is taken, refreshed by
+   * {@link composeLogSink}. Read only by {@link onStartingWatchdogFired}, to
+   * tell a build that is working from one that has stopped talking. See
+   * {@link UP_SILENCE_TIMEOUT_MS}.
+   */
+  private upLastOutputAt = new Map<string, number>();
+
+  /**
+   * Settlements of the `docker compose up` calls currently in flight for a
+   * service — resolved (never rejected) so a waiter can sequence itself after
+   * them without inheriting their failures. {@link stopService} is the waiter: a
+   * stop issued while an `up` is running has to outlive that `up`, or compose
+   * brings the container back after the user asked for it to be gone
+   * (requirement 5).
+   *
+   * A SET per service, for the same reason {@link upInFlight} is
+   * reference-counted rather than a boolean: overlapping calls for one service
+   * are expected (a user-initiated start racing a retry attempt). Holding only
+   * the latest promise would let the shorter call's completion retire the
+   * entry while the longer one is still running, and a stop arriving after
+   * that would see nothing to wait for.
+   */
+  private upSettled = new Map<string, Set<Promise<void>>>();
+
+  /**
+   * Services the user explicitly stopped, and which nothing has deliberately
+   * started since (requirement 5 — "the user's last instruction is the one that
+   * holds").
+   *
+   * Two mechanisms read it. The automatic restart paths refuse to bring a
+   * service in this set back up, so a retry timer that was already in flight
+   * cannot undo the stop. And {@link handleNonZeroExit} ignores its exits: our
+   * own `docker compose stop` SIGTERMs the container and SIGKILLs it when the
+   * 10s grace expires, so a service that doesn't forward SIGTERM exits 143/137
+   * — which, taken at face value, walked a service the user had just stopped
+   * to `error` (and, for a `preview: auto` service, into the retry paths) on
+   * the very next poll.
+   *
+   * Cleared by every deliberate start — `startService`, `restartService`,
+   * `start()`, and the install gate's release — so it only ever suppresses the
+   * window between a stop and the next explicit instruction.
+   */
+  private stoppedByUser = new Set<string>();
+
+  /**
    * Per-service `starting` watchdog timers (#2044). Armed whenever a service
    * enters `starting`, cancelled the moment it leaves. See
    * {@link STARTING_WATCHDOG_MS} for why this exists and why it runs off its
@@ -549,6 +636,23 @@ export class ServiceManager extends EventEmitter {
       updateServiceStatus: (name, status, error) =>
         this.updateServiceStatus(name, status, error),
       onRunning: (name) => {
+        // A service that came back after a recreate is running in a container
+        // the log follower knows nothing about, and the follower it had died
+        // with the predecessor (docs/121 gap F, requirement 4). This hook is the
+        // one place every recovery route converges on — the install-window
+        // retry, the OOM retry, the gated batch and a plain manual restart all
+        // end at a poll that sees `running` — so re-attaching here covers them
+        // all without each path remembering to.
+        //
+        // Deliberately every `running` poll rather than only the transition
+        // into `running`. The follower's death is asynchronous to the poll that
+        // observes the replacement: if `close` has not fired yet when the
+        // transition lands, a transition-gated check no-ops against a follower
+        // that is about to die, and no later transition ever comes — the logs
+        // would stay dead for the rest of the session. Re-checking each poll
+        // costs a Map lookup in the steady state, because `ensureLogFollower`
+        // is a no-op while the follower is alive.
+        this.ensureLogFollower(name);
         // Service recovered — clear any pending install-window retry state.
         this.retry.clearRetryState(name);
         // Leave the post-gate recovery window only after the service has been
@@ -628,6 +732,24 @@ export class ServiceManager extends EventEmitter {
   private handleNonZeroExit(name: string, exitCode: number, oomKilled?: boolean): void {
     const svc = this.services.get(name);
     if (!svc) return;
+
+    if (this.stoppedByUser.has(name)) {
+      // We are looking at our OWN `docker compose stop` landing. It SIGTERMs the
+      // container and SIGKILLs it once the 10s grace expires, so a service that
+      // doesn't forward SIGTERM exits 143 — or 137, which the branch below reads
+      // as a possible OOM. Either way the next poll would walk a service the
+      // user deliberately stopped to `error`, and for a `preview: auto` service
+      // into a retry that brings it back. The user's stop is the last
+      // instruction (requirement 5); this exit is that instruction working.
+      //
+      // `stopped` rather than a bare return, because this branch is also the
+      // only reader of a non-zero exit: a poll that raced the stop and wrote
+      // `running` (compose had not killed the container yet) would otherwise
+      // keep that claim forever, since every later poll lands right back here.
+      // Requirement 3 outranks staying quiet.
+      if (svc.status !== "stopped") this.updateServiceStatus(name, "stopped");
+      return;
+    }
 
     if (this.gatedServices.has(name)) {
       // Intentionally held by the install gate — either waiting for install
@@ -993,6 +1115,9 @@ export class ServiceManager extends EventEmitter {
     // have fired before this start() ran). Non-gated services start now.
     this.gatedServices.clear();
     this.postGateServices.clear();
+    // A full (re)start is a deliberate instruction covering every service, so
+    // no earlier per-service stop survives it (requirement 5).
+    this.stoppedByUser.clear();
     // A full (re)start supersedes any pending mid-session teardown — the stack
     // is being brought up from scratch, so the gate must not wait on it.
     this._gatedTeardown = null;
@@ -1047,9 +1172,14 @@ export class ServiceManager extends EventEmitter {
         this.emit("service_status", { ...svc });
       }
 
-      // 5. Start log streaming (--tail 1000 replays recent history + follows)
+      // 5. Start log streaming (--tail 1000 replays recent history + follows).
+      //    `ensureLogFollower`, not `streamLogs`: step 3's poll can already have
+      //    attached one on an auto service that came up `running`, and replacing
+      //    a live follower would clear the ring buffer it just filled. Nothing
+      //    else can hold a follower here — `reconcile()` kills them all before
+      //    calling us, and a first `start()` has none.
       for (const svc of this.services.values()) {
-        this.streamLogs(svc.name);
+        this.ensureLogFollower(svc.name);
       }
 
       this.emit("stack_ready");
@@ -1090,9 +1220,17 @@ export class ServiceManager extends EventEmitter {
     // service gets a fresh chance. If the user explicitly hits "start"
     // after we gave up on retries, they're saying "try again."
     this.retry.resetOomBudget(name);
+    // ...and this start is now the user's most recent instruction, so an
+    // earlier stop no longer suppresses anything (requirement 5).
+    this.stoppedByUser.delete(name);
     this.updateServiceStatus(name, "starting");
     try {
       await this.withUpInFlight([name], () => this.compose.upService(name, this.composeLogSink([name])));
+      // The user stopped this service while the `up` above was still running.
+      // Theirs is the later instruction, and `stopService` is already waiting on
+      // that `up` to stop whatever it produced — so finishing the start here
+      // would only race it back to `running`. See `stopService`.
+      if (this.stoppedByUser.has(name)) return;
       // The first manual-service start is the moment the compose network
       // actually gets created (compose materializes the network on `up`,
       // not just when the file is parsed). If this stack is all-manual,
@@ -1116,12 +1254,23 @@ export class ServiceManager extends EventEmitter {
     const svc = this.services.get(name);
     if (!svc) throw new Error(`Unknown service: ${name}`);
 
-    // Same as startService — explicit user action resets the OOM budget.
+    // Same as startService — explicit user action resets the OOM budget, and
+    // supersedes an earlier stop (requirement 5).
     this.retry.resetOomBudget(name);
+    this.stoppedByUser.delete(name);
     this.updateServiceStatus(name, "starting");
     try {
       await this.compose.stop(name);
+      // Checked BEFORE the `up`, not only after it. A restart's own stop can
+      // burn the full 10s SIGTERM grace period, and a user Stop landing in that
+      // window registers no in-flight `up` for `stopService` to chase — so
+      // without this the restart would go on to recreate the container after
+      // the service had already been reported stopped (requirement 5).
+      if (this.stoppedByUser.has(name)) return;
       await this.withUpInFlight([name], () => this.compose.upService(name, this.composeLogSink([name])));
+      // Stopped mid-restart — see `startService` for why this returns rather
+      // than finishing the bring-up.
+      if (this.stoppedByUser.has(name)) return;
       // Defensive: if a previous all-manual `start()` skipped the network
       // join (see startService comment), the first restartService after
       // adoption could be the first time the orchestrator gets attached.
@@ -1136,18 +1285,79 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
-   * Stop a specific service.
+   * Stop a specific service, and make it stay stopped (requirement 5).
+   *
+   * A bare `docker compose stop` is not enough when a start is still in flight,
+   * which is exactly when the user reaches for Stop — a service that appears
+   * wedged mid-`up`. The stop lands on a container the racing `up` then creates
+   * or starts anyway, and the service the user asked to be gone comes back.
+   * Nothing sequenced the two: both WS handlers just call the manager.
+   *
+   * So the stop is issued immediately (a running container should go down now,
+   * not after a build that may still have minutes left), and then, if an `up`
+   * was in flight for this service, waited out and issued a second time against
+   * whatever that `up` left behind. {@link stoppedByUser} covers the same race
+   * from the other side: the start path abandons its post-`up` work, the
+   * automatic retries refuse to fire, and the SIGTERM/SIGKILL exit our own stop
+   * produces is not read as a crash.
+   *
+   * Deliberately not a lock around the two operations. Waiting for the `up`
+   * BEFORE stopping would leave the user unable to stop a service whose `up` is
+   * hung — the very failure requirement 2 is about — and would make Stop appear
+   * to do nothing for the length of an image build.
    */
   async stopService(name: string): Promise<void> {
     const svc = this.services.get(name);
     if (!svc) throw new Error(`Unknown service: ${name}`);
 
+    this.stoppedByUser.add(name);
+    // A retry timer already scheduled against an earlier crash would otherwise
+    // restart the service seconds after the user stopped it. This cancels the
+    // pending timer for all three schedules — install-window, OOM and post-gate
+    // retries share `retryTimers`.
+    this.retry.clearRetryState(name);
+    // Captured BEFORE the stop below: an `up` that settles while we are stopping
+    // drops its own entry, and that is precisely the one whose container we
+    // would then never revisit.
+    const pendingUps = [...(this.upSettled.get(name) ?? [])];
     try {
       await this.compose.stop(name);
       this.updateServiceStatus(name, "stopped");
     } catch (err) {
       this.updateServiceStatus(name, "error", (err as Error).message);
       throw err;
+    }
+    // The racing `up` is chased in the BACKGROUND, not awaited. Awaiting it
+    // would hand the stop the one failure mode it exists to survive: an `up`
+    // that never returns (see UP_SILENCE_TIMEOUT_MS) would leave this call
+    // pending forever, so the service would never be reported stopped and the
+    // user's Stop would hang — turning requirement 2's failure into a
+    // requirement 5 failure. The stop above has already gone in; this only
+    // catches what the `up` puts back afterwards.
+    if (pendingUps.length > 0) void this.stopAfterPendingUps(name, pendingUps);
+  }
+
+  /**
+   * Re-issue a stop once the `up` calls that were racing it have settled — the
+   * second half of {@link stopService} (requirement 5).
+   *
+   * Re-checks {@link stoppedByUser} at the end: a deliberate start may have
+   * arrived while we waited, and that is a newer instruction than the stop that
+   * queued this. Never rejects — it runs unattended, and a stop failure here is
+   * reported through the service's status rather than an unhandled rejection.
+   */
+  private async stopAfterPendingUps(name: string, pendingUps: Promise<void>[]): Promise<void> {
+    await Promise.all(pendingUps);
+    if (this._disposed) return;
+    if (!this.stoppedByUser.has(name)) return;
+    try {
+      await this.compose.stop(name);
+      this.updateServiceStatus(name, "stopped");
+    } catch (err) {
+      console.warn(
+        `[compose:${this.sessionId}] follow-up stop for ${name} failed:`,
+        (err as Error).message,
+      );
     }
   }
 
@@ -1206,12 +1416,49 @@ export class ServiceManager extends EventEmitter {
       if (this.logProcesses.get(name) === proc) this.logProcesses.delete(name);
     });
 
+    // A follower dies with the container it follows: `docker compose logs -f`
+    // ends when the container it resolved at spawn time is gone, which every
+    // recreate does. Nothing noticed (docs/121 gap F) — the dead process stayed
+    // in the map, so the service looked followed while its log panel silently
+    // stopped growing. Dropping it here is what makes `logProcesses.has(name)`
+    // an honest liveness answer for {@link ensureLogFollower}; the deliberate
+    // kills (`streamLogs`, `reconcile`, `stop`) have already removed their own
+    // entry by the time this fires, so this only ever reaps a follower that
+    // exited on its own.
+    proc.on("close", () => {
+      if (this.logProcesses.get(name) === proc) this.logProcesses.delete(name);
+    });
+
     this.logProcesses.set(name, proc);
 
     return () => {
       killChild(proc);
       this.logProcesses.delete(name);
     };
+  }
+
+  /**
+   * Re-attach a log follower for `name` if the one it had is gone (docs/121
+   * gap F, requirement 4).
+   *
+   * A follower exits with the container it was following, so every recreate
+   * leaves the service unfollowed: its log panel keeps whatever it had and never
+   * grows again. The three user-visible recreate paths — a crash retry, an OOM
+   * recovery, the install gate's batched release — are all AUTOMATIC, so the
+   * pre-existing `streamLogs` calls on `start()` / `startService` /
+   * `restartService` never covered them, and the only way back was for the user
+   * to restart the service by hand. That is the exact thing requirement 4 rules
+   * out.
+   *
+   * A no-op while the follower is alive, which is what lets the callers invoke
+   * it unconditionally. It deliberately does NOT kill and replace a live
+   * follower: `streamLogs` clears the in-memory ring buffer on every spawn, so a
+   * needless replacement would throw away the log panel's backlog — the opposite
+   * of the requirement.
+   */
+  private ensureLogFollower(name: string): void {
+    if (this.logProcesses.has(name)) return;
+    this.streamLogs(name);
   }
 
   /**
@@ -1261,6 +1508,11 @@ export class ServiceManager extends EventEmitter {
     // drop that exemption early, which costs one grace window rather than the
     // session.
     this.upInFlight.clear();
+    // Same generation argument for the two maps keyed alongside it: a stale
+    // `up`'s silence clock must not judge the new service of that name, and a
+    // stop must not wait on the previous definition's call.
+    this.upLastOutputAt.clear();
+    this.upSettled.clear();
 
     this.services.clear();
     this.logBuffers.clear();
@@ -1381,6 +1633,12 @@ export class ServiceManager extends EventEmitter {
     try {
       await this.withUpInFlight(autoNames, () => this.compose.up(autoNames, this.composeLogSink(autoNames)));
       await this.poller.pollOnce();
+      // This `up` recreates every container whose env file changed, and it is
+      // the one recreate the `onRunning` hook can miss: the replacement can be
+      // up before any poll observes the service as anything but `running`, so
+      // no transition ever fires. Without this the log panel goes quiet for the
+      // rest of the session on nothing worse than the user saving a secret.
+      for (const name of autoNames) this.ensureLogFollower(name);
     } catch (err) {
       console.warn(`[compose:${this.sessionId}] refreshSecrets compose up failed:`, (err as Error).message);
     }
@@ -1404,14 +1662,41 @@ export class ServiceManager extends EventEmitter {
       // publishing a dead (or, worse, reassigned) IP during the window where
       // the service is `starting` and the replacement doesn't exist yet.
       this.clearContainerIp(name);
+      // The silence clock starts now, not at the first byte: an `up` that never
+      // says anything at all is exactly the case the bound exists for.
+      this.upLastOutputAt.set(name, Date.now());
     }
+    // Declared here but only ever ASSIGNED inside the try, so a synchronous
+    // throw from `fn` still runs the release below rather than exempting the
+    // service from reconciliation for the rest of the session.
+    let settled: Promise<void> | undefined;
     try {
-      return await fn();
+      const call = fn();
+      // Never rejects — `stopService` awaits this only to sequence itself after
+      // the call, and the caller of `withUpInFlight` still gets the real rejection.
+      // eslint-disable-next-line no-restricted-syntax -- Promise two-arg form
+      settled = call.then(() => {}, () => {});
+      for (const name of names) {
+        const pending = this.upSettled.get(name) ?? new Set<Promise<void>>();
+        pending.add(settled);
+        this.upSettled.set(name, pending);
+      }
+      return await call;
     } finally {
       for (const name of names) {
         const next = (this.upInFlight.get(name) ?? 1) - 1;
         if (next > 0) this.upInFlight.set(name, next);
-        else this.upInFlight.delete(name);
+        else {
+          this.upInFlight.delete(name);
+          this.upLastOutputAt.delete(name);
+        }
+        // Only OUR settlement leaves the set — an overlapping call for the same
+        // service is still running, and a stop must wait for that one too.
+        const pending = this.upSettled.get(name);
+        if (pending && settled) {
+          pending.delete(settled);
+          if (pending.size === 0) this.upSettled.delete(name);
+        }
       }
       // The watchdog's window is armed when `starting` is written — which for
       // every caller here is BEFORE this `up`. An up that eats most of the
@@ -1489,6 +1774,11 @@ export class ServiceManager extends EventEmitter {
       for (const name of names) this.bufferServiceLog(name, text);
     };
     const sink: ComposeOutputSink = (chunk: string) => {
+      // Progress the user can see (requirement 2) — recorded per CHUNK, before
+      // the line buffering below, so a build whose output has not yet reached a
+      // newline still counts as talking. See UP_SILENCE_TIMEOUT_MS.
+      const now = Date.now();
+      for (const name of names) this.upLastOutputAt.set(name, now);
       pending += chunk;
       const lines = pending.split("\n");
       pending = lines.pop() ?? "";
@@ -1514,6 +1804,10 @@ export class ServiceManager extends EventEmitter {
     if (this._disposed) return;
     const svc = this.services.get(name);
     if (!svc) return;
+    // The user stopped this service after the retry was scheduled. An automatic
+    // restart must not overrule that (requirement 5); a deliberate start clears
+    // the flag and the service becomes retryable again.
+    if (this.stoppedByUser.has(name)) return;
     try {
       await this.withUpInFlight([name], () => this.compose.upService(name, this.composeLogSink([name])));
       // See `startService` — first manual-service start is the moment
@@ -1583,10 +1877,18 @@ export class ServiceManager extends EventEmitter {
   private startGatedServices(): void {
     if (this._disposed) return;
     if (this.gatedServices.size === 0) return;
-    const names = [...this.gatedServices];
+    // A gated service the user stopped while it was held stays stopped. The gate
+    // opening is an automatic lifecycle event, not a newer instruction from the
+    // user, and requirement 5 gives the user's stop the last word — starting it
+    // here would undo a stop they can watch us undo. They can start it whenever
+    // they like, which clears the flag.
+    const names = [...this.gatedServices].filter(n => !this.stoppedByUser.has(n));
+    const held = this.gatedServices.size - names.length;
     this.gatedServices.clear();
+    if (names.length === 0) return;
+    const heldNote = held > 0 ? ` (${held} left stopped at the user's request)` : "";
     console.log(
-      `[compose:${this.sessionId}] install finished — starting ${names.length} gated service(s): ${names.join(", ")}`,
+      `[compose:${this.sessionId}] install finished — starting ${names.length} gated service(s): ${names.join(", ")}${heldNote}`,
     );
     for (const name of names) {
       this.updateServiceStatus(name, "starting");
@@ -1790,13 +2092,40 @@ export class ServiceManager extends EventEmitter {
    * Both exemptions RE-ARM rather than cancel: a build that outruns the window
    * or an install that takes ten minutes is fine, but the service still has to
    * answer for itself once that reason goes away.
+   *
+   * The `compose up` exemption is itself bounded (requirement 2): it holds for
+   * as long as the `up` keeps producing output, and stops holding once it has
+   * gone silent for {@link UP_SILENCE_TIMEOUT_MS}. Without that, a `docker
+   * compose up` that never returns re-armed this watchdog for the rest of the
+   * session. The bound is on silence rather than elapsed time precisely so that
+   * a legitimately slow image build — which talks the whole way through — is
+   * never the thing it fires on.
    */
   private onStartingWatchdogFired(name: string): void {
     if (this._disposed) return;
     const svc = this.services.get(name);
     // Raced with a status change we haven't torn the timer down for yet.
     if (svc?.status !== "starting") return;
-    if (this.upInFlight.has(name) || this.gatedServices.has(name)) {
+    if (this.upInFlight.has(name)) {
+      const silentFor = Date.now() - (this.upLastOutputAt.get(name) ?? 0);
+      if (silentFor < UP_SILENCE_TIMEOUT_MS) {
+        // The build is still producing output — a legitimately slow one, and
+        // requirement 2's non-requirements rule out putting a clock on it.
+        this.armStartingWatchdog(name);
+        return;
+      }
+      console.warn(
+        `[compose:${this.sessionId}] compose up for "${name}" has produced no output for ` +
+        `${Math.round(silentFor / 1000)}s and has not returned — marking error`,
+      );
+      // Deliberately not re-armed: the `up` is still running, so the exemption
+      // would fire this branch again every window. `withUpInFlight` re-arms only
+      // a service still in `starting`, and the poll after a late success writes
+      // `running`, so a build that recovers still clears this.
+      this.updateServiceStatus(name, "error", UP_STALLED_MESSAGE);
+      return;
+    }
+    if (this.gatedServices.has(name)) {
       this.armStartingWatchdog(name);
       return;
     }
