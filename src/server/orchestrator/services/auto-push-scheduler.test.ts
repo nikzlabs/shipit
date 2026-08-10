@@ -241,6 +241,47 @@ describe("auto-push scheduler — a push that cannot happen is never silent", ()
     );
   });
 
+  it("still explains the failure when marking the token invalid throws", async () => {
+    // `markTokenInvalid` verifies against the GitHub API and emits an event, so
+    // it can reject. An unguarded await here skipped the report entirely and
+    // turned the whole push failure into an unhandled rejection — the swallowed
+    // outcome this module exists to end.
+    const runner = fakeRunner();
+    const deps = makeDeps({
+      getRunner: () => runner,
+      githubAuthManager: {
+        authenticated: true,
+        markTokenInvalid: vi.fn(async () => { throw new Error("github unreachable"); }),
+      },
+    });
+    const git = fakeGit({ push: vi.fn(async () => { throw new Error("Authentication failed"); }) });
+    createAutoPushScheduler(deps).schedule(git, "s1");
+
+    await fireDebounce();
+
+    expect(deps.broadcastLog).toHaveBeenCalledWith(
+      "s1",
+      "server",
+      expect.stringContaining("Authentication failed"),
+    );
+    // ...and the lease is still released, so the session stays reclaimable.
+    expect(runner.endPostTurnWork).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the lease and logs when reporting the outcome itself throws", async () => {
+    const runner = fakeRunner();
+    const deps = makeDeps({ getRunner: () => runner });
+    deps.broadcastLog.mockImplementation(() => { throw new Error("log ring exploded"); });
+    const git = fakeGit({ push: vi.fn(async () => { throw new Error("boom"); }) });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    createAutoPushScheduler(deps).schedule(git, "s1");
+
+    await fireDebounce();
+
+    expect(error).toHaveBeenCalled();
+    expect(runner.endPostTurnWork).toHaveBeenCalledTimes(1);
+  });
+
   it("invalidates the stored token and says so when the remote rejects the credential", async () => {
     const markTokenInvalid = vi.fn(async () => true);
     const runner = fakeRunner();

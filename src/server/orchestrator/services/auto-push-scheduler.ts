@@ -151,7 +151,17 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
         sessionId,
         setTimeout(() => {
           timers.delete(sessionId);
-          void runAutoPush(git, sessionId).finally(() => releaseHold(sessionId));
+          void runAutoPush(git, sessionId)
+            // Backstop, not the ordinary path — `runAutoPush` handles its own
+            // failures. Without it a throw from the reporting itself (a runner
+            // whose `emitMessage` fails, a listener on the token-invalidation
+            // event) becomes an unhandled rejection routed to the process-wide
+            // handler, which is precisely the swallowed-in-the-logs outcome this
+            // module exists to end.
+            .catch((err: unknown) => {
+              console.error(`[auto-push] ${sessionId}: reporting the push outcome failed:`, err);
+            })
+            .finally(() => releaseHold(sessionId));
         }, deps.debounceMs),
       );
     },
@@ -213,9 +223,17 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
       // failure would only be visible as a "log_entry" in the session's Logs
       // panel — the same swallow-in-the-logs path the user complained about.
       if (isGitAuthError(err)) {
-        const invalidated = await deps.githubAuthManager.markTokenInvalid(
-          `auto-push failed: ${errMsg}`,
-        );
+        // `markTokenInvalid` verifies the token against the GitHub API and then
+        // emits `token_invalid`, so it is a network call that can reject and a
+        // listener that can throw. Its failure must not cost the user the
+        // explanation for why their commit is still local — which is what an
+        // unguarded `await` here did, by skipping the `report` below entirely.
+        let invalidated = false;
+        try {
+          invalidated = await deps.githubAuthManager.markTokenInvalid(`auto-push failed: ${errMsg}`);
+        } catch (markErr) {
+          console.error(`[auto-push] ${sessionId}: could not mark the GitHub token invalid:`, markErr);
+        }
         report(
           sessionId,
           invalidated
