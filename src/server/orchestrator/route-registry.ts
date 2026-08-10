@@ -15,8 +15,6 @@ import { agentLogAppend } from "./log-emit.js";
 import { getErrorMessage } from "./validation.js";
 import { getGitIdentity } from "./git-config.js";
 import { readGlobalSystemPrompt } from "./global-system-prompt.js";
-import { pushToOrigin, isGitAuthError } from "./git-utils.js";
-import { isNonFastForwardError } from "./services/git.js";
 import { notableFilesForBranch } from "./services/notable-files.js";
 import { emitResetEligible } from "./services/pre-turn-reset.js";
 import { AgentTurnAdmissionError, type SessionRunnerInterface } from "./session-runner.js";
@@ -261,7 +259,7 @@ export async function registerRoutes(
   const {
     deps,
     defaultAgentId, workspaceDir, stateDir, credentialsDir, shouldServeStatic,
-    autoPushDebounceMs, sessionsRoot, agentFactory,
+    autoPushScheduler, sessionsRoot, agentFactory,
     createGitManager, createRepoGit, databaseManager, sessionManager,
     repoStore, chatHistoryManager, usageManager, authManager, codexAuthManager,
     credentialStore, providerAccountManager, agentRegistry, githubAuthManager,
@@ -283,6 +281,7 @@ export async function registerRoutes(
   // ---- HTTP API routes ----
   await registerApiRoutes(app, {
     sessionManager,
+    cancelAutoPush: (sessionId: string) => autoPushScheduler.cancel(sessionId),
     repoStore,
     createGitManager,
     createRepoGit,
@@ -916,72 +915,19 @@ export async function registerRoutes(
       };
 
       const scheduleAutoPush = (git: GitManager, sessionId?: string) => {
-        // Look up the runner from the registry by session ID instead of using
-        // the connection-scoped attachedRunner. If the WS reconnects during an
-        // agent turn, attachedRunner on the old connection becomes null and the
-        // push would be silently skipped.
-        const runner = (sessionId ? runnerRegistry.get(sessionId) : null) ?? attachedRunner;
-        if (!runner) return;
-        runner.clearPushTimer();
-        runner.setPushTimer(setTimeout(async () => {
-          runner.setPushTimer(null);
-          // Keep the runner busy across the push itself, not just the debounce.
-          // Nulling the timer above drops the `hasPendingPush` half of
-          // `agentBusy` at the moment the network call STARTS, so without this a
-          // reclaim pass mid-push sees an idle session — and the `evict` rung's
-          // next step is deleting the checkout the push is reading from. The
-          // hold is deadline-bounded, so a wedged push cannot pin the container.
-          runner.beginPostTurnWork();
-          try {
-            if (!githubAuthManager.authenticated) return;
-            const branch = await pushToOrigin(git);
-            if (branch) {
-              runner.emitMessage({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
-              // A push just landed → CI is about to register. Bump this
-              // session's repo to fast cadence for the post-push window so
-              // the first non-none check is observed quickly. The poller
-              // re-arms the supervisor if the gate was already open
-              // (a closed tab keeps the supervisor paused; the user will
-              // see fresh data on their next visit via forceRefreshSession).
-              prStatusPoller.notifyAutoPush(runner.sessionId);
-            }
-          } catch (err) {
-            if (isNonFastForwardError(err)) {
-              // Branch has diverged — emit event so client can offer rebase
-              runner.emitMessage({
-                type: "git_push_rejected",
-                reason: "non_fast_forward",
-                message: "Branch has diverged from remote. Rebase needed to update.",
-              });
-              return;
-            }
-            const errMsg = getErrorMessage(err);
-            // Token expired/revoked — mark the stored credential invalid so
-            // the SSE broadcast clears the GitHub auth state on every
-            // connected client and surfaces a toast pointing back to
-            // Settings → GitHub. Without this the failure would only be
-            // visible as a "log_entry" in the session's Logs panel — the
-            // same swallow-in-the-logs path the user complained about.
-            if (isGitAuthError(err)) {
-              const invalidated = await githubAuthManager.markTokenInvalid(`auto-push failed: ${errMsg}`);
-              const text = invalidated
-                ? "Auto-push failed: your GitHub token is invalid or expired. Sign in again in Settings → GitHub."
-                : `Auto-push failed: ${errMsg}`;
-              broadcastLog(runner.sessionId, "server", text);
-              runner.emitMessage(agentLogAppend("server", text));
-              return;
-            }
-            const text = errMsg.includes("workflow")
-              ? "Auto-push failed: your GitHub token needs the `workflow` scope to push changes to GitHub Actions workflow files. Update your token at https://github.com/settings/tokens."
-              : `Auto-push failed: ${errMsg}`;
-            broadcastLog(runner.sessionId, "server", text);
-            runner.emitMessage(agentLogAppend("server", text));
-          } finally {
-            // Every branch above returns early somewhere; the `finally` is what
-            // makes the hold release on all of them.
-            runner.endPostTurnWork();
-          }
-        }, autoPushDebounceMs));
+        // Session-keyed, through the app-lived scheduler — never a timer on a
+        // runner. This used to resolve a runner (registry, else the
+        // per-connection `attachedRunner`) and return silently when both were
+        // empty, which dropped the whole push for a session whose runner was
+        // reclaimed between the post-turn commit and the debounce. The scheduler
+        // takes the runner's post-turn hold while the push is armed, so the
+        // reclaim protection `post-turn-hold.ts` added is unchanged; what it no
+        // longer depends on is the timer living on the object being reclaimed.
+        // See `services/auto-push-scheduler.ts`.
+        //
+        // `attachedRunner` survives only as the id fallback for the call sites
+        // that pass no session id; it no longer decides anything.
+        autoPushScheduler.schedule(git, sessionId ?? attachedRunner?.sessionId);
       };
 
       const getActiveDir = (): string => activeSessionDir ?? workspaceDir;

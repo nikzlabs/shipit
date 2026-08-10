@@ -493,7 +493,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     },
     // Only used by the fallback commit path; the WS path always uses commitTurn
     // (which drives its own push via postTurnCommit → ctx.scheduleAutoPush).
-    scheduleAutoPush: (sessionDir) => ctx.scheduleAutoPush(ctx.createGitManager(sessionDir)),
+    scheduleAutoPush: (sessionDir, sessionId) => ctx.scheduleAutoPush(ctx.createGitManager(sessionDir), sessionId),
     listenerDeps,
     buildRunParams: async (sessionId, id, p) => {
       // Read agentSessionId fresh from the DB — env-prep's docs/153 leak repair

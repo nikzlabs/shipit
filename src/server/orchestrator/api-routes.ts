@@ -112,6 +112,14 @@ export interface ApiDeps {
   credentialsDir?: string;
   usageManager: UsageManager;
   runnerRegistry: SessionRunnerRegistry;
+  /**
+   * Drop a session's pending debounced auto-push (`services/auto-push-scheduler.ts`).
+   * Only ever called after a synchronous push has replaced it — the agent's own
+   * `gh pr create`. Optional so tests and local runtimes can omit it; a missing
+   * hook leaves the debounce armed, which is the safe direction (a redundant
+   * push, never a lost one).
+   */
+  cancelAutoPush?: (sessionId: string) => void;
   chatHistoryManager: ChatHistoryManager;
   authManager: AuthManager;
   codexAuthManager: CodexAuthManager;

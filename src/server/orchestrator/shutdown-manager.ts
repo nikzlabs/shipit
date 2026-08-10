@@ -5,6 +5,7 @@ import type { AgentId } from "../shared/types.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionContainerManager } from "./session-container.js";
 import type { DatabaseManager } from "../shared/database.js";
+import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
 import { stopAllTokenWriteBackWatches } from "./session-token-publisher.js";
 
 // ---- Graceful shutdown ----
@@ -19,6 +20,12 @@ export interface ShutdownDeps {
    */
   authManagers: Map<AgentId, AgentAuthManager>;
   runnerRegistry: SessionRunnerRegistry;
+  /**
+   * Pending post-turn auto-pushes. Session-keyed and app-scoped rather than
+   * stored on the runners disposed below (`services/auto-push-scheduler.ts`), so
+   * teardown has to drop them explicitly — nothing else will.
+   */
+  autoPushScheduler: AutoPushScheduler;
   dockerProxyServer: HttpServer | null;
   containerManager: SessionContainerManager | null;
   databaseManager: DatabaseManager;
@@ -60,6 +67,10 @@ export function registerShutdownHook(
     // The agent container is the opposite case, which is why `dispose()` below
     // must not touch it — see `session-container.ts`.
     shutdownDeps.runnerRegistry.disposeAll({ preserveAgent: true });
+    // The armed pushes no longer live on those runners, so drop them here. A
+    // push that has already fired is unaffected — it is an awaited git call, not
+    // a timer.
+    shutdownDeps.autoPushScheduler.cancelAll();
     if (shutdownDeps.dockerProxyServer) {
       await new Promise<void>((resolve) => shutdownDeps.dockerProxyServer!.close(() => resolve()));
     }

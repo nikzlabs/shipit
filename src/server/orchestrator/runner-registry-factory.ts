@@ -21,9 +21,7 @@ import type { UsageManager } from "./usage.js";
 import type { PrepareRunParamsFn } from "./agent-run-params-prep.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { TurnOutcome } from "./turn-settlement.js";
-import { pushToOrigin } from "./git-utils.js";
-import { isNonFastForwardError } from "./services/git.js";
-import { getErrorMessage } from "./validation.js";
+import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
 import { applyShipitConfigChange, setupServiceManager } from "./service-manager-setup.js";
 import { buildAgentRunParams } from "./session-agent-run-params.js";
 import { applyModelRetirement } from "./model-retirement.js";
@@ -61,7 +59,11 @@ export interface RunnerRegistryDeps {
   githubAuthManager: GitHubAuthManager;
   agentFactory: ((agentId: AgentId) => AgentProcess) | undefined;
   chatHistoryManager: ChatHistoryManager;
-  autoPushDebounceMs: number;
+  /**
+   * Session-keyed debounced auto-push. Owned by the app, not by a runner, so a
+   * push armed by a turn survives the runner being reclaimed a moment later.
+   */
+  autoPushScheduler: AutoPushScheduler;
   sseBroadcast: (event: string, data: unknown) => void;
   enforceIdleContainerLimit: () => void;
   getDepCacheDir: (repoUrl: string) => string;
@@ -289,7 +291,7 @@ export function createRunnerRegistry(
   const {
     effectiveRunnerFactory, sessionManager, repoStore, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
-    autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
+    autoPushScheduler, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, logStore, runtimeMode, broadcastLog,
     credentialsDir, providerAccountManager, readSystemPrompt, generateText, getPrStatusPoller, rebindDelivery,
@@ -395,37 +397,7 @@ export function createRunnerRegistry(
       // `scheduleAutoPush(sessionDir)` dep and the `commitTurn` helper below, so
       // the dispatch path and the shared `postTurnCommit` push identically.
       const schedulePushGit = (git: GitManager): void => {
-        if (!githubAuthManager.authenticated) return;
-        runner.clearPushTimer();
-        runner.setPushTimer(setTimeout(async () => {
-          runner.setPushTimer(null);
-          // Nulling the timer above is what lets `clearPushTimer` stop chasing a
-          // timer that already fired — but it also drops the `hasPendingPush`
-          // half of `agentBusy` at the exact moment the network push STARTS, so
-          // the runner reads idle for the whole of it. Carry the busy marker
-          // across the await on the post-turn hold instead: the push is post-turn
-          // work by any definition, and the hold is deadline-bounded so a wedged
-          // push cannot pin the container.
-          runner.beginPostTurnWork();
-          try {
-            const branch = await pushToOrigin(git);
-            if (branch) {
-              runner.emitMessage({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
-            }
-          } catch (err) {
-            if (isNonFastForwardError(err)) {
-              runner.emitMessage({
-                type: "git_push_rejected",
-                reason: "non_fast_forward",
-                message: "Branch has diverged from remote. Rebase needed to update.",
-              });
-            } else {
-              console.error("[system-turn] auto-push failed:", getErrorMessage(err));
-            }
-          } finally {
-            runner.endPostTurnWork();
-          }
-        }, autoPushDebounceMs));
+        autoPushScheduler.schedule(git, runner.sessionId);
       };
       runner.setSystemTurnDeps({
         authorizeDispatch: (sessionId) => {

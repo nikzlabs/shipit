@@ -48,7 +48,7 @@ export async function startStartupMonitors(
     loopDetector, oomBreaker, chatHistoryManager,
     repoPrefetcher, claudeOAuthRefresherRef, codexOAuthRefresherRef,
     startupTimer, authManagers, dockerProxyServer, databaseManager,
-    mergeWatchManager,
+    mergeWatchManager, autoPushScheduler,
   } = rt;
 
   // ---- Docker memory stats broadcast (every 10s) ----
@@ -394,7 +394,7 @@ export async function startStartupMonitors(
     mergeWatchManager?.stopRetryLoop();
   });
   registerShutdownHook(app, {
-    startupTimer, authManagers, runnerRegistry,
+    startupTimer, authManagers, runnerRegistry, autoPushScheduler,
     dockerProxyServer, containerManager, databaseManager,
   });
 

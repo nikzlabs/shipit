@@ -1003,7 +1003,7 @@ export async function executeAgentTurn(
       }
       if (!result.commitHash) return null;
       emit({ type: "git_committed", hash: result.commitHash, message: summary });
-      deps.scheduleAutoPush(runner.sessionDir);
+      deps.scheduleAutoPush(runner.sessionDir, sessionId);
       if (result.parentHash) {
         runner.pendingCommitLink = { commitHash: result.commitHash, parentCommitHash: result.parentHash };
         const updatedId = deps.listenerDeps.chatHistoryManager.updateLastMessage(sessionId, {

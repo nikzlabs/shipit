@@ -791,6 +791,14 @@ export async function agentCreatePr(
     sessionId?: string;
     /** Runner registry — when provided alongside sessionId, enables mid-turn commit flush. */
     runnerRegistry?: SessionRunnerRegistry;
+    /**
+     * Drop this session's pending debounced auto-push. Called only AFTER a
+     * synchronous push has actually replaced it (planning#200). Session-keyed
+     * rather than resolved through a runner: the pending push no longer lives on
+     * one (`services/auto-push-scheduler.ts`), so a session whose runner went
+     * away still gets its debounce cancelled.
+     */
+    cancelAutoPush?: (sessionId: string) => void;
     /** When provided, an unresolved-conflict notice from the pre-push flush is
      * persisted (so it survives a reload), not just emitted. */
     chatHistory?: ChatHistoryManager;
@@ -835,15 +843,16 @@ export async function agentCreatePr(
 
   const head = await git.getCurrentBranch();
 
-  // Resolve the runner so we can cancel the debounced auto-push *after* a
-  // synchronous push lands below. We deliberately do NOT cancel before pushing:
-  // a pending debounced push is only safe to drop once a synchronous push has
-  // actually replaced it (planning#200). On branches that don't push synchronously
-  // (e.g. a not-progressed merged PR returns without pushing), the debounce is
-  // left armed so the commit still reaches the remote.
-  const pushRunner = options.sessionId && options.runnerRegistry
-    ? options.runnerRegistry.get(options.sessionId)
-    : null;
+  // Cancel the debounced auto-push *after* a synchronous push lands below. We
+  // deliberately do NOT cancel before pushing: a pending debounced push is only
+  // safe to drop once a synchronous push has actually replaced it
+  // (planning#200). On branches that don't push synchronously (e.g. a
+  // not-progressed merged PR returns without pushing), the debounce is left
+  // armed so the commit still reaches the remote.
+  const { sessionId, cancelAutoPush } = options;
+  const dropPendingAutoPush = (): void => {
+    if (sessionId) cancelAutoPush?.(sessionId);
+  };
 
   // A PR already on this branch short-circuits creation — but only when it can't
   // legitimately host the new work. The rule (matches /shipit-docs/github.md and
@@ -893,7 +902,7 @@ export async function agentCreatePr(
         throw new ServiceError(500, `Push failed: ${msg}`);
       }
       // Synchronous push landed — now safe to drop any pending debounce.
-      pushRunner?.clearPushTimer();
+      dropPendingAutoPush();
       return await returnExistingPr();
     }
 
@@ -928,7 +937,7 @@ export async function agentCreatePr(
     throw new ServiceError(500, `Push failed: ${msg}`);
   }
   // Synchronous push landed — now safe to drop any pending debounce.
-  pushRunner?.clearPushTimer();
+  dropPendingAutoPush();
 
   // Resolve base branch. A re-armed branch keeps the prior PR's base unless the
   // caller passed an explicit one.

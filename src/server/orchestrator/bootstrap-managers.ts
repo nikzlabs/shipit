@@ -57,6 +57,7 @@ import type { UpdateMode } from "./services/updates.js";
 import type { VersionInfo } from "../shared/types.js";
 import type { GenerateText } from "./non-turn-model.js";
 import { makeNonTurnGenerateText } from "./services/non-turn-work.js";
+import { createAutoPushScheduler } from "./services/auto-push-scheduler.js";
 
 /**
  * Static, process-lifetime metadata captured at startup and surfaced to the
@@ -319,6 +320,20 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // poller exists.
   const prStatusPollerRef: { ref: PrStatusPoller | null } = { ref: null };
 
+  // ---- Post-turn auto-push (services/auto-push-scheduler.ts) ----
+  // Session-keyed and process-lived, deliberately NOT stored on the runner: a
+  // runner disposed between the commit and the debounce used to take the push
+  // with it, silently. Both the WS path and the system-turn path arm THIS
+  // scheduler, so the two can no longer disagree about what a post-turn push
+  // does. The runner is resolved lazily at fire time, and only to report.
+  const autoPushScheduler = createAutoPushScheduler({
+    debounceMs: autoPushDebounceMs,
+    githubAuthManager,
+    getRunner: (sessionId) => registryHolder.ref?.get(sessionId) ?? null,
+    broadcastLog,
+    notifyAutoPush: (sessionId) => prStatusPollerRef.ref?.notifyAutoPush(sessionId),
+  });
+
   // planning#266 — the same forward-ref shape for the merge-watch manager, which is
   // likewise built after the runner registry. Turn adoption (wired into every
   // runner's system-turn deps) reaches it to re-acquire the settlement for a
@@ -526,7 +541,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const runnerRegistry = createRunnerRegistry({
     effectiveRunnerFactory, sessionManager, repoStore, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
-    autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
+    autoPushScheduler, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, runtimeMode, broadcastLog,
     usageManager, runParamsPreps,
@@ -1011,6 +1026,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured,
     latestMemoryStats,
     registryHolder, enforceIdleContainerLimit,
+    autoPushScheduler,
     dockerSecretsConfig, serviceEnvDir,
     prStatusPollerRef,
     claudeOAuthRefresherRef, codexOAuthRefresherRef,

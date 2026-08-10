@@ -653,8 +653,13 @@ export interface SystemTurnDeps {
     /** docs/213 — likely secrets in the staged diff; non-empty ⇒ commit refused. */
     secretFindings: SecretFinding[];
   }>;
-  /** Schedule a debounced auto-push after a commit. */
-  scheduleAutoPush: (sessionDir: string) => void;
+  /**
+   * Schedule a debounced auto-push after a commit. `sessionId` keys the pending
+   * push (`services/auto-push-scheduler.ts`); pass it wherever it is known —
+   * without it the WS implementation falls back to the per-connection runner,
+   * which is null once the last viewer detaches.
+   */
+  scheduleAutoPush: (sessionDir: string, sessionId?: string) => void;
   /**
    * Shared agent-listener deps. Same shape `wireAgentListeners` consumes on
    * the WS path — sharing it means message-group accumulation + chat-history
@@ -1151,12 +1156,13 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * is queued/steered into an in-flight turn or starts a fresh one, and there is
    * no turn to queue behind while a task is merely pending.
    *
-   * Two more terms, both added for the 2026-08-10 reclaim-mid-teardown incident
-   * and both about work that happens once `running` is ALREADY false:
-   * {@link postTurnWorkInFlight} (the turn's own terminal sequence — commit, PR
-   * flow, settlement) and {@link hasPendingPush} (the debounced auto-push that
-   * sequence armed). Reclaim destroys both — `dispose()` clears the push timer
-   * outright — so a session in either state is not idle.
+   * One more term, added for the 2026-08-10 reclaim-mid-teardown incident and
+   * about work that happens once `running` is ALREADY false:
+   * {@link postTurnWorkInFlight} — the turn's own terminal sequence (commit, PR
+   * flow, settlement) AND the debounced auto-push that sequence arms, which the
+   * scheduler holds under the same lease from the moment it arms one
+   * (`services/auto-push-scheduler.ts`). Reclaim destroys the first, so a
+   * session in either state is not idle.
    */
   readonly agentBusy: boolean;
   /**
@@ -1175,19 +1181,17 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * leaked would pin the container forever, which is worse than the window.
    */
   readonly postTurnWorkInFlight: boolean;
-  /** Enter a terminal sequence. Pair with {@link endPostTurnWork} in a `finally`. */
+  /**
+   * Enter a terminal sequence. Pair with {@link endPostTurnWork} in a `finally`.
+   *
+   * Also taken by the auto-push scheduler for the life of an armed push (arm →
+   * fire → push complete), which is why there is no separate pending-push term:
+   * the debounce window and the push itself are post-turn work by any
+   * definition, and one lease is one thing to keep balanced.
+   */
   beginPostTurnWork(): void;
   /** Leave a terminal sequence. Unbalanced calls are no-ops. */
   endPostTurnWork(): void;
-  /**
-   * True while a debounced auto-push is armed but has not fired.
-   *
-   * The push is orchestrator-side git, but `dispose()` clears the timer, so a
-   * runner reclaimed inside the 5 s debounce loses the push entirely — the
-   * commit stays local, the PR never updates and CI never re-runs. That is the
-   * half of the 2026-08-10 incident that outlived the commit itself.
-   */
-  readonly hasPendingPush: boolean;
   /** docs/235 — replace the background-task list wholesale (the backend reports a complete set). */
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void;
   /** docs/235 — drop all background-task state (agent process died; its tasks died with it). */
@@ -1362,11 +1366,6 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   appendTerminalOutput(data: string): void;
   getTerminalOutputBuffer(): string;
   clearTerminalOutputBuffer(): void;
-
-  // Auto-push timer
-  getPushTimer(): ReturnType<typeof setTimeout> | null;
-  setPushTimer(t: ReturnType<typeof setTimeout> | null): void;
-  clearPushTimer(): void;
 
   // Turn event buffer
   getTurnEventBuffer(): WsServerMessage[];
@@ -1633,7 +1632,6 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _terminal: TerminalProcess | null = null;
   private _terminalOutputBuffer = "";
   private static readonly MAX_TERMINAL_BUFFER = 10_000;
-  private _pushTimer: ReturnType<typeof setTimeout> | null = null;
   private _turnEventBuffer: WsServerMessage[] = [];
   private static readonly MAX_TURN_BUFFER = 1000;
   private static readonly MAX_QUEUE_SIZE = 50;
@@ -1714,13 +1712,11 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     return this._isRunning
       || this.backgroundTaskCount > 0
       || this.subAgentSpawnsInFlight > 0
-      || this._postTurnHold.active
-      || this._pushTimer !== null;
+      || this._postTurnHold.active;
   }
   get postTurnWorkInFlight(): boolean { return this._postTurnHold.active; }
   beginPostTurnWork(): void { this._postTurnHold.begin(); }
   endPostTurnWork(): void { this._postTurnHold.end(); }
-  get hasPendingPush(): boolean { return this._pushTimer !== null; }
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void {
     this._backgroundTasks.set(tasks);
     this.announceBackgroundWork();
@@ -1875,12 +1871,6 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   getTerminalOutputBuffer(): string { return this._terminalOutputBuffer; }
   clearTerminalOutputBuffer(): void { this._terminalOutputBuffer = ""; }
 
-  getPushTimer(): ReturnType<typeof setTimeout> | null { return this._pushTimer; }
-  setPushTimer(t: ReturnType<typeof setTimeout> | null): void { this._pushTimer = t; }
-  clearPushTimer(): void {
-    if (this._pushTimer) { clearTimeout(this._pushTimer); this._pushTimer = null; }
-  }
-
   getTurnEventBuffer(): WsServerMessage[] { return [...this._turnEventBuffer]; }
   clearTurnEventBuffer(): void { this._turnEventBuffer = []; this.lastPersistedBufferIndex = 0; }
   emitMessage(msg: WsServerMessage): void {
@@ -1955,7 +1945,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
 
   /** planning#301 — see `SessionRunnerInterface.schedulePostTurnPush`. */
   schedulePostTurnPush(): void {
-    this._systemTurnDeps?.scheduleAutoPush(this.sessionDir);
+    this._systemTurnDeps?.scheduleAutoPush(this.sessionDir, this.sessionId);
   }
 
   async runDispatchedTurn(opts: PreparedDispatch): Promise<void> {
@@ -2020,20 +2010,11 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
       );
       return;
     }
-    // …and for an armed auto-push, because the very next thing this method does
-    // is `clearPushTimer()` — it does not merely race the push, it cancels it,
-    // and the commit then never reaches the remote. `agentBusy` says a runner in
-    // this state is not idle, but the reclaim callers do not all re-check it
-    // immediately before disposing: the disk ladder evaluates its guard before
-    // an awaited pacing delay, so a turn that commits during that delay arms the
-    // timer after the only check. Declining here is what makes the two agree
-    // wherever the call comes from. Bounded by the 5 s debounce.
-    if (this._pushTimer !== null && !opts?.force) {
-      console.log(
-        `[session-runner:${this.sessionId}] dispose() skipped — an auto-push is armed and would be cancelled`,
-      );
-      return;
-    }
+    // An ARMED auto-push takes the same hold, so the guard above covers it too
+    // — the reason the two used to be separate terms was that `dispose()`
+    // cancelled the timer it found on this object, and there is no longer one to
+    // find. The push now outlives a forced teardown as well
+    // (`services/auto-push-scheduler.ts`).
     this._disposed = true;
     this._postTurnHold.reset();
     // docs/144 — cancel any in-flight sub-agent spawns before tearing down.
@@ -2043,7 +2024,6 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     this._subAgentHandles.clear();
     if (this.agent) { this.agent.kill(); this.agent = null; }
     if (this._terminal) { this._terminal.kill(); this._terminal = null; }
-    this.clearPushTimer();
     // docs/240 — settle anything the teardown throws away, so a consumer
     // awaiting a queued turn learns it was dropped instead of hanging forever.
     settleDroppedQueueEntries(this._messageQueue, "runner disposed");

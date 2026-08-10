@@ -136,7 +136,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _terminal: TerminalProcess | null = null;
 
   // Auto-push timer
-  private _pushTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Viewer tracking
   private _viewerCount = 0;
@@ -421,13 +420,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       || this.subAgentSpawnsInFlight > 0
       // The turn's terminal sequence and the auto-push it arms both happen once
       // `running` is false, and reclaim destroys both. See the interface doc.
-      || this._postTurnHold.active
-      || this._pushTimer !== null;
+      || this._postTurnHold.active;
   }
   get postTurnWorkInFlight(): boolean { return this._postTurnHold.active; }
   beginPostTurnWork(): void { this._postTurnHold.begin(); }
   endPostTurnWork(): void { this._postTurnHold.end(); }
-  get hasPendingPush(): boolean { return this._pushTimer !== null; }
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void {
     this._backgroundTasks.set(tasks);
     this.announceBackgroundWork();
@@ -665,18 +662,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   appendTerminalOutput(data: string): void { this.termBuf.append(data); }
   getTerminalOutputBuffer(): string { return this.termBuf.buffer; }
   clearTerminalOutputBuffer(): void { this.termBuf.clear(); }
-
-  // --- Auto-push timer ---
-
-  getPushTimer(): ReturnType<typeof setTimeout> | null { return this._pushTimer; }
-  setPushTimer(t: ReturnType<typeof setTimeout> | null): void { this._pushTimer = t; }
-
-  clearPushTimer(): void {
-    if (this._pushTimer) {
-      clearTimeout(this._pushTimer);
-      this._pushTimer = null;
-    }
-  }
 
   // --- Turn event buffer ---
 
@@ -2653,18 +2638,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       );
       return;
     }
-    // …and for an armed auto-push. This method CANCELS it a few lines below
-    // (`clearPushTimer`), so a reclaim landing inside the 5 s debounce is the
-    // reason the 2026-08-10 fix commit never reached the remote. `agentBusy`
-    // reports it, but not every reclaim caller re-checks immediately before
-    // disposing — the disk ladder evaluates its guard before an awaited pacing
-    // delay — so the refusal has to live here too.
-    if (this._pushTimer !== null && !opts?.force) {
-      console.log(
-        `[container-runner:${this.sessionId}] dispose() skipped — an auto-push is armed and would be cancelled`,
-      );
-      return;
-    }
+    // An ARMED auto-push takes the same hold, so the guard above covers it too
+    // — the reason the two used to be separate terms was that `dispose()`
+    // cancelled the timer it found on this object, and there is no longer one to
+    // find. The push now outlives a forced teardown as well
+    // (`services/auto-push-scheduler.ts`).
     this._disposed = true;
     this._postTurnHold.reset();
 
@@ -2715,7 +2693,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._depReinstallPending = false;
     this.clearServiceManager();
     this.sse.disconnect();
-    this.clearPushTimer();
     // Resolve any awaiters of in-flight install so they don't leak.
     this.signalInstallComplete();
     // Resolve `_workerReady` so any `whenWorkerReady().then(...)` chain

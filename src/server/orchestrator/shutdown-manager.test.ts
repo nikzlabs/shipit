@@ -53,6 +53,11 @@ function buildDeps(): {
     runnerRegistry: {
       disposeAll: vi.fn(() => { order.push("runnerRegistry.disposeAll"); }),
     },
+    // The armed post-turn pushes no longer live on the runners disposed above,
+    // so shutdown has to drop them itself.
+    autoPushScheduler: {
+      cancelAll: vi.fn(() => { order.push("autoPushScheduler.cancelAll"); }),
+    },
     dockerProxyServer: null,
     containerManager,
     databaseManager: {
@@ -83,6 +88,7 @@ describe("registerShutdownHook", () => {
 
     expect(order).toEqual([
       "runnerRegistry.disposeAll",
+      "autoPushScheduler.cancelAll",
       "containerManager.dispose",
       "databaseManager.close",
     ]);

@@ -284,6 +284,8 @@ export interface PrepareReleaseArgs extends PlanReleaseArgs {
   /** Session id + runner registry — threaded into agentCreatePr's commit flush. */
   sessionId?: string;
   runnerRegistry?: SessionRunnerRegistry;
+  /** Drop the session's pending debounced auto-push once this flow's own push lands. */
+  cancelAutoPush?: (sessionId: string) => void;
   chatHistory?: ChatHistoryManager;
 }
 
@@ -533,6 +535,7 @@ async function prepareFinalRelease(
     remoteUrl: args.remoteUrl,
     ...(args.sessionId ? { sessionId: args.sessionId } : {}),
     ...(args.runnerRegistry ? { runnerRegistry: args.runnerRegistry } : {}),
+    ...(args.cancelAutoPush ? { cancelAutoPush: args.cancelAutoPush } : {}),
     ...(args.chatHistory ? { chatHistory: args.chatHistory } : {}),
   });
 

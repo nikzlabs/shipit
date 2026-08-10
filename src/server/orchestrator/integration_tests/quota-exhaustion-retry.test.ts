@@ -155,6 +155,47 @@ describe("same-turn quota failover (docs/150 req 14)", () => {
     runner.dispose({ force: true });
   });
 
+  /**
+   * The 2026-08-10 incident: a post-turn commit landed and its push silently
+   * never happened.
+   *
+   * The quota-retry path clears `running` before the replacement attempt starts,
+   * so when the superseded process died the error listener signalled "idle"
+   * while the turn's post-turn commit was still ~150ms away. The idle enforcer
+   * accepted `dispose(force=false)` in that window, the runner left the
+   * registry, and the push — whose debounce timer lived on that runner — went
+   * with it. Nothing was logged.
+   *
+   * Pinned as an *ordering* fact, not a call shape: whenever the runner says it
+   * is idle, this turn's commit has already run.
+   */
+  it("does not signal idle before the errored turn's post-turn commit has run", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const { deps, autoCommit } = makeDeps(agents);
+    runner.setSystemTurnDeps(deps);
+
+    let committedWhenIdle: number | null = null;
+    runner.on("idle", () => { committedWhenIdle = autoCommit.mock.calls.length; });
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+
+    // Quota exhausted → the retry is armed and the current spawn is killed.
+    agents[0]!.emit("event", { type: "agent_result", error: QUOTA_ERROR, sessionId: "agent-sid" });
+    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "retry agent run");
+
+    // ...and the retry dies at once — every account is spent, so the process
+    // errors instead of producing a result. This is the path that signalled idle
+    // ahead of its own commit.
+    agents[1]!.emit("error", new Error("turn blocked: no eligible account"));
+    await waitFor(() => committedWhenIdle !== null, "idle signal");
+
+    expect(committedWhenIdle).toBeGreaterThan(0);
+
+    runner.dispose({ force: true });
+  });
+
   // The shape production hit on 2026-08-06 (session 174b5d98): the Claude CLI
   // reported the limit as an ordinary assistant message and then ended the turn
   // `subtype: "success"`, so the adapter left `agent_result.error` undefined.
