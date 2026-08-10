@@ -301,6 +301,14 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   ) {
     const resident = runner?.getAgent() ?? null;
     if (resident) {
+      // planning#318 — settle the retired turn FIRST, for the reason spelled out in
+      // `resident-spawn-guard.ts`: this block clears the slot, so the fresh
+      // spawn below installs over an empty one and the displacement hook never
+      // fires, while the retired turn's own `agent_done` is dropped as a stale
+      // spawn. It has to run before `removeAllListeners()`, since the
+      // settlement travels on one of those listeners. Settlement only; a turn
+      // that already settled latches, so this is a no-op for the ordinary case.
+      resident.emit("superseded");
       // Drop the previous turn's listeners BEFORE killing — same reason as
       // `releaseResidentOnSpawnChange`: the kill's late `done`/`error` (an
       // SSE exit, or an in-flight worker HTTP call rejecting locally on the

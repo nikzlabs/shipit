@@ -38,7 +38,35 @@
  * compares it.
  */
 
+import type { AgentProcess } from "../shared/types.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
+
+/**
+ * planning#318 — read the resident process and, if one is there, SETTLE the turn it
+ * still belongs to before either helper below retires it.
+ *
+ * Both helpers retire by clearing the slot (`kill(); setAgent(null)`), so the
+ * turn that spawns next installs its proxy over an EMPTY slot and
+ * `ContainerSessionRunner.supersedeDisplacedAgent` — which fires only for a slot
+ * REPLACEMENT — never sees the displacement. Nothing else settles the retired
+ * turn either: its own `agent_done` carries the previous spawn's `runToken` and
+ * is dropped by the docs/146 stale-spawn guard, the runner is alive so there is
+ * no `disposed`, and the worker truthfully reports an agent running so there is
+ * no `turn_abandoned`. That is how a merge-wake turn stayed pending at
+ * `merge-observed` until planning#260's supervisor re-sent it (see
+ * `dispatched-turn.ts`'s `supersedeRetiredTurn`, the same fix at the two
+ * retirement sites in `runOnce`).
+ *
+ * SETTLEMENT ONLY, and it must run BEFORE `removeAllListeners()` — the
+ * settlement travels on one of those listeners. The `superseded` handler in
+ * `turn-executor.ts` runs no teardown by contract, and a turn that already
+ * settled latches, so this is a no-op for every ordinary release.
+ */
+function resolveResidentToRetire(runner: SessionRunnerInterface): AgentProcess | null {
+  const resident = runner.getAgent();
+  if (resident) resident.emit("superseded");
+  return resident;
+}
 
 /**
  * Kill the runner's resident agent when `desiredIdentity` differs from the
@@ -57,7 +85,7 @@ export function releaseResidentOnSpawnChange(
   if (!runner) return false;
   const applied = runner.appliedSpawnIdentity;
   if (applied === undefined || applied === desiredIdentity) return false;
-  const resident = runner.getAgent();
+  const resident = resolveResidentToRetire(runner);
   if (!resident) return false;
 
   // Drop the previous turn's listeners BEFORE killing, so the kill's `done`
@@ -110,7 +138,7 @@ export function releaseResidentForCredentialChange(
   runner: SessionRunnerInterface | null | undefined,
 ): boolean {
   if (!runner || runner.running) return false;
-  const resident = runner.getAgent();
+  const resident = resolveResidentToRetire(runner);
   if (!resident) return false;
   try {
     resident.removeAllListeners();

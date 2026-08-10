@@ -2,19 +2,26 @@ import { describe, it, expect, vi } from "vitest";
 import { releaseResidentOnSpawnChange } from "./resident-spawn-guard.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 
-function makeAgent() {
+function makeAgent(order: string[] = []) {
   return {
-    kill: vi.fn(),
-    removeAllListeners: vi.fn(),
+    // A real `AgentProcess` is an `EventEmitter<AgentProcessEvents>`; planning#318
+    // settles the retired turn through `emit("superseded")`.
+    emit: vi.fn((event: string) => { order.push(`emit:${event}`); }),
+    kill: vi.fn(() => { order.push("kill"); }),
+    removeAllListeners: vi.fn(() => { order.push("removeAllListeners"); }),
   };
 }
 
-function makeRunner(opts: { appliedSpawnIdentity?: string; agent?: ReturnType<typeof makeAgent> | null }) {
+function makeRunner(opts: {
+  appliedSpawnIdentity?: string;
+  agent?: ReturnType<typeof makeAgent> | null;
+  order?: string[];
+}) {
   const state = {
     sessionId: "s1",
     appliedSpawnIdentity: opts.appliedSpawnIdentity,
     isStreamingActive: true,
-    agent: opts.agent === undefined ? makeAgent() : opts.agent,
+    agent: opts.agent === undefined ? makeAgent(opts.order) : opts.agent,
     clearBackgroundTasks: vi.fn(),
     getAgent() { return state.agent; },
     setAgent(a: unknown) { state.agent = a as typeof state.agent; },
@@ -27,7 +34,8 @@ const asRunner = (r: ReturnType<typeof makeRunner>): SessionRunnerInterface =>
 
 describe("releaseResidentOnSpawnChange", () => {
   it("kills the resident process when the selected model no longer matches the spawn-time one", () => {
-    const runner = makeRunner({ appliedSpawnIdentity: "claude-fable-5" });
+    const order: string[] = [];
+    const runner = makeRunner({ appliedSpawnIdentity: "claude-fable-5", order });
     const agent = runner.agent!;
 
     expect(releaseResidentOnSpawnChange(asRunner(runner), "claude-opus-5")).toBe(true);
@@ -36,6 +44,11 @@ describe("releaseResidentOnSpawnChange", () => {
     // Listeners come off BEFORE the kill so the previous turn's `done` handler
     // can't re-run its terminal flow against an already-finished turn.
     expect(agent.removeAllListeners).toHaveBeenCalledOnce();
+    // planning#318 — and the retired turn is SETTLED before either, because the
+    // settlement travels on one of the listeners about to come off. This site
+    // clears the slot, so the next spawn installs over an empty one and the
+    // displacement hook never fires; without the settle the turn strands.
+    expect(order).toEqual(["emit:superseded", "removeAllListeners", "kill"]);
     expect(runner.getAgent()).toBeNull();
     expect(runner.isStreamingActive).toBe(false);
     expect(runner.appliedSpawnIdentity).toBeUndefined();

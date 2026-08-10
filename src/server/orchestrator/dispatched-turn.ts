@@ -48,6 +48,42 @@ import { formatSessionMessagePrompt } from "./session-message-origin.js";
  */
 const MAX_NO_RESULT_RETRIES = 1;
 
+/**
+ * planning#318 — settle the turn whose resident process this dispatch is about to
+ * RETIRE, at the moment it is retired.
+ *
+ * `ContainerSessionRunner.supersedeDisplacedAgent` already covers a slot
+ * REPLACEMENT (`setAgent(next)` over a still-installed proxy). Both retirement
+ * blocks below take the other shape — `kill(); setAgent(null); createAgent()` —
+ * so the incoming proxy is installed over an ALREADY-EMPTY slot and the
+ * displacement hook has nothing to compare against. Nothing else then tells the
+ * retired turn it is over: its own `agent_done` arrives with the previous
+ * spawn's `runToken` and is dropped by the docs/146 stale-spawn guard (right for
+ * the relay — emitting it would run the retired turn's teardown against the
+ * live turn's slot), and neither `settleAsDropped` net applies (the runner is
+ * alive, and the worker truthfully reports an agent running). The settlement
+ * stayed pending forever.
+ *
+ * In production (2026-08-10, session 18d04568) that stranded a merge-wake turn
+ * for PR #2104 at `merge-observed`: its `agent_result` had already arrived and
+ * drained the NEXT wake turn off the queue, that wake retired the still-resident
+ * process here, and the retired turn's `agent_done` was then dropped as stale.
+ * Indistinguishable from a wake that never reached the session, so planning#260's
+ * retry supervisor re-sent the identical prompt three minutes later — the
+ * duplicate notification planning#318 exists to prevent.
+ *
+ * SETTLEMENT ONLY. The `superseded` handler in `turn-executor.ts` deliberately
+ * runs no teardown: the turn being started here owns the runner, the agent slot
+ * and the working tree. The outcome is whatever the retired turn earned —
+ * `completed` when its `agent_result` had arrived (the production shape),
+ * `interrupted` when it was cut short before producing one — never `no-result`,
+ * which is the one the supervisor retries. A turn that already settled latches,
+ * so this is a no-op for every ordinary retirement.
+ */
+function supersedeRetiredTurn(outgoing: AgentProcess): void {
+  outgoing.emit("superseded");
+}
+
 export async function runDispatchedTurn(
   runner: SessionRunnerInterface,
   deps: SystemTurnDeps,
@@ -258,6 +294,9 @@ export async function runDispatchedTurn(
     if (deps.needsAccountFailover?.(runner.sessionId, agentId)) {
       const outgoing = runner.getAgent();
       if (outgoing) {
+        // Settle first — see `supersedeRetiredTurn`. It has to run BEFORE the
+        // listeners come off, since the settlement travels on one of them.
+        supersedeRetiredTurn(outgoing);
         // Drop the previous turn's listeners BEFORE killing — same as the WS
         // path's failover release and `releaseResidentOnSpawnChange`: the
         // kill's late `done`/`error` (an SSE exit, or an in-flight worker HTTP
@@ -325,6 +364,7 @@ export async function runDispatchedTurn(
     if (opts.systemTurn && !reuse) {
       const outgoing = runner.getAgent();
       if (outgoing) {
+        supersedeRetiredTurn(outgoing);
         try { outgoing.kill(); } catch { /* already gone */ }
         runner.setAgent(null);
         runner.isStreamingActive = false;
