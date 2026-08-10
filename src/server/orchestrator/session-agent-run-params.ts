@@ -106,7 +106,6 @@ export async function buildAgentRunParams(
     (s) => s.enabled,
   );
   const replay = deps.sessionManager.consumeConversationReplay(sessionId);
-  const reasoningEffort = deps.getSelectedReasoning?.();
   // docs/128 / docs/211 — read the server-authoritative session kind
   // synchronously, in the pre-`await` DB block (same ordering rule as the reads
   // above), so the ops overlay in the system prompt can't be lost to a mid-build
@@ -124,6 +123,17 @@ export async function buildAgentRunParams(
   // the connection's value survives only as the fallback for a session that has
   // no row model yet. Cross-backend review found this.
   const selectedModel = sessionInfo?.model ?? deps.getSelectedModel();
+  // docs/217 — the reasoning level follows the model's rule, and for the same
+  // reason. `getSelectedReasoning` is per-CONNECTION on the user path, resolved
+  // once at connect for the session the socket was opened on — but a
+  // `send_message` carrying an explicit `sessionId` retargets that socket
+  // (`send-message.ts`) without recomputing it, so the turn ran at the OTHER
+  // session's depth. The row is authoritative: WS connect persists the level it
+  // resolved (`route-registry.ts`), and every non-WS path (child spawn, Fix CI,
+  // `/agent/dispatch`) reads the row already. The connection value survives only
+  // as the fallback for a session whose row carries none. Cross-backend review
+  // (Codex) found this.
+  const reasoningEffort = sessionInfo?.reasoningEffort ?? deps.getSelectedReasoning?.();
   // docs/252 phase 3 — where this turn's model lives, and what authenticates it.
   // Read here with the other synchronous DB reads (the pre-`await` ordering rule
   // above). The credential route is already pinned: env prep runs before this

@@ -950,6 +950,104 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(cp.lastModel).toBe("claude-opus-4-7");
   });
 
+  it("docs/217 — spawned session inherits the parent's reasoning level", { timeout: 15_000 }, async () => {
+    // The level has to reach the CHILD'S FIRST TURN, not just its row: a child
+    // never connects a WebSocket, so the `?reasoning=` connect param that seeds
+    // a browser-driven session cannot cover this path. An unset row means the
+    // harness default, so "not inherited" is silently quieter thinking.
+    const parentId = await createParentSession();
+    sessionManager.setModel(parentId, "claude-opus-4-7");
+    sessionManager.setReasoning(parentId, "high");
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Inherit reasoning" },
+    });
+    expect(res.statusCode).toBe(200);
+    const childId = (res.json() as { sessionId: string }).sessionId;
+    expect(sessionManager.get(childId)?.reasoningEffort).toBe("high");
+
+    const deadline = Date.now() + 3000;
+    while (createdClaudes.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const cp = createdClaudes[createdClaudes.length - 1];
+    const runDeadline = Date.now() + 3000;
+    while (!cp.runCalled && Date.now() < runDeadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(cp.lastReasoningEffort).toBe("high");
+  });
+
+  it("docs/217 — a level the child's harness doesn't offer is dropped, not forwarded", { timeout: 15_000 }, async () => {
+    // `max` is a Claude level; Codex's set stops at `xhigh`. The child is routed
+    // to Codex by the model, so forwarding the parent's level verbatim would put
+    // an unknown value on the CLI's config flag. Dropping falls back to the
+    // harness default, which is the same rule the connect param follows.
+    //
+    // Asserted against a level the child's harness DOES offer, spawned in the
+    // same shape: without that contrast this passes under "inherit nothing at
+    // all", which is the behaviour the test above exists to forbid.
+    const parentId = await createParentSession();
+    sessionManager.setReasoning(parentId, "max");
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Cross-harness reasoning", model: "gpt-5.5" },
+    });
+    expect(res.statusCode).toBe(200);
+    const childId = (res.json() as { sessionId: string }).sessionId;
+    expect(sessionManager.get(childId)?.agentId).toBe("codex");
+    expect(sessionManager.get(childId)?.reasoningEffort).toBeUndefined();
+
+    // `high` is in BOTH sets — same spawn, same cross-harness route, and it
+    // carries. So the `undefined` above is the validation rejecting `max`, not
+    // the spawn dropping every level it is handed.
+    sessionManager.setReasoning(parentId, "high");
+    const ok = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Cross-harness reasoning ok", model: "gpt-5.5" },
+    });
+    expect(ok.statusCode).toBe(200);
+    const okChildId = (ok.json() as { sessionId: string }).sessionId;
+    expect(sessionManager.get(okChildId)?.reasoningEffort).toBe("high");
+  });
+
+  it("a bare --agent switch does not carry the parent's model onto the new backend", { timeout: 15_000 }, async () => {
+    // Cross-backend review (Codex) found this: the model inheritance was
+    // disabled only by an explicit `--model`, so `--agent codex` from a
+    // Claude/Opus parent pinned the child to Codex AND to `claude-opus-4-7`,
+    // and its first turn spawned the Codex CLI with a model it cannot run.
+    // `--agent` alone documents "that backend's default model" — an empty row.
+    const parentId = await createParentSession();
+    sessionManager.setModel(parentId, "claude-opus-4-7");
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Switch backend", agent: "codex" },
+    });
+    expect(res.statusCode).toBe(200);
+    const childId = (res.json() as { sessionId: string }).sessionId;
+    expect(sessionManager.get(childId)?.agentId).toBe("codex");
+    expect(sessionManager.get(childId)?.model).toBeUndefined();
+    expect(sessionManager.get(childId)?.serviceId).toBeUndefined();
+
+    // Staying on the parent's own harness still inherits — the guard above is a
+    // harness-switch rule, not a blanket "an explicit --agent drops the model".
+    const same = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Same backend", agent: "claude" },
+    });
+    expect(same.statusCode).toBe(200);
+    const sameChildId = (same.json() as { sessionId: string }).sessionId;
+    expect(sessionManager.get(sameChildId)?.model).toBe("claude-opus-4-7");
+  });
+
   it("POST /spawn rejects an unknown agent id with 400", { timeout: 15_000 }, async () => {
     const parentId = await createParentSession();
     const res = await app.inject({
