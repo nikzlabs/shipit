@@ -403,6 +403,48 @@ html, body {
   animation: preview-line-flash 0.6s ease-out;
 }
 
+/* ── Monaco comment gutter (MonacoCommentWidgets.ts) ──
+   Monaco stamps these classes onto its glyph-margin overlays, which live
+   outside the React tree, so they cannot be styled with Tailwind utilities.
+   `monaco-comment-add-glyph` is the hover affordance that makes the
+   add-a-comment click discoverable; `monaco-comment-glyph` marks a line that
+   already carries a comment. */
+.monaco-comment-add-glyph,
+.monaco-comment-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.monaco-comment-add-glyph::before {
+  content: "+";
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  background-color: var(--color-accent);
+  color: var(--color-accent-text);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  transition: background-color var(--duration-fast) var(--ease-default);
+}
+
+.monaco-comment-add-glyph:hover::before {
+  background-color: var(--color-accent-hover);
+}
+
+.monaco-comment-glyph::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background-color: var(--color-accent);
+}
+
 /* Resize handle — vertical divider between panels */
 .resize-handle {
   width: 8px;

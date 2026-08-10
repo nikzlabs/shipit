@@ -1,6 +1,19 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { createCommentWidgetManager } from "./MonacoCommentWidgets.js";
+import {
+  createCommentWidgetManager,
+  ADD_COMMENT_TOOLTIP,
+  HAS_COMMENT_TOOLTIP,
+} from "./MonacoCommentWidgets.js";
 import type { LineComment } from "../../server/shared/types.js";
+
+/** Shape of the decorations the widget hands to Monaco, as far as tests care. */
+interface FakeDecoration {
+  range: { startLineNumber: number };
+  options: {
+    glyphMarginClassName?: string;
+    glyphMarginHoverMessage?: { value: string };
+  };
+}
 
 /**
  * Minimal stub of the bits of monaco.editor.ICodeEditor that
@@ -11,8 +24,12 @@ function makeFakeEditor() {
   const zones = new Map<string, { afterLineNumber: number; domNode: HTMLElement; heightInPx: number }>();
   let nextId = 0;
   const mouseDownHandlers: ((e: { target: { type: number; position?: { lineNumber: number } | null } }) => void)[] = [];
-  let decorationCount = 0;
+  const mouseMoveHandlers: ((e: { target: { type: number; position?: { lineNumber: number } | null } }) => void)[] = [];
+  const mouseLeaveHandlers: (() => void)[] = [];
   const decorationCollections: { clear: ReturnType<typeof vi.fn> }[] = [];
+  /** Every decoration currently live, across all collections. */
+  const liveDecorations = new Map<number, FakeDecoration[]>();
+  let nextCollectionId = 0;
   const updateOptions = vi.fn();
 
   const accessor = {
@@ -34,14 +51,32 @@ function makeFakeEditor() {
       mouseDownHandlers.push(handler);
       return { dispose: vi.fn() };
     },
+    onMouseMove(handler: (e: { target: { type: number; position?: { lineNumber: number } | null } }) => void) {
+      mouseMoveHandlers.push(handler);
+      return { dispose: vi.fn() };
+    },
+    onMouseLeave(handler: () => void) {
+      mouseLeaveHandlers.push(handler);
+      return { dispose: vi.fn() };
+    },
     updateOptions,
-    createDecorationsCollection: vi.fn((decs: unknown[]) => {
-      decorationCount = decs.length;
-      const coll = { clear: vi.fn(() => { decorationCount = 0; }) };
+    createDecorationsCollection: vi.fn((decs: FakeDecoration[]) => {
+      const id = ++nextCollectionId;
+      liveDecorations.set(id, decs);
+      const coll = {
+        clear: vi.fn(() => { liveDecorations.set(id, []); }),
+        set: vi.fn((next: FakeDecoration[]) => { liveDecorations.set(id, next); }),
+      };
       decorationCollections.push(coll);
       return coll;
     }),
   };
+
+  /** Decorations across all collections carrying the given glyph class. */
+  const decorationsWithClass = (className: string): FakeDecoration[] =>
+    [...liveDecorations.values()]
+      .flat()
+      .filter((d) => d.options.glyphMarginClassName === className);
 
   return {
     editor,
@@ -51,7 +86,20 @@ function makeFakeEditor() {
         h({ target: { type, position: lineNumber > 0 ? { lineNumber } : null } });
       }
     },
-    getDecorationCount: () => decorationCount,
+    fireMouseMove: (lineNumber: number | null, type = 6) => {
+      for (const h of mouseMoveHandlers) {
+        h({ target: { type, position: lineNumber === null ? null : { lineNumber } } });
+      }
+    },
+    fireMouseLeave: () => {
+      for (const h of mouseLeaveHandlers) h();
+    },
+    hasMouseMoveHandler: () => mouseMoveHandlers.length > 0,
+    decorationsWithClass,
+    /** Lines currently showing the hover `+`. */
+    addGlyphLines: () =>
+      decorationsWithClass("monaco-comment-add-glyph").map((d) => d.range.startLineNumber),
+    getDecorationCount: () => [...liveDecorations.values()].flat().length,
     decorationCollections,
     updateOptions,
   };
@@ -495,6 +543,128 @@ describe("MonacoCommentWidgets", () => {
     });
   });
 
+  /**
+   * The glyph-margin click is the only way to add a line comment, and before
+   * this the margin drew nothing at all — so the hover `+` is the feature's
+   * entire discoverability.
+   */
+  describe("hover affordance", () => {
+    function makeManager(readOnly = false) {
+      return createCommentWidgetManager(
+        fake.editor as never,
+        {
+          filePath: "src/a.ts",
+          onAddComment: vi.fn(),
+          onEditComment: vi.fn(),
+          onDeleteComment: vi.fn(),
+          readOnly,
+        },
+      );
+    }
+
+    it("marks the hovered line with an add-comment glyph", () => {
+      makeManager();
+      expect(fake.addGlyphLines()).toEqual([]);
+      fake.fireMouseMove(6);
+      expect(fake.addGlyphLines()).toEqual([6]);
+    });
+
+    it("carries a tooltip saying what the click does", () => {
+      makeManager();
+      fake.fireMouseMove(6);
+      const [decoration] = fake.decorationsWithClass("monaco-comment-add-glyph");
+      expect(decoration.options.glyphMarginHoverMessage?.value).toBe(ADD_COMMENT_TOOLTIP);
+    });
+
+    it("moves the glyph to the newly hovered line", () => {
+      makeManager();
+      fake.fireMouseMove(6);
+      fake.fireMouseMove(11);
+      expect(fake.addGlyphLines()).toEqual([11]);
+    });
+
+    it("tracks the glyph margin, the line numbers and the code itself", () => {
+      makeManager();
+      // GUTTER_GLYPH_MARGIN, GUTTER_LINE_NUMBERS, GUTTER_LINE_DECORATIONS,
+      // CONTENT_TEXT, CONTENT_EMPTY — the pointer is on the line in all five.
+      for (const type of [2, 3, 4, 6, 7]) {
+        fake.fireMouseMove(null);
+        fake.fireMouseMove(3, type);
+        expect(fake.addGlyphLines()).toEqual([3]);
+      }
+    });
+
+    it("ignores hovers over a view zone, so a comment card marks nothing", () => {
+      makeManager();
+      // CONTENT_VIEW_ZONE — the pointer is over a comment card, not a line.
+      fake.fireMouseMove(4, 8);
+      expect(fake.addGlyphLines()).toEqual([]);
+    });
+
+    it("clears the glyph when the pointer leaves the editor", () => {
+      makeManager();
+      fake.fireMouseMove(6);
+      fake.fireMouseLeave();
+      expect(fake.addGlyphLines()).toEqual([]);
+    });
+
+    it("clears the glyph when the pointer moves off any line", () => {
+      makeManager();
+      fake.fireMouseMove(6);
+      fake.fireMouseMove(null, /* OUTSIDE_EDITOR */ 13);
+      expect(fake.addGlyphLines()).toEqual([]);
+    });
+
+    it("leaves a commented line showing its own glyph, not a `+`", () => {
+      const manager = makeManager();
+      manager.setComments([lineComment({ line: 5 })]);
+      fake.fireMouseMove(5);
+      expect(fake.addGlyphLines()).toEqual([]);
+      expect(fake.decorationsWithClass("monaco-comment-glyph")).toHaveLength(1);
+    });
+
+    it("drops the `+` when the hovered line gains a comment", () => {
+      const manager = makeManager();
+      fake.fireMouseMove(5);
+      expect(fake.addGlyphLines()).toEqual([5]);
+      manager.setComments([lineComment({ line: 5 })]);
+      expect(fake.addGlyphLines()).toEqual([]);
+    });
+
+    it("restores the `+` when the hovered line loses its last comment", () => {
+      const manager = makeManager();
+      manager.setComments([lineComment({ line: 5 })]);
+      fake.fireMouseMove(5);
+      expect(fake.addGlyphLines()).toEqual([]);
+      manager.setComments([]);
+      expect(fake.addGlyphLines()).toEqual([5]);
+    });
+
+    it("shows no `+` in readOnly mode, which also suppresses the click", () => {
+      makeManager(true);
+      // readOnly must not even subscribe — a marker with no working click
+      // would be a lie.
+      expect(fake.hasMouseMoveHandler()).toBe(false);
+      fake.fireMouseMove(6);
+      expect(fake.addGlyphLines()).toEqual([]);
+    });
+
+    it("still marks a commented line for the tooltip in readOnly mode", () => {
+      const manager = makeManager(true);
+      manager.setComments([lineComment({ line: 5 })]);
+      const [decoration] = fake.decorationsWithClass("monaco-comment-glyph");
+      expect(decoration.options.glyphMarginHoverMessage?.value).toBe(HAS_COMMENT_TOOLTIP);
+    });
+
+    it("dispose() removes the hover glyph", () => {
+      const manager = makeManager();
+      fake.fireMouseMove(6);
+      expect(fake.addGlyphLines()).toEqual([6]);
+      manager.dispose();
+      expect(fake.addGlyphLines()).toEqual([]);
+    });
+  });
+
   it("dispose() removes all view zones and clears decorations", () => {
     const manager = createCommentWidgetManager(
       fake.editor as never,
@@ -534,5 +704,26 @@ describe("MonacoCommentWidgets — diff editor (modified side)", () => {
 
     expect(getModifiedEditor).toHaveBeenCalled();
     expect(fake.updateOptions).toHaveBeenCalledWith({ glyphMargin: true });
+  });
+
+  // DiffPanel gets the affordance from the same shared widget, so the hover
+  // must land on the modified editor rather than the diff wrapper.
+  it("shows the hover glyph on the modified editor", () => {
+    const fake = makeFakeEditor();
+    const diffEditor = { getModifiedEditor: vi.fn(() => fake.editor) };
+
+    createCommentWidgetManager(
+      diffEditor as never,
+      {
+        filePath: "src/a.ts",
+        onAddComment: vi.fn(),
+        onEditComment: vi.fn(),
+        onDeleteComment: vi.fn(),
+        side: "modified",
+      },
+    );
+
+    fake.fireMouseMove(9);
+    expect(fake.addGlyphLines()).toEqual([9]);
   });
 });
