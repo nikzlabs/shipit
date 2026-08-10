@@ -216,7 +216,7 @@ export interface RunnerRegistryDeps {
    * fails its turn for quota. Forwarded into the listener so a dispatched /
    * system turn marks exhaustion exactly like a WS turn does.
    */
-  markSessionAccountExhausted?: (sessionId: string, until: number) => void;
+  markSessionAccountExhausted?: (sessionId: string, until: number, routeId?: string) => void;
   /**
    * docs/153 — fire-and-forget nudge to the Claude OAuth refresher. Forwarded
    * into the listener so dispatched/system turns also heal a stale token via
