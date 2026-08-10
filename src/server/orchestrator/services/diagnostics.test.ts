@@ -428,16 +428,19 @@ describe("getSessionDiagnostics", () => {
       ).toBe("Anthropic API key — metered billing");
     });
 
-    it("reports an unpinned session as pending, not as an error", () => {
+    it("reports a routeless session as per-turn selection, not as an error (docs/260)", () => {
+      // docs/260 removed session→account pinning: with no resident process
+      // there is no current route, and the next turn picks the account fresh.
+      // That is the honest steady state between turns, not a failure.
       const route = describeProviderRoute({ agentId: null }, lookup);
       expect(route?.kind).toBeNull();
-      expect(route?.label).toMatch(/not pinned yet/);
+      expect(route?.label).toBe("selected per turn — the next turn picks an account");
     });
 
-    it("says so when the pinned account has been disconnected", () => {
-      // Disconnecting an account leaves an idle session's pin dangling; the
-      // next turn's preflight re-routes it. Worth naming, because it explains a
-      // session that is about to change account on its own.
+    it("says so when the resident process's account has been disconnected", () => {
+      // Disconnecting an account can outrun the process running on it; worth
+      // naming, because it explains a session that is about to change account
+      // at its next turn's selection (docs/260).
       expect(
         describeProviderRoute(
           { agentId: "claude", providerRouteKind: "account", providerRouteId: "acct_gone" },
@@ -460,7 +463,28 @@ describe("getSessionDiagnostics", () => {
       expect(result.providerRoute).toBeNull();
     });
 
-    it("threads the session's stored route into the payload", async () => {
+    it("threads the RESIDENT process's route into the payload (docs/260)", async () => {
+      // docs/260 — the displayed route is `runner.residentRoute` (the live
+      // CLI's credential), not a session-row pin: only a resident process has
+      // a current account between selections.
+      const result = await getSessionDiagnostics(
+        {
+          containerManager: fakeContainerManager({ container: null }),
+          runnerRegistry: fakeRegistry(
+            fakeRunner({ residentRoute: { kind: "account", id: "acct_1" } }),
+          ),
+          serviceManagers: new Map(),
+          getLogBuffer: () => [],
+          getWorkspaceDir: () => null,
+          getSessionRoute: () => ({ agentId: "claude" }),
+          getAccountLabel: lookup,
+        },
+        "sess-1",
+      );
+      expect(result.providerRoute).toMatchObject({ routeId: "acct_1", label: "Work" });
+    });
+
+    it("shows per-turn selection when no process is resident, even with session wiring (docs/260)", async () => {
       const result = await getSessionDiagnostics(
         {
           containerManager: fakeContainerManager({ container: null }),
@@ -468,16 +492,15 @@ describe("getSessionDiagnostics", () => {
           serviceManagers: new Map(),
           getLogBuffer: () => [],
           getWorkspaceDir: () => null,
-          getSessionRoute: () => ({
-            agentId: "claude",
-            providerRouteKind: "account",
-            providerRouteId: "acct_1",
-          }),
+          getSessionRoute: () => ({ agentId: "claude" }),
           getAccountLabel: lookup,
         },
         "sess-1",
       );
-      expect(result.providerRoute).toMatchObject({ routeId: "acct_1", label: "Work" });
+      expect(result.providerRoute).toMatchObject({
+        routeId: null,
+        label: "selected per turn — the next turn picks an account",
+      });
     });
   });
 

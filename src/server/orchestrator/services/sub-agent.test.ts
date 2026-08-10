@@ -412,7 +412,17 @@ describe("runSubAgent — happy path", () => {
   it("selects a healthy subscription account proactively for a one-shot run", async () => {
     const { deps, runner, selectAccountForTurn } = makeDeps({});
     await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
-    expect(selectAccountForTurn).toHaveBeenCalledWith("openai");
+    expect(selectAccountForTurn).toHaveBeenCalledTimes(1);
+    const [service, selectOpts] = selectAccountForTurn.mock.calls[0] as [
+      string,
+      { optimistic?: boolean } | undefined,
+    ];
+    expect(service).toBe("openai");
+    // docs/260 req 12 — `optimistic` (return blocked accounts anyway) belongs
+    // to the TURN's own attempt loop, which will actually try the result. A
+    // consult is a non-turn caller: it selects non-optimistically, so a
+    // refusal-blocked account is skipped rather than handed back.
+    expect(selectOpts?.optimistic).toBeUndefined();
     expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
   });
 

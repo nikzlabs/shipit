@@ -324,12 +324,22 @@ describe("makeNonTurnGenerateText — credential window", () => {
 
   it("provisions the run's credentials before the spawn and wipes them after", async () => {
     const calls: string[] = [];
+    const restored: string[] = [];
     vi.doMock("../session-credentials.js", () => ({
       provisionSubAgentCredentials: () => calls.push("provision"),
       removeSubAgentCredentials: () => calls.push("wipe"),
       syncAgentTokenBack: () => calls.push("sync"),
       syncProviderAccountTokenBack: () => calls.push("sync-account"),
-      provisionProviderAccountCredentials: () => calls.push("restore"),
+      provisionProviderAccountCredentials: (
+        _dir: string, _sessionId: string, _agentId: string, accountId: string,
+      ) => {
+        calls.push("restore");
+        restored.push(accountId);
+      },
+      // docs/260 — the restore reads the credential subtree's own account
+      // MARKER, not session.providerRoute* (the row records no route any
+      // more). Seed it with the account the session's subtree held.
+      readSessionAccountMarker: () => ({ claude: "acct_marker" }),
     }));
     // The runner has to BE a ContainerSessionRunner for the window to open —
     // local mode provisions nothing, by design (docs/138).
@@ -345,6 +355,9 @@ describe("makeNonTurnGenerateText — credential window", () => {
     const generate = makeNonTurnGenerateText({
       ...(deps as object),
       getRunnerRegistry: () => ({ get: () => runner }),
+      // A session whose primary agent is the same harness the run borrowed —
+      // the case whose subtree must be put back after the consult.
+      sessionManager: { get: () => ({ agentId: "claude" }) },
       credentialsDir: "/credentials",
       fallback: async () => "unused",
     } as never);
@@ -352,8 +365,11 @@ describe("makeNonTurnGenerateText — credential window", () => {
     await generate("prompt", "/ws", { sessionId: "s1", purpose: "pr-description" });
 
     // Provision BEFORE the spawn, wipe AFTER — a background generation must not
-    // leave a credential behind in the session's container.
-    expect(calls).toEqual(["provision", "spawn", "sync", "wipe"]);
+    // leave a credential behind in the session's container. Then the session's
+    // own account comes back from the MARKER, so the next turn is not left
+    // pointed at the consult's credentials (docs/260).
+    expect(calls).toEqual(["provision", "spawn", "sync", "wipe", "restore"]);
+    expect(restored).toEqual(["acct_marker"]);
   });
 
   it("still wipes when the spawn throws", async () => {
@@ -364,6 +380,9 @@ describe("makeNonTurnGenerateText — credential window", () => {
       syncAgentTokenBack: () => calls.push("sync"),
       syncProviderAccountTokenBack: () => calls.push("sync-account"),
       provisionProviderAccountCredentials: () => calls.push("restore"),
+      // docs/260 — read on the wipe path; an empty marker means no account to
+      // restore, which is fine: the wipe is what this test pins.
+      readSessionAccountMarker: () => ({}),
     }));
     const { ContainerSessionRunner } = await import("../container-session-runner.js");
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");

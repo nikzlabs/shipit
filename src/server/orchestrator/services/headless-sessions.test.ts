@@ -7,6 +7,7 @@ import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
 import { CredentialStore } from "../credential-store.js";
 import { ProviderAccountManager } from "../provider-account-manager.js";
+import { readSessionAccountMarker } from "../session-credentials.js";
 import { RepoStore } from "../repo-store.js";
 import { GitManager } from "../../shared/git.js";
 import { createHeadlessSession, seedFromIssueRef } from "./headless-sessions.js";
@@ -421,21 +422,16 @@ describe("createHeadlessSession", () => {
     expect(claim.claim).not.toHaveBeenCalled();
   });
 
-  it("routes credential provisioning through providerAccountManager when one is supplied", async () => {
-    // Regression for the quick-session "not logged in" bug. After
-    // `migrateDefaultAccounts()` runs at orchestrator startup, the legacy
-    // `<credentialsDir>/.claude` (and `.codex`) becomes a symlink into
-    // `provider-accounts/`. The headless path used to skip
-    // `providerAccountManager`, so `prepareSessionAgentEnvironment` fell into
-    // the legacy `provisionAgentCredentials` branch, which copied the symlink
-    // verbatim into the per-session subtree — pointing at an orchestrator path
-    // the container can't resolve. The fix forwards the manager so
-    // `selectRouteForTurn` picks the account route and provisions from the
-    // real account directory. Asserting `providerRoute*` metadata on the
-    // session is the cleanest way to prove the route selector was consulted
-    // without standing up a real container runner. The two agents share the
-    // exact same plumbing, so we exercise both to make sure the symmetry
-    // doesn't drift.
+  it("keeps env-prep account-neutral: no selection, no provisioning (docs/260 §5b)", async () => {
+    // docs/260 removed session→account pinning: headless create's env-prep is
+    // now a WARM-UP (`enforceAccountRouting` unset), and warm-ups are
+    // account-neutral by design — they select no account, stamp no route, and
+    // provision no per-session credential subtree. The real first turn's own
+    // pre-spawn env-prep, moments later, is what selects and provisions; a
+    // selection here would double-select against it. This test pins that
+    // neutrality with connected accounts present for BOTH providers, so a
+    // regression back to eager selection has something to select.
+    //
     // Real credential files, not bare directories: migration gates on a
     // credential marker having content, because an empty `.claude` is something
     // anything running with `HOME=/root` can create through the image-level
@@ -453,6 +449,9 @@ describe("createHeadlessSession", () => {
     providerAccountManager.migrateDefaultAccounts();
     expect(providerAccountManager.getPrimary("anthropic")?.id).toBe("claude-default");
     expect(providerAccountManager.getPrimary("openai")?.id).toBe("codex-default");
+    // A resolved selection always stamps usage (docs/150 req 21) — so an
+    // untouched spy proves no selection resolved.
+    const markUsed = vi.spyOn(providerAccountManager, "markAccountUsed");
 
     await createHeadlessSession(
       sessionManager,
@@ -465,9 +464,19 @@ describe("createHeadlessSession", () => {
       providerAccountManager,
       graduationDeps,
     );
+    // No account selected, no route stamped anywhere: not on the session row,
+    // not on the runner, and no per-session credential subtree (whose account
+    // marker is provisioning's one durable trace — docs/260 §4).
+    expect(markUsed).not.toHaveBeenCalled();
     const claudeSession = sessionManager.get("quick-1");
-    expect(claudeSession?.providerRouteKind).toBe("account");
-    expect(claudeSession?.providerRouteId).toBe("claude-default");
+    expect(claudeSession?.providerRouteKind).toBeUndefined();
+    expect(claudeSession?.providerRouteId).toBeUndefined();
+    expect((registry.get("quick-1") as { residentRoute?: unknown } | undefined)?.residentRoute)
+      .toBeUndefined();
+    expect(readSessionAccountMarker(tmpDir, "quick-1")).toEqual({});
+    // Neutrality must not stall the session: the first turn still dispatches,
+    // and ITS env-prep is what provisions.
+    expect(registry.get("quick-1")?.dispatch).toHaveBeenCalledTimes(1);
 
     await createHeadlessSession(
       sessionManager,
@@ -480,9 +489,13 @@ describe("createHeadlessSession", () => {
       providerAccountManager,
       graduationDeps,
     );
+    // Same neutrality for the other harness — the two share the plumbing.
+    expect(markUsed).not.toHaveBeenCalled();
     const codexSession = sessionManager.get("quick-2");
-    expect(codexSession?.providerRouteKind).toBe("account");
-    expect(codexSession?.providerRouteId).toBe("codex-default");
+    expect(codexSession?.providerRouteKind).toBeUndefined();
+    expect(codexSession?.providerRouteId).toBeUndefined();
+    expect(readSessionAccountMarker(tmpDir, "quick-2")).toEqual({});
+    expect(registry.get("quick-2")?.dispatch).toHaveBeenCalledTimes(1);
   });
 
   it("defers branchRenamed when no explicit branch/title is pinned", async () => {

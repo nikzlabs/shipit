@@ -898,6 +898,17 @@ export async function executeAgentTurn(
   // the session) and, for a wake-turn, strands its merge-watch at
   // `merge-observed` where the retry supervisor re-delivers it.
   agent.on("superseded", () => {
+    // docs/179 / docs/260 §3 — stand down when the displacement IS this turn's
+    // own recovery: the auth heal and the quota attempt loop replace the dying
+    // process on purpose (`runner.setAgent(freshAgent)` in `recoverAuth` /
+    // `retryOnNextAccount`) and the re-dispatched attempt owns settlement,
+    // exactly as the `done` handler already stands down on both flags. Worse
+    // than settling early: a quota-refused attempt has `receivedResult` true
+    // (the refusal arrived as its `agent_result`), so `finishTurn` here would
+    // settle the logical turn as COMPLETED — telling a multi-turn driver (the
+    // rebase conflict loop) that work the agent never did is done, which
+    // staged, continued and force-pushed unresolved conflict markers.
+    if (automaticRecoveryInProgress || quotaRetryInProgress) return;
     wasSuperseded = true;
     finishTurn();
   });
