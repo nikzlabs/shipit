@@ -41,7 +41,11 @@ afterEach(() => {
   useSessionStore.setState({ activeRunnerSessions: new Set<string>(), messages: [], rewindRecoveries: {} });
   usePrStore.setState({ cardBySession: {}, statusBySession: {}, autoMergeBySession: {} });
   useUiStore.getState().setProjectSettingsRepoUrl(null);
-  useRepoStore.setState({ collapsedParents: new Set<string>(), collapsedResolved: new Set<string>() });
+  useRepoStore.setState({
+    collapsedParents: new Set<string>(),
+    collapsedResolved: new Set<string>(),
+    expandedResolvedChildren: new Set<string>(),
+  });
 });
 
 const baseSession = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
@@ -965,6 +969,105 @@ describe("SessionSidebar", () => {
       render(<SessionSidebar {...defaultProps} sessions={[parent, childA]} currentSessionId="other" onResume={onResume} />);
       await user.click(screen.getByLabelText("Hide 1 spawned session"));
       expect(onResume).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("resolved children hidden behind a per-brood control", () => {
+    const parent = baseSession({ id: "parent-1", title: "Parent", remoteUrl: repoA.url });
+    const liveChild = baseSession({
+      id: "child-live",
+      title: "Live child",
+      remoteUrl: repoA.url,
+      parentSessionId: "parent-1",
+      rootSessionId: "parent-1",
+    });
+    const mergedChild = baseSession({
+      id: "child-merged",
+      title: "Merged child",
+      remoteUrl: repoA.url,
+      parentSessionId: "parent-1",
+      rootSessionId: "parent-1",
+      createdAt: "2024-01-01T00:00:00.000Z",
+      lastUsedAt: "2024-01-01T00:00:00.000Z",
+      mergedAt: "2024-01-02T00:00:00.000Z",
+    });
+    const closedChild = baseSession({
+      id: "child-closed",
+      title: "Closed child",
+      remoteUrl: repoA.url,
+      parentSessionId: "parent-1",
+      rootSessionId: "parent-1",
+      createdAt: "2024-01-01T00:00:00.000Z",
+      lastUsedAt: "2024-01-01T00:00:00.000Z",
+      closedAt: "2024-01-02T00:00:00.000Z",
+    });
+
+    it("hides a merged child by default and offers a control to show it", () => {
+      render(<SessionSidebar {...defaultProps} sessions={[parent, liveChild, mergedChild]} />);
+      expect(screen.getByText("Live child")).toBeTruthy();
+      expect(screen.queryByText("Merged child")).toBeNull();
+      expect(screen.getByText("1 resolved")).toBeTruthy();
+      expect(screen.getByLabelText("Show 1 resolved spawned session")).toBeTruthy();
+    });
+
+    it("counts closed-without-merge children as resolved too", () => {
+      render(<SessionSidebar {...defaultProps} sessions={[parent, mergedChild, closedChild]} />);
+      expect(screen.queryByText("Merged child")).toBeNull();
+      expect(screen.queryByText("Closed child")).toBeNull();
+      expect(screen.getByLabelText("Show 2 resolved spawned sessions")).toBeTruthy();
+    });
+
+    it("reveals the resolved children on click and remembers it per root session", async () => {
+      const user = userEvent.setup();
+      render(<SessionSidebar {...defaultProps} sessions={[parent, liveChild, mergedChild]} />);
+      await user.click(screen.getByLabelText("Show 1 resolved spawned session"));
+      expect(screen.getByText("Merged child")).toBeTruthy();
+      expect(screen.getByLabelText("Hide 1 resolved spawned session")).toBeTruthy();
+      expect(useRepoStore.getState().expandedResolvedChildren.has("parent-1")).toBe(true);
+    });
+
+    it("renders no control when the brood has no resolved member", () => {
+      render(<SessionSidebar {...defaultProps} sessions={[parent, liveChild]} />);
+      expect(screen.queryByTestId("resolved-children-toggle")).toBeNull();
+    });
+
+    it("still counts hidden resolved children in the parent's collapse caret", () => {
+      render(<SessionSidebar {...defaultProps} sessions={[parent, liveChild, mergedChild]} />);
+      expect(screen.getByLabelText("Hide 2 spawned sessions")).toBeTruthy();
+    });
+
+    it("hides the control along with the brood when the parent is collapsed", async () => {
+      const user = userEvent.setup();
+      render(<SessionSidebar {...defaultProps} sessions={[parent, liveChild, mergedChild]} />);
+      await user.click(screen.getByLabelText("Hide 2 spawned sessions"));
+      expect(screen.queryByTestId("resolved-children-toggle")).toBeNull();
+      expect(screen.queryByText("Live child")).toBeNull();
+    });
+
+    it("keeps a merged child visible when it has its own children in the brood", () => {
+      // Tucking away an intermediate merged child would leave its grandchild
+      // rendered at the same indent with no visible ancestor.
+      const mergedMiddle = baseSession({
+        id: "child-merged",
+        title: "Merged middle",
+        remoteUrl: repoA.url,
+        parentSessionId: "parent-1",
+        rootSessionId: "parent-1",
+        createdAt: "2024-01-01T00:00:00.000Z",
+        lastUsedAt: "2024-01-01T00:00:00.000Z",
+        mergedAt: "2024-01-02T00:00:00.000Z",
+      });
+      const grandchild = baseSession({
+        id: "grand-1",
+        title: "Grandchild",
+        remoteUrl: repoA.url,
+        parentSessionId: "child-merged",
+        rootSessionId: "parent-1",
+      });
+      render(<SessionSidebar {...defaultProps} sessions={[parent, mergedMiddle, grandchild]} />);
+      expect(screen.getByText("Merged middle")).toBeTruthy();
+      expect(screen.getByText("Grandchild")).toBeTruthy();
+      expect(screen.queryByTestId("resolved-children-toggle")).toBeNull();
     });
   });
 

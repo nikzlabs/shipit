@@ -199,6 +199,34 @@ The `getChildren` selector (`session-store.ts:618-619`) keeps its exact-match
 semantics for `parentSessionId` (provenance/cards), and gains a sibling
 `getBrood(rootId)` selector for the sidebar's grouping query.
 
+#### Resolved members of a brood are hidden by default
+
+A big feature spawns 10–15 children and most of them finish merged, so a brood
+whose members all stayed visible turned the sidebar into a long scroll of
+completed work the user had to archive by hand. `pushTree` therefore splits the
+brood: live members render as before, and the members `isRecentlyResolved()`
+considers resolved (merged **or** closed-without-merge, not reopened since) are
+tucked behind a per-root control — the same affordance as the repo-level
+"Recently resolved" section from docs/161, indented to child level and labelled
+`N resolved`.
+
+Two deliberate differences from the repo-level control:
+
+- **Collapsed by default**, and the persisted state is therefore the *expanded*
+  set (`expandedResolvedChildren` in `repo-store`, keyed by root session id;
+  `shipit-expanded-resolved-children` in localStorage). Absence = hidden.
+- **A brood member that is itself a parent inside the brood is never tucked
+  away**, even when resolved. The brood renders flat at one indent level, so
+  hiding a middle child would leave its own descendants with no visible
+  ancestor. The predicate mirrors `parentsWithChildren` in
+  `useSessionGrouping`'s sort, keeping the split consistent with the order the
+  list arrives in.
+
+The root's own collapse caret still counts the **whole** brood, resolved members
+included — collapsing the parent hides everything, so the total is the honest
+number there. The control costs one extra row while the brood is expanded and
+nothing at all while it is collapsed.
+
 ### 4. Migration
 
 Add a `root_session_id TEXT` column (nullable) with an `idx_sessions_root` index

@@ -289,6 +289,8 @@ export function RepoGroup({
   onToggleResolvedCollapsed,
   collapsedParents,
   onToggleParentCollapsed,
+  expandedResolvedChildren,
+  onToggleResolvedChildren,
   onResume,
   onSelectCurrent,
   onArchive,
@@ -320,6 +322,12 @@ export function RepoGroup({
   onToggleResolvedCollapsed: () => void;
   collapsedParents: Set<string>;
   onToggleParentCollapsed: (parentId: string) => void;
+  /**
+   * Root session IDs whose resolved (merged/closed) spawned children are shown.
+   * Absence = hidden, the default — see the store field of the same name.
+   */
+  expandedResolvedChildren: Set<string>;
+  onToggleResolvedChildren: (rootId: string) => void;
   onResume: (id: string) => void;
   onSelectCurrent?: () => void;
   onArchive: (id: string) => void;
@@ -585,7 +593,9 @@ export function RepoGroup({
               // Render a top-level (root) session followed by its (non-collapsed)
               // brood into `target`. The brood stays together; a root with a
               // visible brood stays Active even after its PR resolves so spawned
-              // work is never automatically moved under "Recently resolved".
+              // work is never automatically moved under "Recently resolved". The
+              // brood's OWN resolved members are tucked behind a per-root
+              // toggle (see below) rather than leaving the sidebar.
               const pushTree = (s: SessionInfo, target: React.ReactElement[]) => {
                 const brood = broodByRoot.get(s.id);
                 const childCount = brood?.length ?? 0;
@@ -605,20 +615,67 @@ export function RepoGroup({
                   />,
                 );
                 if (!brood || childrenCollapsed) return;
-                for (const member of brood) {
-                  target.push(
-                    <SessionItem
-                      key={member.id}
-                      session={member}
-                      isCurrent={member.id === currentSessionId}
-                      onResume={onResume}
-                      onSelectCurrent={onSelectCurrent}
-                      onArchive={onArchive}
-                      isTouch={isTouch}
-                      indented
-                    />,
-                  );
+                // A brood member that is ITSELF a parent inside the brood is
+                // never tucked away: hiding it would leave its own descendants
+                // rendered (they sit at the same indent level) with no visible
+                // ancestor. Mirrors `parentsWithChildren` in the group sort, so
+                // this split agrees with the order the list already arrives in.
+                const parentsInBrood = new Set<string>();
+                for (const m of brood) {
+                  if (m.parentSessionId) parentsInBrood.add(m.parentSessionId);
                 }
+                const isResolvedMember = (m: SessionInfo): boolean =>
+                  isRecentlyResolved(m) && !parentsInBrood.has(m.id);
+                const renderMember = (member: SessionInfo) => (
+                  <SessionItem
+                    key={member.id}
+                    session={member}
+                    isCurrent={member.id === currentSessionId}
+                    onResume={onResume}
+                    onSelectCurrent={onSelectCurrent}
+                    onArchive={onArchive}
+                    isTouch={isTouch}
+                    indented
+                  />
+                );
+                const resolvedMembers: SessionInfo[] = [];
+                for (const member of brood) {
+                  if (isResolvedMember(member)) resolvedMembers.push(member);
+                  else target.push(renderMember(member));
+                }
+                // A big feature spawns 10-15 children and most of them end
+                // merged, so the resolved tail of a brood is hidden behind its
+                // own control — the same affordance as the repo-level "Recently
+                // resolved" section, but collapsed by default and only rendered
+                // when the brood actually has a resolved member. The one extra
+                // row it costs is paid back by every merged child it hides.
+                if (resolvedMembers.length === 0) return;
+                const resolvedShown = expandedResolvedChildren.has(s.id);
+                const countLabel = `${resolvedMembers.length} resolved spawned session${resolvedMembers.length === 1 ? "" : "s"}`;
+                target.push(
+                  <button
+                    key={`resolved-children-${s.id}`}
+                    type="button"
+                    data-testid="resolved-children-toggle"
+                    onClick={() => onToggleResolvedChildren(s.id)}
+                    aria-expanded={resolvedShown}
+                    aria-label={resolvedShown ? `Hide ${countLabel}` : `Show ${countLabel}`}
+                    className="group/resolvedkids flex items-center gap-1.5 px-2 pt-1 pb-0.5 mx-1 ml-5 text-left"
+                  >
+                    <GitMergeIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-tertiary)" />
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-(--color-text-tertiary)">
+                      {resolvedMembers.length} resolved
+                    </span>
+                    <span className="shrink-0 flex items-center text-(--color-text-tertiary) group-hover/resolvedkids:text-(--color-text-secondary) transition-colors">
+                      {resolvedShown
+                        ? <CaretDownIcon size={ICON_SIZE.XS} />
+                        : <CaretRightIcon size={ICON_SIZE.XS} />
+                      }
+                    </span>
+                  </button>,
+                );
+                if (!resolvedShown) return;
+                for (const member of resolvedMembers) target.push(renderMember(member));
               };
               // docs/161 — split into Active and a demoted "Recently resolved"
               // group (merged OR closed-without-merge). The session list is

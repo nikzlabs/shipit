@@ -618,6 +618,30 @@ export function saveCollapsedResolved(collapsed: Set<string>): void {
   } catch { /* ignore */ }
 }
 
+// Per-root-session EXPANDED state for the resolved members of a spawn brood.
+// Inverted relative to COLLAPSED_RESOLVED_KEY above: a brood's resolved children
+// are hidden by DEFAULT (absence = collapsed), because a big feature can spawn
+// 10-15 children and the merged ones are finished work. Presence = the user
+// expanded that brood's resolved sub-section.
+const EXPANDED_RESOLVED_CHILDREN_KEY = "shipit-expanded-resolved-children";
+
+export function getSavedExpandedResolvedChildren(): Set<string> {
+  try {
+    const raw = localStorage.getItem(EXPANDED_RESOLVED_CHILDREN_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw) as string[];
+      return new Set(arr);
+    }
+  } catch { /* ignore */ }
+  return new Set();
+}
+
+export function saveExpandedResolvedChildren(expanded: Set<string>): void {
+  try {
+    localStorage.setItem(EXPANDED_RESOLVED_CHILDREN_KEY, JSON.stringify([...expanded]));
+  } catch { /* ignore */ }
+}
+
 const OPS_COLLAPSED_KEY = "shipit-ops-collapsed";
 
 export function getSavedOpsCollapsed(): boolean {
