@@ -1043,14 +1043,16 @@ describe("wireAgentListeners", () => {
 });
 
 /**
- * docs/235 — the background-task marker is what keeps a session that is waiting
- * (rather than thinking) from reading as idle. `emitToViewers` reaches only the
- * clients attached to THIS session's WebSocket, so on its own it can never light
- * the sidebar dot of a session nobody is looking at: a `shipit agent run` consult
- * backgrounded after the SSE connected stayed invisible until the session was
- * opened. The SSE broadcast is the cross-session half.
+ * docs/235 / planning#246 — the background-task marker is what keeps a session that
+ * is waiting (rather than thinking) from reading as idle.
+ *
+ * The listener's job is only to keep the RUNNER's state true; the runner
+ * announces the change itself (`background_work`) and one subscriber in
+ * `runner-registry-factory` turns that into the cross-session SSE broadcast.
+ * These assert the listener drives the runner correctly on both edges,
+ * including the crash path — which emits no draining event of its own.
  */
-describe("wireAgentListeners — cross-session background-task marker", () => {
+describe("wireAgentListeners — background-work marker", () => {
   function wireForBackgroundTasks() {
     const agent = new FakeAgent();
     const runner = new SessionRunner({
@@ -1062,34 +1064,29 @@ describe("wireAgentListeners — cross-session background-task marker", () => {
     // streaming process, so a task can only be outstanding while one is up.
     runner.isStreamingActive = true;
     runner.setAgent(agent as unknown as AgentProcess);
-    const d = deps();
-    wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+    const announced: string[][] = [];
+    runner.on("background_work", () => announced.push(runner.backgroundWorkDescriptions));
+    wireAgentListeners(agent as unknown as AgentProcess, runner, deps(), {
       capturedSessionId: "session-bg",
       isNewSession: false,
       persistUserMessage: vi.fn(),
     });
-    const attention = () =>
-      (d.sseBroadcast as ReturnType<typeof vi.fn>).mock.calls
-        .filter(([event]) => event === "session_attention")
-        .map(([, payload]) => payload);
-    return { agent, runner, attention };
+    return { agent, runner, announced };
   }
 
-  it("broadcasts the descriptions when a background task starts", () => {
-    const { agent, attention } = wireForBackgroundTasks();
+  it("announces the descriptions when a background task starts", () => {
+    const { agent, announced } = wireForBackgroundTasks();
 
     agent.emit("event", {
       type: "agent_background_tasks",
       tasks: [{ id: "bg-1", description: "shipit agent run --agent codex" }],
     } satisfies AgentEvent);
 
-    expect(attention()).toEqual([
-      { sessionId: "session-bg", backgroundTasks: ["shipit agent run --agent codex"] },
-    ]);
+    expect(announced).toEqual([["shipit agent run --agent codex"]]);
   });
 
-  it("broadcasts an empty list when the tasks drain", () => {
-    const { agent, attention } = wireForBackgroundTasks();
+  it("announces the drain when the tasks drain", () => {
+    const { agent, announced } = wireForBackgroundTasks();
 
     agent.emit("event", {
       type: "agent_background_tasks",
@@ -1097,14 +1094,13 @@ describe("wireAgentListeners — cross-session background-task marker", () => {
     } satisfies AgentEvent);
     agent.emit("event", { type: "agent_background_tasks", tasks: [] } satisfies AgentEvent);
 
-    expect(attention().at(-1)).toEqual({ sessionId: "session-bg", backgroundTasks: [] });
+    expect(announced.at(-1)).toEqual([]);
   });
 
   // A crashed process emits no draining event of its own, so the marker would
-  // otherwise keep a dead session pulsing green in every sidebar until the next
-  // SSE connect.
-  it("broadcasts the drain when the agent process errors out", () => {
-    const { agent, attention } = wireForBackgroundTasks();
+  // otherwise keep a dead session pulsing green in every sidebar.
+  it("announces the drain when the agent process errors out", () => {
+    const { agent, runner, announced } = wireForBackgroundTasks();
 
     agent.emit("event", {
       type: "agent_background_tasks",
@@ -1112,6 +1108,20 @@ describe("wireAgentListeners — cross-session background-task marker", () => {
     } satisfies AgentEvent);
     agent.emit("error", new Error("process died"));
 
-    expect(attention().at(-1)).toEqual({ sessionId: "session-bg", backgroundTasks: [] });
+    expect(announced.at(-1)).toEqual([]);
+    expect(runner.backgroundWorkDescriptions).toEqual([]);
+  });
+
+  // Deduped on value: the inputs are touched far more often than they change
+  // (`isStreamingActive` at both ends of every turn, a clear on an already-empty
+  // tracker), and each announcement costs an SSE frame to every browser.
+  it("stays silent when nothing actually changed", () => {
+    const { agent, runner, announced } = wireForBackgroundTasks();
+
+    agent.emit("event", { type: "agent_background_tasks", tasks: [] } satisfies AgentEvent);
+    runner.clearBackgroundTasks();
+    runner.isStreamingActive = true;
+
+    expect(announced).toEqual([]);
   });
 });

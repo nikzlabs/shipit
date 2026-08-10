@@ -807,6 +807,18 @@ export async function registerRoutes(
           if (buffered.type === "terminal_output") continue;
           if (buffered.type === "terminal_exit") continue;
           if (buffered.type === "terminal_reconnecting") continue;
+          // planning#246 — `background_tasks` is deliberately skipped: this attach's
+          // own `GET /history` carries the runner's CURRENT `backgroundTasks`,
+          // read live at request time, so the replay can only ever be older.
+          // That mattered because the marker is also cleared by paths that emit
+          // no `background_tasks` of their own (a crashed process, a disposed
+          // runner — they announce over SSE instead), which leaves the last
+          // buffered copy saying "outstanding" after the truth became "none".
+          // Replaying it resurrected a green dot on a session with nothing
+          // running, and whether it won came down to whether the replay landed
+          // before or after the HTTP history it contradicts. Dropping it makes
+          // history the single attach-time source, with no race to lose.
+          if (buffered.type === "background_tasks") continue;
           send(buffered);
         }
         // UNCONDITIONAL, empty queue included: an empty snapshot is exactly the
