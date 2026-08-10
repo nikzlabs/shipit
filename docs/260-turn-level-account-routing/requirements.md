@@ -61,18 +61,32 @@ requirement below contradicts it.
    alone until the provider-stated reset time, but re-tried after at most
    ~30 minutes. When ShipIt's quota data says an account is out of quota, the
    account is still tried once to confirm — and after that refusal it is left
-   alone on the same terms. An account is never re-tried on every turn while
-   its refusal is remembered, and never blocked without having been tried.
+   alone on the same terms. The memory clears early on newer real account
+   data showing the account healthy again — reported by the harness or
+   fetched from the provider's usage API. Example: the user upgrades their
+   plan and presses the quota refresh button in the UI; the account must be
+   tried again on the next turn, even though its refusal was remembered.
+   An account is never blocked without having been tried.
 
 10. The transcript shows every actual attempt: a refused attempt is shown
     when it happens, and a turn that runs on a different account than the
-    previous turn says so, in the user's own account labels. This is not
-    noisy by construction — requirement 9 means a refused account is left
-    alone until it recovers, so repeated identical notices cannot occur.
+    previous turn says so, in the user's own account labels. Requirements 9
+    and 12 keep this from repeating on its own: identical notices recur only
+    when the user resends while every account is spent, and then they are the
+    answer to a question the user just asked.
 
 11. This applies to every subscription-shaped credential: Claude accounts,
-    Codex/ChatGPT accounts, and string-delivered subscriptions (e.g. the GLM
-    coding plan).
+    Codex/ChatGPT accounts, and subscriptions that are signed in with a
+    pasted API key instead of a login flow (ShipIt calls these
+    string-delivered; the GLM coding plan is the current example). The key
+    shape bills like a subscription and runs out like one, but today it has
+    no recovery path at all once marked spent, so it needs this feature most.
+
+12. A turn that ends with every account refused must not poison the next
+    one: the next turn tries all the accounts again, in strategy order,
+    regardless of any remembered refusals. Resending the message is the
+    user's forceful retry — there must be no state in which ShipIt believes
+    every account is out of quota and refuses to try any of them.
 
 ## Design context — constraints, not requirements
 
@@ -98,10 +112,13 @@ not user-observable requirements.
   strategy wins; stickiness is at most a tiebreak among equally-ranked
   accounts.
 - **Repeated-refusal cost.** Bounded by req 9: a refusal is remembered until
-  the stated reset with a ~30-minute re-probe cap. The remembered refusal is
-  still harness-reported, so it does not violate req 5, and the cap prevents
-  the unbounded memory that recreated the stale-bench deadlock this feature
-  removes.
+  the stated reset with a ~30-minute re-probe cap, and cleared early by newer
+  healthy account data. The remembered refusal is still harness-reported, so
+  it does not violate req 5, and the cap plus req 12's all-refused retry
+  prevent the unbounded memory that recreated the stale-bench deadlock this
+  feature removes. Accepted cost: while every account is genuinely spent,
+  each resend tries each account once (a few seconds per attempt) — that is
+  the user's own forceful retry, not background churn.
 - **Machinery this deletes** (the 2026-08-10 trace found all three permanent
   stuck states inside it): the bench-vs-snapshot reconciliation
   (`reconcileHardExhaustion`, `isTrustedHealthySnapshot`, the `exhaustedAt`/
@@ -134,7 +151,16 @@ None — design and implementation are unblocked.
   actual attempt — and rejected the "noisy" concern as wrong: a refused
   account is left alone until it recovers (requirement 9), so an account is
   tried once when our data says it is out of quota, not on every turn.
-  Repeated identical notices cannot occur. Recorded as requirement 10.
+  Recorded as requirement 10.
+- 2026-08-10 (doc review) — What clears a remembered refusal? Nik: real
+  account data, reported through the harness or the usage API — e.g. the
+  user upgrades their plan and refreshes the quota in the UI; ShipIt must
+  then try that account again even though it was already tried. Added to
+  requirement 9.
+- 2026-08-10 (doc review) — What if no account could pick up a turn? Nik:
+  the next turn still tries all the accounts using the strategy, so a
+  wrong "out of quota" belief can never deadlock routing; resending is the
+  user's forceful retry. Recorded as requirement 12.
 - 2026-08-10 — Scope across credential shapes? Nik: all subscription-shaped
   credentials — Claude accounts, Codex accounts, string-delivered
   subscriptions. Recorded as requirement 11.
