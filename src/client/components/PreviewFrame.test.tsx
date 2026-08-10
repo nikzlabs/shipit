@@ -203,6 +203,61 @@ describe("PreviewFrame", () => {
     expect(postMessage).not.toHaveBeenCalledWith({ source: "shipit-toolbar", type: "reload" }, "*");
   });
 
+  it("hands an agent-authored destination to the preview script instead of reloading", async () => {
+    // Regression (docs/258): the pointer arrived as a `src` assignment, which
+    // is always a document load — so a link to a place inside the page the user
+    // was already on rebuilt the whole app. The script decides same-document
+    // vs. new document from the live location; this side only delivers.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "loaded" },
+      source: iframe.contentWindow,
+    }));
+    const srcSetter = vi.fn();
+    Object.defineProperty(iframe, "src", { set: srcSetter, get: () => "http://localhost:5173", configurable: true });
+
+    usePreviewStore.getState().setPreviewLinkIntent({
+      sessionId: "s1", service: "web", port: 5173, slotKey: "s1:5173",
+      targetPath: "/requirements?focus=7#req-7", clickId: 1, startedAt: Date.now(),
+    });
+
+    // Targeted at the slot's origin, not "*": a WindowProxy keeps its identity
+    // across origin changes, so the capability gate alone would hand the URL to
+    // a page the preview navigated itself to.
+    await vi.waitFor(() => expect(postMessage).toHaveBeenCalledWith(
+      { source: "shipit-toolbar", type: "navigate", url: "http://localhost:5173/requirements?focus=7#req-7" },
+      "http://localhost:5173",
+    ));
+    expect(srcSetter).not.toHaveBeenCalled();
+    // The intent is consumed either way — it describes one click.
+    expect(usePreviewStore.getState().previewLinkIntent).toBeNull();
+  });
+
+  it("falls back to src for a destination in a preview with no injected script", async () => {
+    // No "loaded" message — a non-proxied local preview, a 502, an auth-gated
+    // response. A document load is worse than a hash change but it arrives.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    const srcSetter = vi.fn();
+    Object.defineProperty(iframe, "src", { set: srcSetter, get: () => "http://localhost:5173", configurable: true });
+
+    usePreviewStore.getState().setPreviewLinkIntent({
+      sessionId: "s1", service: "web", port: 5173, slotKey: "s1:5173",
+      targetPath: "/requirements#req-7", clickId: 1, startedAt: Date.now(),
+    });
+
+    await vi.waitFor(() => expect(srcSetter).toHaveBeenCalledWith("http://localhost:5173/requirements#req-7"));
+    expect(postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "navigate" }),
+      "*",
+    );
+  });
+
   it("links to the page the preview is currently on, not the entry URL", async () => {
     // Same regression as the refresh button above: the control used to open
     // `activeSlotUrl`, so a user who had navigated into a sub-route got the

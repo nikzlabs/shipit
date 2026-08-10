@@ -112,6 +112,7 @@ function runInjectedScript(
     canGoForward: boolean;
     back: () => unknown;
     forward: () => unknown;
+    navigate: (url: string) => unknown;
     addEventListener: (type: string, fn: (e?: unknown) => void) => void;
   },
 ) {
@@ -120,30 +121,65 @@ function runInjectedScript(
   const pushed: unknown[][] = [];
   const traversed: string[] = [];
   const history = {
+    state: null,
     pushState: (...args: unknown[]) => { pushed.push(args); return "original-return"; },
     replaceState: (...args: unknown[]) => { pushed.push(args); },
     back: () => { traversed.push("history.back"); },
     forward: () => { traversed.push("history.forward"); },
   };
-  const location = { ...initial, port: "3001", hostname: "preview.localhost", reload: () => { traversed.push("reload"); } };
+  const assigned: string[] = [];
+  const location = {
+    ...initial,
+    port: "3001",
+    hostname: "preview.localhost",
+    href: `https://preview.localhost:3001${initial.pathname}${initial.search}${initial.hash}`,
+    reload: () => { traversed.push("reload"); },
+    assign: (u: string) => { assigned.push(u); },
+  };
+  const parent = { postMessage: (m: PostedMessage) => posted.push(m) };
+  const dispatched: unknown[] = [];
   const window = {
     WebSocket: function FakeWebSocket() {},
     navigation,
-    parent: { postMessage: (m: PostedMessage) => posted.push(m) },
+    parent,
     addEventListener: (type: string, fn: (e?: unknown) => void) => {
       const existing = listeners.get(type) ?? [];
       listeners.set(type, [...existing, fn]);
     },
+    dispatchEvent: (e: unknown) => { dispatched.push(e); return true; },
   };
+  /** Stand-ins for the constructors the script uses to announce a rewrite. */
+  class FakeHashChangeEvent {
+    type: string;
+    oldURL: unknown;
+    newURL: unknown;
+    constructor(type: string, init: { oldURL?: unknown; newURL?: unknown } = {}) {
+      this.type = type;
+      this.oldURL = init.oldURL;
+      this.newURL = init.newURL;
+    }
+  }
+  class FakePopStateEvent {
+    type: string;
+    state: unknown;
+    constructor(type: string, init: { state?: unknown } = {}) {
+      this.type = type;
+      this.state = init.state;
+    }
+  }
   const html = injectPreviewBootstrap("<html><head></head></html>");
   const body = html.slice(html.indexOf("<script>") + "<script>".length, html.indexOf("</script>"));
   vm.runInContext(body, vm.createContext({
     window, history, location, URL, WebSocket: window.WebSocket, Promise,
+    HashChangeEvent: FakeHashChangeEvent, PopStateEvent: FakePopStateEvent,
   }));
-  const toolbar = (type: string) => {
-    for (const fn of listeners.get("message") ?? []) fn({ data: { source: "shipit-toolbar", type } });
+  // Commands arrive from the embedding window, which is what the script checks.
+  const toolbar = (type: string, extra: Record<string, unknown> = {}, source: unknown = parent) => {
+    for (const fn of listeners.get("message") ?? []) {
+      fn({ data: { source: "shipit-toolbar", type, ...extra }, source });
+    }
   };
-  return { posted, listeners, history, location, pushed, traversed, toolbar };
+  return { posted, listeners, history, location, pushed, traversed, toolbar, assigned, dispatched };
 }
 
 /** A Navigation API stub that records which traversals were attempted. */
@@ -158,6 +194,7 @@ function fakeNavigation(opts: { canGoBack?: boolean; canGoForward?: boolean; rej
       canGoForward: opts.canGoForward ?? true,
       back: () => { calls.push("back"); return navResult(opts.rejectWith); },
       forward: () => { calls.push("forward"); return navResult(opts.rejectWith); },
+      navigate: (url: string) => { calls.push(`navigate:${url}`); return navResult(opts.rejectWith); },
       addEventListener: (type: string, fn: (e?: unknown) => void) => {
         navListeners.set(type, [...(navListeners.get(type) ?? []), fn]);
       },
@@ -315,6 +352,179 @@ describe("injected preview script — toolbar history navigation", () => {
       { source: "shipit-preview", type: "path", path: "/", canGoBack: false },
       { source: "shipit-preview", type: "path", path: "/orders/8842", canGoBack: true },
     ]);
+  });
+});
+
+describe("injected preview script — pointer navigation", () => {
+  // The bug this exists for: an agent-authored pointer used to arrive as a
+  // `src` assignment on the parent's side, which is always a document load. A
+  // pointer at a place inside the page the user was already on therefore tore
+  // the app down and rebuilt it — a visible blink, and in-page state lost.
+  const AT = { pathname: "/requirements", search: "?focus=3", hash: "#req-3" };
+
+  it("changes only the fragment in place when the rest of the URL matches", () => {
+    const { nav, calls } = fakeNavigation();
+    const { toolbar, location, assigned } = runInjectedScript({ ...AT }, nav);
+
+    toolbar("navigate", { url: "https://preview.localhost:3001/requirements?focus=3#req-7" });
+
+    // A same-document navigation: no request, no reload, and `hashchange`
+    // fires — the reaction channel the feature promises the page.
+    expect(location.hash).toBe("#req-7");
+    expect(assigned).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("does nothing at all when the destination is where the page already is", () => {
+    const { nav, calls } = fakeNavigation();
+    const { toolbar, location, assigned } = runInjectedScript({ ...AT }, nav);
+
+    toolbar("navigate", { url: "https://preview.localhost:3001/requirements?focus=3#req-3" });
+
+    expect(location.hash).toBe("#req-3");
+    expect(assigned).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("removes the fragment in place rather than reloading to drop it", () => {
+    // The browser's own fragment path does not cover removal (the navigation
+    // algorithm takes it only for a non-null destination fragment), so this
+    // would otherwise reload the app to get rid of a "#" — the exact blink the
+    // fix exists to remove. A pointer at the app as a whole is this shape.
+    const { nav, calls } = fakeNavigation();
+    const { toolbar, assigned, pushed, dispatched } = runInjectedScript({ ...AT }, nav);
+
+    toolbar("navigate", { url: "https://preview.localhost:3001/requirements?focus=3" });
+
+    expect(assigned).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(pushed).toEqual([[null, "", "https://preview.localhost:3001/requirements?focus=3"]]);
+    // And the page is told, since the browser fires no event for a rewrite.
+    expect(dispatched).toEqual([{
+      type: "hashchange",
+      oldURL: "https://preview.localhost:3001/requirements?focus=3#req-3",
+      newURL: "https://preview.localhost:3001/requirements?focus=3",
+    }]);
+  });
+
+  it("reports the new path after removing the fragment", () => {
+    // The rewrite goes through the wrapped `pushState`, so the toolbar's path
+    // display follows it — a bare `history.pushState` would freeze it.
+    const { nav } = fakeNavigation();
+    const { toolbar, posted, location } = runInjectedScript({ ...AT }, nav);
+    // The stub does not update `location` for us; the script's report reads it.
+    const advance = () => { location.hash = ""; };
+
+    advance();
+    toolbar("navigate", { url: "https://preview.localhost:3001/requirements?focus=3" });
+
+    expect(posted.filter((m) => m.type === "path").map((m) => m.path))
+      .toEqual(["/requirements?focus=3#req-3", "/requirements?focus=3"]);
+  });
+
+  it("changes the query on the same page in place, and tells the router", () => {
+    // Cross-document by default, so this used to reload. These previews are
+    // dev tools the agent itself built and route with the History API, so the
+    // rewrite plus a `popstate` re-renders them in place instead.
+    const { nav, calls } = fakeNavigation();
+    const { toolbar, assigned, pushed, dispatched } = runInjectedScript({ ...AT }, nav);
+
+    toolbar("navigate", { url: "https://preview.localhost:3001/requirements?focus=7#req-7" });
+
+    expect(assigned).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(pushed).toEqual([[null, "", "https://preview.localhost:3001/requirements?focus=7#req-7"]]);
+    // popstate is what the router listens on; hashchange is fired too because
+    // the fragment moved as well, and a page may key off either (req 11).
+    expect(dispatched).toEqual([
+      { type: "popstate", state: null },
+      {
+        type: "hashchange",
+        oldURL: "https://preview.localhost:3001/requirements?focus=3#req-3",
+        newURL: "https://preview.localhost:3001/requirements?focus=7#req-7",
+      },
+    ]);
+  });
+
+  it("fires only popstate when the query moves but the fragment does not", () => {
+    const { nav } = fakeNavigation();
+    const { toolbar, dispatched } = runInjectedScript({ ...AT }, nav);
+
+    toolbar("navigate", { url: "https://preview.localhost:3001/requirements?focus=7#req-3" });
+
+    expect(dispatched).toEqual([{ type: "popstate", state: null }]);
+  });
+
+  it("still performs a real navigation to a different path", () => {
+    // The line sits at the path: a different one is plausibly a different
+    // document, where a rewrite would leave stale content under a new URL.
+    const { nav, calls } = fakeNavigation();
+    const { toolbar, assigned, pushed } = runInjectedScript({ ...AT }, nav);
+
+    toolbar("navigate", { url: "https://preview.localhost:3001/orders/8842" });
+
+    expect(calls).toEqual(["navigate:https://preview.localhost:3001/orders/8842"]);
+    expect(assigned).toEqual([]);
+    expect(pushed).toEqual([]);
+  });
+
+  it("falls back to location.assign without the Navigation API", () => {
+    const { toolbar, assigned } = runInjectedScript({ ...AT }, undefined);
+
+    toolbar("navigate", { url: "https://preview.localhost:3001/orders/8842" });
+
+    expect(assigned).toEqual(["https://preview.localhost:3001/orders/8842"]);
+  });
+
+  it("swallows a rejected navigation instead of spilling it into the app's console", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (r: unknown) => rejections.push(r);
+    process.on("unhandledRejection", onRejection);
+    const { nav } = fakeNavigation({ rejectWith: "AbortError" });
+    const { toolbar } = runInjectedScript({ ...AT }, nav);
+
+    toolbar("navigate", { url: "https://preview.localhost:3001/orders/8842" });
+    await new Promise((resolve) => setImmediate(resolve));
+    process.off("unhandledRejection", onRejection);
+
+    expect(rejections).toEqual([]);
+  });
+
+  it("refuses a destination off the preview's own origin", () => {
+    const { nav, calls } = fakeNavigation();
+    const { toolbar, assigned } = runInjectedScript({ ...AT }, nav);
+
+    toolbar("navigate", { url: "https://evil.example/x" });
+
+    expect(assigned).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("ignores an unusable or absent url rather than throwing", () => {
+    const { nav, calls } = fakeNavigation();
+    const { toolbar, assigned } = runInjectedScript({ ...AT }, nav);
+
+    toolbar("navigate", {});
+    toolbar("navigate", { url: 42 });
+
+    expect(assigned).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("ignores toolbar commands that did not come from the embedding window", () => {
+    // The commands drive this frame's history and location; only the window
+    // ShipIt renders us in gets to send them.
+    const { nav, calls } = fakeNavigation();
+    const { toolbar, assigned, traversed } = runInjectedScript({ ...AT }, nav);
+
+    const stranger = { postMessage: () => {} };
+    toolbar("navigate", { url: "https://preview.localhost:3001/orders/8842" }, stranger);
+    toolbar("reload", {}, stranger);
+    toolbar("back", {}, stranger);
+
+    expect(assigned).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(traversed).toEqual([]);
   });
 });
 

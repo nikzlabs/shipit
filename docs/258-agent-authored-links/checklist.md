@@ -28,8 +28,17 @@
       (both mean "not running", req 12); `starting` waits without re-sending,
       and two rapid clicks send one start
 - [x] Intent reselects its own port when its service reaches `running`
-- [x] A new slot is created at the destination; a live slot is navigated by
-      assigning `src`, and left alone when the page already reports it is there
+- [x] A new slot is created at the destination; a live slot is handed the
+      destination, and left alone when the page already reports it is there
+- [x] Navigating within the page (req 13): on the same path the injected
+      script's `navigate` command changes the fragment in place and rewrites a
+      changed query with `pushState` + synthetic `popstate`/`hashchange`; a
+      different path stays a real navigation (`navigation.navigate()` /
+      `location.assign`), and the parent falls back to `src` for a slot with no
+      injected script
+- [x] Toolbar commands are accepted only from the embedding window; a `navigate`
+      URL off the preview's origin is refused; the command is posted to the
+      slot's origin, not `"*"`, since a `WindowProxy` outlives its document
 - [x] Cancel on session switch; last-click-wins on rapid clicks
 - [x] A click is scoped to the transcript's own session, so a deferred render of
       the outgoing one cannot act on the incoming session's services

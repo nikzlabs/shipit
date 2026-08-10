@@ -49,6 +49,10 @@ one requirement — with no way to make that pointer clickable.
 12. If the pointer names a service that is **not running, ShipIt starts it
     first** and then opens the destination. A stopped service is not by itself a
     reason to report a pointer as unopenable (req 10); a start that *fails* is.
+13. Clicking a pointer at a place **inside the page the Preview is already on
+    navigates within that page** — it does not reload it. The user must not see
+    the app blink and rebuild itself to be taken to an item on the page in front
+    of them.
 
 ## The page-facing contract
 
@@ -71,6 +75,27 @@ respond to every click is a page that should be a preview service.
 _None._
 
 ## Resolved questions
+
+- **2026-08-10 — Must a click navigate within the page rather than reload it?**
+  Reported by the requester against the shipped feature: *"pressing a link in
+  the conversation to open in the preview seems to reload the preview page, not
+  navigate within the page (visible blink)"*. Recorded as req 13.
+
+- **2026-08-10 — Does req 13 cover a pointer that changes the query string, not
+  just the fragment?** Only the fragment case is same-document for free; a query
+  change is a cross-document navigation by default, so the worked shape in this
+  doc (`?focus=7#req-7` → `?focus=9#req-9`) still blinked. Offered: fragments
+  only, `history.pushState` plus a synthetic `popstate` for the query too, or
+  the same but gated on detecting that the page registered a `popstate`
+  listener. The middle option carries a silent failure mode — a page that reads
+  `location.search` once at load and never routes would render stale content
+  under the new URL. Answer: **the pushState route, ungated** — *"the logic is
+  that this is for debug tools that the agent itself built, which are likely
+  using best patterns, including history management"*. The risk is accepted on
+  that basis, and no detector is built. The boundary now sits at the **path**:
+  same path means the page the user is already on, so its query and fragment are
+  that page's own state; a different path is plausibly a different document and
+  is still a real navigation. Stated in [`plan.md`](./plan.md).
 
 - **2026-08-09 — Which failures must req 10's toast cover?** Req 10 said "for
   any reason", which ShipIt cannot honour literally: some failures need a

@@ -120,8 +120,8 @@ sent — that is how the user sees the service booting instead of a blank pause.
 2. The service name is matched exactly against `preview-store.services`. No
    declared service by that name, or one with no declared port → req 10 toast.
 3. The click records an **intent** (below) and selects the port.
-4. A live slot is navigated by **assigning the iframe's `src`** to the resolved
-   destination URL — unless the page is already there.
+4. A live slot is navigated by **handing the destination URL to the injected
+   preview script** (`navigate` command) — unless the page is already there.
 5. A service that is not running is started first (req 12), below.
 
 **"Already there" is decided against the path the page REPORTED, not the slot's
@@ -197,13 +197,68 @@ their `sessionId` today (`service-list.ts:5`, `service-status.ts:5`), so an
 intent must check the session itself rather than trusting that a status belongs
 to the session it is waiting on.
 
-**On step 4.** An earlier draft added a `navigate` command to the injected
-preview script, on the belief that a parent cannot navigate a cross-origin
-iframe. That is wrong: cross-origin blocks *reading* `location` and calling
-`history`, not assigning `src`, and `PreviewFrame.tsx:407` already does it. The
-command would also have widened an injected listener that checks neither
-`event.source` nor origin (`preview-proxy.ts:106`) — a new message type on an
-unauthenticated channel, to do something the parent can already do.
+**On step 4, and why it is not a `src` assignment (req 13).** It was one, on the
+reasoning that the parent *can* navigate a cross-origin iframe — true, but it
+navigates it the only way a parent can, by loading a document. So a pointer at a
+place inside the page the user was already on tore the app down and rebuilt it:
+a visible blink and every bit of in-page state gone, which is precisely what a
+pointer *into* a page must not do. The injected script is on the other side of
+the boundary, where the live `location` is readable, so it can tell the cases
+apart:
+
+- **Same path, only the fragment differs** → `location.hash = …`, the platform's
+  own same-document path. No request, no reload; it fires `hashchange` and
+  scrolls, so nothing has to be synthesized. This is the reaction channel req 11
+  already promises the page.
+- **Same path, anything else** (the query moved, or the fragment was removed)
+  → no browser-provided same-document route exists: a query change is
+  cross-document by default, and the navigation algorithm takes its fragment
+  path only for a *non-null* destination fragment, so even dropping a `#` would
+  otherwise reload the app. So the entry is rewritten with `pushState` — the
+  wrapped one, so the parent's path report follows — and then what the browser
+  would have fired is fired: `popstate` when the query moved, `hashchange` when
+  the fragment did.
+- **A different path** → a real navigation, which loads. Through
+  `navigation.navigate()` where the Navigation API exists, so an app that routes
+  on it can intercept and stay same-document; falls back to `location.assign`.
+- **No injected script** (a non-proxied local preview, a 502, an auth-gated
+  response — the slot never reported `loaded`) → the `src` assignment, as
+  before. A document load, but it arrives.
+
+**The boundary is the path**, and the requirement is what puts it there: same
+path means *the page the user is already on*, so everything left — the query,
+the fragment — is that page's own state. A different path is plausibly a
+different document, where a rewrite would leave stale content under a new URL.
+
+**`popstate` is a bet, taken deliberately.** It is what every mainstream
+client-side router listens on, so the rewrite re-renders the app in place. A page
+that reads `location.search` once at load and never routes hears nothing and
+keeps its old content under the new URL — silent, with no error anywhere. The
+requester accepted that on the grounds that these previews are debug tools the
+agent itself built and therefore manage history properly (receipt in
+`requirements.md`, 2026-08-10), and explicitly did *not* want it gated on
+detecting that the page had registered a `popstate` listener.
+
+The command travels the same unauthenticated channel as `back`/`forward`/
+`reload`, which the first draft counted against it. That listener now checks
+`event.source === window.parent`, and `go` refuses any URL off the preview's own
+origin — so the widening is a command that only the embedder can send and that
+cannot leave the origin.
+
+**The message is posted to the slot's origin, never `"*"`.** Unlike `reload`, it
+carries the agent-authored URL. `reloadableWindowsRef` records a *capability*
+and is deliberately not cleared on refresh, but a `WindowProxy` keeps its
+identity across document and origin changes — so a frame the previewed app has
+since navigated somewhere else still matches the gate. An explicit target origin
+is what stops that URL reaching a foreign page; the browser drops the message
+instead, which leaves the click doing nothing — the accepted best-effort class
+(req 10), not a leak.
+
+**A rejected `navigation.navigate()` is swallowed, not recovered from.** Its
+causes are an interceptor deliberately aborting (an unsaved-changes guard) and a
+superseding navigation; forcing `location.assign` would override the app in the
+first case and fight it in the second. Reporting it instead would need the
+correlated request/result protocol req 10 explicitly declines.
 
 ### Present (req 3)
 
@@ -553,7 +608,8 @@ status bar on hover and hand it to the OS protocol handler on middle-click or
 | `src/client/utils/preview-link-navigation.ts` | Navigate / already-there / outside-preview, against the page's reported path |
 | `src/client/App.tsx` | Sends `start_service` for an intent whose service is stopped (req 12) |
 | `src/client/stores/present-store.ts` | `focusByPath` (closes the gallery), `linkTarget` |
-| `src/client/components/PreviewFrame/PreviewFrame.tsx` | Navigate the live slot |
+| `src/client/components/PreviewFrame/PreviewFrame.tsx` | Hand the destination to the live slot's injected script (falling back to `src`) |
+| `src/server/orchestrator/preview-proxy.ts` | The injected script's `navigate` command: same-document hash change vs. a real navigation (req 13) |
 | `src/client/components/PresentPane.tsx` | Scroll a markdown artifact; pass the fragment to the rendered frame |
 | `src/client/components/FileContentView/RenderedFrame.tsx` | Inject the scroll script into an HTML artifact's `srcDoc` |
 | `src/server/shipit-docs/chat-links.md` | Agent-facing reference |
@@ -562,7 +618,6 @@ status bar on hover and hand it to the OS protocol handler on middle-click or
 
 - Auto-linkifying bare prose. Both schemes are explicit; there is no pattern to
   guess and no false-positive gate to build.
-- A `navigate` command in the injected preview script. Assigning the iframe
-  `src` does the same job with no new message type on an unauthenticated
-  channel.
+- Making a pointer to a *different path* same-document as well, or detecting
+  whether the page is client-routed before rewriting its entry; see "On step 4".
 - Addressing a place inside SVG, image or source-view artifacts (req 9).

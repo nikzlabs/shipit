@@ -91,22 +91,82 @@ const HMR_WS_PATCH = `<script>(function(){` +
     // three engines ship the API (Chrome 102, Safari 18.2, Firefox 147), so
     // this costs a button nobody has rather than keeping the bug alive.
     `var nav=window.navigation;` +
+    // Navigation API results reject (InvalidStateError, an aborted intercept)
+    // and we never act on the outcome. Swallow both promises rather than
+    // spilling an unhandled rejection into the previewed app's console.
+    `var swallow=function(){};` +
     `var travel=function(dir){` +
       `if(!nav)return;` +
       `if(dir==="back"?!nav.canGoBack:!nav.canGoForward)return;` +
-      // Rejects with InvalidStateError if the entry list moved under us
-      // between the check and the call. Swallow both promises rather than
-      // spilling an unhandled rejection into the previewed app's console.
-      `var swallow=function(){};var r=nav[dir]();` +
+      `var r=nav[dir]();` +
       `r.committed.catch(swallow);r.finished.catch(swallow)` +
     `};` +
+    // Dispatch an event the browser would have fired for a navigation it
+    // performed itself. Guarded per call: an engine missing one of the
+    // constructors must not take the rest of `go` down with it.
+    `var fire=function(C,n,i){try{window.dispatchEvent(new C(n,i))}catch(e2){}};` +
+    // Send the frame to an agent-authored pointer's destination (docs/258).
+    // The parent could assign our `src` instead — cross-origin blocks reading
+    // `location`, not navigating a frame — but that is always a document load,
+    // so a pointer at a place *inside* the page the user is already on tore the
+    // app down and rebuilt it. In here we can see where the page actually is,
+    // so a destination on the page we are already showing becomes the
+    // same-document navigation it really is (req 13).
+    `var go=function(u){try{` +
+      // A non-string resolves against our own origin ("/undefined") instead of
+      // throwing, so it has to be rejected before the parser sees it.
+      `if(typeof u!=="string")return;` +
+      `var c=new URL(location.href);var t=new URL(u,c);` +
+      // Same second check the parent makes. What follows is a navigation, and
+      // this side is the one that can compare against the live location.
+      `if(t.origin!==c.origin||t.href===c.href)return;` +
+      // Same path = the page the user is already on, so every remaining
+      // difference is that page's own state. The path is where the line sits:
+      // a different one is plausibly a different document (an MPA's
+      // /about.html), while a query on the same path is what a page uses to say
+      // where it is within itself.
+      `if(t.pathname===c.pathname){` +
+        // Fragment alone: the platform's own same-document path. It fires
+        // hashchange and scrolls, so nothing has to be synthesized.
+        `if(t.search===c.search&&t.hash){location.hash=t.hash;return}` +
+        // Anything else on this page has no browser-provided same-document
+        // route — a fragment REMOVAL is not covered (the navigation algorithm
+        // takes its fragment path only for a non-null destination fragment) and
+        // a query change is cross-document by default. So rewrite the entry and
+        // then fire what the browser would have. `pushState` is the wrapped one,
+        // so the parent's path report follows.
+        `history.pushState(history.state,"",t.href);` +
+        // `popstate` is what every mainstream client-side router listens on, so
+        // this is what re-renders the app in place. A page that reads
+        // `location.search` once at load and never routes hears nothing and
+        // keeps its old content under the new URL — the accepted cost of not
+        // reloading (docs/258 requirements, 2026-08-10).
+        `if(t.search!==c.search)fire(PopStateEvent,"popstate",{state:history.state});` +
+        `if(t.hash!==c.hash)fire(HashChangeEvent,"hashchange",{oldURL:c.href,newURL:t.href});` +
+        `return` +
+      `}` +
+      // A different path is left as a real navigation, and reloads — unless the
+      // app runs its own router on the Navigation API, which gets to intercept
+      // this and stay same-document.
+      // A rejection here is swallowed rather than recovered from: the causes are
+      // an interceptor deliberately aborting (an unsaved-changes guard) and a
+      // superseding navigation, and forcing `location.assign` would override the
+      // app in the first case and fight it in the second.
+      `if(nav&&nav.navigate){var r=nav.navigate(t.href);` +
+        `r.committed.catch(swallow);r.finished.catch(swallow);return}` +
+      `location.assign(t.href)` +
+    `}catch(e){}};` +
     // Let the preview toolbar drive the embedded browser's session history.
     // The iframe is cross-origin (preview subdomain / a different port), so the
     // parent can't touch `contentWindow.history` directly — it asks us to here.
     `window.addEventListener("message",function(e){` +
       `var d=e.data;if(!d||d.source!=="shipit-toolbar")return;` +
+      // Only ShipIt drives these. The commands come from the window that embeds
+      // us, so anything else posting them is not the toolbar.
+      `if(e.source!==window.parent)return;` +
       `if(d.type==="back")travel("back");` +
       `else if(d.type==="forward")travel("forward");` +
+      `else if(d.type==="navigate")go(d.url);` +
       // Refresh must reload whatever page the preview is currently on. The
       // parent can only re-assign the iframe's `src`, which is the slot's
       // original entry URL — that would throw away any client-side route the
