@@ -148,7 +148,7 @@ function runInjectedScript(
     },
     dispatchEvent: (e: unknown) => { dispatched.push(e); return true; },
   };
-  /** Stand-in for the constructor the script uses to announce a hash rewrite. */
+  /** Stand-ins for the constructors the script uses to announce a rewrite. */
   class FakeHashChangeEvent {
     type: string;
     oldURL: unknown;
@@ -159,11 +159,19 @@ function runInjectedScript(
       this.newURL = init.newURL;
     }
   }
+  class FakePopStateEvent {
+    type: string;
+    state: unknown;
+    constructor(type: string, init: { state?: unknown } = {}) {
+      this.type = type;
+      this.state = init.state;
+    }
+  }
   const html = injectPreviewBootstrap("<html><head></head></html>");
   const body = html.slice(html.indexOf("<script>") + "<script>".length, html.indexOf("</script>"));
   vm.runInContext(body, vm.createContext({
     window, history, location, URL, WebSocket: window.WebSocket, Promise,
-    HashChangeEvent: FakeHashChangeEvent,
+    HashChangeEvent: FakeHashChangeEvent, PopStateEvent: FakePopStateEvent,
   }));
   // Commands arrive from the embedding window, which is what the script checks.
   const toolbar = (type: string, extra: Record<string, unknown> = {}, source: unknown = parent) => {
@@ -414,17 +422,50 @@ describe("injected preview script — pointer navigation", () => {
       .toEqual(["/requirements?focus=3#req-3", "/requirements?focus=3"]);
   });
 
-  it("navigates through the Navigation API when the query differs", () => {
-    // Cross-document by web semantics, so it reloads — unless the app runs its
-    // own router on the Navigation API, which gets to intercept this.
+  it("changes the query on the same page in place, and tells the router", () => {
+    // Cross-document by default, so this used to reload. These previews are
+    // dev tools the agent itself built and route with the History API, so the
+    // rewrite plus a `popstate` re-renders them in place instead.
     const { nav, calls } = fakeNavigation();
-    const { toolbar, location, assigned } = runInjectedScript({ ...AT }, nav);
+    const { toolbar, assigned, pushed, dispatched } = runInjectedScript({ ...AT }, nav);
 
     toolbar("navigate", { url: "https://preview.localhost:3001/requirements?focus=7#req-7" });
 
-    expect(calls).toEqual(["navigate:https://preview.localhost:3001/requirements?focus=7#req-7"]);
     expect(assigned).toEqual([]);
-    expect(location.hash).toBe("#req-3");
+    expect(calls).toEqual([]);
+    expect(pushed).toEqual([[null, "", "https://preview.localhost:3001/requirements?focus=7#req-7"]]);
+    // popstate is what the router listens on; hashchange is fired too because
+    // the fragment moved as well, and a page may key off either (req 11).
+    expect(dispatched).toEqual([
+      { type: "popstate", state: null },
+      {
+        type: "hashchange",
+        oldURL: "https://preview.localhost:3001/requirements?focus=3#req-3",
+        newURL: "https://preview.localhost:3001/requirements?focus=7#req-7",
+      },
+    ]);
+  });
+
+  it("fires only popstate when the query moves but the fragment does not", () => {
+    const { nav } = fakeNavigation();
+    const { toolbar, dispatched } = runInjectedScript({ ...AT }, nav);
+
+    toolbar("navigate", { url: "https://preview.localhost:3001/requirements?focus=7#req-3" });
+
+    expect(dispatched).toEqual([{ type: "popstate", state: null }]);
+  });
+
+  it("still performs a real navigation to a different path", () => {
+    // The line sits at the path: a different one is plausibly a different
+    // document, where a rewrite would leave stale content under a new URL.
+    const { nav, calls } = fakeNavigation();
+    const { toolbar, assigned, pushed } = runInjectedScript({ ...AT }, nav);
+
+    toolbar("navigate", { url: "https://preview.localhost:3001/orders/8842" });
+
+    expect(calls).toEqual(["navigate:https://preview.localhost:3001/orders/8842"]);
+    expect(assigned).toEqual([]);
+    expect(pushed).toEqual([]);
   });
 
   it("falls back to location.assign without the Navigation API", () => {

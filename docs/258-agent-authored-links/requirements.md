@@ -72,31 +72,30 @@ respond to every click is a page that should be a preview service.
 
 ## Open questions
 
-- **Does req 13 hold for a pointer that changes the query string or the path,
-  not just the fragment?** As shipped, a destination differing only by fragment
-  is a same-document navigation and never reloads; a different path or query
-  loads a new document, exactly as typing the URL would — so the worked shape in
-  this doc, `?focus=7#req-7` → `?focus=9#req-9`, still blinks. Making those
-  same-document too is possible (`history.pushState` plus a synthetic
-  `popstate`, which every mainstream client-side router reacts to), but it
-  requires ShipIt to decide that the page *is* client-routed; a page that reads
-  `location.search` once at load and never routes would then render stale
-  content under a changed URL. Either req 13 narrows to fragments, or ShipIt
-  takes that bet — a human call, because the failure it risks is silent.
+_None._
 
 ## Resolved questions
 
 - **2026-08-10 — Must a click navigate within the page rather than reload it?**
   Reported by the requester against the shipped feature: *"pressing a link in
   the conversation to open in the preview seems to reload the preview page, not
-  navigate within the page (visible blink)"*. Recorded as req 13. What ShipIt
-  can honour is bounded by the web platform, and the boundary is now stated in
-  [`plan.md`](./plan.md): a destination differing only by fragment is a
-  same-document navigation and never reloads; a different path or query is a
-  cross-document navigation and loads, unless the page's own router intercepts
-  it. Making *those* same-document too would need ShipIt to guess that the page
-  is client-routed, and a page that guesses wrong renders stale content under a
-  changed URL — worse than the blink.
+  navigate within the page (visible blink)"*. Recorded as req 13.
+
+- **2026-08-10 — Does req 13 cover a pointer that changes the query string, not
+  just the fragment?** Only the fragment case is same-document for free; a query
+  change is a cross-document navigation by default, so the worked shape in this
+  doc (`?focus=7#req-7` → `?focus=9#req-9`) still blinked. Offered: fragments
+  only, `history.pushState` plus a synthetic `popstate` for the query too, or
+  the same but gated on detecting that the page registered a `popstate`
+  listener. The middle option carries a silent failure mode — a page that reads
+  `location.search` once at load and never routes would render stale content
+  under the new URL. Answer: **the pushState route, ungated** — *"the logic is
+  that this is for debug tools that the agent itself built, which are likely
+  using best patterns, including history management"*. The risk is accepted on
+  that basis, and no detector is built. The boundary now sits at the **path**:
+  same path means the page the user is already on, so its query and fragment are
+  that page's own state; a different path is plausibly a different document and
+  is still a real navigation. Stated in [`plan.md`](./plan.md).
 
 - **2026-08-09 — Which failures must req 10's toast cover?** Req 10 said "for
   any reason", which ShipIt cannot honour literally: some failures need a

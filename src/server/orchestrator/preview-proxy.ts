@@ -101,14 +101,17 @@ const HMR_WS_PATCH = `<script>(function(){` +
       `var r=nav[dir]();` +
       `r.committed.catch(swallow);r.finished.catch(swallow)` +
     `};` +
+    // Dispatch an event the browser would have fired for a navigation it
+    // performed itself. Guarded per call: an engine missing one of the
+    // constructors must not take the rest of `go` down with it.
+    `var fire=function(C,n,i){try{window.dispatchEvent(new C(n,i))}catch(e2){}};` +
     // Send the frame to an agent-authored pointer's destination (docs/258).
     // The parent could assign our `src` instead — cross-origin blocks reading
     // `location`, not navigating a frame — but that is always a document load,
     // so a pointer at a place *inside* the page the user is already on tore the
     // app down and rebuilt it. In here we can see where the page actually is,
-    // so a destination that differs only by fragment becomes the same-document
-    // navigation it really is: no request, no reload, and `hashchange` fires,
-    // which is the reaction channel the feature promises the page (req 11).
+    // so a destination on the page we are already showing becomes the
+    // same-document navigation it really is (req 13).
     `var go=function(u){try{` +
       // A non-string resolves against our own origin ("/undefined") instead of
       // throwing, so it has to be rejected before the parser sees it.
@@ -117,27 +120,34 @@ const HMR_WS_PATCH = `<script>(function(){` +
       // Same second check the parent makes. What follows is a navigation, and
       // this side is the one that can compare against the live location.
       `if(t.origin!==c.origin||t.href===c.href)return;` +
-      `if(t.pathname===c.pathname&&t.search===c.search){` +
-        `if(t.hash){location.hash=t.hash;return}` +
-        // Same page, fragment REMOVED. `location.hash=""` would leave a bare
-        // "#", and falling through to a real navigation would reload the app to
-        // drop a fragment — the exact blink req 13 exists to remove. The
-        // browser's own fragment path doesn't cover this (the navigation
-        // algorithm takes it only for a non-null destination fragment), so do
-        // it by hand: rewrite the entry, then say so. `pushState` is the one we
-        // wrapped, so the parent's path report fires from it.
+      // Same path = the page the user is already on, so every remaining
+      // difference is that page's own state. The path is where the line sits:
+      // a different one is plausibly a different document (an MPA's
+      // /about.html), while a query on the same path is what a page uses to say
+      // where it is within itself.
+      `if(t.pathname===c.pathname){` +
+        // Fragment alone: the platform's own same-document path. It fires
+        // hashchange and scrolls, so nothing has to be synthesized.
+        `if(t.search===c.search&&t.hash){location.hash=t.hash;return}` +
+        // Anything else on this page has no browser-provided same-document
+        // route — a fragment REMOVAL is not covered (the navigation algorithm
+        // takes its fragment path only for a non-null destination fragment) and
+        // a query change is cross-document by default. So rewrite the entry and
+        // then fire what the browser would have. `pushState` is the wrapped one,
+        // so the parent's path report follows.
         `history.pushState(history.state,"",t.href);` +
-        `try{window.dispatchEvent(new HashChangeEvent("hashchange",` +
-          `{oldURL:c.href,newURL:t.href}))}catch(e2){}` +
+        // `popstate` is what every mainstream client-side router listens on, so
+        // this is what re-renders the app in place. A page that reads
+        // `location.search` once at load and never routes hears nothing and
+        // keeps its old content under the new URL — the accepted cost of not
+        // reloading (docs/258 requirements, 2026-08-10).
+        `if(t.search!==c.search)fire(PopStateEvent,"popstate",{state:history.state});` +
+        `if(t.hash!==c.hash)fire(HashChangeEvent,"hashchange",{oldURL:c.href,newURL:t.href});` +
         `return` +
       `}` +
-      // A different path or query is a cross-document navigation by web
-      // semantics, so it reloads — unless the app runs its own router on the
-      // Navigation API, which gets to intercept this and stay same-document.
-      // `history.pushState` + a synthetic `popstate` would suppress the reload
-      // for History-API routers too, but it is a guess about the page: one that
-      // reads `location.search` at load and never routes would keep rendering
-      // the old content under the new URL, which is worse than the reload.
+      // A different path is left as a real navigation, and reloads — unless the
+      // app runs its own router on the Navigation API, which gets to intercept
+      // this and stay same-document.
       // A rejection here is swallowed rather than recovered from: the causes are
       // an interceptor deliberately aborting (an unsaved-changes guard) and a
       // superseding navigation, and forcing `location.assign` would override the

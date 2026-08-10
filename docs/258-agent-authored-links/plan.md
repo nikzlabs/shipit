@@ -206,30 +206,38 @@ pointer *into* a page must not do. The injected script is on the other side of
 the boundary, where the live `location` is readable, so it can tell the cases
 apart:
 
-- **Only the fragment differs** → `location.hash = …`, a same-document
-  navigation. No request, no reload, and `hashchange` fires — which is the
-  reaction channel req 11 already promises the page.
-- **Same page, fragment removed** → the browser's own fragment path does not
-  cover this (the navigation algorithm takes it only for a non-null destination
-  fragment), so it is done by hand: `pushState` to the new URL — the wrapped
-  one, so the parent's path report follows — plus a synthetic `hashchange`,
-  since nothing else would tell the page. Without it, a pointer at *the app as a
-  whole* would reload the app to drop a `#`.
-- **A different path or query** → a cross-document navigation by web semantics,
-  so it loads. It goes through `navigation.navigate()` where the Navigation API
-  exists, which lets an app that routes on it intercept and stay same-document,
-  and falls back to `location.assign`.
+- **Same path, only the fragment differs** → `location.hash = …`, the platform's
+  own same-document path. No request, no reload; it fires `hashchange` and
+  scrolls, so nothing has to be synthesized. This is the reaction channel req 11
+  already promises the page.
+- **Same path, anything else** (the query moved, or the fragment was removed)
+  → no browser-provided same-document route exists: a query change is
+  cross-document by default, and the navigation algorithm takes its fragment
+  path only for a *non-null* destination fragment, so even dropping a `#` would
+  otherwise reload the app. So the entry is rewritten with `pushState` — the
+  wrapped one, so the parent's path report follows — and then what the browser
+  would have fired is fired: `popstate` when the query moved, `hashchange` when
+  the fragment did.
+- **A different path** → a real navigation, which loads. Through
+  `navigation.navigate()` where the Navigation API exists, so an app that routes
+  on it can intercept and stay same-document; falls back to `location.assign`.
 - **No injected script** (a non-proxied local preview, a 502, an auth-gated
   response — the slot never reported `loaded`) → the `src` assignment, as
   before. A document load, but it arrives.
 
-**Why not force the path/query case same-document too.** `history.pushState`
-plus a synthetic `popstate` would suppress the reload for History-API routers,
-which is most of them. It is also a guess about a page ShipIt cannot inspect: an
-app that reads `location.search` once at load and never routes would keep
-rendering its old content under the new URL — a silently wrong page, worse than
-the blink it removes. The Navigation API's `navigate` event is the platform's
-own version of that question and is asked instead, because the page answers it.
+**The boundary is the path**, and the requirement is what puts it there: same
+path means *the page the user is already on*, so everything left — the query,
+the fragment — is that page's own state. A different path is plausibly a
+different document, where a rewrite would leave stale content under a new URL.
+
+**`popstate` is a bet, taken deliberately.** It is what every mainstream
+client-side router listens on, so the rewrite re-renders the app in place. A page
+that reads `location.search` once at load and never routes hears nothing and
+keeps its old content under the new URL — silent, with no error anywhere. The
+requester accepted that on the grounds that these previews are debug tools the
+agent itself built and therefore manage history properly (receipt in
+`requirements.md`, 2026-08-10), and explicitly did *not* want it gated on
+detecting that the page had registered a `popstate` listener.
 
 The command travels the same unauthenticated channel as `back`/`forward`/
 `reload`, which the first draft counted against it. That listener now checks
@@ -610,6 +618,6 @@ status bar on hover and hand it to the OS protocol handler on middle-click or
 
 - Auto-linkifying bare prose. Both schemes are explicit; there is no pattern to
   guess and no false-positive gate to build.
-- Making a pointer to a different path or query same-document as well. It would
-  mean guessing that the page is client-routed; see "On step 4" above.
+- Making a pointer to a *different path* same-document as well, or detecting
+  whether the page is client-routed before rewriting its entry; see "On step 4".
 - Addressing a place inside SVG, image or source-view artifacts (req 9).
