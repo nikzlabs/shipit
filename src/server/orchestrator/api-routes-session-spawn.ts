@@ -123,7 +123,11 @@ export async function registerSessionSpawnRoutes(
     // buffered into the turn-event log, which the next turn start clears, so a
     // switch into a between-turns session with outstanding work has nothing to
     // replay and would otherwise hydrate as finished.
-    const backgroundTasks = runner?.backgroundTaskDescriptions ?? [];
+    // planning#246 — the UNION, so a session switched into while a brokered
+    // `shipit agent run` consult is in flight hydrates as *waiting* too. The
+    // CLI's task list alone cannot see a consult: it outlives its parent turn,
+    // needs no resident streaming process, and Codex reports no tasks at all.
+    const backgroundTasks = runner?.backgroundWorkDescriptions ?? [];
     const rewindSnapshot = deps.chatHistoryManager.latestRewindSnapshot(request.params.id);
 
     // Don't reconstruct in-progress messages from runner.chatMessageGroups here.

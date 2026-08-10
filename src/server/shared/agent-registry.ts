@@ -185,6 +185,18 @@ export function getAgentCapabilities(id: AgentId): AgentCapabilities | undefined
 }
 
 /**
+ * Human-readable harness name ("Codex", "Claude Code") from the static defs,
+ * falling back to the raw id for an unknown one.
+ *
+ * Same shape and same reason as {@link getAgentCapabilities}: the runners label
+ * the consults they are brokering for the busy marker's status line, and they
+ * hold an `AgentId` with no registry handle to resolve it against.
+ */
+export function getAgentDisplayName(id: AgentId): string {
+  return AGENT_DEFS.find((d) => d.id === id)?.name ?? id;
+}
+
+/**
  * Env var required for each agent's auth (Claude uses OAuth, not an env var).
  * Consumers should go through {@link getAuthEnvKey} rather than reading this
  * map directly so a new backend's key (e.g. `CURSOR_API_KEY`) is one edit

@@ -650,6 +650,17 @@ export function useServerEvents(): void {
         next.delete(data.sessionId);
         return next;
       });
+      // …and from the background-work set, for the same reason. The container
+      // is gone, so nothing can still be outstanding in it — and the disposal
+      // paths clear the runner's own trackers directly, without a draining
+      // event of their own. Without this the sidebar dot would keep pulsing on
+      // a reaped session until the next SSE connect.
+      useSessionStore.getState().setBackgroundTaskSessions((prev) => {
+        if (!prev.has(data.sessionId)) return prev;
+        const next = new Map(prev);
+        next.delete(data.sessionId);
+        return next;
+      });
     });
 
     es.addEventListener("full_reset_complete", () => {

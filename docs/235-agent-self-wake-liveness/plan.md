@@ -269,9 +269,46 @@ new mechanism.
 > (`turn-executor`'s `done`, `agent-listeners`' process `error`): those call
 > `clearBackgroundTasks()` but the CLI is gone and emits no draining event, so
 > without a broadcast there the marker would keep a dead session pulsing green
-> in every sidebar until the next SSE connect. The remaining clears
+> in every sidebar until the next SSE connect. Container disposal is covered on
+> the client instead — the existing `session_status` idle-disposal handler now
+> drops the background-work marker alongside the running one, since a reaped
+> container can hold nothing outstanding. The remaining clears
 > (`resident-spawn-guard`) run between turns with no turn in flight, where the
 > next turn's own event or the next connect snapshot reconciles.
+
+**5g. The marker is the UNION with in-flight consults, not the task list.**
+Added by planning#246 after a cross-backend review pointed out that the fix above
+still missed its own reported workload. §5a–5f all read
+`backgroundTaskDescriptions`, the list the CLI reports — and a brokered
+`shipit agent run` consult is invisible in it three ways over: it outlives the
+turn that started it (docs/236 makes backgrounding the recommended shape), it
+needs no resident streaming process (so the tracker's liveness gate zeroes the
+count), and **Codex reports no background tasks at all**, so a Codex-pinned
+session never populates the list in the first place.
+
+The orchestrator already owns the missing fact. `subAgentSpawnsInFlight`
+(planning#298) is the in-flight spawn set, and `agentBusy` — the predicate every
+container-reclaim path consults — is defined as
+`running || backgroundTaskCount > 0 || subAgentSpawnsInFlight > 0` precisely
+because the first two are not enough. planning#298 had already been burned by this:
+it reaped a live 12-minute Codex review. The UI simply never read the third term.
+
+So the marker becomes `backgroundWorkDescriptions` — one getter on the runner
+interface, `backgroundTaskDescriptions` ++ one label per in-flight consult
+("Codex consult") — and every surface reads it: the SSE broadcasts, the
+`session_attention` connect snapshot, and the `GET /history` payload. The
+runners track the consulted `AgentId` alongside each in-flight spawn so the
+label can name it, and `services/sub-agent.ts` announces the marker when a
+spawn starts and again in its `finally`.
+
+Two consequences worth stating. The process-death broadcasts send the union
+rather than a bare `[]`, because a consult routinely outlives its parent turn
+and asserting "nothing outstanding" would blank the marker on exactly the
+session still waiting on a review. And the announcement at spawn time reads the
+runner *after* calling `spawnSubAgent`, relying on both runners registering the
+spawn synchronously ahead of their first `await`; a guard test in
+`container-session-runner.test.ts` pins that, so an `await` inserted before the
+registration is a red build rather than a marker that quietly stops appearing.
 
 > **Corrected after shipping — the chat status line also needs a snapshot.** The
 > SSE snapshot restores the *sidebar* marker, but the chat's status line is

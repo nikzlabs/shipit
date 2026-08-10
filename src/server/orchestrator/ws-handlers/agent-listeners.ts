@@ -562,7 +562,7 @@ export function wireAgentListeners(
           // gets the good label immediately.
           deps.sseBroadcast("session_attention", {
             sessionId: turnSessionId,
-            backgroundTasks: runner.backgroundTaskDescriptions,
+            backgroundTasks: runner.backgroundWorkDescriptions,
           });
         }
       }
@@ -1571,7 +1571,10 @@ export function wireAgentListeners(
         // so say it ourselves — otherwise the cross-session marker keeps a dead
         // session pulsing green in every sidebar until the next SSE connect.
         if (turnSessionId) {
-          deps.sseBroadcast("session_attention", { sessionId: turnSessionId, backgroundTasks: [] });
+          deps.sseBroadcast("session_attention", {
+            sessionId: turnSessionId,
+            backgroundTasks: runner.backgroundWorkDescriptions,
+          });
         }
       }
       runner.running = false;

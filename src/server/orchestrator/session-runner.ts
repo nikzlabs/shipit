@@ -25,6 +25,7 @@ import type { PreTurnResetHookResult, PreTurnResetRunner } from "./pre-turn-rese
 // Re-exported here so container-session-runner.ts (and the runner classes
 // in this file) can keep their existing import path.
 import { BackgroundTaskTracker, type BackgroundTaskInfo } from "./background-task-tracker.js";
+import { getAgentDisplayName } from "../shared/agent-registry.js";
 import { runDispatchedTurn } from "./dispatched-turn.js";
 export { runDispatchedTurn };
 
@@ -1024,6 +1025,29 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    */
   readonly subAgentSpawnsInFlight: number;
   /**
+   * planning#246 — one label per in-flight consult ("Codex consult"), for the
+   * busy marker's status line. Same set as {@link subAgentSpawnsInFlight},
+   * named.
+   */
+  readonly subAgentSpawnLabels: string[];
+  /**
+   * planning#246 — what the sidebar dot and the chat status line report as
+   * "busy outside a turn": the CLI's background tasks PLUS the consults this
+   * runner is brokering.
+   *
+   * This is the UI counterpart of {@link agentBusy}'s non-turn half, and it has
+   * to be the union for the same reason that predicate does. A consult is the
+   * case the background-task list cannot see: it needs no resident streaming
+   * process, and Codex reports no background tasks at all, so a session waiting
+   * on a 30-minute review reads as *idle* on `backgroundTaskDescriptions`
+   * alone — which is precisely how the sidebar came to show a live
+   * `shipit agent run` review as a finished session.
+   *
+   * Empty means "not busy outside a turn", which is what every consumer keys
+   * on; a running turn is the separate `running` axis.
+   */
+  readonly backgroundWorkDescriptions: string[];
+  /**
    * docs/235, planning#298 — the union liveness axis every container-reclaim path
    * must consult: `running || backgroundTaskCount > 0 || subAgentSpawnsInFlight > 0`.
    *
@@ -1479,8 +1503,12 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _disposed = false;
   pendingCommitLink: { commitHash: string; parentCommitHash: string } | null = null;
   private _subAgentSpawnsThisTurn = 0;
-  /** docs/144 — in-flight sub-agent run handles, cancelled on dispose. */
-  private _subAgentHandles = new Set<SubAgentRunHandle>();
+  /**
+   * docs/144 — in-flight sub-agent run handles, cancelled on dispose. Keyed by
+   * handle and valued by the agent being consulted, so planning#246 can name the
+   * consult in the busy marker instead of only counting it.
+   */
+  private _subAgentHandles = new Map<SubAgentRunHandle, AgentId>();
 
   /**
    * Per-session agent factory (see `SessionRunnerInterface.createAgent`).
@@ -1525,6 +1553,12 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   // planning#298 — a live consult is a fact we own (the in-flight handle set), not a
   // reported hint, so it needs no `isStreamingActive` gate.
   get subAgentSpawnsInFlight(): number { return this._subAgentHandles.size; }
+  get subAgentSpawnLabels(): string[] {
+    return [...this._subAgentHandles.values()].map((id) => `${getAgentDisplayName(id)} consult`);
+  }
+  get backgroundWorkDescriptions(): string[] {
+    return [...this.backgroundTaskDescriptions, ...this.subAgentSpawnLabels];
+  }
   get agentBusy(): boolean {
     return this._isRunning || this.backgroundTaskCount > 0 || this.subAgentSpawnsInFlight > 0;
   }
@@ -1576,7 +1610,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
       ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
     };
     const handle = runAgentToCompletion(agent, runOpts, Date.now());
-    this._subAgentHandles.add(handle);
+    this._subAgentHandles.set(handle, req.agentId);
     const prev = process.env.SHIPIT_AGENT_DEPTH;
     try {
       process.env.SHIPIT_AGENT_DEPTH = String(req.depth + 1);
@@ -1789,7 +1823,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     }
     this._disposed = true;
     // docs/144 — cancel any in-flight sub-agent spawns before tearing down.
-    for (const handle of this._subAgentHandles) {
+    for (const handle of this._subAgentHandles.keys()) {
       try { handle.cancel(); } catch { /* best-effort */ }
     }
     this._subAgentHandles.clear();

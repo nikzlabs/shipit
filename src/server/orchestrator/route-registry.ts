@@ -127,7 +127,12 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
       const runner = runnerRegistry.get(session.id);
       if (runner?.running) activeRunnerSessions.push(session.id);
       if (runner && runner.awaitingPermissionIds.size > 0) awaitingPermissionSessions.push(session.id);
-      if (runner && runner.backgroundTaskCount > 0) backgroundTaskSessions.push(session.id);
+      // planning#246 — the UNION (`backgroundWorkDescriptions`), not the
+      // CLI-reported task list alone: a brokered `shipit agent run` consult
+      // needs no resident streaming process and Codex reports no background
+      // tasks at all, so a session waiting on a live review would otherwise be
+      // snapshotted as idle.
+      if (runner && runner.backgroundWorkDescriptions.length > 0) backgroundTaskSessions.push(session.id);
     }
     client.write(`event: active_runners\ndata: ${JSON.stringify({ sessionIds: activeRunnerSessions })}\n\n`);
     client.write(`event: session_attention\ndata: ${JSON.stringify({ awaitingPermissionSessionIds: awaitingPermissionSessions, backgroundTaskSessionIds: backgroundTaskSessions })}\n\n`);

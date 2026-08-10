@@ -169,6 +169,21 @@ describe("useServerEvents — session_attention background work", () => {
     expect(useSessionStore.getState().awaitingPermissionSessions.has("other")).toBe(true);
   });
 
+  // A reaped container can hold nothing outstanding, and the disposal paths
+  // clear the runner's trackers directly with no draining event of their own —
+  // so the marker would otherwise pulse on a dead session until the next connect.
+  it("clears the marker when the session's container is reaped", () => {
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+
+    act(() => {
+      es.emit("session_attention", { sessionId: "other", backgroundTasks: ["Codex consult"] });
+      es.emit("session_status", { sessionId: "other", running: false, reason: "idle-disposed" });
+    });
+
+    expect(useSessionStore.getState().backgroundTaskSessions.has("other")).toBe(false);
+  });
+
   // The connect snapshot stays authoritative: it reconciles both sets wholesale
   // so a reconnect converges rather than merging onto stale entries.
   it("still reconciles both sets wholesale from the connect snapshot", () => {

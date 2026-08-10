@@ -85,7 +85,13 @@ function makeDeps(opts: {
   const append = vi.fn();
   // emitChatCard reads chatMessageGroups/steeredMessages and mutates recordedCards,
   // then persists via chatHistoryManager.replaceInProgress — stub all four.
+  // planning#246 — mirrors the real runners: the spawn registers SYNCHRONOUSLY
+  // (before any await) and deregisters when the run settles, so the marker the
+  // service announces reflects the consult while it is in flight.
+  const inFlightConsults: string[] = [];
   const runner = {
+    backgroundTaskDescriptions: [] as string[],
+    get backgroundWorkDescriptions(): string[] { return [...inFlightConsults]; },
     subAgentSpawnsThisTurn: opts.subAgentSpawnsThisTurn ?? 0,
     // A FOREGROUND consult: the invoking agent is blocked waiting, so its turn
     // is still in flight and the card rides the in-progress turn. The
@@ -95,24 +101,35 @@ function makeDeps(opts: {
     chatMessageGroups: [] as never[],
     steeredMessages: [] as never[],
     recordedCards: [] as never[],
-    spawnSubAgent: vi.fn(async () =>
-      opts.spawnResults?.shift() ?? opts.spawnResult ?? {
-        status: "success",
-        text: "2 bugs found",
-        truncated: false,
-        durationMs: 4200,
-        costUsd: 0.03,
-        inputTokens: 1000,
-        outputTokens: 200,
-        contextTokens: 1200,
-      },
-    ),
+    spawnSubAgent: vi.fn(async () => {
+      inFlightConsults.push("Codex consult");
+      try {
+        // Yield, so the registration is actually OUTSTANDING when the service
+        // announces the marker. An async body with no await would run start to
+        // finish — deregistration included — before control ever returned, which
+        // no real spawn does.
+        await Promise.resolve();
+        return opts.spawnResults?.shift() ?? opts.spawnResult ?? {
+          status: "success",
+          text: "2 bugs found",
+          truncated: false,
+          durationMs: 4200,
+          costUsd: 0.03,
+          inputTokens: 1000,
+          outputTokens: 200,
+          contextTokens: 1200,
+        };
+      } finally {
+        inFlightConsults.pop();
+      }
+    }),
   };
   const selectAccountForTurn = vi.fn((_provider: string, selectOpts?: { exclude?: string[] }): AccountSelection => ({
     ok: true as const,
     route: { kind: "account" as const, id: selectOpts?.exclude?.length ? "acct-secondary" : "acct-primary" },
   }));
   const markAccountExhausted = vi.fn();
+  const sseBroadcast = vi.fn();
   const deps = {
     sessionManager: {
       get: vi.fn((id: string) => (session?.id === id ? session : undefined)),
@@ -154,10 +171,11 @@ function makeDeps(opts: {
     usageManager: { record, getSessionUsage, getSessionTokenTotals } as never,
     recordAgentRateLimits,
     chatHistoryManager: { replaceInProgress, append, updateSubAgentConsultCard } as never,
+    sseBroadcast,
   };
   return {
     deps, runner, emitMessage, record, replaceInProgress, append, updateSubAgentConsultCard,
-    recordAgentRateLimits, selectAccountForTurn, markAccountExhausted,
+    recordAgentRateLimits, selectAccountForTurn, markAccountExhausted, sseBroadcast,
   };
 }
 
@@ -1163,5 +1181,59 @@ describe("sweepSubAgentCredentialsOnSignOut", () => {
   it("is a no-op without a credentialsDir (local mode)", () => {
     const sessionManager = { list: () => [{ id: "sessA", agentId: "claude" }] } as never;
     expect(() => sweepSubAgentCredentialsOnSignOut("codex", { sessionManager })).not.toThrow();
+  });
+});
+
+/**
+ * planning#246 — the cross-session "busy outside a turn" marker.
+ *
+ * A consult is the case the sidebar could not see. docs/236 tells agents to
+ * background long ones, so the primary turn ends while the review runs on
+ * (`running` false); a consult needs no resident streaming process, so the
+ * CLI's background-task list reads zero; and a Codex-pinned session reports no
+ * background tasks at all. The session therefore rendered as *finished* while a
+ * 30-minute review was in flight — which is what the sidebar was showing for
+ * "requested a review using shipit agent".
+ */
+describe("runSubAgent — cross-session busy marker", () => {
+  const attention = (sseBroadcast: ReturnType<typeof vi.fn>) =>
+    sseBroadcast.mock.calls
+      .filter(([event]) => event === "session_attention")
+      .map(([, payload]) => payload);
+
+  it("names the consult while it runs and drops it once the run settles", async () => {
+    const { deps, sseBroadcast } = makeDeps({});
+    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+
+    const broadcasts = attention(sseBroadcast);
+    expect(broadcasts[0]).toEqual({ sessionId: "s1", backgroundTasks: ["Codex consult"] });
+    expect(broadcasts.at(-1)).toEqual({ sessionId: "s1", backgroundTasks: [] });
+  });
+
+  // The marker must survive the run FAILING — a consult that errors or is
+  // cancelled has still stopped, and a stuck marker is a session that looks
+  // busy forever.
+  it("clears the marker when the spawn throws", async () => {
+    const { deps, runner, sseBroadcast } = makeDeps({});
+    runner.spawnSubAgent = vi.fn(async () => {
+      throw new WorkerTimeoutError("/agent/spawn", SUB_AGENT_TRANSPORT_TIMEOUT_MS);
+    });
+
+    await expect(
+      runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 }),
+    ).rejects.toBeInstanceOf(WorkerTimeoutError);
+
+    expect(attention(sseBroadcast).at(-1)).toEqual({ sessionId: "s1", backgroundTasks: [] });
+  });
+
+  // Every gate rejects before anything is in flight, so a refused spawn must
+  // not tell the sidebar the session is busy.
+  it("announces nothing when the spawn is rejected by a gate", async () => {
+    const { deps, sseBroadcast } = makeDeps({ enableSubAgents: false });
+    await expectServiceError(
+      runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 }),
+      403,
+    );
+    expect(attention(sseBroadcast)).toEqual([]);
   });
 });
