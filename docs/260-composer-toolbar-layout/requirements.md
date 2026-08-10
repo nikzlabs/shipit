@@ -57,21 +57,33 @@ The row already contained three controls that had been collapsed to icons to buy
 
 13. Composer widths below 360 px are explicitly not a target. Behaviour there only has to be non-destructive — requirement 1 still holds, and the model name may be truncated to nothing.
 
+14. How large the mic, Stop and Send targets are follows the device, not the composer. On a phone or a tablet they stay large enough to hit with a thumb at every composer width; on a desktop they stay compact even when the chat panel is narrow.
+
+15. In the compact layout the context ring shows as a ring alone. Its token count and running cost are not shown beside it, and remain available inside the settings menu.
+
+16. The attach button stays in the compact row. Attaching a file is an action taken while composing, not a setting, and it does not move behind the settings control.
+
 ## Requirement provenance
 
-Requirements 1–8 and 10–13 were stated by the human in chat, most of them in direct response to a rendered mock-up. Requirement 9 is inherited from an existing repo convention rather than newly asked for: `ReasoningSelector`'s compact mode already keeps the full label in `title` and `aria-label`, and the harness selector followed it. It is written down here because the compact layout hides considerably more than either of those did.
+Requirements 1–8 and 10–13 were stated by the human in chat, most of them in direct response to a rendered mock-up.
 
-No requirement below the line is an agent inference. Everything the agent supplied that the human has not ruled on is in **Open questions**, and implementation is blocked while any remain.
+Requirements 14–16 began as agent proposals. Each was put to the human as an open question with its alternative and a recommendation, and each was answered on 2026-08-10 — see the first three receipts below. They are requirements because they were chosen, not because they were suggested.
+
+Requirement 9 is the one item inherited from an existing repo convention rather than newly asked for: `ReasoningSelector`'s compact mode already keeps the full label in `title` and `aria-label`, and the harness selector followed it. It is written down here because the compact layout hides considerably more than either of those did.
+
+No requirement is an unreviewed agent inference.
 
 ## Open questions
 
-- **Should touch-target size follow the composer's width, or the input device?** The 44 px hit areas for mic, Stop and Send are currently switched on by the same mobile media query that drives everything else. The proposal is to split them: layout density follows the composer's width (requirement 3), but hit-area size keeps following the viewport, on the grounds that whether a target needs to be 44 px is a question about fingers and not about panel width. The visible consequence: a 600 px chat panel on a desktop keeps the compact 32 px buttons, while a 600 px tablet keeps the large ones. The alternative — driving both from the composer width — is simpler to reason about but gives a desktop user with a narrow panel oversized buttons they do not need. *Recommendation: split them.*
-
-- **May the context ring lose its token-count and cost labels on a narrow desktop panel?** Those two labels are shown today whenever the *window* is 768 px or wider, so a desktop user with the panel dragged to 520 px sees them now. Under requirement 3 that panel is "compact", and the ring would show as a ring alone — a real reduction for that user, though it is what every phone already sees. The alternative is a third size band between "ring only" and "today's row", which is more states to build and test. *Recommendation: accept the loss; the figures stay one tap away in the menu.*
-
-- **Does the attach "+" button stay in the compact row, or move into the settings menu?** It is kept in the row in the mock-up, on the grounds that attaching a file is an action taken while composing rather than a setting, and it costs 28 px. Moving it into the menu would buy that 28 px back for the model name. *Recommendation: keep it in the row.*
+None. Implementation is unblocked.
 
 ## Resolved questions
+
+- 2026-08-10 — Should touch-target size follow the composer's width, like everything else, or the input device? Chosen: **the input device**. Layout density follows the composer width (requirement 3), but hit-area size keeps following the screen, because whether a target needs to be thumb-sized is a question about fingers and not about panel width. Requirement 14 follows. Visible consequence, accepted: a 600 px chat panel on a desktop keeps compact buttons while a 600 px tablet keeps large ones — the two look different at the same composer width, deliberately.
+
+- 2026-08-10 — May the context ring lose its token-count and cost labels on a narrow desktop panel? Chosen: **yes, ring alone below 700 px.** Those labels show today whenever the *window* is 768 px or wider, so a desktop user with the panel at 520 px loses them — but that is already what every phone sees, and the figures stay one tap away in the menu. Requirement 15 follows. The alternative considered and rejected was a third size band keeping the labels between roughly 480 and 700 px: it removes nothing from anyone, at the cost of a third state to build and test.
+
+- 2026-08-10 — Does the attach button stay in the compact row, or move behind the settings control? Chosen: **stays in the row**, because attaching a file is an action taken while composing rather than a setting. Requirement 16 follows. The 28 px it costs would otherwise have gone to the model name — enough to make "GPT-5 Codex" fit at 360 px — so this is a deliberate trade of name width for keeping attach one tap away.
 
 - 2026-08-10 — Which of five candidate layouts should be built: moving Stop out of the row, collapsing the model label to an icon, moving all settings behind one control, wrapping to two rows, or a horizontally scrolling strip? Chosen: **moving all settings behind one control**, applied whenever the composer is under 700 px wide. The measured argument is that it is the only candidate whose headroom does not change with state — it fits at 320 px with 42 px to spare and survives the 590 px worst case, because the controls that grow are exactly the ones it removes from the row. The two cheap candidates do not fix the bug: Stop leaving the row saves nothing at all when idle, and collapsing the model label saves 16–34 px against a 145 px deficit. Requirements 3 and 9 follow.
 
