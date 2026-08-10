@@ -50,6 +50,7 @@ import {
 import { Button } from "../ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
+import { useUiStore } from "../../stores/ui-store.js";
 import { ProviderAccountsCard } from "./ProviderAccountsCard.js";
 import { BackgroundWorkSection } from "./BackgroundWorkSection.js";
 
@@ -98,8 +99,14 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
    * appeared once an account already did. Revealing the card is the handoff,
    * and it keeps the screen's "only what you configured" property for everyone
    * who has not asked for it.
+   *
+   * It lives in the UI store rather than here because Settings renders its tabs
+   * through Radix `TabsContent`, which UNMOUNTS the inactive one: as component
+   * state the reveal was lost by switching to any other Settings tab and back,
+   * and the only route back to "Add account" was to walk the whole add-flow
+   * again. `settingsTab` sits in the same store for the same reason.
    */
-  const [revealed, setRevealed] = useState<string[]>([]);
+  const revealed = useUiStore((s) => s.revealedServiceModes);
 
   /**
    * docs/257 req 5 — a card with something to say stays on screen.
@@ -191,8 +198,7 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
       {addOpen && (
         <AddServiceDialog
           onClose={() => setAddOpen(false)}
-          onReveal={(modeKey) => setRevealed((current) =>
-            current.includes(modeKey) ? current : [...current, modeKey])}
+          onReveal={(modeKey) => useUiStore.getState().revealServiceMode(modeKey)}
         />
       )}
     </div>
