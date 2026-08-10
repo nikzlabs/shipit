@@ -318,6 +318,19 @@ export function createRunnerRegistry(
       getPrStatusPoller?.()?.notifyRunnerIdle(sessionId);
     },
     onRunnerCreated: (runner) => {
+      // planning#246 — the ONE subscriber for the cross-session "busy outside a
+      // turn" marker. The runner emits `background_work` from every place its
+      // value can change (task list, streaming gate, consult set, dispose), so
+      // this is the only site that has to know how the marker reaches a
+      // browser — and a new way to clear the tracker needs no broadcast of its
+      // own. The previous per-call-site version left five clears silent, each
+      // of which pinned a green dot on an idle session until the next reload.
+      runner.on("background_work", () => {
+        sseBroadcast("session_attention", {
+          sessionId: runner.sessionId,
+          backgroundTasks: runner.backgroundWorkDescriptions,
+        });
+      });
       // planning#341 — keep the composer's "start from the latest base" control
       // honest between turns: recompute + push `reset_eligible` when the
       // workspace file watcher reports a change (debounced, merged sessions

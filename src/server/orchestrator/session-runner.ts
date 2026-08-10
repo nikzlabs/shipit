@@ -941,6 +941,27 @@ export interface SessionRunnerEvents {
    * the handle as `dropped`, exactly as it does for a runner disposed mid-turn.
    */
   turn_abandoned: [];
+  /**
+   * planning#246 — this runner's `backgroundWorkDescriptions` changed: a background
+   * task appeared or drained, a consult started or finished, or the resident
+   * process died and took its tasks with it.
+   *
+   * The marker exists so a session that is *waiting* rather than thinking still
+   * reads as busy in the sidebar, and its inputs are mutated from a dozen
+   * places — `setBackgroundTasks`, `clearBackgroundTasks`, the
+   * `isStreamingActive` gate, sub-agent registration, `dispose`. The first
+   * version of the cross-session push announced the change at each call site
+   * that happened to be on the mind at the time, which left five clears silent:
+   * a spawn-identity change, a credential rotation, the stuck-running
+   * reconciler, and both runners' `dispose`. Each of those turned the sidebar
+   * dot into a permanent green light on a session with nothing running.
+   *
+   * So the runner announces its own state instead, from the one place that can
+   * see every mutation, and exactly one subscriber (wired in
+   * `runner-registry-factory`) turns it into the SSE broadcast. Adding a sixth
+   * way to clear the tracker now needs no broadcast of its own.
+   */
+  background_work: [];
 }
 
 /**
@@ -1509,6 +1530,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
    * consult in the busy marker instead of only counting it.
    */
   private _subAgentHandles = new Map<SubAgentRunHandle, AgentId>();
+  /** planning#246 — last announced `backgroundWorkDescriptions`, for change detection. */
+  private _lastAnnouncedWork = "[]";
 
   /**
    * Per-session agent factory (see `SessionRunnerInterface.createAgent`).
@@ -1544,7 +1567,13 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   get guardedUnavailable(): boolean { return this._guardedUnavailable; }
   set guardedUnavailable(v: boolean) { this._guardedUnavailable = v; }
   get isStreamingActive(): boolean { return this._isStreamingActive; }
-  set isStreamingActive(v: boolean) { this._isStreamingActive = v; }
+  set isStreamingActive(v: boolean) {
+    this._isStreamingActive = v;
+    // The tracker's liveness gate zeroes the task list without a resident
+    // streaming process, so flipping this changes the marker even though no
+    // task was touched.
+    this.announceBackgroundWork();
+  }
   // docs/235 — the count is gated on `isStreamingActive` inside the tracker: a
   // background task cannot outlive the CLI process, so without a resident
   // streaming process the answer is definitionally zero.
@@ -1562,8 +1591,30 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   get agentBusy(): boolean {
     return this._isRunning || this.backgroundTaskCount > 0 || this.subAgentSpawnsInFlight > 0;
   }
-  setBackgroundTasks(tasks: BackgroundTaskInfo[]): void { this._backgroundTasks.set(tasks); }
-  clearBackgroundTasks(): void { this._backgroundTasks.clear(); }
+  setBackgroundTasks(tasks: BackgroundTaskInfo[]): void {
+    this._backgroundTasks.set(tasks);
+    this.announceBackgroundWork();
+  }
+  clearBackgroundTasks(): void {
+    this._backgroundTasks.clear();
+    this.announceBackgroundWork();
+  }
+  /**
+   * planning#246 — emit `background_work` when the marker's value actually changed.
+   *
+   * Deduped on the rendered value because the inputs are touched far more often
+   * than they change: `isStreamingActive` is set at both ends of every turn, and
+   * a clear on an already-empty tracker is the common case. The listener turns
+   * each emit into an SSE frame to every connected browser, so a bare
+   * pass-through would spend frames saying nothing. Convergence after a missed
+   * frame is the connect snapshot's job, not this one's.
+   */
+  private announceBackgroundWork(): void {
+    const next = JSON.stringify(this.backgroundWorkDescriptions);
+    if (next === this._lastAnnouncedWork) return;
+    this._lastAnnouncedWork = next;
+    this.emit("background_work");
+  }
   get appliedPermissionMode(): PermissionMode | undefined { return this._appliedPermissionMode; }
   set appliedPermissionMode(v: PermissionMode | undefined) { this._appliedPermissionMode = v; }
   get appliedSpawnIdentity(): string | undefined { return this._appliedSpawnIdentity; }
@@ -1611,6 +1662,9 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     };
     const handle = runAgentToCompletion(agent, runOpts, Date.now());
     this._subAgentHandles.set(handle, req.agentId);
+    // planning#246 — synchronously, before the first await below, so the marker
+    // already counts this consult by the time the caller resumes.
+    this.announceBackgroundWork();
     const prev = process.env.SHIPIT_AGENT_DEPTH;
     try {
       process.env.SHIPIT_AGENT_DEPTH = String(req.depth + 1);
@@ -1620,6 +1674,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
       return await handle.promise;
     } finally {
       this._subAgentHandles.delete(handle);
+      this.announceBackgroundWork();
       try { agent.kill(); } catch { /* already exited */ }
     }
   }
@@ -1840,6 +1895,12 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     this._backgroundTasks.clear();
     this._appliedPermissionMode = undefined;
     this._appliedSpawnIdentity = undefined;
+    // planning#246 — the fields above were written directly rather than through
+    // their setters, so say so before `removeAllListeners()` takes the channel
+    // away. A disposed runner holds nothing outstanding, and the sidebar has no
+    // other way to learn that: idle reclaim, rescue, restart and archive all
+    // land here without a draining event of their own.
+    this.announceBackgroundWork();
     this.emit("disposed");
     this.removeAllListeners();
   }

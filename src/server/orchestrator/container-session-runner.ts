@@ -249,6 +249,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * instead of only counting it.
    */
   private readonly _subAgentAborts = new Map<string, { controller: AbortController; agentId: AgentId }>();
+  /** planning#246 — last announced `backgroundWorkDescriptions`, for change detection. */
+  private _lastAnnouncedWork = "[]";
   private _workerResourcesStarted = false;
   /**
    * docs/240 — in-flight one-time worker-resource start. Concurrent callers
@@ -390,6 +392,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // (the prod sse-drop). When it turns off, the streaming process is exiting —
     // drop the reference so genuinely-orphaned events stop being re-adopted.
     this._streamingProxy = v ? this._agent : null;
+    // The tracker's liveness gate zeroes the task list without a resident
+    // streaming process, so flipping this changes the marker even though no
+    // task was touched.
+    this.announceBackgroundWork();
   }
   // docs/235 — gated on `isStreamingActive` inside the tracker: a background
   // task cannot outlive the CLI process, so without a resident streaming
@@ -409,8 +415,24 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   get agentBusy(): boolean {
     return this._isRunning || this.backgroundTaskCount > 0 || this.subAgentSpawnsInFlight > 0;
   }
-  setBackgroundTasks(tasks: BackgroundTaskInfo[]): void { this._backgroundTasks.set(tasks); }
-  clearBackgroundTasks(): void { this._backgroundTasks.clear(); }
+  setBackgroundTasks(tasks: BackgroundTaskInfo[]): void {
+    this._backgroundTasks.set(tasks);
+    this.announceBackgroundWork();
+  }
+  clearBackgroundTasks(): void {
+    this._backgroundTasks.clear();
+    this.announceBackgroundWork();
+  }
+  /**
+   * planning#246 — emit `background_work` when the marker's value actually
+   * changed. See `SessionRunner.announceBackgroundWork` for why it dedupes.
+   */
+  private announceBackgroundWork(): void {
+    const next = JSON.stringify(this.backgroundWorkDescriptions);
+    if (next === this._lastAnnouncedWork) return;
+    this._lastAnnouncedWork = next;
+    this.emit("background_work");
+  }
   get appliedPermissionMode(): PermissionMode | undefined { return this._appliedPermissionMode; }
   set appliedPermissionMode(v: PermissionMode | undefined) { this._appliedPermissionMode = v; }
   get appliedSpawnIdentity(): string | undefined { return this._appliedSpawnIdentity; }
@@ -466,6 +488,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   async spawnSubAgent(req: SubAgentSpawnRequest): Promise<SubAgentRunResult> {
     const controller = new AbortController();
     this._subAgentAborts.set(req.spawnId, { controller, agentId: req.agentId });
+    // planning#246 — synchronously, before the first await below, so the marker
+    // already counts this consult by the time the caller resumes.
+    this.announceBackgroundWork();
     const startedAt = Date.now();
     console.log(
       `[sub-agent] worker-post session=${this.sessionId} spawn=${req.spawnId} agent=${req.agentId} `
@@ -502,6 +527,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       throw err;
     } finally {
       this._subAgentAborts.delete(req.spawnId);
+      this.announceBackgroundWork();
     }
   }
 
@@ -518,6 +544,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       try { spawn.controller.abort(reason); } catch { /* best-effort */ }
     }
     this._subAgentAborts.clear();
+    this.announceBackgroundWork();
   }
 
   getAgent(): AgentProcess | null { return this._agent; }
@@ -2531,6 +2558,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // with it. The count getter already gates on `isStreamingActive`; clearing
     // here keeps the tracker from holding a stale list across a respawn.
     this._backgroundTasks.clear();
+    // planning#246 — written directly rather than through the setters, so the
+    // marker needs saying: the reconciler just declared this session's agent
+    // dead, and nothing else will tell the sidebar.
+    this.announceBackgroundWork();
     this._appliedPermissionMode = undefined;
     this._appliedSpawnIdentity = undefined;
     this._agent = null;
@@ -2646,6 +2677,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._backgroundTasks.clear();
     this._appliedPermissionMode = undefined;
     this._appliedSpawnIdentity = undefined;
+    // planning#246 — same as above, and before `removeAllListeners()` takes the
+    // channel away. A disposed runner holds nothing outstanding, and idle
+    // reclaim, rescue, restart and archive all land here without a draining
+    // event of their own.
+    this.announceBackgroundWork();
     this.termBuf.reset();
     this.emit("disposed");
     this.removeAllListeners();

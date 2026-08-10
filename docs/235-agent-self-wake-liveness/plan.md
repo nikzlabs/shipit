@@ -272,9 +272,11 @@ new mechanism.
 > in every sidebar until the next SSE connect. Container disposal is covered on
 > the client instead — the existing `session_status` idle-disposal handler now
 > drops the background-work marker alongside the running one, since a reaped
-> container can hold nothing outstanding. The remaining clears
-> (`resident-spawn-guard`) run between turns with no turn in flight, where the
-> next turn's own event or the next connect snapshot reconciles.
+> container can hold nothing outstanding.
+>
+> **Superseded by 5h.** Announcing per call site is what left the *other* five
+> clears silent. The runner announces its own changes now, and the per-site
+> broadcasts described above are gone.
 
 **5g. The marker is the UNION with in-flight consults, not the task list.**
 Added by planning#246 after a cross-backend review pointed out that the fix above
@@ -561,3 +563,56 @@ shell work a supported persistence primitive.
 - `src/client/hooks/useAttentionInfo.ts` — `computeAttentionReason`
 - `src/client/hooks/useAttentionNotifications.ts` — the settle window before a
   reason is worth interrupting the user for
+
+**5h. The runner announces the marker; exactly one subscriber broadcasts it.**
+Added by planning#246 after the cross-backend review enumerated the clears 5b's
+per-call-site broadcasts did not cover — a spawn-identity change and a
+credential rotation (`resident-spawn-guard`), the stuck-running reconciler
+(`verifyRunningState`), and both runners' `dispose`. Each one clears the tracker
+directly and emits no draining event, so each left the sidebar dot lit on a
+session with nothing running until the next SSE connect.
+
+Adding a broadcast to each was the wrong shape: the marker's inputs are mutated
+from a dozen places (`setBackgroundTasks`, `clearBackgroundTasks`, the
+`isStreamingActive` gate, consult registration, `dispose`), and any future sixth
+one would be silent again by default. So the announcement moves to the one place
+that can see every mutation. The runner emits `background_work` whenever
+`backgroundWorkDescriptions` actually changes, and a single subscriber wired in
+`runner-registry-factory`'s `onRunnerCreated` turns it into the
+`session_attention` SSE broadcast.
+
+This *removes* mechanism rather than adding it: the explicit broadcasts in
+`turn-executor`, `agent-listeners`, and `services/sub-agent.ts` are all gone,
+along with the service's `sseBroadcast` dependency and its route wiring. It also
+makes the guarantee structural — a new way to clear the tracker is announced
+because it goes through the same setters, not because someone remembered.
+
+The emit is deduped on the rendered value. `isStreamingActive` is set at both
+ends of every turn and a clear on an already-empty tracker is the common case,
+so a bare pass-through would spend an SSE frame per browser saying nothing.
+Convergence after a genuinely missed frame stays the connect snapshot's job.
+
+**5i. `background_tasks` is not replayed on reattach.** The same review noted
+that WS, SSE, and `GET /history` all write this marker with no shared ordering,
+and proposed a per-session revision. That is more mechanism than the exposure
+warrants — each transport preserves its own order, the updates are
+level-triggered re-statements rather than deltas, and the connect snapshot
+reconciles wholesale. But one concrete instance was worth closing: the
+turn-event replay buffer holds the last `background_tasks`, and the clears that
+announce over SSE alone (a crashed process, a disposed runner) leave that copy
+saying "outstanding" after the truth became "none". Replaying it on reattach
+resurrected the dot, and which value won depended on whether the replay landed
+before or after the HTTP history it contradicts.
+
+`background_tasks` therefore joins the replay loop's existing skip list in
+`route-registry.ts`, beside `agent_event` and `turn_snapshot`. The attach's own
+`GET /history` carries the runner's current `backgroundTasks` read live at
+request time, so history is the single attach-time source and there is no race
+left to lose.
+
+**Residual, accepted.** `BackgroundTaskTracker` decays a non-zero count after
+its TTL through the getter alone, with no mutation to announce. A marker can
+therefore outlive the tracker's own honoring of it by up to one window in a
+browser that stays connected. The decay only fires when events stopped arriving
+entirely — the liveness gate catches the ordinary process-death case first — and
+the connect snapshot corrects it.

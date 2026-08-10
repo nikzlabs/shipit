@@ -142,19 +142,6 @@ export interface RunSubAgentDeps {
      */
     routeId?: string,
   ) => void;
-  /**
-   * planning#246 — global SSE, for the cross-session "busy outside a turn" marker.
-   *
-   * A consult is the case the sidebar could not see: docs/236 tells agents to
-   * background long ones, so the primary turn ends (`running` false) while the
-   * review runs on; it needs no resident streaming process, so the CLI's
-   * background-task list reads zero; and a Codex-pinned session reports no
-   * background tasks at all. The session therefore rendered as *finished* while
-   * a 30-minute review was in flight.
-   *
-   * Optional so minimal test setups keep working; absent ⇒ no marker updates.
-   */
-  sseBroadcast?: (event: string, data: unknown) => void;
   /** Source-of-truth credentials root (`/credentials`). Omitted in local mode / tests. */
   credentialsDir?: string;
   /**
@@ -451,47 +438,20 @@ export async function runSubAgent(
     );
   };
 
-  /**
-   * planning#246 — re-state this session's "busy outside a turn" marker to every
-   * sidebar. Level-triggered: it always sends the runner's CURRENT union, so a
-   * missed edge self-corrects on the next call and two concurrent consults
-   * can't clear each other's marker.
-   *
-   * The runner is re-resolved for the same reason `finalizeConsultCard` does it:
-   * the one that started the consult may already have been disposed.
-   */
-  const announceBackgroundWork = (): void => {
-    const live = deps.runnerRegistry.get(sessionId) ?? runner;
-    deps.sseBroadcast?.("session_attention", {
-      sessionId,
-      backgroundTasks: live.backgroundWorkDescriptions,
-    });
-  };
-
   try {
-    const spawn = () => {
-      const running = runner.spawnSubAgent({
-        agentId: subAgentId,
-        prompt,
-        spawnId,
-        depth,
-        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-        // The RESOLVED model, so what runs and what is recorded are the same by
-        // construction. Letting the adapter fall back to its own `models[0]`
-        // instead would run the catalogue join's first entry, which on an install
-        // with no first-party credential is a model this install cannot run.
-        ...(spawnModel !== undefined ? { model: spawnModel } : {}),
-        ...(subServiceRouting !== undefined ? { serviceRouting: subServiceRouting } : {}),
-      });
-      // Announced AFTER the call, not before: both runners register the
-      // in-flight spawn synchronously, ahead of their first `await`, so the
-      // union already counts this consult by the time control returns here.
-      // (`container-session-runner.test.ts` → "background-work marker" asserts
-      // exactly that, so an `await` added ahead of the registration turns into a
-      // red build rather than a marker that silently stops appearing.)
-      announceBackgroundWork();
-      return running;
-    };
+    const spawn = () => runner.spawnSubAgent({
+      agentId: subAgentId,
+      prompt,
+      spawnId,
+      depth,
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      // The RESOLVED model, so what runs and what is recorded are the same by
+      // construction. Letting the adapter fall back to its own `models[0]`
+      // instead would run the catalogue join's first entry, which on an install
+      // with no first-party credential is a model this install cannot run.
+      ...(spawnModel !== undefined ? { model: spawnModel } : {}),
+      ...(subServiceRouting !== undefined ? { serviceRouting: subServiceRouting } : {}),
+    });
     let result = await spawn();
 
     // docs/150 reqs 7, 14, 20 — one-shot reviews use the same persisted hard-
@@ -752,12 +712,6 @@ export async function runSubAgent(
       sessionId,
       { spawnId, subAgentId },
     );
-
-    // planning#246 — the consult has left the runner's in-flight set (the runner
-    // deregisters it in its own `finally`, which ran before this one), so this
-    // re-states the marker without it. Last, after the commit, so a sidebar
-    // stops showing the session as busy only once its work is durable.
-    announceBackgroundWork();
   }
 }
 
