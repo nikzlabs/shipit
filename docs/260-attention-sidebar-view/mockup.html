@@ -10,7 +10,7 @@
   requirements.md instead of only in an ephemeral Present-tab artifact. Open in
   a browser to view.
 
-  The top half draws the DECIDED design (requirements 4-9, all answered
+  The top half draws the DECIDED design (requirements 4-10, all answered
   2026-08-10). The strip at the foot keeps the rejected alternatives at thumbnail
   size, with the one-line reason each lost, so the exploration stays reviewable.
 
@@ -51,12 +51,20 @@
   .hdr{display:flex;align-items:center;gap:6px;padding:0 10px;height:41px;border-bottom:1px solid var(--border-1)}
   .hdr .sp{flex:1}
   .ico{width:26px;height:26px;border-radius:5px;display:grid;place-items:center;color:var(--text-3);position:relative}
-  /* The active state of the icon is the ONLY mode indicator — there is no band
-     under the header. It has to carry that alone, so it is a filled amber chip,
-     not the faint hover tint an inactive icon gets. */
-  .ico.on{color:#231a05;background:var(--attention)}
-  /* on the lit icon the badge must invert, or amber-on-amber swallows the count */
-  .ico.on .badge{background:#2b1f05;color:#fde68a;border-color:var(--attention)}
+  .ico.on{color:var(--attention);background:var(--bg-tertiary)}
+
+  /* ---- the switch ----
+     A PILL, not an icon with a badge stuck on it: glyph and count sit side by
+     side, so the count can never occlude the glyph. The pressed state follows
+     the house pattern for a toggled ghost button (IssuesViewer.tsx) — the glyph
+     switches to `fill` weight and takes the accent color over a bg-tertiary
+     chip — rather than inventing a saturated amber button the header has
+     nowhere else. */
+  .sw{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 6px;
+    border-radius:6px;color:var(--text-3);--knock:var(--bg-primary)}
+  .sw .n{font-size:10px;font-weight:700;line-height:1;color:var(--attention)}
+  .sw.on{background:var(--bg-tertiary);color:var(--attention);--knock:var(--bg-tertiary)}
+  .sw svg{display:block}
   .badge{position:absolute;top:-1px;right:-2px;min-width:14px;height:14px;padding:0 3px;
     background:var(--attention);color:#231a05;border-radius:7px;font-size:9px;font-weight:700;
     line-height:14px;text-align:center;border:2px solid var(--bg-primary);box-sizing:content-box}
@@ -113,6 +121,20 @@
   .anat ol b{color:var(--text-1);font-weight:600}
   .anat code{background:var(--bg-secondary);border:1px solid var(--border-1);border-radius:4px;padding:0 4px;font-size:11px}
 
+  /* ---- switch state board ---- */
+  .swdemo{display:flex;gap:16px;flex-wrap:wrap}
+  .swcell{width:158px}
+  .swcell .tile{height:104px;background:var(--bg-primary);border:1px solid var(--border-1);
+    border-radius:8px;display:grid;place-items:center;overflow:hidden}
+  .swcell .z{transform:scale(3)}
+  .swcell h4{margin:8px 0 2px;font-size:11px;font-weight:600;color:var(--text-1)}
+  .swcell p{margin:0;font-size:11px;color:var(--text-3);line-height:1.5}
+  .swcell.bad .tile{border-color:rgba(239,68,68,.4)}
+  .swcell.bad h4{color:var(--error)}
+  /* the rejected treatment, kept so the defect is visible rather than described */
+  .ico.bad{color:#231a05;background:var(--attention)}
+  .ico.bad .badge{background:#2b1f05;color:#fde68a;border-color:var(--attention)}
+
   /* ---- rejected thumbnails ---- */
   .thumbs{display:flex;gap:16px;flex-wrap:wrap}
   .th{width:190px}
@@ -142,6 +164,41 @@
 <p class="lede">A second sidebar view that drops the repo tree and lists only the sessions whose ball is in the user’s court. Attention is <b>not a new signal</b> — it is <code>computeAttentionReason()</code> (<code>useAttentionInfo.ts</code>), already the single source of truth for the amber rail, the row tooltip and notifications (req 9).</p>
 <p class="note">Drawn as decided: header icon + count badge (req 4–5) · one flat list, stable order (req 6–7) · a row that stops needing you settles where it stands (req 8). Rejected alternatives are kept at thumbnail size at the foot.</p>
 
+<h2>The switch, at 3×</h2>
+<p class="note">The switch carries the whole mode on its own (req 10), so its four states have to be told apart at 26 px. It is a <b>pill</b>, not an icon wearing a badge: glyph and count sit side by side, so the count can never sit on top of the glyph. The pressed state follows the house pattern for a toggled ghost button (<code>IssuesViewer.tsx</code>: glyph to <code>fill</code> weight, accent color, quiet chip behind it) instead of a saturated amber button, which the header has nowhere else.</p>
+<div class="swdemo">
+
+  <div class="swcell">
+    <div class="tile"><span class="z"><span class="sw"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.6v4M8 10.9v.1"/></svg><span class="n">4</span></span></span></div>
+    <h4>Off · 4 waiting</h4>
+    <p>Grey glyph, amber count. This is the discovery state — the only amber in the All view’s header.</p>
+  </div>
+
+  <div class="swcell">
+    <div class="tile"><span class="z"><span class="sw"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.6v4M8 10.9v.1"/></svg></span></span></div>
+    <h4>Off · nothing waiting</h4>
+    <p>The count disappears and the pill shrinks to the glyph. No permanent amber mark in the header.</p>
+  </div>
+
+  <div class="swcell">
+    <div class="tile"><span class="z"><span class="sw on"><svg width="15" height="15" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.6" fill="currentColor"/><path d="M8 4.5v4.1M8 10.9v.7" stroke="var(--knock)" stroke-width="1.7" stroke-linecap="round"/></svg><span class="n">4</span></span></span></div>
+    <h4>On · 4 waiting</h4>
+    <p>Filled glyph, amber, on a quiet chip. Three things change at once — weight, color, background — so the state reads without a label.</p>
+  </div>
+
+  <div class="swcell">
+    <div class="tile"><span class="z"><span class="sw on"><svg width="15" height="15" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.6" fill="currentColor"/><path d="M8 4.5v4.1M8 10.9v.7" stroke="var(--knock)" stroke-width="1.7" stroke-linecap="round"/></svg></span></span></div>
+    <h4>On · inbox zero</h4>
+    <p>Still lit — you are still in the view — but with no count. Pairs with the “Nothing needs you” empty state.</p>
+  </div>
+
+  <div class="swcell bad">
+    <div class="tile"><span class="z"><span class="ico bad"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.6v4M8 10.9v.1"/></svg><span class="badge">4</span></span></span></div>
+    <h4>Rejected · filled square + badge</h4>
+    <p>The first attempt. The badge lands on the glyph and eats it, so the control reads as an amber blob — and a saturated fill is louder than anything else in the header.</p>
+  </div>
+</div>
+
 <h2>The two views</h2>
 <div class="row">
 
@@ -152,7 +209,7 @@
       <div class="hdr">
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span>
         <span class="sp"></span>
-        <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.6v4M8 10.9v.1"/></svg><span class="badge">4</span></span>
+        <span class="sw"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.6v4M8 10.9v.1"/></svg><span class="n">4</span></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span>
       </div>
@@ -180,7 +237,7 @@
       <div class="hdr">
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span>
         <span class="sp"></span>
-        <span class="ico on"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.6v4M8 10.9v.1"/></svg><span class="badge">4</span></span>
+        <span class="sw on"><svg width="15" height="15" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.6" fill="currentColor"/><path d="M8 4.5v4.1M8 10.9v.7" stroke="var(--knock)" stroke-width="1.7" stroke-linecap="round"/></svg><span class="n">4</span></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span>
       </div>
@@ -221,7 +278,7 @@
       <div class="hdr">
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span>
         <span class="sp"></span>
-        <span class="ico on"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.6v4M8 10.9v.1"/></svg><span class="badge">3</span></span>
+        <span class="sw on"><svg width="15" height="15" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.6" fill="currentColor"/><path d="M8 4.5v4.1M8 10.9v.7" stroke="var(--knock)" stroke-width="1.7" stroke-linecap="round"/></svg><span class="n">3</span></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span>
       </div>
@@ -241,7 +298,7 @@
       <div class="hdr">
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span>
         <span class="sp"></span>
-        <span class="ico on"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.6v4M8 10.9v.1"/></svg><span class="badge">9</span></span>
+        <span class="sw on"><svg width="15" height="15" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.6" fill="currentColor"/><path d="M8 4.5v4.1M8 10.9v.7" stroke="var(--knock)" stroke-width="1.7" stroke-linecap="round"/></svg><span class="n">9</span></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span>
       </div>
@@ -266,7 +323,7 @@
       <div class="hdr">
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span>
         <span class="sp"></span>
-        <span class="ico on"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.6v4M8 10.9v.1"/></svg></span>
+        <span class="sw on"><svg width="15" height="15" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.6" fill="currentColor"/><path d="M8 4.5v4.1M8 10.9v.7" stroke="var(--knock)" stroke-width="1.7" stroke-linecap="round"/></svg></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span>
       </div>
@@ -349,7 +406,7 @@
 <h2>Notes carried by the drawings</h2>
 <div class="legend">
   <p><b>Attention is not redefined</b> (req 9). The view filters on <code>computeAttentionReason() !== null</code> — the function that already drives the amber rail, the row tooltip and notifications. A session is in the list for exactly the reason the tooltip already gives, so the two surfaces cannot disagree, and no new state, store or server field is introduced.</p>
-  <p><b>Nothing sits above the list.</b> An earlier draft put an amber <em>“NEEDS YOU · 4 — Show all”</em> strip under the header. It is cut. It costs about 28 px — the same height that ruled out the segmented control, so it gave back the one thing the icon was chosen to save — and everything on it was already on screen: the count is on the badge, the exit is a second click on the same icon, and every row states its own reason, which no row in the All view does. The lit icon is the whole mode indicator, so it is drawn as a filled amber chip rather than a faint tint.</p>
+  <p><b>Nothing sits above the list.</b> An earlier draft put an amber <em>“NEEDS YOU · 4 — Show all”</em> strip under the header. It is cut. It costs about 28 px — the same height that ruled out the segmented control, so it gave back the one thing the icon was chosen to save — and everything on it was already on screen: the count is on the badge, the exit is a second click on the same icon, and every row states its own reason, which no row in the All view does. The switch is therefore the whole mode indicator, which is what the state board above has to earn.</p>
   <p><b>The amber rail is dropped inside the view.</b> When every row needs attention, a per-row marker carries no information — it degrades to a texture. The reason word on the meta line does the work instead, and the right edge frees up.</p>
   <p><b>Repo identity survives without repo headers</b> as the docs/254 color on the row’s left edge plus a text chip. Left is free precisely because docs/187 chose the right edge for attention.</p>
   <p><b>Stability has two halves</b> (req 7–8): the sort key never changes, <em>and</em> a row that stops qualifying holds its slot until the view is re-entered. Either one alone still lets the list move under the cursor.</p>
