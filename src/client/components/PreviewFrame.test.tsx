@@ -1399,8 +1399,18 @@ describe("PreviewFrame", () => {
 
       // Run out the retry budget without ever reporting "loaded": two silent
       // reloads, then the verdict.
+      //
+      // Advance until the verdict rather than exactly `MAX_AUTH_RETRIES + 1`
+      // times. Each of the first two expiries has to complete a `setRefreshKey`
+      // state update, a re-render and an effect re-arm before the next advance
+      // finds a timer to fire, and that re-render is React's to schedule — a
+      // fixed count leaves zero slack and loses the race on a loaded CI box
+      // while passing every time locally. Extra iterations are inert: once the
+      // verdict lands, `authSettledRef` stops the effect re-arming, so there is
+      // no timer left for an advance to fire. The assertions this test exists
+      // for are the two after the rerender below, and they are untouched.
       await vi.waitFor(() => expect(screen.queryByTitle("Live Preview")).toBeInTheDocument());
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < 10 && !screen.queryByText("Preview authentication required"); i++) {
         await vi.advanceTimersByTimeAsync(MAX_AUTH_TIMEOUT_MS + 1);
       }
       expect(screen.getByText("Preview authentication required")).toBeInTheDocument();
