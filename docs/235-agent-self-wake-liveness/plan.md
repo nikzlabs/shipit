@@ -245,6 +245,34 @@ emitted three lines below — that event already carries
 re-derive after a reconnect), so it is the established precedent rather than a
 new mechanism.
 
+> **Corrected after shipping — the "live push" never reached the sidebar.** This
+> section reads the snapshot as a top-up on a live push that already worked. It
+> did not: the live push is `background_tasks`, emitted through
+> `runner.emitMessage`, which reaches only the clients attached to *that
+> session's* WebSocket — and a browser holds exactly one. So the cross-session
+> marker was populated **only** by the connect snapshot, and covered only work
+> already outstanding when the SSE opened. Work that started afterwards — the
+> common case, a `shipit agent run` consult backgrounded mid-session — left the
+> session reading as idle in the sidebar until the user either reloaded the page
+> or *opened* the session, whose WS attach replayed `background_tasks` and lit
+> the dot then. (Reported as: "a session that requested a review using shipit
+> agent is not shown as active until I open it, then the status updates.")
+>
+> Fix: the incremental counterpart of the snapshot. `agent_background_tasks` now
+> also `sseBroadcast`s `session_attention { sessionId, backgroundTasks }` —
+> descriptions, not ids, so a switch gets the named label instead of the
+> snapshot's unnamed fallback; an empty list means drained. The client applies
+> each live axis only when its own field is present, so a background-task
+> transition cannot clear an outstanding permission prompt's signal.
+>
+> The drain needs saying explicitly on the paths where the process *dies*
+> (`turn-executor`'s `done`, `agent-listeners`' process `error`): those call
+> `clearBackgroundTasks()` but the CLI is gone and emits no draining event, so
+> without a broadcast there the marker would keep a dead session pulsing green
+> in every sidebar until the next SSE connect. The remaining clears
+> (`resident-spawn-guard`) run between turns with no turn in flight, where the
+> next turn's own event or the next connect snapshot reconciles.
+
 > **Corrected after shipping — the chat status line also needs a snapshot.** The
 > SSE snapshot restores the *sidebar* marker, but the chat's status line is
 > re-established from `GET /history`, and that payload only ever carried

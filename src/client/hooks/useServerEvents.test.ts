@@ -103,6 +103,92 @@ describe("useServerEvents — session_agent_started", () => {
   });
 });
 
+/**
+ * docs/235 — the sidebar's background-work marker is cross-session state, so it
+ * has to arrive on the SSE. The connect snapshot alone only covers work that was
+ * already outstanding when the stream opened; a `shipit agent run` consult
+ * backgrounded afterwards reached only the viewers attached to that session's
+ * WebSocket, so the session read as idle in the sidebar until it was opened.
+ */
+describe("useServerEvents — session_attention background work", () => {
+  beforeEach(() => {
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    FakeEventSource.last = null;
+    useSessionStore.setState({
+      sessionId: "s1",
+      backgroundTaskSessions: new Map<string, string[]>(),
+      awaitingPermissionSessions: new Set<string>(),
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("marks a session busy when background work starts in it, unopened", () => {
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+
+    act(() => {
+      es.emit("session_attention", {
+        sessionId: "other",
+        backgroundTasks: ["shipit agent run --agent codex"],
+      });
+    });
+
+    expect(useSessionStore.getState().backgroundTaskSessions.get("other")).toEqual([
+      "shipit agent run --agent codex",
+    ]);
+  });
+
+  it("clears the marker when the list drains", () => {
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+
+    act(() => {
+      es.emit("session_attention", { sessionId: "other", backgroundTasks: ["npm test"] });
+      es.emit("session_attention", { sessionId: "other", backgroundTasks: [] });
+    });
+
+    expect(useSessionStore.getState().backgroundTaskSessions.has("other")).toBe(false);
+  });
+
+  // The two live forms share one event name, so each must apply only its own
+  // axis — a background-task transition that read a missing `awaitingPermission`
+  // as `false` would silently drop an outstanding prompt's sidebar signal.
+  it("leaves the awaiting-permission set alone", () => {
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+
+    act(() => {
+      es.emit("session_attention", { sessionId: "other", awaitingPermission: true });
+      es.emit("session_attention", { sessionId: "other", backgroundTasks: ["npm test"] });
+    });
+
+    expect(useSessionStore.getState().awaitingPermissionSessions.has("other")).toBe(true);
+  });
+
+  // The connect snapshot stays authoritative: it reconciles both sets wholesale
+  // so a reconnect converges rather than merging onto stale entries.
+  it("still reconciles both sets wholesale from the connect snapshot", () => {
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+
+    act(() => {
+      es.emit("session_attention", { sessionId: "gone", backgroundTasks: ["npm test"] });
+      es.emit("session_attention", {
+        awaitingPermissionSessionIds: [],
+        backgroundTaskSessionIds: ["fresh"],
+      });
+    });
+
+    const marker = useSessionStore.getState().backgroundTaskSessions;
+    expect(marker.has("gone")).toBe(false);
+    expect(marker.has("fresh")).toBe(true);
+  });
+});
+
 describe("useServerEvents — Claude auth diagnostics", () => {
   beforeEach(() => {
     vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);

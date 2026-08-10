@@ -1253,6 +1253,16 @@ export async function executeAgentTurn(
           // our copy rather than leaving a stale count pinning `agentBusy` true
           // and blocking idle reclaim forever.
           runner.clearBackgroundTasks();
+          // …and tell every sidebar the same thing. The drain that normally
+          // clears the marker arrives as an `agent_background_tasks` event from
+          // the CLI; a process that EXITS emits no such event, so without this
+          // the cross-session marker (now pushed live, not only snapshotted on
+          // SSE connect) would keep a dead session pulsing green until the user
+          // reloaded the page.
+          deps.listenerDeps.sseBroadcast("session_attention", {
+            sessionId,
+            backgroundTasks: [],
+          });
         }
       }
 
