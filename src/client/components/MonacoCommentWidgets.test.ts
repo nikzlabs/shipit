@@ -6,6 +6,15 @@ import {
 } from "./MonacoCommentWidgets.js";
 import type { LineComment } from "../../server/shared/types.js";
 
+/** The mouse events the widget's Monaco listeners read, as far as tests care. */
+interface FakeMouseEvent {
+  target: {
+    type: number;
+    position?: { lineNumber: number } | null;
+    detail?: { isAfterLines: boolean };
+  };
+}
+
 /** Shape of the decorations the widget hands to Monaco, as far as tests care. */
 interface FakeDecoration {
   range: { startLineNumber: number };
@@ -23,9 +32,25 @@ interface FakeDecoration {
 function makeFakeEditor() {
   const zones = new Map<string, { afterLineNumber: number; domNode: HTMLElement; heightInPx: number }>();
   let nextId = 0;
-  const mouseDownHandlers: ((e: { target: { type: number; position?: { lineNumber: number } | null } }) => void)[] = [];
-  const mouseMoveHandlers: ((e: { target: { type: number; position?: { lineNumber: number } | null } }) => void)[] = [];
+  const mouseDownHandlers: ((e: FakeMouseEvent) => void)[] = [];
+  const mouseMoveHandlers: ((e: FakeMouseEvent) => void)[] = [];
   const mouseLeaveHandlers: (() => void)[] = [];
+  const scrollHandlers: (() => void)[] = [];
+
+  /**
+   * Mirrors Monaco: `dispose()` unregisters the handler. Without this the
+   * tests could not tell a torn-down listener from a live one, so dropping
+   * disposal in production would still pass.
+   */
+  function subscribe<T>(list: T[], handler: T) {
+    list.push(handler);
+    return {
+      dispose: vi.fn(() => {
+        const i = list.indexOf(handler);
+        if (i !== -1) list.splice(i, 1);
+      }),
+    };
+  }
   const decorationCollections: { clear: ReturnType<typeof vi.fn> }[] = [];
   /** Every decoration currently live, across all collections. */
   const liveDecorations = new Map<number, FakeDecoration[]>();
@@ -47,18 +72,10 @@ function makeFakeEditor() {
     changeViewZones(cb: (a: typeof accessor) => void) {
       cb(accessor);
     },
-    onMouseDown(handler: (e: { target: { type: number; position?: { lineNumber: number } | null } }) => void) {
-      mouseDownHandlers.push(handler);
-      return { dispose: vi.fn() };
-    },
-    onMouseMove(handler: (e: { target: { type: number; position?: { lineNumber: number } | null } }) => void) {
-      mouseMoveHandlers.push(handler);
-      return { dispose: vi.fn() };
-    },
-    onMouseLeave(handler: () => void) {
-      mouseLeaveHandlers.push(handler);
-      return { dispose: vi.fn() };
-    },
+    onMouseDown: (handler: (e: FakeMouseEvent) => void) => subscribe(mouseDownHandlers, handler),
+    onMouseMove: (handler: (e: FakeMouseEvent) => void) => subscribe(mouseMoveHandlers, handler),
+    onMouseLeave: (handler: () => void) => subscribe(mouseLeaveHandlers, handler),
+    onDidScrollChange: (handler: () => void) => subscribe(scrollHandlers, handler),
     updateOptions,
     createDecorationsCollection: vi.fn((decs: FakeDecoration[]) => {
       const id = ++nextCollectionId;
@@ -72,27 +89,45 @@ function makeFakeEditor() {
     }),
   };
 
-  /** Decorations across all collections carrying the given glyph class. */
+  /**
+   * Decorations across all collections carrying the given glyph class.
+   * Monaco takes a space-separated class list, so match a member of it.
+   */
   const decorationsWithClass = (className: string): FakeDecoration[] =>
     [...liveDecorations.values()]
       .flat()
-      .filter((d) => d.options.glyphMarginClassName === className);
+      .filter((d) => d.options.glyphMarginClassName?.split(" ").includes(className));
 
   return {
     editor,
     zones,
-    fireMouseDown: (lineNumber: number, type = 2) => {
-      for (const h of mouseDownHandlers) {
-        h({ target: { type, position: lineNumber > 0 ? { lineNumber } : null } });
+    fireMouseDown: (lineNumber: number, type = 2, isAfterLines = false) => {
+      for (const h of [...mouseDownHandlers]) {
+        h({
+          target: {
+            type,
+            position: lineNumber > 0 ? { lineNumber } : null,
+            detail: { isAfterLines },
+          },
+        });
       }
     },
-    fireMouseMove: (lineNumber: number | null, type = 6) => {
-      for (const h of mouseMoveHandlers) {
-        h({ target: { type, position: lineNumber === null ? null : { lineNumber } } });
+    fireMouseMove: (lineNumber: number | null, type = 6, isAfterLines = false) => {
+      for (const h of [...mouseMoveHandlers]) {
+        h({
+          target: {
+            type,
+            position: lineNumber === null ? null : { lineNumber },
+            detail: { isAfterLines },
+          },
+        });
       }
     },
     fireMouseLeave: () => {
-      for (const h of mouseLeaveHandlers) h();
+      for (const h of [...mouseLeaveHandlers]) h();
+    },
+    fireScroll: () => {
+      for (const h of [...scrollHandlers]) h();
     },
     hasMouseMoveHandler: () => mouseMoveHandlers.length > 0,
     decorationsWithClass,
@@ -239,6 +274,23 @@ describe("MonacoCommentWidgets", () => {
     fake.fireMouseDown(15);
     const lines = [...fake.zones.values()].map((z) => z.afterLineNumber);
     expect(lines).toContain(15);
+  });
+
+  it("ignores a glyph margin click in the blank space past the end of the file", () => {
+    createCommentWidgetManager(
+      fake.editor as never,
+      {
+        filePath: "src/a.ts",
+        onAddComment: vi.fn(),
+        onEditComment: vi.fn(),
+        onDeleteComment: vi.fn(),
+      },
+    );
+    // Monaco still reports the last line here, so an unguarded click opens an
+    // input on a line the pointer is nowhere near — and one the `+` refuses
+    // to mark, which would make the affordance a lie.
+    fake.fireMouseDown(8, 2, /* isAfterLines */ true);
+    expect(fake.zones.size).toBe(0);
   });
 
   it("ignores mouse down events outside the glyph margin", () => {
@@ -654,6 +706,43 @@ describe("MonacoCommentWidgets", () => {
       manager.setComments([lineComment({ line: 5 })]);
       const [decoration] = fake.decorationsWithClass("monaco-comment-glyph");
       expect(decoration.options.glyphMarginHoverMessage?.value).toBe(HAS_COMMENT_TOOLTIP);
+      // ...but flagged static, so the CSS drops the pointer cursor — readOnly
+      // suppresses the click the cursor would be advertising.
+      expect(decoration.options.glyphMarginClassName)
+        .toContain("monaco-comment-glyph--static");
+    });
+
+    it("leaves the comment glyph clickable when not readOnly", () => {
+      const manager = makeManager();
+      manager.setComments([lineComment({ line: 5 })]);
+      const [decoration] = fake.decorationsWithClass("monaco-comment-glyph");
+      expect(decoration.options.glyphMarginClassName)
+        .not.toContain("monaco-comment-glyph--static");
+    });
+
+    // Monaco reports the last line's position for the blank space past the
+    // end of a short file, so an unguarded handler marks a line the pointer
+    // is hundreds of pixels away from.
+    it("draws nothing in the blank space past the end of the file", () => {
+      makeManager();
+      fake.fireMouseMove(8, /* CONTENT_EMPTY */ 7, /* isAfterLines */ true);
+      expect(fake.addGlyphLines()).toEqual([]);
+    });
+
+    it("clears an existing glyph when the pointer moves past the end", () => {
+      makeManager();
+      fake.fireMouseMove(3);
+      fake.fireMouseMove(8, 7, true);
+      expect(fake.addGlyphLines()).toEqual([]);
+    });
+
+    it("drops the glyph on scroll, which fires no mouse event", () => {
+      makeManager();
+      fake.fireMouseMove(6);
+      fake.fireScroll();
+      // Decorations are model-anchored, so a kept marker would ride line 6
+      // away from the stationary pointer.
+      expect(fake.addGlyphLines()).toEqual([]);
     });
 
     it("dispose() removes the hover glyph", () => {
@@ -662,6 +751,30 @@ describe("MonacoCommentWidgets", () => {
       expect(fake.addGlyphLines()).toEqual([6]);
       manager.dispose();
       expect(fake.addGlyphLines()).toEqual([]);
+    });
+
+    it("dispose() unsubscribes, so a later mouse move draws nothing", () => {
+      const manager = makeManager();
+      manager.dispose();
+      fake.fireMouseMove(6);
+      fake.fireScroll();
+      expect(fake.addGlyphLines()).toEqual([]);
+      expect(fake.hasMouseMoveHandler()).toBe(false);
+    });
+
+    it("survives a second dispose()", () => {
+      const manager = makeManager();
+      fake.fireMouseMove(6);
+      manager.dispose();
+      expect(() => { manager.dispose(); }).not.toThrow();
+      expect(fake.addGlyphLines()).toEqual([]);
+    });
+
+    it("a manager recreated on the same editor still draws the glyph", () => {
+      makeManager().dispose();
+      makeManager();
+      fake.fireMouseMove(6);
+      expect(fake.addGlyphLines()).toEqual([6]);
     });
   });
 

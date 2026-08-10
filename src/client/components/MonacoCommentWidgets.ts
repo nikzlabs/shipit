@@ -40,6 +40,25 @@ export const HAS_COMMENT_TOOLTIP = "This line has a comment";
 const LINE_HOVER_TYPES: ReadonlySet<number> = new Set([2, 3, 4, 6, 7]);
 
 /**
+ * True when the pointer is in the blank space past the end of the file.
+ *
+ * Monaco still reports the last line's position there, so without this check
+ * hovering empty space 300px below a short file marks its final line, and
+ * clicking it opens a comment input on a line the pointer is nowhere near.
+ * The flag rides on the margin and content-empty detail objects only, hence
+ * the property probing rather than a cast.
+ */
+function isPastEndOfFile(target: monaco.editor.IMouseTarget): boolean {
+  return (
+    "detail" in target &&
+    typeof target.detail === "object" &&
+    target.detail !== null &&
+    "isAfterLines" in target.detail &&
+    target.detail.isAfterLines
+  );
+}
+
+/**
  * Minimal shape of comments the widget consumes. The widget filters to
  * `kind === "line"` internally, so callers can pass mixed arrays (e.g. a
  * `ReviewComment[]` containing both line and selection kinds) without having
@@ -480,7 +499,8 @@ export function createCommentWidgetManager(
     if (options.readOnly) return;
     if (
       e.target.type === GLYPH_MARGIN_TYPE &&
-      e.target.position
+      e.target.position &&
+      !isPastEndOfFile(e.target)
     ) {
       createInputZone(e.target.position.lineNumber);
     }
@@ -496,12 +516,16 @@ export function createCommentWidgetManager(
       editor.onMouseMove((e) => {
         const position = e.target.position;
         setPointerLine(
-          position && LINE_HOVER_TYPES.has(e.target.type)
+          position && LINE_HOVER_TYPES.has(e.target.type) && !isPastEndOfFile(e.target)
             ? position.lineNumber
             : null,
         );
       }),
       editor.onMouseLeave(() => { setPointerLine(null); }),
+      // Wheel scrolling fires no mouse event, and decorations are anchored to
+      // the model — so the marker would ride its old line out from under a
+      // stationary pointer. Drop it; the next mouse move re-derives it.
+      editor.onDidScrollChange(() => { setPointerLine(null); }),
     );
   }
 
@@ -538,7 +562,11 @@ export function createCommentWidgetManager(
             endColumn: 1,
           },
           options: {
-            glyphMarginClassName: "monaco-comment-glyph",
+            // In readOnly mode the glyph-margin click is suppressed, so the
+            // marker must not offer a pointer cursor it cannot honour.
+            glyphMarginClassName: options.readOnly
+              ? "monaco-comment-glyph monaco-comment-glyph--static"
+              : "monaco-comment-glyph",
             glyphMarginHoverMessage: { value: HAS_COMMENT_TOOLTIP },
             stickiness: 1, // NeverGrowsWhenTypingAtEdges
           },
