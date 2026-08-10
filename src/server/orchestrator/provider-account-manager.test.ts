@@ -1084,7 +1084,11 @@ describe("ProviderAccountManager", () => {
     function withLimits(
       root: string,
       store: CredentialStore,
-      limits: Record<string, { session?: { usedPct: number | null; resetAt: string } | null }>,
+      limits: Record<string, {
+        session?: { usedPct: number | null; resetAt: string } | null;
+        weekly?: { usedPct: number | null; resetAt: string } | null;
+        fetchedAt?: number;
+      }>,
     ): ProviderAccountManager {
       return new ProviderAccountManager({
         credentialsDir: root,
@@ -1207,6 +1211,129 @@ describe("ProviderAccountManager", () => {
       expect(mgr.selectAccountForTurn("anthropic")).toEqual({
         ok: true,
         route: { kind: "account", id: b.id },
+      });
+    });
+
+    describe("hard-exhaustion reconciliation", () => {
+      function setupBenchedPair() {
+        const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+        const healthy = mgr.create("anthropic", "Healthy");
+        const spent = mgr.create("anthropic", "Spent");
+        mgr.setAccountStatus("anthropic", healthy.id, READY);
+        mgr.setAccountStatus("anthropic", spent.id, READY);
+        const exhaustedAt = Date.now() - 1_000;
+        for (const account of [healthy, spent]) {
+          store.upsertCredentialRoute({
+            ...mgr.get("anthropic", account.id)!,
+            exhaustedUntil: Date.now() + 3_600_000,
+            exhaustedAt,
+          });
+        }
+        return { healthy, spent, exhaustedAt };
+      }
+
+      const windows = (fetchedAt: number, weeklyPct = 19) => ({
+        session: { usedPct: 2, resetAt: new Date(Date.now() + 3_600_000).toISOString() },
+        weekly: { usedPct: weeklyPct, resetAt: new Date(Date.now() + 7_200_000).toISOString() },
+        fetchedAt,
+      });
+
+      it("selects a globally benched account for a new session after a newer 2%/19% snapshot", () => {
+        const { healthy, spent, exhaustedAt } = setupBenchedPair();
+        const quota = withLimits(root, store, {
+          [healthy.id]: windows(exhaustedAt + 1),
+          [spent.id]: {
+            ...windows(exhaustedAt + 1),
+            session: { usedPct: 100, resetAt: new Date(Date.now() + 3_600_000).toISOString() },
+          },
+        });
+
+        expect(quota.selectAccountForTurn("anthropic")).toEqual({
+          ok: true,
+          route: { kind: "account", id: healthy.id },
+        });
+        expect(store.getCredentialRoute(healthy.id)?.exhaustedUntil).toBeNull();
+        expect(store.getCredentialRoute(spent.id)?.exhaustedUntil).not.toBeNull();
+      });
+
+      it("also heals an existing session pinned to the account", () => {
+        const { healthy, exhaustedAt } = setupBenchedPair();
+        const quota = withLimits(root, store, { [healthy.id]: windows(exhaustedAt + 1) });
+
+        expect(quota.classifyRouteForTurn("anthropic", { kind: "account", id: healthy.id })).toBeNull();
+        expect(store.getCredentialRoute(healthy.id)?.exhaustedUntil).toBeNull();
+      });
+
+      it.each([
+        ["absent", undefined],
+        ["unknown", { session: null, weekly: null, fetchedAt: Date.now() }],
+      ])("keeps the bench when quota is %s", (_label, snapshot) => {
+        const { healthy } = setupBenchedPair();
+        const quota = withLimits(root, store, snapshot ? { [healthy.id]: snapshot } : {});
+        expect(quota.isRouteUsableForTurn("anthropic", { kind: "account", id: healthy.id })).toBe(false);
+      });
+
+      it("keeps the bench when either window remains exhausted", () => {
+        const { healthy, exhaustedAt } = setupBenchedPair();
+        const quota = withLimits(root, store, { [healthy.id]: windows(exhaustedAt + 1, 100) });
+        expect(quota.isRouteUsableForTurn("anthropic", { kind: "account", id: healthy.id })).toBe(false);
+      });
+
+      it("rejects an older snapshot but accepts a later snapshot after restart", () => {
+        const { healthy, exhaustedAt } = setupBenchedPair();
+        const stale = withLimits(root, store, { [healthy.id]: windows(exhaustedAt - 1) });
+        expect(stale.isRouteUsableForTurn("anthropic", { kind: "account", id: healthy.id })).toBe(false);
+
+        const restartedStore = new CredentialStore(root);
+        const fresh = withLimits(root, restartedStore, { [healthy.id]: windows(exhaustedAt + 1) });
+        expect(fresh.isRouteUsableForTurn("anthropic", { kind: "account", id: healthy.id })).toBe(true);
+        expect(restartedStore.getCredentialRoute(healthy.id)?.exhaustedUntil).toBeNull();
+      });
+
+      it("does not let a pre-failure snapshot weaken same-turn hard exhaustion", () => {
+        const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+        const account = mgr.create("anthropic", "Account");
+        mgr.setAccountStatus("anthropic", account.id, READY);
+        const snapshotAt = Date.now() - 1_000;
+        const quota = withLimits(root, store, { [account.id]: windows(snapshotAt) });
+        quota.markAccountExhausted("anthropic", account.id, Date.now() + 3_600_000);
+
+        expect(quota.isRouteUsableForTurn("anthropic", { kind: "account", id: account.id })).toBe(false);
+      });
+
+      it("refreshes precedence on a repeated hard failure without shortening its bench", () => {
+        const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+        const account = mgr.create("anthropic", "Account");
+        mgr.setAccountStatus("anthropic", account.id, READY);
+        const far = Date.now() + 7_200_000;
+        mgr.markAccountExhausted("anthropic", account.id, far);
+        const first = store.getCredentialRoute(account.id)!;
+        const snapshotAt = first.exhaustedAt! + 1;
+        while (Date.now() <= snapshotAt) { /* establish strict event order */ }
+        const quota = withLimits(root, store, { [account.id]: windows(snapshotAt) });
+        quota.markAccountExhausted("anthropic", account.id, Date.now() + 60_000);
+
+        expect(quota.isRouteUsableForTurn("anthropic", { kind: "account", id: account.id })).toBe(false);
+        expect(store.getCredentialRoute(account.id)?.exhaustedUntil).toBe(far);
+      });
+
+      it("heals a legacy persisted row using updatedAt as its observation clock", () => {
+        const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+        const account = mgr.create("anthropic", "Legacy");
+        mgr.setAccountStatus("anthropic", account.id, READY);
+        store.upsertCredentialRoute({
+          ...mgr.get("anthropic", account.id)!,
+          exhaustedUntil: Date.now() + 3_600_000,
+        });
+        const legacy = store.getCredentialRoute(account.id)!;
+        let fetchedAt = Date.now();
+        while (fetchedAt <= legacy.updatedAt) fetchedAt = Date.now();
+        const quota = withLimits(root, store, { [account.id]: windows(fetchedAt) });
+
+        expect(quota.selectAccountForTurn("anthropic")).toEqual({
+          ok: true,
+          route: { kind: "account", id: account.id },
+        });
       });
     });
   });

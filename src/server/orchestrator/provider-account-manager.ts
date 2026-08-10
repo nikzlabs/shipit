@@ -849,7 +849,8 @@ export class ProviderAccountManager {
     const overCutoff: CredentialRoute[] = [];
     const exhaustedResets: number[] = [];
     for (const account of connected) {
-      const resetAt = exhaustedUntil(limits[account.id], account, now);
+      const reconciled = this.reconcileHardExhaustion(account, limits[account.id], now);
+      const resetAt = exhaustedUntil(limits[account.id], reconciled, now);
       if (resetAt !== null) {
         exhaustedResets.push(resetAt);
         continue;
@@ -925,13 +926,14 @@ export class ProviderAccountManager {
    */
   classifyRouteForTurn(serviceId: string, route: ProviderRoute): RouteUnusableReason | null {
     if (route.kind !== "account") return null;
-    const account = this.get(serviceId, route.id);
+    let account = this.get(serviceId, route.id);
     if (!account) return "unavailable";
     if (account.status !== "ready" && account.status !== "authenticating") return "unavailable";
     // docs/252 req 10 — quota is keyed by `(service, billing mode)` now.
     // Accounts are always subscriptions, so this manager's group is exactly
     // `routingSettingsKeyFor`'s, which is where its cutoffs already come from.
     const limits = this.getSubscriptionLimits?.()?.[credentialModeKey(...routingSettingsKeyFor(serviceId))] ?? {};
+    account = this.reconcileHardExhaustion(account, limits[route.id], Date.now());
     if (exhaustedUntil(limits[route.id], account, Date.now()) !== null) return "exhausted";
 
     // docs/150 req 6 — past a cutoff, this session should move to the next
@@ -996,10 +998,14 @@ export class ProviderAccountManager {
   markAccountExhausted(serviceId: string, accountId: string, until: number): CredentialRoute | null {
     const account = this.get(serviceId, accountId);
     if (!account) return null;
-    if (typeof account.exhaustedUntil === "number" && account.exhaustedUntil >= until) {
-      return account;
-    }
-    this.credentialStore.upsertCredentialRoute({ ...account, exhaustedUntil: until });
+    this.credentialStore.upsertCredentialRoute({
+      ...account,
+      exhaustedUntil: Math.max(account.exhaustedUntil ?? 0, until),
+      // Refresh this clock on every hard failure, even when its reset estimate
+      // is shorter. Otherwise a snapshot predating the new failure could clear
+      // an older, longer bench and weaken same-turn failover.
+      exhaustedAt: Date.now(),
+    });
     return this.get(serviceId, accountId) ?? null;
   }
 
@@ -1012,8 +1018,23 @@ export class ProviderAccountManager {
   clearAccountExhaustion(serviceId: string, accountId: string): CredentialRoute {
     const account = this.require(serviceId, accountId);
     if (account.exhaustedUntil === null || account.exhaustedUntil === undefined) return account;
-    this.credentialStore.upsertCredentialRoute({ ...account, exhaustedUntil: null });
+    this.credentialStore.upsertCredentialRoute({ ...account, exhaustedUntil: null, exhaustedAt: null });
     return this.require(serviceId, accountId);
+  }
+
+  /** Let a newer, complete provider reading supersede an older hard bench. */
+  private reconcileHardExhaustion(
+    account: CredentialRoute,
+    snapshot: { session?: unknown; weekly?: unknown; fetchedAt?: unknown } | undefined,
+    now: number,
+  ): CredentialRoute {
+    if (typeof account.exhaustedUntil !== "number" || account.exhaustedUntil <= now) return account;
+    // Legacy rows have no explicit observation clock. Their last row update is
+    // the best persisted lower bound and lets deployed stale benches converge.
+    const observedAt = account.exhaustedAt ?? account.updatedAt;
+    if (!isTrustedHealthySnapshot(snapshot, observedAt, now)) return account;
+    this.credentialStore.upsertCredentialRoute({ ...account, exhaustedUntil: null, exhaustedAt: null });
+    return this.get(account.serviceId, account.id) ?? account;
   }
 
   /** Overwrite the persisted status of an account (idempotent). */
@@ -1406,6 +1427,26 @@ function exhaustedUntil(
   }
   if (resets.length === 0) return null;
   return Math.min(...resets);
+}
+
+/**
+ * A quota reading can overrule a hard bench only when it was observed after
+ * that bench and both subscription windows are known below hard exhaustion.
+ */
+function isTrustedHealthySnapshot(
+  snapshot: { session?: unknown; weekly?: unknown; fetchedAt?: unknown } | undefined,
+  exhaustedAt: number,
+  now: number,
+): boolean {
+  if (!snapshot) return false;
+  if (typeof snapshot.fetchedAt !== "number" || !Number.isFinite(snapshot.fetchedAt)) return false;
+  if (snapshot.fetchedAt <= exhaustedAt || snapshot.fetchedAt > now) return false;
+  for (const key of ["session", "weekly"] as const) {
+    const window = snapshot[key] as { usedPct?: unknown } | null | undefined;
+    if (!window || typeof window.usedPct !== "number" || !Number.isFinite(window.usedPct)) return false;
+    if (window.usedPct >= 100) return false;
+  }
+  return true;
 }
 
 function readClaudeAccessToken(file: string): string | null {
