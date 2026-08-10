@@ -43,6 +43,7 @@ beforeEach(() => {
   useSettingsStore.getState().setCredentialRoutes([]);
   useSettingsStore.getState().setProviderAccounts([]);
   useUiStore.getState().setToast(null);
+  useUiStore.setState({ revealedServiceModes: [] });
   useSettingsStore.setState({ providerAccountNotices: {} });
   vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
     fetchCalls.push({
@@ -134,6 +135,24 @@ describe("ServicesPanel", () => {
     await userEvent.click(screen.getByTestId("add-service-continue"));
     // The card the message points at now exists, with its "Add account" button.
     expect(screen.getByTestId("provider-accounts-card-codex")).toBeInTheDocument();
+    expect(screen.getByTestId("provider-account-add-codex")).toBeInTheDocument();
+  });
+
+  it("keeps the revealed card across a remount, so 'Add account' stays reachable", async () => {
+    // Settings renders its tabs through Radix `TabsContent`, which UNMOUNTS the
+    // inactive one. With the reveal held in this component's own state,
+    // switching to another Settings tab and back dropped the card and left no
+    // route to "Add account" but walking the whole add-flow again. Unmounting
+    // and remounting is that tab switch, reduced to what actually breaks it.
+    const { unmount } = render(<ServicesPanel agentList={[codexAgent]} />);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    await userEvent.click(screen.getByTestId("add-service-option-openai"));
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+    await userEvent.click(screen.getByTestId("add-service-continue"));
+    expect(screen.getByTestId("provider-account-add-codex")).toBeInTheDocument();
+
+    unmount();
+    render(<ServicesPanel agentList={[codexAgent]} />);
     expect(screen.getByTestId("provider-account-add-codex")).toBeInTheDocument();
   });
 
