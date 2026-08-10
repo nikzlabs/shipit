@@ -8,6 +8,7 @@ export type KeybindingId =
   | "toggle-shortcuts"
   | "new-session"
   | "quick-capture"
+  | "toggle-attention-view"
   | "voice-mode-a"
   | "voice-mode-b"
   // Fixed reference rows (editable: false) — shown for completeness only.
@@ -62,6 +63,19 @@ export const KEYBINDINGS: readonly KeybindingDef[] = [
     label: "Quick capture",
     group: "Sessions",
     defaultBinding: "mod+alt+n",
+    editable: true,
+    requiresSecondModifier: true,
+  },
+  {
+    // docs/260 req 14 — flips the sidebar between the repo tree and the flat
+    // "Needs you" list. Deliberately in the `mod+alt+…` family quick-capture
+    // already uses: `mod+shift+a` is reserved by macOS Chrome for tab search at
+    // the browser level, where a page cannot preventDefault it, so that chord
+    // would simply never fire for a large share of users.
+    id: "toggle-attention-view",
+    label: "Show sessions that need you",
+    group: "Sessions",
+    defaultBinding: "mod+alt+a",
     editable: true,
     requiresSecondModifier: true,
   },

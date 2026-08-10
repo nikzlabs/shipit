@@ -12,10 +12,13 @@ import { useRepoStore } from "../../stores/repo-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useMediaQuery } from "../../hooks/useMediaQuery.js";
+import { useAttentionSessions } from "../../hooks/useAttentionSessions.js";
 import type { SessionInfo, RepoInfo } from "../../../server/shared/types.js";
 import { useSidebarResize } from "./useSidebarResize.js";
 import { computeRepoGroups } from "./useSessionGrouping.js";
 import { OpsSessionGroup, OrphanSessionGroup, RepoGroup, SandboxSessionGroup } from "./SessionGroup.js";
+import { AttentionSessionList } from "./AttentionSessionList.js";
+import { AttentionViewToggle } from "./AttentionViewToggle.js";
 
 interface SessionSidebarProps {
   sessions: SessionInfo[];
@@ -117,6 +120,15 @@ export function SessionSidebar({
     [sessions, hiddenUrls],
   );
   const repoGroups = useMemo(() => computeRepoGroups(visibleRepos, visibleSessions), [visibleRepos, visibleSessions]);
+
+  // docs/260 — the sidebar's second view. Membership and the count both come
+  // from the shared attention derivation (req 9), over the SAME visible-session
+  // list the repo tree is built from, so a session hidden from one view can
+  // never appear in the other.
+  const sidebarView = useUiStore((s) => s.sidebarView);
+  const toggleSidebarView = useUiStore((s) => s.toggleSidebarView);
+  const attentionIds = useAttentionSessions(visibleSessions);
+  const attentionView = sidebarView === "attention";
 
   const handleViewAll = useCallback((repoUrl: string) => {
     // Open AllSessionsDialog (it will default to filtering by the current repo)
@@ -359,6 +371,13 @@ export function SessionSidebar({
           <SidebarSimpleIcon size={ICON_SIZE.SM} />
         </Button>
         </WithTooltip>
+        {/* docs/260 — deliberately NO view switch on the collapsed rail. Req 5
+            asks for the count in both VIEWS, not in both collapse states, and a
+            40px rail can show no list: the control there could only be a
+            one-way "expand into the attention view", which is a different
+            action wearing the same glyph as the header's toggle. The rail
+            already shows no session information at all; leaving it that way
+            beats a second control with second semantics. */}
         <RepoSwitcher repos={repos} activeRepoUrl={useRepoStore.getState().activeRepoUrl} onSelectRepo={(url) => useRepoStore.getState().setActiveRepoUrl(url)} onAddRepo={onAddRepo} onCreateNew={onCreateNewRepo}>
         <Button
           variant="ghost"
@@ -425,6 +444,15 @@ export function SessionSidebar({
           </Button>
           </WithTooltip>
         )}
+        {/* docs/260 req 4 — the view switch belongs with the collapse control
+            (both act on the sidebar itself), not in the right-hand cluster of
+            create/act controls. The mobile bar has no collapse control, so the
+            slot is free and the switch is simply first (req 15). */}
+        <AttentionViewToggle
+          active={attentionView}
+          count={attentionIds.size}
+          onToggle={toggleSidebarView}
+        />
         <span className="flex-1" />
         {renderAdvancedSessionMenu()}
         {!mobile && renderQuickSessionControls()}
@@ -446,14 +474,28 @@ export function SessionSidebar({
         </RepoSwitcher>
       </div>
 
-      {/* Scrollable grouped repo sections */}
+      {/* The list body: the grouped repo tree, or docs/260's flat
+          needs-attention list. Both scroll in this same container — the second
+          view adds no chrome of its own above the list (req 10). */}
       <div
         // docs/254 — when the groups are separated the first header band should
         // meet the sidebar header's bottom border directly, the way a table's
         // first section header does; a leading 4px of padding made it look
         // detached. The gap BELOW each group comes from the group's own margin.
-        className={`flex-1 overflow-y-auto min-h-0 flex flex-col pb-1 ${separated ? "" : "pt-1"}`}
+        className={`flex-1 overflow-y-auto min-h-0 flex flex-col pb-1 ${!attentionView && separated ? "" : "pt-1"}`}
       >
+        {attentionView ? (
+          <AttentionSessionList
+            sessions={visibleSessions}
+            attentionIds={attentionIds}
+            currentSessionId={currentSessionId}
+            onResume={onResume}
+            onSelectCurrent={handleSelectCurrent}
+            onArchive={onArchive}
+            isTouch={isTouch}
+          />
+        ) : (
+          <>
         {repoGroups.length === 0 && hiddenRepos.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-3 px-4 py-8">
             <p className="text-xs text-(--color-text-tertiary) text-center">No repositories yet.</p>
@@ -582,6 +624,8 @@ export function SessionSidebar({
               </div>
             )}
           </div>
+        )}
+          </>
         )}
       </div>
     </div>

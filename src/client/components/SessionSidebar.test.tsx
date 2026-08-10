@@ -1475,3 +1475,77 @@ describe("SessionSidebar", () => {
     });
   });
 });
+
+/**
+ * docs/260 — the "Needs you" view. The list itself is covered in
+ * `SessionSidebar/AttentionSessionList.test.tsx`; these are the sidebar-level
+ * wiring facts: where the switch sits, what its count says, and what it swaps.
+ */
+describe("SessionSidebar needs-attention view", () => {
+  afterEach(() => {
+    useUiStore.getState().setSidebarView("all");
+  });
+
+  const waiting = () => [
+    baseSession({ id: "s1", title: "Needs me", remoteUrl: repoA.url }),
+    baseSession({ id: "s2", title: "Also needs me", remoteUrl: repoB.url }),
+  ];
+
+  const findSwitch = () => screen.getByRole("button", { name: /need you/ });
+
+  it("puts the switch beside the collapse control, not among the create controls", () => {
+    // req 4 — the switch and the collapse button both act on the sidebar; the
+    // right-hand cluster is create/act controls the switch must not join.
+    render(<SessionSidebar {...defaultProps} sessions={waiting()} />);
+    const collapse = screen.getByRole("button", { name: "Collapse sidebar" });
+    expect(collapse.nextElementSibling).toBe(findSwitch());
+  });
+
+  it("is the first control on the mobile bar, which has no collapse button", () => {
+    // req 15.
+    render(<SessionSidebar {...defaultProps} sessions={waiting()} mobile />);
+    expect(screen.queryByRole("button", { name: "Collapse sidebar" })).toBeNull();
+    expect(findSwitch().parentElement?.firstElementChild).toBe(findSwitch());
+  });
+
+  it("carries the count in BOTH views, so the second one is discoverable", () => {
+    // req 5. Both sessions are idle with no PR, i.e. "Waiting for your input".
+    render(<SessionSidebar {...defaultProps} repos={[repoA, repoB]} sessions={waiting()} />);
+    expect(findSwitch().textContent).toContain("2");
+
+    fireEvent.click(findSwitch());
+    expect(screen.getByRole("button", { name: /Show all sessions/ }).textContent).toContain("2");
+  });
+
+  it("swaps the repo tree for a flat list with no repo headers", () => {
+    // reqs 2, 3, 6, 10 — no grouping, no headers, and no band above the list.
+    render(<SessionSidebar {...defaultProps} repos={[repoA, repoB]} sessions={waiting()} />);
+    // The repo group: a sticky header band and its own "New session" row.
+    expect(screen.getByText("repo").closest(".sticky")).toBeTruthy();
+    expect(screen.getAllByText("New session").length).toBe(2);
+
+    fireEvent.click(findSwitch());
+    expect(screen.queryByText("New session")).toBeNull();
+    // "repo" survives only as a row's repo NAME (req 12), never as a header.
+    expect(screen.getByText("repo").closest(".sticky")).toBeNull();
+    expect(screen.getByText("Needs me")).toBeTruthy();
+    expect(screen.getByText("Also needs me")).toBeTruthy();
+    // The lit icon is the whole mode indicator — nothing else is added above.
+    expect(screen.queryByText(/Needs you/)).toBeNull();
+  });
+
+  it("remembers the chosen view", () => {
+    // req 13 — the store is seeded from localStorage; this covers the write.
+    render(<SessionSidebar {...defaultProps} sessions={waiting()} />);
+    fireEvent.click(findSwitch());
+    expect(useUiStore.getState().sidebarView).toBe("attention");
+    expect(localStorage.getItem("shipit-sidebar-view")).toBe("attention");
+  });
+
+  it("adds no second switch to the collapsed rail", () => {
+    // A rail control could only mean "expand into the view" — a different
+    // action behind the same glyph. The rail shows no session state at all.
+    render(<SessionSidebar {...defaultProps} sessions={waiting()} collapsed />);
+    expect(screen.queryByRole("button", { name: /need you/ })).toBeNull();
+  });
+});
