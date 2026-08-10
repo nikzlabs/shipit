@@ -85,6 +85,8 @@ it has been cut — see the plan's "Resolved decisions".
 - [x] Follow-up (2026-08-10): a turn whose resident process is RETIRED at a spawn
       boundary (`kill(); setAgent(null); createAgent()`) settles too — the retirement
       sites clear the slot first, so the displacement hook never saw them
+- [x] Follow-up: the rule holds at every clear-then-spawn site — both `runOnce` blocks,
+      the two `resident-spawn-guard.ts` helpers, and the WS failover release
 
 ## Docs
 

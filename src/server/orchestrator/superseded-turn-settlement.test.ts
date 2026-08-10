@@ -221,12 +221,17 @@ describe("a superseded turn settles (planning#318)", () => {
     runner.dispose({ force: true });
   });
 
-  it("settles a RETIRED turn that never produced a result as `interrupted`", async () => {
-    // Same retirement, reached with no `agent_result` behind it: the settlement
-    // must still not read as `no-result`, or the supervisor re-delivers a wake
-    // whose prompt a live agent already received.
-    const { runner, agents } = makeRunnerWithDeps();
+  it("settles the retired turn at the ACCOUNT-FAILOVER retirement site too", async () => {
+    // `runOnce` has two retirement blocks, and both clear the slot before
+    // spawning. This is the other one: the next turn needs a different provider
+    // account, so the resident process is retired before env prep rewrites the
+    // credential subtree it reads. Its `removeAllListeners()` is deliberate —
+    // the kill's late `done` must not re-run the retired turn's teardown — which
+    // is exactly why the settle has to happen BEFORE it.
+    const { runner, agents, deps } = makeRunnerWithDeps();
     const outcomes: TurnOutcome[] = [];
+    let failover = false;
+    deps.needsAccountFailover = () => failover;
 
     runner.dispatch(testDispatch({
       text: "Child PR #2104 merged.",
@@ -234,21 +239,51 @@ describe("a superseded turn settles (planning#318)", () => {
       deliveryId: "watch-2104:1",
       onTurnComplete: (o) => outcomes.push(o),
     }));
-    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "wake A started");
+    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "wake started");
 
-    // Drive the retirement directly — the shape the drain reaches, minus A's
-    // result. `runDispatchedTurn`'s `systemTurn && !reuse` block is what runs.
-    void runner.runDispatchedTurn(testDispatch({
-      text: "Child PR #2105 merged.",
-      systemTurn: true,
-      deliveryId: "watch-2105:1",
-    }));
-    await waitForTurn(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "wake B started");
+    // An ordinary user turn queues behind the wake and drains on its result,
+    // by which time the session has failed over to another account.
+    runner.enqueue({ text: "next", execution: "dispatched" });
+    failover = true;
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "user turn started");
 
     expect(agents[0]!.kill).toHaveBeenCalled();
     expect(outcomes).toHaveLength(1);
-    expect(outcomes[0]!.status).toBe("interrupted");
-    expect(outcomes[0]!.errored).toBe(false);
+    expect(outcomes[0]!.status).toBe("completed");
+
+    runner.clearQueue();
+    runner.dispose({ force: true });
+  });
+
+  it("settles the retired turn when a SPAWN-IDENTITY change releases it", async () => {
+    // The third retirement inside `runOnce`, and the one this fix originally
+    // left open: the session's model / service / credential selection changed
+    // while the wake ran, so the drained turn releases the resident process
+    // through `releaseResidentOnSpawnChange` instead of either block above. Same
+    // clear-then-spawn shape, same stranded settlement.
+    const { runner, agents, deps } = makeRunnerWithDeps();
+    const outcomes: TurnOutcome[] = [];
+    deps.listenerDeps.sessionManager.get = vi.fn().mockReturnValue({ model: "opus" }) as never;
+
+    runner.dispatch(testDispatch({
+      text: "Child PR #2104 merged.",
+      systemTurn: true,
+      deliveryId: "watch-2104:1",
+      onTurnComplete: (o) => outcomes.push(o),
+    }));
+    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "wake started");
+
+    // The wake spawned under one identity; the session now selects another. Only
+    // a NON-system turn consults the guard, so the drained turn is a user turn.
+    runner.appliedSpawnIdentity = "claude::fable::default";
+    runner.enqueue({ text: "next", execution: "dispatched" });
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "user turn started");
+
+    expect(agents[0]!.kill).toHaveBeenCalled();
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.status).toBe("completed");
 
     runner.clearQueue();
     runner.dispose({ force: true });

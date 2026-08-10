@@ -480,6 +480,9 @@ describe("SessionRunner", () => {
       defaultAgentId: "claude" as AgentId,
     });
     const outgoing = {
+      // A real `AgentProcess` is an `EventEmitter<AgentProcessEvents>`; the
+      // retirement settles its turn with `emit("superseded")` before killing.
+      emit: vi.fn(),
       kill: vi.fn(),
       removeAllListeners: vi.fn(),
     } as any;
@@ -617,6 +620,9 @@ describe("SessionRunner", () => {
     const resident = {
       on: vi.fn(),
       run: vi.fn(),
+      // See the failover test above — the retirement settles the outgoing
+      // turn through this before killing.
+      emit: vi.fn(),
       kill: vi.fn(() => { order.push("kill-resident"); }),
       removeAllListeners: vi.fn(),
       sendUserMessage: vi.fn(),
