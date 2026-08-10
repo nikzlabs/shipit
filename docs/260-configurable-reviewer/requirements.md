@@ -15,8 +15,7 @@ configured today. Part of it is a ShipIt setting (the sub-agent defaults, per ha
 the other part the agent decides for itself: it writes `--agent codex` because a line in
 `CLAUDE.md` tells it to. That is product behaviour living in a per-repository markdown file.
 
-Design: `plan.md` (not written yet — no implementation work may start while an open question
-remains below).
+No open questions remain.
 
 ## Requirements
 
@@ -33,63 +32,86 @@ remains below).
    **derived** from that model rather than chosen — exactly as background work already
    resolves (docs/252 req 9).
 
-4. **Reviewing works whichever model is implementing.** A Claude session gets a review from
-   something that is not itself, and so does a Codex session, with no setting to keep in sync
-   between the two cases and no editing between sessions.
+4. **Reviewing works whichever model is implementing**, with nothing to keep in sync between
+   the cases and no editing between sessions. The user configures **two** reviewers, and
+   ShipIt uses whichever of them is **furthest from the implementer**.
 
-   The user configures **two** reviewers to achieve this: a first choice, and a second one
-   used when the first would collide with whatever is implementing. Both are configured the
-   same way (req 1), so the second is a reviewer in its own right rather than a degraded
-   fallback.
+   *Furthest* is stated as the goal because it is the goal: a second opinion is worth having
+   in proportion to how little it shares with the first. A different model **and** a
+   different harness is the ideal. What the install actually has may not allow it — a user
+   may have configured no second harness — so ShipIt takes the best available difference
+   rather than refusing. The exact ranking is design and belongs in `plan.md`; what this
+   requirement fixes is that ShipIt never reviews work with the thing that produced it when
+   it has any configured alternative.
 
 5. The reasoning level is **part of the reviewer's configuration**, not a separate decision
    and not left to the harness's own default.
 
-6. An agent asks for a review **without naming a service, a model or a harness**. Asking for
-   a review and choosing who performs it become two different things, and only the first
-   belongs to the agent.
+6. An agent asks for a review **by naming the role, never the reviewer**. It supplies no
+   service, no model and no harness. Asking for a review and choosing who performs it become
+   two different things, and only the first belongs to the agent.
 
-7. ShipIt reports what a review actually ran on, and its usage and cost are attributed to the
+7. **Everything else a spawned agent runs on is explicit at the call.** Outside a role,
+   `shipit agent run` carries the harness, the model and the reasoning level on the
+   invocation itself, and ShipIt keeps **no** stored per-harness defaults for it. The
+   implicit paths are the roles, and they are the only implicit paths.
+
+8. **Review works on a fresh install**, before anyone has configured a reviewer, and it
+   never points at a service the user has no credential for. Both reviewers therefore have a
+   **derived** default rather than a named model — the same argument docs/252 req 9 made for
+   background work.
+
+9. ShipIt reports what a review actually ran on, and its usage and cost are attributed to the
    service and billing mode that served it — as any other work is (docs/252 reqs 11 and 16).
    This restates existing behaviour because this feature must not lose it, not because it
    changes.
 
+## Scope
+
+**The child-session case is not part of this feature.** It came up as evidence that removing
+the stored defaults costs nothing — the paths that need to be implicit have, or will have,
+their own support — and a child session already inherits its parent's selection. No
+child-session role is designed or built here. Strike this paragraph if that reading is wrong.
+
 ## Open questions
 
-- **What makes ShipIt use the second reviewer rather than the first?** Req 4 says "when the
-  first would collide with whatever is implementing", and *collide* is the agent's word, not
-  the human's. Three readings, and they behave differently in ordinary use:
-  **(a) same service** — any Anthropic-served session is reviewed by the second reviewer;
-  **(b) same model** — only an exact model match switches, so Anthropic Sonnet could be
-  reviewed by Anthropic Opus; **(c) same harness** — a Claude Code session switches whatever
-  model is driving it, which is what `CLAUDE.md`'s existing rule literally says.
-  Recommendation: **(a) same service**, because the blind spot a second opinion exists to
-  avoid belongs to the model's vendor and training, not to the CLI that spawns it — and (b)
-  would let one vendor review itself, which is the case this feature exists to prevent.
-
-- **Do the per-harness sub-agent defaults survive this feature?** They store exactly this
-  feature's tuple — `(service, billing mode, model, reasoning effort)` — keyed by *harness*,
-  and their only consumer is the sub-agent spawn that a review already goes through
-  (`sub-agent.ts:285`). Recommendation: **remove them.** The reviewer settings replace them
-  for the reviewing case, and an explicitly named `shipit agent run --agent X` can fall back
-  to that harness's first eligible model, which is the path the code already has. Keeping
-  both would leave two places that answer "what does a spawned agent run on".
-
-- **How does an agent ask for a review (req 6)?** Options: a new `--role reviewer` flag
-  alongside today's `--agent`; making `--agent` optional so an omitted one means "the
-  configured reviewer"; or a separate verb. This decides whether a non-review consult
-  (`shipit agent run --agent codex` for something that is not a review) keeps working
-  unchanged, and it is the difference between adding a concept and widening one.
-
-- **Does the reviewer setting need a default, and what is it?** Nothing was said about the
-  unconfigured install. Without a default, review does not work until someone configures it;
-  with one, ShipIt has to pick, and docs/252 req 9 argues a **derived** default (whatever the
-  install can actually run) rather than a named model. Recommendation: derive both reviewers
-  the same way — the first eligible model, and the first eligible model of a *different*
-  service — so review works on a fresh install and never points at a service the user has no
-  credential for.
+_None._
 
 ## Resolved questions
+
+- 2026-08-10 — **What makes ShipIt use the second reviewer rather than the first?** **Chosen:
+  neither of the three rules offered — state the goal instead.** The options put were "same
+  service", "same exact model" and "same harness", each a collision test against the *first*
+  reviewer. The human rejected the framing: "the idea is to use the reviewer that is far away
+  from the implementer. Ideally, it's a different model and different harness, but the user
+  may not have other harnesses configured." So the selection is not a collision test with a
+  fallback, it is a **distance ranking over the configured reviewers**, and it degrades to
+  the best available difference rather than to a designated second choice. Req 4 rewritten to
+  say that and to leave the ranking to `plan.md` — the human's own note that "the exact logic
+  needs to be figured out" is what makes the rule design rather than requirement.
+
+- 2026-08-10 — **Do the per-harness sub-agent defaults survive?** **Chosen: remove them, and
+  make every non-role spawn fully explicit.** The recommendation was only to remove them; the
+  human went further — "make all the agent parameters explicit in the agent run … not only
+  the harness, which I suggest replacing the agent flag, but also the model and the thinking
+  level. So everything in the call would be explicit, because for implicit calls, we already
+  have, we will have custom support, which is the review case and the child session case."
+  That is a cleaner division than the one offered: **roles are the implicit path, and the raw
+  call is the explicit one**, with nothing stored in between. Req 7 states it. The consequence
+  is that `SubAgentDefaults` is deleted rather than superseded, which is also what empties the
+  per-vendor Settings tabs — the audit (`docs/252-custom-models/ui-audit.md`, D16) found them
+  to be the only thing those tabs uniquely held.
+
+- 2026-08-10 — **How does an agent ask for a review?** **Chosen: a new `--role reviewer`
+  flag.** Taken as offered, against making `--agent` optional (which would reinterpret an
+  existing flag's absence, where today an omitted `--agent` is a hard error — so a forgetful
+  caller would silently get a review) and against a separate verb (which would duplicate the
+  run/result plumbing). Req 6.
+
+- 2026-08-10 — **What does a fresh install do before anyone configures a reviewer?**
+  **Chosen: derive both.** Taken as offered. Review works out of the box, and a derived
+  default cannot name a service the install has no credential for — the same reasoning
+  docs/252 req 9 recorded for background work. Req 8.
 
 - 2026-08-10 — Does a reviewer name a harness, or a model? **Chosen: a model — unify on
   model-first.** The tension was real: docs/252 established that you pick a model and the
@@ -98,8 +120,8 @@ remains below).
   unify on harness-first (which would have amended docs/252 req 9); or unify on model-first.
   The human chose model-first, which is why req 3 states the derivation rather than
   introducing a harness axis. The consequence is that "not the same reviewer twice" cannot be
-  expressed as a harness rule and is instead expressed by configuring two reviewers (req 4) —
-  the human's own answer, given in the same breath.
+  expressed as a harness rule and is instead expressed by configuring two reviewers and
+  ranking them by distance (req 4).
 
 - 2026-08-10 — Is this policy that belongs in `CLAUDE.md`? **Chosen: no — it is ShipIt
   functionality.** The human: "it's not about CLAUDE.md, because CLAUDE.md is about a
@@ -123,17 +145,20 @@ What he actually said:
 - "our reviewer would be Anthropic plus model plus thinking level" → reqs 1 and 5. The
   reasoning level being *part of the reviewer* rather than a separate control is his.
 - "for the case where the authoring model is the same … we need kind of default reviewer. So
-  the user should be able to configure these two reviewers." → req 4's second reviewer. The
-  count — two, both fully configured — is his, not the agent's.
+  the user should be able to configure these two reviewers." → req 4's count of two, both
+  fully configured.
+- "the idea is to use the reviewer that is far away from the implementer. Ideally, it's a
+  different model and different harness, but the user may not have other harnesses
+  configured." → req 4's distance goal, replacing the three collision rules the agent had
+  offered.
 - "it's not about CLAUDE.md, because CLAUDE.md is about a specific repository, whereas we
   discuss the ShipIt functionality" → req 2.
 - "Unify on model-first" → req 3, chosen from three options; see the receipt.
-- "I'm not sure if we need per-harness settings. Maybe we need a separate reviewer tab only?"
-  → recorded as an **open question** rather than as a requirement, because it was asked
-  rather than decided.
+- "Remove them and make all the agent parameters explicit in the agent run … everything in
+  the call would be explicit, because for implicit calls … we will have custom support, which
+  is the review case and the child session case." → req 7, and the *Scope* note. The
+  generalization from "remove the defaults" to "roles are the only implicit path" is his.
 
-Req 7 is the agent's, and states an existing obligation rather than a new one — it is here so
-that attribution is not quietly lost, and should be struck if that is not wanted.
-
-The trigger for the second reviewer (the first open question) is **not** settled by anything
-the human said; req 4 deliberately states the observable goal and leaves the rule open.
+Reqs 8 and 9 are the agent's recommendations, taken as offered; req 9 states an existing
+obligation rather than a new one — it is here so that attribution is not quietly lost, and
+should be struck if that is not wanted.
