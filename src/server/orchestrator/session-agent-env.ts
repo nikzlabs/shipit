@@ -41,6 +41,7 @@ import {
   syncMemoryBack,
   repushAgentToken,
   repushProviderAccountToken,
+  writeSessionResidentRoute,
 } from "./session-credentials.js";
 import {
   startTokenWriteBackWatch,
@@ -449,8 +450,10 @@ function selectTurnRoute(
         : !id.startsWith("cred_") || deps.credentialStore.getCredentialRoute(id) !== undefined;
     if (stillExists) return { kind, id };
   }
-  const residentAccountId =
-    opts.residentRoute?.kind === "account" ? opts.residentRoute.id : undefined;
+  // Any resident kind qualifies for balanced session-spreading (req 8): the
+  // account walk matches an account id, the string walk a stored-credential
+  // id, and an env-reserved id simply matches neither.
+  const residentRouteId = opts.residentRoute?.id;
   // docs/252 phase 3 — scoped to the SELECTED `(service, billing mode)`. Asking
   // one question per `AgentId` could answer with a credential belonging to a
   // different mode entirely, which is how an included turn became a metered one.
@@ -471,7 +474,7 @@ function selectTurnRoute(
     {
       optimistic: true,
       ...(opts.excludeRouteIds ? { exclude: opts.excludeRouteIds } : {}),
-      ...(residentAccountId ? { residentAccountId } : {}),
+      ...(residentRouteId ? { residentRouteId } : {}),
     },
   );
   return routeFromSelection(agentId, selection, blockedSubjectFor(agentId, session));
@@ -591,6 +594,19 @@ export async function prepareSessionAgentEnvironment(
   // own post-run stamp could land.
   if (isTurn && runner && selectedRoute) {
     runner.residentRoute = { kind: selectedRoute.kind, id: selectedRoute.id };
+    // docs/260 §5 — persist the same stamp, so a post-restart adoption can
+    // recover the identity of a surviving process whose credential left no
+    // subtree marker (string/env-delivered routes; reqs 11 and 13). Best
+    // effort: the file only ever improves attribution.
+    if (runner instanceof ContainerSessionRunner) {
+      try {
+        writeSessionResidentRoute(deps.credentialsDir, sessionId, agentId, {
+          kind: selectedRoute.kind, id: selectedRoute.id,
+        });
+      } catch (err) {
+        console.warn("[credentials] resident-route record failed:", getErrorMessage(err));
+      }
+    }
   }
 
   // docs/150 req 21 — stamp the credential this turn actually resolved onto,
@@ -624,17 +640,27 @@ export async function prepareSessionAgentEnvironment(
   // on `agentPinned` (their flat source has no per-account identity, and a
   // per-turn re-copy would clobber session-local state with an older root).
   if (isTurn && runner instanceof ContainerSessionRunner) {
-    try {
-      if (selectedRoute?.kind === "account") {
-        const outcome = ensureSessionAccountCredentials(
-          deps.credentialsDir, sessionId, agentId, selectedRoute.id,
+    // docs/260 req 4 — the account-identity step fails CLOSED. If the subtree
+    // cannot be verified/reprovisioned for the chosen account, the turn must
+    // NOT spawn: the tree on disk may still hold ANOTHER account's token, and
+    // a spawn would spend that account while the capture attributes this one
+    // (the poisoning class req 4 exists to close). The throw surfaces as a
+    // failed turn via the executor's error path — visible and resendable,
+    // unlike a silently mis-billed turn.
+    if (selectedRoute?.kind === "account") {
+      const outcome = ensureSessionAccountCredentials(
+        deps.credentialsDir, sessionId, agentId, selectedRoute.id,
+      );
+      if (outcome !== "match") {
+        console.log(
+          `[credentials] ${sessionId} account subtree ${outcome} for ${selectedRoute.id}`,
         );
-        if (outcome !== "match") {
-          console.log(
-            `[credentials] ${sessionId} account subtree ${outcome} for ${selectedRoute.id}`,
-          );
-        }
-      } else if (!session.agentPinned) {
+      }
+    }
+    // Everything below stays best-effort: the legacy flat copy and memory
+    // seeding are write-once scaffolding with no account identity at stake.
+    try {
+      if (selectedRoute?.kind !== "account" && !session.agentPinned) {
         provisionAgentCredentials(deps.credentialsDir, sessionId, agentId);
       }
       // docs/155 — seed the shared per-repo Claude memory dir into this

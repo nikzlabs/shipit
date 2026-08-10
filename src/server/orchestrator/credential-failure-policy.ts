@@ -36,7 +36,7 @@ import type { SessionInfo } from "../shared/types.js";
 /** The session fields that answer "what is this turn billed to?". */
 export type CredentialFailureSubject = Pick<
   SessionInfo,
-  "agentId" | "serviceId" | "billingMode" | "providerRouteServiceId" | "providerRouteBillingMode"
+  "agentId" | "serviceId" | "billingMode"
 >;
 
 export interface CredentialFailurePolicy {
@@ -69,27 +69,42 @@ export interface CredentialFailurePolicy {
 }
 
 /**
- * The policy for `session`, read from **the route in force** and only then from
- * the selection.
- *
- * The order matters and is phase 1's rule restated: a route's billing mode is a
- * property of the route, not of the selection that was in force when it was
- * pinned, and the two can disagree — routing can land a session that selected a
- * subscription on a metered key when no account is connected. The credential
- * that just failed is the pinned one, so the pinned one is what decides.
+ * docs/260 — the policy for a turn whose failing credential is KNOWN: the
+ * turn's own captured route, resolved to its billing mode and service by the
+ * caller. The route in force is what decides, and under per-turn routing that
+ * route is the capture, never a session row — a mid-turn `set_model` can
+ * rewrite the session's selection, and a pre-260 row can still carry a stale
+ * `provider_route_*` pin, but neither changes which credential just failed.
  */
-export function credentialFailurePolicyFor(
-  session: CredentialFailureSubject | undefined,
+export function credentialFailurePolicyForRoute(
+  agentId: SessionInfo["agentId"] | undefined,
+  billingMode: BillingMode | undefined,
+  serviceId: string | undefined,
 ): CredentialFailurePolicy {
-  const billingMode = session?.providerRouteBillingMode ?? session?.billingMode;
-  const serviceId = session?.providerRouteServiceId ?? session?.serviceId;
-  const nativeService = nativeServiceForHarness(session?.agentId);
+  const nativeService = nativeServiceForHarness(agentId);
   return {
     billingMode,
     serviceId,
     stopsOnFailure: billingMode === "key",
     vendorOwnedRecovery: serviceId === undefined || serviceId === nativeService,
   };
+}
+
+/**
+ * The policy for `session`, read from its model selection — the FALLBACK for
+ * turns with no captured route (a turn that failed before env-prep resolved
+ * one, tests, local runtime). Turns that captured a route go through
+ * {@link credentialFailurePolicyForRoute} instead.
+ *
+ * docs/260 — this deliberately no longer reads the dead `provider_route_*`
+ * session columns: nothing writes them any more, so a value there is a pre-260
+ * leftover, and letting it override the live selection was a hidden per-session
+ * pin deciding whether a turn retries (req 2).
+ */
+export function credentialFailurePolicyFor(
+  session: CredentialFailureSubject | undefined,
+): CredentialFailurePolicy {
+  return credentialFailurePolicyForRoute(session?.agentId, session?.billingMode, session?.serviceId);
 }
 
 /** Shorthand for the one question every gate asks. */

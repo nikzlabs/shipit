@@ -761,17 +761,19 @@ describe("ProviderAccountManager", () => {
       expect(refusalBlockedUntil(mgr.get("anthropic", a.id)!, Date.now())).toBeNull();
     });
 
-    // A later failure carrying a vaguer reset must not shorten a lockout the
-    // provider already told us the true end of.
-    it("only ever extends an existing lockout", () => {
+    // docs/260 req 9 — the newest refusal's stated reset supersedes an older,
+    // longer estimate. A re-probe answered with "resets in a minute" must not
+    // leave the account benched on a stale two-hour deadline.
+    it("the newest refusal's stated reset wins, even when it is earlier", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
       const a = mgr.create("anthropic", "A");
       mgr.setAccountStatus("anthropic", a.id, "ready");
       const far = Date.now() + 7_200_000;
+      const near = Date.now() + 60_000;
       mgr.markAccountExhausted("anthropic", a.id, far);
-      mgr.markAccountExhausted("anthropic", a.id, Date.now() + 60_000);
+      mgr.markAccountExhausted("anthropic", a.id, near);
 
-      expect(mgr.get("anthropic", a.id)?.exhaustedUntil).toBe(far);
+      expect(mgr.get("anthropic", a.id)?.exhaustedUntil).toBe(near);
     });
 
     it("ignores an unknown account rather than inventing a row", () => {
@@ -1046,7 +1048,7 @@ describe("ProviderAccountManager", () => {
         // Make b the least-recently-used, which plain balanced would pick.
         mgr.markAccountUsed("anthropic", a);
 
-        expect(mgr.selectAccountForTurn("anthropic", { residentAccountId: a })).toEqual({
+        expect(mgr.selectAccountForTurn("anthropic", { residentRouteId: a })).toEqual({
           ok: true,
           route: { kind: "account", id: a },
         });
@@ -1057,7 +1059,7 @@ describe("ProviderAccountManager", () => {
         const { a, b } = twoReadyAccounts();
         const mgr = mgrWith({ [a]: { session: win(10) }, [b]: { session: win(10) } });
 
-        expect(mgr.selectAccountForTurn("anthropic", { residentAccountId: b })).toEqual({
+        expect(mgr.selectAccountForTurn("anthropic", { residentRouteId: b })).toEqual({
           ok: true,
           route: { kind: "account", id: a },
         });
@@ -1068,7 +1070,7 @@ describe("ProviderAccountManager", () => {
         store.setSelectionMode("anthropic", "sub", "balanced");
         const mgr = mgrWith({ [a]: { session: win(95) }, [b]: { session: win(10) } });
 
-        expect(mgr.selectAccountForTurn("anthropic", { residentAccountId: a })).toEqual({
+        expect(mgr.selectAccountForTurn("anthropic", { residentRouteId: a })).toEqual({
           ok: true,
           route: { kind: "account", id: b },
         });
@@ -1380,7 +1382,7 @@ describe("ProviderAccountManager", () => {
         expect(quota.selectAccountForTurn("anthropic")).toMatchObject({ ok: false, reason: "all_exhausted" });
       });
 
-      it("refreshes the observation clock on a repeated refusal without shortening the memory", () => {
+      it("refreshes the observation clock and adopts the newest stated reset on a repeated refusal", () => {
         const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
         const account = mgr.create("anthropic", "Account");
         mgr.setAccountStatus("anthropic", account.id, READY);
@@ -1390,10 +1392,14 @@ describe("ProviderAccountManager", () => {
         const snapshotAt = first.exhaustedAt! + 1;
         while (Date.now() <= snapshotAt) { /* establish strict event order */ }
         const quota = withLimits(root, store, { [account.id]: windows(snapshotAt) });
-        quota.markAccountExhausted("anthropic", account.id, Date.now() + 60_000);
+        const near = Date.now() + 60_000;
+        quota.markAccountExhausted("anthropic", account.id, near);
 
         expect(quota.selectAccountForTurn("anthropic")).toMatchObject({ ok: false, reason: "all_exhausted" });
-        expect(store.getCredentialRoute(account.id)?.exhaustedUntil).toBe(far);
+        // docs/260 req 9 — the newest refusal's stated reset replaces the
+        // older, longer estimate; the refreshed `exhaustedAt` clock is what
+        // keeps the memory alive past any pre-failure snapshot.
+        expect(store.getCredentialRoute(account.id)?.exhaustedUntil).toBe(near);
       });
     });
   });

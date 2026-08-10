@@ -214,7 +214,7 @@ export function selectRouteForSelection(
   /**
    * docs/260 — the attempt loop's contract, threaded verbatim into both walks:
    * `exclude` for routes refused this turn, `optimistic` for "I will attempt
-   * the result" (req 12), `residentAccountId` for balanced session-spreading
+   * the result" (req 12), `residentRouteId` for balanced session-spreading
    * (req 8). Omitted by non-turn callers, which keeps their failure shapes.
    */
   opts: SelectAccountOptions = {},
@@ -317,15 +317,26 @@ function stringSelectionFor(
       return { ok: true, route: { kind: "reserved", id: orderCredentialRoutes(stored)[0].id } };
     }
     const now = deps.now?.() ?? Date.now();
-    const ordered = orderStringCredentials(
-      stored,
-      deps.credentialStore.getSelectionMode(selection.serviceId, selection.billingMode),
-    ).filter((route) => !exclude.has(route.id));
+    const mode = deps.credentialStore.getSelectionMode(selection.serviceId, selection.billingMode);
+    const ordered = orderStringCredentials(stored, mode)
+      .filter((route) => !exclude.has(route.id));
     // docs/260 reqs 9, 11, 12 — the account walk's contract, same shape for
     // the string-delivered twin: refusal memory (the shared read rule) is the
     // only skip, and an optimistic caller that finds everything blocked takes
     // the best blocked credential anyway — only real refusals this turn may
     // produce the terminal failure.
+    //
+    // req 8 — and the account walk's `balanced` rule too: balanced spreads
+    // SESSIONS, not turns, so the credential backing a live resident process
+    // keeps serving its session while it is unblocked. Without this,
+    // least-recently-used ordering alternates a two-credential install every
+    // turn and restarts the resident process each time.
+    if (mode === "balanced" && opts.residentRouteId) {
+      const resident = ordered.find(
+        (route) => route.id === opts.residentRouteId && refusalBlockedUntil(route, now) === null,
+      );
+      if (resident) return { ok: true, route: { kind: "reserved", id: resident.id } };
+    }
     const next = ordered.find((route) => refusalBlockedUntil(route, now) === null);
     if (next) return { ok: true, route: { kind: "reserved", id: next.id } };
     const probe = ordered[0];
@@ -409,7 +420,10 @@ export function residentRouteNeedsRelease(
   if ((runner?.backgroundWorkDescriptions?.length ?? 0) > 0) return false;
   const selection = selectRouteForSelection(harnessId, selectionOf(session), deps, {
     optimistic: true,
-    ...(resident.kind === "account" ? { residentAccountId: resident.id } : {}),
+    // Any resident kind qualifies for balanced session-spreading — the
+    // account walk matches an account id, the string walk a stored-credential
+    // id, and an env-reserved id simply matches neither.
+    residentRouteId: resident.id,
   });
   if (!selection.ok) return false;
   return selection.route.kind !== resident.kind || selection.route.id !== resident.id;

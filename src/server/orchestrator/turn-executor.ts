@@ -34,7 +34,8 @@ import {
   detectHardExhaustionInTurnText,
   exhaustionLockoutUntil,
 } from "./ws-handlers/agent-rate-limits.js";
-import { stopsOnCredentialFailure } from "./credential-failure-policy.js";
+import { credentialFailurePolicyForRoute, stopsOnCredentialFailure } from "./credential-failure-policy.js";
+import type { CredentialFailurePolicy } from "./credential-failure-policy.js";
 import { ProviderRouteUnavailableError } from "./provider-route-preflight.js";
 
 /**
@@ -594,12 +595,25 @@ export async function executeAgentTurn(
    * attempt had. Req 12: keys do not fail over; ShipIt stops and says so, which
    * here means letting the turn retire with the provider's own error.
    *
-   * Read at the moment of failure rather than captured at turn start: this turn
-   * may have pinned its route during env-prep, which is what puts the billing
-   * mode on the session row in the first place.
+   * docs/260 req 2 — the credential that refused is the TURN'S OWN capture,
+   * so ITS billing mode decides. The session row is only the fallback for a
+   * turn with no capture (failed before env-prep, tests, local runtime): the
+   * row's selection is mutable mid-turn (`set_model`), and its dead
+   * `provider_route_*` columns can still carry a pre-260 pin — neither changes
+   * which credential just failed.
    */
-  const quotaRetryAllowed = (): boolean =>
-    !stopsOnCredentialFailure(deps.listenerDeps.sessionManager.get(sessionId));
+  const capturedRoutePolicy = (): CredentialFailurePolicy | undefined => {
+    const captured = capturedCredentialRoute;
+    if (!captured?.providerRouteKind || !captured.providerRouteId) return undefined;
+    const profile = deps.routeProfile?.(captured.providerRouteKind, captured.providerRouteId);
+    if (!profile) return undefined;
+    return credentialFailurePolicyForRoute(agentId, profile.billingMode, profile.serviceId);
+  };
+  const quotaRetryAllowed = (): boolean => {
+    const policy = capturedRoutePolicy();
+    if (policy) return !policy.stopsOnFailure;
+    return !stopsOnCredentialFailure(deps.listenerDeps.sessionManager.get(sessionId));
+  };
 
   const retryOnNextAccount = async (entry: RefusedAttempt): Promise<void> => {
     console.log(
@@ -638,11 +652,19 @@ export async function executeAgentTurn(
     detected: Parameters<typeof exhaustionLockoutUntil>[0],
   ): RefusedAttempt => {
     const routeId = capturedCredentialRoute?.providerRouteId ?? "unknown";
+    // docs/260 req 6 — "resets at" only ever quotes the PROVIDER'S OWN stated
+    // instant. When it named none, `exhaustionLockoutUntil` synthesizes a
+    // short self-expiring lockout for the internal bench stamp — an estimate
+    // that must not be presented to the user as a provider-reported reset.
+    const statedReset =
+      detected.resetAt !== null && !Number.isNaN(Date.parse(detected.resetAt))
+        ? new Date(Date.parse(detected.resetAt)).toISOString()
+        : null;
     return {
       routeId,
       label: (routeId !== "unknown" ? deps.routeLabel?.(routeId) : undefined) ?? routeId,
       providerMessage: providerMessage.replace(/\s+/g, " ").trim().slice(0, 400),
-      resetAt: new Date(exhaustionLockoutUntil(detected)).toISOString(),
+      resetAt: statedReset,
     };
   };
 
@@ -762,6 +784,10 @@ export async function executeAgentTurn(
     capturedSessionId: sessionId,
     getCapturedRouteId: () => capturedCredentialRoute?.providerRouteId,
     getCapturedRouteKind: () => capturedCredentialRoute?.providerRouteKind,
+    // docs/260 req 2 — failure policy resolved from the captured route (see
+    // `capturedRoutePolicy`); the auth handler falls back to the session's
+    // selection when this answers undefined.
+    getCapturedRoutePolicy: capturedRoutePolicy,
     // docs/179 — auto-recovery hooks: the listener calls `willRecoverAuth`
     // synchronously to decide whether to suppress the sign-in card, then
     // `recoverAuth` to heal + re-dispatch. Omitted when this turn can't recover

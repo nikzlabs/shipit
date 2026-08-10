@@ -1389,7 +1389,14 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
         // credential topology alone under a live process: the leak repair's
         // unlink→copy window makes that process report itself unauthenticated.
         const opts = { repairLeakedSubtrees: !hasLiveAgent?.(session.id) };
-        const wrote = accountId
+        // An UNMARKED subtree's identity is unknown — it may hold a different
+        // account's copy, and a marker only appears when account provisioning
+        // writes one. Pushing the re-authed account's token there would poison
+        // a session that is spending another account (the 2026-08-10 incident
+        // class), so an unmarked session only ever gets the legacy flat repush,
+        // which overwrites nothing but a flat token file it already has. Its
+        // next turn's env-prep provisions and marks it properly.
+        const wrote = accountId && marked !== undefined
           ? repushProviderAccountToken(credentialsDir, session.id, agentId, accountId, undefined, undefined, opts)
           : repushAgentToken(credentialsDir, session.id, agentId, undefined, undefined, opts);
         if (wrote) healed++;

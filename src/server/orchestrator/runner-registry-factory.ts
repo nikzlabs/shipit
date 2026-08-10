@@ -1,10 +1,12 @@
-import { readSessionAccountMarker } from "./session-credentials.js";
+import { readSessionAccountMarker, readSessionResidentRoute } from "./session-credentials.js";
 import { queuedMessageToDispatchOptions } from "./prepared-dispatch.js";
 import type { GitManager } from "../shared/git.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
 import { AgentTurnAdmissionError, SessionRunnerRegistry, dispatchOnRunner } from "./session-runner.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
+import { billingModeForRoute } from "./sessions.js";
+import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
 import type { RepoStore } from "./repo-store.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { GitHubAuthManager } from "./github-auth.js";
@@ -538,9 +540,15 @@ export function createRunnerRegistry(
               },
             });
           },
-          // docs/260 §5 — post-restart resident identity, from the marker.
+          // docs/260 §5 — post-restart resident identity. The resident-route
+          // record (written at every routed spawn) is authoritative — it is
+          // the only identity a string/env-delivered credential leaves behind
+          // (reqs 11/13). The account marker is the fallback for processes
+          // spawned before the record existed.
           ...(credentialsDir ? {
             recoverResidentRoute: (sessionId: string, agentId: AgentId) => {
+              const recorded = readSessionResidentRoute(credentialsDir, sessionId)[agentId];
+              if (recorded) return recorded;
               const marked = readSessionAccountMarker(credentialsDir, sessionId)[agentId];
               return marked !== undefined ? { kind: "account" as const, id: marked } : undefined;
             },
@@ -549,6 +557,15 @@ export function createRunnerRegistry(
           routeLabel: (routeId: string) =>
             providerAccountManager?.getByRouteId(routeId)?.label
             ?? credentialStore.getCredentialRoute(routeId)?.label,
+          // docs/260 req 2 — billing mode + service of the turn's captured
+          // route, so failure policy never re-reads the session row.
+          routeProfile: (kind: ProviderRouteKind, routeId: string) => {
+            const row = providerAccountManager?.getByRouteId(routeId)
+              ?? credentialStore.getCredentialRoute(routeId);
+            if (row) return { billingMode: row.billingMode, serviceId: row.serviceId };
+            const mode = billingModeForRoute(kind, routeId);
+            return mode ? { billingMode: mode } : undefined;
+          },
           // docs/260 — the dispatched-turn twin of the WS pre-capture check:
           // release the resident process only when selection would land this
           // turn on a DIFFERENT credential, and never while the process holds

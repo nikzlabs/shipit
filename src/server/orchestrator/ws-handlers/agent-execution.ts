@@ -3,6 +3,7 @@ import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
 import { buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
 import { postTurnCommit } from "./post-turn.js";
+import { billingModeForRoute } from "../sessions.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { emitResetEligible } from "../services/pre-turn-reset.js";
 import { applyPreTurnReset, type PreTurnResetHookResult } from "../pre-turn-reset-hook.js";
@@ -540,6 +541,15 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     routeLabel: (routeId) =>
       ctx.providerAccountManager?.getByRouteId(routeId)?.label
       ?? ctx.credentialStore.getCredentialRoute(routeId)?.label,
+    // docs/260 req 2 — billing mode + service of the turn's captured route,
+    // so failure policy never re-reads the session row.
+    routeProfile: (kind, routeId) => {
+      const row = ctx.providerAccountManager?.getByRouteId(routeId)
+        ?? ctx.credentialStore.getCredentialRoute(routeId);
+      if (row) return { billingMode: row.billingMode, serviceId: row.serviceId };
+      const mode = billingModeForRoute(kind, routeId);
+      return mode ? { billingMode: mode } : undefined;
+    },
     finalizeAgentEnv: (sessionId, id, capturedRoute) => {
       finalizeSessionAgentEnvironment(runner, {
         sessionId,

@@ -6,8 +6,10 @@ import {
   ensureSessionAccountCredentials,
   provisionProviderAccountCredentials,
   readSessionAccountMarker,
+  readSessionResidentRoute,
   revokeSessionProviderCredentials,
   writeSessionAccountMarker,
+  writeSessionResidentRoute,
 } from "./session-agent-credentials.js";
 
 /**
@@ -156,5 +158,29 @@ describe("ensureSessionAccountCredentials (docs/260 req 4)", () => {
     seedAccount("acct_a", "tok-a");
     provisionProviderAccountCredentials(root, SESSION, "claude", "acct_a");
     expect(readSessionAccountMarker(root, SESSION).claude).toBe("acct_a");
+  });
+
+  // docs/260 §5 — the resident-route record is the identity a STRING-delivered
+  // credential leaves behind for post-restart adoption (reqs 11/13). The
+  // account marker cannot carry it: the marker records which account's subtree
+  // COPY is on disk, and a string credential authenticates from spawn env
+  // without touching the subtree.
+  describe("session resident-route record", () => {
+    it("round-trips per agent and overwrites on a new spawn", () => {
+      writeSessionResidentRoute(root, SESSION, "claude", { kind: "reserved", id: "cred_glm" });
+      writeSessionResidentRoute(root, SESSION, "codex", { kind: "account", id: "acct_z" });
+      expect(readSessionResidentRoute(root, SESSION).claude).toEqual({ kind: "reserved", id: "cred_glm" });
+      expect(readSessionResidentRoute(root, SESSION).codex).toEqual({ kind: "account", id: "acct_z" });
+
+      writeSessionResidentRoute(root, SESSION, "claude", { kind: "account", id: "acct_a" });
+      expect(readSessionResidentRoute(root, SESSION).claude).toEqual({ kind: "account", id: "acct_a" });
+      expect(readSessionResidentRoute(root, SESSION).codex).toEqual({ kind: "account", id: "acct_z" });
+    });
+
+    it("reads an absent or corrupt file as empty", () => {
+      expect(readSessionResidentRoute(root, "nope")).toEqual({});
+      fs.writeFileSync(path.join(root, "sessions", SESSION, ".shipit-resident-route.json"), "not-json");
+      expect(readSessionResidentRoute(root, SESSION)).toEqual({});
+    });
   });
 });

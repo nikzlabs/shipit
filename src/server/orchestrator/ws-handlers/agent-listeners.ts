@@ -5,6 +5,7 @@ import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
 import { resetRunnerTurnState } from "../session-runner.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
+import type { CredentialFailurePolicy } from "../credential-failure-policy.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
 import {
@@ -175,6 +176,12 @@ export interface WireListenersOpts {
   getCapturedRouteId?: () => string | undefined;
   /** docs/260 — the captured route's kind, for reserved-vs-account branches. */
   getCapturedRouteKind?: () => "account" | "reserved" | "string" | undefined;
+  /**
+   * docs/260 req 2 — failure policy resolved from the TURN'S OWN captured
+   * route. Undefined when the turn captured none (then the session's model
+   * selection answers instead).
+   */
+  getCapturedRoutePolicy?: () => CredentialFailurePolicy | undefined;
   /**
    * The permission mode this turn actually requested from the CLI (docs/138),
    * AFTER any guarded→auto downgrade. When this is `"guarded"`, the
@@ -1400,6 +1407,17 @@ export function wireAgentListeners(
             });
           }
         }
+      } else if (opts.getCapturedRouteId?.()) {
+        // docs/260 req 10 — a turn can end WITHOUT usage telemetry (a Codex
+        // compact result reports no tokens or cost), but its credential route
+        // is still the fact the next turn's "Continuing on X" notice compares
+        // against. Left unrecorded, that comparison would read the route of an
+        // OLDER turn and mis-fire. Record the route with an empty usage row —
+        // zero cost and zero tokens change no aggregate.
+        deps.usageManager.record(usageSessionId, 0, event.durationMs ?? 0, undefined, undefined, {
+          ...(turnModel ? { model: turnModel } : {}),
+          credentialRouteId: opts.getCapturedRouteId()!,
+        });
       }
 
       // docs/140 — recover any live steer the CLI never acknowledged this turn

@@ -697,11 +697,13 @@ export class CredentialStore {
    * (epoch ms), so routing stops choosing the one that just refused a turn.
    *
    * The string-delivered twin of `ProviderAccountManager.markAccountExhausted`,
-   * and it shares that method's two rules for the same reasons: the stamp only
-   * ever moves *later*, so a second failure carrying a vaguer reset cannot
-   * shorten a lockout the provider already told us the end of; and a `key` route
-   * is silently ignored, because metered billing has no subscription window to
-   * exhaust and req 12 forbids failing a key over anyway.
+   * and it shares that method's two rules for the same reasons: the NEWEST
+   * refusal's stated reset wins outright (docs/260 req 9 — a re-probe saying
+   * "resets in five minutes" must supersede an older week-long estimate, and
+   * `refusalBlockedUntil`'s 30-minute cap bounds the cost of the reverse
+   * direction); and a `key` route is silently ignored, because metered billing
+   * has no subscription window to exhaust and req 12 forbids failing a key
+   * over anyway.
    *
    * Returns the stamped route, or `null` when there was nothing to stamp — an
    * unknown id, or a `key` credential.
@@ -709,14 +711,14 @@ export class CredentialStore {
   markCredentialRouteExhausted(routeId: string, until: number): CredentialRoute | null {
     const route = this.getCredentialRoute(routeId);
     if (route?.billingMode !== "sub") return null;
-    // docs/260 req 9 — every refusal refreshes the observation clock, even when
-    // its reset estimate does not extend the deadline: `refusalBlockedUntil`
-    // reads `min(until, at + cap)`, and a row without the clock reads as
-    // expired. Before 260 this stamp never wrote `exhaustedAt`, which is why
-    // string credentials had no recovery path at all (req 11).
+    // docs/260 req 9 — every refusal refreshes the observation clock:
+    // `refusalBlockedUntil` reads `min(until, at + cap)`, and a row without
+    // the clock reads as expired. Before 260 this stamp never wrote
+    // `exhaustedAt`, which is why string credentials had no recovery path at
+    // all (req 11).
     this.upsertCredentialRoute({
       ...route,
-      exhaustedUntil: Math.max(route.exhaustedUntil ?? 0, until),
+      exhaustedUntil: until,
       exhaustedAt: Date.now(),
     });
     return this.getCredentialRoute(routeId) ?? null;

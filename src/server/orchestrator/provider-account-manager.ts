@@ -226,15 +226,16 @@ export interface SelectAccountOptions {
    */
   exclude?: readonly string[];
   /**
-   * docs/260 req 8 — the account backing the session's resident CLI process,
-   * when one is alive. Under `balanced` the mode spreads **sessions**, not
-   * turns: while this account is eligible, unblocked, and under its cutoff it
-   * is chosen outright, because least-recently-used ordering would otherwise
-   * alternate a two-account install every turn and restart the resident
-   * process each time. Under `strict` this is ignored — the strategy is
-   * absolute and the session moves back the turn a better account recovers.
+   * docs/260 req 8 — the credential route backing the session's resident CLI
+   * process, when one is alive (an account id, or a stored string-credential
+   * id). Under `balanced` the mode spreads **sessions**, not turns: while this
+   * credential is eligible, unblocked, and under its cutoff it is chosen
+   * outright, because least-recently-used ordering would otherwise alternate
+   * a two-credential install every turn and restart the resident process each
+   * time. Under `strict` this is ignored — the strategy is absolute and the
+   * session moves back the turn a better credential recovers.
    */
-  residentAccountId?: string;
+  residentRouteId?: string;
   /**
    * docs/260 req 12 — set by callers that will actually ATTEMPT the result
    * (the turn's attempt loop). When every non-excluded account is
@@ -890,8 +891,8 @@ export class ProviderAccountManager {
     // its cutoff or looks spent has stopped being "equally ranked" and the
     // normal walk decides. Under `strict` the strategy is absolute, so the
     // option is not consulted at all.
-    if (mode === "balanced" && opts.residentAccountId) {
-      const resident = clear.find((account) => account.id === opts.residentAccountId);
+    if (mode === "balanced" && opts.residentRouteId) {
+      const resident = clear.find((account) => account.id === opts.residentRouteId);
       if (resident) return { ok: true, route: { kind: "account", id: resident.id } };
     }
 
@@ -966,20 +967,23 @@ export class ProviderAccountManager {
    * freshly connected account may not exist at all. Without the stamp the
    * router would keep choosing the account that just refused the turn.
    *
-   * Only ever moves the stamp *later*, so a second failure carrying a vaguer
-   * reset can't shorten a lockout the provider already told us the end of.
-   * Reserved routes are not accounts and are silently ignored (req 12 — metered
-   * billing has no subscription window).
+   * The NEWEST refusal's stated reset wins outright (docs/260 req 9): a
+   * re-probe answered with "resets in five minutes" must supersede an older
+   * week-long estimate, and `refusalBlockedUntil`'s 30-minute cap bounds the
+   * cost of the reverse direction (a vaguer short fallback replacing a longer
+   * stated reset re-probes once more, nothing worse). Reserved routes are not
+   * accounts and are silently ignored (req 12 — metered billing has no
+   * subscription window).
    */
   markAccountExhausted(serviceId: string, accountId: string, until: number): CredentialRoute | null {
     const account = this.get(serviceId, accountId);
     if (!account) return null;
     this.credentialStore.upsertCredentialRoute({
       ...account,
-      exhaustedUntil: Math.max(account.exhaustedUntil ?? 0, until),
-      // Refresh this clock on every hard failure, even when its reset estimate
-      // is shorter. Otherwise a snapshot predating the new failure could clear
-      // an older, longer bench and weaken same-turn failover.
+      exhaustedUntil: until,
+      // Refresh this clock on every hard failure — `refusalBlockedUntil`
+      // reads `min(until, at + cap)`, so the clock is what re-arms the
+      // 30-minute re-probe window.
       exhaustedAt: Date.now(),
     });
     return this.get(serviceId, accountId) ?? null;

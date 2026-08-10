@@ -289,6 +289,16 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
       writeSessionAccountMarker(credentialsDir, sessionId, "claude", accountId);
     }
 
+    // And one pre-260 session holding a token with NO marker at all — its
+    // identity is unknown, so an account-scoped re-push must leave it alone.
+    // (It may be running on Y; force-pushing X's token there is the poisoning
+    // class the marker scoping exists to close. Its next turn's env-prep
+    // provisions and marks it properly.)
+    sessionManager.track("sess-unmarked", "Pre-260 session");
+    sessionManager.setAgentId("sess-unmarked", "claude");
+    sessionManager.setAgentPinned("sess-unmarked");
+    writeToken(sessionRoot("sess-unmarked"), "stale-sess-unmarked");
+
     // Account X finishes signing in again.
     authManager.start({ accountId: x.id });
     authManager.emit("complete");
@@ -297,6 +307,8 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     // The session pinned to Y is untouched in BOTH directions: it did not get
     // X's token, and Y's own source was not pushed on X's event either.
     expect(readToken(sessionRoot("sess-y"))).toBe("stale-sess-y");
+    // The unmarked subtree did not receive X's account token.
+    expect(readToken(sessionRoot("sess-unmarked"))).toBe("stale-sess-unmarked");
     expect(accounts.get("anthropic", x.id)?.status).toBe("ready");
   });
 });

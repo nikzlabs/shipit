@@ -116,6 +116,65 @@ export function writeSessionAccountMarker(
 }
 
 /**
+ * docs/260 §5 — the credential route the session's LAST SPAWNED resident
+ * process runs on, per agent. The account marker above cannot carry this: it
+ * records which account's SUBTREE COPY is on disk (revocation depends on that
+ * meaning), while a string-delivered credential authenticates from spawn env
+ * and leaves the subtree — and therefore the marker — untouched. Without this
+ * record a post-restart adoption cannot attribute a surviving string-credential
+ * process (req 11), and the busy deletion guard cannot see that the credential
+ * is in use (req 13).
+ *
+ * Written at the pre-spawn stamp (the same moment `runner.residentRoute` is
+ * set) and read ONLY by adoption recovery — a stale file with no surviving
+ * process is never consulted, so retirement does not need to clear it.
+ */
+const SESSION_RESIDENT_ROUTE = ".shipit-resident-route.json";
+
+export interface RecordedResidentRoute {
+  kind: "account" | "reserved" | "string";
+  id: string;
+}
+
+export function readSessionResidentRoute(
+  credentialsRoot: string,
+  sessionId: string,
+): Partial<Record<AgentId, RecordedResidentRoute>> {
+  const file = path.join(perSessionCredentialsDir(credentialsRoot, sessionId), SESSION_RESIDENT_ROUTE);
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Partial<Record<AgentId, RecordedResidentRoute>> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (key !== "claude" && key !== "codex") continue;
+      const route = value as { kind?: unknown; id?: unknown };
+      if (
+        (route?.kind === "account" || route?.kind === "reserved" || route?.kind === "string")
+        && typeof route.id === "string"
+      ) {
+        out[key] = { kind: route.kind, id: route.id };
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function writeSessionResidentRoute(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  route: RecordedResidentRoute,
+): void {
+  const dir = perSessionCredentialsDir(credentialsRoot, sessionId);
+  if (!fs.existsSync(dir)) return;
+  const current = readSessionResidentRoute(credentialsRoot, sessionId);
+  current[agentId] = route;
+  fs.writeFileSync(path.join(dir, SESSION_RESIDENT_ROUTE), JSON.stringify(current));
+}
+
+/**
  * docs/260 req 4 — make the session's credential subtree belong to the
  * CHOSEN account before the turn spawns, whatever it held before.
  *

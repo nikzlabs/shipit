@@ -7,6 +7,7 @@
  */
 
 import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
+import type { BillingMode } from "../shared/catalogue/types.js";
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, TerminalProcess, AgentRunParams, SessionInfo, SessionMessageOrigin } from "../shared/types.js";
 import type { WsServerMessage, ImageAttachment, FileContextRef, UploadRef, PermissionMode, ClaudeContentBlockToolUse, SkillInfo } from "../shared/types.js";
@@ -798,6 +799,17 @@ export interface SystemTurnDeps {
    * raw id is shown.
    */
   routeLabel?: (routeId: string) => string | undefined;
+  /**
+   * docs/260 req 2/req 12 — resolve a credential route id to its billing mode
+   * and owning service, so failure policy (retry vs stop, heal vs set aside)
+   * branches on the TURN'S OWN captured route rather than a session row.
+   * Optional — when absent or unresolvable, policy falls back to the
+   * session's model selection.
+   */
+  routeProfile?: (
+    kind: ProviderRouteKind,
+    routeId: string,
+  ) => { billingMode: BillingMode; serviceId?: string } | undefined;
   /**
    * docs/179 — heal the agent's OAuth source token. Used by the runtime-401
    * auto-retry: when a turn's CLI emits `auth_required`, the executor awaits

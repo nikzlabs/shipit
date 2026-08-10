@@ -245,6 +245,40 @@ read it; if nothing does after this change, it is dropped in the same PR.
   their copies are inert residue that converges at the next turn's identity
   check, and enumerating them would rebuild, by content, the pinned-session
   walk this feature deletes (review's over-engineering finding, accepted).
+- **Implementation-review triage (Codex run 9e2b302a, as built).** The
+  cross-backend implementation review found nine issues; eight are fixed on
+  this branch, one accepted:
+  - An account-scoped re-push (re-auth and refresher) skips UNMARKED
+    subtrees — an unmarked copy's identity is unknown, and force-pushing the
+    re-authed account's token there was the poisoning class reopened
+    (`app-lifecycle.ts`; guard in `claude-auth.test.ts`).
+  - Failure policy (quota retry, auth-heal vs set-aside) branches on the
+    turn's CAPTURED route via the `routeProfile` dep and
+    `credentialFailurePolicyForRoute`; `credentialFailurePolicyFor` no longer
+    reads the dead `provider_route_*` columns, so a pre-260 row cannot pin
+    the decision (req 2).
+  - The account-identity step (`ensureSessionAccountCredentials`) fails
+    CLOSED: a provisioning error fails the turn visibly instead of spawning
+    on whatever tree is on disk (req 4). Token sync-in stays best-effort by
+    design — after the identity step it can only deliver a stale token of the
+    RIGHT account, which the auth heal covers.
+  - The attempt ledger's "resets at" quotes only a provider-STATED reset;
+    the synthesized short lockout stays internal (req 6).
+  - A turn that ends without usage telemetry (Codex compact) still records
+    its `credential_route_id`, so the next turn's "Continuing on X" notice
+    compares against the true previous route (req 10).
+  - Exhaustion stamps are latest-wins: a re-probe's shorter stated reset
+    supersedes an older longer estimate instead of `Math.max` (req 9).
+  - `balanced` session-spreading covers string-delivered subscriptions: the
+    `residentRouteId` option (renamed from `residentAccountId`) is honoured
+    by the string walk too (req 8).
+  - A per-session **resident-route record** (`.shipit-resident-route.json`,
+    written at every routed pre-spawn stamp) recovers post-restart identity
+    for string/env-delivered credentials, which leave no subtree marker;
+    adoption prefers it and falls back to the account marker (reqs 11/13).
+  - ACCEPTED: the background-work hint's 10-minute TTL and Codex's empty
+    task list (req 13 limitation above), and local mode's fresh provider
+    thread after an account switch — both documented design bounds.
 
 ## 5b. Every turn entry point, not just the WS path (reqs 1, 11, 13)
 

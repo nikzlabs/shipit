@@ -105,6 +105,35 @@ describe("wireAgentListeners", () => {
     runner.dispose({ force: true });
   });
 
+  it("records the turn's credential route even when the result carries no usage telemetry (docs/260 req 10)", () => {
+    // A Codex compact result reports no tokens or cost, but its route is
+    // still the fact the next turn's "Continuing on X" notice compares
+    // against. Left unrecorded, the comparison would read an OLDER turn's
+    // route and mis-fire.
+    const agent = new FakeAgent();
+    const runner = new SessionRunner({
+      sessionId: "session-1",
+      sessionDir: "/tmp/session-1",
+      defaultAgentId: "codex",
+    });
+    const d = deps();
+
+    wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+      capturedSessionId: "session-1",
+      getCapturedRouteId: () => "acct-a",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+    });
+
+    agent.emit("event", { type: "agent_result", result: "done" } satisfies AgentEvent);
+
+    expect(d.usageManager.record).toHaveBeenCalledWith(
+      "session-1", 0, 0, undefined, undefined,
+      expect.objectContaining({ credentialRouteId: "acct-a" }),
+    );
+    runner.dispose({ force: true });
+  });
+
   it("keeps Codex stream-completion events internal so live text is not duplicated", () => {
     const agent = new FakeAgent();
     const runner = new SessionRunner({

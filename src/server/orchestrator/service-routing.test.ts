@@ -317,6 +317,50 @@ describe("string-delivered subscription failover", () => {
     expect(selected).toEqual({ ok: true, route: { kind: "reserved", id: "cred_b" } });
   });
 
+  it("`balanced` keeps a session on its resident string credential (req 8)", () => {
+    // Balanced spreads SESSIONS, not turns: without the resident preference,
+    // least-recently-used ordering would alternate a two-credential install
+    // every turn and restart the resident process each time.
+    const routes = [
+      sub("cred_a", { priority: 0, lastUsedAt: 900 }),
+      sub("cred_b", { priority: 1, lastUsedAt: 100 }),
+    ];
+    const selected = selectRouteForSelection("claude", glm, {
+      credentialStore: store(routes, { cred_a: "k1", cred_b: "k2" }, "balanced"),
+      env: {} as NodeJS.ProcessEnv,
+      now: () => NOW,
+    }, { residentRouteId: "cred_a" });
+    expect(selected).toEqual({ ok: true, route: { kind: "reserved", id: "cred_a" } });
+  });
+
+  it("`balanced` abandons a refusal-blocked resident string credential", () => {
+    // The stickiness only holds while the resident credential is unblocked —
+    // a benched one hands the session to the normal walk.
+    const routes = [
+      sub("cred_a", { priority: 0, lastUsedAt: 900, exhaustedUntil: NOW + 60_000, exhaustedAt: NOW - 1_000 }),
+      sub("cred_b", { priority: 1, lastUsedAt: 100 }),
+    ];
+    const selected = selectRouteForSelection("claude", glm, {
+      credentialStore: store(routes, { cred_a: "k1", cred_b: "k2" }, "balanced"),
+      env: {} as NodeJS.ProcessEnv,
+      now: () => NOW,
+    }, { residentRouteId: "cred_a" });
+    expect(selected).toEqual({ ok: true, route: { kind: "reserved", id: "cred_b" } });
+  });
+
+  it("`strict` ignores the resident string credential — the strategy is absolute", () => {
+    const routes = [
+      sub("cred_a", { priority: 0 }),
+      sub("cred_b", { priority: 1 }),
+    ];
+    const selected = selectRouteForSelection("claude", glm, {
+      credentialStore: store(routes, { cred_a: "k1", cred_b: "k2" }, "strict"),
+      env: {} as NodeJS.ProcessEnv,
+      now: () => NOW,
+    }, { residentRouteId: "cred_b" });
+    expect(selected).toEqual({ ok: true, route: { kind: "reserved", id: "cred_a" } });
+  });
+
   it("ignores a lapsed bench", () => {
     const selected = pick(
       [sub("cred_a", { priority: 0, exhaustedUntil: NOW - 1 }), sub("cred_b", { priority: 1 })],
