@@ -251,6 +251,7 @@ export async function registerGitHubRoutes(
           // flush, those edits wouldn't appear on the PR.
           sessionId: request.params.id,
           runnerRegistry: deps.runnerRegistry,
+          ...(deps.cancelAutoPush ? { cancelAutoPush: deps.cancelAutoPush } : {}),
           chatHistory: deps.chatHistoryManager,
         });
         if (deps.prStatusPoller && session.remoteUrl) {
@@ -393,6 +394,7 @@ export async function registerGitHubRoutes(
           remoteUrl,
           sessionId: request.params.id,
           runnerRegistry: deps.runnerRegistry,
+          ...(deps.cancelAutoPush ? { cancelAutoPush: deps.cancelAutoPush } : {}),
           chatHistory: deps.chatHistoryManager,
         });
 

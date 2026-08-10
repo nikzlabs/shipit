@@ -172,6 +172,63 @@ describe("post-turn commit when the agent process dies", () => {
   });
 
   /**
+   * The 2026-08-10 push-drop incident, at the turn-executor level: a crashed
+   * turn's post-turn flow must hold the runner against lifecycle-driven
+   * teardown for its whole duration.
+   *
+   * `running` is already false by the time the flow starts, so the runner's
+   * existing running-guard says nothing here — and an idle-enforcer pass landing
+   * mid-flow used to dispose the runner while its commit was still being
+   * written, taking the debounced push and the PR card with it.
+   */
+  it("declines a non-forced dispose while the crashed turn's post-turn flow runs", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
+    const filePath = path.join(repoDir, "file.txt");
+    let disposedDuringFlow: boolean | null = null;
+    // Stand in for the idle enforcer arriving mid-flow — same call it makes.
+    const postTurnPrFlow = vi.fn(async () => {
+      runner.dispose();
+      disposedDuringFlow = runner.disposed;
+    });
+
+    const agent = makeFakeAgent(() => fs.writeFileSync(filePath, "work before dying\n"));
+    const deps: SystemTurnDeps = {
+      agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
+      autoCommit: realAutoCommit,
+      scheduleAutoPush: vi.fn(),
+      postTurnPrFlow,
+      listenerDeps: makeListenerDeps(),
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+
+    await executeAgentTurn(runner, deps, agent as never, {
+      agentId: "claude" as AgentId,
+      sessionId: "s1",
+      prompt: "p",
+      userText: "make an edit",
+      emitUserEcho: false,
+      persistUserMessage: vi.fn(),
+      isNewSession: false,
+      fallbackTitle: "t",
+      turnStartHeadHash: null,
+      drainNext: async () => {},
+      emit: () => {},
+      useStreaming: true,
+      emitErrorOnNoResult: true,
+    });
+    await waitFor(() => agent.run.mock.calls.length === 1, "turn started");
+
+    agent.emit("done", 143);
+    await waitFor(() => postTurnPrFlow.mock.calls.length === 1, "post-turn flow ran");
+
+    expect(disposedDuringFlow).toBe(false);
+    // ...and the hold is released, so the runner is reclaimable straight after.
+    await waitFor(() => !runner.postTurnWorkInFlight, "post-turn hold released");
+    runner.dispose();
+    expect(runner.disposed).toBe(true);
+  });
+
+  /**
    * The same crash, but a queued turn drains behind it and starts by discarding
    * working-tree state. The planning#264 commit-before-drain covers this one; the
    * test pins that the crash-path change did not disturb it (and, via the

@@ -138,6 +138,44 @@ describe("auto-push: success and failure", () => {
     });
   });
 
+  /**
+   * The 2026-08-10 incident, end to end. The debounced push used to live on the
+   * session's runner, so a runner reclaimed between the post-turn commit and the
+   * 5s debounce took the push with it — no push, no error, no log line. Asserts
+   * the observable outcome: the commit reaches the remote regardless.
+   */
+  it("pushes even when the runner is disposed before the debounce fires", { timeout: 15_000 }, async () => {
+    await githubAuth.setToken("test-token");
+    const { sessionId, sessionDir } = await createSession();
+    const bareDir = createBareRemote(sessionDir);
+
+    fs.writeFileSync(path.join(sessionDir, "survives-disposal.txt"), "post-turn commit");
+
+    client.send({ type: "send_message", text: "second turn", sessionId });
+    const prevClaude = latestClaude;
+    const claude2 = await waitForClaude(() => latestClaude, prevClaude);
+    claude2.finish("test-session-1");
+
+    // The session is reclaimed the instant the turn ends — the shape the
+    // quota-retry path produced, where the runner left the registry ~150ms
+    // before its own post-turn commit landed.
+    app.runnerRegistry.dispose(sessionId, { force: true });
+
+    const remoteHas = async (): Promise<boolean> => {
+      const files = execSync("git ls-tree -r --name-only --full-tree HEAD || true", {
+        cwd: bareDir,
+        env: { ...process.env, HOME: tmpDir },
+      }).toString();
+      return files.includes("survives-disposal.txt");
+    };
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline && !(await remoteHas())) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+
+    expect(await remoteHas()).toBe(true);
+  });
+
   it("pushes when HEAD moves during a clean turn", { timeout: 15_000 }, async () => {
     await githubAuth.setToken("test-token");
     const { sessionId, sessionDir } = await createSession();

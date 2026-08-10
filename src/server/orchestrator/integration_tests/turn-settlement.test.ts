@@ -23,6 +23,7 @@
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { SessionRunner } from "../session-runner.js";
+import { createAutoPushScheduler } from "../services/auto-push-scheduler.js";
 import { adoptInFlightTurn } from "../turn-adoption.js";
 import type { AgentId, AgentProcess } from "../../shared/types.js";
 import type { TurnOutcome } from "../turn-settlement.js";
@@ -501,15 +502,23 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     expect(runner.agentBusy).toBe(false);
   });
 
-  it("a debounced auto-push keeps the runner busy, and dispose refuses to cancel it", async () => {
+  it("a debounced auto-push keeps the runner busy, and dispose refuses to reclaim under it", () => {
     const runner = newRunner();
     expect(runner.agentBusy).toBe(false);
-    // What `scheduleAutoPush` arms after a turn's commit. `dispose()` CANCELS the
-    // timer (`clearPushTimer`), so a runner reclaimed inside the 5 s debounce
-    // loses the push and the fix commit never reaches the remote — the half of
-    // the 2026-08-10 incident that outlived the commit itself.
-    runner.setPushTimer(setTimeout(() => { /* never fires in this test */ }, 60_000));
-    expect(runner.hasPendingPush).toBe(true);
+
+    // What `scheduleAutoPush` arms after a turn's commit. The timer itself lives
+    // in the app-scoped scheduler (`services/auto-push-scheduler.ts`), so a
+    // reclaim can no longer cancel it — but a reclaim inside the debounce would
+    // still tear down the container the branch is being pushed from, so the
+    // scheduler takes the runner's post-turn hold for the life of the push.
+    const scheduler = createAutoPushScheduler({
+      debounceMs: 60_000,
+      githubAuthManager: { authenticated: true, markTokenInvalid: async () => false },
+      getRunner: () => runner,
+      broadcastLog: () => {},
+    });
+    scheduler.schedule({} as never, "s1");
+    expect(scheduler.pending("s1")).toBe(true);
     expect(runner.agentBusy).toBe(true);
 
     // `agentBusy` alone is not enough: the disk-tier ladder evaluates its guard
@@ -517,9 +526,9 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     // after the only check. The refusal has to live in `dispose()` too.
     runner.dispose();
     expect(runner.disposed).toBe(false);
-    expect(runner.hasPendingPush).toBe(true);
+    expect(scheduler.pending("s1")).toBe(true);
 
-    runner.clearPushTimer();
+    scheduler.cancel("s1");
     expect(runner.agentBusy).toBe(false);
     runner.dispose();
     expect(runner.disposed).toBe(true);

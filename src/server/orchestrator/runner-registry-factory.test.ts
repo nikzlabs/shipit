@@ -47,7 +47,9 @@ describe("createRunnerRegistry — background-work marker wiring", () => {
       githubAuthManager: { authenticated: false } as never,
       agentFactory: undefined,
       chatHistoryManager: {} as never,
-      autoPushDebounceMs: 5000,
+      autoPushScheduler: {
+        schedule: () => {}, cancel: () => {}, cancelAll: () => {}, pending: () => false,
+      },
       sseBroadcast,
       enforceIdleContainerLimit: () => {},
       getDepCacheDir: () => "",

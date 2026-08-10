@@ -19,7 +19,6 @@ function fakeRunner() {
   return {
     sessionId: "s1",
     turnSummary: "do things",
-    clearPushTimer: vi.fn(),
     emitMessage: vi.fn(),
     pendingCommitLink: null as unknown,
   };

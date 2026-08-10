@@ -1604,7 +1604,6 @@ export function wireAgentListeners(
           error: `Agent process error: ${err.message}`,
         });
       }
-      runner.onAgentFinished();
     }
     if (turnSessionId) {
       deps.sseBroadcast("session_agent_finished", { sessionId: turnSessionId });
@@ -1621,5 +1620,20 @@ export function wireAgentListeners(
         console.error("[agent] error-path drain failed:", drainErr);
       }
     }
+    // The runner's "idle" event fires LAST, after `onError` has run this turn's
+    // drain and post-turn commit — the ordering `turn-executor.ts` states for
+    // every other terminal path ("the idle event drives auto-remediation ... so
+    // it must fire only AFTER the post-turn commit/PR work has landed"). This
+    // path used to signal idle *above*, before `onError` was even called, so an
+    // idle-driven `dispose()` could land between the two: the quota-exhaustion
+    // retry clears `running` before the replacement attempt starts, so the
+    // runner's own running-guard reads it as reclaimable while its post-turn
+    // commit is still 150ms away. The commit then landed against a session whose
+    // runner had already left the registry, and the push went with it.
+    //
+    // Safe to defer: `onAgentFinished` is itself guarded on `!running && no
+    // queue`, so a drain that started a fresh turn suppresses the signal rather
+    // than emitting a spurious idle mid-turn — which the old placement did.
+    runner?.onAgentFinished();
   });
 }
