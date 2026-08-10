@@ -10,6 +10,7 @@ import {
   setGitIdentity,
   writeContainerGitConfig,
   CONTAINER_CREDENTIAL_HELPER,
+  FALLBACK_CONTAINER_GIT_IDENTITY,
 } from "./git-config.js";
 
 describe("git-config: initGlobalGitConfig", () => {
@@ -211,6 +212,74 @@ describe("git-config: writeContainerGitConfig (docs/088 finding #5)", () => {
     writeContainerGitConfig(dest);
     const sign = execSync(`git config --file ${dest} commit.gpgsign`, { encoding: "utf-8" }).trim();
     expect(sign).toBe("false");
+  });
+
+  // An `ops` / `sandbox` agent's own commits are the only commits those
+  // sessions get — ShipIt does not auto-commit them (`auto-commit-gate.ts`) —
+  // and `git commit` HARD-FAILS with no identity. A sandbox is the worst case:
+  // repo-less by design and creatable with `capabilities.git` off, so connecting
+  // GitHub (the usual way an identity appears) is not part of its flow.
+  describe("identity floor — the container can always commit", () => {
+    it("falls back to a placeholder identity when the user has configured none", () => {
+      const dest = path.join(tmpDir, "container", ".gitconfig");
+      writeContainerGitConfig(dest);
+
+      const read = (key: string) =>
+        execSync(`git config --file ${dest} ${key}`, { encoding: "utf-8" }).trim();
+      expect(read("user.name")).toBe(FALLBACK_CONTAINER_GIT_IDENTITY.name);
+      expect(read("user.email")).toBe(FALLBACK_CONTAINER_GIT_IDENTITY.email);
+      // RFC 2606 reserved TLD — can never reach a real mailbox.
+      expect(FALLBACK_CONTAINER_GIT_IDENTITY.email).toMatch(/\.invalid$/);
+    });
+
+    it("a real identity always wins, and overrides the fallback retroactively", () => {
+      const dest = path.join(tmpDir, "container", ".gitconfig");
+      // Container provisioned before the user connected GitHub…
+      writeContainerGitConfig(dest);
+      expect(
+        execSync(`git config --file ${dest} user.name`, { encoding: "utf-8" }).trim(),
+      ).toBe(FALLBACK_CONTAINER_GIT_IDENTITY.name);
+
+      // …then the identity is set and the file is regenerated (which is what
+      // `provisionAgentCredentialsFromRoot` does on the next provision).
+      setGitIdentity("Ada Lovelace", "ada@example.com");
+      writeContainerGitConfig(dest);
+
+      const contents = fs.readFileSync(dest, "utf-8");
+      expect(contents).toContain("Ada Lovelace");
+      expect(contents).toContain("ada@example.com");
+      expect(contents).not.toContain(FALLBACK_CONTAINER_GIT_IDENTITY.name);
+    });
+
+    it("end-to-end: a commit succeeds in a repo using only this gitconfig", () => {
+      // The actual failure being prevented — without an identity this is
+      // "Author identity unknown ... fatal: unable to auto-detect email address".
+      const dest = path.join(tmpDir, "container", ".gitconfig");
+      writeContainerGitConfig(dest);
+
+      const repo = path.join(tmpDir, "sandbox-clone");
+      fs.mkdirSync(repo, { recursive: true });
+      // Scrub the ambient identity so the config under test is the only source.
+      // The vars must be DELETED, not set to "" — an empty `GIT_AUTHOR_NAME`
+      // overrides the config and fails with "empty ident name" instead of
+      // falling through to it.
+      const SCRUBBED = new Set([
+        "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL",
+      ]);
+      const env: NodeJS.ProcessEnv = {
+        ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !SCRUBBED.has(k))),
+        GIT_CONFIG_GLOBAL: dest,
+        GIT_CONFIG_SYSTEM: "/dev/null",
+      };
+      const run = (cmd: string) => execSync(cmd, { cwd: repo, encoding: "utf-8", env });
+      run("git init -q -b main");
+      fs.writeFileSync(path.join(repo, "notes.md"), "sandbox work\n");
+      run("git add -A");
+      run('git commit -qm "the agent commits its own work"');
+
+      expect(run("git log --format=%an").trim()).toBe(FALLBACK_CONTAINER_GIT_IDENTITY.name);
+    });
   });
 
   it("rewrites fresh each call — no stale token survives a regeneration", () => {
