@@ -890,9 +890,19 @@ export async function executeAgentTurn(
   // strands `systemTurnInProgress` (suppressing live steering for the rest of
   // the session) and, for a wake-turn, strands its merge-watch at
   // `merge-observed` where the retry supervisor re-delivers it.
+  //
+  // It must also GIVE UP its post-turn hold, which the non-streaming path opens
+  // at `agent_result` and closes in `done`. A retired turn's `done` carries the
+  // previous spawn's `runToken` and is dropped by the docs/146 stale-spawn
+  // guard, so `done` may never run for it — and the hold would then sit until
+  // its deadline, keeping an idle session unreclaimable for no reason. Releasing
+  // a LIVENESS CLAIM is not the teardown this handler is forbidden from doing:
+  // the displacing turn has `running` true, so the runner stays busy on its
+  // account, and the working tree is that turn's to sweep.
   agent.on("superseded", () => {
     wasSuperseded = true;
     finishTurn();
+    releasePostTurn();
   });
 
   let tokenSyncFired = false;
@@ -1303,14 +1313,22 @@ export async function executeAgentTurn(
     // owns the agent ref, the re-dispatch, and ALL terminal work (drain / commit
     // / finished). Stand down so we don't double-drain, emit a spurious error,
     // or finalize a turn that's about to be retried.
-    // Both stand-downs hand every terminal step to the re-dispatched turn, which
-    // opens its own hold — so this turn's must not stay open behind it.
-    if (automaticRecoveryInProgress) { releasePostTurn(); return; }
+    // NOTHING is released on either stand-down, deliberately. Both flags are set
+    // BEFORE this turn produced a result, so no hold of this turn's can be open
+    // here: `willRecoverAuth` runs before the agent is killed, and the quota
+    // gate returns ahead of the `agent_result` branch that opens the hold. The
+    // one state in which a hold IS open under `automaticRecoveryInProgress` is
+    // the FAILED heal — which is running the drain/commit sequence right now,
+    // under its own hold, and a release here would drop it mid-commit. The same
+    // race exists on the quota-retry rejection path. (Found by cross-backend
+    // review; the earlier "release so it can't leak behind the retry" reasoning
+    // was guarding a leak that cannot happen.)
+    if (automaticRecoveryInProgress) return;
     // docs/150 req 14 — same stand-down for the quota retry: `retryOnNextAccount`
     // killed this process on purpose and the re-dispatched turn owns every
     // terminal step. Without this, the kill's `done` would drain the queue and
     // finalize a turn that is being re-run.
-    if (quotaRetryInProgress) { releasePostTurn(); return; }
+    if (quotaRetryInProgress) return;
     // Hold the runner for the whole terminal sequence below — including the
     // early `return`s, which the `finally` covers. On the non-streaming path
     // this ADOPTS the hold `agent_result` already opened (the latch makes it a

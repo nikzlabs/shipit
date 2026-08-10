@@ -399,6 +399,14 @@ export function createRunnerRegistry(
         runner.clearPushTimer();
         runner.setPushTimer(setTimeout(async () => {
           runner.setPushTimer(null);
+          // Nulling the timer above is what lets `clearPushTimer` stop chasing a
+          // timer that already fired — but it also drops the `hasPendingPush`
+          // half of `agentBusy` at the exact moment the network push STARTS, so
+          // the runner reads idle for the whole of it. Carry the busy marker
+          // across the await on the post-turn hold instead: the push is post-turn
+          // work by any definition, and the hold is deadline-bounded so a wedged
+          // push cannot pin the container.
+          runner.beginPostTurnWork();
           try {
             const branch = await pushToOrigin(git);
             if (branch) {
@@ -414,6 +422,8 @@ export function createRunnerRegistry(
             } else {
               console.error("[system-turn] auto-push failed:", getErrorMessage(err));
             }
+          } finally {
+            runner.endPostTurnWork();
           }
         }, autoPushDebounceMs));
       };

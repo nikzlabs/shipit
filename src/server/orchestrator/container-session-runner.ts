@@ -2646,6 +2646,18 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       );
       return;
     }
+    // …and for an armed auto-push. This method CANCELS it a few lines below
+    // (`clearPushTimer`), so a reclaim landing inside the 5 s debounce is the
+    // reason the 2026-08-10 fix commit never reached the remote. `agentBusy`
+    // reports it, but not every reclaim caller re-checks immediately before
+    // disposing — the disk ladder evaluates its guard before an awaited pacing
+    // delay — so the refusal has to live here too.
+    if (this._pushTimer !== null && !opts?.force) {
+      console.log(
+        `[container-runner:${this.sessionId}] dispose() skipped — an auto-push is armed and would be cancelled`,
+      );
+      return;
+    }
     this._disposed = true;
     this._postTurnHold.reset();
 

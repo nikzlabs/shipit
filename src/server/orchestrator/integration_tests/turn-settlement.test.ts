@@ -501,17 +501,54 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     expect(runner.agentBusy).toBe(false);
   });
 
-  it("a debounced auto-push keeps the runner busy — reclaim would cancel it", async () => {
+  it("a debounced auto-push keeps the runner busy, and dispose refuses to cancel it", async () => {
     const runner = newRunner();
     expect(runner.agentBusy).toBe(false);
-    // What `scheduleAutoPush` arms after a turn's commit. `dispose()` clears the
-    // timer, so a runner reclaimed inside the 5 s debounce loses the push and
-    // the fix commit never reaches the remote — the half of the 2026-08-10
-    // incident that outlived the commit itself.
+    // What `scheduleAutoPush` arms after a turn's commit. `dispose()` CANCELS the
+    // timer (`clearPushTimer`), so a runner reclaimed inside the 5 s debounce
+    // loses the push and the fix commit never reaches the remote — the half of
+    // the 2026-08-10 incident that outlived the commit itself.
     runner.setPushTimer(setTimeout(() => { /* never fires in this test */ }, 60_000));
     expect(runner.hasPendingPush).toBe(true);
     expect(runner.agentBusy).toBe(true);
+
+    // `agentBusy` alone is not enough: the disk-tier ladder evaluates its guard
+    // BEFORE an awaited pacing delay, so a push armed during that delay is armed
+    // after the only check. The refusal has to live in `dispose()` too.
+    runner.dispose();
+    expect(runner.disposed).toBe(false);
+    expect(runner.hasPendingPush).toBe(true);
+
     runner.clearPushTimer();
+    expect(runner.agentBusy).toBe(false);
+    runner.dispose();
+    expect(runner.disposed).toBe(true);
+  });
+
+  // A retired turn's `done` carries the previous spawn's `runToken` and is
+  // dropped by the docs/146 stale-spawn guard, so `done` may never run for it.
+  // The non-streaming path opens its hold at `agent_result` and closes it in
+  // `done` — so a superseded turn has to give the hold up itself, or an idle
+  // session sits unreclaimable until the hold's deadline for no reason.
+  it("a superseded turn gives up its post-turn hold instead of leaking it", async () => {
+    const runner = newRunner();
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "CI is red — fix it", systemTurn: true }));
+    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "fix turn start");
+
+    // Opens the hold (non-streaming: the commit is due in `done`).
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await flushTurn();
+    expect(runner.postTurnWorkInFlight).toBe(true);
+
+    // A newer spawn takes the agent slot. This turn's own `done` will now be
+    // dropped as stale, so nothing else can close the hold.
+    agents[0]!.emit("superseded");
+    await flushTurn();
+    expect(runner.postTurnWorkInFlight).toBe(false);
     expect(runner.agentBusy).toBe(false);
   });
 

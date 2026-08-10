@@ -61,6 +61,26 @@ describe("PostTurnHold", () => {
     expect(hold.active).toBe(true);
   });
 
+  // A leaked hold stops COUNTING at its deadline, but the leaked depth survives
+  // — so without forfeiting it, the next turn's `begin()` re-arms the deadline
+  // over the stale depth and its matching `end()` unwinds only back to it. The
+  // hold would then read active again with nobody holding it, and every later
+  // turn would extend a lease nobody owns.
+  it("forfeits an expired hold instead of letting later turns resurrect it", () => {
+    const { hold, advance } = withClock();
+    hold.begin();          // leaked — its `end()` never comes
+    advance(POST_TURN_HOLD_MAX_MS + 1);
+    expect(hold.active).toBe(false);
+
+    // A later, well-behaved turn.
+    hold.begin();
+    expect(hold.active).toBe(true);
+    hold.end();
+    // Balanced, so the hold is genuinely free again — not pinned by the corpse
+    // of the leaked one.
+    expect(hold.active).toBe(false);
+  });
+
   it("reset drops every hold (runner teardown)", () => {
     const { hold } = withClock();
     hold.begin();

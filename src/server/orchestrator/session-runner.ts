@@ -2009,6 +2009,20 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
       );
       return;
     }
+    // …and for an armed auto-push, because the very next thing this method does
+    // is `clearPushTimer()` — it does not merely race the push, it cancels it,
+    // and the commit then never reaches the remote. `agentBusy` says a runner in
+    // this state is not idle, but the reclaim callers do not all re-check it
+    // immediately before disposing: the disk ladder evaluates its guard before
+    // an awaited pacing delay, so a turn that commits during that delay arms the
+    // timer after the only check. Declining here is what makes the two agree
+    // wherever the call comes from. Bounded by the 5 s debounce.
+    if (this._pushTimer !== null && !opts?.force) {
+      console.log(
+        `[session-runner:${this.sessionId}] dispose() skipped — an auto-push is armed and would be cancelled`,
+      );
+      return;
+    }
     this._disposed = true;
     this._postTurnHold.reset();
     // docs/144 — cancel any in-flight sub-agent spawns before tearing down.

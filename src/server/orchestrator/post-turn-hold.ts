@@ -46,8 +46,19 @@ export class PostTurnHold {
 
   constructor(private readonly now: () => number = () => Date.now()) {}
 
-  /** Enter a terminal sequence. Re-arms the deadline. */
+  /**
+   * Enter a terminal sequence. Re-arms the deadline.
+   *
+   * An EXPIRED depth is forfeited first. The deadline makes a leaked hold stop
+   * *counting*, but the leaked depth itself survives, so without this the next
+   * `begin()` would re-arm the deadline over it and the matching `end()` would
+   * unwind only to the stale depth — leaving the hold active again and handing
+   * every later turn the job of extending a lease nobody owns. Once a sequence
+   * has outlived its deadline we have already decided not to trust it; the
+   * honest move is to drop it rather than let it accumulate.
+   */
   begin(): void {
+    if (this.depth > 0 && this.now() >= this.deadline) this.depth = 0;
     this.depth++;
     this.deadline = this.now() + POST_TURN_HOLD_MAX_MS;
   }

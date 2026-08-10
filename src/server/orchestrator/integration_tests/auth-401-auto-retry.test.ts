@@ -291,6 +291,54 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     runner.dispose({ force: true });
   });
 
+  // A late `done` must not release the FAILED-HEAL sequence's post-turn hold.
+  //
+  // `recoverAuth`'s heal-failed branch runs this turn's whole terminal sequence
+  // (drain → commit → finished → settle) under the post-turn hold that keeps the
+  // runner off the idle-reclaim list. The killed agent's `done` can arrive while
+  // that sequence is mid-commit, and it takes the `automaticRecoveryInProgress`
+  // stand-down — which briefly ALSO released the hold, on the mistaken theory
+  // that the re-dispatched turn owned it. There is no re-dispatched turn on this
+  // branch: the release just reopened the window over the commit. (Found by
+  // cross-backend review.)
+  it("a late `done` does not release the failed-heal sequence's reclaim hold", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const ensureAgentTokenFresh = vi.fn().mockResolvedValue(false); // heal fails
+    const { deps } = makeDeps(agents, ensureAgentTokenFresh);
+    // Hold the commit open so the terminal sequence is observably in flight.
+    let releaseCommit!: () => void;
+    const commitGate = new Promise<void>((r) => { releaseCommit = r; });
+    deps.autoCommit = vi.fn().mockImplementation(async () => {
+      await commitGate;
+      return { commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [] };
+    });
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+
+    // 401 → heal fails → the terminal sequence starts and parks in the commit.
+    agents[0]!.emit("auth_required");
+    await waitFor(() => (deps.autoCommit as ReturnType<typeof vi.fn>).mock.calls.length === 1, "commit started");
+    expect(runner.postTurnWorkInFlight).toBe(true);
+    expect(runner.agentBusy).toBe(true);
+
+    // The killed process's `done` lands mid-commit.
+    agents[0]!.emit("done", 0);
+    await flush();
+    // Before the fix this was false: the stand-down had dropped the hold and the
+    // runner was reclaimable with its commit still running.
+    expect(runner.postTurnWorkInFlight).toBe(true);
+    expect(runner.agentBusy).toBe(true);
+
+    releaseCommit();
+    await waitFor(() => !runner.postTurnWorkInFlight, "hold released after the commit");
+    expect(runner.agentBusy).toBe(false);
+
+    runner.dispose({ force: true });
+  });
+
   it("does not loop: a second auth_required on the re-dispatched turn surfaces the card instead of healing again", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];

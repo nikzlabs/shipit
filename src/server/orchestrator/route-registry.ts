@@ -925,6 +925,13 @@ export async function registerRoutes(
         runner.clearPushTimer();
         runner.setPushTimer(setTimeout(async () => {
           runner.setPushTimer(null);
+          // Keep the runner busy across the push itself, not just the debounce.
+          // Nulling the timer above drops the `hasPendingPush` half of
+          // `agentBusy` at the moment the network call STARTS, so without this a
+          // reclaim pass mid-push sees an idle session — and the `evict` rung's
+          // next step is deleting the checkout the push is reading from. The
+          // hold is deadline-bounded, so a wedged push cannot pin the container.
+          runner.beginPostTurnWork();
           try {
             if (!githubAuthManager.authenticated) return;
             const branch = await pushToOrigin(git);
@@ -969,6 +976,10 @@ export async function registerRoutes(
               : `Auto-push failed: ${errMsg}`;
             broadcastLog(runner.sessionId, "server", text);
             runner.emitMessage(agentLogAppend("server", text));
+          } finally {
+            // Every branch above returns early somewhere; the `finally` is what
+            // makes the hold release on all of them.
+            runner.endPostTurnWork();
           }
         }, autoPushDebounceMs));
       };
