@@ -6,6 +6,7 @@ import { CredentialStore } from "../credential-store.js";
 import { ProviderAccountManager, providerAccountCredentialRoot } from "../provider-account-manager.js";
 import { SessionManager } from "../sessions.js";
 import { createTestDatabaseManager } from "../integration_tests/test-helpers.js";
+import { writeSessionAccountMarker } from "../session-credentials.js";
 import { signOutProvider } from "./settings.js";
 import type { AgentAuthManager } from "../agent-auth-manager.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
@@ -32,11 +33,17 @@ describe("signOutProvider", () => {
   let signedOutProviders: string[];
 
   const registry = () => ({
+    ids: () => [...new Set([...residentAgents.keys(), ...runningSessionIds])],
     get: (id: string) => {
       const resident = residentAgents.get(id);
       if (!resident && !runningSessionIds.has(id)) return undefined;
       return {
+        sessionId: id,
         running: runningSessionIds.has(id),
+        backgroundWorkDescriptions: [] as string[],
+        // No spawn stamp in these fakes — the marker fallback identifies the
+        // process's account, which is exactly the post-restart shape.
+        residentRoute: undefined,
         getAgent: () => (resident ? { kill: () => { resident.killed = true; } } : null),
         setAgent: (agent: unknown) => { if (resident && agent === null) resident.cleared = true; },
       };
@@ -67,10 +74,15 @@ describe("signOutProvider", () => {
     return account.id;
   }
 
+  /**
+   * docs/260 — a session "on" an account means its credential subtree records
+   * that account in its marker; no session-row pin exists any more.
+   */
   function pinSession(id: string, accountId: string, agentId: "claude" | "codex" = "claude"): void {
     sessions.track(id, id);
     sessions.setAgentId(id, agentId);
-    sessions.setProviderRoute(id, "account", accountId);
+    fs.mkdirSync(path.join(root, "sessions", id), { recursive: true });
+    writeSessionAccountMarker(root, id, agentId, accountId);
   }
 
   beforeEach(() => {
@@ -168,15 +180,17 @@ describe("signOutProvider", () => {
    * strand the session, since env prep only provisions for a session that is not
    * yet pinned.
    */
-  it("leaves the pin pointing at the gone account so the session can re-route", () => {
+  it("routes the session's next turn through selection once accounts are gone (req 1)", () => {
     const a = connectAccount("A");
     pinSession("s1", a);
     seedSessionCredentials("s1", "token-A");
 
     signOutProvider(accounts, sessions, registry(), "claude", { credentialsDir: root });
 
-    expect(sessions.get("s1")?.providerRouteId).toBe(a);
-    expect(accounts.isRouteUsableForTurn("anthropic", { kind: "account", id: a })).toBe(false);
+    // docs/260 — no pin survives sign-out because no pin exists at all: the
+    // next turn selects among whatever accounts remain, and with none left the
+    // selector answers auth_required rather than naming a ghost.
+    expect(accounts.selectAccountForTurn("anthropic")).toEqual({ ok: false, reason: "auth_required" });
   });
 
   /**

@@ -112,7 +112,9 @@ function makeFakeAgent(): FakeAgent {
 function makeDeps(
   agents: FakeAgent[],
   ensureAgentTokenFresh: SystemTurnDeps["ensureAgentTokenFresh"],
-  resolveTurnAccountId?: SystemTurnDeps["resolveTurnAccountId"],
+  // docs/260 — the heal is scoped by the TURN'S OWN captured route, which the
+  // executor takes from `prepareAgentEnv`'s returned `turnRoute`.
+  turnRoute?: { kind: "account" | "reserved"; id: string },
 ): {
   deps: SystemTurnDeps;
   sseBroadcast: ReturnType<typeof vi.fn>;
@@ -127,7 +129,7 @@ function makeDeps(
       return a as unknown as ReturnType<SystemTurnDeps["agentFactory"]>;
     },
     ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
-    ...(resolveTurnAccountId ? { resolveTurnAccountId } : {}),
+    ...(turnRoute ? { prepareAgentEnv: async () => ({ turnRoute }) } : {}),
     autoCommit: vi.fn().mockResolvedValue({
       commitHash: null,
       parentHash: null,
@@ -518,12 +520,13 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     runner.dispose({ force: true });
   });
 
-  // docs/150 — with several accounts per provider, the heal has to name the
-  // account this turn is pinned to. Provider-wide, `ensureAgentTokenFresh`
-  // refreshes every account and returns `results.every(Boolean)`, so a second
-  // account that is revoked (or was never signed in) makes the aggregate false
-  // and a healthy account's turn gets a sign-in card it did not need.
-  it("heals the account the turn is pinned to, not the whole provider", async () => {
+  // docs/260 — with several accounts per provider, the heal has to name the
+  // account this TURN ran on (the captured route). Provider-wide,
+  // `ensureAgentTokenFresh` refreshes every account and returns
+  // `results.every(Boolean)`, so a second account that is revoked (or was
+  // never signed in) makes the aggregate false and a healthy account's turn
+  // gets a sign-in card it did not need.
+  it("heals the account the turn ran on, not the whole provider", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];
     // Stands in for the real healer: account-scoped calls heal, a
@@ -534,7 +537,7 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     const { deps, startOAuthFlow } = makeDeps(
       agents,
       ensureAgentTokenFresh as unknown as SystemTurnDeps["ensureAgentTokenFresh"],
-      () => "acct_healthy",
+      { kind: "account", id: "acct_healthy" },
     );
     runner.setSystemTurnDeps(deps);
 
@@ -552,7 +555,7 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     runner.dispose({ force: true });
   });
 
-  // docs/150 — a session pinned to a reserved route (`claude-api-key`,
+  // docs/260 — a turn that ran on a reserved route (`claude-api-key`,
   // `claude-env-oauth`) has no account token of its own. Rotating every
   // *subscription* account and reporting the aggregate answers a question
   // nobody asked: a bad API key would read as healed because the subscriptions
@@ -566,8 +569,8 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     const { deps } = makeDeps(
       agents,
       ensureAgentTokenFresh,
-      // Pinned to `claude-api-key` — not an account.
-      () => undefined,
+      // The turn ran on `claude-api-key` — not an account.
+      { kind: "reserved", id: "claude-api-key" },
     );
     runner.setSystemTurnDeps(deps);
 

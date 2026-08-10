@@ -54,6 +54,7 @@ import { projectConsultCardForWire } from "../transcript-projection.js";
 import {
   provisionSubAgentCredentials,
   provisionProviderAccountCredentials,
+  readSessionAccountMarker,
   removeSubAgentCredentials,
   syncAgentTokenBack,
   syncProviderAccountTokenBack,
@@ -673,19 +674,19 @@ export async function runSubAgent(
         + `account=${accountId ?? "flat"}`,
       );
       // A same-provider consult temporarily borrows the session's provider
-      // subtree while the primary is blocked waiting for it. Put the pinned
-      // account back before the primary resumes; cross-provider runs touched a
-      // different subtree, so there is nothing to restore.
-      if (
-        subAgentId === session.agentId
-        && session.providerRouteKind === "account"
-        && session.providerRouteId
-      ) {
+      // subtree while the primary is blocked waiting for it. Put the subtree's
+      // own recorded account back before the primary resumes (docs/260 — the
+      // marker, not a session row, says whose credentials the subtree holds;
+      // the borrow provisions through `provisionSubAgentCredentials`, which
+      // never touches it). Cross-provider runs touched a different subtree, so
+      // there is nothing to restore.
+      const restoreAccountId = readSessionAccountMarker(credentialsDir, sessionId)[subAgentId];
+      if (subAgentId === session.agentId && restoreAccountId) {
         provisionProviderAccountCredentials(
           credentialsDir,
           sessionId,
           subAgentId,
-          session.providerRouteId,
+          restoreAccountId,
         );
       }
     }

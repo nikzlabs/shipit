@@ -73,7 +73,10 @@ describe("reserved routes never become subscription accounts (req 12)", () => {
     // subscription must not silently start spending money — the turn fails and
     // the user is told when the window resets.
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
-    const resetAt = Date.now() + 45 * 60 * 1000;
+    // Inside the docs/260 re-probe cap, so the STATED reset is what the
+    // failure names; a longer reset would be truncated to the ~30-minute cap
+    // (req 9 — a refusal is re-tried within the cap whatever it claims).
+    const resetAt = Date.now() + 20 * 60 * 1000;
     const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
     const acct = mgr.create("anthropic", "Subscription");
     mgr.setAccountStatus("anthropic", acct.id, "ready");

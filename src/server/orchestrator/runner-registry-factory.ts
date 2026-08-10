@@ -1,8 +1,12 @@
+import { readSessionAccountMarker, readSessionResidentRoute } from "./session-credentials.js";
+import { queuedMessageToDispatchOptions } from "./prepared-dispatch.js";
 import type { GitManager } from "../shared/git.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
-import { AgentTurnAdmissionError, SessionRunnerRegistry } from "./session-runner.js";
-import type { SessionRunnerInterface } from "./session-runner.js";
+import { AgentTurnAdmissionError, SessionRunnerRegistry, dispatchOnRunner } from "./session-runner.js";
+import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
+import { billingModeForRoute } from "./sessions.js";
+import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
 import type { RepoStore } from "./repo-store.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { GitHubAuthManager } from "./github-auth.js";
@@ -39,8 +43,7 @@ import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
-import { sessionAccountId, sessionNeedsAccountFailover } from "./services/provider-account-switch.js";
-import { sessionNeedsCredentialFailover } from "./service-routing.js";
+import { residentRouteNeedsRelease} from "./service-routing.js";
 import type { GenerateText } from "./non-turn-model.js";
 
 // ---- Runner registry setup ----
@@ -332,6 +335,23 @@ export function createRunnerRegistry(
           sessionId: runner.sessionId,
           backgroundTasks: runner.backgroundWorkDescriptions,
         });
+        // docs/260 req 13 — a system turn deferred behind background work
+        // (the dispatch gate in `dispatchOnRunner`) drains the moment the
+        // work clears, rather than waiting for the next user turn. Re-enter
+        // through `dispatchOnRunner` so the entry keeps its settlement (the
+        // planning#257/planning#261 rule). `systemTurnDeps` is initialized below in
+        // this same creation block, before any event can fire.
+        if (
+          runner.backgroundWorkDescriptions.length === 0
+          && !runner.running
+          && runner.queueLength > 0
+        ) {
+          const next = runner.dequeue();
+          if (next) {
+            runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+            dispatchOnRunner(runner, systemTurnDeps, queuedMessageToDispatchOptions(next));
+          }
+        }
       });
       // planning#341 — keep the composer's "start from the latest base" control
       // honest between turns: recompute + push `reset_eligible` when the
@@ -399,7 +419,7 @@ export function createRunnerRegistry(
       const schedulePushGit = (git: GitManager): void => {
         autoPushScheduler.schedule(git, runner.sessionId);
       };
-      runner.setSystemTurnDeps({
+      const systemTurnDeps: SystemTurnDeps = {
         authorizeDispatch: (sessionId) => {
           const session = sessionManager.get(sessionId);
           assertSessionCanDispatch(sessionId, session, (remoteUrl) =>
@@ -429,7 +449,7 @@ export function createRunnerRegistry(
         // model, no MCP, no autoCreatePr). When `credentialStore` is absent
         // (extreme-minimal test setup) we fall back to the minimal shape
         // so we don't regress those callers.
-        buildRunParams: async (sessionId, agentId, prompt) => {
+        buildRunParams: async (sessionId, agentId, prompt, turnRoute) => {
           const session = sessionManager.get(sessionId);
           if (!credentialStore) {
             return {
@@ -451,6 +471,7 @@ export function createRunnerRegistry(
             sessionId,
             agentId,
             prompt,
+            ...(turnRoute ? { turnRoute } : {}),
             sessionDir: runner.sessionDir,
             ...(session?.agentSessionId !== undefined ? { agentSessionId: session.agentSessionId } : {}),
           });
@@ -480,7 +501,7 @@ export function createRunnerRegistry(
           // quick/child/CI-fix turn spawn with a sibling-rotated (dead) token →
           // "Not logged in". Idempotent with the service fn's earlier call.
           prepareAgentEnv: async (sessionId, agentId, envOpts) => {
-            await prepareSessionAgentEnvironment(runner, {
+            return prepareSessionAgentEnvironment(runner, {
               sessionId,
               agentId,
               // docs/150 req 13 — the dispatched/system-turn twin of the WS
@@ -491,6 +512,9 @@ export function createRunnerRegistry(
               // (`dispatched-turn.ts` captures it), so it needs the same
               // no-repair-under-a-live-CLI guarantee as the WS path.
               ...(envOpts?.reusingResidentAgent ? { reusingResidentAgent: true } : {}),
+              ...(envOpts?.excludeRouteIds ? { excludeRouteIds: envOpts.excludeRouteIds } : {}),
+              ...(envOpts?.residentRoute ? { residentRoute: envOpts.residentRoute } : {}),
+              ...(envOpts?.requireResidentRoute ? { requireResidentRoute: true } : {}),
               deps: {
                 credentialsDir, credentialStore, sessionManager, chatHistoryManager,
                 ...(providerAccountManager ? { providerAccountManager } : {}),
@@ -498,19 +522,41 @@ export function createRunnerRegistry(
               },
             });
           },
-          // docs/252 phase 5 — a benched string-delivered subscription credential
-          // retires the resident process on the same terms an exhausted account
-          // does, so this is no longer gated on there being an account manager at
-          // all: a GLM-only install has none, and its failover has to work.
-          // `sessionNeedsAccountFailover` answers false without one.
-          needsAccountFailover: (sessionId: string) =>
-            sessionNeedsAccountFailover(sessionManager.get(sessionId), providerAccountManager)
-            || sessionNeedsCredentialFailover(sessionManager.get(sessionId), credentialStore),
-          ...(providerAccountManager ? {
-            // docs/150 — scope the runtime-401 heal to this turn's account.
-            resolveTurnAccountId: (sessionId: string) =>
-              sessionAccountId(sessionManager.get(sessionId)),
+          // docs/260 §5 — post-restart resident identity. The resident-route
+          // record (written at every routed spawn) is authoritative — it is
+          // the only identity a string/env-delivered credential leaves behind
+          // (reqs 11/13). The account marker is the fallback for processes
+          // spawned before the record existed.
+          ...(credentialsDir ? {
+            recoverResidentRoute: (sessionId: string, agentId: AgentId) => {
+              const recorded = readSessionResidentRoute(credentialsDir, sessionId)[agentId];
+              if (recorded) return recorded;
+              const marked = readSessionAccountMarker(credentialsDir, sessionId)[agentId];
+              return marked !== undefined ? { kind: "account" as const, id: marked } : undefined;
+            },
           } : {}),
+          // docs/260 req 10 — labels for the attempt-loop notices.
+          routeLabel: (routeId: string) =>
+            providerAccountManager?.getByRouteId(routeId)?.label
+            ?? credentialStore.getCredentialRoute(routeId)?.label,
+          // docs/260 req 2 — billing mode + service of the turn's captured
+          // route, so failure policy never re-reads the session row.
+          routeProfile: (kind: ProviderRouteKind, routeId: string) => {
+            const row = providerAccountManager?.getByRouteId(routeId)
+              ?? credentialStore.getCredentialRoute(routeId);
+            if (row) return { billingMode: row.billingMode, serviceId: row.serviceId };
+            const mode = billingModeForRoute(kind, routeId);
+            return mode ? { billingMode: mode } : undefined;
+          },
+          // docs/260 — the dispatched-turn twin of the WS pre-capture check:
+          // release the resident process only when selection would land this
+          // turn on a DIFFERENT credential, and never while the process holds
+          // background work (req 13 — the check itself answers false then).
+          needsAccountFailover: (sessionId: string) =>
+            residentRouteNeedsRelease(sessionManager.get(sessionId), runner.agentId, runner, {
+              credentialStore,
+              ...(providerAccountManager ? { providerAccountManager } : {}),
+            }),
         } : {}),
         // Single shared commit helper — same `postTurnCommit` the WS path uses
         // (workspace-locked auto-commit + conflict notice + auto-push + commit
@@ -629,7 +675,8 @@ export function createRunnerRegistry(
             }
           },
         } : {}),
-      });
+      };
+      runner.setSystemTurnDeps(systemTurnDeps);
 
       // In local mode (dogfooding), the orchestrator can't manage Docker —
       // skip ServiceManager wiring entirely for inner sessions. This also

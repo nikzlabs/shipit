@@ -6,6 +6,8 @@
  * enforces resource limits.
  */
 
+import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
+import type { BillingMode } from "../shared/catalogue/types.js";
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, TerminalProcess, AgentRunParams, SessionInfo, SessionMessageOrigin } from "../shared/types.js";
 import type { WsServerMessage, ImageAttachment, FileContextRef, UploadRef, PermissionMode, ClaudeContentBlockToolUse, SkillInfo } from "../shared/types.js";
@@ -440,6 +442,22 @@ export function dispatchOnRunner(
     return enqueueAndReport();
   }
 
+  // docs/260 req 13 — a resident process holding background work (a sub-agent
+  // review, agent-started background tasks) may not be displaced by a system
+  // turn: a system turn always spawns fresh, and the fresh spawn retires the
+  // resident (`dispatched-turn.ts`), losing the tokens already spent on that
+  // work. Enqueue instead; the queue drains the moment the work clears (the
+  // `background_work` nudge in `runner-registry-factory.ts`) or on the next
+  // turn boundary. User-initiated turns are unaffected — they reuse the
+  // resident process or run on its own account (`requireResidentRoute`).
+  if (
+    opts.systemTurn
+    && runner.getAgent() !== null
+    && runner.backgroundWorkDescriptions.length > 0
+  ) {
+    return enqueueAndReport();
+  }
+
   // Flip running=true synchronously BEFORE scheduling the async dispatched
   // turn. Without this, the microtask gap between `void runDispatchedTurn(...)`
   // and the executor's own `runner.running = true` is a window where a
@@ -675,7 +693,13 @@ export interface SystemTurnDeps {
    * this, system turns used to run with only `{ prompt, sessionId, cwd }` and
    * inherited none of the user-path agent configuration.
    */
-  buildRunParams: (sessionId: string, agentId: AgentId, prompt: string) => Promise<AgentRunParams>;
+  buildRunParams: (
+    sessionId: string,
+    agentId: AgentId,
+    prompt: string,
+    /** docs/260 §1b — the turn's selected credential route, threaded as a value. */
+    turnRoute?: { kind: ProviderRouteKind; id: string },
+  ) => Promise<AgentRunParams>;
   /**
    * planning#266 — re-acquire the completion settlement for a DELIVERY whose turn
    * outlived an orchestrator restart.
@@ -785,15 +809,52 @@ export interface SystemTurnDeps {
        * `prepareSessionAgentEnvironment`'s `reusingResidentAgent`.
        */
       reusingResidentAgent?: boolean;
+      /** docs/260 §3 — routes refused this turn; selection excludes them. */
+      excludeRouteIds?: readonly string[];
+      /** docs/260 §5 — the resident process's credential route, when alive. */
+      residentRoute?: { kind: ProviderRouteKind; id: string };
+      /**
+       * docs/260 reqs 8/13 — the turn MUST run on `residentRoute` (a reused
+       * live process, or one holding background work that may not be killed).
+       */
+      requireResidentRoute?: boolean;
     },
-  ) => Promise<void>;
+  ) => Promise<{ turnRoute?: { kind: ProviderRouteKind; id: string } } | undefined>;
   /**
-   * docs/150 — whether the persisted provider account must change before the
-   * next agent is captured. The dispatch adapter uses this to retire a
-   * resident streaming process before creating the incoming turn's agent;
-   * environment prep later performs the credential and route switch.
+   * docs/260 — whether the resident streaming process's credential differs
+   * from what this turn's selection would choose. The dispatch adapter uses
+   * this to retire the process before creating the incoming turn's agent;
+   * environment prep later performs the credential switch. Never true while
+   * the process holds background work (req 13).
    */
   needsAccountFailover?: (sessionId: string, agentId: AgentId) => boolean;
+  /**
+   * docs/260 §5 — recover a re-adopted resident process's credential identity
+   * from the session's credential-subtree account marker. The account a
+   * surviving CLI runs on IS the marker: any account change retires the
+   * process before reprovisioning, so the two cannot diverge. Wired by the
+   * registry factory; optional in tests (adoption then runs unattributed,
+   * exactly as before docs/260).
+   */
+  recoverResidentRoute?: (sessionId: string, agentId: AgentId) => { kind: ProviderRouteKind; id: string } | undefined;
+  /**
+   * docs/260 req 10 — the user-facing label for a credential route id
+   * (account label or stored-credential label), for the attempt-loop notices
+   * and the terminal all-refused message. Optional — tests omit it and the
+   * raw id is shown.
+   */
+  routeLabel?: (routeId: string) => string | undefined;
+  /**
+   * docs/260 req 2/req 12 — resolve a credential route id to its billing mode
+   * and owning service, so failure policy (retry vs stop, heal vs set aside)
+   * branches on the TURN'S OWN captured route rather than a session row.
+   * Optional — when absent or unresolvable, policy falls back to the
+   * session's model selection.
+   */
+  routeProfile?: (
+    kind: ProviderRouteKind,
+    routeId: string,
+  ) => { billingMode: BillingMode; serviceId?: string } | undefined;
   /**
    * docs/179 — heal the agent's OAuth source token. Used by the runtime-401
    * auto-retry: when a turn's CLI emits `auth_required`, the executor awaits
@@ -827,19 +888,6 @@ export interface SystemTurnDeps {
    * guard would have kept in place. Optional — omitted in tests / local runtime.
    */
   repushSessionAgentToken?: (sessionId: string, agentId: AgentId) => void;
-  /**
-   * docs/150 — the provider account this session's turn is running on, or
-   * `undefined` when unpinned / on a reserved route.
-   *
-   * Exists so the runtime-401 recovery above can heal **that** account rather
-   * than the provider. Called with no account id, `ensureAgentTokenFresh`
-   * refreshes every connected account and returns `results.every(Boolean)` —
-   * fine when a provider had exactly one account, wrong once it can have
-   * several: a second account that is revoked or never signed in makes the
-   * aggregate false, so a healthy account's turn is told it could not heal and
-   * the user gets a sign-in card for an account that was fine.
-   */
-  resolveTurnAccountId?: (sessionId: string) => string | undefined;
   /**
    * Single shared post-turn commit helper — the same `postTurnCommit` the WS
    * path uses (auto-commit + conflict notice + workspace-locked `git add` +
@@ -1245,6 +1293,21 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    */
   appliedSpawnIdentity: string | undefined;
   /**
+   * docs/260 §5 — the credential route the RESIDENT process was spawned with
+   * (`{kind, id}` of the turn route that provisioned its credentials), or
+   * `undefined` when no resident process exists or it predates the stamp.
+   * Typed runner state, deliberately not derived from the session row (which
+   * no longer records a route): the pre-capture release check compares the
+   * next turn's selection against this, req 13's guard and disconnect
+   * enumerate processes by it, and balanced-mode selection prefers it while
+   * eligible (req 8). Set at spawn from the turn route; cleared whenever the
+   * agent slot empties. After an orchestrator restart it is recovered from
+   * the session's credential-subtree account marker — the account a surviving
+   * CLI runs on IS the marker, since any account change retires the process
+   * before reprovisioning.
+   */
+  residentRoute: { kind: ProviderRouteKind; id: string } | undefined;
+  /**
    * docs/182 — true when the runner's most recent completed turn ended in an
    * error (agent process error, or an errored `agent_result` that wasn't a
    * deliberate interrupt). Set definitively at every turn completion (false on a
@@ -1619,6 +1682,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _isStreamingActive = false;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
   private _appliedSpawnIdentity: string | undefined = undefined;
+  /** See `SessionRunnerInterface.residentRoute` — the resident CLI's credential route. */
+  private _residentRoute: { kind: ProviderRouteKind; id: string } | undefined = undefined;
   private _accumulatedText = "";
   private _accumulatedToolUse: ClaudeContentBlockToolUse[] = [];
   private _turnSummary = "";
@@ -1745,6 +1810,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set appliedPermissionMode(v: PermissionMode | undefined) { this._appliedPermissionMode = v; }
   get appliedSpawnIdentity(): string | undefined { return this._appliedSpawnIdentity; }
   set appliedSpawnIdentity(v: string | undefined) { this._appliedSpawnIdentity = v; }
+  get residentRoute(): { kind: ProviderRouteKind; id: string } | undefined { return this._residentRoute; }
+  set residentRoute(v: { kind: ProviderRouteKind; id: string } | undefined) { this._residentRoute = v; }
   get accumulatedText(): string { return this._accumulatedText; }
   set accumulatedText(s: string) { this._accumulatedText = s; }
   get accumulatedToolUse(): ClaudeContentBlockToolUse[] { return this._accumulatedToolUse; }
@@ -1832,6 +1899,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
       // alive it is still running its spawn-time model, endpoint and credential,
       // so the drift check must keep comparing against it across proxy/ref churn.
       this._appliedSpawnIdentity = undefined;
+      this._residentRoute = undefined;
     }
   }
 
@@ -2034,6 +2102,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     this._backgroundTasks.clear();
     this._appliedPermissionMode = undefined;
     this._appliedSpawnIdentity = undefined;
+      this._residentRoute = undefined;
     // planning#246 — the fields above were written directly rather than through
     // their setters, so say so before `removeAllListeners()` takes the channel
     // away. A disposed runner holds nothing outstanding, and the sidebar has no

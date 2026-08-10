@@ -34,14 +34,40 @@ import {
   detectHardExhaustionInTurnText,
   exhaustionLockoutUntil,
 } from "./ws-handlers/agent-rate-limits.js";
-import { stopsOnCredentialFailure } from "./credential-failure-policy.js";
+import { credentialFailurePolicyForRoute, stopsOnCredentialFailure } from "./credential-failure-policy.js";
+import type { CredentialFailurePolicy } from "./credential-failure-policy.js";
 import { ProviderRouteUnavailableError } from "./provider-route-preflight.js";
+
+/**
+ * docs/260 §3 — one refused attempt in a turn's attempt loop: which credential,
+ * what the provider actually said, and when it claims the window resets.
+ */
+export interface RefusedAttempt {
+  routeId: string;
+  label: string;
+  providerMessage: string;
+  resetAt: string | null;
+}
+
+/**
+ * docs/260 req 6 — the terminal all-refused message, built ONLY from this
+ * turn's actual refusals. Ends with what the user can do about it, matching
+ * the routing message it replaces — and a resend genuinely re-tries every
+ * account (req 12), so the sentence is true by construction.
+ */
+export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
+  const lines = ledger.map((entry) => {
+    const reset = entry.resetAt ? ` (resets at ${entry.resetAt})` : "";
+    return `- ${entry.label}${reset}: ${entry.providerMessage}`;
+  });
+  return `Every connected account refused this turn for quota:\n${lines.join("\n")}\nSend this message again to re-try every account, or connect another account in Settings.`;
+}
 import { resetRunnerTurnState } from "./session-runner.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
 import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
-import { emitChatCard, emitNoticePostTurn } from "./chat-card-persistence.js";
+import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { TURN_COMPLETED, turnErrored, turnInterrupted, turnNoResult, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 
@@ -93,13 +119,15 @@ export interface TurnInput {
   /** One shared retry budget for automatic auth and stale-resume recovery. */
   recoveryRetryUsed?: boolean;
   /**
-   * docs/150 req 14 — set on the quota-retry re-dispatch (a turn re-run after
-   * the provider killed it for subscription exhaustion). Bounds the retry to
-   * exactly one: if the second account is spent too, the turn fails normally
-   * rather than walking down every account one process at a time. Absent on a
-   * first attempt.
+   * docs/260 §3 — the attempt ledger: every credential the provider refused
+   * during THIS logical turn, in refusal order. Present on attempt-loop
+   * re-dispatches, absent on a first attempt. It bounds the loop — each
+   * retry's selection excludes every entry, so a credential is attempted at
+   * most once per turn — and it is the only material the terminal all-refused
+   * message may be built from (req 6: what the provider said, not a
+   * deduction).
    */
-  isQuotaRetry?: boolean;
+  attemptLedger?: readonly RefusedAttempt[];
   /**
    * docs/179 — shared "user row persisted" latch, threaded from the original
    * attempt into the auth-retry (and docs/150's quota retry) so the user
@@ -410,14 +438,22 @@ export async function executeAgentTurn(
       // beside them: every heal was a no-op that reported success, the turn
       // was re-dispatched ~120ms later on byte-identical credentials, and the
       // one shared recovery budget was spent for nothing.
-      if (deps.resolveTurnAccountId) {
-        const turnAccountId = deps.resolveTurnAccountId(sessionId);
-        healed = turnAccountId && deps.ensureAgentTokenFresh
-          ? await deps.ensureAgentTokenFresh(agentId, turnAccountId, { force: true })
+      // docs/260 — the account to heal is the TURN'S OWN capture (set after
+      // env-prep), never a session row: the row records no route any more, and
+      // the 401 being healed came from the process this capture describes.
+      // A RESERVED route stays unhealable here, as before — a bad API key or
+      // env token is not something the account refresher owns. No capture at
+      // all (tests / local runtime / no routing in play) keeps the
+      // provider-wide heal rather than silently disabling recovery.
+      if (capturedCredentialRoute?.providerRouteKind === "account") {
+        healed = deps.ensureAgentTokenFresh
+          ? await deps.ensureAgentTokenFresh(
+              agentId, capturedCredentialRoute.providerRouteId, { force: true },
+            )
           : false;
+      } else if (capturedCredentialRoute) {
+        healed = false;
       } else {
-        // No resolver wired (tests / local runtime): keep the pre-docs/150
-        // provider-wide behaviour rather than silently disabling recovery.
         healed = deps.ensureAgentTokenFresh
           ? await deps.ensureAgentTokenFresh(agentId, undefined, { force: true })
           : false;
@@ -564,17 +600,30 @@ export async function executeAgentTurn(
    * attempt had. Req 12: keys do not fail over; ShipIt stops and says so, which
    * here means letting the turn retire with the provider's own error.
    *
-   * Read at the moment of failure rather than captured at turn start: this turn
-   * may have pinned its route during env-prep, which is what puts the billing
-   * mode on the session row in the first place.
+   * docs/260 req 2 — the credential that refused is the TURN'S OWN capture,
+   * so ITS billing mode decides. The session row is only the fallback for a
+   * turn with no capture (failed before env-prep, tests, local runtime): the
+   * row's selection is mutable mid-turn (`set_model`), and its dead
+   * `provider_route_*` columns can still carry a pre-260 pin — neither changes
+   * which credential just failed.
    */
-  const quotaRetryAllowed = (): boolean =>
-    !stopsOnCredentialFailure(deps.listenerDeps.sessionManager.get(sessionId));
+  const capturedRoutePolicy = (): CredentialFailurePolicy | undefined => {
+    const captured = capturedCredentialRoute;
+    if (!captured?.providerRouteKind || !captured.providerRouteId) return undefined;
+    const profile = deps.routeProfile?.(captured.providerRouteKind, captured.providerRouteId);
+    if (!profile) return undefined;
+    return credentialFailurePolicyForRoute(agentId, profile.billingMode, profile.serviceId);
+  };
+  const quotaRetryAllowed = (): boolean => {
+    const policy = capturedRoutePolicy();
+    if (policy) return !policy.stopsOnFailure;
+    return !stopsOnCredentialFailure(deps.listenerDeps.sessionManager.get(sessionId));
+  };
 
-  const retryOnNextAccount = async (): Promise<void> => {
+  const retryOnNextAccount = async (entry: RefusedAttempt): Promise<void> => {
     console.log(
-      `[turn] ${agentId} reported quota exhaustion for ${sessionId}; `
-      + "retrying once on the next eligible account",
+      `[turn] ${agentId} reported a quota refusal for ${sessionId} on ${entry.routeId}; `
+      + "retrying on the next eligible credential",
     );
     // The dying process still holds the spent account's token. Kill it before
     // the retry re-provisions, so nothing keeps spending the account we just
@@ -593,11 +642,35 @@ export async function executeAgentTurn(
     }
     await executeAgentTurn(runner, deps, freshAgent, {
       ...input,
-      isQuotaRetry: true,
+      attemptLedger: [...(input.attemptLedger ?? []), entry],
       reuseExistingAgent: false,
       emitUserEcho: false,
       persistGuard,
     });
+  };
+
+  // docs/260 §3 — the ledger entry for a refusal that just happened: the
+  // captured route (the credential this attempt actually authenticated with),
+  // its user-facing label, the provider's own words, and the lockout end.
+  const ledgerEntryFor = (
+    providerMessage: string,
+    detected: Parameters<typeof exhaustionLockoutUntil>[0],
+  ): RefusedAttempt => {
+    const routeId = capturedCredentialRoute?.providerRouteId ?? "unknown";
+    // docs/260 req 6 — "resets at" only ever quotes the PROVIDER'S OWN stated
+    // instant. When it named none, `exhaustionLockoutUntil` synthesizes a
+    // short self-expiring lockout for the internal bench stamp — an estimate
+    // that must not be presented to the user as a provider-reported reset.
+    const statedReset =
+      detected.resetAt !== null && !Number.isNaN(Date.parse(detected.resetAt))
+        ? new Date(Date.parse(detected.resetAt)).toISOString()
+        : null;
+    return {
+      routeId,
+      label: (routeId !== "unknown" ? deps.routeLabel?.(routeId) : undefined) ?? routeId,
+      providerMessage: providerMessage.replace(/\s+/g, " ").trim().slice(0, 400),
+      resetAt: statedReset,
+    };
   };
 
   /**
@@ -643,6 +716,7 @@ export async function executeAgentTurn(
     if (!quotaRetryAllowed()) return false;
     const exhausted = detectHardExhaustion(err.message);
     if (!exhausted) return false;
+    const refusedEntry = ledgerEntryFor(err.message, exhausted);
     try {
       deps.listenerDeps.markSessionAccountExhausted?.(
         sessionId,
@@ -679,7 +753,7 @@ export async function executeAgentTurn(
     quotaRetryInProgress = true;
     // Fire-and-forget: the listener's gate is synchronous, so the re-dispatch
     // cannot be awaited here.
-    void retryOnNextAccount().catch(async (retryErr: unknown) => {
+    void retryOnNextAccount(refusedEntry).catch(async (retryErr: unknown) => {
       console.error("[turn] quota retry from the error path failed:", retryErr);
       // The claim is now a lie — run the teardown the listener would have.
       holdPostTurn();
@@ -719,14 +793,20 @@ export async function executeAgentTurn(
     fallbackTitle: input.fallbackTitle,
     capturedSessionId: sessionId,
     getCapturedRouteId: () => capturedCredentialRoute?.providerRouteId,
+    getCapturedRouteKind: () => capturedCredentialRoute?.providerRouteKind,
+    // docs/260 req 2 — failure policy resolved from the captured route (see
+    // `capturedRoutePolicy`); the auth handler falls back to the session's
+    // selection when this answers undefined.
+    getCapturedRoutePolicy: capturedRoutePolicy,
     // docs/179 — auto-recovery hooks: the listener calls `willRecoverAuth`
     // synchronously to decide whether to suppress the sign-in card, then
     // `recoverAuth` to heal + re-dispatch. Omitted when this turn can't recover
     // (already a retry, or no healer) so the listener keeps the legacy flow.
     ...(canRecoverAuth ? { willRecoverAuth, recoverAuth } : {}),
     // docs/252 phase 5 — the adapter-`error` twin of the `agent_result` quota
-    // branch below. Omitted on a retry so one hop stays one hop.
-    ...(input.isQuotaRetry ? {} : { willRetryOnQuotaError }),
+    // branch below. Wired on every attempt: the loop is bounded by the
+    // ledger's exclusion set (one attempt per credential), not by hop count.
+    willRetryOnQuotaError,
     // eslint-disable-next-line no-restricted-syntax -- Claude-only CLI stderr/--resume recovery (docs/155)
     ...(!recoveryRetryUsed && agentId === "claude" ? { recoverMissingConversation } : {}),
     ...(input.permissionMode !== undefined ? { requestedPermissionMode: input.permissionMode } : {}),
@@ -900,6 +980,17 @@ export async function executeAgentTurn(
   // the displacing turn has `running` true, so the runner stays busy on its
   // account, and the working tree is that turn's to sweep.
   agent.on("superseded", () => {
+    // docs/179 / docs/260 §3 — stand down when the displacement IS this turn's
+    // own recovery: the auth heal and the quota attempt loop replace the dying
+    // process on purpose (`runner.setAgent(freshAgent)` in `recoverAuth` /
+    // `retryOnNextAccount`) and the re-dispatched attempt owns settlement,
+    // exactly as the `done` handler already stands down on both flags. Worse
+    // than settling early: a quota-refused attempt has `receivedResult` true
+    // (the refusal arrived as its `agent_result`), so `finishTurn` here would
+    // settle the logical turn as COMPLETED — telling a multi-turn driver (the
+    // rebase conflict loop) that work the agent never did is done, which
+    // staged, continued and force-pushed unresolved conflict markers.
+    if (automaticRecoveryInProgress || quotaRetryInProgress) return;
     wasSuperseded = true;
     finishTurn();
     releasePostTurn();
@@ -1250,13 +1341,15 @@ export async function executeAgentTurn(
     // structurally invisible. `turnSummary` is this turn's own (it is cleared
     // by `resetRunnerTurnState` at turn start) and is already populated:
     // `wireAgentListeners` runs first and assigns it from `agent_assistant`.
-    if (!input.isQuotaRetry && quotaRetryAllowed()) {
+    if (quotaRetryAllowed()) {
       const exhausted = event.error
         ? detectHardExhaustion(event.error)
         : detectHardExhaustionInTurnText(runner?.turnSummary);
       if (exhausted) {
         quotaRetryInProgress = true;
-        await retryOnNextAccount();
+        await retryOnNextAccount(
+          ledgerEntryFor(event.error ?? runner?.turnSummary ?? "quota exhausted", exhausted),
+        );
         return;
       }
     }
@@ -1603,7 +1696,18 @@ export async function executeAgentTurn(
   // listeners above are the whole job. Skip env-prep and the spawn entirely
   // (re-running `/agent/start` would 409 against the live process, and a
   // `sendUserMessage` would inject a phantom message into the user's turn).
-  if (input.adopt) return;
+  //
+  // docs/260 §5 — its route capture comes from the recovered resident identity
+  // (`turn-adoption.ts` restores it from the account marker), so refusals,
+  // rate-limit events, and write-back from the surviving process attribute to
+  // the account it actually runs on.
+  if (input.adopt) {
+    const resident = runner?.residentRoute;
+    capturedCredentialRoute = resident
+      ? { providerRouteKind: resident.kind, providerRouteId: resident.id }
+      : undefined;
+    return;
+  }
 
   try {
     // Sync the freshest OAuth token (and provision/pin on the first turn)
@@ -1624,18 +1728,56 @@ export async function executeAgentTurn(
     // (nikzlabs/shipit#1874). Credential *topology* changes only at a spawn
     // boundary; the token copy still happens either way.
     const envBegan = Date.now();
-    await deps.prepareAgentEnv?.(sessionId, agentId, {
+    const prep = await deps.prepareAgentEnv?.(sessionId, agentId, {
       reusingResidentAgent: input.reuseExistingAgent === true,
+      // docs/260 §3 — a credential the provider refused this turn is out of
+      // the running; selection may not hand it back.
+      ...(input.attemptLedger?.length
+        ? { excludeRouteIds: input.attemptLedger.map((entry) => entry.routeId) }
+        : {}),
+      // docs/260 reqs 8/13 — the resident process's credential prefers to keep
+      // serving this session under `balanced`, and MUST keep it when the
+      // process is being reused (its token is in memory) or holds background
+      // work (killing it would lose the tokens already spent — req 13).
+      ...(runner?.residentRoute ? { residentRoute: runner.residentRoute } : {}),
+      requireResidentRoute:
+        runner?.residentRoute !== undefined
+        && (input.reuseExistingAgent === true
+          || (runner?.backgroundWorkDescriptions.length ?? 0) > 0),
     });
     console.log(`[turn] env-prep for ${sessionId} took ${Date.now() - envBegan}ms`);
     const preparedSession = deps.listenerDeps.sessionManager.get(sessionId);
     activeResumeSessionId = preparedSession?.agentSessionId ?? null;
-    capturedCredentialRoute = preparedSession
-      ? {
-          providerRouteKind: preparedSession.providerRouteKind,
-          providerRouteId: preparedSession.providerRouteId,
-        }
+    const turnRoute = prep?.turnRoute;
+    capturedCredentialRoute = turnRoute
+      ? { providerRouteKind: turnRoute.kind, providerRouteId: turnRoute.id }
       : undefined;
+    // docs/260 req 10 — say the account in the transcript when it changed:
+    // after a refusal ("X is out of quota — continuing on Y"), and between
+    // turns when routing moved the session ("Continuing on Y"). Labels are the
+    // user's own; both notices ride the in-turn persisted path.
+    const lastRefusal = input.attemptLedger?.at(-1);
+    if (runner && turnRoute) {
+      const routeLabel = deps.routeLabel?.(turnRoute.id) ?? turnRoute.id;
+      if (lastRefusal) {
+        emitNoticeInTurn(
+          runner,
+          sessionId,
+          `${lastRefusal.label} is out of quota — continuing this turn on ${routeLabel}.`,
+          deps.listenerDeps.chatHistoryManager,
+        );
+      } else {
+        const previousRouteId = deps.listenerDeps.usageManager?.lastTurnCredentialRouteId?.(sessionId);
+        if (previousRouteId !== undefined && previousRouteId !== turnRoute.id) {
+          emitNoticeInTurn(
+            runner,
+            sessionId,
+            `Continuing on ${routeLabel}.`,
+            deps.listenerDeps.chatHistoryManager,
+          );
+        }
+      }
+    }
 
     if (input.reuseExistingAgent) {
       // docs/140 — carry the message into the resident streaming process. Push
@@ -1654,7 +1796,7 @@ export async function executeAgentTurn(
       // started AFTER this turn what delivery the surviving turn belongs to.
       if (input.deliveryId !== undefined) agent.setDeliveryId?.(input.deliveryId);
       const paramsBegan = Date.now();
-      const runParams = await deps.buildRunParams(sessionId, agentId, prompt);
+      const runParams = await deps.buildRunParams(sessionId, agentId, prompt, turnRoute);
       console.log(`[turn] build-run-params for ${sessionId} took ${Date.now() - paramsBegan}ms; spawning agent`);
       // WS always carries `useStreaming` (true or false); dispatch leaves it
       // undefined so the run params are unchanged from the system-turn shape.
@@ -1676,10 +1818,22 @@ export async function executeAgentTurn(
           sessionId,
           agentId,
         );
+        // docs/260 §5 — the resident process's credential identity, typed
+        // runner state: what the next turn's pre-capture release check, the
+        // req-13 guard, and disconnect enumeration read.
+        runner.residentRoute = turnRoute ? { kind: turnRoute.kind, id: turnRoute.id } : undefined;
       }
     }
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
+    // docs/260 req 6 — when the attempt loop ran out of candidates, the
+    // routing throw is generic while this turn holds the actual refusals.
+    // Replace the message with the ledger: each attempted credential, what
+    // the provider answered, and when it resets. Still the same error class,
+    // so the listener's blocked-turn path (no retry, verbatim surface) holds.
+    if (error instanceof ProviderRouteUnavailableError && input.attemptLedger?.length) {
+      error.message = allRefusedMessage(input.attemptLedger);
+    }
     agent.emit("error", error);
   }
 }

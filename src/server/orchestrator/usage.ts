@@ -109,6 +109,13 @@ export interface RecordedTurn {
   /** docs/144 — set when the turn was a sub-agent consult rather than the pinned agent's own. */
   subAgentId?: string;
   /**
+   * docs/260 §5 — the credential route (account or stored string credential)
+   * this turn authenticated with. Independent of `attribution`'s all-or-none
+   * rule: a turn can know its route without rates (and vice versa). Absent for
+   * env-delivered credentials and legacy rows.
+   */
+  credentialRouteId?: string;
+  /**
    * Defaults to today's behaviour — `per-turn` for a sub-agent consult,
    * `cumulative` otherwise — so a caller that does not know still gets what it
    * got before.
@@ -264,6 +271,7 @@ function foldSplitRows(rows: SplitRow[]): UsageGroup[] {
 export class UsageManager {
   private db;
   private stmtInsert;
+  private stmtLastRoute;
   private stmtLastCumulative;
   private stmtSessionUsage;
   private stmtSessionSplit;
@@ -280,9 +288,18 @@ export class UsageManager {
         cache_read_tokens, cache_create_tokens, model, context_tokens,
         sub_agent_id, cumulative_cost_usd,
         service_id, billing_mode,
-        rate_input, rate_output, rate_cache_read, rate_cache_write
+        rate_input, rate_output, rate_cache_read, rate_cache_write,
+        credential_route_id
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    // docs/260 §5 — the account the session's PREVIOUS turn ran on, for the
+    // req-10 "Continuing on X" change notice. Primary turns only: a sub-agent
+    // consult routes independently and must not read as the session moving.
+    this.stmtLastRoute = this.db.prepare(`
+      SELECT credential_route_id FROM usage_turns
+      WHERE session_id = ? AND sub_agent_id IS NULL AND credential_route_id IS NOT NULL
+      ORDER BY id DESC LIMIT 1
     `);
     // Most recent cumulative snapshot for ONE agent's turns within a session,
     // used to diff a running total into a per-turn delta. The chain is keyed by
@@ -411,8 +428,18 @@ export class UsageManager {
       attribution?.rates.output ?? null,
       attribution?.rates.cacheRead ?? null,
       attribution?.rates.cacheWrite ?? null,
+      extra?.credentialRouteId ?? null,
     );
     return perTurnCost;
+  }
+
+  /**
+   * docs/260 §5 — the credential route the session's most recent primary turn
+   * authenticated with, or `undefined` when no turn recorded one.
+   */
+  lastTurnCredentialRouteId(sessionId: string): string | undefined {
+    const row = this.stmtLastRoute.get(sessionId) as { credential_route_id: string } | undefined;
+    return row?.credential_route_id ?? undefined;
   }
 
   /**

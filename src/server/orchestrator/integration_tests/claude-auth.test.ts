@@ -21,6 +21,7 @@ import {
 import { DatabaseManager } from "../../shared/database.js";
 import type { CredentialStore } from "../credential-store.js";
 import { ProviderAccountManager } from "../provider-account-manager.js";
+import { writeSessionAccountMarker } from "../session-credentials.js";
 
 describe("Integration: Claude auth (OAuth & API key)", () => {
   let app: FastifyInstance;
@@ -233,19 +234,22 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  // docs/150 (docs/142 A3, account-scoped) — a completed sign-in force-pushes
-  // the fresh source token into the sessions already pinned to that account, so
-  // an idle session recovers without waiting for its next turn. The half that
-  // needs asserting is the SCOPE: the pre-account filter was `session.agentId
-  // === agentId` plus "the session holds a Claude token", which every Claude
-  // session satisfies — so re-authenticating one account wrote its token over
-  // every other account's sessions, and those sessions then ran a different
-  // subscription than the one they are pinned to (and audited as).
+  // docs/142 A3, rescoped by docs/260 §5 — a completed sign-in force-pushes the
+  // fresh source token into the sessions whose credential subtree currently
+  // holds that account's copy. With session→account pinning gone (docs/260
+  // reqs 1–2), "whose copy a session holds" is the subtree's own recorded
+  // identity — the account MARKER written by the provisioning writer
+  // (`writeSessionAccountMarker`) — never a session row. The half that needs
+  // asserting is the SCOPE: re-authenticating account X must not write X's
+  // token over a subtree marked as holding account Y's copy, or that session's
+  // next resident process would run a different subscription than the one its
+  // turn selected (and audited as).
   //
   // Driven through `buildApp`'s own `wireEventHandlers` by emitting the real
   // `complete` event, rather than calling the re-push helper directly: the
-  // scoping lives in that handler, so calling the helper would assert nothing.
-  it("re-pushes a refreshed token only into sessions pinned to that account", async () => {
+  // scoping lives in that handler (`repushTokenToPinnedSessions` in
+  // app-lifecycle.ts), so calling the helper would assert nothing.
+  it("re-pushes a refreshed token only into sessions whose credential subtree is marked with that account", async () => {
     const accountRoot = (accountId: string): string =>
       path.join(credentialsDir, "provider-accounts", "claude", accountId);
     const sessionRoot = (sessionId: string): string =>
@@ -263,7 +267,8 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
         claudeAiOauth: { accessToken: string };
       }).claudeAiOauth.accessToken;
 
-    // Two connected Claude accounts, each with a session pinned to it. The
+    // Two connected Claude accounts, each with a session whose credential
+    // subtree holds (and is MARKED as holding) that account's copy. The
     // accounts are created through the same store `buildApp` was handed, so the
     // app's own `ProviderAccountManager` sees them.
     const accounts = new ProviderAccountManager({ credentialsDir, credentialStore });
@@ -273,14 +278,26 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     writeToken(accountRoot(y.id), "source-y");
 
     for (const [sessionId, accountId] of [["sess-x", x.id], ["sess-y", y.id]] as const) {
-      sessionManager.track(sessionId, "Pinned session");
+      sessionManager.track(sessionId, "Claude session");
       sessionManager.setAgentId(sessionId, "claude");
-      sessionManager.setProviderRoute(sessionId, "account", accountId);
       sessionManager.setAgentPinned(sessionId);
       // Each already holds its own copy — the one the CLI in the container
-      // actually reads, and the only thing a re-push can repair.
+      // actually reads, and the only thing a re-push can repair. The marker is
+      // the subtree's recorded identity: docs/260 §5 makes it, not any session
+      // row, the authority on whose token the copy is.
       writeToken(sessionRoot(sessionId), `stale-${sessionId}`);
+      writeSessionAccountMarker(credentialsDir, sessionId, "claude", accountId);
     }
+
+    // And one pre-260 session holding a token with NO marker at all — its
+    // identity is unknown, so an account-scoped re-push must leave it alone.
+    // (It may be running on Y; force-pushing X's token there is the poisoning
+    // class the marker scoping exists to close. Its next turn's env-prep
+    // provisions and marks it properly.)
+    sessionManager.track("sess-unmarked", "Pre-260 session");
+    sessionManager.setAgentId("sess-unmarked", "claude");
+    sessionManager.setAgentPinned("sess-unmarked");
+    writeToken(sessionRoot("sess-unmarked"), "stale-sess-unmarked");
 
     // Account X finishes signing in again.
     authManager.start({ accountId: x.id });
@@ -290,6 +307,8 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     // The session pinned to Y is untouched in BOTH directions: it did not get
     // X's token, and Y's own source was not pushed on X's event either.
     expect(readToken(sessionRoot("sess-y"))).toBe("stale-sess-y");
+    // The unmarked subtree did not receive X's account token.
+    expect(readToken(sessionRoot("sess-unmarked"))).toBe("stale-sess-unmarked");
     expect(accounts.get("anthropic", x.id)?.status).toBe("ready");
   });
 });

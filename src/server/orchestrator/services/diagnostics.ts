@@ -108,18 +108,17 @@ export function describeProviderRoute(
   const kind = session.providerRouteKind ?? null;
   const routeId = session.providerRouteId ?? null;
 
-  // A session that has never taken a turn has no route: it picks one at its
-  // first turn, under whatever the selection mode says then (req 21). Saying
-  // "none" would read as an error rather than as "nothing has happened yet".
+  // docs/260 — no live process means no current route: every turn selects
+  // its account fresh, so between turns this is the honest steady state, not
+  // an error.
   if (!kind || !routeId) {
-    return { agentId, kind: null, routeId: null, label: "not pinned yet — the next turn selects an account" };
+    return { agentId, kind: null, routeId: null, label: "selected per turn — the next turn picks an account" };
   }
   if (kind === "reserved") {
     return { agentId, kind, routeId, label: RESERVED_ROUTE_LABEL[routeId] ?? routeId };
   }
   const label = agentId ? getAccountLabel(agentId, routeId) : undefined;
-  // A pinned account can be disconnected while the session is idle — the row
-  // goes, the pin stays, and the next turn's preflight re-routes it. Worth
+  // The account can be disconnected while the process lives on — worth
   // naming, since it explains a session that is about to change account.
   return { agentId, kind, routeId, label: label ?? "account no longer connected" };
 }
@@ -301,9 +300,17 @@ export async function getSessionDiagnostics(
   const workspaceDir = getWorkspaceDir(sessionId);
   const parsedConfig = workspaceDir ? readParsedConfig(workspaceDir) : null;
 
+  // docs/260 — the displayed route is the RESIDENT process's (typed runner
+  // state), because that is the only thing that has one between selections;
+  // an idle session's account is chosen fresh at its next turn.
+  const resident = runner?.residentRoute;
+  const routeSession = deps.getSessionRoute?.(sessionId);
   const providerRoute = deps.getSessionRoute
     ? describeProviderRoute(
-        deps.getSessionRoute(sessionId),
+        {
+          agentId: routeSession?.agentId ?? null,
+          ...(resident ? { providerRouteKind: resident.kind, providerRouteId: resident.id } : {}),
+        },
         deps.getAccountLabel ?? (() => undefined),
       )
     : null;

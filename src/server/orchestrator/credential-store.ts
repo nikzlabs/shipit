@@ -697,11 +697,13 @@ export class CredentialStore {
    * (epoch ms), so routing stops choosing the one that just refused a turn.
    *
    * The string-delivered twin of `ProviderAccountManager.markAccountExhausted`,
-   * and it shares that method's two rules for the same reasons: the stamp only
-   * ever moves *later*, so a second failure carrying a vaguer reset cannot
-   * shorten a lockout the provider already told us the end of; and a `key` route
-   * is silently ignored, because metered billing has no subscription window to
-   * exhaust and req 12 forbids failing a key over anyway.
+   * and it shares that method's two rules for the same reasons: the NEWEST
+   * refusal's stated reset wins outright (docs/260 req 9 — a re-probe saying
+   * "resets in five minutes" must supersede an older week-long estimate, and
+   * `refusalBlockedUntil`'s 30-minute cap bounds the cost of the reverse
+   * direction); and a `key` route is silently ignored, because metered billing
+   * has no subscription window to exhaust and req 12 forbids failing a key
+   * over anyway.
    *
    * Returns the stamped route, or `null` when there was nothing to stamp — an
    * unknown id, or a `key` credential.
@@ -709,9 +711,39 @@ export class CredentialStore {
   markCredentialRouteExhausted(routeId: string, until: number): CredentialRoute | null {
     const route = this.getCredentialRoute(routeId);
     if (route?.billingMode !== "sub") return null;
-    if (typeof route.exhaustedUntil === "number" && route.exhaustedUntil >= until) return route;
-    this.upsertCredentialRoute({ ...route, exhaustedUntil: until });
+    // docs/260 req 9 — every refusal refreshes the observation clock:
+    // `refusalBlockedUntil` reads `min(until, at + cap)`, and a row without
+    // the clock reads as expired. Before 260 this stamp never wrote
+    // `exhaustedAt`, which is why string credentials had no recovery path at
+    // all (req 11).
+    this.upsertCredentialRoute({
+      ...route,
+      exhaustedUntil: until,
+      exhaustedAt: Date.now(),
+    });
     return this.getCredentialRoute(routeId) ?? null;
+  }
+
+  /**
+   * docs/260 req 9 — the string-delivered twin of
+   * `ProviderAccountManager.clearRefusalOnHealthyReading`: a reading newer
+   * than the refusal whose known windows are all below 100% clears the memory.
+   */
+  clearCredentialRefusalOnHealthyReading(
+    routeId: string,
+    snapshot: { session?: unknown; weekly?: unknown; fetchedAt?: unknown } | undefined,
+  ): boolean {
+    const route = this.getCredentialRoute(routeId);
+    if (route?.exhaustedUntil === null || route?.exhaustedUntil === undefined) return false;
+    if (!snapshot || typeof snapshot.fetchedAt !== "number" || !Number.isFinite(snapshot.fetchedAt)) return false;
+    const observedAt = typeof route.exhaustedAt === "number" ? route.exhaustedAt : 0;
+    if (snapshot.fetchedAt <= observedAt) return false;
+    for (const key of ["session", "weekly"] as const) {
+      const window = snapshot[key] as { usedPct?: unknown } | null | undefined;
+      if (typeof window?.usedPct === "number" && window.usedPct >= 100) return false;
+    }
+    this.upsertCredentialRoute({ ...route, exhaustedUntil: null, exhaustedAt: null });
+    return true;
   }
 
   /**

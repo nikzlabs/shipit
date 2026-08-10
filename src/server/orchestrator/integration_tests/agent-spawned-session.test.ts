@@ -1131,9 +1131,12 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       sessionManager,
     };
 
+    // docs/260 — only a TURN (enforceAccountRouting) scaffolds and stamps;
+    // a warm-up call is account-neutral and pins nothing.
     await prepareSessionAgentEnvironment(runner, {
       sessionId: parentId,
       agentId: "claude",
+      enforceAccountRouting: true,
       deps,
     });
     expect(sessionManager.get(parentId)?.agentPinned).toBe(true);
@@ -1143,6 +1146,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     await prepareSessionAgentEnvironment(runner, {
       sessionId: parentId,
       agentId: "claude",
+      enforceAccountRouting: true,
       deps,
     });
     expect(sessionManager.get(parentId)?.agentPinned).toBe(true);

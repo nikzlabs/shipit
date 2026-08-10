@@ -173,10 +173,11 @@ describe("same-turn quota failover (docs/252 phase 5, req 12)", () => {
       providerRouteId: "acct-old",
     } as Partial<SessionInfo>;
     const { deps, runner } = harness(oldSession);
-    const getSession = deps.listenerDeps.sessionManager.get as ReturnType<typeof vi.fn>;
-    deps.prepareAgentEnv = vi.fn(async () => {
-      getSession.mockReturnValue({ id: "s1", agentId: "claude", ...oldSession, providerRouteId: "acct-new" });
-    });
+    // docs/260 §1b — the captured route is env-prep's RETURNED turn route, a
+    // value, never a session row re-read.
+    deps.prepareAgentEnv = vi.fn(async () => ({
+      turnRoute: { kind: "account" as const, id: "acct-new" },
+    }));
     const recordAgentRateLimits = vi.fn();
     deps.listenerDeps.recordAgentRateLimits = recordAgentRateLimits;
     const first = makeFakeAgent();

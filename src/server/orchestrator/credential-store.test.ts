@@ -91,14 +91,16 @@ describe("CredentialStore", () => {
       expect(store.getCredentialRoute("cred_k")?.exhaustedUntil).toBeUndefined();
     });
 
-    it("only ever moves the stamp later", () => {
-      // A second failure carrying a vaguer reset must not shorten a lockout the
-      // provider already told us the end of. Same rule as `markAccountExhausted`.
+    it("the newest refusal's stated reset wins, even when it is earlier", () => {
+      // docs/260 req 9 — a re-probe answered with a short, precise reset must
+      // supersede an older long estimate; otherwise the credential stays
+      // benched for the full 30-minute re-probe cap instead of the five
+      // minutes the provider just named. Same rule as `markAccountExhausted`.
       const store = new CredentialStore(createTmpDir());
       store.upsertCredentialRouteWithSecret(routeOf("cred_a", "sub"), "k");
       store.markCredentialRouteExhausted("cred_a", 9_000);
       store.markCredentialRouteExhausted("cred_a", 1_000);
-      expect(store.getCredentialRoute("cred_a")?.exhaustedUntil).toBe(9_000);
+      expect(store.getCredentialRoute("cred_a")?.exhaustedUntil).toBe(1_000);
     });
 
     it("ignores an unknown id", () => {

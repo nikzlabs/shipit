@@ -105,6 +105,39 @@ describe("wireAgentListeners", () => {
     runner.dispose({ force: true });
   });
 
+  it("records the turn's credential route even when the result carries no usage telemetry (docs/260 req 10)", () => {
+    // A Codex compact result reports no tokens or cost, but its route is
+    // still the fact the next turn's "Continuing on X" notice compares
+    // against. Left unrecorded, the comparison would read an OLDER turn's
+    // route and mis-fire.
+    const agent = new FakeAgent();
+    const runner = new SessionRunner({
+      sessionId: "session-1",
+      sessionDir: "/tmp/session-1",
+      defaultAgentId: "codex",
+    });
+    const d = deps();
+
+    wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+      capturedSessionId: "session-1",
+      getCapturedRouteId: () => "acct-a",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+    });
+
+    agent.emit("event", {
+      type: "agent_result",
+      status: "success",
+      sessionId: "session-1",
+    } satisfies AgentEvent);
+
+    expect(d.usageManager.record).toHaveBeenCalledWith(
+      "session-1", 0, 0, undefined, undefined,
+      expect.objectContaining({ credentialRouteId: "acct-a" }),
+    );
+    runner.dispose({ force: true });
+  });
+
   it("keeps Codex stream-completion events internal so live text is not duplicated", () => {
     const agent = new FakeAgent();
     const runner = new SessionRunner({
@@ -356,8 +389,12 @@ describe("wireAgentListeners", () => {
       willRecoverAuth?: () => boolean;
       recoverAuth?: () => Promise<boolean>;
       onAgentAuthRequired?: (agentId: string) => void;
-      markSessionAccountExhausted?: (sessionId: string, until: number) => void;
+      markSessionAccountExhausted?: (sessionId: string, until: number, routeId?: string) => void;
       session?: Record<string, unknown>;
+      // docs/260 — the turn's captured route, which replaced the session row
+      // as the source of reserved-vs-account branching in the auth handler.
+      getCapturedRouteId?: () => string | undefined;
+      getCapturedRouteKind?: () => "account" | "reserved" | "string" | undefined;
     }) {
       const { session, onAgentAuthRequired, markSessionAccountExhausted, ...opts } = extra;
       const agent = new FakeAgent();
@@ -600,12 +637,18 @@ describe("wireAgentListeners", () => {
 
       it("benches the credential so the next turn fails over", async () => {
         const markSessionAccountExhausted = vi.fn();
-        const { agent, runner } = wireAuth({ markSessionAccountExhausted, session: glmSession });
+        const { agent, runner } = wireAuth({
+          markSessionAccountExhausted,
+          session: glmSession,
+          // docs/260 — reserved-ness comes from the turn's captured route.
+          getCapturedRouteId: () => "cred_a",
+          getCapturedRouteKind: () => "reserved",
+        });
 
         agent.emit("auth_required");
         await tick();
 
-        expect(markSessionAccountExhausted).toHaveBeenCalledWith("session-1", expect.any(Number));
+        expect(markSessionAccountExhausted).toHaveBeenCalledWith("session-1", expect.any(Number), "cred_a");
         runner.dispose({ force: true });
       });
 
@@ -652,7 +695,11 @@ describe("wireAgentListeners", () => {
       });
 
       it("says the credential was set aside, not that you should sign in", async () => {
-        const { agent, runner, d } = wireAuth({ session: glmSession });
+        const { agent, runner, d } = wireAuth({
+          session: glmSession,
+          getCapturedRouteId: () => "cred_a",
+          getCapturedRouteKind: () => "reserved",
+        });
 
         agent.emit("auth_required");
         await tick();

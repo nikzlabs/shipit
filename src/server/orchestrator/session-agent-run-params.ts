@@ -11,6 +11,7 @@
  * nor the Stop-hook PR enforcement applied), no MCP, and no model.
  */
 
+import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
 import type { AgentId, AgentRunParams, PermissionMode } from "../shared/types.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SessionManager } from "./sessions.js";
@@ -55,6 +56,11 @@ export interface BuildAgentRunParamsDeps {
 }
 
 export interface BuildAgentRunParamsArgs {
+  /**
+   * docs/260 §1b — the credential route the turn selected, threaded from
+   * env-prep by the executor. Absent for callers with no routing in play.
+   */
+  turnRoute?: { kind: ProviderRouteKind; id: string };
   deps: BuildAgentRunParamsDeps;
   sessionId: string;
   agentId: AgentId;
@@ -139,6 +145,10 @@ export async function buildAgentRunParams(
   // above). The credential route is already pinned: env prep runs before this
   // (`turn-executor.ts`), which is what makes an account-delivered credential
   // detectable and therefore leaves today's first-party spawn untouched.
+  // docs/260 §1b — the credential route arrives as a VALUE from the turn's own
+  // selection (threaded by the executor), never from a session row: the row
+  // records no route any more, and reading one here is how spawn shaping and
+  // attribution could name different credentials.
   const serviceRouting = sessionInfo
     ? serviceRoutingForSelection(
         agentId,
@@ -149,9 +159,7 @@ export async function buildAgentRunParams(
               modelId: sessionInfo.model,
             }
           : undefined,
-        sessionInfo.providerRouteKind && sessionInfo.providerRouteId
-          ? { kind: sessionInfo.providerRouteKind, id: sessionInfo.providerRouteId }
-          : undefined,
+        args.turnRoute,
       )
     : undefined;
   const sessionKind = sessionInfo?.kind;

@@ -44,6 +44,7 @@ import {
 import type { CredentialStore } from "../credential-store.js";
 import { collectServiceCredentialEnv } from "../secret-resolver.js";
 import { ServiceError } from "./types.js";
+import type { SessionRunnerRegistry } from "../session-runner.js";
 
 /** The label ShipIt gives a credential the user did not name. */
 function generatedLabel(serviceName: string, billingMode: CredentialBillingMode, taken: Set<string>): string {
@@ -290,16 +291,38 @@ function deliveredValueFor(
 /**
  * Remove a stored credential and its secret.
  *
- * Deliberately unguarded by any "sessions are pinned to this" check, unlike the
- * account disconnect it sits beside: no session can be pinned to a string route
- * in phase 2, because nothing routes a turn onto one yet. Phase 3 is where that
- * guard becomes owed, and the account path already has the shape to copy.
+ * docs/260 req 13 — refused while a live process is RUNNING a turn or holds
+ * background work on this credential (`runner.residentRoute` names it): the
+ * deletion's change-release would otherwise kill exactly the work req 13
+ * protects. An idle resident is fine — the release after this call retires it
+ * and the next turn re-routes. `runnerRegistry` is optional so callers with no
+ * registry (tests, non-turn wiring) keep the unguarded behavior.
  */
 export function deleteCredentialRoute(
   credentialStore: CredentialStore,
   routeId: string,
+  runnerRegistry?: Pick<SessionRunnerRegistry, "ids" | "get">,
 ): { routes: CredentialRoute[] } {
   const route = requireStringRoute(credentialStore, routeId);
+  const busy = runnerRegistry
+    ? runnerRegistry.ids().filter((sessionId: string) => {
+        const runner = runnerRegistry.get(sessionId);
+        return (
+          !!runner
+          && runner.residentRoute?.id === routeId
+          && (runner.running || runner.backgroundWorkDescriptions.length > 0)
+        );
+      })
+    : [];
+  if (busy.length > 0) {
+    const named = busy.slice(0, 3).map((id: string) => `"${id}"`).join(", ");
+    const rest = busy.length - Math.min(busy.length, 3);
+    throw new ServiceError(
+      409,
+      `Cannot remove this credential while sessions are still working on it: ${named}${rest > 0 ? ` and ${rest} more` : ""}. `
+        + "Wait for them to finish or stop them, then remove it.",
+    );
+  }
   const before = deliveredValueFor(credentialStore, route.serviceId, route.billingMode);
   credentialStore.deleteCredentialRoute(routeId);
   syncProcessEnvForMode(credentialStore, route.serviceId, route.billingMode, before);

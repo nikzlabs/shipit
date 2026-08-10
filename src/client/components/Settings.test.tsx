@@ -198,46 +198,12 @@ describe("Settings - Agent → Claude tab", () => {
     expect(screen.getByText(/A's CLI output\./)).toBeInTheDocument();
   });
 
-  it("asks which account to move pinned sessions to instead of dead-ending on the refusal", async () => {
-    const now = Date.now();
-    const base = { serviceId: "anthropic" as const, billingMode: "sub" as const, via: "account" as const, isPrimary: false, status: "ready" as const, createdAt: now, updatedAt: now };
-    useSettingsStore.getState().setProviderAccounts([
-      { ...base, id: "acct-a", label: "Account A", isPrimary: true },
-      { ...base, id: "acct-b", label: "Account B" },
-    ]);
-
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce({
-        ok: false,
-        status: 409,
-        json: async () => ({
-          error: "1 session(s) are pinned to this account. Choose a replacement account to move them to (available: acct-b).",
-        }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ accounts: [{ ...base, id: "acct-b", label: "Account B" }], switchedSessionIds: ["s1"] }),
-      });
-    vi.stubGlobal("fetch", fetchMock);
-
-    render(<Settings {...defaultProps} />);
-    await userEvent.click(within(screen.getByTestId("provider-account-row-acct-a")).getByRole("button", { name: "Disconnect" }));
-
-    // The refusal names the alternatives, so it becomes a picker on the row.
-    const panel = await screen.findByTestId("provider-account-replacement-acct-a");
-    expect(panel).toHaveTextContent("1 session(s) are pinned");
-    await userEvent.click(screen.getByTestId("provider-account-confirm-replacement-acct-a"));
-
-    await waitFor(() => expect(fetchMock).toHaveBeenLastCalledWith(
-      "/api/provider-accounts/claude/acct-a?replacementAccountId=acct-b",
-      expect.objectContaining({ method: "DELETE" }),
-    ));
-    vi.unstubAllGlobals();
-  });
-
-  // docs/150 req 23 — the last account disconnects without a picker, because
-  // there is nothing to pick. The user is told what it cost.
-  it("disconnects the last account and reports the sessions left without one", async () => {
+  // docs/260 req 3 — disconnecting is one click, even for the last account.
+  // Sessions are never pinned to an account, so there is no replacement to
+  // pick and no moved/stranded bookkeeping to report: the row disappears, the
+  // response carries `{accounts}` only, and each session simply routes among
+  // whatever accounts remain at its next turn.
+  it("disconnects the last account in one click with nothing to report (docs/260 req 3)", async () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
       { serviceId: "anthropic", billingMode: "sub", via: "account", id: "acct-a", label: "Account A", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
@@ -245,7 +211,7 @@ describe("Settings - Agent → Claude tab", () => {
 
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ accounts: [], switchedSessionIds: [], strandedSessionIds: ["s1", "s2"] }),
+      json: async () => ({ accounts: [] }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -256,14 +222,13 @@ describe("Settings - Agent → Claude tab", () => {
       "/api/provider-accounts/claude/acct-a",
       expect.objectContaining({ method: "DELETE" }),
     ));
-    // No replacement picker — that panel is for the answerable case only.
+    // The row is gone and the empty state renders — the one-click disconnect
+    // is the whole flow.
+    await waitFor(() => expect(screen.queryByTestId("provider-account-row-acct-a")).not.toBeInTheDocument());
+    expect(screen.getByTestId("provider-accounts-empty-claude")).toBeInTheDocument();
+    // No replacement picker, no moved/stranded notice, no toast (req 3).
     expect(screen.queryByTestId("provider-account-replacement-acct-a")).not.toBeInTheDocument();
-    // docs/257 req 5 — this result used to be a global toast. It now renders on
-    // the card, and card-scoped rather than row-scoped because the successful
-    // disconnect deleted the row it is about.
-    await waitFor(() => expect(screen.getByTestId("provider-accounts-notice-claude")).toHaveTextContent(
-      "2 session(s) have no connected Claude account",
-    ));
+    expect(screen.queryByTestId("provider-accounts-notice-claude")).not.toBeInTheDocument();
     expect(useUiStore.getState().toast).toBeNull();
     vi.unstubAllGlobals();
   });

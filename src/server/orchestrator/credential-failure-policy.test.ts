@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   credentialFailurePolicyFor,
+  credentialFailurePolicyForRoute,
   credentialFailureStopMessage,
   stopsOnCredentialFailure,
 } from "./credential-failure-policy.js";
@@ -26,11 +27,23 @@ describe("credentialFailurePolicyFor — docs/252 req 12", () => {
     ).toBe(true);
   });
 
-  it("reads the ROUTE's mode over the selection's when they disagree", () => {
-    // Phase 1's rule: a route's billing mode is a property of the route. Routing
-    // can land a session that selected a subscription on a metered key when no
-    // account is connected, and the credential that just failed is the pinned
-    // one.
+  it("the captured route's mode decides via the route-shaped entry point", () => {
+    // Phase 1's rule survives docs/260 in a new home: a route's billing mode
+    // is a property of the route, and under per-turn routing that route is
+    // the TURN'S OWN capture, resolved by the executor's `routeProfile` dep
+    // and answered here.
+    const policy = credentialFailurePolicyForRoute("claude", "key", "anthropic");
+    expect(policy).toMatchObject({ billingMode: "key", stopsOnFailure: true });
+    expect(credentialFailurePolicyForRoute("claude", "sub", "zai")).toMatchObject({
+      stopsOnFailure: false,
+      vendorOwnedRecovery: false,
+    });
+  });
+
+  it("ignores the dead provider_route_* columns on the session fallback (docs/260 req 2)", () => {
+    // Nothing writes those columns any more, so a value there is a pre-260
+    // leftover. Letting it override the live selection was a hidden
+    // per-session pin deciding whether a turn retries.
     const policy = credentialFailurePolicyFor(
       session({
         serviceId: "anthropic",
@@ -39,7 +52,7 @@ describe("credentialFailurePolicyFor — docs/252 req 12", () => {
         providerRouteBillingMode: "key",
       }),
     );
-    expect(policy).toMatchObject({ billingMode: "key", stopsOnFailure: true });
+    expect(policy).toMatchObject({ billingMode: "sub", stopsOnFailure: false });
   });
 
   it("keeps today's behaviour for a session that names no mode at all", () => {

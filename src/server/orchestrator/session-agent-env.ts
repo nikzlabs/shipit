@@ -18,6 +18,7 @@
  * is about to run.
  */
 
+import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
 import path from "node:path";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
@@ -29,9 +30,10 @@ import { ContainerSessionRunner } from "./container-session-runner.js";
 import {
   ensureLocalWorkspaceTrust,
   ensureSessionAgentUserConfig,
+  ensureSessionAccountCredentials,
   provisionAgentCredentials,
-  provisionProviderAccountCredentials,
   provisionRepoMemory,
+  readSessionAccountMarker,
   syncAgentTokenIn,
   syncProviderAccountTokenIn,
   syncAgentTokenBack,
@@ -39,6 +41,7 @@ import {
   syncMemoryBack,
   repushAgentToken,
   repushProviderAccountToken,
+  writeSessionResidentRoute,
 } from "./session-credentials.js";
 import {
   startTokenWriteBackWatch,
@@ -57,11 +60,8 @@ import { routeFromSelection } from "./provider-route-preflight.js";
 import {
   markCredentialRouteUsed,
   selectRouteForSelection,
-  sessionNeedsCredentialFailover,
 } from "./service-routing.js";
 import type { ModelSelection } from "../shared/catalogue/index.js";
-import { failoverNotice, failoverPinnedSession } from "./services/provider-account-switch.js";
-import { emitNoticeInTurn } from "./chat-card-persistence.js";
 import { ensureCodexHomeInitialized } from "./agents/codex/home-init.js";
 import { ensureLocalAgentOpsHost } from "./local-agent-ops.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
@@ -375,6 +375,17 @@ export function refreshAgentEnvForAllSessions(
  */
 export interface PrepareSessionAgentEnvironmentResult {
   /**
+   * docs/260 §1b — the route this turn authenticates with, selected here and
+   * threaded by the executor as a VALUE through run-params, spawn, listener
+   * attribution, and write-back. The session row is no longer the handoff:
+   * nothing on the turn path reads `sessions.provider_route_*`.
+   *
+   * `undefined` when this call was a warm-up (`enforceAccountRouting` unset —
+   * warm-ups are account-neutral and select nothing) or when nothing is
+   * signed in (`auth_required` falls through to the legacy env path).
+   */
+  turnRoute?: ProviderRoute;
+  /**
    * docs/153 — the per-turn leak repair's terminal state regarding the
    * Claude CLI session id. Tri-state:
    *
@@ -415,21 +426,57 @@ export interface PrepareSessionAgentEnvironmentResult {
  * reaches `auth_required` and so still resolves `undefined`, which is what kept
  * the pre-feature behaviour.
  */
-function selectRouteForNewTurn(
+function selectTurnRoute(
   agentId: AgentId,
   session: SessionInfo,
   deps: SessionAgentEnvDeps,
-  enforce: boolean,
+  opts: {
+    excludeRouteIds?: readonly string[] | undefined;
+    residentRoute?: { kind: ProviderRouteKind; id: string } | undefined;
+    requireResidentRoute?: boolean;
+  },
 ): ProviderRoute | undefined {
   const manager = deps.providerAccountManager;
+  // docs/260 reqs 8/13 — a reused or busy resident process fixes the route:
+  // the turn runs on the credential the live process already holds, whatever
+  // the strategy prefers. Only while that credential still exists — a
+  // deleted account or removed key has nothing left to protect, and normal
+  // selection (below) is what re-routes the session.
+  if (opts.requireResidentRoute && opts.residentRoute) {
+    const { kind, id } = opts.residentRoute;
+    const stillExists =
+      kind === "account"
+        ? manager?.getByRouteId(id) !== undefined
+        : !id.startsWith("cred_") || deps.credentialStore.getCredentialRoute(id) !== undefined;
+    if (stillExists) return { kind, id };
+  }
+  // Any resident kind qualifies for balanced session-spreading (req 8): the
+  // account walk matches an account id, the string walk a stored-credential
+  // id, and an env-reserved id simply matches neither.
+  const residentRouteId = opts.residentRoute?.id;
   // docs/252 phase 3 — scoped to the SELECTED `(service, billing mode)`. Asking
   // one question per `AgentId` could answer with a credential belonging to a
   // different mode entirely, which is how an included turn became a metered one.
-  const selection = selectRouteForSelection(agentId, modelSelectionOf(session), {
-    credentialStore: deps.credentialStore,
-    ...(manager ? { providerAccountManager: manager } : {}),
-  });
-  if (!enforce) return selection.ok ? selection.route : undefined;
+  //
+  // docs/260 req 12 — `optimistic` is unconditional here: this is the turn's
+  // own pre-spawn selection and the result WILL be attempted, so refusal
+  // memory may order candidates but not produce `all_exhausted` on its own.
+  // The blocking throw fires only when every candidate was actually refused
+  // this turn (all excluded), and the executor's attempt loop rewrites that
+  // failure from its own ledger (req 6).
+  const selection = selectRouteForSelection(
+    agentId,
+    modelSelectionOf(session),
+    {
+      credentialStore: deps.credentialStore,
+      ...(manager ? { providerAccountManager: manager } : {}),
+    },
+    {
+      optimistic: true,
+      ...(opts.excludeRouteIds ? { exclude: opts.excludeRouteIds } : {}),
+      ...(residentRouteId ? { residentRouteId } : {}),
+    },
+  );
   return routeFromSelection(agentId, selection, blockedSubjectFor(agentId, session));
 }
 
@@ -480,6 +527,28 @@ export async function prepareSessionAgentEnvironment(
      */
     enforceAccountRouting?: boolean;
     /**
+     * docs/260 §3 — route ids already refused by the provider during THIS
+     * logical turn. Set by the attempt loop's retries so selection cannot
+     * hand back an account that just refused; empty on the first attempt.
+     */
+    excludeRouteIds?: readonly string[];
+    /**
+     * docs/260 §5 — the credential route backing the session's live resident
+     * CLI process, when one exists. Under `balanced` its account keeps
+     * serving this session while eligible (the mode spreads sessions, not
+     * turns — req 8); under `strict` it is only a preference when
+     * `requireResidentRoute` forces it.
+     */
+    residentRoute?: { kind: ProviderRouteKind; id: string };
+    /**
+     * docs/260 reqs 8/13 — the turn MUST run on `residentRoute`: the process
+     * is being reused (its token is in memory), or it holds background work
+     * and may not be killed for a move. Selection short-circuits to the
+     * resident route while its credential still exists; a deleted credential
+     * falls through to normal selection (there is nothing left to protect).
+     */
+    requireResidentRoute?: boolean;
+    /**
      * True when this turn will REUSE a resident agent process rather than
      * spawn a fresh one (live steering, docs/140). Set by the turn executor,
      * which is the only caller that knows.
@@ -504,162 +573,118 @@ export async function prepareSessionAgentEnvironment(
   const { sessionId, agentId, deps } = args;
   const session = deps.sessionManager.get(sessionId);
   if (!session) return {};
-  // docs/150 reqs 3/7/8 — an ALREADY-pinned session whose account is spent
-  // moves to the next eligible one before the turn starts, keeping its
-  // transcript and workspace (req 9). Throws when there is nowhere to go, which
-  // is how req 13's fail-fast reaches existing sessions and not just first
-  // turns. Gated on the same flag as the routing preflight: this rewrites
-  // credentials and kills a process, which a pre-turn warm-up must not do.
-  const failover =
-    args.enforceAccountRouting && deps.providerAccountManager
-      ? failoverPinnedSession(sessionId, {
-          sessionManager: deps.sessionManager,
-          providerAccountManager: deps.providerAccountManager,
-          credentialsDir: deps.credentialsDir,
-        })
-      : null;
-  // Re-read: the failover just repointed `provider_route_id`, and everything
-  // below (provisioning, token sync, sync-back bookkeeping) has to see the
-  // account the turn will actually run on.
-  const routedSession = failover ? (deps.sessionManager.get(sessionId) ?? session) : session;
+  // docs/260 §1 — every routed turn selects its account HERE, from the
+  // strategy and the quota picture; no pinned route is consulted and none is
+  // persisted. A warm-up (`enforceAccountRouting` unset — child spawn,
+  // headless create, CI fix, session wake) is account-neutral by design: it
+  // selects nothing, provisions nothing, and stamps nothing, so it cannot
+  // double-select against the real turn that follows moments later.
+  const isTurn = args.enforceAccountRouting === true;
+  const selectedRoute = isTurn
+    ? selectTurnRoute(agentId, session, deps, {
+        excludeRouteIds: args.excludeRouteIds,
+        residentRoute: args.residentRoute,
+        requireResidentRoute: args.requireResidentRoute === true,
+      })
+    : undefined;
 
-  // docs/150 reqs 13/17 — route preflight. For a session that has not been
-  // pinned to a route yet this is the decision point, so it is also the last
-  // moment a turn can be stopped *before* pinning and credential provisioning
-  // make it look like it ran on an account.
-  const pinnedRoute =
-    routedSession.providerRouteKind && routedSession.providerRouteId
-      ? { kind: routedSession.providerRouteKind, id: routedSession.providerRouteId }
-      : undefined;
-  // docs/252 phase 3 — a pinned STRING credential that has since been deleted is
-  // not a route any more. Reusing it unconditionally (which is what this branch
-  // did) left the session attributing its turns to a credential that no longer
-  // exists while delivery handed the CLI whichever one of that mode's remains
-  // sorts first — the attribution and the authentication naming different
-  // credentials. Dropping it re-pins on this very turn, through the resolution
-  // below. Account routes are excluded: their own machinery owns benching and
-  // status, and a missing account is docs/150's case, not this one.
-  const pinnedIsStale =
-    pinnedRoute?.kind === "reserved"
-    && pinnedRoute.id.startsWith("cred_")
-    && !deps.credentialStore.getCredentialRoute(pinnedRoute.id);
-  // docs/252 phase 5, req 12 — the string-delivered twin of the account
-  // failover above. A subscription authenticated by a supplied key (GLM's
-  // coding plan) is benched by `markSessionAccountExhausted` exactly as an
-  // account is, so a session pinned to the spent one has to move to another
-  // credential of the SAME `(service, mode)` before its next turn. Gated on the
-  // same flag as the account path: this repoints a session, which a pre-turn
-  // warm-up must not do.
-  const pinnedIsBenched =
-    (args.enforceAccountRouting ?? false)
-    && sessionNeedsCredentialFailover(routedSession, deps.credentialStore);
-  const dropPinnedRoute = pinnedIsStale || pinnedIsBenched;
-  const selectedRoute =
-    pinnedRoute && !dropPinnedRoute
-      ? pinnedRoute
-      : selectRouteForNewTurn(agentId, routedSession, deps, args.enforceAccountRouting ?? false);
-  if (dropPinnedRoute) {
-    const why = pinnedIsStale ? "its credential was removed" : "its credential is out of quota";
-    console.log(`[env-prep] ${sessionId} dropped pinned route ${pinnedRoute?.id ?? "?"} — ${why}`);
-  }
-  // Persist the move. The first-turn branch below pins only when the session has
-  // never been pinned, so without this an already-pinned session kept naming the
-  // dead or benched credential on its row: every later turn would re-resolve the
-  // same way (correct) while `usage_turns` and the spawn identity recorded a
-  // credential the turn did not authenticate with (req 11). Phase 3's stale-drop
-  // asserted this re-pinning; it did not happen.
-  const credentialMoved =
-    dropPinnedRoute && pinnedRoute && selectedRoute && selectedRoute.id !== pinnedRoute.id;
-  if (credentialMoved && selectedRoute) {
-    deps.sessionManager.setProviderRoute(sessionId, selectedRoute.kind, selectedRoute.id);
+  // docs/260 §5 — stamp the selection onto the runner BEFORE the spawn: the
+  // local-mode HOME resolver and the pre-capture release check read this, and
+  // the spawn that follows may resolve synchronously, before the executor's
+  // own post-run stamp could land.
+  if (isTurn && runner && selectedRoute) {
+    runner.residentRoute = { kind: selectedRoute.kind, id: selectedRoute.id };
+    // docs/260 §5 — persist the same stamp, so a post-restart adoption can
+    // recover the identity of a surviving process whose credential left no
+    // subtree marker (string/env-delivered routes; reqs 11 and 13). Best
+    // effort: the file only ever improves attribution.
+    if (runner instanceof ContainerSessionRunner) {
+      try {
+        writeSessionResidentRoute(deps.credentialsDir, sessionId, agentId, {
+          kind: selectedRoute.kind, id: selectedRoute.id,
+        });
+      } catch (err) {
+        console.warn("[credentials] resident-route record failed:", getErrorMessage(err));
+      }
+    }
   }
 
-  // docs/150 req 21 — stamp the account this turn actually resolved onto, which
-  // is what `balanced` sorts by. Here rather than inside `selectAccountForTurn`
-  // because that function also answers probe questions (route usability, the
-  // `selectRouteForTurn` wrapper), and an account merely *considered* has not
-  // been used. Covers the pinned branch too, deliberately: an account carrying
-  // an active session should keep sorting last while that work continues.
+  // docs/150 req 21 — stamp the credential this turn actually resolved onto,
+  // which is what `balanced` sorts by. An account merely *considered* has not
+  // been used; a warm-up stamps nothing (it resolved nothing).
   if (selectedRoute?.kind === "account" && deps.providerAccountManager) {
     deps.providerAccountManager.markAccountUsed(accountServiceForHarness(agentId), selectedRoute.id);
   }
   // docs/252 phase 5 — the same stamp for a string-delivered credential, which
-  // is what makes `balanced` mean anything for a subscription authenticated by a
-  // key. A no-op for an env-delivered route, which has no row to stamp.
+  // is what makes `balanced` mean anything for a subscription authenticated by
+  // a key. A no-op for an env-delivered route, which has no row to stamp.
   markCredentialRouteUsed(deps.credentialStore, selectedRoute);
 
-  // req 11 — say it in the session, where the user is already looking, and
-  // persist it: a switch the transcript forgets on reload is not a record.
-  const chatHistory = deps.chatHistoryManager;
-  if (failover && runner && chatHistory) {
-    emitNoticeInTurn(runner, sessionId, failoverNotice(failover), chatHistory);
-  }
-  // The same sentence for the same event, one credential shape over: the wording
-  // is `failoverNotice`'s `exhausted` case, and it says the user's own labels
-  // because "moved from cred_9f3e… to cred_1b77…" tells them nothing about which
-  // credential is now paying.
-  if (pinnedIsBenched && credentialMoved && selectedRoute && pinnedRoute && runner && chatHistory) {
-    const label = (routeId: string): string =>
-      deps.credentialStore.getCredentialRoute(routeId)?.label ?? routeId;
-    emitNoticeInTurn(
-      runner,
-      sessionId,
-      `${label(pinnedRoute.id)} is out of quota — continuing this session on ${label(selectedRoute.id)}.`,
-      chatHistory,
-    );
-  }
-
   // One line per preparation recording the decisions that shaped it: which
-  // route the turn resolved to, whether this call pins it, and whether the
-  // leak repair ran. Diagnosing nikzlabs/shipit#1874 from production logs meant
-  // inferring all three from their side effects — the repair announced itself
-  // only when it fired, so "repaired again" and "never converged" were
-  // indistinguishable from "ran and found nothing". Route ids are opaque
-  // account handles (`acct_…`); no token material is logged here or anywhere
-  // below.
+  // route the turn resolved to and whether the leak repair ran. Route ids are
+  // opaque account handles (`acct_…`); no token material is logged here or
+  // anywhere below.
   const routeLabel = selectedRoute ? `${selectedRoute.kind}:${selectedRoute.id}` : "none";
   const repairLabel = args.reusingResidentAgent ? "skipped(resident-agent)" : "run";
-  const failoverLabel = failover
-    ? ` failover=${failover.fromAccountId}->${failover.toAccountId}`
-    : "";
-  const pinLabel = routedSession.agentPinned ? "already" : "now";
   console.log(
-    `[env-prep] ${sessionId} agent=${agentId} route=${routeLabel} pinned=${pinLabel} repair=${repairLabel}${failoverLabel}`,
+    `[env-prep] ${sessionId} agent=${agentId} route=${routeLabel} turn=${isTurn ? "yes" : "warm-up"} repair=${repairLabel}`,
   );
 
-  // Step 1: provision the pinned agent's credential subtree (write-once),
-  // then mark the session as pinned. After the first turn `session.agentPinned`
-  // is true, so subsequent calls skip both the copy and the mark.
-  if (!session.agentPinned) {
-    if (runner instanceof ContainerSessionRunner) {
-      try {
-        if (selectedRoute?.kind === "account") {
-          provisionProviderAccountCredentials(deps.credentialsDir, sessionId, agentId, selectedRoute.id);
-        } else {
-          provisionAgentCredentials(deps.credentialsDir, sessionId, agentId);
-        }
-        // docs/155 — seed the shared per-repo Claude memory dir into this
-        // session's memory subtree (write-once, on first turn). Only Claude
-        // has the `.claude/projects/-workspace/memory` layout, and only a
-        // session with a remote URL has a stable repo hash to share by;
-        // sessions without one keep memory ephemeral in their per-session dir.
-        // eslint-disable-next-line no-restricted-syntax -- docs/155: Claude-only memory dir layout, see provisionRepoMemory
-        if (agentId === "claude" && session.remoteUrl) {
-          provisionRepoMemory(deps.credentialsDir, sessionId, repoUrlToHash(session.remoteUrl));
-        }
-      } catch (err) {
-        console.warn("[credentials] provisioning failed:", getErrorMessage(err));
+  // Step 1 (docs/260 req 4): the session's credential subtree FOLLOWS the
+  // turn. For an account route, `ensureSessionAccountCredentials` verifies by
+  // recorded identity that the subtree belongs to the chosen account and
+  // reprovisions it wholesale on any mismatch — a wrong-account token can
+  // never survive to spawn time, which closes the "session spends account A
+  // while telemetry benches account B" poisoning class the 2026-08-10
+  // incident exposed. Reserved/legacy routes keep the write-once copy gated
+  // on `agentPinned` (their flat source has no per-account identity, and a
+  // per-turn re-copy would clobber session-local state with an older root).
+  if (isTurn && runner instanceof ContainerSessionRunner) {
+    // docs/260 req 4 — the account-identity step fails CLOSED. If the subtree
+    // cannot be verified/reprovisioned for the chosen account, the turn must
+    // NOT spawn: the tree on disk may still hold ANOTHER account's token, and
+    // a spawn would spend that account while the capture attributes this one
+    // (the poisoning class req 4 exists to close). The throw surfaces as a
+    // failed turn via the executor's error path — visible and resendable,
+    // unlike a silently mis-billed turn.
+    if (selectedRoute?.kind === "account") {
+      const outcome = ensureSessionAccountCredentials(
+        deps.credentialsDir, sessionId, agentId, selectedRoute.id,
+      );
+      if (outcome !== "match") {
+        console.log(
+          `[credentials] ${sessionId} account subtree ${outcome} for ${selectedRoute.id}`,
+        );
       }
     }
+    // Everything below stays best-effort: the legacy flat copy and memory
+    // seeding are write-once scaffolding with no account identity at stake.
+    try {
+      if (selectedRoute?.kind !== "account" && !session.agentPinned) {
+        provisionAgentCredentials(deps.credentialsDir, sessionId, agentId);
+      }
+      // docs/155 — seed the shared per-repo Claude memory dir into this
+      // session's memory subtree (write-once, on first turn). Only Claude
+      // has the `.claude/projects/-workspace/memory` layout, and only a
+      // session with a remote URL has a stable repo hash to share by;
+      // sessions without one keep memory ephemeral in their per-session dir.
+      // eslint-disable-next-line no-restricted-syntax -- docs/155: Claude-only memory dir layout, see provisionRepoMemory
+      if (!session.agentPinned && agentId === "claude" && session.remoteUrl) {
+        provisionRepoMemory(deps.credentialsDir, sessionId, repoUrlToHash(session.remoteUrl));
+      }
+    } catch (err) {
+      console.warn("[credentials] provisioning failed:", getErrorMessage(err));
+    }
+  }
+  if (isTurn && !session.agentPinned) {
     deps.sessionManager.setAgentId(sessionId, agentId);
-    if (selectedRoute) deps.sessionManager.setProviderRoute(sessionId, selectedRoute.kind, selectedRoute.id);
+    // docs/260 — `agentPinned` no longer pins anything about routing; it
+    // survives only as the "scaffolded once" boundary for the write-once
+    // provisioning branches above (legacy flat credentials, repo memory).
     deps.sessionManager.setAgentPinned(sessionId);
-  } else if (runner instanceof ContainerSessionRunner) {
-    // Provisioning above already normalized the agent's user config, but it runs
-    // exactly once per session — a session pinned before that normalization
-    // existed would stay wrong forever (for Claude: an untrusted `/workspace`,
-    // so the CLI silently drops the workspace's own `permissions.allow`
-    // entries). Re-assert it on every later turn instead. Idempotent and
+  } else if (isTurn && runner instanceof ContainerSessionRunner) {
+    // The account path's provisioning normalizes the agent's user config only
+    // when it reprovisions; re-assert it on every turn. Idempotent and
     // merge-only: it reads one small JSON file and writes only when a key is
     // actually missing.
     try {
@@ -691,7 +716,7 @@ export async function prepareSessionAgentEnvironment(
   // meant the home held one route's subscription credentials while the turn ran
   // on another; the CLI's env-beats-disk preference picked the right one by
   // luck, not by design (docs/150 req 12).
-  if (isLocalRuntime()) {
+  if (isLocalRuntime() && isTurn) {
     const accountId = selectedRoute?.kind === "account" ? selectedRoute.id : undefined;
     try {
       const outcomes = selectedRoute?.kind === "reserved"
@@ -817,6 +842,7 @@ export async function prepareSessionAgentEnvironment(
   // we proceed, and the runtime-401 auto-retry awaits the same in-flight
   // refresh. Skipped for the env-provided OAuth route (not refresher-managed).
   if (
+    isTurn &&
     runner instanceof ContainerSessionRunner &&
     deps.ensureAgentTokenFresh &&
     selectedRoute?.id !== "claude-env-oauth"
@@ -835,7 +861,12 @@ export async function prepareSessionAgentEnvironment(
   // a write-once provisioning copy goes stale the moment any other session
   // rotates the source.
   let overrideAgentSessionId: string | null | undefined;
-  if (runner instanceof ContainerSessionRunner) {
+  // docs/260 — warm-ups skip the token sync too: it is route-directional
+  // (account subtree vs the legacy flat root), a warm-up has no route, and
+  // pulling the FLAT root's token into an account-provisioned subtree is the
+  // wrong-account overwrite req 4 exists to prevent. The executor's own
+  // enforce-routing call, moments later, performs the sync.
+  if (isTurn && runner instanceof ContainerSessionRunner) {
     try {
       // docs/153 — if the per-turn sync repairs a leaked symlink, recover
       // the Claude CLI's `sessionId` from the orphan jsonl tree so the next
@@ -956,7 +987,10 @@ export async function prepareSessionAgentEnvironment(
     );
   }
 
-  return overrideAgentSessionId !== undefined ? { overrideAgentSessionId } : {};
+  return {
+    ...(selectedRoute ? { turnRoute: selectedRoute } : {}),
+    ...(overrideAgentSessionId !== undefined ? { overrideAgentSessionId } : {}),
+  };
 }
 
 /**
@@ -991,16 +1025,18 @@ export function repushSessionAgentToken(
   args: { sessionId: string; agentId: AgentId; deps: Pick<SessionAgentEnvDeps, "credentialsDir" | "sessionManager"> },
 ): void {
   if (!(runner instanceof ContainerSessionRunner)) return;
-  const session = args.deps.sessionManager.get(args.sessionId);
   try {
-    if (session?.providerRouteKind === "account" && session.providerRouteId) {
-      repushProviderAccountToken(
-        args.deps.credentialsDir,
-        args.sessionId,
-        args.agentId,
-        session.providerRouteId,
-      );
-    } else if (session?.providerRouteId !== "claude-env-oauth") {
+    // docs/260 — the source to repush from is the subtree's own recorded
+    // account (the marker), never a session row: the row records no route any
+    // more, and a null read here would force-push the FLAT root's token over
+    // an account session's copy — the cross-account overwrite this feature
+    // exists to end. No marker + a reserved env-OAuth route means the
+    // credentials aren't ours to write; no marker otherwise is a true legacy
+    // session and keeps the flat repush.
+    const marked = readSessionAccountMarker(args.deps.credentialsDir, args.sessionId)[args.agentId];
+    if (marked) {
+      repushProviderAccountToken(args.deps.credentialsDir, args.sessionId, args.agentId, marked);
+    } else if (runner.residentRoute?.id !== "claude-env-oauth") {
       repushAgentToken(args.deps.credentialsDir, args.sessionId, args.agentId);
     }
   } catch (err) {
@@ -1033,7 +1069,16 @@ export function finalizeSessionAgentEnvironment(
   stopTokenWriteBackWatch(args.sessionId);
   if (!(runner instanceof ContainerSessionRunner)) return;
   const session = args.deps.sessionManager.get(args.sessionId);
-  const route = args.capturedRoute ?? session;
+  // docs/260 — the write-back target is the TURN'S OWN captured route; with
+  // no capture (a path that never ran env-prep), the subtree's recorded
+  // account marker decides. The old fallback read the session row, and a
+  // missing row value sent an account session's token to the FLAT root —
+  // the exact cross-account write-back that poisoned installs pre-260.
+  const markerAccountId = readSessionAccountMarker(args.deps.credentialsDir, args.sessionId)[args.agentId];
+  const route = args.capturedRoute
+    ?? (markerAccountId
+      ? { providerRouteKind: "account" as const, providerRouteId: markerAccountId }
+      : undefined);
   try {
     if (route?.providerRouteKind === "account" && route.providerRouteId) {
       syncProviderAccountTokenBack(

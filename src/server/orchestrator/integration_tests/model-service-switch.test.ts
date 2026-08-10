@@ -10,7 +10,9 @@
  * the service the user just moved away from (req 11).
  *
  * **What each test here is actually guarding, stated because it is not obvious
- * from the names.** The respawn and the route re-pin are phase 3's mechanism;
+ * from the names.** The respawn and the per-turn route resolution are the
+ * spawn-shaping mechanism (phase 3, reshaped by docs/260 — selection is
+ * per-turn and threads a turn-route VALUE; the session row pins nothing);
  * these two cases would pass with phase 4's handler changes reverted, and they
  * are here as the end-to-end proof that the picker acting on a LIVE session
  * reaches that mechanism at all — which nothing else asserted. The refusal and
@@ -180,7 +182,14 @@ describe("Integration: mid-session model switching across services (docs/252 pha
     client.close();
   });
 
-  it("re-pins the credential route to the new service rather than reusing the old one", async () => {
+  it("resolves each turn's credential against the CURRENT service, with no session-row pin (docs/260 reqs 1-2)", async () => {
+    // docs/260 — selection happens per turn and produces a turn-route VALUE
+    // threaded to spawn shaping; `sessions.provider_route_*` has no routing
+    // reads or writes left. The docs/252 hazard this test used to pin at the
+    // session row ("the old service's key must not authenticate a turn at the
+    // new endpoint") is now held per-turn: there is no pinned route to go
+    // stale, so the observable is the spawn itself — which service, which
+    // endpoint, which credential variable each turn was actually shaped with.
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
@@ -188,6 +197,11 @@ describe("Integration: mid-session model switching across services (docs/252 pha
     client.send({ type: "send_message", text: "Turn one" });
     const claude1 = await waitForClaude(() => lastClaude);
     claude1.initSession("route-repin-session");
+    // Turn one's spawn was shaped by that turn's own selection: OpenRouter's
+    // endpoint, authenticated by OpenRouter's key.
+    expect(claude1.lastServiceRouting?.serviceId).toBe("openrouter");
+    expect(claude1.lastServiceRouting?.baseUrl).toBe(OPENROUTER_BASE);
+    expect((claude1.lastServiceRouting as AnyMsg)?.credentialSourceEnv).toBe("OPENROUTER_API_KEY");
     claude1.emit("event", {
       type: "result",
       subtype: "success",
@@ -196,21 +210,28 @@ describe("Integration: mid-session model switching across services (docs/252 pha
     });
     await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
 
+    // req 2 — nothing pinned the session to the credential the turn used: the
+    // route columns stay empty even after a completed turn.
     const sessionId = sessionManager.list()[0]!.id;
-    const pinnedFirst = sessionManager.get(sessionId);
-    expect(pinnedFirst?.providerRouteServiceId).toBe("openrouter");
+    const afterTurnOne = sessionManager.get(sessionId);
+    expect(afterTurnOne?.providerRouteId).toBeUndefined();
+    expect(afterTurnOne?.providerRouteServiceId).toBeUndefined();
 
     client.send({ type: "set_model", model: MODEL, serviceId: "vercel", billingMode: "key" });
-    // Wait for the confirmation, which is sent after the write.
+    // Wait for the confirmation, which is sent after the selection write.
     await drainUntil(client, (m) => m.type === "model_selection_changed");
+    expect(sessionManager.get(sessionId)?.serviceId).toBe("vercel");
 
-    const afterSwitch = sessionManager.get(sessionId);
-    expect(afterSwitch?.serviceId).toBe("vercel");
-    // A route belongs to a `(service, billing mode)`. Environment preparation
-    // reuses a pinned route unconditionally, so leaving OpenRouter's in place
-    // would authenticate the next turn — at Vercel's endpoint — with
-    // OpenRouter's key.
-    expect(afterSwitch?.providerRouteId).toBeUndefined();
+    // req 1 — the next turn re-runs selection against the NEW service: the
+    // fresh spawn goes to Vercel's endpoint on Vercel's key. With no pinned
+    // route there is nothing stale for env-prep to reuse, so the old
+    // service's key structurally cannot authenticate this turn.
+    client.send({ type: "send_message", text: "Turn two" });
+    const claude2 = await waitForClaude(() => lastClaude, claude1);
+    expect(claude2.lastServiceRouting?.serviceId).toBe("vercel");
+    expect(claude2.lastServiceRouting?.baseUrl).toBe(VERCEL_BASE);
+    expect((claude2.lastServiceRouting as AnyMsg)?.credentialSourceEnv).toBe("AI_GATEWAY_API_KEY");
+    expect(sessionManager.get(sessionId)?.providerRouteId).toBeUndefined();
 
     client.close();
   });

@@ -80,11 +80,20 @@ export function wireAuthRequiredHandler(
     // failure, and left the dead credential selected for every later turn. Req 12
     // says subscriptions fail over; for these, ShipIt's own answer is to set the
     // credential aside so the next turn resolves another.
-    const failurePolicy = credentialFailurePolicyFor(turnSession ?? undefined);
+    // docs/260 req 2 — the policy comes from the TURN'S OWN captured route
+    // when the executor resolved one; the session's model selection is only
+    // the fallback for a turn that never captured (failed before env-prep,
+    // tests, local runtime). The session row's selection is mutable mid-turn
+    // and its dead `provider_route_*` columns can carry a pre-260 pin —
+    // neither describes the credential that just refused this turn.
+    const failurePolicy =
+      opts.getCapturedRoutePolicy?.() ?? credentialFailurePolicyFor(turnSession ?? undefined);
     const setAsideCredential =
       !failurePolicy.stopsOnFailure
       && !failurePolicy.vendorOwnedRecovery
-      && turnSession?.providerRouteKind === "reserved"
+      // docs/260 — reserved-ness comes from the TURN'S OWN captured route,
+      // not a session row (which records no route any more).
+      && opts.getCapturedRouteKind?.() === "reserved"
       && !!turnSessionId;
 
     // docs/179 — decide SYNCHRONOUSLY (before the teardown below kills the agent
@@ -186,7 +195,11 @@ export function wireAuthRequiredHandler(
       // transient blip costs minutes, not a day — and
       // `markSessionAccountExhausted` still refuses a metered key (req 12).
       if (setAsideCredential && turnSessionId) {
-        deps.markSessionAccountExhausted?.(turnSessionId, Date.now() + UNKNOWN_RESET_LOCKOUT_MS);
+        deps.markSessionAccountExhausted?.(
+          turnSessionId,
+          Date.now() + UNKNOWN_RESET_LOCKOUT_MS,
+          opts.getCapturedRouteId?.(),
+        );
       }
       persistAuthErrorRow();
       // docs/153, docs/155 — let the per-agent module decide its side effect on

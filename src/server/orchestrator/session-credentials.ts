@@ -35,11 +35,17 @@ export {
 export {
   ensureLocalWorkspaceTrust,
   ensureSessionAgentUserConfig,
+  ensureSessionAccountCredentials,
   provisionAgentCredentials,
   provisionProviderAccountCredentials,
   provisionSubAgentCredentials,
+  readSessionAccountMarker,
+  readSessionResidentRoute,
   removeSubAgentCredentials,
+  writeSessionAccountMarker,
+  writeSessionResidentRoute,
 } from "./session-agent-credentials.js";
+export type { RecordedResidentRoute } from "./session-agent-credentials.js";
 
 // ---- Per-turn OAuth token sync ----
 export type { AgentSessionIdRecoveryCallback } from "./token-sync-manager.js";

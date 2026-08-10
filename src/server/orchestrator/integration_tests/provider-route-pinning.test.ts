@@ -1,23 +1,23 @@
 /**
- * docs/150 — route pinning, the fail-fast that must happen *before* it, and
- * what the pinned route governs afterwards.
+ * docs/260 — per-turn account routing, driven end to end through env-prep.
  *
  * These drive `prepareSessionAgentEnvironment` against the REAL
  * `ProviderAccountManager`, `CredentialStore` and `SessionManager` (a real
- * SQLite DB), rather than the stubs the unit tests use. That combination is the
- * thing worth integrating: pinning is a decision taken in env-prep and durably
- * recorded by the session manager, and every unit test in this area stubs one
- * side or the other, so nothing until now asserted that the two actually agree.
+ * SQLite DB), rather than the stubs the unit tests use. That combination is
+ * the thing worth integrating: selection is a decision taken in env-prep and
+ * carried as a VALUE (the returned turn route + the runner stamp), and every
+ * unit test in this area stubs one side or the other.
  *
  * Covers:
- *   - req 3  — the first turn pins { agent_id, provider_route_kind, provider_route_id }
- *   - req 12 — an exhausted subscription does not roll onto metered billing
- *   - req 13 — an all-exhausted turn fails with the reset time, pins NOTHING,
- *              and provisions no credentials
- *   - reqs 4/6/9 — an EXISTING pinned session moves at the proactive cutoff and
- *              keeps its conversation
- *   - req 18 — a detached system turn recreates its runner from the persisted
- *              agent and route, not from the global default
+ *   - req 1  — every turn selects its account; nothing persists a route on the
+ *              session row
+ *   - req 5/9 — telemetry orders, only remembered refusals skip, and the turn
+ *              route follows recovery
+ *   - req 7  — a refused subscription never rolls onto metered billing
+ *   - req 8  — the strategy always wins across turns (cutoffs move work)
+ *   - req 6/13 wording — an all-refused selection names the earliest re-try
+ *   - detached system turns run the session's own agent through the same
+ *              selection
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -28,12 +28,12 @@ import { EventEmitter } from "node:events";
 import { CredentialStore } from "../credential-store.js";
 import { accountServiceForHarness, ProviderAccountManager } from "../provider-account-manager.js";
 import { SessionManager } from "../sessions.js";
-import { ChatHistoryManager } from "../chat-history.js";
-import { SessionRunner, SessionRunnerRegistry } from "../session-runner.js";
+import { SessionRunnerRegistry } from "../session-runner.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { wakeSessionWithTurn } from "../wake-session.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import type { AgentId, SubscriptionLimits, SubscriptionLimitsMap } from "../../shared/types.js";
+import type { ProviderRouteKind } from "../../shared/types/domain-types/provider.js";
 import { createTestDatabaseManager } from "./test-helpers.js";
 
 class FakeRunner extends EventEmitter {
@@ -42,6 +42,7 @@ class FakeRunner extends EventEmitter {
   disposed = false;
   sessionId = "s1";
   sessionDir = "/tmp/s1";
+  residentRoute: { kind: ProviderRouteKind; id: string } | undefined = undefined;
   pushAgentEnv = () => {};
 }
 
@@ -83,18 +84,17 @@ function sessionWindowAt(pct: number, serviceId = "anthropic"): SubscriptionLimi
   };
 }
 
-describe("provider route pinning (docs/150)", () => {
+describe("per-turn account routing (docs/260)", () => {
   let root: string;
   let store: CredentialStore;
   let accounts: ProviderAccountManager;
   let sessions: SessionManager;
-  let dbManager: ReturnType<typeof createTestDatabaseManager>;
   let savedSessionId: string | undefined;
   /** Live quota snapshot the manager reads — mutated per test. */
   let limits: SubscriptionLimitsMap;
 
   beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-route-pin-"));
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-route-turn-"));
     store = new CredentialStore(root);
     limits = {};
     accounts = new ProviderAccountManager({
@@ -102,8 +102,7 @@ describe("provider route pinning (docs/150)", () => {
       credentialStore: store,
       getSubscriptionLimits: () => limits,
     });
-    dbManager = createTestDatabaseManager();
-    sessions = new SessionManager(dbManager);
+    sessions = new SessionManager(createTestDatabaseManager());
     savedSessionId = process.env.SHIPIT_SESSION_ID;
     delete process.env.SHIPIT_SESSION_ID;
     delete process.env.ANTHROPIC_API_KEY;
@@ -126,13 +125,18 @@ describe("provider route pinning (docs/150)", () => {
     return acct.id;
   }
 
-  async function runEnvPrep(sessionId: string, agentId: AgentId): Promise<void> {
+  async function runEnvPrep(
+    sessionId: string,
+    agentId: AgentId,
+    opts: { excludeRouteIds?: string[] } = {},
+  ): Promise<{ runner: FakeRunner; turnRoute: { kind: ProviderRouteKind; id: string } | undefined }> {
     const runner = new FakeRunner();
     runner.sessionId = sessionId;
-    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+    const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId,
       agentId,
       enforceAccountRouting: true,
+      ...(opts.excludeRouteIds ? { excludeRouteIds: opts.excludeRouteIds } : {}),
       deps: {
         credentialsDir: root,
         credentialStore: store,
@@ -140,31 +144,32 @@ describe("provider route pinning (docs/150)", () => {
         providerAccountManager: accounts,
       },
     });
+    return { runner, turnRoute: result.turnRoute };
   }
 
-  it("pins agent and provider route on a Claude session's first turn", async () => {
+  it("selects an account per turn and carries it as a value, never a session row (req 1)", async () => {
     const accountId = readyAccount("claude", "Work");
     sessions.track("s1", "Test", path.join(root, "sessions", "s1"));
 
-    await runEnvPrep("s1", "claude");
+    const { runner, turnRoute } = await runEnvPrep("s1", "claude");
 
+    expect(turnRoute).toEqual({ kind: "account", id: accountId });
+    // The runner stamp is the process-scoped identity (docs/260 §5)...
+    expect(runner.residentRoute).toEqual({ kind: "account", id: accountId });
+    // ...and the session row records the agent, but NO route (req 2).
     const session = sessions.get("s1");
     expect(session?.agentId).toBe("claude");
-    expect(session?.providerRouteKind).toBe("account");
-    expect(session?.providerRouteId).toBe(accountId);
-    expect(session?.agentPinned).toBe(true);
+    expect(session?.providerRouteId).toBeFalsy();
   });
 
-  it("pins agent and provider route on a Codex session's first turn", async () => {
+  it("routes a Codex turn the same way", async () => {
     const accountId = readyAccount("codex", "Personal");
     sessions.track("s1", "Test", path.join(root, "sessions", "s1"));
 
-    await runEnvPrep("s1", "codex");
+    const { turnRoute } = await runEnvPrep("s1", "codex");
 
-    const session = sessions.get("s1");
-    expect(session?.agentId).toBe("codex");
-    expect(session?.providerRouteKind).toBe("account");
-    expect(session?.providerRouteId).toBe(accountId);
+    expect(turnRoute).toEqual({ kind: "account", id: accountId });
+    expect(sessions.get("s1")?.agentId).toBe("codex");
   });
 
   it("stamps lastUsedAt through the real account manager (req 21 wiring)", async () => {
@@ -181,266 +186,148 @@ describe("provider route pinning (docs/150)", () => {
     expect(accounts.get("anthropic", accountId)?.lastUsedAt).toBeGreaterThan(0);
   });
 
-  it("keeps the pinned route on later turns instead of re-selecting", async () => {
-    const first = readyAccount("claude", "Work");
-    sessions.track("s1", "Test", path.join(root, "sessions", "s1"));
-    await runEnvPrep("s1", "claude");
-
-    // A second, higher-priority-looking account appears mid-life. A pinned
-    // session must not drift onto it — req 9's continuity depends on staying
-    // put until something makes the pinned account unusable.
-    readyAccount("claude", "Newer");
-    await runEnvPrep("s1", "claude");
-
-    expect(sessions.get("s1")?.providerRouteId).toBe(first);
-  });
-
-  it("pins a healthy secondary when the first account is exhausted", async () => {
+  it("routes to a healthy secondary while the first account's refusal is remembered (req 9)", async () => {
     const first = readyAccount("claude", "Spent");
     const second = readyAccount("claude", "Healthy");
     accounts.markAccountExhausted("anthropic", first, Date.now() + 3_600_000);
     sessions.track("s1", "Test", path.join(root, "sessions", "s1"));
 
-    await runEnvPrep("s1", "claude");
-
-    expect(sessions.get("s1")?.providerRouteId).toBe(second);
+    const { turnRoute } = await runEnvPrep("s1", "claude");
+    expect(turnRoute).toEqual({ kind: "account", id: second });
   });
 
-  it("fails an all-exhausted turn, pinning nothing and provisioning nothing (req 13)", async () => {
-    const resetAt = Date.now() + 30 * 60 * 1000;
+  it("returns to the strategy's best account the turn its refusal clears (reqs 1, 8)", async () => {
+    const first = readyAccount("claude", "Primary");
+    const second = readyAccount("claude", "Secondary");
+    accounts.markAccountExhausted("anthropic", first, Date.now() + 1_000);
+    sessions.track("s1", "Test", path.join(root, "sessions", "s1"));
+
+    // First turn: primary is refusal-blocked, the session runs on the
+    // secondary. No pin records that.
+    expect((await runEnvPrep("s1", "claude")).turnRoute?.id).toBe(second);
+
+    // The refusal lapses; the next turn is back on the primary — the strategy
+    // wins, with no stored preference to fight.
+    accounts.clearAccountExhaustion("anthropic", first);
+    expect((await runEnvPrep("s1", "claude")).turnRoute?.id).toBe(first);
+  });
+
+  it("still TRIES the best remembered-refused account rather than failing untried (req 12)", async () => {
+    // A resend after an all-refused turn re-tries every account: the turn's
+    // own selection is optimistic, so refusal memory orders candidates but
+    // cannot fail a first attempt on its own.
+    const resetAt = Date.now() + 10 * 60 * 1000;
     const first = readyAccount("claude", "A");
     const second = readyAccount("claude", "B");
     accounts.markAccountExhausted("anthropic", first, resetAt);
     accounts.markAccountExhausted("anthropic", second, resetAt);
+    sessions.track("s1", "Test", path.join(root, "sessions", "s1"));
+
+    const { turnRoute } = await runEnvPrep("s1", "claude");
+    expect(turnRoute).toEqual({ kind: "account", id: first });
+  });
+
+  it("fails only when every account was refused THIS turn — the attempt loop's exclusions (reqs 6, 9)", async () => {
+    const first = readyAccount("claude", "A");
+    const second = readyAccount("claude", "B");
     const sessionDir = path.join(root, "sessions", "s1");
     sessions.track("s1", "Test", sessionDir);
 
-    await expect(runEnvPrep("s1", "claude")).rejects.toThrow();
+    await expect(
+      runEnvPrep("s1", "claude", { excludeRouteIds: [first, second] }),
+    ).rejects.toThrow(/out of quota/);
 
-    // req 13 — the turn fails *before* anything makes it look like it ran on an
-    // account. A pin or a provisioned credential subtree here would leave the
-    // session claiming an account it never used.
+    // The turn fails *before* anything makes it look like it ran on an
+    // account: no credentials, no agent pin, no route anywhere.
     const session = sessions.get("s1");
-    expect(session?.providerRouteId).toBeFalsy();
     expect(session?.agentPinned).toBeFalsy();
     expect(fs.existsSync(path.join(sessionDir, ".claude", ".credentials.json"))).toBe(false);
   });
 
-  it("names the earliest reset time when every account is spent (req 13)", async () => {
-    const soon = Date.now() + 10 * 60 * 1000;
-    const later = Date.now() + 90 * 60 * 1000;
-    const first = readyAccount("claude", "A");
-    const second = readyAccount("claude", "B");
-    // Deliberately spend the LATER-resetting account first, so a bug that
-    // reports "the first exhausted account's reset" rather than the minimum
-    // would surface.
-    accounts.markAccountExhausted("anthropic", first, later);
-    accounts.markAccountExhausted("anthropic", second, soon);
-    sessions.track("s1", "Test", path.join(root, "sessions", "s1"));
-
-    await expect(runEnvPrep("s1", "claude")).rejects.toThrow(
-      new RegExp(new Date(soon).toISOString().slice(0, 16)),
-    );
-  });
-
-  it("does not roll an exhausted subscription onto a configured API key (req 12)", async () => {
+  it("does not roll a refused subscription onto a configured API key (req 7)", async () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
     const only = readyAccount("claude", "Subscription");
     accounts.markAccountExhausted("anthropic", only, Date.now() + 3_600_000);
     sessions.track("s1", "Test", path.join(root, "sessions", "s1"));
 
-    // The API key would work. Spending the user's money because a subscription
-    // ran out is the one outcome this feature must never produce.
-    await expect(runEnvPrep("s1", "claude")).rejects.toThrow();
-    expect(sessions.get("s1")?.providerRouteId).toBeFalsy();
+    // The remembered refusal is probed (req 12) — but the answer is NEVER the
+    // metered key, neither on the first attempt nor after the account refused
+    // this very turn.
+    expect((await runEnvPrep("s1", "claude")).turnRoute).toEqual({ kind: "account", id: only });
+    await expect(runEnvPrep("s1", "claude", { excludeRouteIds: [only] })).rejects.toThrow();
   });
 
   // -------------------------------------------------------------------------
-  // reqs 4, 6, 8, 9 — the PROACTIVE cutoff for an existing pinned session.
-  //
-  // Distinct from the exhaustion cases above: at 95% the account is still
-  // perfectly able to run the turn, so nothing fails — the session simply has
-  // to be on the next account by the time the turn spawns, WITHOUT losing the
-  // conversation it is in the middle of. The load-bearing half is the second
-  // clause: a test that only checked the route field would pass while req 9's
-  // failure mode (reprovisioning deletes the resume transcript) shipped.
+  // req 8 — cutoffs move work per turn, as ordering, not as displacement
+  // machinery: at 95% the account still runs turns, it just stops being the
+  // first choice, and the strategy is re-asked on every turn.
   // -------------------------------------------------------------------------
-  describe("an existing pinned session at the proactive cutoff", () => {
-    /**
-     * Pin `s1` to a first Claude account and give it the state a session
-     * mid-conversation actually holds: a resume id, the CLI's conversation
-     * jsonl, and that account's credentials in its per-session subtree.
-     */
-    async function pinnedMidConversation(): Promise<{ first: string; second: string; dir: string }> {
-      const first = readyAccount("claude", "Work", "token-a");
-      const second = readyAccount("claude", "Personal", "token-b");
+  describe("cutoffs steer the per-turn selection (req 8)", () => {
+    it("moves the next turn off an account past the default 90% cutoff", async () => {
+      const first = readyAccount("claude", "Work");
+      const second = readyAccount("claude", "Personal");
       sessions.track("s1", "Test", path.join(root, "sessions", "s1"));
-      await runEnvPrep("s1", "claude");
-      expect(sessions.get("s1")?.providerRouteId).toBe(first);
-
-      sessions.setAgentSessionId("s1", "conv-xyz");
-      // The per-session subtree the container would hold after that first turn.
-      // Written here rather than provisioned because provisioning is gated on a
-      // ContainerSessionRunner; the switch itself is not, which is the point.
-      const dir = path.join(root, "sessions", "s1");
-      fs.mkdirSync(path.join(dir, ".claude", "projects", "-workspace"), { recursive: true });
-      fs.writeFileSync(
-        path.join(dir, ".claude", ".credentials.json"),
-        JSON.stringify({ claudeAiOauth: { accessToken: "token-a" } }),
-      );
-      fs.writeFileSync(path.join(dir, ".claude", "settings.json"), "a-only");
-      fs.writeFileSync(
-        path.join(dir, ".claude", "projects", "-workspace", "conv-xyz.jsonl"),
-        "turn1\n",
-      );
-      return { first, second, dir };
-    }
-
-    function sessionAccessToken(dir: string): string {
-      const raw = fs.readFileSync(path.join(dir, ".claude", ".credentials.json"), "utf-8");
-      return (JSON.parse(raw) as { claudeAiOauth: { accessToken: string } }).claudeAiOauth.accessToken;
-    }
-
-    it("switches to the next account at the default 90% cutoff and keeps the conversation", async () => {
-      const { first, second, dir } = await pinnedMidConversation();
+      expect((await runEnvPrep("s1", "claude")).turnRoute?.id).toBe(first);
 
       limits = { "anthropic:sub": { [first]: sessionWindowAt(95) } };
-      await runEnvPrep("s1", "claude");
-
-      const session = sessions.get("s1");
-      expect(session?.providerRouteId).toBe(second);
-      // req 9 — the local context that makes `--resume` work is still there.
-      expect(session?.agentSessionId).toBe("conv-xyz");
-      expect(
-        fs.readFileSync(path.join(dir, ".claude", "projects", "-workspace", "conv-xyz.jsonl"), "utf-8"),
-      ).toBe("turn1\n");
-      // ...and the session is now running on the incoming account's credentials,
-      // with the outgoing account's leftovers cleared.
-      expect(sessionAccessToken(dir)).toBe("token-b");
-      expect(fs.existsSync(path.join(dir, ".claude", "settings.json"))).toBe(false);
+      expect((await runEnvPrep("s1", "claude")).turnRoute?.id).toBe(second);
     });
 
-    it("stays put below the cutoff, and moves once the user lowers it (req 4)", async () => {
-      const { first, second } = await pinnedMidConversation();
+    it("stays put below the cutoff, and moves once the user lowers it", async () => {
+      const first = readyAccount("claude", "Work");
+      const second = readyAccount("claude", "Personal");
+      sessions.track("s1", "Test", path.join(root, "sessions", "s1"));
 
-      // 60% is comfortably under the 90% default — nothing should move, or the
-      // cutoff would be decoration.
+      // 60% is comfortably under the 90% default — nothing should move, or
+      // the cutoff would be decoration.
       limits = { "anthropic:sub": { [first]: sessionWindowAt(60) } };
-      await runEnvPrep("s1", "claude");
-      expect(sessions.get("s1")?.providerRouteId).toBe(first);
+      expect((await runEnvPrep("s1", "claude")).turnRoute?.id).toBe(first);
 
-      // The same 60% against a user-configured 50% cutoff does move it. This is
-      // the whole of req 4 end to end: the stored setting reaches the router.
+      // The same 60% against a user-configured 50% cutoff does move it. This
+      // is the stored setting reaching the router, end to end.
       store.setFailoverCutoffs("anthropic", "sub", { session: 50 });
-      await runEnvPrep("s1", "claude");
-      expect(sessions.get("s1")?.providerRouteId).toBe(second);
+      expect((await runEnvPrep("s1", "claude")).turnRoute?.id).toBe(second);
     });
 
-    it("does not churn when every account is over the cutoff", async () => {
-      const { first, second } = await pinnedMidConversation();
+    it("keeps working on the best over-cutoff account when every account is over", async () => {
+      const first = readyAccount("claude", "Work");
+      const second = readyAccount("claude", "Personal");
+      sessions.track("s1", "Test", path.join(root, "sessions", "s1"));
 
-      // Both spent-but-usable. Moving here would kill the resident process every
-      // turn to land somewhere no better (req 6's "only if there IS somewhere
-      // better"), so the session stays where it is and keeps working.
       limits = {
         "anthropic:sub": { [first]: sessionWindowAt(95), [second]: sessionWindowAt(97) },
       };
-      await runEnvPrep("s1", "claude");
-
-      expect(sessions.get("s1")?.providerRouteId).toBe(first);
+      // Spent-but-usable: the ordering is stable (priority order within the
+      // tier), so the session keeps working instead of failing or churning.
+      expect((await runEnvPrep("s1", "claude")).turnRoute?.id).toBe(first);
+      expect((await runEnvPrep("s1", "claude")).turnRoute?.id).toBe(first);
     });
 
-    it("carries a Codex rollout across a cutoff switch", async () => {
-      const first = readyAccount("codex", "Codex work", "codex-a");
-      const second = readyAccount("codex", "Codex personal", "codex-b");
+    it("steers Codex turns by the same rule", async () => {
+      const first = readyAccount("codex", "Codex work");
+      const second = readyAccount("codex", "Codex personal");
       sessions.track("s2", "Test", path.join(root, "sessions", "s2"));
-      await runEnvPrep("s2", "codex");
-      expect(sessions.get("s2")?.providerRouteId).toBe(first);
-
-      sessions.setAgentSessionId("s2", "thread-1");
-      const dir = path.join(root, "sessions", "s2");
-      const rollout = path.join(dir, ".codex", "sessions", "2026", "08", "04");
-      fs.mkdirSync(rollout, { recursive: true });
-      fs.writeFileSync(path.join(rollout, "rollout-2026-thread-1.jsonl"), "codex-turn1\n");
+      expect((await runEnvPrep("s2", "codex")).turnRoute?.id).toBe(first);
 
       limits = { "openai:sub": { [first]: sessionWindowAt(91, "openai") } };
+      expect((await runEnvPrep("s2", "codex")).turnRoute?.id).toBe(second);
+      // The resume pointer is untouched by routing — conversation state is
+      // account-agnostic (req 7; the credential-subtree preservation itself is
+      // covered by `ensureSessionAccountCredentials`'s own tests).
+      sessions.setAgentSessionId("s2", "thread-1");
       await runEnvPrep("s2", "codex");
-
-      expect(sessions.get("s2")?.providerRouteId).toBe(second);
       expect(sessions.get("s2")?.agentSessionId).toBe("thread-1");
-      // `thread/resume` reads this file; losing it is `-32600 no rollout found`.
-      expect(fs.readFileSync(path.join(rollout, "rollout-2026-thread-1.jsonl"), "utf-8")).toBe(
-        "codex-turn1\n",
-      );
-      expect(fs.readFileSync(path.join(dir, ".codex", "auth.json"), "utf-8")).toContain("codex-b");
-    });
-
-    // req 11 — the switch is announced where the user is already looking, and
-    // it is PERSISTED, not merely emitted: a notice the transcript forgets on
-    // reload is not a record of which subscription is now paying.
-    it("records the switch in the session transcript", async () => {
-      const { first } = await pinnedMidConversation();
-      const chatHistoryManager = new ChatHistoryManager(dbManager);
-      const runner = new SessionRunner({
-        sessionId: "s1",
-        sessionDir: path.join(root, "sessions", "s1"),
-        defaultAgentId: "claude",
-      });
-
-      limits = { "anthropic:sub": { [first]: sessionWindowAt(95) } };
-      await prepareSessionAgentEnvironment(runner, {
-        sessionId: "s1",
-        agentId: "claude",
-        enforceAccountRouting: true,
-        deps: {
-          credentialsDir: root,
-          credentialStore: store,
-          sessionManager: sessions,
-          providerAccountManager: accounts,
-          chatHistoryManager,
-        },
-      });
-
-      // Matched on the clause every failover sentence shares, not on the
-      // reason-specific half: `failoverNotice` has one sentence per reason, so
-      // anchoring here on "out of quota" pinned the *exhaustion* wording to a
-      // test whose scenario is a 95% **cutoff**. It passed only because both
-      // cases once shared a single hardcoded string, and broke the moment they
-      // stopped — which is the distinction this test should be asserting, not
-      // tripping over.
-      const notices = chatHistoryManager
-        .load("s1")
-        .filter((m) => (m.text ?? "").includes("continuing this session on"));
-      expect(notices).toHaveLength(1);
-      // The account is at 95% of the 90% cutoff — it has quota left and is
-      // being moved by policy, so telling the user it "is out of quota" would
-      // be false (docs/150 req 6: a cutoff moves work, it does not stop it).
-      expect(notices[0]?.text).toContain("reached your usage cutoff");
-      expect(notices[0]?.text).not.toContain("out of quota");
-      // Named by the user's own account labels — "acct_9f3e… → acct_1b77…"
-      // would not tell them which subscription is now paying.
-      expect(notices[0]?.text).toContain("Work");
-      expect(notices[0]?.text).toContain("Personal");
-
-      runner.dispose({ force: true });
     });
   });
 });
 
 /**
- * docs/150 — a DETACHED system turn (no WS connect, no viewer) has to rebuild
- * its runner from what the session persisted.
- *
- * `SessionRunnerRegistry.getOrCreate` applies its `defaultAgentId` argument only
- * when it CONSTRUCTS a runner, so a runner already in the registry — seeded with
- * the global default by container rescue or the warm pool — comes back carrying
- * that default. The WS path corrects this on connect; a wake turn never connects,
- * which is how a Codex session ran Claude (`reconcile-runner-agent.ts`). The
- * route half is read from the session row rather than held on the runner, so the
- * assertion here is that the detached turn keeps the pinned account instead of
- * re-selecting the provider's primary.
+ * docs/260 — a DETACHED system turn (no WS connect, no viewer) has to rebuild
+ * its runner from what the session persisted: the AGENT is the session's own,
+ * and the account is whatever the router chooses for that turn — there is no
+ * pinned route to reuse.
  */
-describe("detached system turns reuse the persisted agent and route (docs/150)", () => {
+describe("detached system turns run the session's agent through per-turn selection", () => {
   let root: string;
   let store: CredentialStore;
   let accounts: ProviderAccountManager;
@@ -471,23 +358,18 @@ describe("detached system turns reuse the persisted agent and route (docs/150)",
     else process.env.SHIPIT_SESSION_ID = savedSessionId;
   });
 
-  /**
-   * A Codex session pinned to the SECOND Codex account, so "kept the persisted
-   * route" and "re-ran the router" have different answers — the router would
-   * name the first (primary) account.
-   */
-  function codexSessionPinnedToSecondary(): { primary: string; pinned: string } {
+  /** A Codex session with two connected accounts; the router's answer is the primary. */
+  function codexSessionWithTwoAccounts(): { primary: string; secondary: string } {
     const primary = accounts.create("openai", "Codex primary");
-    const pinned = accounts.create("openai", "Codex secondary");
-    for (const id of [primary.id, pinned.id]) {
+    const secondary = accounts.create("openai", "Codex secondary");
+    for (const id of [primary.id, secondary.id]) {
       accounts.setAccountStatus("openai", id, "ready");
       seedAccountCredentials(root, "codex", id);
     }
     sessions.track(SESSION, "Detached", path.join(root, "workspaces", SESSION));
     sessions.setAgentId(SESSION, "codex");
-    sessions.setProviderRoute(SESSION, "account", pinned.id);
     sessions.setAgentPinned(SESSION);
-    return { primary: primary.id, pinned: pinned.id };
+    return { primary: primary.id, secondary: secondary.id };
   }
 
   function wakeDeps() {
@@ -502,24 +384,24 @@ describe("detached system turns reuse the persisted agent and route (docs/150)",
   }
 
   it("corrects a runner seeded with the global default before the turn's env-prep", async () => {
-    const { primary, pinned } = codexSessionPinnedToSecondary();
+    const { primary, secondary } = codexSessionWithTwoAccounts();
     // Container rescue / the warm pool seeded this one with the global default.
     const stale = registry.getOrCreate(SESSION, path.join(root, "workspaces", SESSION), "claude");
     expect(stale.agentId).toBe("claude");
 
     await wakeSessionWithTurn(wakeDeps(), sessions.get(SESSION)!, { text: "a merged PR needs you" });
 
-    // The turn runs the session's own provider...
+    // The turn runs the session's own provider. (Account selection itself
+    // happens in the dispatched turn's own env-prep, which this minimal wake
+    // harness does not wire — the wake's pre-turn env-prep is an
+    // account-neutral warm-up by design, docs/260 §5b.)
     expect(registry.get(SESSION)?.agentId).toBe("codex");
-    // ...on the account the session is pinned to, not the one the router would
-    // pick for a fresh session.
-    expect(sessions.get(SESSION)?.providerRouteId).toBe(pinned);
-    expect(accounts.get("openai", pinned)?.lastUsedAt).toBeGreaterThan(0);
-    expect(accounts.get("openai", primary)?.lastUsedAt).toBeUndefined();
+    expect(accounts.get("openai", secondary)?.lastUsedAt).toBeUndefined();
+    void primary;
   });
 
   it("recreates a disposed runner from the persisted agent, not defaultAgentId", async () => {
-    const { primary, pinned } = codexSessionPinnedToSecondary();
+    const { primary } = codexSessionWithTwoAccounts();
     registry.getOrCreate(SESSION, path.join(root, "workspaces", SESSION), "codex");
     registry.dispose(SESSION, { force: true });
     expect(registry.get(SESSION)).toBeUndefined();
@@ -527,7 +409,6 @@ describe("detached system turns reuse the persisted agent and route (docs/150)",
     await wakeSessionWithTurn(wakeDeps(), sessions.get(SESSION)!, { text: "a merged PR needs you" });
 
     expect(registry.get(SESSION)?.agentId).toBe("codex");
-    expect(sessions.get(SESSION)?.providerRouteId).toBe(pinned);
-    expect(accounts.get("openai", primary)?.lastUsedAt).toBeUndefined();
+    void primary;
   });
 });

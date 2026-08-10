@@ -19,7 +19,7 @@ import {
   ensureClaudeWorkspaceTrusted,
 } from "./agents/claude/user-config.js";
 import { providerAccountCredentialRoot } from "./provider-account-manager.js";
-import { SUBTREE_STATE_SUBPATHS } from "./token-sync-manager.js";
+import { AGENT_TOKEN_FILES, SUBTREE_STATE_SUBPATHS } from "./token-sync-manager.js";
 import {
   AGENT_CREDENTIAL_PATHS,
   SHARED_CREDENTIAL_PATHS,
@@ -61,6 +61,171 @@ export function provisionProviderAccountCredentials(
     providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
     true,
   );
+  writeSessionAccountMarker(credentialsRoot, sessionId, agentId, accountId);
+}
+
+/**
+ * docs/260 §4/§5 — which provider ACCOUNT'S credentials a session's subtree
+ * currently holds, per agent. Written by the only provisioning writer above
+ * and cleared by revocation, so it is authoritative for the copy on disk —
+ * token bytes cannot answer this (the CLI rotates them), and the session row
+ * no longer records a route at all.
+ *
+ * Three readers: the per-turn identity check ({@link
+ * ensureSessionAccountCredentials}), post-restart resident-process adoption
+ * (the account a surviving CLI runs on IS the marker, since any account
+ * change retires the process before reprovisioning), and disconnect
+ * revocation ("which sessions hold account X's copy").
+ */
+const SESSION_ACCOUNT_MARKER = ".shipit-provider-accounts.json";
+
+export function readSessionAccountMarker(
+  credentialsRoot: string,
+  sessionId: string,
+): Partial<Record<AgentId, string>> {
+  const file = path.join(perSessionCredentialsDir(credentialsRoot, sessionId), SESSION_ACCOUNT_MARKER);
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Partial<Record<AgentId, string>> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if ((key === "claude" || key === "codex") && typeof value === "string") out[key] = value;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function writeSessionAccountMarker(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  accountId: string | null,
+): void {
+  const dir = perSessionCredentialsDir(credentialsRoot, sessionId);
+  if (!fs.existsSync(dir)) return;
+  const current = readSessionAccountMarker(credentialsRoot, sessionId);
+  if (accountId === null) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- keyed by the AgentId union, not arbitrary input
+    delete current[agentId];
+  } else {
+    current[agentId] = accountId;
+  }
+  fs.writeFileSync(path.join(dir, SESSION_ACCOUNT_MARKER), JSON.stringify(current));
+}
+
+/**
+ * docs/260 §5 — the credential route the session's LAST SPAWNED resident
+ * process runs on, per agent. The account marker above cannot carry this: it
+ * records which account's SUBTREE COPY is on disk (revocation depends on that
+ * meaning), while a string-delivered credential authenticates from spawn env
+ * and leaves the subtree — and therefore the marker — untouched. Without this
+ * record a post-restart adoption cannot attribute a surviving string-credential
+ * process (req 11), and the busy deletion guard cannot see that the credential
+ * is in use (req 13).
+ *
+ * Written at the pre-spawn stamp (the same moment `runner.residentRoute` is
+ * set) and read ONLY by adoption recovery — a stale file with no surviving
+ * process is never consulted, so retirement does not need to clear it.
+ */
+const SESSION_RESIDENT_ROUTE = ".shipit-resident-route.json";
+
+export interface RecordedResidentRoute {
+  kind: "account" | "reserved" | "string";
+  id: string;
+}
+
+export function readSessionResidentRoute(
+  credentialsRoot: string,
+  sessionId: string,
+): Partial<Record<AgentId, RecordedResidentRoute>> {
+  const file = path.join(perSessionCredentialsDir(credentialsRoot, sessionId), SESSION_RESIDENT_ROUTE);
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Partial<Record<AgentId, RecordedResidentRoute>> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (key !== "claude" && key !== "codex") continue;
+      const route = value as { kind?: unknown; id?: unknown };
+      if (
+        (route?.kind === "account" || route?.kind === "reserved" || route?.kind === "string")
+        && typeof route.id === "string"
+      ) {
+        out[key] = { kind: route.kind, id: route.id };
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function writeSessionResidentRoute(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  route: RecordedResidentRoute,
+): void {
+  const dir = perSessionCredentialsDir(credentialsRoot, sessionId);
+  if (!fs.existsSync(dir)) return;
+  const current = readSessionResidentRoute(credentialsRoot, sessionId);
+  current[agentId] = route;
+  fs.writeFileSync(path.join(dir, SESSION_RESIDENT_ROUTE), JSON.stringify(current));
+}
+
+/**
+ * docs/260 req 4 — make the session's credential subtree belong to the
+ * CHOSEN account before the turn spawns, whatever it held before.
+ *
+ *   - `match`: the marker already names the chosen account; the per-turn
+ *     freshness sync (which is same-account by construction now) does the
+ *     rest.
+ *   - `provisioned`: the subtree had no credentials for this agent yet.
+ *   - `adopted`: a pre-260 subtree with no marker whose token byte-matches
+ *     the chosen account's root — recorded, nothing copied.
+ *   - `replaced`: the subtree held a different account's credentials (the
+ *     wrong-account poisoning class), or an unidentifiable pre-260 copy.
+ *     Reprovisioned wholesale from the chosen account's root; conversation
+ *     state survives via the replacement allowlist.
+ */
+export function ensureSessionAccountCredentials(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  accountId: string,
+): "match" | "provisioned" | "adopted" | "replaced" {
+  const recorded = readSessionAccountMarker(credentialsRoot, sessionId)[agentId];
+  if (recorded === accountId) return "match";
+  const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
+  const sessionToken = readFirstTokenFile(sessionDir, agentId);
+  if (recorded === undefined && sessionToken === null) {
+    provisionProviderAccountCredentials(credentialsRoot, sessionId, agentId, accountId);
+    return "provisioned";
+  }
+  if (recorded === undefined && sessionToken !== null) {
+    const rootToken = readFirstTokenFile(
+      providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
+      agentId,
+    );
+    if (rootToken !== null && sessionToken === rootToken) {
+      writeSessionAccountMarker(credentialsRoot, sessionId, agentId, accountId);
+      return "adopted";
+    }
+  }
+  provisionProviderAccountCredentials(credentialsRoot, sessionId, agentId, accountId);
+  return "replaced";
+}
+
+function readFirstTokenFile(root: string, agentId: AgentId): string | null {
+  for (const rel of AGENT_TOKEN_FILES[agentId] ?? []) {
+    try {
+      return fs.readFileSync(path.join(root, rel), "utf8");
+    } catch {
+      // Missing candidate — try the next filename this agent has used.
+    }
+  }
+  return null;
 }
 
 /**
@@ -92,6 +257,10 @@ export function revokeSessionProviderCredentials(
   for (const rel of AGENT_CREDENTIAL_PATHS[agentId]) {
     removeProviderSubtreeForReplacement(dir, rel);
   }
+  // docs/260 — the subtree no longer holds any account's credentials for this
+  // agent; a stale marker would make the next turn's identity check skip the
+  // reprovision it needs.
+  writeSessionAccountMarker(credentialsRoot, sessionId, agentId, null);
 }
 
 /**

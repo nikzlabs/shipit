@@ -75,6 +75,22 @@ export async function adoptInFlightTurn(
 ): Promise<void> {
   const sessionId = runner.sessionId;
 
+  // docs/260 §5 — recover the surviving process's credential identity before
+  // any of its events arrive: the adopted turn skips env-prep entirely, so
+  // without this its refusals, rate-limit events, and token write-back would
+  // have no account to attribute to. The session's credential-subtree marker
+  // is authoritative for a live process (an account change retires the
+  // process before reprovisioning, so they cannot diverge).
+  if (runner.residentRoute === undefined) {
+    const recovered = deps.recoverResidentRoute?.(sessionId, info.agentId);
+    if (recovered) {
+      runner.residentRoute = recovered;
+      console.log(
+        `[turn-adoption:${sessionId}] recovered resident route ${recovered.kind}:${recovered.id} from the account marker`,
+      );
+    }
+  }
+
   // Queue drain re-entry. The in-memory queue died with the previous process,
   // so this is normally a no-op — but a message enqueued WHILE the adopted turn
   // runs must still drain when it ends, exactly as it would on any other turn.

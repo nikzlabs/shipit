@@ -51,7 +51,9 @@ import { publishDepDirOverlayBases, type DepDirPublishOutcome } from "./overlay-
 import type { ContainerSessionRunner } from "./container-session-runner.js";
 import { ClaudeOAuthRefresher } from "./agents/claude/oauth-refresher.js";
 import { CodexOAuthRefresher } from "./agents/codex/oauth-refresher.js";
-import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
+import { repushAgentToken, repushProviderAccountToken,
+  readSessionAccountMarker,
+} from "./session-credentials.js";
 import { MarketplaceStore } from "./marketplace-store.js";
 import type { UpdateMode } from "./services/updates.js";
 import type { VersionInfo } from "../shared/types.js";
@@ -505,23 +507,18 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
    * would be churn without a behaviour change.
    */
   const markSessionAccountExhausted = (sessionId: string, until: number, capturedRouteId?: string): void => {
-    const session = sessionManager.get(sessionId);
-    const routeId = capturedRouteId ?? session?.providerRouteId;
-    if (!session || !routeId) return;
-    if (session.providerRouteKind === "account") {
-      if (!session.agentId) return;
-      const marked = providerAccountManager?.markAccountExhausted(
-        // The row is keyed by the account's service; the session names a
-        // harness (planning#342). An account route always belongs to the
-        // harness's own vendor — that is what `via: "account"` means — so the
-        // conversion is total, not a guess.
-        accountServiceForHarness(session.agentId),
-        routeId,
-        until,
-      );
+    // docs/260 — ONLY the turn's own captured route may be stamped. The old
+    // session-row fallback is gone with the columns: a refusal that cannot
+    // name the credential it came from stamps nothing, because stamping a
+    // guess is exactly the wrong-account benching the incident was made of.
+    const routeId = capturedRouteId;
+    if (!routeId) return;
+    const account = providerAccountManager?.getByRouteId(routeId);
+    if (account) {
+      const marked = providerAccountManager?.markAccountExhausted(account.serviceId, routeId, until);
       if (marked) {
         console.log(
-          `[quota] ${session.agentId} account ${routeId} reported exhausted by session `
+          `[quota] account ${routeId} reported exhausted by session `
           + `${sessionId}; benched until ${new Date(until).toISOString()}`,
         );
       }
@@ -716,14 +713,13 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       let healed = 0;
       for (const session of sessionManager.list()) {
         if (!session.agentPinned || session.agentId !== agentId) continue;
-        // Match either route-aware sessions pinned to this account, or legacy
-        // (null route) sessions which still resolve to the source via the
-        // legacy `.claude/.credentials.json` symlink that the provider-account
-        // migration stamped on disk.
-        const accountMatches =
-          (session.providerRouteKind === "account" && session.providerRouteId === accountId) ||
-          (session.providerRouteKind === null || session.providerRouteKind === undefined);
-        if (!accountMatches) continue;
+        // docs/260 — whose token a session's subtree holds is the subtree's
+        // own recorded identity (the account marker), never a session row.
+        // Sessions holding this account's copy get the rotated token; a
+        // pre-260 subtree with no marker keeps the legacy flat repush, which
+        // only overwrites a token file the session already has.
+        const marked = readSessionAccountMarker(credentialsDir, session.id)[agentId];
+        if (marked !== undefined && marked !== accountId) continue;
         try {
           // docs/179 §4 — the refresher fires on a wall clock, so it can land
           // mid-turn or under an idle-but-resident streaming process. Push the
@@ -732,8 +728,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
           // makes the process report itself unauthenticated.
           const opts = { repairLeakedSubtrees: !sessionHasLiveAgent(runnerRegistry, session.id) };
           const wrote =
-            session.providerRouteKind === "account" && session.providerRouteId
-              ? repushProviderAccountToken(credentialsDir, session.id, agentId, session.providerRouteId, undefined, undefined, opts)
+            marked !== undefined
+              ? repushProviderAccountToken(credentialsDir, session.id, agentId, accountId, undefined, undefined, opts)
               : repushAgentToken(credentialsDir, session.id, agentId, undefined, undefined, opts);
           if (wrote) healed++;
         } catch (err) {
@@ -899,8 +895,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     // independently of the session's pin and can fail over mid-run) wins over
     // both: re-deriving one would name a different credential, and req 10 files
     // the snapshot against whatever owns the route.
-    const pinned = sessionId ? sessionManager.get(sessionId)?.providerRouteId : undefined;
-    const routeId = explicitRouteId ?? pinned
+    const routeId = explicitRouteId
       ?? providerAccountManager?.selectRouteForTurn(accountServiceForHarness(agentId))?.id;
     // No resolvable route means we cannot say whose quota this is; recording it
     // under a guess would attribute one subscription's usage to another.
@@ -915,6 +910,13 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     const modeKey = limitsModeKey(owner);
     limitsProvidersByMode.get(modeKey)?.setRateLimits(session, weekly, routeId);
     limitsRegistry?.markAuthRefreshed(modeKey);
+    // docs/260 req 9 — a healthy reading newer than a remembered refusal
+    // clears that memory immediately (the user's post-upgrade refresh, a
+    // fresh event from a probe turn). Both shapes are offered the reading;
+    // each clear no-ops unless the route is its own kind and blocked.
+    const reading = { session, weekly, fetchedAt: Date.now() };
+    providerAccountManager?.clearRefusalOnHealthyReading(owner.serviceId, routeId, reading);
+    credentialStore.clearCredentialRefusalOnHealthyReading(routeId, reading);
   };
 
   // ---- Session directory creation ----

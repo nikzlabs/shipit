@@ -310,29 +310,63 @@ describe("ServicesPanel credential-row errors (docs/257 req 5)", () => {
 });
 
 /**
- * docs/257 req 5 — the case the card's own tests cannot see.
- *
- * `ProviderAccountsCard` renders in isolation in its own suite, so a notice set
- * as the last account disappears looks fine there. In this HOST it is not: the
- * card's presence is derived from the account list, so the notice was mounted
- * and unmounted in the same commit and the user never learned which sessions
- * the disconnect had stranded. Found by cross-backend review.
+ * docs/257 req 5 — a card with something to say stays mounted (the clause is
+ * `notices[provider]` in the `configured` filter, since the card's presence is
+ * otherwise derived from the account list). docs/260 req 3 narrowed what a
+ * disconnect has to say: a SUCCESSFUL disconnect reports nothing — no moved or
+ * stranded sessions, no replacement to pick — so the last account's removal
+ * legitimately drops the card. The notices that still keep it mounted arrive
+ * from elsewhere (the duplicate-account refusal, failed setting saves); the
+ * one refusal a disconnect can still hit (req 13, busy process) leaves the
+ * row in place to carry its own message.
  */
 describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)", () => {
-  it("still shows the disconnect result after the LAST account is removed", async () => {
-    const now = Date.now();
+  const now = Date.now();
+  const seedOneClaudeAccount = () => {
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", createdAt: now, updatedAt: now }),
     ]);
     useSettingsStore.getState().setProviderAccounts([
       { id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
-    // The server disconnects and reports what it stranded (docs/150 req 23).
+  };
+
+  it("drops the card silently when the LAST account disconnects — nothing left to say (docs/260 req 3)", async () => {
+    seedOneClaudeAccount();
+    // The server just disconnects: `{accounts}` only, no session bookkeeping.
     vi.stubGlobal("fetch", () =>
       Promise.resolve({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ accounts: [], switchedSessionIds: [], strandedSessionIds: ["s1", "s2"] }),
+        json: () => Promise.resolve({ accounts: [] }),
+      }),
+    );
+
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await userEvent.click(
+      within(screen.getByTestId("provider-account-row-acct_1")).getByRole("button", { name: "Disconnect" }),
+    );
+
+    // Back to "only what you configured": no notice keeps the card mounted,
+    // because there is no moved/stranded story to tell (req 3).
+    await waitFor(() => {
+      expect(screen.queryByTestId("provider-accounts-card-claude")).toBeNull();
+    });
+    expect(screen.getByTestId("services-empty")).toBeInTheDocument();
+    expect(screen.queryByTestId("provider-accounts-notice-claude")).toBeNull();
+    expect(useUiStore.getState().toast).toBeNull();
+  });
+
+  it("keeps the card and lands the busy-process refusal on the row (docs/260 req 13)", async () => {
+    seedOneClaudeAccount();
+    // The one refusal disconnect still makes: a live process is running a turn
+    // or holding background work on this account. The account survives, so the
+    // message is row-scoped and the card stays for the account, not a notice.
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({ error: "An agent is still working on this account. Wait for it to finish." }),
       }),
     );
 
@@ -342,12 +376,12 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
     );
 
     await waitFor(() => {
-      expect(screen.getByTestId("provider-accounts-notice-claude"))
-        .toHaveTextContent("2 session(s) have no connected Claude account");
+      expect(screen.getByTestId("provider-account-notice-acct_1"))
+        .toHaveTextContent("Wait for it to finish");
     });
-    // The row really is gone — this is not the notice surviving because nothing
-    // was removed.
-    expect(screen.queryByTestId("provider-account-row-acct_1")).toBeNull();
+    expect(screen.getByTestId("provider-account-row-acct_1")).toBeInTheDocument();
+    expect(screen.getByTestId("provider-accounts-card-claude")).toBeInTheDocument();
+    expect(useUiStore.getState().toast).toBeNull();
   });
 
   it("drops the card again once the notice is dismissed", async () => {

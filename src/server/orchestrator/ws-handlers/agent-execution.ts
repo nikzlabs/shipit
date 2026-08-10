@@ -3,10 +3,10 @@ import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
 import { buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
 import { postTurnCommit } from "./post-turn.js";
+import { billingModeForRoute } from "../sessions.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { emitResetEligible } from "../services/pre-turn-reset.js";
 import { applyPreTurnReset, type PreTurnResetHookResult } from "../pre-turn-reset-hook.js";
-import { sessionAccountId, sessionNeedsAccountFailover } from "../services/provider-account-switch.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
 import { startQueuedMessage } from "../queue-drain.js";
@@ -22,7 +22,7 @@ import { detectAndReArmMergedSession, detectAndReArmResetSession } from "../serv
 import { reactToReleaseMarkers } from "../services/release-flow.js";
 import { executeAgentTurn } from "../turn-executor.js";
 import { releaseResidentOnSpawnChange } from "../resident-spawn-guard.js";
-import { desiredSpawnIdentity, sessionNeedsCredentialFailover } from "../service-routing.js";
+import { desiredSpawnIdentity, residentRouteNeedsRelease } from "../service-routing.js";
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "../prompt-assembly.js";
 
 // docs/149 — re-export so existing `selectAgentEnvForPush` consumers (unit
@@ -280,24 +280,23 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // a new one.
   const agentInfo = ctx.agentRegistry.get(agentId);
   const useStreaming = ctx.credentialStore.getLiveSteering() && (agentInfo?.capabilities.supportsSteering ?? false);
-  // docs/150 reqs 3/7/8 — a resident streaming process holds the OUTGOING
-  // account's token in memory, so a failover has to kill it. Env-prep does the
-  // switch, but it runs inside `executeAgentTurn`, by which point this function
-  // has already handed the executor an agent to write into — killing it there
-  // would leave `sendUserMessage` addressing a dead process. So release it
-  // here, before it can be captured; env-prep still owns the switch itself,
-  // and with no resident agent the turn simply spawns a fresh one against the
-  // new account's credentials.
-  //
-  // docs/252 phase 5 — and the same for a benched string-delivered subscription
-  // credential. A resident process read its key from the environment at spawn
-  // and never re-reads, so a session failing over to another GLM key would keep
-  // spending the one that just ran out.
+  // docs/260 — a resident streaming process holds its spawn-time credential in
+  // memory, so a turn that selection would route to a DIFFERENT credential has
+  // to kill it. Env-prep owns the switch, but it runs inside
+  // `executeAgentTurn`, by which point this function has already handed the
+  // executor an agent to write into — killing it there would leave
+  // `sendUserMessage` addressing a dead process. So release it here, before it
+  // can be captured; with no resident agent the turn simply spawns fresh
+  // against the newly-selected credentials. Never fires while the process
+  // holds background work (req 13) — the turn then runs on the resident
+  // credential instead (`requireResidentRoute` in the executor).
   const failoverSession = capturedSessionId ? ctx.sessionManager.get(capturedSessionId) : undefined;
   if (
     useStreaming &&
-    (sessionNeedsAccountFailover(failoverSession, ctx.providerAccountManager)
-      || sessionNeedsCredentialFailover(failoverSession, ctx.credentialStore))
+    residentRouteNeedsRelease(failoverSession, agentId, runner, {
+      credentialStore: ctx.credentialStore,
+      ...(ctx.providerAccountManager ? { providerAccountManager: ctx.providerAccountManager } : {}),
+    })
   ) {
     const resident = runner?.getAgent() ?? null;
     if (resident) {
@@ -482,9 +481,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     agentFactory: (id) => ctx.agentFactory(id),
     // docs/179 — token healer for the runtime-401 auto-retry.
     ...(ctx.ensureAgentTokenFresh ? { ensureAgentTokenFresh: ctx.ensureAgentTokenFresh } : {}),
-    // docs/150 — and the account to heal, so a revoked sibling account can't
-    // make a healthy account's turn look unhealable.
-    resolveTurnAccountId: (sid: string) => sessionAccountId(ctx.sessionManager.get(sid)),
     autoCommit: async (sessionDir, summary) => {
       const git = ctx.createGitManager(sessionDir);
       const parentHash = await git.getHeadHash();
@@ -495,7 +491,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     // (which drives its own push via postTurnCommit → ctx.scheduleAutoPush).
     scheduleAutoPush: (sessionDir, sessionId) => ctx.scheduleAutoPush(ctx.createGitManager(sessionDir), sessionId),
     listenerDeps,
-    buildRunParams: async (sessionId, id, p) => {
+    buildRunParams: async (sessionId, id, p, turnRoute) => {
       // Read agentSessionId fresh from the DB — env-prep's docs/153 leak repair
       // (run by the executor immediately before this) updates it there.
       const session = ctx.sessionManager.get(sessionId);
@@ -512,6 +508,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         sessionId,
         agentId: id,
         prompt: p,
+        ...(turnRoute ? { turnRoute } : {}),
         sessionDir: activeDir,
         ...(session?.agentSessionId !== undefined ? { agentSessionId: session.agentSessionId } : {}),
         ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
@@ -519,7 +516,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       });
     },
     prepareAgentEnv: async (sessionId, id, envOpts) => {
-      await prepareSessionAgentEnvironment(runner, {
+      return prepareSessionAgentEnvironment(runner, {
         sessionId,
         agentId: id,
         // docs/150 req 13 — this IS the turn's pre-spawn step, so an
@@ -527,6 +524,9 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         // exhausted account.
         enforceAccountRouting: true,
         ...(envOpts?.reusingResidentAgent ? { reusingResidentAgent: true } : {}),
+        ...(envOpts?.excludeRouteIds ? { excludeRouteIds: envOpts.excludeRouteIds } : {}),
+        ...(envOpts?.residentRoute ? { residentRoute: envOpts.residentRoute } : {}),
+        ...(envOpts?.requireResidentRoute ? { requireResidentRoute: true } : {}),
         deps: {
           credentialsDir: ctx.credentialsDir,
           credentialStore: ctx.credentialStore,
@@ -536,6 +536,19 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
           ...(ctx.ensureAgentTokenFresh ? { ensureAgentTokenFresh: ctx.ensureAgentTokenFresh } : {}),
         },
       });
+    },
+    // docs/260 req 10 — labels for attempt notices, in the user's own words.
+    routeLabel: (routeId) =>
+      ctx.providerAccountManager?.getByRouteId(routeId)?.label
+      ?? ctx.credentialStore.getCredentialRoute(routeId)?.label,
+    // docs/260 req 2 — billing mode + service of the turn's captured route,
+    // so failure policy never re-reads the session row.
+    routeProfile: (kind, routeId) => {
+      const row = ctx.providerAccountManager?.getByRouteId(routeId)
+        ?? ctx.credentialStore.getCredentialRoute(routeId);
+      if (row) return { billingMode: row.billingMode, serviceId: row.serviceId };
+      const mode = billingModeForRoute(kind, routeId);
+      return mode ? { billingMode: mode } : undefined;
     },
     finalizeAgentEnv: (sessionId, id, capturedRoute) => {
       finalizeSessionAgentEnvironment(runner, {

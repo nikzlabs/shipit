@@ -50,21 +50,23 @@ preference. Every routed turn asks `ProviderAccountManager.selectAccountForTurn`
   chosen account differs from the process's captured account (section 5),
   retire the process. No quota classification is involved — the router already
   answered.
-- **Busy processes are never retired for a move (req 13).** The guard cannot
-  rest on the docs/235 tracker alone: the review verified it is a bounded
-  *hint* — it expires after ~10 minutes without refresh, and Codex reports
-  zero background tasks today. Req 13 is absolute, so the busy fact moves to
-  its owners: the **worker** reports live agent-started background processes
-  in its status (it spawns and hosts them, and it survives orchestrator
-  restarts), and **brokered consults** are checked against their persisted
-  run records, not orchestrator memory. The retirement check, system-turn
-  admission, and disconnect all read this composite busy fact. While it is
-  set, the turn runs on the resident process's own account regardless of
-  what the strategy prefers — the documented exception to req 8 — and the
-  move happens at the first turn that finds the process clean. The one case
-  this cannot save: the process's own account refuses the turn mid-flight
-  and the process dies of it; the provider killed it, not the router, and
-  its background children die with it as for any process crash today.
+- **Busy processes are never retired for a move (req 13, as built).** The
+  guard reads `runner.backgroundWorkDescriptions` — the docs/235 tracker plus
+  the live brokered-consult handles — at every place a process could be
+  killed: the pre-capture release (`residentRouteNeedsRelease` answers false
+  while busy), system-turn admission (`dispatchOnRunner` defers, with a
+  drain nudge when the work clears), account disconnect/sign-out, string
+  credential deletion, and the credential-change release. While busy, the
+  turn runs on the resident process's own account regardless of what the
+  strategy prefers (`requireResidentRoute`) — the documented exception to
+  req 8 — and the move happens at the first clean turn. **Known limitation
+  (follow-up):** the tracker half is a bounded hint — it expires ~10 minutes
+  after the last refresh and the Codex CLI reports no background tasks — so
+  a very long untracked background process can still lose its protection;
+  the durable worker-side busy fact the review proposed remains open. The
+  one case no guard can save: the process's own account refuses the turn
+  mid-flight and the process dies of it; the provider killed it, not the
+  router.
 
 Non-turn work (`selectRouteForTurn` callers: voice, naming) honours refusal
 memory exactly like a turn's first selection: blocked accounts are skipped,
@@ -228,20 +230,55 @@ read it; if nothing does after this change, it is dropped in the same PR.
 - `sessions.provider_route_kind/id` lose every read AND write path in the
   same PR; the columns stay in the schema as dead legacy (no destructive
   migration), nothing more.
-- **Restart with surviving containers:** the worker echoes its spawn route in
-  `/agent/status` — the spawn already delivers the credentials, so the worker
-  owns the fact and survives with the container; the status type gains the
-  route id. An adopted in-flight turn (which returns before env-prep and so
-  never captures a route today) attributes refusals, rate-limit events, and
-  write-back from that echo. Comparing token files at the *next* turn
-  (section 4) still repairs residue, but it is too late for the adopted
-  turn's own terminal events — the review's finding, accepted.
+- **Restart with surviving containers (as built):** the plan proposed a worker
+  status echo; the implementation recovers identity from the session's
+  credential-subtree **account marker** instead (`turn-adoption.ts` →
+  `recoverResidentRoute`). Equivalent and simpler: the marker is written by
+  the only provisioning writer and any account change retires the process
+  before reprovisioning, so a surviving CLI's account IS the marker — and the
+  marker, unlike a status field, needed no worker wire change. The adopted
+  turn seeds its route capture from the recovered stamp, so its refusals,
+  rate-limit events, and write-back attribute correctly.
 - **Re-auth re-push** narrows to live processes only: after account X
   re-authenticates, its fresh token is force-pushed into sessions whose
   `runner.residentRoute` names X. Idle sessions are deliberately excluded —
   their copies are inert residue that converges at the next turn's identity
   check, and enumerating them would rebuild, by content, the pinned-session
   walk this feature deletes (review's over-engineering finding, accepted).
+- **Implementation-review triage (Codex run 9e2b302a, as built).** The
+  cross-backend implementation review found nine issues; eight are fixed on
+  this branch, one accepted:
+  - An account-scoped re-push (re-auth and refresher) skips UNMARKED
+    subtrees — an unmarked copy's identity is unknown, and force-pushing the
+    re-authed account's token there was the poisoning class reopened
+    (`app-lifecycle.ts`; guard in `claude-auth.test.ts`).
+  - Failure policy (quota retry, auth-heal vs set-aside) branches on the
+    turn's CAPTURED route via the `routeProfile` dep and
+    `credentialFailurePolicyForRoute`; `credentialFailurePolicyFor` no longer
+    reads the dead `provider_route_*` columns, so a pre-260 row cannot pin
+    the decision (req 2).
+  - The account-identity step (`ensureSessionAccountCredentials`) fails
+    CLOSED: a provisioning error fails the turn visibly instead of spawning
+    on whatever tree is on disk (req 4). Token sync-in stays best-effort by
+    design — after the identity step it can only deliver a stale token of the
+    RIGHT account, which the auth heal covers.
+  - The attempt ledger's "resets at" quotes only a provider-STATED reset;
+    the synthesized short lockout stays internal (req 6).
+  - A turn that ends without usage telemetry (Codex compact) still records
+    its `credential_route_id`, so the next turn's "Continuing on X" notice
+    compares against the true previous route (req 10).
+  - Exhaustion stamps are latest-wins: a re-probe's shorter stated reset
+    supersedes an older longer estimate instead of `Math.max` (req 9).
+  - `balanced` session-spreading covers string-delivered subscriptions: the
+    `residentRouteId` option (renamed from `residentAccountId`) is honoured
+    by the string walk too (req 8).
+  - A per-session **resident-route record** (`.shipit-resident-route.json`,
+    written at every routed pre-spawn stamp) recovers post-restart identity
+    for string/env-delivered credentials, which leave no subtree marker;
+    adoption prefers it and falls back to the account marker (reqs 11/13).
+  - ACCEPTED: the background-work hint's 10-minute TTL and Codex's empty
+    task list (req 13 limitation above), and local mode's fresh provider
+    thread after an account switch — both documented design bounds.
 
 ## 5b. Every turn entry point, not just the WS path (reqs 1, 11, 13)
 
