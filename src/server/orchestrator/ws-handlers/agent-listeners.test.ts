@@ -125,7 +125,11 @@ describe("wireAgentListeners", () => {
       persistUserMessage: vi.fn(),
     });
 
-    agent.emit("event", { type: "agent_result", result: "done" } satisfies AgentEvent);
+    agent.emit("event", {
+      type: "agent_result",
+      status: "success",
+      sessionId: "session-1",
+    } satisfies AgentEvent);
 
     expect(d.usageManager.record).toHaveBeenCalledWith(
       "session-1", 0, 0, undefined, undefined,
