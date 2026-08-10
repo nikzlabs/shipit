@@ -717,15 +717,14 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     await resetLocalAgentOpsForTests();
   });
 
-  // docs/150 — local mode has no per-session credentials mount, so the account
-  // the router selected reaches the CLI only if the spawn is told which HOME to
-  // use. `createAgent` is the per-session hook every spawn path already prefers.
-  describe("account-scoped local spawns (docs/150)", () => {
-    const account = (sessionId: string, accountId: string): SessionInfo => ({
+  // docs/260 — local mode has no per-session credentials mount, so the account
+  // the TURN selected reaches the CLI only if the spawn is told which HOME to
+  // use. Env-prep stamps the selection on the runner (`residentRoute`) before
+  // the spawn resolves; `createAgent` reads that stamp lazily.
+  describe("account-scoped local spawns (docs/260)", () => {
+    const claudeSession = (sessionId: string): SessionInfo => ({
       id: sessionId,
       agentId: "claude" as AgentId,
-      providerRouteKind: "account",
-      providerRouteId: accountId,
     } as SessionInfo);
 
     function localFactoryWith(sessions: Record<string, SessionInfo>) {
@@ -745,18 +744,21 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
       return { factory: factory!, calls };
     }
 
-    it("resolves each session's own account root", () => {
+    it("resolves each runner's own stamped account root", () => {
       const { factory, calls } = localFactoryWith({
-        s1: account("s1", "acct-a"),
-        s2: account("s2", "acct-b"),
+        s1: claudeSession("s1"),
+        s2: claudeSession("s2"),
       });
 
       const r1 = factory({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
       const r2 = factory({ sessionId: "s2", sessionDir: "/tmp/s2", defaultAgentId: "claude" as AgentId });
+      // What env-prep does immediately before each spawn (docs/260 §5).
+      r1.residentRoute = { kind: "account", id: "acct-a" };
+      r2.residentRoute = { kind: "account", id: "acct-b" };
       r1.createAgent!("claude");
       r2.createAgent!("claude");
 
-      // Two sessions pinned to different accounts spawn against different
+      // Two sessions routed to different accounts spawn against different
       // credential roots — the whole point, and what a single process-global
       // HOME could not express.
       expect(calls[0].home).toBe("/credentials/provider-accounts/claude/acct-a");
@@ -765,15 +767,15 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
       r2.dispose({ force: true });
     });
 
-    it("re-reads the route on each spawn so a failover is picked up", () => {
-      const sessions: Record<string, SessionInfo> = { s1: account("s1", "acct-a") };
-      const { factory, calls } = localFactoryWith(sessions);
+    it("re-reads the stamp on each spawn so a per-turn move is picked up", () => {
+      const { factory, calls } = localFactoryWith({ s1: claudeSession("s1") });
       const runner = factory({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
 
+      runner.residentRoute = { kind: "account", id: "acct-a" };
       runner.createAgent!("claude");
-      // The turn hits its cutoff and env-prep moves the session; the retry
-      // spawns from the same runner.
-      sessions.s1 = account("s1", "acct-b");
+      // The next turn's selection lands elsewhere; env-prep re-stamps and the
+      // retry spawns from the same runner.
+      runner.residentRoute = { kind: "account", id: "acct-b" };
       runner.createAgent!("claude");
 
       expect(calls.map((c) => c.home)).toEqual([

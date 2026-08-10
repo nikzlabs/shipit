@@ -12,38 +12,56 @@ function session(overrides: Partial<SessionInfo>): SessionInfo {
 function deps(
   sessions: Record<string, SessionInfo>,
   providerAccountManager?: LocalAgentHomeDeps["providerAccountManager"],
+  /** docs/260 — the turn route env-prep stamped on the runner, per session. */
+  turnRoutes: Record<string, { kind: string; id: string } | undefined> = {},
 ): LocalAgentHomeDeps {
   return {
     sessionManager: { get: (id: string) => sessions[id] },
     credentialsDir: CREDENTIALS,
+    getTurnRoute: (sessionId: string) => turnRoutes[sessionId],
     ...(providerAccountManager ? { providerAccountManager } : {}),
   };
 }
 
-describe("resolveLocalAgentHome (docs/150)", () => {
-  it("resolves the account root the session is pinned to", () => {
+describe("resolveLocalAgentHome (docs/260)", () => {
+  it("resolves the account root of the turn's own route", () => {
     const home = resolveLocalAgentHome(
       "s1",
       "claude",
-      deps({ s1: session({ agentId: "claude", providerRouteKind: "account", providerRouteId: "acct-a" }) }),
+      deps(
+        { s1: session({ agentId: "claude" }) },
+        undefined,
+        { s1: { kind: "account", id: "acct-a" } },
+      ),
     );
     expect(home).toBe(`${CREDENTIALS}/provider-accounts/claude/acct-a`);
   });
 
-  it("gives two sessions on different accounts different roots", () => {
-    const d = deps({
-      s1: session({ id: "s1", agentId: "claude", providerRouteKind: "account", providerRouteId: "acct-a" }),
-      s2: session({ id: "s2", agentId: "claude", providerRouteKind: "account", providerRouteId: "acct-b" }),
-    });
+  it("gives two sessions routed to different accounts different roots", () => {
+    const d = deps(
+      {
+        s1: session({ id: "s1", agentId: "claude" }),
+        s2: session({ id: "s2", agentId: "claude" }),
+      },
+      undefined,
+      {
+        s1: { kind: "account", id: "acct-a" },
+        s2: { kind: "account", id: "acct-b" },
+      },
+    );
     expect(resolveLocalAgentHome("s1", "claude", d))
       .not.toBe(resolveLocalAgentHome("s2", "claude", d));
   });
 
-  it("resolves a Codex session's account root the same way", () => {
+  it("resolves a Codex turn's account root the same way", () => {
     const home = resolveLocalAgentHome(
       "s1",
       "codex",
-      deps({ s1: session({ agentId: "codex", providerRouteKind: "account", providerRouteId: "acct-c" }) }),
+      deps(
+        { s1: session({ agentId: "codex" }) },
+        undefined,
+        { s1: { kind: "account", id: "acct-c" } },
+      ),
     );
     expect(home).toBe(`${CREDENTIALS}/provider-accounts/codex/acct-c`);
   });
@@ -58,12 +76,13 @@ describe("resolveLocalAgentHome (docs/150)", () => {
       "s1",
       "claude",
       deps(
-        { s1: session({ agentId: "claude", providerRouteKind: "reserved", providerRouteId: "claude-api-key" }) },
+        { s1: session({ agentId: "claude" }) },
         { selectRouteForTurn },
+        { s1: { kind: "reserved", id: "claude-api-key" } },
       ),
     );
     expect(home).toBeUndefined();
-    // And it does not quietly re-route to an account the session isn't pinned to.
+    // And it does not quietly re-route to an account the turn didn't select.
     expect(selectRouteForTurn).not.toHaveBeenCalled();
   });
 

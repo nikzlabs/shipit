@@ -999,16 +999,18 @@ export function repushSessionAgentToken(
   args: { sessionId: string; agentId: AgentId; deps: Pick<SessionAgentEnvDeps, "credentialsDir" | "sessionManager"> },
 ): void {
   if (!(runner instanceof ContainerSessionRunner)) return;
-  const session = args.deps.sessionManager.get(args.sessionId);
   try {
-    if (session?.providerRouteKind === "account" && session.providerRouteId) {
-      repushProviderAccountToken(
-        args.deps.credentialsDir,
-        args.sessionId,
-        args.agentId,
-        session.providerRouteId,
-      );
-    } else if (session?.providerRouteId !== "claude-env-oauth") {
+    // docs/260 — the source to repush from is the subtree's own recorded
+    // account (the marker), never a session row: the row records no route any
+    // more, and a null read here would force-push the FLAT root's token over
+    // an account session's copy — the cross-account overwrite this feature
+    // exists to end. No marker + a reserved env-OAuth route means the
+    // credentials aren't ours to write; no marker otherwise is a true legacy
+    // session and keeps the flat repush.
+    const marked = readSessionAccountMarker(args.deps.credentialsDir, args.sessionId)[args.agentId];
+    if (marked) {
+      repushProviderAccountToken(args.deps.credentialsDir, args.sessionId, args.agentId, marked);
+    } else if (runner.residentRoute?.id !== "claude-env-oauth") {
       repushAgentToken(args.deps.credentialsDir, args.sessionId, args.agentId);
     }
   } catch (err) {
