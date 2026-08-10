@@ -1036,6 +1036,53 @@ describe("SessionContainerManager", () => {
     });
   });
 
+  // --- markContainerGone (docs/121 gap E) ---
+
+  describe("markContainerGone", () => {
+    it("drops the tracking entry for a container Docker says is gone", async () => {
+      const sc = await manager.create(buildConfig());
+      expect(manager.get("test-session-1")).toBe(sc);
+
+      expect(await manager.markContainerGone("test-session-1", sc.id)).toBe(true);
+
+      expect(manager.get("test-session-1")).toBeUndefined();
+      expect(manager.size).toBe(0);
+      // Same state transition the `die` handler applies — this path exists
+      // precisely because that `die` never arrived.
+      expect(sc.status).toBe("stopped");
+    });
+
+    it("refuses to act on a different container incarnation", async () => {
+      // The caller inspected one container and then awaited. A rescue or
+      // manual restart can replace the entry in that window, and a late
+      // "not running" answer about the OLD container must not delete the
+      // healthy replacement.
+      const sc = await manager.create(buildConfig());
+
+      expect(await manager.markContainerGone("test-session-1", "some-other-id")).toBe(false);
+
+      expect(manager.get("test-session-1")).toBe(sc);
+      expect(sc.status).not.toBe("stopped");
+    });
+
+    it("does not emit container_destroyed", async () => {
+      // Nothing was destroyed: we are recording a death we discovered late,
+      // not performing one. Subscribers that tear resources down on that
+      // event must not fire for a container that is already gone.
+      const destroyed = vi.fn();
+      manager.on("container_destroyed", destroyed);
+      const sc = await manager.create(buildConfig());
+
+      await manager.markContainerGone("test-session-1", sc.id);
+
+      expect(destroyed).not.toHaveBeenCalled();
+    });
+
+    it("is a no-op for unknown session IDs", async () => {
+      expect(await manager.markContainerGone("nonexistent", "c1")).toBe(false);
+    });
+  });
+
   // --- cleanupOrphans ---
 
   describe("cleanupOrphans", () => {

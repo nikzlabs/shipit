@@ -12,6 +12,7 @@ import type { SessionLoopDetector } from "./loop-detector.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { agentLogAppend } from "./log-emit.js";
+import { persistTurnInProgress, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { deleteSession } from "./services/session.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { getErrorMessage } from "./validation.js";
@@ -254,7 +255,12 @@ export function handleContainerExited(
   const runner = runnerRegistry.get(sessionId);
   if (runner) {
     if (chatHistoryManager) {
-      preservePartialTurnOnContainerExit(sessionId, runner, chatHistoryManager, exitDetail);
+      preservePartialTurnOnWorkerLoss(
+        sessionId,
+        runner,
+        chatHistoryManager,
+        `Session container exited unexpectedly${exitDetail}. The agent's progress up to this point has been preserved.`,
+      );
     }
     runner.emitMessage({
       type: "session_status",
@@ -270,39 +276,52 @@ export function handleContainerExited(
 
 /**
  * Flush a runner's in-flight turn state to chat history before its container
- * is torn down. Mirrors the `agent.on("error")` rescue in
- * `wireAgentListeners` — see `handleContainerExited` for why we can't rely
- * on that path when the container dies without emitting `agent_error`.
+ * is torn down, then append `notice` as a visible assistant error. Mirrors
+ * the `agent.on("error")` rescue in `wireAgentListeners` — see
+ * `handleContainerExited` for why we can't rely on that path when the
+ * container dies without emitting `agent_error`.
+ *
+ * `notice` is the caller's complete sentence rather than a detail fragment
+ * because the two callers describe genuinely different discoveries: a Docker
+ * `die` we received, and (docs/121 gap E) a container the missing-container
+ * reconciler found gone with no exit event at all. Both must leave the same
+ * kind of mark — a persisted transcript row, not just a log line — or the
+ * user is left with a spinner that stopped for no stated reason.
  */
-function preservePartialTurnOnContainerExit(
+export function preservePartialTurnOnWorkerLoss(
   sessionId: string,
   runner: SessionRunnerInterface,
   chatHistoryManager: ChatHistoryManager,
-  exitDetail: string,
+  notice: string,
 ): void {
   try {
     if (runner.running) {
-      const groups = runner.chatMessageGroups;
-      const persistableGroups = groups.filter((g) => g.text || g.toolUse.length > 0);
-      const partialMessages = persistableGroups.map((g) => ({
-        role: "assistant" as const,
-        text: g.text,
-        toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
-        toolResults: g.toolResults?.length ? g.toolResults : undefined,
-        subagentEvents: g.subagentEvents?.length ? g.subagentEvents : undefined,
-      }));
-      chatHistoryManager.replaceInProgress(sessionId, partialMessages);
+      // The canonical snapshot, not a groups-only rebuild.
+      // `replaceInProgress` deletes EVERY in-progress row first, so writing
+      // only the assistant groups silently drops the turn's live-steered user
+      // messages (docs/140) and its recorded side-channel cards — a voice
+      // note, a bug-report card, a sub-agent consult. `persistTurnInProgress`
+      // is the one place that re-interleaves all three at their true
+      // positions.
+      persistTurnInProgress(chatHistoryManager, runner, sessionId);
     }
     // Even when the runner is idle or there are no in-memory groups (e.g.
     // this runner reconnected to a container whose prior turn left
     // in_progress=1 rows in the DB), finalize so those rows are preserved
     // instead of being deleted by the next turn's replaceInProgress.
     chatHistoryManager.finalizeInProgress(sessionId);
-    chatHistoryManager.append(sessionId, {
-      role: "assistant",
-      text: `Session container exited unexpectedly${exitDetail}. The agent's progress up to this point has been preserved.`,
-      isError: true,
-    });
+    // Emit AND persist. An `append` alone reaches only a future reload: the
+    // attached viewer would watch the spinner stop with no explanation,
+    // because `session_status.error` is rendered nowhere on the client. Runs
+    // after `finalizeInProgress`, so there is no in-progress set for this row
+    // to join and the post-turn append is the correct shape.
+    emitNoticePostTurn(
+      (m) => runner.emitMessage(m),
+      chatHistoryManager,
+      sessionId,
+      notice,
+      "warn",
+    );
   } catch (err) {
     // Never let a chat-history write failure block the dispose path — that
     // would leak the runner. Log and move on.

@@ -703,6 +703,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   /** Timestamp of the most recent SSE event from the worker, or 0 if none yet. */
   get lastSseEventAt(): number { return this.sse.lastActivityAt; }
 
+  /**
+   * `Date.now()` of the moment the worker `/events` stream went down without
+   * coming back; 0 while it is up. Surfaced for the missing-container
+   * reconciler — see `SseConnectionManager.streamDownSince`.
+   */
+  get workerStreamDownSince(): number { return this.sse.streamDownSince; }
+
   /** Worker URL (read-only — used by the container health endpoint). */
   getWorkerUrl(): string { return this.workerUrl; }
 

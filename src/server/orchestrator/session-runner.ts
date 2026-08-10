@@ -1328,6 +1328,17 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    */
   readonly lastSseEventAt?: number;
 
+  /**
+   * `Date.now()` of the moment the worker `/events` stream went down without
+   * coming back; 0 while it is up. Container-only — direct runners have no
+   * SSE stream and omit it.
+   *
+   * The missing-container reconciler uses this as the cheap "this worker is
+   * not answering" trigger before paying for a Docker liveness probe. See
+   * `SseConnectionManager.streamDownSince`.
+   */
+  readonly workerStreamDownSince?: number;
+
   // Agent factory (container mode — returns a proxy that delegates to the worker)
   createAgent?(agentId: AgentId): AgentProcess;
 
