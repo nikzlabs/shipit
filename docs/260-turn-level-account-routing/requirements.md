@@ -146,7 +146,18 @@ not user-observable requirements.
 
 ## Open questions
 
-None — design and implementation are unblocked.
+- **Balanced mode vs resident processes.** Under `balanced`
+  (least-recently-used ordering) a literal per-turn reading moves a
+  two-account install to the other account on every turn — killing the
+  resident CLI process each time, because the account a session just used
+  always sorts last. Requirement 8 was answered for strict priority and did
+  not decide this case, and the cross-backend design review flagged that a
+  "resident-process tiebreak" would quietly change what `balanced` means.
+  Options: (a) `balanced` spreads **sessions** — a session's resident process
+  keeps its account while that account stays eligible and under its cutoff
+  (recommended: it matches the mode's stated purpose of avoiding pile-up and
+  avoids a process restart on every turn); (b) `balanced` spreads **turns** —
+  literal least-recently-used, accepting the churn.
 
 ## Resolved questions
 
