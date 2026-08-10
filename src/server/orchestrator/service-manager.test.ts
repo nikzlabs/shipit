@@ -8,6 +8,8 @@ import {
   NETWORK_JOIN_TIMEOUT_MS,
   STARTING_WATCHDOG_MS,
   STARTING_TIMEOUT_MESSAGE,
+  COMPOSE_LOG_PREFIX,
+  MAX_COMPOSE_LOG_LINE,
   type ComposeRunner,
   type ComposeQuery,
   type SecretsStatusInternalSnapshot,
@@ -3117,15 +3119,19 @@ services:
     const stored: string[] = [];
     /** Ring-buffer contents sampled WHILE the `up` is still running. */
     let bufferDuringUp = "";
+    /** What a panel opened mid-build would be served. */
+    let snapshotDuringUp = "";
 
-    const composeRunner: ComposeRunner = (args, _cwd, onOutput) => {
-      if (args.includes("up")) {
-        onOutput?.("#4 [2/9] RUN apt-get update\n#4 sha256:abc 0.4s done\n");
-        onOutput?.("#5 [3/9] RUN playwright ");
-        onOutput?.("install-deps chromium\n");
-        bufferDuringUp = mgr.getLogBuffer("dev");
-      }
-      return Promise.resolve();
+    const composeRunner: ComposeRunner = async (args, _cwd, onOutput) => {
+      if (!args.includes("up")) return;
+      onOutput?.("#4 [2/9] RUN apt-get update\n#4 sha256:abc 0.4s done\n");
+      onOutput?.("#5 [3/9] RUN playwright ");
+      onOutput?.("install-deps chromium\n");
+      // Compose's last record often has no trailing newline. `ComposeCli.run`
+      // flushes at the process boundary so it isn't dropped.
+      onOutput?.("#5 DONE 92.1s");
+      bufferDuringUp = mgr.getLogBuffer("dev");
+      snapshotDuringUp = await mgr.snapshotLogs("dev");
     };
 
     const logStore = {
@@ -3146,14 +3152,18 @@ services:
     });
     mgr.on("service_log", (name: string, text: string) => { logs.push({ name, text }); });
 
-    return { mgr, logs, stored, getBufferDuringUp: () => bufferDuringUp };
+    return {
+      mgr, logs, stored,
+      getBufferDuringUp: () => bufferDuringUp,
+      getSnapshotDuringUp: () => snapshotDuringUp,
+    };
   }
 
   it("relays build progress line by line while the container does not exist yet", async () => {
     tmpDir = makeSessionDir("service-mgr-");
     const dir = path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
     fs.writeFileSync(path.join(dir, "docker-compose.yml"), MANUAL_COMPOSE);
-    const { mgr, logs, getBufferDuringUp } = makeBuildingManager(dir);
+    const { mgr, logs, getBufferDuringUp, getSnapshotDuringUp } = makeBuildingManager(dir);
 
     await mgr.start();
     logs.length = 0;
@@ -3163,11 +3173,54 @@ services:
       "[compose] #4 [2/9] RUN apt-get update\n",
       "[compose] #4 sha256:abc 0.4s done\n",
       "[compose] #5 [3/9] RUN playwright install-deps chromium\n",
+      // Flushed at the process boundary — the command never wrote its last "\n".
+      "[compose] #5 DONE 92.1s\n",
     ]);
     expect(logs.every(l => l.name === "dev")).toBe(true);
-    // Also readable by a panel opened mid-build: `snapshotLogs` falls back to
-    // the ring buffer while `docker compose logs` has no container to answer for.
     expect(getBufferDuringUp()).toContain("[compose] #5 [3/9] RUN playwright install-deps chromium");
+    // A panel opened mid-build is served the same lines: with no persisted
+    // history for this channel yet — the cold-build case — `snapshotLogs` falls
+    // back to the ring buffer while `docker compose logs` has no container to
+    // answer for.
+    expect(getSnapshotDuringUp()).toContain("[compose] #4 [2/9] RUN apt-get update");
+
+    await mgr.stop();
+  });
+
+  it("emits a record that never ends, instead of buffering it without bound", async () => {
+    tmpDir = makeSessionDir("service-mgr-");
+    const dir = path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
+    fs.writeFileSync(path.join(dir, "docker-compose.yml"), MANUAL_COMPOSE);
+
+    const logs: string[] = [];
+    const composeRunner: ComposeRunner = (args, _cwd, onOutput) => {
+      if (args.includes("up")) {
+        // No newline anywhere. The sink's buffer lives outside MAX_LOG_BUFFER's
+        // cap, so without a bound this grows for the length of the build.
+        for (let i = 0; i < 5; i++) onOutput?.("x".repeat(MAX_COMPOSE_LOG_LINE / 2));
+      }
+      return Promise.resolve();
+    };
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery: emptyComposeQuery,
+      pollIntervalMs: 0,
+    });
+    mgr.on("service_log", (_name: string, text: string) => { logs.push(text); });
+
+    await mgr.start();
+    logs.length = 0;
+    await mgr.startService("dev");
+
+    // One emit when the buffer passed the cap mid-stream, one on the flush —
+    // rather than 10 KB sitting in `pending` until the command ended.
+    expect(logs.length).toBe(2);
+    expect(logs.every(t => t.startsWith(COMPOSE_LOG_PREFIX))).toBe(true);
+    expect(logs.reduce((n, t) => n + t.length, 0)).toBeGreaterThan(MAX_COMPOSE_LOG_LINE);
 
     await mgr.stop();
   });
@@ -3176,11 +3229,14 @@ services:
     tmpDir = makeSessionDir("service-mgr-");
     const dir = path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
     fs.writeFileSync(path.join(dir, "docker-compose.yml"), MANUAL_COMPOSE);
-    const { mgr, stored } = makeBuildingManager(dir);
+    const { mgr, logs, stored } = makeBuildingManager(dir);
 
     await mgr.start();
     await mgr.startService("dev");
 
+    // Non-vacuous: output DID flow (otherwise "nothing was persisted" would be
+    // true for the uninteresting reason).
+    expect(logs.filter(l => l.text.includes("[compose]")).length).toBeGreaterThan(0);
     // docs/192: `streamLogs` picks `--tail 1000` vs `--tail 0` by asking whether
     // the store already holds this channel. Seeding it with build output would
     // flip that predicate before the container was ever followed, losing the

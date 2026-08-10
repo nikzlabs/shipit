@@ -29,7 +29,16 @@ import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
  * This is how the image build / pull phase becomes visible. See
  * {@link ComposeRunner} and `ServiceManager.composeLogSink`.
  */
-export type ComposeOutputSink = (chunk: string) => void;
+export interface ComposeOutputSink {
+  (chunk: string): void;
+  /**
+   * Emit whatever the sink still holds — a trailing record the command never
+   * terminated with a newline. Called once per PROCESS, not once per call:
+   * the conflict-recovery retry is a second `docker` process, and a partial
+   * line from the failed attempt must not be glued onto the retry's first.
+   */
+  flush?(): void;
+}
 
 /**
  * Runs a docker compose command. Resolves on exit 0, rejects otherwise.
@@ -305,9 +314,19 @@ export class ComposeCli {
   }
 
   /** Run a docker compose command and resolve/reject based on exit code. */
-  private run(onOutput: ComposeOutputSink | undefined, ...subArgs: string[]): Promise<void> {
+  private async run(
+    onOutput: ComposeOutputSink | undefined,
+    ...subArgs: string[]
+  ): Promise<void> {
     const args = this.args(...subArgs);
-    return this.runner(args, this.workspaceDir, onOutput);
+    try {
+      await this.runner(args, this.workspaceDir, onOutput);
+    } finally {
+      // The process is over either way, so its last unterminated line is now
+      // complete. In the `finally` so a FAILED attempt flushes too — see the
+      // per-process note on `ComposeOutputSink.flush`.
+      onOutput?.flush?.();
+    }
   }
 }
 

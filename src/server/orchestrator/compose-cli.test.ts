@@ -14,8 +14,11 @@
  * netns-parent liveness.
  */
 
-import { describe, it, expect, vi } from "vitest";
-import { ComposeCli } from "./compose-cli.js";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { ComposeCli, type ComposeOutputSink } from "./compose-cli.js";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 
@@ -362,5 +365,100 @@ describe("ComposeCli — compose up output sink", () => {
 
     await expect(cli.upService("dev")).resolves.toBeUndefined();
     expect(calls[0]!.hasSink).toBe(false);
+  });
+});
+
+/**
+ * The DEFAULT runner, exercised for real.
+ *
+ * The tests above inject a runner, so they prove the plumbing and nothing about
+ * the code that actually runs in production: whether output streams before the
+ * process exits, whether stdout is drained, whether a huge failure message is
+ * capped. `ComposeCli` shells out to `docker` by name, so a fake `docker` on
+ * PATH is enough to drive the real thing.
+ */
+describe("ComposeCli — default runner (real spawn against a fake `docker`)", () => {
+  let binDir: string;
+  let prevPath: string | undefined;
+
+  /** Install a fake `docker` on PATH whose body is `script`. */
+  function fakeDocker(script: string): void {
+    binDir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-docker-"));
+    const bin = path.join(binDir, "docker");
+    fs.writeFileSync(bin, `#!/bin/sh\n${script}\n`);
+    fs.chmodSync(bin, 0o755);
+    prevPath = process.env.PATH;
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+  }
+
+  afterEach(() => {
+    if (prevPath !== undefined) process.env.PATH = prevPath;
+    prevPath = undefined;
+    if (binDir) fs.rmSync(binDir, { recursive: true, force: true });
+  });
+
+  function cliUnderTest(): ComposeCli {
+    return new ComposeCli({
+      sessionId: SID,
+      workspaceDir: os.tmpdir(),
+      composeFile: "docker-compose.yml",
+      overrideFile: "/state/compose.override.yml",
+      composeQuery: vi.fn(async () => ""),
+      // No composeRunner — this is the point of the suite.
+    });
+  }
+
+  it("streams both stdout and stderr BEFORE the process exits", async () => {
+    // The `sleep` is what makes this a streaming assertion rather than a
+    // buffered one: the sink must have both lines while `docker` is still alive.
+    fakeDocker(`
+echo "#4 [2/9] RUN apt-get update" >&2
+echo "to stdout"
+sleep 0.3
+echo "#4 DONE 0.4s" >&2
+`);
+    const seen: { text: string; atMs: number }[] = [];
+    const t0 = Date.now();
+    const sink = (chunk: string) => { seen.push({ text: chunk, atMs: Date.now() - t0 }); };
+
+    await cliUnderTest().upService("dev", sink);
+
+    const joined = seen.map(s => s.text).join("");
+    expect(joined).toContain("#4 [2/9] RUN apt-get update");
+    expect(joined).toContain("to stdout");
+    expect(joined).toContain("#4 DONE 0.4s");
+    // The first chunk landed well before the process exited ~300ms in.
+    expect(seen[0]!.atMs).toBeLessThan(250);
+  });
+
+  it("caps a failing command's stderr in the rejection, keeping the tail", async () => {
+    // 40k of noise, then the line that actually says what went wrong.
+    fakeDocker(`
+i=0
+while [ $i -lt 400 ]; do echo "#3 CACHED noise line padding padding padding padding" >&2; i=$((i+1)); done
+echo "ERROR: failed to solve: process did not complete successfully" >&2
+exit 17
+`);
+
+    await expect(cliUnderTest().upService("dev")).rejects.toThrow(/exit 17/);
+    await expect(cliUnderTest().upService("dev")).rejects.toThrow(
+      /failed to solve: process did not complete successfully/,
+    );
+
+    const err = await cliUnderTest().upService("dev").catch((e: unknown) => e);
+    expect((err as Error).message.length).toBeLessThan(10_000);
+  });
+
+  it("flushes a trailing line the command never terminated with a newline", async () => {
+    fakeDocker(`printf '#5 building' >&2`);
+    const chunks: string[] = [];
+    const sink: ComposeOutputSink = (chunk: string) => { chunks.push(chunk); };
+    let flushed = 0;
+    sink.flush = () => { flushed += 1; };
+
+    await cliUnderTest().upService("dev", sink);
+
+    expect(chunks.join("")).toBe("#5 building");
+    expect(flushed).toBe(1);
   });
 });

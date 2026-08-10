@@ -150,6 +150,13 @@ export const INSTALL_FAILED_GATE_MESSAGE =
 export const COMPOSE_LOG_PREFIX = "[compose] ";
 
 /**
+ * Longest run of compose output the line-buffering sink holds without seeing a
+ * newline before it emits anyway. Bounds the one buffer that lives OUTSIDE
+ * `MAX_LOG_BUFFER`'s cap; well above any real progress line.
+ */
+export const MAX_COMPOSE_LOG_LINE = 8_000;
+
+/**
  * How long {@link ServiceManager.joinSessionNetwork} may block before its
  * callers give up and move on to resolving service status (#2044).
  *
@@ -1441,7 +1448,16 @@ export class ServiceManager extends EventEmitter {
    * {@link COMPOSE_LOG_PREFIX} for why the silence it replaces was a bug.
    *
    * Line-buffered, because compose emits progress in arbitrary chunks and a
-   * per-chunk prefix would land mid-line.
+   * per-chunk prefix would land mid-line. The buffer is bounded
+   * ({@link MAX_COMPOSE_LOG_LINE}) so a record that never terminates can't grow
+   * without limit outside the ring buffer's cap, and `flush` empties it at each
+   * process boundary so the last line isn't dropped.
+   *
+   * For a multi-service `up`, every line goes to every named service. Compose's
+   * output is stack-global — it can even name a service pulled in by
+   * `depends_on` that isn't in `names` — so no per-line attribution exists to
+   * recover. Copying it is the honest option, and the {@link COMPOSE_LOG_PREFIX}
+   * says plainly that these lines describe the `up`, not the container.
    *
    * Deliberately NOT persisted to the durable log store, even though every
    * other line in this channel is. `streamLogs` decides between replaying the
@@ -1451,24 +1467,46 @@ export class ServiceManager extends EventEmitter {
    * Seeding the channel with build output would flip that predicate before the
    * container has ever been followed, and the container's first lines — emitted
    * in the gap between `up` returning and the follower attaching, which spans a
-   * network join and a poll — would be lost for good. Live emission plus the
-   * ring buffer covers both viewers that matter: an open panel gets the lines as
-   * they arrive, and a panel opened mid-build gets them from `snapshotLogs`,
-   * which falls back to the ring buffer while `docker compose logs` has no
-   * container to answer for.
+   * network join and a poll — would be lost for good. `hasChannel` is a
+   * file-size check over a raw-text channel, so there is no cheaper way to tell
+   * the two kinds of bytes apart; persisting build output needs its own
+   * "container backlog seeded" marker, which is a docs/192 change rather than
+   * part of this fix.
+   *
+   * What live emission plus the ring buffer does cover: an open panel gets the
+   * lines as they arrive, and on a service with no persisted history yet — the
+   * cold-build case this exists for — a panel opened mid-build also gets them
+   * from `snapshotLogs`, which falls back to the ring buffer while
+   * `docker compose logs` has no container to answer for. What it does not:
+   * once the channel holds container history, `snapshotLogs` returns that and
+   * ignores the ring, so a later build is visible only live.
    */
   private composeLogSink(names: string[]): ComposeOutputSink {
     let pending = "";
-    return (chunk: string) => {
+    const emit = (line: string): void => {
+      if (!line.trim()) return;
+      const text = `${COMPOSE_LOG_PREFIX}${line}\n`;
+      for (const name of names) this.bufferServiceLog(name, text);
+    };
+    const sink: ComposeOutputSink = (chunk: string) => {
       pending += chunk;
       const lines = pending.split("\n");
       pending = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        const text = `${COMPOSE_LOG_PREFIX}${line}\n`;
-        for (const name of names) this.bufferServiceLog(name, text);
+      for (const line of lines) emit(line);
+      // A stream that never emits a newline would otherwise accumulate here
+      // forever, re-copied by every `split` — unbounded memory on a path whose
+      // whole job is to survive a build of unknown length.
+      if (pending.length > MAX_COMPOSE_LOG_LINE) {
+        emit(pending);
+        pending = "";
       }
     };
+    sink.flush = () => {
+      const rest = pending;
+      pending = "";
+      emit(rest);
+    };
+    return sink;
   }
 
   /** Run a single restart attempt for a service in retry-backoff. */

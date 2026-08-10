@@ -112,6 +112,21 @@ with build output would lose the container's first lines. The same change
 drains stdout (an unread pipe could have deadlocked a chatty command) and
 caps the stderr kept for the rejection message.
 
+**Known limitation of that choice**: on a service whose channel already
+holds container history, `snapshotLogs` returns the durable history and
+ignores the ring buffer, so a *later* build is visible only live — a
+panel opened mid-build sees it arrive but cannot scroll back to its
+start. Persisting compose output properly needs `hasChannel` (a
+file-size check over a raw-text channel) replaced by an explicit
+"container backlog seeded" marker, or a stack-level compose channel with
+UI aggregation. Both are docs/192 changes, not part of this fix.
+
+Compose's output is stack-global — a single `up` can build a service
+pulled in by `depends_on` that isn't named in the call — so a multi-service
+`up` copies each line to every named service. There is no per-line
+attribution to recover; the `[compose] ` prefix carries the distinction
+instead.
+
 ## Sequence
 
 D and F together close the "compose service recovers but UI thinks
