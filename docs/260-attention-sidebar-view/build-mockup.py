@@ -87,6 +87,44 @@ def hdr(active: bool, count, extra_left: str = "") -> str:
             f'<span class="ico">{I_BOLT_MIC}</span><span class="ico">{I_GH}</span></div>')
 
 
+def hdr_mobile(active: bool, count) -> str:
+    """The mobile sessions panel's own bar. It has no collapse control (Sessions
+    is a mode of the bottom tab bar, so you switch away rather than close), and
+    quick-session/voice/new live in that tab bar — so the left slot is empty and
+    the switch lands in the same place as on desktop."""
+    sw = (SW_ON if active else SW_OFF).format(n=count)
+    return (f'<div class="hdr">{sw}<span class="sp"></span>'
+            f'<span class="ico">{I_PLUS}</span><span class="ico">{I_GH}</span></div>')
+
+
+# ---------------------------------------------------------------- contrast
+def _lin(c: float) -> float:
+    return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def luminance(hex_color: str) -> float:
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    return 0.2126 * _lin(r) + 0.7152 * _lin(g) + 0.0722 * _lin(b)
+
+
+def contrast(fg: str, bg: str) -> float:
+    a, b = luminance(fg), luminance(bg)
+    hi, lo = max(a, b), min(a, b)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def ratio(fg: str, bg: str, *, small_text: bool) -> str:
+    """Formatted ratio + pass/fail. WCAG AA wants 4.5:1 for small text and
+    3:1 for a non-text UI component."""
+    r = contrast(fg, bg)
+    need = 4.5 if small_text else 3.0
+    ok = r >= need
+    cls = "ok" if ok else "fail"
+    mark = "✓" if ok else "✕"
+    return f'<span class="ratio {cls}">{r:.2f}:1 {mark}</span>'
+
+
 def row(title, *, pr=False, dot="", repo=None, when="", attn=False, sel=False,
         settled=False, indent=False, cls="") -> str:
     c = "it"
@@ -145,6 +183,78 @@ for name, pick, why in CANDIDATES:
     <h4>{name}{tag}</h4>
     <p>{why}</p>
   </div>'''
+
+# ---------------------------------------------------------------- light themes
+# Every light theme defines --color-attention as #d97706 (amber-600); only the
+# surfaces differ. The proposed small-text value is amber-700.
+AMBER_LIGHT = "#d97706"
+AMBER_LIGHT_TEXT = "#b45309"
+LIGHT_THEMES = [
+    ("light", "#ffffff", "#f3f4f6", "#111827", "#9ca3af", "#e5e7eb"),
+    ("warm-light", "#fdf8f0", "#ede4d4", "#2c2416", "#a89878", "#e4d8c4"),
+    ("solarized-light", "#fdf6e3", "#e4ddc8", "#073642", "#93a1a1", "#e0d8c0"),
+]
+
+
+def light_cell(theme, bg, chip, text1, text3, border, count_color) -> str:
+    sw_off = (f'<span class="sw" style="color:{text3}">{glyph("Chats", "regular")}'
+              f'<span class="n" style="color:{count_color}">4</span></span>')
+    sw_on = (f'<span class="sw on" style="color:{AMBER_LIGHT};background:{chip}">'
+             f'{glyph("Chats", "fill")}<span class="n" style="color:{count_color}">4</span></span>')
+    sample_row = (
+        f'<div style="position:relative;margin:0 4px;padding:6px 8px;border-radius:5px;'
+        f'font-size:12px;box-shadow:inset -3px 0 0 {AMBER_LIGHT};'
+        f'background-image:linear-gradient(90deg,transparent 62%,{AMBER_LIGHT}33)">'
+        f'<span style="display:block;color:{text1};font-size:12px">Repo group separation</span>'
+        f'<span style="display:block;color:{text3};font-size:10px;margin-top:3px">shipit · 14m</span>'
+        f'</div>')
+    return f'''
+  <div class="lt">
+    <div class="ltframe" style="background:{bg};border-color:{border}">
+      <div class="ltbar" style="border-color:{border}">{sw_off}{sw_on}</div>
+      {sample_row}
+    </div>
+    <h4>{theme}</h4>
+    <p>count on surface {ratio(count_color, bg, small_text=True)}<br>
+       count on chip {ratio(count_color, chip, small_text=True)}<br>
+       marker edge {ratio(AMBER_LIGHT, bg, small_text=False)}</p>
+  </div>'''
+
+
+# Pick, per theme, the LIGHTEST amber on the Tailwind ramp that clears AA (4.5:1)
+# against that theme's pressed chip — the harder of the two surfaces. One shared
+# shade does not work: the cream chips in warm-/solarized-light are darker than
+# the neutral one, so they need a deeper amber.
+AMBER_RAMP = [("amber-600", "#d97706"), ("amber-700", "#b45309"),
+              ("amber-800", "#92400e"), ("amber-900", "#78350f")]
+
+
+def pick_amber(chip: str) -> tuple[str, str]:
+    for name, value in AMBER_RAMP:
+        if contrast(value, chip) >= 4.5:
+            return name, value
+    return AMBER_RAMP[-1]
+
+
+PICKED = {t[0]: pick_amber(t[2]) for t in LIGHT_THEMES}
+
+light_asis = "".join(light_cell(*t, AMBER_LIGHT) for t in LIGHT_THEMES)
+light_fixed = "".join(
+    light_cell(*t, PICKED[t[0]][1]).replace(
+        f"<h4>{t[0]}</h4>",
+        f'<h4>{t[0]} &nbsp;<span class="tok">{PICKED[t[0]][0]}</span></h4>')
+    for t in LIGHT_THEMES)
+dark_ref = (f'<div class="lt"><div class="ltframe" style="background:#030712;border-color:#1f2937">'
+            f'<div class="ltbar" style="border-color:#1f2937">{SW_OFF.format(n=4)}{SW_ON.format(n=4)}</div>'
+            f'<div style="position:relative;margin:0 4px;padding:6px 8px;border-radius:5px;font-size:12px;'
+            f'box-shadow:inset -3px 0 0 #f59e0b;'
+            f'background-image:linear-gradient(90deg,transparent 62%,rgba(245,158,11,.2))">'
+            f'<span style="display:block;color:#f3f4f6;font-size:12px">Repo group separation</span>'
+            f'<span style="display:block;color:#6b7280;font-size:10px;margin-top:3px">shipit · 14m</span>'
+            f'</div></div><h4>dark (reference)</h4>'
+            f'<p>count on surface {ratio("#f59e0b", "#030712", small_text=True)}<br>'
+            f'count on chip {ratio("#f59e0b", "#1f2937", small_text=True)}<br>'
+            f'marker edge {ratio("#f59e0b", "#030712", small_text=False)}</p></div>')
 
 # ---------------------------------------------------------------- the two views
 ALL_ROWS = (
@@ -327,6 +437,19 @@ HTML = f'''<!doctype html>
   .hb.bad .frame{{border-color:rgba(239,68,68,.4)}}
   .hb.pick .frame{{border-color:rgba(34,197,94,.45)}}
 
+  /* ---- light-theme contrast board ---- */
+  .lt{{width:214px}}
+  .ltframe{{border:1px solid;border-radius:8px;padding-bottom:8px;overflow:hidden}}
+  .ltbar{{display:flex;align-items:center;gap:6px;height:41px;padding:0 8px;
+    border-bottom:1px solid;margin-bottom:8px}}
+  .lt h4{{margin:8px 0 2px;font-size:11px;font-weight:600;color:var(--text-1)}}
+  .lt p{{margin:0;font-size:11px;color:var(--text-3);line-height:1.7}}
+  .ratio{{font-variant-numeric:tabular-nums;font-weight:600}}
+  .ratio.ok{{color:var(--success)}}
+  .ratio.fail{{color:var(--error)}}
+  .tok{{font-size:9px;font-weight:700;letter-spacing:.03em;color:var(--attention);
+    background:rgba(245,158,11,.14);border-radius:8px;padding:1px 5px}}
+
   /* ---- rejected thumbnails ---- */
   .thumbs{{display:flex;gap:16px;flex-wrap:wrap}}
   .th{{width:190px}}
@@ -371,7 +494,20 @@ HTML = f'''<!doctype html>
     <h4>Rejected · in the right-hand cluster</h4>
     <p>Five glyphs in a row, four of which create something. A view switch among them is a category error, and the count competes with the icons on either side instead of standing out.</p>
   </div>
+  <div class="hb">
+    <div class="frame"><div class="z"><div class="side">{hdr_mobile(False, 4)}</div></div></div>
+    <h4>Mobile · same slot (req 15)</h4>
+    <p>The mobile session list has no collapse control — Sessions is a mode of the bottom tab bar, so you switch away rather than close it — and new/quick/voice live in that tab bar. The left slot is therefore empty, and the switch lands in the same place as on desktop.</p>
+  </div>
 </div>
+
+<h2>Light themes — does the amber hold up?</h2>
+<p class="note">All six light themes define <code>--color-attention</code> as <code>{AMBER_LIGHT}</code> (amber-600); only the surfaces differ, so three of them cover the range. Ratios are computed, not eyeballed: WCAG AA wants <b>4.5:1</b> for small text like the count, and <b>3:1</b> for a non-text UI element like the edge marker.</p>
+<p class="note"><b>Finding: the marker is fine everywhere, the count is not.</b> The 10 px count in <code>--color-attention</code> lands near 3:1 on a light surface and drops below it on the pressed chip — readable, but under AA for text. Dark themes have no such problem, so this is a light-theme-only fix.</p>
+<div class="swdemo">{light_asis}{dark_ref}</div>
+<p class="note" style="margin-top:18px"><b>Proposed fix — a small-text amber, chosen per theme.</b> The count takes a deeper amber while the glyph and the marker keep <code>--color-attention</code> unchanged. One shared shade does not work: amber-700 clears AA on the neutral chip but not on the cream chips in <code>warm-light</code> and <code>solarized-light</code>, which are darker. So the value is picked per theme — the lightest amber on the ramp that clears 4.5:1 against that theme's chip — which is exactly what a per-theme token is for, and the pattern <code>--color-attention</code> itself already follows. Same hue, still obviously the attention color.</p>
+<p class="note"><b>One red square is left, and it is not ours.</b> On <code>solarized-light</code> the docs/187 edge marker itself measures 2.95:1 against that theme's cream surface — a hair under the 3:1 a non-text element wants. That is the existing row marker on an existing theme, unchanged by this view and visible in the All view today, so it is a separate fix; it is recorded here because this board is what surfaced it.</p>
+<div class="swdemo">{light_fixed}</div>
 
 <h2>Which glyph?</h2>
 <p class="note">The first draft used a warning circle. Wrong twice over: <code>WarningCircleIcon</code> already appears about forty times across the client for genuine warnings, and “something is broken” is not what the switch means — most of the list is an agent quietly waiting for you. Five candidates from the pack we already ship (<code>@phosphor-icons/react</code>), each drawn from its real path data, off state then on state. None of the five is used anywhere else in the client.</p>

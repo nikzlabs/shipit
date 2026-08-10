@@ -37,17 +37,38 @@ terms. Design lives in `plan.md` (not written yet); the visual reference is
     In particular, why a session needs attention is shown exactly the way the
     current build shows it, and is not restated as text on the row.
 12. Each row in the second view shows the name of its repository.
+13. The sidebar remembers which view was chosen, and opens in it again.
+14. A keyboard shortcut changes the view. It appears alongside the product's
+    other shortcuts and can be changed the same way they can.
+15. The mobile session list has the same switch, on the left of its own top bar.
+16. The switch and its count are legible in every theme, light and dark.
 
 ## Open questions
 
-- **Q4 · Is the chosen view remembered?** Sticky across reloads and session
-  switches, or does the sidebar always open in the All view?
-- **Q7 · Is there a keyboard shortcut for the switch?**
-- **Q8 · Does mobile get the same switch?** The mobile sessions panel is one mode
-  of the bottom tab bar and has no desktop header row.
+_(none — see the receipts below)_
 
 ## Resolved questions
 
+- **2026-08-10 · Does the amber hold up on light themes?** Not as drawn. Nik:
+  *"I would like to see how this new colored switcher icon would look in the
+  light theme to make sure that the contrast is okay."* → requirement 16. The
+  measured board in the mockup shows the 10 px count in `--color-attention`
+  reaching only 2.35–3.19:1 on light surfaces, under the 4.5:1 AA wants for
+  small text; the fix is a deeper amber for the count, picked per theme, with
+  the glyph and the edge marker left alone. Dark themes are unaffected (6.8–9.4:1).
+- **2026-08-10 · Q4 — is the chosen view remembered?** Yes. Nik: *"yes."* →
+  requirement 13.
+- **2026-08-10 · Q7 — is there a keyboard shortcut?** Yes. Nik: *"Why not, let's
+  add it."* → requirement 14. The requirement is that a shortcut exists and
+  behaves like the others; the chord itself is a design choice for `plan.md`,
+  which should register it in `src/client/keybindings/registry.ts` (docs/180) so
+  it appears in the `?` overlay and the Keyboard settings tab and is rebindable,
+  rather than hard-coding a keydown handler.
+- **2026-08-10 · Q8 — does mobile get the switch?** Yes. Nik: *"There is still
+  the same bar in the session list on mobile. There is no 'close sessions'
+  button, but the new switcher could be just on the left."* → requirement 15.
+  The mobile bar's left slot is empty today (it has no collapse control), so the
+  switch lands in the same place as on desktop.
 - **2026-08-10 · Q1 — where the switch lives.** Nik: *"Icon toggle + badge."* →
   requirements 4 and 5. The segmented control (mockup A1), the pinned band with
   no mode (A3) and the view dropdown (A4) are out.
