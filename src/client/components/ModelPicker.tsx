@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react";
-import { CaretDownIcon, CheckIcon, LockIcon, RobotIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, CheckIcon, LockIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatModelName, resolveModelAlias } from "../utils/format-model.js";
 import { getSavedModelId, getSavedModelSelection } from "../utils/local-storage.js";
@@ -101,30 +101,6 @@ function groupRows(rows: ModelRow[]): ModelGroup[] {
 }
 
 /**
- * True when this model id is offered by more than one eligible group — the sole
- * case where the id alone cannot say who is billing you.
- *
- * That is exactly why the service pill is disclosure-on-demand rather than
- * permanent: it appears when the ambiguity is real and costs nothing otherwise.
- */
-function isAmbiguous(rows: ModelRow[], modelId: string | undefined): boolean {
-  if (!modelId) return false;
-  return rows.filter((r) => r.modelId === modelId).length > 1;
-}
-
-/**
- * The label that disambiguates a duplicated model id: the **billing mode** when
- * the duplicate rows are within one service, the **service** when they cross
- * services — because that is the axis that actually differs.
- */
-function disambiguator(rows: ModelRow[], row: ModelRow): string {
-  const duplicates = rows.filter((r) => r.modelId === row.modelId);
-  const crossesServices = duplicates.some((r) => r.serviceId !== row.serviceId);
-  if (crossesServices) return row.serviceName;
-  return row.billingMode === "sub" ? "Subscription" : "API key";
-}
-
-/**
  * The session this composer is bound to, or `undefined` when it is bound to
  * none.
  *
@@ -190,34 +166,25 @@ interface HarnessSelectorProps {
   /** See {@link ModelSelectorProps.seedFromHistory}. */
   seedFromHistory?: boolean;
   disabled?: boolean;
-  /**
-   * Mobile composer mode: show only the robot icon to conserve toolbar width,
-   * as {@link ReasoningSelector} does with its brain. The harness name is the
-   * widest label in the row ("Claude Code"), and with the model selector beside
-   * it the toolbar overflowed far enough to push Send off-screen.
-   *
-   * The icon is generic rather than per-harness, so it says *that* there is a
-   * harness choice and not *which* — the name moves into `title` and
-   * `aria-label`, and the open menu still checks the current one. Same trade the
-   * brain icon already makes for reasoning effort.
-   */
-  compactTrigger?: boolean;
 }
 
 /**
- * Which CLI runs this session. Disabled with the reason on it once the session
- * has pinned one — the irreversibility is the whole point of splitting it out,
- * so it is stated on the control rather than inside a menu.
+ * The harness state this control and docs/260's composer settings menu both
+ * render. Extracted so the menu's Harness panel cannot drift from the standalone
+ * selector — in particular the pinned-session rule, which is the one fact about
+ * a session that is irreversible.
  */
-export function HarnessSelector({
+export function useHarnessPickerState({
   agents,
   activeAgentId,
-  onAgentChange,
   hasActiveSession = false,
   seedFromHistory = false,
-  disabled,
-  compactTrigger = false,
-}: HarnessSelectorProps) {
+}: {
+  agents: AgentOption[];
+  activeAgentId: AgentId;
+  hasActiveSession?: boolean;
+  seedFromHistory?: boolean;
+}) {
   const sessionId = useSessionStore((s) => s.sessionId);
   const sessions = useSessionStore((s) => s.sessions);
   const currentSession = boundSession(sessions, sessionId, seedFromHistory);
@@ -228,12 +195,47 @@ export function HarnessSelector({
   // no models and appears nowhere. An installed-but-unauthenticated one stays
   // visible, because that is actionable.
   const installed = agents.filter((a) => a.installed);
-  const displayedAgentId = displayedHarness(agents, activeAgentId, currentSession, seedFromHistory);
-  const displayAgent = agents.find((a) => a.id === displayedAgentId);
-  const locked = !!pinnedAgentId;
-  // Carried into `title` / `aria-label` in every mode, because the compact
-  // trigger has no visible text to fall back on.
-  const harnessName = displayAgent?.name ?? "Loading...";
+  const currentAgentId = displayedHarness(agents, activeAgentId, currentSession, seedFromHistory);
+  const displayAgent = agents.find((a) => a.id === currentAgentId);
+  return {
+    installed,
+    displayAgent,
+    currentAgentId,
+    locked: !!pinnedAgentId,
+    /** Never empty — the settings-menu anchor has no other text to fall back on. */
+    harnessName: displayAgent?.name ?? "Loading...",
+  };
+}
+
+/** The `title` explaining why a pinned harness cannot be changed. Shared with the menu. */
+export function lockedHarnessReason(harnessName: string): string {
+  return `${harnessName}: fixed for this session after the first message. Models stay switchable.`;
+}
+
+/**
+ * Which CLI runs this session. Disabled with the reason on it once the session
+ * has pinned one — the irreversibility is the whole point of splitting it out,
+ * so it is stated on the control rather than inside a menu.
+ *
+ * docs/260 — this renders in the composer's WIDE row only. Below 700px of
+ * composer width the harness moves into `ComposerSettingsMenu`, which is why the
+ * old `compactTrigger` (an icon-only mobile variant) no longer exists: there is
+ * no width at which this control is shown but too narrow for its own name.
+ */
+export function HarnessSelector({
+  agents,
+  activeAgentId,
+  onAgentChange,
+  hasActiveSession = false,
+  seedFromHistory = false,
+  disabled,
+}: HarnessSelectorProps) {
+  const { installed, currentAgentId, locked, harnessName } = useHarnessPickerState({
+    agents,
+    activeAgentId,
+    hasActiveSession,
+    seedFromHistory,
+  });
 
   return (
     <div data-testid="harness-selector">
@@ -241,26 +243,14 @@ export function HarnessSelector({
         <DropdownMenuTrigger asChild>
           <button
             disabled={disabled || locked}
-            title={
-              locked
-                ? `${harnessName}: fixed for this session after the first message. Models stay switchable.`
-                : compactTrigger
-                  ? harnessName
-                  : undefined
-            }
-            className={`flex items-center gap-1.5 text-xs rounded-lg transition-colors font-medium text-(--color-text-secondary) disabled:opacity-50 disabled:cursor-not-allowed ${
-              compactTrigger ? "h-8 justify-center px-2" : "px-2.5 py-1.5"
-            } ${
+            title={locked ? lockedHarnessReason(harnessName) : undefined}
+            className={`flex items-center gap-1.5 text-xs rounded-lg transition-colors font-medium text-(--color-text-secondary) disabled:opacity-50 disabled:cursor-not-allowed px-2.5 py-1.5 ${
               disabled || locked ? "cursor-default" : "hover:bg-(--color-bg-hover) cursor-pointer"
             }`}
             aria-label={`Harness selector: ${harnessName}`}
             data-testid="harness-trigger"
           >
-            {compactTrigger ? (
-              <RobotIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary)" />
-            ) : (
-              <span>{harnessName}</span>
-            )}
+            <span>{harnessName}</span>
             {locked ? (
               <LockIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary)" />
             ) : (
@@ -271,7 +261,7 @@ export function HarnessSelector({
         <DropdownMenuContent side="top" align="end" className="w-56" data-testid="harness-dropdown">
           {installed.map((agent) => {
             const rows = modelRowsFor(agent);
-            const isCurrent = agent.id === displayedAgentId;
+            const isCurrent = agent.id === currentAgentId;
             return (
               <DropdownMenuItem
                 key={agent.id}
@@ -337,19 +327,30 @@ interface ModelSelectorProps {
 }
 
 /**
- * Which model this session runs, grouped by `(service, billing mode)` — the
- * identity a model is actually selected by (req 5), and the grouping the
- * credential, the price and the billing kind all hang off.
+ * Everything needed to render the model choice, in one place.
+ *
+ * docs/260 — extracted from {@link ModelSelector} because the composer's
+ * settings menu needs exactly this and a second copy would drift. The precedence
+ * below is the subtle part: the trigger label and the checkmark read the SAME
+ * resolution, so they can never contradict each other, and the pending pick is
+ * the whole `(service, mode, model)` triple rather than an id. Both properties
+ * were bugs once; see the comments inline.
  */
-export function ModelSelector({
+export function useModelPickerState({
   agents,
   activeAgentId,
   onModelChange,
   modelInfo,
   hasActiveSession = false,
   seedFromHistory = false,
-  disabled,
-}: ModelSelectorProps) {
+}: {
+  agents: AgentOption[];
+  activeAgentId: AgentId;
+  onModelChange?: (selection: EligibleModelOption) => void;
+  modelInfo: ModelInfo | null;
+  hasActiveSession?: boolean;
+  seedFromHistory?: boolean;
+}) {
   // docs/252 phase 4 — the optimistic pick is the whole TRIPLE, not a model id.
   // A mid-session switch across services routinely keeps the id (the same model
   // is reachable direct and through a gateway), so an id-keyed pending pick
@@ -478,11 +479,6 @@ export function ModelSelector({
     chosenGroupKey ?? rows.find((r) => r.modelId === selectedModel)?.groupKey;
 
   const displayName = formatModelName(displayedModel ?? "");
-  const displayedRow = rows.find(
-    (r) => r.modelId === displayedModel && (!selectedGroupKey || r.groupKey === selectedGroupKey),
-  ) ?? rows.find((r) => r.modelId === displayedModel);
-  const triggerPill =
-    displayedRow && isAmbiguous(rows, displayedModel) ? disambiguator(rows, displayedRow) : undefined;
 
   const handleModelSelect = useCallback(
     (row: ModelRow) => {
@@ -531,6 +527,49 @@ export function ModelSelector({
   }
   prevLiveRef.current = liveModel;
 
+  return {
+    groups,
+    /** The name on the trigger / anchor. Empty only before the catalogue arrives. */
+    displayName,
+    /** The row the checkmark belongs on, as a `(model, group)` pair. */
+    selectedModel,
+    selectedGroupKey,
+    handleModelSelect,
+  };
+}
+
+/**
+ * Which model this session runs, grouped by `(service, billing mode)` — the
+ * identity a model is actually selected by (req 5), and the grouping the
+ * credential, the price and the billing kind all hang off.
+ *
+ * docs/260 — the composer's WIDE row only; below 700px of composer width the
+ * model moves into `ComposerSettingsMenu`, which renders the same state.
+ */
+export function ModelSelector({
+  agents,
+  activeAgentId,
+  onModelChange,
+  modelInfo,
+  hasActiveSession = false,
+  seedFromHistory = false,
+  disabled,
+}: ModelSelectorProps) {
+  const {
+    groups,
+    displayName,
+    selectedModel,
+    selectedGroupKey,
+    handleModelSelect,
+  } = useModelPickerState({
+    agents,
+    activeAgentId,
+    onModelChange,
+    modelInfo,
+    hasActiveSession,
+    seedFromHistory,
+  });
+
   return (
     <div data-testid="model-selector">
       <DropdownMenu>
@@ -544,11 +583,6 @@ export function ModelSelector({
             data-testid="model-trigger"
           >
             <span>{displayName || "Loading..."}</span>
-            {triggerPill && (
-              <span className="text-(--color-text-tertiary)" data-testid="model-trigger-service">
-                {triggerPill}
-              </span>
-            )}
             {!disabled && <CaretDownIcon size={ICON_SIZE.XS} />}
           </button>
         </DropdownMenuTrigger>

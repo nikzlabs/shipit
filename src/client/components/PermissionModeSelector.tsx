@@ -30,22 +30,28 @@ import type { ModelInfo } from "../utils/model-info.js";
  * entirely — auto is the only behavior and there's nothing to toggle.
  */
 
+/**
+ * docs/260 req 17 — `label` is the mode ALONE ("Guarded"), because it renders as
+ * a badge in the composer row where the second word was 34px of nothing. The
+ * menu below spells out "<label> mode", where it reads as a description and
+ * there is room for it.
+ */
 const MODE_META: Record<
   PermissionMode,
   { label: string; icon: typeof NotepadIcon; description: string }
 > = {
   plan: {
-    label: "Plan mode",
+    label: "Plan",
     icon: NotepadIcon,
     description: "Read-only — research and plan, no edits.",
   },
   guarded: {
-    label: "Guarded mode",
+    label: "Guarded",
     icon: ShieldCheckIcon,
     description: "Autonomous — commands are safety-checked by Claude before running; risky ones are blocked. Slightly slower and costs a bit more than auto.",
   },
   auto: {
-    label: "Auto mode",
+    label: "Auto",
     icon: FastForwardIcon,
     description: "Autonomous — no command safety check.",
   },
@@ -53,6 +59,32 @@ const MODE_META: Record<
 
 // Display order: most → least oversight.
 const LADDER: PermissionMode[] = ["plan", "guarded", "auto"];
+
+/**
+ * Whether the effective model can run guarded mode. Guarded needs Sonnet or
+ * Opus; Haiku is unsupported. The runtime init-field check is the backstop if a
+ * model turns out unsupported despite this gate.
+ *
+ * docs/260 — exported because the composer's settings menu offers the same
+ * choice below 700px of composer width, and a second copy of the rule would
+ * drift into offering a mode the server then refuses.
+ */
+export function isGuardedModelOk({
+  agents,
+  activeAgentId,
+  modelInfo,
+}: {
+  agents: AgentOption[];
+  activeAgentId: AgentId;
+  modelInfo?: ModelInfo | null;
+}): boolean {
+  const activeAgent = agents.find((a) => a.id === activeAgentId);
+  const effectiveAlias =
+    (modelInfo?.model ? resolveModelAlias(modelInfo.model) : undefined) ??
+    getSavedModelId() ??
+    activeAgent?.models[0];
+  return effectiveAlias !== "haiku";
+}
 
 export function PermissionModeSelector({
   mode,
@@ -81,14 +113,7 @@ export function PermissionModeSelector({
   // any other modes the agent advertises. Ordered along the oversight ladder.
   const available = LADDER.filter((m) => m === "auto" || supported.includes(m));
 
-  // Resolve the effective model alias to gate guarded's model coupling. Guarded
-  // needs Sonnet or Opus; Haiku is unsupported. The runtime init-field check is
-  // the backstop if a model turns out unsupported despite this gate.
-  const effectiveAlias =
-    (modelInfo?.model ? resolveModelAlias(modelInfo.model) : undefined) ??
-    getSavedModelId() ??
-    activeAgent?.models[0];
-  const guardedModelOk = effectiveAlias !== "haiku";
+  const guardedModelOk = isGuardedModelOk({ agents, activeAgentId, modelInfo });
 
   // Nothing meaningful to toggle (e.g. Codex: only `auto`). Hide the control —
   // this also fixes the latent gap where the old binary toggle showed `plan`
@@ -138,7 +163,7 @@ export function PermissionModeSelector({
               <Icon size={ICON_SIZE.SM} className="mt-0.5 shrink-0" weight={isCurrent ? "fill" : "regular"} />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-sm font-medium">{meta.label}</span>
+                  <span className="text-sm font-medium">{meta.label} mode</span>
                   {isCurrent && <CheckIcon size={ICON_SIZE.XS} className="text-(--color-accent)" />}
                 </div>
                 <p className="text-xs text-(--color-text-tertiary) mt-0.5">

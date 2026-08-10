@@ -39,7 +39,9 @@ describe("PermissionModeSelector", () => {
     render(
       <PermissionModeSelector mode="guarded" onChange={vi.fn()} agents={claudeAll} activeAgentId="claude" modelInfo={sonnet} />,
     );
-    expect(screen.getByTestId("permission-mode-selector")).toHaveTextContent("Guarded mode");
+    // docs/260 req 17 — the badge names the mode alone; "mode" was 34px of nothing.
+    expect(screen.getByTestId("permission-mode-selector")).toHaveTextContent("Guarded");
+    expect(screen.getByTestId("permission-mode-selector")).not.toHaveTextContent("Guarded mode");
   });
 
   it("offers plan, guarded, and auto in the menu", async () => {

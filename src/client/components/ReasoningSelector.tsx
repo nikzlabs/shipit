@@ -12,6 +12,59 @@ import {
 import type { AgentOption } from "../agent-types.js";
 
 /**
+ * The reasoning choice as both this control and docs/260's composer settings
+ * menu render it. Extracted so the menu's Reasoning panel shares one precedence
+ * rule (and one `saveReasoning` side effect) with the standalone selector.
+ *
+ * Returns `null` when the agent exposes no reasoning knob, which is the caller's
+ * signal to render nothing.
+ */
+export function useReasoningPickerState({
+  agent,
+  sessionReasoning,
+  onChange,
+  seedFromHistory = false,
+}: {
+  agent: AgentOption | undefined;
+  sessionReasoning: string | undefined;
+  onChange: (effort: string | null) => void;
+  seedFromHistory?: boolean;
+}) {
+  const [pending, setPending] = useState<string | null | undefined>(undefined);
+
+  const select = useCallback(
+    (effort: string | null) => {
+      if (!agent) return;
+      setPending(effort);
+      saveReasoning(agent.id, effort);
+      onChange(effort);
+    },
+    [agent, onChange],
+  );
+
+  const reasoning = agent?.reasoning;
+  if (!agent || !reasoning || reasoning.options.length === 0) return null;
+
+  // `pending` (incl. an explicit null = "Default just picked") wins until cleared;
+  // otherwise the per-session value. The per-agent seed is consulted only when
+  // composing a brand-new session (`seedFromHistory`). `undefined` ⇒ Default.
+  const current =
+    pending !== undefined
+      ? pending ?? undefined
+      : sessionReasoning ?? (seedFromHistory ? getSavedReasoning(agent.id) : undefined);
+
+  return {
+    /** The agent's own name for the knob ("Reasoning", "Reasoning effort"). */
+    label: reasoning.label,
+    /** "Default" plus the agent's levels, in catalogue order. */
+    options: [{ value: null as string | null, label: "Default" }, ...reasoning.options],
+    current,
+    currentLabel: reasoning.options.find((o) => o.value === current)?.label ?? "Default",
+    select,
+  };
+}
+
+/**
  * docs/217 — Control B: the composer's reasoning/effort control for the ACTIVE
  * session's own turns. Sits beside the model selector. The option set and label
  * are agent-defined (`agent.reasoning`); a "Default" entry maps to no value (the
@@ -33,13 +86,16 @@ import type { AgentOption } from "../agent-types.js";
  * can never linger into the next (both were the "forgot it was on Max" footgun).
  * The seed still drives new sessions and per-agent restore via `saveReasoning`
  * and the `?reasoning=` connect param (docs/217).
+ *
+ * docs/260 — the composer's WIDE row only. Below 700px of composer width the
+ * reasoning knob moves into `ComposerSettingsMenu`, so the old icon-only
+ * `compactTrigger` variant no longer has a width to exist at.
  */
 export function ReasoningSelector({
   agent,
   sessionReasoning,
   onChange,
   disabled,
-  compactTrigger = false,
   seedFromHistory = false,
 }: {
   agent: AgentOption | undefined;
@@ -47,8 +103,6 @@ export function ReasoningSelector({
   /** `null` clears the selection back to the agent's default. */
   onChange: (effort: string | null) => void;
   disabled?: boolean;
-  /** Mobile composer mode: show only the brain icon to conserve toolbar width. */
-  compactTrigger?: boolean;
   /**
    * When true (new-session composer — no active session), fall back to the
    * per-agent localStorage seed so the picker previews the level the new session
@@ -56,31 +110,9 @@ export function ReasoningSelector({
    */
   seedFromHistory?: boolean;
 }) {
-  const [pending, setPending] = useState<string | null | undefined>(undefined);
-
-  const handleSelect = useCallback(
-    (effort: string | null) => {
-      if (!agent) return;
-      setPending(effort);
-      saveReasoning(agent.id, effort);
-      onChange(effort);
-    },
-    [agent, onChange],
-  );
-
-  const reasoning = agent?.reasoning;
-  if (!agent || !reasoning || reasoning.options.length === 0) return null;
-
-  // `pending` (incl. an explicit null = "Default just picked") wins until cleared;
-  // otherwise the per-session value. The per-agent seed is consulted only when
-  // composing a brand-new session (`seedFromHistory`). `undefined` ⇒ Default.
-  const current =
-    pending !== undefined
-      ? pending ?? undefined
-      : sessionReasoning ?? (seedFromHistory ? getSavedReasoning(agent.id) : undefined);
-
-  const currentLabel =
-    reasoning.options.find((o) => o.value === current)?.label ?? "Default";
+  const state = useReasoningPickerState({ agent, sessionReasoning, onChange, seedFromHistory });
+  if (!state) return null;
+  const { label, options, current, currentLabel, select: handleSelect } = state;
 
   return (
     <div data-testid="reasoning-selector">
@@ -88,21 +120,19 @@ export function ReasoningSelector({
         <DropdownMenuTrigger asChild>
           <button
             disabled={disabled}
-            className={`flex items-center justify-center gap-1.5 text-xs rounded-lg transition-colors font-medium text-(--color-text-secondary) hover:bg-(--color-bg-hover) cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
-              compactTrigger ? "h-8 px-2" : "px-2.5 py-1.5"
-            }`}
-            aria-label={`${reasoning.label} selector`}
-            title={`${reasoning.label}: ${currentLabel}`}
+            className="flex items-center justify-center gap-1.5 text-xs rounded-lg transition-colors font-medium text-(--color-text-secondary) hover:bg-(--color-bg-hover) cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed px-2.5 py-1.5"
+            aria-label={`${label} selector`}
+            title={`${label}: ${currentLabel}`}
             data-testid="reasoning-trigger"
           >
             <BrainIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary)" />
-            {!compactTrigger && <span>{currentLabel}</span>}
+            <span>{currentLabel}</span>
             <CaretDownIcon size={ICON_SIZE.XS} />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent side="top" align="end" className="w-44" data-testid="reasoning-dropdown">
-          <DropdownMenuLabel>{reasoning.label}</DropdownMenuLabel>
-          {[{ value: null as string | null, label: "Default" }, ...reasoning.options].map((opt) => {
+          <DropdownMenuLabel>{label}</DropdownMenuLabel>
+          {options.map((opt) => {
             const isCurrent = (opt.value ?? undefined) === (current ?? undefined);
             return (
               <DropdownMenuItem
