@@ -51,20 +51,16 @@
   .hdr{display:flex;align-items:center;gap:6px;padding:0 10px;height:41px;border-bottom:1px solid var(--border-1)}
   .hdr .sp{flex:1}
   .ico{width:26px;height:26px;border-radius:5px;display:grid;place-items:center;color:var(--text-3);position:relative}
-  .ico.on{color:var(--attention);background:rgba(245,158,11,.14)}
+  /* The active state of the icon is the ONLY mode indicator — there is no band
+     under the header. It has to carry that alone, so it is a filled amber chip,
+     not the faint hover tint an inactive icon gets. */
+  .ico.on{color:#231a05;background:var(--attention)}
+  /* on the lit icon the badge must invert, or amber-on-amber swallows the count */
+  .ico.on .badge{background:#2b1f05;color:#fde68a;border-color:var(--attention)}
   .badge{position:absolute;top:-1px;right:-2px;min-width:14px;height:14px;padding:0 3px;
     background:var(--attention);color:#231a05;border-radius:7px;font-size:9px;font-weight:700;
     line-height:14px;text-align:center;border:2px solid var(--bg-primary);box-sizing:content-box}
   .scroll{flex:1;padding:4px 0;overflow:hidden}
-
-  /* ---- mode band ---- */
-  .mode{display:flex;align-items:center;gap:6px;padding:6px 10px;
-    background:rgba(245,158,11,.08);border-bottom:1px solid rgba(245,158,11,.22);
-    color:var(--attention);font-size:11px;font-weight:600;letter-spacing:.03em;text-transform:uppercase}
-  .mode .n{background:rgba(245,158,11,.2);border-radius:9px;padding:0 6px;font-size:10px}
-  .mode .exit{margin-left:auto;color:var(--text-3);font-size:10px;font-weight:500;text-transform:none;letter-spacing:0}
-  .mode.zero{background:rgba(34,197,94,.07);border-bottom-color:rgba(34,197,94,.2);color:var(--success)}
-  .mode.zero .n{background:rgba(34,197,94,.18)}
 
   /* ---- repo group header (All view only) ---- */
   .grp{display:flex;align-items:center;gap:6px;padding:5px 10px 5px 12px;font-size:11px;
@@ -179,7 +175,7 @@
 
   <!-- NEEDS YOU -->
   <div>
-    <p class="cap"><b>Needs you</b> — same four sessions, one flat list. No repo headers, no child indent, no ops/sandbox pins: those groupings exist to give a repo tree its shape, and there is no tree here.</p>
+    <p class="cap"><b>Needs you</b> — same four sessions, one flat list, and <b>nothing above it</b>. No repo headers, no child indent, no ops/sandbox pins, no mode band: those groupings exist to give a repo tree its shape, and there is no tree here.</p>
     <div class="side">
       <div class="hdr">
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span>
@@ -188,7 +184,6 @@
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span>
       </div>
-      <div class="mode">Needs you <span class="n">4</span><span class="exit">Show all</span></div>
       <div class="scroll">
         <div class="it edge sel" style="--rc:var(--repo-6)"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="r-broken">CI fix failed ×3</span><span class="chip"><span class="dot"></span>shipit</span><span class="when">14m</span></span></span></div>
         <div class="it edge" style="--rc:var(--repo-6)"><span class="prico none"></span><span class="body"><span class="ttl">Mobile composer overflow</span><span class="meta"><span class="r-wait">Waiting for your input</span><span class="chip"><span class="dot"></span>shipit</span><span class="when">1h</span></span></span></div>
@@ -230,7 +225,6 @@
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span>
       </div>
-      <div class="mode">Needs you <span class="n">3</span><span class="exit">Show all</span></div>
       <div class="scroll">
         <div class="it edge sel" style="--rc:var(--repo-6)"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="r-broken">CI fix failed ×3</span><span class="chip"><span class="dot"></span>shipit</span><span class="when">14m</span></span></span></div>
         <div class="it edge settled" style="--rc:var(--repo-6)"><span class="prico none"></span><span class="body"><span class="ttl">Mobile composer overflow</span><span class="meta"><span class="r-done">Agent picked it up</span><span class="chip"><span class="dot"></span>shipit</span><span class="when">now</span></span></span></div>
@@ -251,7 +245,6 @@
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span>
       </div>
-      <div class="mode">Needs you <span class="n">9</span><span class="exit">Show all</span></div>
       <div class="scroll">
         <div class="it edge" style="--rc:var(--repo-11)"><span class="prico none"></span><span class="body"><span class="ttl">Issue tracker filters</span><span class="meta"><span class="r-blocked">Needs your approval</span><span class="chip"><span class="dot"></span>shipit</span><span class="when">2m</span></span></span></div>
         <div class="it edge" style="--rc:var(--repo-6)"><span class="prico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/><path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg></span><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="r-broken">CI fix failed ×3</span><span class="chip"><span class="dot"></span>shipit</span><span class="when">14m</span></span></span></div>
@@ -268,7 +261,7 @@
   </div>
 
   <div>
-    <p class="cap"><b>Empty</b> — inbox zero. The badge disappears from the header in this state, so the All view carries no permanent amber mark.</p>
+    <p class="cap"><b>Empty</b> — inbox zero. The badge disappears from the header in this state, so the All view carries no permanent amber mark. The icon stays lit, because you are still in the view.</p>
     <div class="side">
       <div class="hdr">
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span>
@@ -277,7 +270,6 @@
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span>
       </div>
-      <div class="mode zero">Needs you <span class="n">0</span><span class="exit">Show all</span></div>
       <div class="empty">
         <span style="color:var(--success)"><svg width="30" height="30" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="8" cy="8" r="6.6"/><path d="M4.8 8.3 7 10.5l4.2-4.6"/></svg></span>
         <p>Nothing needs you</p>
@@ -306,7 +298,6 @@
   <div class="th">
     <div class="side">
       <div class="hdr" style="height:34px"><span class="ico" style="width:22px;height:22px"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sp"></span><span class="ico" style="width:22px;height:22px"><svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div>
-      <div class="mode" style="padding:4px 8px;font-size:9px">Needs you <span class="n">2</span></div>
       <div class="scroll">
         <div class="it edge" style="--rc:var(--repo-6)"><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="r-broken">CI failed</span></span></span></div>
         <div class="grp" style="--gc:var(--repo-6);font-size:9px">shipit</div>
@@ -319,7 +310,6 @@
   <div class="th">
     <div class="side">
       <div class="hdr" style="height:34px"><span class="ico" style="width:22px;height:22px"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sp"></span><span class="ico" style="width:22px;height:22px"><svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div>
-      <div class="mode" style="padding:4px 8px;font-size:9px">Needs you <span class="n">4</span></div>
       <div class="scroll">
         <div class="band blocked">Blocked <span>1</span><hr/></div>
         <div class="it edge" style="--rc:var(--repo-11)"><span class="body"><span class="ttl">Issue tracker filters</span></span></div>
@@ -335,7 +325,6 @@
   <div class="th">
     <div class="side">
       <div class="hdr" style="height:34px"><span class="ico" style="width:22px;height:22px"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sp"></span><span class="ico" style="width:22px;height:22px"><svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div>
-      <div class="mode" style="padding:4px 8px;font-size:9px">Needs you <span class="n">3</span></div>
       <div class="scroll">
         <div class="it edge" style="--rc:var(--repo-11)"><span class="body"><span class="ttl" style="color:var(--attention)">Approve a tool call</span><span class="meta">Issue tracker filters</span></span></div>
         <div class="it edge" style="--rc:var(--repo-6)"><span class="body"><span class="ttl" style="color:var(--error)">CI fix failed ×3</span><span class="meta">Repo group separation</span></span></div>
@@ -348,7 +337,6 @@
   <div class="th">
     <div class="side">
       <div class="hdr" style="height:34px"><span class="ico" style="width:22px;height:22px"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span><span class="sp"></span><span class="ico" style="width:22px;height:22px"><svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span></div>
-      <div class="mode" style="padding:4px 8px;font-size:9px">Needs you <span class="n">2</span></div>
       <div class="scroll">
         <div class="it edge" style="--rc:var(--repo-6)"><span class="body"><span class="ttl">Repo group separation</span><span class="meta"><span class="r-broken">CI fix failed ×3</span></span></span></div>
         <div class="it edge" style="--rc:var(--repo-3)"><span class="body"><span class="ttl">Bump vite to 7.1.4</span><span class="meta"><span class="r-wait">Waiting for your input</span></span></span></div>
@@ -361,6 +349,7 @@
 <h2>Notes carried by the drawings</h2>
 <div class="legend">
   <p><b>Attention is not redefined</b> (req 9). The view filters on <code>computeAttentionReason() !== null</code> — the function that already drives the amber rail, the row tooltip and notifications. A session is in the list for exactly the reason the tooltip already gives, so the two surfaces cannot disagree, and no new state, store or server field is introduced.</p>
+  <p><b>Nothing sits above the list.</b> An earlier draft put an amber <em>“NEEDS YOU · 4 — Show all”</em> strip under the header. It is cut. It costs about 28 px — the same height that ruled out the segmented control, so it gave back the one thing the icon was chosen to save — and everything on it was already on screen: the count is on the badge, the exit is a second click on the same icon, and every row states its own reason, which no row in the All view does. The lit icon is the whole mode indicator, so it is drawn as a filled amber chip rather than a faint tint.</p>
   <p><b>The amber rail is dropped inside the view.</b> When every row needs attention, a per-row marker carries no information — it degrades to a texture. The reason word on the meta line does the work instead, and the right edge frees up.</p>
   <p><b>Repo identity survives without repo headers</b> as the docs/254 color on the row’s left edge plus a text chip. Left is free precisely because docs/187 chose the right edge for attention.</p>
   <p><b>Stability has two halves</b> (req 7–8): the sort key never changes, <em>and</em> a row that stops qualifying holds its slot until the view is re-entered. Either one alone still lets the list move under the cursor.</p>

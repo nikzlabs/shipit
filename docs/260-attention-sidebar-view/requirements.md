@@ -30,6 +30,8 @@ terms. Design lives in `plan.md` (not written yet); the visual reference is
 9. "Needs attention" means the same thing in this view as everywhere else in the
    product — there is one definition, shared with the row marker, the row tooltip
    and notifications.
+10. The icon is the only chrome the second view adds. Nothing else appears above
+    the list — no band, no label, no separate exit control.
 
 ## Open questions
 
@@ -55,6 +57,13 @@ terms. Design lives in `plan.md` (not written yet); the visual reference is
   place, shouldn't move to the separate section."* → requirement 8. Both the
   immediate removal (mockup C3) and the "Settled just now" section that the first
   C2 drawing used are out: the row stays exactly where it is.
+- **2026-08-10 · Is there a band above the list?** No. Nik, on the first
+  drawing's amber "Needs you · 4 — Show all" strip: *"why do we need a separate
+  bar? I thought I chose the option with an icon only."* → requirement 10. The
+  band cost ~28 px, which is the height that ruled out the segmented control, and
+  it repeated what was already on screen: the count is on the badge, the exit is
+  a second click on the icon, and every row states its own reason. The lit icon
+  is now the whole mode indicator.
 - **2026-08-10 · Q6 — is the existing attention rule too broad for this view?**
   Nik: *"Keep it, one definition."* → requirement 9. An agent idle on an open PR
   still counts, and no view-specific rule is introduced.
