@@ -114,7 +114,12 @@ export interface RecordedTurn {
    * got before.
    */
   costSource?: TurnCostSource;
-  /** Absent = a `legacy` row: written before ShipIt tracked where money went. */
+  /**
+   * Absent = a `legacy` row: nothing records where this usage went. Written
+   * before ShipIt tracked it, or — since planning#343 — written now by work
+   * that genuinely resolved no model, which is the same absence reached from
+   * the other direction.
+   */
   attribution?: TurnAttribution;
   /**
    * docs/252 phase 3 — the harness's running conversation total, when it
@@ -185,14 +190,21 @@ interface SplitRow {
   models: string | null;
 }
 
-/** The literal key of the one bucket for rows recorded before attribution existed. */
+/**
+ * The literal key of the one bucket for rows that carry no attribution.
+ *
+ * Named for its founding case — rows recorded before attribution existed — but
+ * it is **not** purely historical and does not drain on its own (req 16,
+ * planning#343). Work that resolves no model writes into it going forward: the
+ * unknown is what defines the bucket, not when the row was written.
+ */
 export const LEGACY_GROUP_KEY = "legacy";
 
 /**
  * Fold rate-set buckets into one group per `(service, mode)`, plus the legacy
  * bucket. Sorted so the wire shape is stable: subscriptions first (they are the
- * allowance side of the split), then metered, then legacy last — it is the
- * group that drains on its own.
+ * allowance side of the split), then metered, then legacy last — it is the one
+ * group that says nothing about where the usage went.
  */
 function foldSplitRows(rows: SplitRow[]): UsageGroup[] {
   const byKey = new Map<string, UsageGroup & { modelSet: Set<string> }>();

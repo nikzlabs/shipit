@@ -200,6 +200,12 @@ export function usageTotalsFrom(groups: readonly UsageGroup[]): UsageTotals {
  *    long-lived session does not silently lose a total the user has already
  *    seen; it is not merged into either figure above.
  *
+ * The legacy bucket also takes forward-generated rows now (req 16,
+ * planning#343 — work that resolved no model), so its *volume* is no longer only
+ * historical. Those rows are unpriced and add nothing here. `earlier` remains
+ * the label for a legacy dollar figure of unknown provenance; it is a statement
+ * about what can be said of the money, not a guarantee of when it was spent.
+ *
  * `null` when there is nothing to show at all.
  */
 export type RunningFigureKind = "metered" | "at-api-rates" | "earlier";

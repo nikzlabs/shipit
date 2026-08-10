@@ -30,6 +30,7 @@ import type { AgentId, AgentEvent, AgentProcess, RuntimeMode } from "../shared/t
 import type { AgentHomeResolver } from "../shared/agent-home.js";
 import type { LocalAgentFactory } from "./local-agent-home.js";
 import type { GenerateText } from "./non-turn-model.js";
+import { recordNonTurnUsage, type NonTurnTelemetry } from "./services/non-turn-work.js";
 
 /**
  * Runtime mode for the orchestrator. Selected via the `RUNTIME_MODE` env var.
@@ -271,6 +272,91 @@ export interface ManagerSet {
   reviewStore: FileReviewStore;
   egressAllowlistStore: EgressAllowlistStore;
   presentStore: PresentStore;
+}
+
+/**
+ * The pre-feature text generator: spawn the install's default harness in
+ * process and return what it said.
+ *
+ * Reachable only where an in-process agent exists — `RUNTIME_MODE=local`. In
+ * container production agents live inside session containers, so `agentFactory`
+ * is undefined and this degrades to the empty string, which is the behaviour
+ * every caller has always normalized into its own fallback text.
+ *
+ * **docs/252 phase 7 (planning#343) — it records its own usage row.** This is
+ * also `makeNonTurnGenerateText`'s `fallback`: the path non-turn work takes when
+ * it resolves no model at all. Under local mode that spawns a real CLI, so it is
+ * the second producer of the unattributable volume req 16 sends to the legacy
+ * group, and dropping its telemetry would be the same silent loss the naming
+ * path had. The recording has to live here rather than in the caller, which sees
+ * only a returned string and cannot tell whether a CLI ran.
+ *
+ * Unattributed and **unpriced** by construction: `recordNonTurnUsage` is handed
+ * no target because there is none, so the harness's own dollar figure is
+ * discarded rather than written as a price. Recorded only when the caller named
+ * a session — the post-interrupt commit message names none and has nothing to
+ * attribute to.
+ */
+export function makeInProcessGenerateText(deps: {
+  agentFactory: ((agentId: AgentId) => AgentProcess) | undefined;
+  defaultAgentId: AgentId;
+  usageManager: UsageManager;
+}): GenerateText {
+  const { agentFactory, defaultAgentId, usageManager } = deps;
+  return (prompt, cwd, opts) => {
+    if (!agentFactory) {
+      // No in-process agent available — return empty to degrade gracefully.
+      return Promise.resolve("");
+    }
+    return new Promise<string>((resolve, reject) => {
+      const agent = agentFactory(defaultAgentId);
+      let text = "";
+      let telemetry: NonTurnTelemetry | undefined;
+      agent.on("event", (event: AgentEvent) => {
+        if (event.type === "agent_assistant") {
+          for (const block of event.content) {
+            if (block.type === "text") text += block.text;
+          }
+        }
+        if (event.type === "agent_result") {
+          telemetry = {
+            durationMs: event.durationMs ?? 0,
+            ...(event.cost ? { costUsd: event.cost.totalUsd } : {}),
+            ...(event.tokens
+              ? {
+                  inputTokens: event.tokens.input,
+                  outputTokens: event.tokens.output,
+                  ...(event.tokens.cacheRead !== undefined ? { cacheReadTokens: event.tokens.cacheRead } : {}),
+                  ...(event.tokens.cacheWrite !== undefined ? { cacheCreateTokens: event.tokens.cacheWrite } : {}),
+                }
+              : {}),
+          };
+        }
+      });
+      agent.on("done", (exitCode: number) => {
+        // Ahead of the resolve/reject branch: the tokens were spent either way,
+        // and a run that produced no usable text still consumed them.
+        if (opts?.sessionId && telemetry) {
+          recordNonTurnUsage(
+            { usageManager },
+            {
+              sessionId: opts.sessionId,
+              harnessId: defaultAgentId,
+              purpose: opts.purpose ?? "pr-description",
+              telemetry,
+            },
+          );
+        }
+        if (exitCode === 0 || text.length > 0) {
+          resolve(text);
+        } else {
+          reject(new Error(`Agent process exited with code ${  exitCode}`));
+        }
+      });
+      agent.on("error", (err: Error) => reject(err));
+      agent.run({ prompt, cwd, permissionMode: "auto" });
+    });
+  };
 }
 
 /**
@@ -526,34 +612,9 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
 
   // ---- Text generation (AI-powered features) ----
   // Tests inject a stub. In production, agentFactory is unavailable (agents
-  // live inside session containers), so the default uses agentFactory only
-  // when provided, otherwise returns empty string (feature gracefully degrades).
-  const generateText = deps.generateText ?? ((prompt: string, cwd: string): Promise<string> => {
-    if (!agentFactory) {
-      // No in-process agent available — return empty to degrade gracefully.
-      return Promise.resolve("");
-    }
-    return new Promise((resolve, reject) => {
-      const agent = agentFactory(defaultAgentId);
-      let text = "";
-      agent.on("event", (event: AgentEvent) => {
-        if (event.type === "agent_assistant") {
-          for (const block of event.content) {
-            if (block.type === "text") text += block.text;
-          }
-        }
-      });
-      agent.on("done", (exitCode: number) => {
-        if (exitCode === 0 || text.length > 0) {
-          resolve(text);
-        } else {
-          reject(new Error(`Agent process exited with code ${  exitCode}`));
-        }
-      });
-      agent.on("error", (err: Error) => reject(err));
-      agent.run({ prompt, cwd, permissionMode: "auto" });
-    });
-  });
+  // live inside session containers), so the default degrades to empty string.
+  const generateText: GenerateText = deps.generateText
+    ?? makeInProcessGenerateText({ agentFactory, defaultAgentId, usageManager });
 
   return {
     defaultAgentId,

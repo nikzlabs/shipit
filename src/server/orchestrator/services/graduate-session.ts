@@ -444,10 +444,24 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
     // req 16 — naming can now be pointed at a metered service, so what it spent
     // gets a row of its own rather than disappearing. Recorded whether or not
     // the title parsed: the tokens were consumed either way.
-    if (target && result.usage) {
+    //
+    // Recorded whether or not a target resolved, too (planning#343). With no
+    // eligible model naming still runs — on the session's own harness, unshaped
+    // — and both harnesses report their tokens. Gating the row on `target`
+    // dropped them: real volume, measured and then discarded, invisible by
+    // construction because nobody notices a row that was never written. Req 16
+    // puts it in the legacy group, unattributed and unpriced, which is what
+    // `recordNonTurnUsage` writes when it is handed no target.
+    if (result.usage) {
       recordNonTurnUsage(
         { ...(usageManager ? { usageManager } : {}) },
-        { sessionId, target, purpose: "session-naming", telemetry: result.usage },
+        {
+          sessionId,
+          harnessId: namingHarness,
+          ...(target ? { target } : {}),
+          purpose: "session-naming",
+          telemetry: result.usage,
+        },
       );
     }
     return result;

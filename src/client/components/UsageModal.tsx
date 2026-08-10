@@ -370,7 +370,18 @@ function worstQuota(
  *
  * The legacy row is colourless and unlabelled by mode on purpose: tinting it as
  * plan or metered would assert the very attribution the bucket exists to admit
- * is missing.
+ * is missing. Its name says what is missing rather than when the row was
+ * written, because the bucket is no longer purely historical (req 16,
+ * planning#343): work that resolves no model writes into it going forward.
+ *
+ * Those forward rows are recorded **unpriced** (`non-turn-work.ts`), so they add
+ * volume and no money. A bucket holding nothing else therefore has no figure to
+ * print, and prints "Unpriced" rather than a `$0.00` that would assert the work
+ * was free. When it *does* carry money, "earlier accounting" is the honest label
+ * for a dollar figure of unknown provenance — which is not a claim that every
+ * such dollar is pre-feature: a sub-agent consult whose stored default predates
+ * the triple also writes an unattributed row and keeps the harness's own figure
+ * (`services/sub-agent.ts`). That is phase 3's shape, unchanged here.
  */
 function UsageGroupRow({
   group,
@@ -381,6 +392,10 @@ function UsageGroupRow({
 }) {
   const quota = worstQuota(group, limits);
   const legacy = group.kind === "legacy";
+  // `$0.00` here would assert the work was free — the one thing req 16 exists to
+  // stop the totals saying. A legacy bucket holding only unpriced rows has no
+  // dollar figure to show, so it says so instead of printing a zero.
+  const unpriced = legacy && group.costUsd === 0;
   return (
     <div
       className={`flex items-start gap-3 text-sm py-1.5 border-b border-(--color-border-primary) last:border-0 ${
@@ -392,7 +407,7 @@ function UsageGroupRow({
       <span className="flex-1 min-w-0">
         <span className="flex items-center gap-2 flex-wrap">
           <span className="text-(--color-text-primary)">
-            {legacy ? "Before ShipIt tracked this" : serviceLabel(group.serviceId!)}
+            {legacy ? "No service recorded" : serviceLabel(group.serviceId!)}
           </span>
           <span className="text-[10px] px-1.5 py-px rounded-full border border-(--color-border-primary) text-(--color-text-secondary)">
             {legacy ? "Unattributed" : billingModeLabel(group.billingMode!)}
@@ -434,9 +449,11 @@ function UsageGroupRow({
           </>
         ) : (
           <>
-            <span className="text-(--color-text-primary)">{formatCost(group.costUsd)}</span>
+            <span className="text-(--color-text-primary)">
+              {unpriced ? "Unpriced" : formatCost(group.costUsd)}
+            </span>
             <span className="block text-[10px] text-(--color-text-secondary)">
-              {legacy ? "earlier accounting" : "metered"}
+              {unpriced ? "no rates recorded" : legacy ? "earlier accounting" : "metered"}
             </span>
           </>
         )}

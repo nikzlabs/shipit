@@ -268,7 +268,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     // commit message, which has no session to attribute to and no notice to
     // raise. It keeps app-di's generator, which is the in-process agent in local
     // mode and the degrade-to-empty default otherwise.
-    fallback: (prompt, cwd) => generateText(prompt, cwd),
+    // `opts` forwarded, not dropped: in local mode this generator spawns a real
+    // CLI, so it needs the session to record the unattributed row planning#343
+    // is about (`app-di.ts`).
+    fallback: (prompt, cwd, opts) => generateText(prompt, cwd, opts),
   });
 
   // docs/184: compose services no longer receive the user's platform-managed
