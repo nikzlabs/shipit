@@ -85,15 +85,17 @@ function runAudit(): Record<string, AuditVulnerability> {
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], cwd: repoRoot },
     );
   } catch (err) {
-    // `npm audit` exits non-zero precisely when it finds something, so a
-    // non-zero exit is the normal path here — the JSON is still on stdout.
-    // Only treat it as a failure when there is no parseable payload.
-    const e = err as { stdout?: string; message?: string };
-    raw = e.stdout ?? "";
-    if (!raw.trim()) {
-      console.error(`npm audit failed to run: ${e.message ?? "unknown error"}`);
-      process.exit(2);
-    }
+    // `--audit-level=none` means findings never make npm exit non-zero
+    // (verified: a tree with 9 vulnerabilities still exits 0). So a non-zero
+    // exit here is always a genuine tool failure, never "it found something" —
+    // and salvaging a partial report from it would risk auditing less than the
+    // whole tree while reporting a pass.
+    const e = err as { message?: string };
+    console.error(`npm audit failed to run: ${e.message ?? "unknown error"}`);
+    console.error(
+      "  Refusing to pass on an audit that did not run — this is not a clean tree.",
+    );
+    process.exit(2);
   }
 
   let parsed: {
@@ -142,18 +144,54 @@ function loadAllowlist(): AllowlistEntry[] {
     console.error(".audit-allowlist.json must contain a JSON array.");
     process.exit(2);
   }
+  // Validate shape strictly, not just truthiness. A loose check here is a
+  // false-PASS vector: `"expires": "never"` or `true` compares as unexpired
+  // against an ISO date, so a malformed entry would suppress a real high
+  // advisory forever. Every field has to be the exact shape the comparison
+  // below assumes.
   const entries = parsed as AllowlistEntry[];
-  const malformed = entries.filter(
-    (e) => !e?.advisory || !e?.reason || !e?.expires,
-  );
-  if (malformed.length > 0) {
+  const problems: string[] = [];
+  for (const e of entries) {
+    const label = JSON.stringify(e);
+    if (!e || typeof e !== "object") {
+      problems.push(`${label} — must be an object`);
+      continue;
+    }
+    if (typeof e.advisory !== "string" || !GHSA_ID.test(e.advisory)) {
+      problems.push(`${label} — "advisory" must be a GHSA id (GHSA-xxxx-xxxx-xxxx)`);
+    }
+    if (typeof e.reason !== "string" || e.reason.trim() === "") {
+      problems.push(`${label} — "reason" must be a non-empty string`);
+    }
+    if (typeof e.expires !== "string" || !isCalendarDate(e.expires)) {
+      problems.push(`${label} — "expires" must be a real calendar date, YYYY-MM-DD`);
+    }
+  }
+  if (problems.length > 0) {
     console.error(
-      `\n${malformed.length} malformed .audit-allowlist.json entr(ies) — each needs "advisory", "reason", and "expires":\n`,
+      `\n${problems.length} invalid .audit-allowlist.json entr(ies):\n`,
     );
-    for (const e of malformed) console.error(`  ${JSON.stringify(e)}`);
+    for (const p of problems) console.error(`  ${p}`);
     process.exit(2);
   }
   return entries;
+}
+
+const GHSA_ID = /^GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}$/i;
+
+/**
+ * True only for a canonical YYYY-MM-DD that names a real day. The lexicographic
+ * `expires < today` comparison below is sound only for canonical dates, so
+ * "2026-8-09" and "2026-02-31" have to be rejected here rather than silently
+ * mis-compared.
+ */
+function isCalendarDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return (
+    !Number.isNaN(parsed.getTime()) &&
+    parsed.toISOString().slice(0, 10) === value
+  );
 }
 
 /** Pull the GHSA id out of an advisory URL (…/advisories/GHSA-xxxx-…). */
@@ -181,14 +219,36 @@ for (const vuln of Object.values(vulnerabilities)) {
 }
 
 const failThreshold = SEVERITY_RANK[FAIL_LEVEL];
+
+// Sanity-check the report shape. npm reporting vulnerabilities while yielding
+// no advisory objects at all means `via` is not the shape this parser assumes —
+// a schema change would otherwise read as "nothing found" and pass.
+if (Object.keys(vulnerabilities).length > 0 && advisories.size === 0) {
+  console.error(
+    `npm audit reported ${Object.keys(vulnerabilities).length} vulnerable package(s) but no advisory records could be read.`,
+  );
+  console.error(
+    "  The report schema is not what this script expects — refusing to report a pass.",
+  );
+  process.exit(2);
+}
+
+// An unrecognised severity ranks as unknown, and `undefined >= threshold` is
+// false — which would silently drop it. Fail closed instead: anything this
+// script cannot rank is treated as blocking.
 const relevant = [...advisories.values()].filter(
-  (a) => SEVERITY_RANK[a.severity] >= failThreshold,
+  (a) => (SEVERITY_RANK[a.severity] ?? Number.MAX_SAFE_INTEGER) >= failThreshold,
 );
 
 const allowedById = new Map(allowlist.map((e) => [e.advisory, e]));
-const expired: AllowlistEntry[] = [];
 const blocking: Array<AuditAdvisory & { id: string }> = [];
 const suppressed: Array<{ advisory: AuditAdvisory & { id: string }; entry: AllowlistEntry }> = [];
+
+// Expiry is a property of the entry, not of what is reported today. Checking it
+// only for currently-blocking advisories would let an expired entry sit
+// unnoticed while its advisory is dormant or below the threshold, and then
+// silently suppress it the day it comes back.
+const expired = allowlist.filter((e) => e.expires < today);
 
 for (const advisory of relevant) {
   const entry = allowedById.get(advisory.id);
@@ -196,15 +256,13 @@ for (const advisory of relevant) {
     blocking.push(advisory);
     continue;
   }
-  if (entry.expires < today) {
-    expired.push(entry);
-    continue;
-  }
+  if (entry.expires < today) continue; // already counted in `expired`
   suppressed.push({ advisory, entry });
 }
 
 // An allowlist entry that no longer matches anything is dead weight, but it is
-// not a reason to fail an unrelated PR — say so and move on.
+// not a reason to fail an unrelated PR — say so and move on. (An expired one is
+// reported as expired above regardless.)
 const stale = allowlist.filter((e) => !advisories.has(e.advisory));
 
 console.log(
