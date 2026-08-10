@@ -103,6 +103,8 @@ export class ClaudeLimitsProvider implements LimitsProvider {
   private lockedUntil = new Map<string, number>();
   /** Single-flight guard so concurrent refreshes share one request, per route. */
   private inFlight = new Map<string, Promise<LimitsRefreshResult>>();
+  /** Invalidates responses that started before a route's credential changed. */
+  private routeGeneration = new Map<string, number>();
 
   private listAccountRouteIds: (() => string[]) | undefined;
   private credentialDirForRoute: ((routeId: string) => string | undefined) | undefined;
@@ -147,6 +149,8 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     this.eventLatest.delete(routeId);
     this.apiLatest.delete(routeId);
     this.lockedUntil.delete(routeId);
+    this.inFlight.delete(routeId);
+    this.routeGeneration.set(routeId, (this.routeGeneration.get(routeId) ?? 0) + 1);
   }
 
   async fetch(routeId: string): Promise<SubscriptionLimits | null> {
@@ -216,14 +220,16 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     }
     const existing = this.inFlight.get(routeId);
     if (existing) return existing;
-    const run = this.doRefresh(routeId).finally(() => {
-      this.inFlight.delete(routeId);
+    const generation = this.routeGeneration.get(routeId) ?? 0;
+    const request = this.doRefresh(routeId, generation);
+    const run = request.finally(() => {
+      if (this.inFlight.get(routeId) === run) this.inFlight.delete(routeId);
     });
     this.inFlight.set(routeId, run);
     return run;
   }
 
-  private async doRefresh(routeId: string): Promise<LimitsRefreshResult> {
+  private async doRefresh(routeId: string, generation: number): Promise<LimitsRefreshResult> {
     // Account-scoped: `getAccessToken()` with no dir prefers ANTHROPIC_AUTH_TOKEN
     // and otherwise reads the ROOT config dir, so passing nothing here fetched
     // the wrong subscription's usage (or none at all, leaving the pill at "—").
@@ -264,6 +270,9 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     }
 
     if (response.status === 429) {
+      if ((this.routeGeneration.get(routeId) ?? 0) !== generation) {
+        return { routeId, outcome: "skipped" };
+      }
       const until = this.now() + retryAfterMs(response);
       this.lockedUntil.set(routeId, until);
       console.warn(
@@ -288,6 +297,9 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     if (!parsed) {
       console.warn("[claude-limits] /usage unexpected payload shape");
       return { routeId, outcome: "failed", detail: "unexpected /usage payload" };
+    }
+    if ((this.routeGeneration.get(routeId) ?? 0) !== generation) {
+      return { routeId, outcome: "skipped" };
     }
     // A successful fetch clears any prior lockout for this route.
     this.lockedUntil.delete(routeId);

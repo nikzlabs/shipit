@@ -1003,6 +1003,19 @@ export class ProviderAccountManager {
     return this.get(serviceId, accountId) ?? null;
   }
 
+  /**
+   * Clear a hard-exhaustion stamp after the credential behind an account row
+   * has been replaced by a successful scoped sign-in. The stamp belongs to
+   * the old credential, not to the stable row that holds labels and routing
+   * preferences.
+   */
+  clearAccountExhaustion(serviceId: string, accountId: string): CredentialRoute {
+    const account = this.require(serviceId, accountId);
+    if (account.exhaustedUntil === null || account.exhaustedUntil === undefined) return account;
+    this.credentialStore.upsertCredentialRoute({ ...account, exhaustedUntil: null });
+    return this.require(serviceId, accountId);
+  }
+
   /** Overwrite the persisted status of an account (idempotent). */
   setAccountStatus(serviceId: string, accountId: string, status: CredentialStatus): CredentialRoute {
     const account = this.require(serviceId, accountId);

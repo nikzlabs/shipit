@@ -54,6 +54,7 @@
 
 ## Phase 2 — Inline Quota Per Account
 
+- [x] Clear credential-owned bench and quota state before a reauthenticated account row becomes selectable, then seed only the replacement account.
 - [x] Change `SubscriptionLimitsMap` wire shape to provider -> account-or-route -> limits.
 - [x] Update `LimitsPoller` cache, state, delta detection, and SSE broadcast for account-keyed snapshots.
 - [x] Poll Claude quota per stored Claude provider account.

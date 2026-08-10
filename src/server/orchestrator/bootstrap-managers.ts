@@ -659,6 +659,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     runnerRegistry,
   });
 
+  // Filled after the agent limits providers are indexed below. Auth events
+  // cannot fire until bootstrap returns, so the callback passed into event
+  // wiring always observes the initialized registry.
+  let limitsRegistry: LimitsRegistry | null = null;
+
   // ---- Event wiring (deployment + auth) ----
   // `authManagers` map is built above the runner-registry construction (see
   // docs/155 Phase 2) so system-turn listeners can pick it up.
@@ -671,6 +676,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     // stamp as well as `canRunTurns`, and these handlers are exactly where a
     // fresh install first becomes runnable.
     credentialStore,
+    onCredentialReplaced: (agentId, accountId) => {
+      const provider = limitsProviders.get(agentId);
+      if (!provider) return;
+      limitsRegistry?.markSignedOut(limitsModeKey(provider), accountId);
+    },
     // docs/179 §4 — never let the post-sign-in re-push rewrite credential
     // topology under a live CLI process.
     hasLiveAgent: (sessionId) => sessionHasLiveAgent(runnerRegistry, sessionId),
@@ -820,7 +830,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const limitsProvidersByMode = new Map(
     [...limitsProviders.values()].map((p) => [limitsModeKey(p), p]),
   );
-  const limitsRegistry = !isTestMode
+  limitsRegistry = !isTestMode
     ? new LimitsRegistry({ providers: limitsProvidersByMode, sseBroadcast })
     : null;
   if (limitsRegistry) {
@@ -839,12 +849,18 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       if (!provider) continue;
       const modeKey = limitsModeKey(provider);
       mgr.on("complete", () => {
+        // Every supported flow is account-scoped. Ignore a defensive second
+        // completion after the auth manager has cleared its scope; fanning a
+        // seed across all accounts would spend unrelated refresh budgets and
+        // cannot identify which credential was replaced.
+        const accountId = mgr.getActiveAccountId() ?? undefined;
+        if (!accountId) return;
         limitsRegistry.markAuthRefreshed(modeKey);
         // docs/161 — seed one `/api/oauth/usage` baseline per sign-in so the
         // Claude pill shows a low-usage number without waiting for the user to
         // click refresh. Self-skips if an API snapshot already exists and is a
         // no-op for providers without an on-demand path (Codex).
-        void limitsRegistry.refreshNow(modeKey, "seed");
+        void limitsRegistry.refreshNow(modeKey, "seed", accountId);
       });
     }
   }

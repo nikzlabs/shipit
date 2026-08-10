@@ -1107,7 +1107,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     getPendingPayload() { return null; }
   }
 
-  function setup() {
+  function setup(onCredentialReplaced?: (agentId: AgentId, accountId: string) => void) {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-wire-auth-"));
     const credentialStore = new CredentialStore(tmp);
     const providerAccountManager = new ProviderAccountManager({ credentialsDir: tmp, credentialStore });
@@ -1124,6 +1124,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
       credentialsDir: tmp,
       sessionManager,
       credentialStore,
+      onCredentialReplaced,
     });
     return { providerAccountManager, mgr, events, account };
   }
@@ -1140,6 +1141,27 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("ready");
     const complete = events.find((e) => e.event === "agent_auth_complete");
     expect(complete?.data).toMatchObject({ agentId: "claude", accountId: account.id });
+  });
+
+  it("clears the replaced credential's exhaustion before making the row selectable", () => {
+    let statusDuringInvalidation: string | undefined;
+    const managerRef: { current?: ProviderAccountManager } = {};
+    const rig = setup((_agentId, accountId) => {
+      statusDuringInvalidation = managerRef.current?.get("anthropic", accountId)?.status;
+    });
+    managerRef.current = rig.providerAccountManager;
+    const until = Date.now() + 3_600_000;
+    rig.providerAccountManager.markAccountExhausted("anthropic", rig.account.id, until);
+    rig.mgr.activeAccountId = rig.account.id;
+
+    rig.mgr.emit("complete");
+
+    expect(statusDuringInvalidation).not.toBe("ready");
+    expect(rig.providerAccountManager.get("anthropic", rig.account.id)).toMatchObject({
+      status: "ready",
+      exhaustedUntil: null,
+    });
+    expect(rig.providerAccountManager.selectRouteForTurn("anthropic")?.id).toBe(rig.account.id);
   });
 
   /** Write what a completed Claude sign-in leaves in an account's root. */
