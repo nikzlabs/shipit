@@ -931,6 +931,7 @@ export function MessageInput({
                   onAgentChange={onAgentChange}
                   hasActiveSession={hasActiveSession}
                   disabled={disabled || isLoading}
+                  compactTrigger={isMobile}
                 />
               </div>
             )}
