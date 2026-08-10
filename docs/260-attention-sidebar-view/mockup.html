@@ -129,6 +129,12 @@
   .swcell .z{transform:scale(3)}
   .swcell h4{margin:8px 0 2px;font-size:11px;font-weight:600;color:var(--text-1)}
   .swcell p{margin:0;font-size:11px;color:var(--text-3);line-height:1.5}
+  .swdemo.wide .swcell{width:214px}
+  .swdemo.wide .tile{height:96px}
+  .swdemo.wide .z{transform:scale(2.4)}
+  .swcell.pick .tile{border-color:rgba(34,197,94,.45)}
+  .swcell .tag{font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+    color:var(--success);background:rgba(34,197,94,.14);border-radius:8px;padding:1px 5px}
   .swcell.bad .tile{border-color:rgba(239,68,68,.4)}
   .swcell.bad h4{color:var(--error)}
   /* the rejected treatment, kept so the defect is visible rather than described */
@@ -164,36 +170,82 @@
 <p class="lede">A second sidebar view that drops the repo tree and lists only the sessions whose ball is in the user’s court. Attention is <b>not a new signal</b> — it is <code>computeAttentionReason()</code> (<code>useAttentionInfo.ts</code>), already the single source of truth for the amber rail, the row tooltip and notifications (req 9).</p>
 <p class="note">Drawn as decided: header icon + count badge (req 4–5) · one flat list, stable order (req 6–7) · a row that stops needing you settles where it stands (req 8). Rejected alternatives are kept at thumbnail size at the foot.</p>
 
+<h2>Which glyph?</h2>
+<p class="note">The first drawing used a warning circle. It is the wrong word twice over: <code>WarningCircleIcon</code> already appears about forty times across the client for genuine warnings, and “something is wrong” is not what the switch means — most of the list is an agent quietly waiting for you. Five candidates from the pack we already ship (<code>@phosphor-icons/react</code>), each drawn off the real path data, off state then on state. None of the five is used for anything else in the app.</p>
+<div class="swdemo wide">
+
+  <div class="swcell pick">
+    <div class="tile"><span class="z" style="display:inline-flex;gap:8px;align-items:center">
+      <span class="sw"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M216,80H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8V96A16,16,0,0,0,216,80ZM66.55,137.78,40,159.25V48H168v88H71.58A8,8,0,0,0,66.55,137.78ZM216,207.25l-26.55-21.47a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32Z"/></svg><span class="n">4</span></span>
+      <span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></svg><span class="n">4</span></span>
+    </span></div>
+    <h4>Chats &nbsp;<span class="tag">recommended</span></h4>
+    <p>A session <em>is</em> a chat. The glyph names the objects being listed, not what is wrong with them — and the singular <code>ChatCircle</code> already means “conversation” elsewhere in the app, so the plural reads as “several of those”.</p>
+  </div>
+  <div class="swcell">
+    <div class="tile"><span class="z" style="display:inline-flex;gap:8px;align-items:center">
+      <span class="sw"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M208,32H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32Zm0,16V152h-28.7A15.86,15.86,0,0,0,168,156.69L148.69,176H107.31L88,156.69A15.86,15.86,0,0,0,76.69,152H48V48Zm0,160H48V168H76.69L96,187.31A15.86,15.86,0,0,0,107.31,192h41.38A15.86,15.86,0,0,0,160,187.31L179.31,168H208v40Z"/></svg><span class="n">4</span></span>
+      <span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M208,32H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32Zm0,176H48V168H76.69L96,187.32A15.89,15.89,0,0,0,107.31,192h41.38A15.86,15.86,0,0,0,160,187.31L179.31,168H208v40Z"/></svg><span class="n">4</span></span>
+    </span></div>
+    <h4>Tray</h4>
+    <p>The inbox metaphor: a tray you work down to empty. Says <em>triage</em> rather than <em>sessions</em>, and pairs naturally with the “Nothing needs you” empty state.</p>
+  </div>
+  <div class="swcell">
+    <div class="tile"><span class="z" style="display:inline-flex;gap:8px;align-items:center">
+      <span class="sw"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M220.17,100,202.86,70a28,28,0,0,0-38.24-10.25,27.69,27.69,0,0,0-9,8.34L138.2,38a28,28,0,0,0-48.48,0A28,28,0,0,0,48.15,74l1.59,2.76A27.67,27.67,0,0,0,38,80.41a28,28,0,0,0-10.24,38.25l40,69.32a87.47,87.47,0,0,0,53.43,41,88.56,88.56,0,0,0,22.92,3,88,88,0,0,0,76.06-132Zm-6.66,62.64A72,72,0,0,1,81.62,180l-40-69.32a12,12,0,0,1,20.78-12L81.63,132a8,8,0,1,0,13.85-8L62,66A12,12,0,1,1,82.78,54L114,108a8,8,0,1,0,13.85-8L103.57,58h0a12,12,0,1,1,20.78-12l33.42,57.9a48,48,0,0,0-5.54,60.6,8,8,0,0,0,13.24-9A32,32,0,0,1,172.78,112a8,8,0,0,0,2.13-10.4L168.23,90A12,12,0,1,1,189,78l17.31,30A71.56,71.56,0,0,1,213.51,162.62ZM184.25,31.71A8,8,0,0,1,194,26a59.62,59.62,0,0,1,36.53,28l.33.57a8,8,0,1,1-13.85,8l-.33-.57a43.67,43.67,0,0,0-26.8-20.5A8,8,0,0,1,184.25,31.71ZM80.89,237a8,8,0,0,1-11.23,1.33A119.56,119.56,0,0,1,40.06,204a8,8,0,0,1,13.86-8,103.67,103.67,0,0,0,25.64,29.72A8,8,0,0,1,80.89,237Z"/></svg><span class="n">4</span></span>
+      <span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M219.31,98.46A88,88,0,1,1,67.08,186.77h0L26.15,115.88a16,16,0,0,1,27.69-16L72.4,132a8,8,0,0,0,13.86-8L47,56A16,16,0,0,1,74.69,40L114,108a8,8,0,1,0,13.85-8l-30-52a16,16,0,0,1,27.71-16L166,102.12A48.25,48.25,0,0,0,152,136a47.59,47.59,0,0,0,9.6,28.8,8,8,0,1,0,12.79-9.61A32,32,0,0,1,181,110.26a8,8,0,0,0,2.17-10.43L171.71,80a16,16,0,0,1,27.71-16l19.89,34.46Zm-29.37-57A43.74,43.74,0,0,1,216.74,62l.33.57a8,8,0,0,0,13.86-8L230.6,54a59.64,59.64,0,0,0-36.54-28,8,8,0,0,0-4.12,15.46ZM79.58,225.72A103.58,103.58,0,0,1,53.93,196a8,8,0,0,0-13.86,8,119.56,119.56,0,0,0,29.6,34.28,8,8,0,0,0,9.91-12.56Z"/></svg><span class="n">4</span></span>
+    </span></div>
+    <h4>HandWaving</h4>
+    <p>Sessions waving for your attention. Unused anywhere in the app and instantly recognisable — but the busiest of the five at 15 px, and it can read as “hello”.</p>
+  </div>
+  <div class="swcell">
+    <div class="tile"><span class="z" style="display:inline-flex;gap:8px;align-items:center">
+      <span class="sw"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M230.6,49.53A15.81,15.81,0,0,0,216,40H40A16,16,0,0,0,28.19,66.76l.08.09L96,139.17V216a16,16,0,0,0,24.87,13.32l32-21.34A16,16,0,0,0,160,194.66V139.17l67.74-72.32.08-.09A15.8,15.8,0,0,0,230.6,49.53ZM40,56h0Zm106.18,74.58A8,8,0,0,0,144,136v58.66L112,216V136a8,8,0,0,0-2.16-5.47L40,56H216Z"/></svg><span class="n">4</span></span>
+      <span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M227.81,66.76l-.08.09L160,139.17v55.49A16,16,0,0,1,152.87,208l-32,21.34A16,16,0,0,1,96,216V139.17L28.27,66.85l-.08-.09A16,16,0,0,1,40,40H216a16,16,0,0,1,11.84,26.76Z"/></svg><span class="n">4</span></span>
+    </span></div>
+    <h4>Funnel</h4>
+    <p>Honest and generic: this is a filter. It says a filter is applied but nothing about <em>which</em> one, and it would be the fifth grey outline glyph in a header of grey outline glyphs.</p>
+  </div>
+  <div class="swcell">
+    <div class="tile"><span class="z" style="display:inline-flex;gap:8px;align-items:center">
+      <span class="sw"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M221.87,83.16A104.1,104.1,0,1,1,195.67,49l22.67-22.68a8,8,0,0,1,11.32,11.32l-96,96a8,8,0,0,1-11.32-11.32l27.72-27.72a40,40,0,1,0,17.87,31.09,8,8,0,1,1,16-.9,56,56,0,1,1-22.38-41.65L184.3,60.39a87.88,87.88,0,1,0,23.13,29.67,8,8,0,0,1,14.44-6.9Z"/></svg><span class="n">4</span></span>
+      <span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M221.87,83.16A104.1,104.1,0,1,1,195.67,49l22.67-22.68a8,8,0,0,1,11.32,11.32L167.6,99.71h0l-37.71,37.71-23.95,23.95a40,40,0,0,0,62-35.67,8,8,0,1,1,16-.9,56,56,0,0,1-95.5,42.79h0a56,56,0,0,1,73.13-84.43L184.3,60.39a87.88,87.88,0,1,0,23.13,29.67,8,8,0,0,1,14.44-6.9Z"/></svg><span class="n">4</span></span>
+    </span></div>
+    <h4>Target</h4>
+    <p>“Needs attention” as a bullseye. Legible at any size, but vague — it could equally mean goals, focus mode, or a build target.</p>
+  </div>
+</div>
+
 <h2>The switch, at 3×</h2>
-<p class="note">The switch carries the whole mode on its own (req 10), so its four states have to be told apart at 26 px. It is a <b>pill</b>, not an icon wearing a badge: glyph and count sit side by side, so the count can never sit on top of the glyph. The pressed state follows the house pattern for a toggled ghost button (<code>IssuesViewer.tsx</code>: glyph to <code>fill</code> weight, accent color, quiet chip behind it) instead of a saturated amber button, which the header has nowhere else.</p>
+<p class="note">The switch carries the whole mode on its own (req 10), so its four states have to be told apart at 26 px. It is a <b>pill</b>, not an icon wearing a badge: glyph and count sit side by side, so the count can never sit on top of the glyph. The pressed state follows the house pattern for a toggled ghost button (<code>IssuesViewer.tsx</code>: glyph to <code>fill</code> weight, accent color, quiet chip behind it) instead of a saturated amber button, which the header has nowhere else. The glyph is <code>ChatsIcon</code> — see the board above for why.</p>
 <div class="swdemo">
 
   <div class="swcell">
-    <div class="tile"><span class="z"><span class="sw"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.6v4M8 10.9v.1"/></svg><span class="n">4</span></span></span></div>
+    <div class="tile"><span class="z"><span class="sw"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M216,80H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8V96A16,16,0,0,0,216,80ZM66.55,137.78,40,159.25V48H168v88H71.58A8,8,0,0,0,66.55,137.78ZM216,207.25l-26.55-21.47a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32Z"/></svg><span class="n">4</span></span></span></div>
     <h4>Off · 4 waiting</h4>
     <p>Grey glyph, amber count. This is the discovery state — the only amber in the All view’s header.</p>
   </div>
 
   <div class="swcell">
-    <div class="tile"><span class="z"><span class="sw"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.6v4M8 10.9v.1"/></svg></span></span></div>
+    <div class="tile"><span class="z"><span class="sw"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M216,80H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8V96A16,16,0,0,0,216,80ZM66.55,137.78,40,159.25V48H168v88H71.58A8,8,0,0,0,66.55,137.78ZM216,207.25l-26.55-21.47a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32Z"/></svg></span></span></div>
     <h4>Off · nothing waiting</h4>
     <p>The count disappears and the pill shrinks to the glyph. No permanent amber mark in the header.</p>
   </div>
 
   <div class="swcell">
-    <div class="tile"><span class="z"><span class="sw on"><svg width="15" height="15" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.6" fill="currentColor"/><path d="M8 4.5v4.1M8 10.9v.7" stroke="var(--knock)" stroke-width="1.7" stroke-linecap="round"/></svg><span class="n">4</span></span></span></div>
+    <div class="tile"><span class="z"><span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></svg><span class="n">4</span></span></span></div>
     <h4>On · 4 waiting</h4>
     <p>Filled glyph, amber, on a quiet chip. Three things change at once — weight, color, background — so the state reads without a label.</p>
   </div>
 
   <div class="swcell">
-    <div class="tile"><span class="z"><span class="sw on"><svg width="15" height="15" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.6" fill="currentColor"/><path d="M8 4.5v4.1M8 10.9v.7" stroke="var(--knock)" stroke-width="1.7" stroke-linecap="round"/></svg></span></span></div>
+    <div class="tile"><span class="z"><span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></svg></span></span></div>
     <h4>On · inbox zero</h4>
     <p>Still lit — you are still in the view — but with no count. Pairs with the “Nothing needs you” empty state.</p>
   </div>
 
   <div class="swcell bad">
-    <div class="tile"><span class="z"><span class="ico bad"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.6v4M8 10.9v.1"/></svg><span class="badge">4</span></span></span></div>
+    <div class="tile"><span class="z"><span class="ico bad"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M216,80H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8V96A16,16,0,0,0,216,80ZM66.55,137.78,40,159.25V48H168v88H71.58A8,8,0,0,0,66.55,137.78ZM216,207.25l-26.55-21.47a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32Z"/></svg><span class="badge">4</span></span></span></div>
     <h4>Rejected · filled square + badge</h4>
     <p>The first attempt. The badge lands on the glyph and eats it, so the control reads as an amber blob — and a saturated fill is louder than anything else in the header.</p>
   </div>
@@ -209,7 +261,7 @@
       <div class="hdr">
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span>
         <span class="sp"></span>
-        <span class="sw"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.6v4M8 10.9v.1"/></svg><span class="n">4</span></span>
+        <span class="sw"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M216,80H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8V96A16,16,0,0,0,216,80ZM66.55,137.78,40,159.25V48H168v88H71.58A8,8,0,0,0,66.55,137.78ZM216,207.25l-26.55-21.47a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32Z"/></svg><span class="n">4</span></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span>
       </div>
@@ -237,7 +289,7 @@
       <div class="hdr">
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span>
         <span class="sp"></span>
-        <span class="sw on"><svg width="15" height="15" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.6" fill="currentColor"/><path d="M8 4.5v4.1M8 10.9v.7" stroke="var(--knock)" stroke-width="1.7" stroke-linecap="round"/></svg><span class="n">4</span></span>
+        <span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></svg><span class="n">4</span></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span>
       </div>
@@ -278,7 +330,7 @@
       <div class="hdr">
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span>
         <span class="sp"></span>
-        <span class="sw on"><svg width="15" height="15" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.6" fill="currentColor"/><path d="M8 4.5v4.1M8 10.9v.7" stroke="var(--knock)" stroke-width="1.7" stroke-linecap="round"/></svg><span class="n">3</span></span>
+        <span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></svg><span class="n">3</span></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span>
       </div>
@@ -298,7 +350,7 @@
       <div class="hdr">
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span>
         <span class="sp"></span>
-        <span class="sw on"><svg width="15" height="15" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.6" fill="currentColor"/><path d="M8 4.5v4.1M8 10.9v.7" stroke="var(--knock)" stroke-width="1.7" stroke-linecap="round"/></svg><span class="n">9</span></span>
+        <span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></svg><span class="n">9</span></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span>
       </div>
@@ -323,7 +375,7 @@
       <div class="hdr">
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/><line x1="6" y1="2.6" x2="6" y2="13.4"/></svg></span>
         <span class="sp"></span>
-        <span class="sw on"><svg width="15" height="15" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.6" fill="currentColor"/><path d="M8 4.5v4.1M8 10.9v.7" stroke="var(--knock)" stroke-width="1.7" stroke-linecap="round"/></svg></span>
+        <span class="sw on"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></svg></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 1.5 3.5 9h4l-1 5.5L13 7H9z"/></svg></span>
         <span class="ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6.4"/></svg></span>
       </div>
