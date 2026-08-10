@@ -1444,6 +1444,12 @@ describe("PreviewFrame", () => {
       vi.fn().mockResolvedValue(new Response(JSON.stringify({ ready: true }), { status: 200 })),
     );
     const MAX_AUTH_TIMEOUT_MS = 5000;
+    const MAX_AUTH_RETRIES = 2;
+    // Installed after `useFakeTimers()` so it wraps the fake `setTimeout`, and
+    // before the render so it can see the very first arming.
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const authTimers = () =>
+      setTimeoutSpy.mock.calls.filter(([, delay]) => delay === MAX_AUTH_TIMEOUT_MS);
 
     try {
       const previewA: PreviewStatus = { running: true, port: 3000, url: "/preview/session-a/3000/", source: "detected" };
@@ -1455,58 +1461,51 @@ describe("PreviewFrame", () => {
       // Run out the retry budget without ever reporting "loaded": two silent
       // reloads, then the verdict.
       //
-      // Each of the first two expiries has to complete a `setRefreshKey` state
-      // update, a re-render and an effect re-arm before the next advance finds
-      // a timer to fire. A bare `advanceTimersByTimeAsync` leaves that flush to
-      // React's own scheduler, which runs on a *real* macrotask captured before
-      // `useFakeTimers()` — so it is not ordered against the real `setTimeout`
-      // the advance yields on. Nothing about the fake clock makes progress:
-      // replace the advance with the synchronous `advanceTimersByTime` and the
-      // verdict never appears, however many times you advance. That is why both
-      // an exact `MAX_AUTH_RETRIES + 1` count and the bounded retry loop that
-      // replaced it flaked on a loaded CI box while passing every time locally
-      // — under load the loop can burn every iteration before React flushes
-      // once, and then falls through to a failing assertion (nikzlabs/shipit#2139).
+      // Every advance below is wrapped in `act`, and that is the whole fix for
+      // this test's history of flaking (nikzlabs/shipit#2139). Each of the
+      // first two expiries has to complete a `setRefreshKey` state update, a
+      // re-render and an effect re-arm before the next advance finds a timer to
+      // fire. Outside `act`, that flush belongs to React's own scheduler, which
+      // runs on a *real* macrotask captured before `useFakeTimers()` — so it is
+      // not ordered against the real `setTimeout` an async advance yields on.
+      // The fake clock contributes no progress at all: with the synchronous
+      // `advanceTimersByTime` and no `act`, the verdict never appears however
+      // many times you advance. Earlier versions here therefore progressed only
+      // on those incidental real macrotasks, which is why first an exact count
+      // and then a bounded retry loop both passed locally and lost the race on
+      // a loaded CI box — a loop can burn every iteration before React flushes
+      // once, and then falls through to a failing assertion.
       //
-      // `act` flushes React's work before the call returns, so each advance is
-      // guaranteed to find a re-armed timer — three advances suffice with zero
-      // real macrotasks in between. `vi.waitFor` keeps the bound wall-clock
-      // rather than iteration-count, so a slow box buys more time instead of
-      // running out of tries. Extra iterations are inert: once the verdict
-      // lands, `authSettledRef` stops the effect re-arming, so there is no
-      // timer left for an advance to fire. The assertions this test exists for
-      // are the two after the rerender below, and they are untouched.
-      await vi.waitFor(() => expect(screen.queryByTitle("Live Preview")).toBeInTheDocument());
-      await vi.waitFor(
-        async () => {
-          await act(async () => {
-            await vi.advanceTimersByTimeAsync(MAX_AUTH_TIMEOUT_MS + 1);
-          });
-          expect(screen.getByText("Preview authentication required")).toBeInTheDocument();
-        },
-        { timeout: 10_000, interval: 10 },
-      );
+      // Inside `act` the flush happens before the call returns, so the count is
+      // exact rather than hopeful: wait for the first timer to be armed, then
+      // one advance per expiry.
+      await vi.waitFor(() => expect(authTimers()).toHaveLength(1));
+      for (let i = 0; i < MAX_AUTH_RETRIES + 1; i++) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(MAX_AUTH_TIMEOUT_MS + 1);
+        });
+      }
+      expect(screen.getByText("Preview authentication required")).toBeInTheDocument();
 
-      const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+      // From here, any auth timer at all is a regression. Note there is no
+      // advance between the two rerenders: `rerender` is already `act`-wrapped,
+      // so the effects run without one, while an `await` here would let session
+      // B's in-flight health poll resolve and legitimately arm a timer of its
+      // own — counted by the assertion below, for the wrong session.
+      setTimeoutSpy.mockClear();
       rerender(<PreviewFrame preview={previewB} sessionId="session-b" {...defaultProps} />);
-      await vi.advanceTimersByTimeAsync(0);
       rerender(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
-      await vi.advanceTimersByTimeAsync(0);
 
       // No fresh detection timer, and the verdict is still on screen rather
       // than having silently reset.
-      expect(
-        setTimeoutSpy.mock.calls.filter(([, d]) => d === MAX_AUTH_TIMEOUT_MS),
-      ).toHaveLength(0);
+      expect(authTimers()).toHaveLength(0);
       expect(screen.getByText("Preview authentication required")).toBeInTheDocument();
-      setTimeoutSpy.mockRestore();
     } finally {
+      setTimeoutSpy.mockRestore();
       vi.useRealTimers();
       vi.unstubAllEnvs();
     }
-    // Above the 10s `waitFor` budget, so a genuinely stuck wait reports what it
-    // was waiting for instead of being cut short by the 5s default.
-  }, 20_000);
+  });
 });
 
 describe("formatErrorForMessage", () => {
