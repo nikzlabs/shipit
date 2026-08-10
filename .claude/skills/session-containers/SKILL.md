@@ -29,7 +29,7 @@ This skill covers Docker container management, session runners, idle disposal, a
   4. Wire `runner.on("idle")` -> `onRunnerIdle(sessionId)` callback
 - **`get(sessionId)`**: Returns runner if exists and not disposed
 - Max 10 concurrent runners; evicts oldest idle runner if at capacity
-- `disposeAll()` for graceful shutdown
+- `disposeAll(opts?)` for graceful shutdown and full reset. Forced — it kills running agents unless the caller passes `{ preserveAgent: true }`, which shutdown does and full reset does not
 
 ### Runner Factory (Production)
 
@@ -243,12 +243,15 @@ live turn, so the flow completes even in sessions nobody opens.
 
 ### Container Persistence Across Runner Disposal
 
-When a `ContainerSessionRunner` is disposed (idle container cleanup), the Docker container is destroyed along with the runner. However, when a runner is disposed without explicit container destruction (e.g. server shutdown cleanup), the `dispose()` method:
-- Kills the agent process in the container (fire-and-forget)
-- Disconnects the SSE stream
-- Emits `"disposed"` -> removed from `SessionRunnerRegistry`
+**`runner.dispose()` never destroys the Docker container.** Where a container does go away — idle cleanup, archive, Rescue — it is a *separate, explicit* `containerManager.destroy(sessionId)` call by that caller, sitting next to the dispose. Read the two as independent: a runner is an in-memory object, a container is a process on the host, and their lifetimes are deliberately not tied.
 
-Containers that survive (e.g. after an unclean shutdown) are rediscovered on startup, enabling fast reconnection — a new runner can reconnect to the existing container without restarting anything.
+`dispose()` itself:
+- Kills the agent process in the container, fire-and-forget — **unless `{ preserveAgent: true }`**, which only the shutdown path passes (see *Graceful Shutdown*)
+- Cancels in-flight sub-agent spawns (same `preserveAgent` exception)
+- Disconnects the SSE stream
+- Emits `"disposed"` -> removed from `SessionRunnerRegistry`, and the session's Compose stack is `compose down`-ed
+
+Containers that survive — after any shutdown, clean or not — are rediscovered on startup, enabling fast reconnection: a new runner reconnects to the existing container without restarting anything, and `reattachInFlightTurns()` re-adopts a turn that is still running inside it.
 
 ## Idle Container Cleanup
 
@@ -307,13 +310,21 @@ When a user returns to a session whose runner was disposed:
 ```
 app.addHook("onClose"):
   1. authManager.kill()
-  2. runnerRegistry.disposeAll()
-     -> each runner: kill agent, disconnect SSE, emit "disposed"
+  2. runnerRegistry.disposeAll({ preserveAgent: true })
+     -> each runner: drop the local proxy, disconnect SSE, emit "disposed"
+     -> does NOT post /agent/kill: the CLI keeps running in the container
   3. containerManager.dispose()
-     -> for each container: stop + remove
+     -> stop the health monitor + drop listeners. Containers are NOT touched.
 ```
 
-All Docker containers are destroyed on server shutdown. On next startup, orphan cleanup catches any that survived an unclean shutdown.
+**Session containers survive orchestrator shutdown, and so do their in-flight turns.** This is what makes updates zero-downtime (docs/113): `deploy.sh` replaces only the orchestrator, and the next boot re-adopts the survivors via `rediscoverContainers()` and `reattachInFlightTurns()` (docs/240). Orphan cleanup at startup reaps whatever no longer maps to an active session.
+
+Two rules follow, and both have bitten production:
+
+- **`dispose()` on the container manager must never destroy a container.** It called `destroyAll()` until 2026-08-10, so every update destroyed every session ~9s before Compose even replaced the orchestrator; `destroyAll()` no longer exists. Teardown is per-session and explicit — `destroy(sessionId)`, from the idle enforcer, archive/repo-delete, tier escalation and Rescue.
+- **A forced runner dispose on the shutdown path must pass `preserveAgent`.** Without it the `/agent/kill` post clears the worker's `turnActive`, and `reattachInFlightTurns()` adopts a turn only while that flag is true — so the turn dies inside a healthy container, unadoptable, with its transcript tail unpersisted and its post-turn commit unrun. Full reset deliberately does not pass it.
+
+The session's **Compose stack** is the exception: it is still `compose down`-ed on dispose, because `ServiceManager.start()` opens with `killStaleContainers()` and rebuilds the stack on the next attach regardless.
 
 ## Resource Limits
 
