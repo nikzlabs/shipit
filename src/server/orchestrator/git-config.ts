@@ -121,6 +121,18 @@ export function initGlobalGitConfig(credentialsDir: string): void {
 export const CONTAINER_CREDENTIAL_HELPER = "/usr/local/bin/shipit-git-credential";
 
 /**
+ * Identity written into a session container's gitconfig when the user has
+ * configured none. Its only job is to keep `git commit` from hard-failing
+ * inside the container; a real identity always wins. `.invalid` is the RFC 2606
+ * reserved TLD, so the address can never resolve to a real mailbox and is
+ * obvious as a placeholder in `git log`. See {@link writeContainerGitConfig}.
+ */
+export const FALLBACK_CONTAINER_GIT_IDENTITY: GitIdentity = {
+  name: "ShipIt Agent",
+  email: "agent@shipit.invalid",
+};
+
+/**
  * Write a *sanitized* gitconfig for a session container at `destPath`.
  *
  * Unlike the orchestrator's own global gitconfig (which embeds the GitHub PAT
@@ -150,11 +162,26 @@ export function writeContainerGitConfig(destPath: string): void {
     execFileSync("git", ["config", "--file", destPath, key, value]);
   };
 
-  const id = getGitIdentity();
-  if (id) {
-    set("user.name", id.name);
-    set("user.email", id.email);
-  }
+  // The user's real identity when there is one, a placeholder when there isn't.
+  // Never left unset: `git commit` HARD-FAILS without an identity ("Author
+  // identity unknown"), and for `ops` / `sandbox` sessions the agent's own
+  // commits are the only commits there are — ShipIt does not auto-commit those
+  // kinds (`services/auto-commit-gate.ts`), so an identity-less container means
+  // the agent simply cannot save its work. A sandbox is the worst case: it is
+  // repo-less by design and may be created with `capabilities.git` OFF, so
+  // connecting GitHub — the usual way an identity gets set — is not part of its
+  // flow at all.
+  //
+  // This deliberately does NOT go in `initGlobalGitConfig` / `getGitIdentity`.
+  // Those answer "has the user configured an identity?", which drives the
+  // `git_identity_required` prompt (`route-registry.ts`); defaulting there would
+  // suppress the prompt and silently attribute the user's commits to a
+  // placeholder forever. Here the fallback is a floor for a generated,
+  // container-only file, and a real identity always overrides it — including
+  // retroactively, since `writeSessionGitConfig` rewrites this file.
+  const id = getGitIdentity() ?? FALLBACK_CONTAINER_GIT_IDENTITY;
+  set("user.name", id.name);
+  set("user.email", id.email);
   set("commit.gpgsign", "false");
   set("credential.helper", CONTAINER_CREDENTIAL_HELPER);
 
