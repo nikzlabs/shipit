@@ -195,6 +195,46 @@ describe("Integration: prompt queuing", () => {
     client.close();
   });
 
+  // The drain's `queue_updated` reaches only attached viewers, and the client
+  // clears its queued bubbles on nothing else short of an interrupt or a
+  // session switch. So the attach burst must carry the queue snapshot even when
+  // it is EMPTY — otherwise a viewer that saw the enqueue, left, and came back
+  // after the queue drained keeps the stale bubble forever.
+  it("sends an empty queue_updated on re-attach after the queue drained while detached", async () => {
+    const client1 = await TestClient.connect(port);
+    await client1.receive(); // preview_status
+    const sessionId = client1.sessionId;
+
+    client1.send({ type: "send_message", text: "First" });
+    const firstClaude = await waitForClaude(() => lastClaude);
+    firstClaude.emit("event", { type: "agent_init", sessionId: "session-drain", model: "m", tools: [] });
+
+    // The viewer sees the enqueue, then leaves.
+    client1.send({ type: "send_message", text: "Second" });
+    expect(await drainUntil(client1, (m) => m.type === "message_queued")).toBeTruthy();
+    client1.close();
+    await new Promise((r) => setTimeout(r, 50));
+
+    // The queue drains with nobody attached: the live `queue_updated` for the
+    // now-empty queue reaches no one.
+    firstClaude.emit("event", { type: "agent_result", status: "success", sessionId: "session-drain", durationMs: 10 });
+    firstClaude.emit("done", 0);
+    const secondClaude = await waitForClaude(() => lastClaude, firstClaude);
+    expect(secondClaude.lastPrompt).toBe("Second");
+
+    // ...and the drained turn ends too, so the re-attach below finds an idle
+    // runner with an empty queue — the production shape.
+    secondClaude.emit("event", { type: "agent_result", status: "success", sessionId: "session-drain", durationMs: 10 });
+    secondClaude.emit("done", 0);
+    await new Promise((r) => setTimeout(r, 100));
+
+    const client2 = await TestClient.connect(port, sessionId);
+    const queueUpdated = await drainUntil(client2, (m) => m.type === "queue_updated", 40, 3000);
+    expect(queueUpdated).toMatchObject({ type: "queue_updated", queue: [] });
+
+    client2.close();
+  });
+
   it("cancel_queued_message with position removes a specific item", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
