@@ -95,6 +95,10 @@ export async function startStartupMonitors(
         containerManager,
         runnerRegistry,
         broadcastLog,
+        // Lets the vanished path preserve an interrupted turn's transcript and
+        // append a visible notice — the same rescue `handleContainerExited`
+        // performs for a Docker `die` (docs/121 gap E).
+        chatHistoryManager,
         // Lets the reconciler re-adopt a live-but-untracked container
         // instead of force-disposing its runner — same resolver shape as
         // the startup `rediscover` path.

@@ -251,7 +251,9 @@ export async function isTrackedContainerRunning(
   if (!sc?.id) return undefined;
   try {
     const info = await deps.docker.getContainer(sc.id).inspect();
-    return info.State?.Running === true;
+    // An inspect with no `State` block tells us nothing — `undefined`, not
+    // `false`, for the same reason the catch below distinguishes them.
+    return info.State?.Running;
   } catch (err) {
     if ((err as { statusCode?: number }).statusCode === 404) return false;
     const detail = err instanceof Error ? err.message : String(err);

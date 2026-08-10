@@ -1036,6 +1036,40 @@ describe("SessionContainerManager", () => {
     });
   });
 
+  // --- markContainerGone (docs/121 gap E) ---
+
+  describe("markContainerGone", () => {
+    it("drops the tracking entry for a container Docker says is gone", async () => {
+      const sc = await manager.create(buildConfig());
+      expect(manager.get("test-session-1")).toBe(sc);
+
+      manager.markContainerGone("test-session-1");
+
+      expect(manager.get("test-session-1")).toBeUndefined();
+      expect(manager.size).toBe(0);
+      // Same state transition the `die` handler applies — this path exists
+      // precisely because that `die` never arrived.
+      expect(sc.status).toBe("stopped");
+    });
+
+    it("does not emit container_destroyed", async () => {
+      // Nothing was destroyed: we are recording a death we discovered late,
+      // not performing one. Subscribers that tear resources down on that
+      // event must not fire for a container that is already gone.
+      const destroyed = vi.fn();
+      manager.on("container_destroyed", destroyed);
+      await manager.create(buildConfig());
+
+      manager.markContainerGone("test-session-1");
+
+      expect(destroyed).not.toHaveBeenCalled();
+    });
+
+    it("is a no-op for unknown session IDs", () => {
+      expect(() => manager.markContainerGone("nonexistent")).not.toThrow();
+    });
+  });
+
   // --- cleanupOrphans ---
 
   describe("cleanupOrphans", () => {

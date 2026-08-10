@@ -275,15 +275,23 @@ export function handleContainerExited(
 
 /**
  * Flush a runner's in-flight turn state to chat history before its container
- * is torn down. Mirrors the `agent.on("error")` rescue in
- * `wireAgentListeners` — see `handleContainerExited` for why we can't rely
- * on that path when the container dies without emitting `agent_error`.
+ * is torn down, then append `notice` as a visible assistant error. Mirrors
+ * the `agent.on("error")` rescue in `wireAgentListeners` — see
+ * `handleContainerExited` for why we can't rely on that path when the
+ * container dies without emitting `agent_error`.
+ *
+ * `notice` is the caller's complete sentence rather than a detail fragment
+ * because the two callers describe genuinely different discoveries: a Docker
+ * `die` we received, and (docs/121 gap E) a container the missing-container
+ * reconciler found gone with no exit event at all. Both must leave the same
+ * kind of mark — a persisted transcript row, not just a log line — or the
+ * user is left with a spinner that stopped for no stated reason.
  */
-function preservePartialTurnOnContainerExit(
+export function preservePartialTurnOnWorkerLoss(
   sessionId: string,
   runner: SessionRunnerInterface,
   chatHistoryManager: ChatHistoryManager,
-  exitDetail: string,
+  notice: string,
 ): void {
   try {
     if (runner.running) {
@@ -305,7 +313,7 @@ function preservePartialTurnOnContainerExit(
     chatHistoryManager.finalizeInProgress(sessionId);
     chatHistoryManager.append(sessionId, {
       role: "assistant",
-      text: `Session container exited unexpectedly${exitDetail}. The agent's progress up to this point has been preserved.`,
+      text: notice,
       isError: true,
     });
   } catch (err) {
