@@ -56,6 +56,8 @@ export interface FakeAgent extends EventEmitter {
   kill: ReturnType<typeof vi.fn>;
   removeAllListeners: () => this;
   setPermissionMode: ReturnType<typeof vi.fn>;
+  /** How a turn is carried into a RESIDENT streaming process (docs/140). */
+  sendUserMessage: ReturnType<typeof vi.fn>;
 }
 
 export function makeFakeAgent(): FakeAgent {
@@ -63,6 +65,7 @@ export function makeFakeAgent(): FakeAgent {
   agent.run = vi.fn();
   agent.kill = vi.fn();
   agent.setPermissionMode = vi.fn();
+  agent.sendUserMessage = vi.fn();
   return agent;
 }
 
