@@ -17,6 +17,18 @@ issue: planning#58
 > `docs/252-custom-models/plan.md` → *Retiring the `ProviderAccount` projection*
 > has the mapping.
 
+## Reauthentication replaces credential-owned quota state (2026-08-10)
+
+A successful account-scoped sign-in keeps the stable route row, its label,
+priority, selection settings, and session pins. It does not keep state learned
+from the credential that the sign-in replaced. Before the row returns to
+`ready`, the auth-completion path clears its persisted hard-exhaustion stamp
+and invalidates its event snapshot, usage-API snapshot, refresh lockout, and
+in-flight quota generation. The post-auth seed then targets that account only.
+This ordering prevents a healthy replacement credential from inheriting the
+old credential's bench or 100% cached quota while preserving normal hard
+exhaustion during turns.
+
 ## Every provider-authenticated run (requirement 20)
 
 The account router is an execution invariant, not only a session-turn feature.
@@ -3230,4 +3242,3 @@ carries it on `PinnedAccountFailover`, and `failoverNotice` maps it to one of
 three sentences. Selection is untouched — it only ever needed the boolean, and
 the classification is derived from the same live snapshot rather than stored
 anywhere.
-

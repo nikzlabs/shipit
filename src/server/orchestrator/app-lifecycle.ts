@@ -1290,6 +1290,8 @@ export interface EventWiringDeps {
    * install runnable for the first time.
    */
   credentialStore: CredentialStore | undefined;
+  /** Drop state owned by the credential that a scoped sign-in replaced. */
+  onCredentialReplaced?: (agentId: AgentId, accountId: string) => void;
 }
 
 export function markProviderAccountUnauthenticated(opts: {
@@ -1459,12 +1461,17 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
           sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
           return;
         }
-        // A scoped login finished: flip the row to `ready` and re-push the
-        // fresh token only into sessions pinned to this account.
+        // Invalidate the old credential's bench and quota state before the
+        // stable account row becomes selectable again. This ordering is
+        // load-bearing: `ready` with a stale exhaustion stamp can make routing
+        // report that every account is exhausted after a healthy re-login.
         try {
+          providerAccountManager.clearAccountExhaustion(accountServiceForHarness(agentId), accountId);
+          eventDeps.onCredentialReplaced?.(agentId, accountId);
           providerAccountManager.setAccountStatus(accountServiceForHarness(agentId), accountId, "ready");
         } catch (err) {
           console.error(`[auth] failed to mark account ${accountId} ready:`, err);
+          return;
         }
       } else {
         console.warn(`[auth] ${agentId} reported a completed sign-in with no account scope; nothing to mark ready`);
