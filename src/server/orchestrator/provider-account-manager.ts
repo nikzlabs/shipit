@@ -18,7 +18,7 @@ import {
   modeCredentialFor,
   nativeServiceForHarness,
 } from "../shared/catalogue/index.js";
-import { credentialModeKey, orderCredentialRoutes } from "../shared/types/domain-types/credential-route.js";
+import { credentialModeKey, orderCredentialRoutes, refusalBlockedUntil } from "../shared/types/domain-types/credential-route.js";
 import { probeNestedString } from "./agents/agent-auth-base.js";
 
 /**
@@ -219,28 +219,33 @@ export type AccountSelection =
   | { ok: true; route: ProviderRoute }
   | ({ ok: false } & AccountSelectionFailure);
 
-/**
- * Why a route a session is **already pinned to** can no longer run its turn
- * (docs/150 reqs 6, 7, 11). See {@link ProviderAccountManager.classifyRouteForTurn}.
- *
- * `over_cutoff` is deliberately not a flavour of `exhausted`: the account still
- * has quota, it has only crossed the threshold the *user* configured, and req 6
- * says that moves work rather than stopping it.
- */
-export type RouteUnusableReason =
-  /** A quota window is at 100%, or a hard exhaustion was stamped mid-turn. */
-  | "exhausted"
-  /** Past a configured cutoff, with an account genuinely under one to move to. */
-  | "over_cutoff"
-  /** Disconnected, signed out, or otherwise not in a usable state. */
-  | "unavailable";
-
 export interface SelectAccountOptions {
   /**
-   * Routes already tried and failed this turn. Mid-turn failover (req 14)
-   * passes the exhausted route so the retry cannot pick it again.
+   * Routes already tried and failed this turn. The attempt loop (docs/260
+   * req 6) passes every refused route so a retry cannot pick it again.
    */
   exclude?: readonly string[];
+  /**
+   * docs/260 req 8 — the account backing the session's resident CLI process,
+   * when one is alive. Under `balanced` the mode spreads **sessions**, not
+   * turns: while this account is eligible, unblocked, and under its cutoff it
+   * is chosen outright, because least-recently-used ordering would otherwise
+   * alternate a two-account install every turn and restart the resident
+   * process each time. Under `strict` this is ignored — the strategy is
+   * absolute and the session moves back the turn a better account recovers.
+   */
+  residentAccountId?: string;
+  /**
+   * docs/260 req 12 — set by callers that will actually ATTEMPT the result
+   * (the turn's attempt loop). When every non-excluded account is
+   * refusal-blocked, an optimistic selection returns the best blocked one
+   * instead of failing, so a resend after an all-refused turn re-tries every
+   * account. Non-optimistic callers (voice, naming — work that cannot
+   * attempt) get the `all_exhausted` failure and simply don't run: req 12
+   * names the user's resend as the force-retry boundary, and background work
+   * is not that resend.
+   */
+  optimistic?: boolean;
 }
 
 /**
@@ -824,13 +829,13 @@ export class ProviderAccountManager {
    */
   selectAccountForTurn(serviceId: string, opts: SelectAccountOptions = {}): AccountSelection {
     const exclude = new Set(opts.exclude ?? []);
+    const mode = this.credentialStore.getSelectionMode(...routingSettingsKeyFor(serviceId));
+    const eligible = this.accountsInSelectionOrder(serviceId).filter(
+      (account) => account.status === "ready" || account.status === "authenticating",
+    );
     const connected = orderForSelectionMode(
-      this.accountsInSelectionOrder(serviceId).filter(
-        (account) =>
-          (account.status === "ready" || account.status === "authenticating") &&
-          !exclude.has(account.id),
-      ),
-      this.credentialStore.getSelectionMode(...routingSettingsKeyFor(serviceId)),
+      eligible.filter((account) => !exclude.has(account.id)),
+      mode,
     );
 
     // docs/252 req 10 — quota is keyed by `(service, billing mode)` now.
@@ -838,45 +843,73 @@ export class ProviderAccountManager {
     // `routingSettingsKeyFor`'s, which is where its cutoffs already come from.
     const limits = this.getSubscriptionLimits?.()?.[credentialModeKey(...routingSettingsKeyFor(serviceId))] ?? {};
     const now = Date.now();
-
-    // docs/150 reqs 4–6 — three tiers, not two. An account past its cutoff is
-    // still perfectly capable of running the turn; it has just stopped being
-    // the *first* choice. Collapsing "past cutoff" into "exhausted" would make
-    // a 90% setting strictly worse than no failover at all: once every account
-    // crossed 90%, every turn would fail with `all_exhausted` while ten percent
-    // of quota sat unused on each one.
     const cutoffs = this.credentialStore.getFailoverCutoffs(...routingSettingsKeyFor(serviceId));
+
+    // docs/260 reqs 5, 9 — four tiers, and only the last one skips. Telemetry
+    // (a snapshot claiming 100%) ORDERS an account to the back but cannot
+    // block it: an account whose data says it is spent is still tried, last —
+    // that is req 9's "try once to confirm". The only skip is refusal memory:
+    // a refusal the harness itself reported, remembered until the stated
+    // reset and re-probed within REFUSAL_REPROBE_MS.
+    const clear: CredentialRoute[] = [];
     const overCutoff: CredentialRoute[] = [];
-    const exhaustedResets: number[] = [];
-    for (const account of connected) {
-      const reconciled = this.reconcileHardExhaustion(account, limits[account.id], now);
-      const resetAt = exhaustedUntil(limits[account.id], reconciled, now);
-      if (resetAt !== null) {
-        exhaustedResets.push(resetAt);
+    const looksSpent: CredentialRoute[] = [];
+    const blocked: CredentialRoute[] = [];
+    const blockedResets: number[] = [];
+    for (let account of connected) {
+      // req 9's early clear, applied lazily at the read: the live snapshot map
+      // already carries whatever the refresh button or a probe turn fetched,
+      // so a blocked account with a newer healthy reading unblocks right here
+      // — no separate reconciliation pass, no event ordering to get wrong.
+      if (
+        refusalBlockedUntil(account, now) !== null
+        && this.clearRefusalOnHealthyReading(serviceId, account.id, limits[account.id])
+      ) {
+        account = this.get(serviceId, account.id) ?? account;
+      }
+      const blockedUntil = refusalBlockedUntil(account, now);
+      if (blockedUntil !== null) {
+        blocked.push(account);
+        blockedResets.push(blockedUntil);
+        continue;
+      }
+      if (snapshotExhaustedResetAt(limits[account.id], now) !== null) {
+        looksSpent.push(account);
         continue;
       }
       if (isOverCutoff(limits[account.id], cutoffs)) {
         overCutoff.push(account);
         continue;
       }
-      return { ok: true, route: { kind: "account", id: account.id } };
+      clear.push(account);
     }
-    // Nothing under its cutoff, but these still work. Preferring the first in
-    // the mode's own order keeps the choice stable rather than hunting for
-    // whichever account is marginally least used — and under `balanced` that
-    // order is already least-recently-used, so the tier degrades the same way
-    // the tier above it does.
-    const fallback = overCutoff[0];
-    if (fallback) return { ok: true, route: { kind: "account", id: fallback.id } };
 
-    // req 12 — a *spent* subscription must never silently roll onto
-    // pay-as-you-go billing. The reserved env/API-key route is only reachable
-    // when the user has no usable subscription at all (the manual-auth case),
-    // never as the next hop after one runs out. Ordering this check after the
-    // reserved fallback would spend the user's money on their behalf, which is
-    // the one outcome this feature must not produce.
-    if (exhaustedResets.length > 0) {
-      const earliest = Math.min(...exhaustedResets);
+    // docs/260 req 8 — `balanced` spreads SESSIONS, not turns: the account
+    // backing a live resident process keeps serving its session while it is
+    // clear. Only the clear tier qualifies — a resident account that is over
+    // its cutoff or looks spent has stopped being "equally ranked" and the
+    // normal walk decides. Under `strict` the strategy is absolute, so the
+    // option is not consulted at all.
+    if (mode === "balanced" && opts.residentAccountId) {
+      const resident = clear.find((account) => account.id === opts.residentAccountId);
+      if (resident) return { ok: true, route: { kind: "account", id: resident.id } };
+    }
+
+    const pick = clear[0] ?? overCutoff[0] ?? looksSpent[0];
+    if (pick) return { ok: true, route: { kind: "account", id: pick.id } };
+
+    // Everything left is refusal-blocked (or was excluded after refusing this
+    // very turn). req 7 — a spent subscription must never silently roll onto
+    // pay-as-you-go billing, so the reserved env/API-key fallback is dead
+    // whenever any subscription account exists; it serves only installs with
+    // no accounts at all.
+    if (blocked.length > 0 || eligible.length > connected.length) {
+      // req 12 — a caller that will actually ATTEMPT the result may take the
+      // best blocked account anyway; only refusals from real attempts this
+      // turn may produce the terminal failure.
+      const probe = blocked[0];
+      if (opts.optimistic && probe) return { ok: true, route: { kind: "account", id: probe.id } };
+      const earliest = Math.min(...blockedResets);
       return {
         ok: false,
         reason: "all_exhausted",
@@ -888,76 +921,6 @@ export class ProviderAccountManager {
     const reserved = this.reservedRouteFor(serviceId);
     if (reserved && !exclude.has(reserved.id)) return { ok: true, route: reserved };
     return { ok: false, reason: "auth_required" };
-  }
-
-  /**
-   * docs/150 reqs 3, 7, 8 — can the route a session is **already pinned to**
-   * still run a turn?
-   *
-   * `selectAccountForTurn` cannot answer this: it returns the *best* route in
-   * priority order, so a session healthily pinned to a secondary account would
-   * see it name the primary and read that as "you have been skipped." The
-   * eligibility rules are the same, asked about one route instead of all of
-   * them.
-   *
-   * Reserved env/API-key routes are always usable. They are metered billing,
-   * not a subscription window, so there is nothing to exhaust — and req 12
-   * means nothing may move a turn off them for quota reasons either.
-   * A pinned account that has since been deleted or signed out reports
-   * unusable, which sends the caller back through the router.
-   */
-  isRouteUsableForTurn(serviceId: string, route: ProviderRoute): boolean {
-    return this.classifyRouteForTurn(serviceId, route) === null;
-  }
-
-  /**
-   * The same question as {@link isRouteUsableForTurn}, answered with **why**:
-   * `null` when the route can still run a turn, otherwise the reason it cannot.
-   *
-   * The reason exists because the user-facing consequences differ. A move at a
-   * configured cutoff (req 6) leaves the account with quota to spare — telling
-   * the user it is "out of quota" is simply false, and misreads a threshold
-   * they chose as a provider limit they hit. Hard exhaustion (req 7) and an
-   * account that has been disconnected or lost its sign-in are three different
-   * stories, and `failoverPinnedSession` needs to tell them apart to say the
-   * true one (req 11).
-   *
-   * Selection itself does not branch on this — it only ever needs the boolean.
-   */
-  classifyRouteForTurn(serviceId: string, route: ProviderRoute): RouteUnusableReason | null {
-    if (route.kind !== "account") return null;
-    let account = this.get(serviceId, route.id);
-    if (!account) return "unavailable";
-    if (account.status !== "ready" && account.status !== "authenticating") return "unavailable";
-    // docs/252 req 10 — quota is keyed by `(service, billing mode)` now.
-    // Accounts are always subscriptions, so this manager's group is exactly
-    // `routingSettingsKeyFor`'s, which is where its cutoffs already come from.
-    const limits = this.getSubscriptionLimits?.()?.[credentialModeKey(...routingSettingsKeyFor(serviceId))] ?? {};
-    account = this.reconcileHardExhaustion(account, limits[route.id], Date.now());
-    if (exhaustedUntil(limits[route.id], account, Date.now()) !== null) return "exhausted";
-
-    // docs/150 req 6 — past a cutoff, this session should move to the next
-    // eligible account. But only if there IS somewhere better: reporting
-    // "unusable" when every account is above its cutoff would hand
-    // `failoverPinnedSession` a different over-cutoff account each turn and
-    // churn the session between them for no benefit, killing the resident
-    // process every time. A cutoff is a preference, so it can only displace a
-    // session onto an account that is actually under one.
-    const cutoffs = this.credentialStore.getFailoverCutoffs(...routingSettingsKeyFor(serviceId));
-    if (!isOverCutoff(limits[route.id], cutoffs)) return null;
-    // "Somewhere better" means an account genuinely UNDER its cutoff — not
-    // merely whichever account the selector would name first. Asking the
-    // selector here would compare against its over-cutoff fallback, so a
-    // session pinned to the second over-cutoff account would be displaced onto
-    // the first one, then back, killing the resident process each turn.
-    const now = Date.now();
-    const hasBetter = this.accountsInSelectionOrder(serviceId).some((candidate) => {
-      if (candidate.id === route.id) return false;
-      if (candidate.status !== "ready" && candidate.status !== "authenticating") return false;
-      if (exhaustedUntil(limits[candidate.id], candidate, now) !== null) return false;
-      return !isOverCutoff(limits[candidate.id], cutoffs);
-    });
-    return hasBetter ? "over_cutoff" : null;
   }
 
   /**
@@ -974,6 +937,19 @@ export class ProviderAccountManager {
     return (RESERVED_ENV_ROUTES[serviceId ?? ""] ?? []).some(
       (candidate) => Boolean(process.env[candidate.env]?.trim()),
     );
+  }
+
+  /**
+   * The account row behind a bare route id, whatever service it belongs to.
+   * For callers that hold only the id (notice labels, attempt ledgers) —
+   * everything that knows its service keeps asking `get(serviceId, id)`.
+   */
+  getByRouteId(routeId: string): CredentialRoute | undefined {
+    for (const serviceId of accountServiceIds()) {
+      const account = this.get(serviceId, routeId);
+      if (account) return account;
+    }
+    return undefined;
   }
 
   resolveCredentialRoot(provider: AgentId, accountId: string): string {
@@ -1022,19 +998,36 @@ export class ProviderAccountManager {
     return this.require(serviceId, accountId);
   }
 
-  /** Let a newer, complete provider reading supersede an older hard bench. */
-  private reconcileHardExhaustion(
-    account: CredentialRoute,
+  /**
+   * docs/260 req 9 — a quota reading that is newer than a refusal and shows
+   * the account healthy clears the refusal memory immediately, so "user
+   * upgrades their plan and presses the refresh button" re-opens the account
+   * on the very next turn instead of waiting out the re-probe cap.
+   *
+   * The trust bar is deliberately low — `usedPct: null` counts as healthy
+   * (the provider only reports a number above a warning threshold), and no
+   * completeness proof is demanded — because a wrong clear now costs one
+   * refused attempt (req 5), not a wrongly-run turn. Called from the two
+   * places readings arrive: the rate-limit event push and the usage-API
+   * refresh (`bootstrap-managers.ts`).
+   */
+  clearRefusalOnHealthyReading(
+    serviceId: string,
+    accountId: string,
     snapshot: { session?: unknown; weekly?: unknown; fetchedAt?: unknown } | undefined,
-    now: number,
-  ): CredentialRoute {
-    if (typeof account.exhaustedUntil !== "number" || account.exhaustedUntil <= now) return account;
-    // Legacy rows have no explicit observation clock. Their last row update is
-    // the best persisted lower bound and lets deployed stale benches converge.
-    const observedAt = account.exhaustedAt ?? account.updatedAt;
-    if (!isTrustedHealthySnapshot(snapshot, observedAt, now)) return account;
+  ): boolean {
+    const account = this.get(serviceId, accountId);
+    if (!account) return false;
+    if (account.exhaustedUntil === null || account.exhaustedUntil === undefined) return false;
+    if (!snapshot || typeof snapshot.fetchedAt !== "number" || !Number.isFinite(snapshot.fetchedAt)) return false;
+    const observedAt = typeof account.exhaustedAt === "number" ? account.exhaustedAt : 0;
+    if (snapshot.fetchedAt <= observedAt) return false;
+    for (const key of ["session", "weekly"] as const) {
+      const window = snapshot[key] as { usedPct?: unknown } | null | undefined;
+      if (window && typeof window.usedPct === "number" && window.usedPct >= 100) return false;
+    }
     this.credentialStore.upsertCredentialRoute({ ...account, exhaustedUntil: null, exhaustedAt: null });
-    return this.get(account.serviceId, account.id) ?? account;
+    return true;
   }
 
   /** Overwrite the persisted status of an account (idempotent). */
@@ -1407,46 +1400,28 @@ export function orderForSelectionMode<T extends { lastUsedAt?: number }>(
   return [...accounts].sort((a, b) => (a.lastUsedAt ?? 0) - (b.lastUsedAt ?? 0));
 }
 
-function exhaustedUntil(
+/**
+ * docs/260 req 5 — what the TELEMETRY claims about a window, used only to
+ * order an account to the back of the walk ("looks spent, try last"), never
+ * to skip it. The refusal memory in `refusalBlockedUntil` (shared,
+ * `credential-route.ts`) is the only thing that skips.
+ */
+function snapshotExhaustedResetAt(
   limits: { session?: unknown; weekly?: unknown } | undefined,
-  account: Pick<CredentialRoute, "exhaustedUntil">,
   now: number,
 ): number | null {
   const resets: number[] = [];
-  if (typeof account.exhaustedUntil === "number" && account.exhaustedUntil > now) {
-    resets.push(account.exhaustedUntil);
-  }
   for (const key of ["session", "weekly"] as const) {
     const window = limits?.[key] as { usedPct: number | null; resetAt: string } | null | undefined;
     if (window === null || window === undefined) continue;
     if (window.usedPct === null || window.usedPct < 100) continue;
     const at = Date.parse(window.resetAt);
-    // An exhausted window whose reset already passed is stale, not blocking.
+    // An exhausted window whose reset already passed is stale, not spent.
     if (Number.isNaN(at)) resets.push(Number.POSITIVE_INFINITY);
     else if (at > now) resets.push(at);
   }
   if (resets.length === 0) return null;
   return Math.min(...resets);
-}
-
-/**
- * A quota reading can overrule a hard bench only when it was observed after
- * that bench and both subscription windows are known below hard exhaustion.
- */
-function isTrustedHealthySnapshot(
-  snapshot: { session?: unknown; weekly?: unknown; fetchedAt?: unknown } | undefined,
-  exhaustedAt: number,
-  now: number,
-): boolean {
-  if (!snapshot) return false;
-  if (typeof snapshot.fetchedAt !== "number" || !Number.isFinite(snapshot.fetchedAt)) return false;
-  if (snapshot.fetchedAt <= exhaustedAt || snapshot.fetchedAt > now) return false;
-  for (const key of ["session", "weekly"] as const) {
-    const window = snapshot[key] as { usedPct?: unknown } | null | undefined;
-    if (!window || typeof window.usedPct !== "number" || !Number.isFinite(window.usedPct)) return false;
-    if (window.usedPct >= 100) return false;
-  }
-  return true;
 }
 
 function readClaudeAccessToken(file: string): string | null {

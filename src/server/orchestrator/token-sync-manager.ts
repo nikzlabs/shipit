@@ -40,7 +40,7 @@ import {
  * (Claude: history/projects/settings under `.claude`; Codex: `config.toml`
  * under `.codex`) are never clobbered.
  */
-const AGENT_TOKEN_FILES: Partial<Record<AgentId, readonly string[]>> = {
+export const AGENT_TOKEN_FILES: Partial<Record<AgentId, readonly string[]>> = {
   claude: [".claude/.credentials.json", ".claude/credentials.json", ".claude/auth.json"],
   codex: [".codex/auth.json"],
 };

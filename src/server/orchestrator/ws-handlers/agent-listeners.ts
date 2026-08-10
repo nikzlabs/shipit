@@ -1348,6 +1348,12 @@ export function wireAgentListeners(
               ? { cumulativeSnapshot: event.cost.totalUsd }
               : {}),
             ...(turnAttribution ? { attribution: turnAttribution } : {}),
+            // docs/260 §5 — the route this turn authenticated with, from the
+            // turn's own capture (never the session row, which records no
+            // route any more). The durable input to req 10's change notice.
+            ...(opts.getCapturedRouteId?.()
+              ? { credentialRouteId: opts.getCapturedRouteId() as string }
+              : {}),
           },
         );
         // docs/252 req 16 — the live emit carries the same two attribution

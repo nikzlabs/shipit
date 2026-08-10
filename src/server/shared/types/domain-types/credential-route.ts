@@ -100,6 +100,41 @@ export interface CredentialRoute {
 }
 
 /**
+ * docs/260 req 9 — how long a harness quota refusal may block a credential
+ * before it is re-tried. The cap is the insurance against a wrong or stale
+ * refusal record: whatever `exhaustedUntil` claims, the credential is probed
+ * again within this window, and a refusal that was wrong self-heals at the
+ * cost of one attempt.
+ */
+export const REFUSAL_REPROBE_MS = 30 * 60_000;
+
+/**
+ * docs/260 req 9 — the ONLY reading of `exhaustedUntil`/`exhaustedAt`, shared
+ * by the account walk and the string-credential walk so the two shapes cannot
+ * drift (req 11).
+ *
+ * A credential is refusal-blocked while
+ * `now < min(exhaustedUntil, exhaustedAt + REFUSAL_REPROBE_MS)` — honoured
+ * until the provider-stated reset, but re-probed within the cap. Returns the
+ * epoch-ms the block lifts, or `null` when the credential is not blocked.
+ *
+ * A row with `exhaustedUntil` but no `exhaustedAt` (a pre-260 bench, or a
+ * string credential stamped before the clock existed) reads as expired —
+ * deliberately: only a refusal the harness actually reported, with its
+ * observation time, may block a turn (req 5), and the missing clock is
+ * exactly the state the 2026-08-10 incident showed can go permanently stale.
+ */
+export function refusalBlockedUntil(
+  route: Pick<CredentialRoute, "exhaustedUntil" | "exhaustedAt">,
+  now: number,
+): number | null {
+  if (typeof route.exhaustedUntil !== "number") return null;
+  if (typeof route.exhaustedAt !== "number") return null;
+  const until = Math.min(route.exhaustedUntil, route.exhaustedAt + REFUSAL_REPROBE_MS);
+  return until > now ? until : null;
+}
+
+/**
  * The key a `(service, billing mode)` pair is stored under in the settings maps
  * that used to be keyed by `AgentId` — `accountSelectionMode` and
  * `failoverCutoffs`.

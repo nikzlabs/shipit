@@ -709,9 +709,39 @@ export class CredentialStore {
   markCredentialRouteExhausted(routeId: string, until: number): CredentialRoute | null {
     const route = this.getCredentialRoute(routeId);
     if (route?.billingMode !== "sub") return null;
-    if (typeof route.exhaustedUntil === "number" && route.exhaustedUntil >= until) return route;
-    this.upsertCredentialRoute({ ...route, exhaustedUntil: until });
+    // docs/260 req 9 — every refusal refreshes the observation clock, even when
+    // its reset estimate does not extend the deadline: `refusalBlockedUntil`
+    // reads `min(until, at + cap)`, and a row without the clock reads as
+    // expired. Before 260 this stamp never wrote `exhaustedAt`, which is why
+    // string credentials had no recovery path at all (req 11).
+    this.upsertCredentialRoute({
+      ...route,
+      exhaustedUntil: Math.max(route.exhaustedUntil ?? 0, until),
+      exhaustedAt: Date.now(),
+    });
     return this.getCredentialRoute(routeId) ?? null;
+  }
+
+  /**
+   * docs/260 req 9 — the string-delivered twin of
+   * `ProviderAccountManager.clearRefusalOnHealthyReading`: a reading newer
+   * than the refusal whose known windows are all below 100% clears the memory.
+   */
+  clearCredentialRefusalOnHealthyReading(
+    routeId: string,
+    snapshot: { session?: unknown; weekly?: unknown; fetchedAt?: unknown } | undefined,
+  ): boolean {
+    const route = this.getCredentialRoute(routeId);
+    if (!route || route.exhaustedUntil === null || route.exhaustedUntil === undefined) return false;
+    if (!snapshot || typeof snapshot.fetchedAt !== "number" || !Number.isFinite(snapshot.fetchedAt)) return false;
+    const observedAt = typeof route.exhaustedAt === "number" ? route.exhaustedAt : 0;
+    if (snapshot.fetchedAt <= observedAt) return false;
+    for (const key of ["session", "weekly"] as const) {
+      const window = snapshot[key] as { usedPct?: unknown } | null | undefined;
+      if (window && typeof window.usedPct === "number" && window.usedPct >= 100) return false;
+    }
+    this.upsertCredentialRoute({ ...route, exhaustedUntil: null, exhaustedAt: null });
+    return true;
   }
 
   /**

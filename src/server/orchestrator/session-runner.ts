@@ -740,15 +740,32 @@ export interface SystemTurnDeps {
        * `prepareSessionAgentEnvironment`'s `reusingResidentAgent`.
        */
       reusingResidentAgent?: boolean;
+      /** docs/260 §3 — routes refused this turn; selection excludes them. */
+      excludeRouteIds?: readonly string[];
+      /** docs/260 §5 — the resident process's credential route, when alive. */
+      residentRoute?: { kind: "account" | "reserved"; id: string };
+      /**
+       * docs/260 reqs 8/13 — the turn MUST run on `residentRoute` (a reused
+       * live process, or one holding background work that may not be killed).
+       */
+      requireResidentRoute?: boolean;
     },
-  ) => Promise<void>;
+  ) => Promise<{ turnRoute?: { kind: "account" | "reserved"; id: string } } | void>;
   /**
-   * docs/150 — whether the persisted provider account must change before the
-   * next agent is captured. The dispatch adapter uses this to retire a
-   * resident streaming process before creating the incoming turn's agent;
-   * environment prep later performs the credential and route switch.
+   * docs/260 — whether the resident streaming process's credential differs
+   * from what this turn's selection would choose. The dispatch adapter uses
+   * this to retire the process before creating the incoming turn's agent;
+   * environment prep later performs the credential switch. Never true while
+   * the process holds background work (req 13).
    */
   needsAccountFailover?: (sessionId: string, agentId: AgentId) => boolean;
+  /**
+   * docs/260 req 10 — the user-facing label for a credential route id
+   * (account label or stored-credential label), for the attempt-loop notices
+   * and the terminal all-refused message. Optional — tests omit it and the
+   * raw id is shown.
+   */
+  routeLabel?: (routeId: string) => string | undefined;
   /**
    * docs/179 — heal the agent's OAuth source token. Used by the runtime-401
    * auto-retry: when a turn's CLI emits `auth_required`, the executor awaits
@@ -1143,6 +1160,21 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    */
   appliedSpawnIdentity: string | undefined;
   /**
+   * docs/260 §5 — the credential route the RESIDENT process was spawned with
+   * (`{kind, id}` of the turn route that provisioned its credentials), or
+   * `undefined` when no resident process exists or it predates the stamp.
+   * Typed runner state, deliberately not derived from the session row (which
+   * no longer records a route): the pre-capture release check compares the
+   * next turn's selection against this, req 13's guard and disconnect
+   * enumerate processes by it, and balanced-mode selection prefers it while
+   * eligible (req 8). Set at spawn from the turn route; cleared whenever the
+   * agent slot empties. After an orchestrator restart it is recovered from
+   * the session's credential-subtree account marker — the account a surviving
+   * CLI runs on IS the marker, since any account change retires the process
+   * before reprovisioning.
+   */
+  residentRoute: { kind: "account" | "reserved"; id: string } | undefined;
+  /**
    * docs/182 — true when the runner's most recent completed turn ended in an
    * error (agent process error, or an errored `agent_result` that wasn't a
    * deliberate interrupt). Set definitively at every turn completion (false on a
@@ -1511,6 +1543,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _isStreamingActive = false;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
   private _appliedSpawnIdentity: string | undefined = undefined;
+  /** See `SessionRunnerInterface.residentRoute` — the resident CLI's credential route. */
+  private _residentRoute: { kind: "account" | "reserved"; id: string } | undefined = undefined;
   private _accumulatedText = "";
   private _accumulatedToolUse: ClaudeContentBlockToolUse[] = [];
   private _turnSummary = "";
@@ -1630,6 +1664,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set appliedPermissionMode(v: PermissionMode | undefined) { this._appliedPermissionMode = v; }
   get appliedSpawnIdentity(): string | undefined { return this._appliedSpawnIdentity; }
   set appliedSpawnIdentity(v: string | undefined) { this._appliedSpawnIdentity = v; }
+  get residentRoute(): { kind: "account" | "reserved"; id: string } | undefined { return this._residentRoute; }
+  set residentRoute(v: { kind: "account" | "reserved"; id: string } | undefined) { this._residentRoute = v; }
   get accumulatedText(): string { return this._accumulatedText; }
   set accumulatedText(s: string) { this._accumulatedText = s; }
   get accumulatedToolUse(): ClaudeContentBlockToolUse[] { return this._accumulatedToolUse; }
@@ -1717,6 +1753,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
       // alive it is still running its spawn-time model, endpoint and credential,
       // so the drift check must keep comparing against it across proxy/ref churn.
       this._appliedSpawnIdentity = undefined;
+      this._residentRoute = undefined;
     }
   }
 
@@ -1906,6 +1943,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     this._backgroundTasks.clear();
     this._appliedPermissionMode = undefined;
     this._appliedSpawnIdentity = undefined;
+      this._residentRoute = undefined;
     // planning#246 — the fields above were written directly rather than through
     // their setters, so say so before `removeAllListeners()` takes the channel
     // away. A disposed runner holds nothing outstanding, and the sidebar has no

@@ -35,10 +35,13 @@ export {
 export {
   ensureLocalWorkspaceTrust,
   ensureSessionAgentUserConfig,
+  ensureSessionAccountCredentials,
   provisionAgentCredentials,
   provisionProviderAccountCredentials,
   provisionSubAgentCredentials,
+  readSessionAccountMarker,
   removeSubAgentCredentials,
+  writeSessionAccountMarker,
 } from "./session-agent-credentials.js";
 
 // ---- Per-turn OAuth token sync ----

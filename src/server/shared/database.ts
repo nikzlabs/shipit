@@ -1147,6 +1147,16 @@ const MIGRATIONS: Migration[] = [
     if (columns.some((c) => c.name === "note")) return;
     db.exec("ALTER TABLE file_reviews ADD COLUMN note TEXT");
   },
+  // docs/260 §5 — the credential route a turn actually authenticated with.
+  // The durable "previous turn's account" that req 10's change notice reads,
+  // now that `sessions.provider_route_*` records nothing. Nullable: legacy
+  // rows, env-delivered credentials, and turns that resolved no route all
+  // legitimately have none. Guarded like the steps above for the rewind tests.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(usage_turns)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "credential_route_id")) return;
+    db.exec("ALTER TABLE usage_turns ADD COLUMN credential_route_id TEXT");
+  },
 ];
 
 /**

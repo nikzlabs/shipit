@@ -21,10 +21,12 @@
  */
 
 import type { AgentId, ServiceRouting, SessionInfo } from "../shared/types.js";
+import { selectionOf } from "./turn-attribution.js";
 import type {
   AccountSelection,
   ProviderAccountManager,
   ProviderRoute,
+  SelectAccountOptions,
 } from "./provider-account-manager.js";
 import { accountServiceForHarness, orderForSelectionMode } from "./provider-account-manager.js";
 import type { CredentialStore } from "./credential-store.js";
@@ -44,6 +46,7 @@ import {
   credentialRouteEnvName,
   isStoredCredentialRouteId,
   orderCredentialRoutes,
+  refusalBlockedUntil,
 } from "../shared/types/domain-types/credential-route.js";
 import type { AccountSelectionMode } from "../shared/types/domain-types/provider.js";
 
@@ -208,6 +211,13 @@ export function selectRouteForSelection(
   harnessId: AgentId,
   selection: ModelSelection | undefined,
   deps: SelectRouteDeps,
+  /**
+   * docs/260 — the attempt loop's contract, threaded verbatim into both walks:
+   * `exclude` for routes refused this turn, `optimistic` for "I will attempt
+   * the result" (req 12), `residentAccountId` for balanced session-spreading
+   * (req 8). Omitted by non-turn callers, which keeps their failure shapes.
+   */
+  opts: SelectAccountOptions = {},
 ): AccountSelection {
   const mode = selection ? getMode(selection.serviceId, selection.billingMode) : undefined;
   if (!selection || !mode) {
@@ -216,7 +226,7 @@ export function selectRouteForSelection(
     // asking about the harness's OWN vendor, the only service a session with no
     // selection could ever have meant.
     return (
-      deps.providerAccountManager?.selectAccountForTurn(accountServiceForHarness(harnessId))
+      deps.providerAccountManager?.selectAccountForTurn(accountServiceForHarness(harnessId), opts)
       ?? { ok: false, reason: "auth_required" }
     );
   }
@@ -238,7 +248,7 @@ export function selectRouteForSelection(
     // declare an account credential, and each one's models are carried only by
     // its own harness — so it is a property of today's rows rather than of this
     // code. `service-routing.test.ts` pins the axis on the divergent pair.
-    const selected = deps.providerAccountManager.selectAccountForTurn(selection.serviceId);
+    const selected = deps.providerAccountManager.selectAccountForTurn(selection.serviceId, opts);
     // Its answer is taken only when it names an ACCOUNT. Its own trailing
     // env/key fallback is mode-blind — it is what would hand an `anthropic:sub`
     // selection the metered `claude-api-key` — so the env-delivered case is
@@ -258,7 +268,7 @@ export function selectRouteForSelection(
     if (!selected.ok && selected.reason === "all_exhausted") return selected;
   }
 
-  return stringSelectionFor(harnessId, selection, deps);
+  return stringSelectionFor(harnessId, selection, deps, opts);
 }
 
 /**
@@ -292,10 +302,12 @@ function stringSelectionFor(
   harnessId: AgentId,
   selection: ModelSelection,
   deps: SelectRouteDeps,
+  opts: SelectAccountOptions = {},
 ): AccountSelection {
   if (!harnessCanCarry(harnessId, { ...selection, via: "string" })) {
     return { ok: false, reason: "auth_required" };
   }
+  const exclude = new Set(opts.exclude ?? []);
   const stored = deps.credentialStore
     .listCredentialRoutes(selection.serviceId, selection.billingMode)
     .filter((route) => route.via === "string" && deps.credentialStore.getCredentialSecret(route.id));
@@ -308,12 +320,19 @@ function stringSelectionFor(
     const ordered = orderStringCredentials(
       stored,
       deps.credentialStore.getSelectionMode(selection.serviceId, selection.billingMode),
-    );
-    const next = ordered.find((route) => !isBenched(route.exhaustedUntil, now));
+    ).filter((route) => !exclude.has(route.id));
+    // docs/260 reqs 9, 11, 12 — the account walk's contract, same shape for
+    // the string-delivered twin: refusal memory (the shared read rule) is the
+    // only skip, and an optimistic caller that finds everything blocked takes
+    // the best blocked credential anyway — only real refusals this turn may
+    // produce the terminal failure.
+    const next = ordered.find((route) => refusalBlockedUntil(route, now) === null);
     if (next) return { ok: true, route: { kind: "reserved", id: next.id } };
-    const benched = stored
-      .map((route) => route.exhaustedUntil)
-      .filter((until): until is number => typeof until === "number" && until > now);
+    const probe = ordered[0];
+    if (opts.optimistic && probe) return { ok: true, route: { kind: "reserved", id: probe.id } };
+    const benched = ordered
+      .map((route) => refusalBlockedUntil(route, now))
+      .filter((until): until is number => typeof until === "number");
     return {
       ok: false,
       reason: "all_exhausted",
@@ -327,10 +346,6 @@ function stringSelectionFor(
     return { ok: true, route: { kind: "reserved", id: envRouteIdFor(storageEnv) } };
   }
   return { ok: false, reason: "auth_required" };
-}
-
-function isBenched(exhaustedUntil: number | null | undefined, now: number): boolean {
-  return typeof exhaustedUntil === "number" && exhaustedUntil > now;
 }
 
 /**
@@ -363,27 +378,41 @@ export function markCredentialRouteUsed(
 }
 
 /**
- * docs/252 phase 5 — is the credential this session is **already pinned to** no
- * longer able to run a turn?
+ * docs/260 — should the resident streaming process be released before this
+ * turn captures it, because selection would land on a DIFFERENT credential?
  *
- * The string-delivered twin of `sessionNeedsAccountFailover`, and it answers
- * only about subscriptions: a `key` route is never benched (req 12), and an
- * env-delivered credential has no row, so neither can report unusable here. A
- * pinned row that has been *deleted* is handled separately at env prep — that is
- * a removal, not an exhaustion, and it re-pins rather than failing over.
+ * Replaces the pinned-route failover checks: the comparison is between the
+ * live process's credential (`runner.residentRoute`, typed runner state) and
+ * what the router would choose right now — the same inputs env-prep's own
+ * selection reads moments later, so the two agree unless account state moves
+ * in between, and the per-turn provisioning identity check backstops that.
+ *
+ * Never true while the process holds background work (req 13): a sub-agent
+ * review or an agent-started background process must not be killed for a
+ * move; the turn runs on the resident credential instead
+ * (`requireResidentRoute`) and the move waits for a clean turn.
  */
-export function sessionNeedsCredentialFailover(
-  session:
-    | Pick<SessionInfo, "providerRouteKind" | "providerRouteId">
+export function residentRouteNeedsRelease(
+  session: SessionInfo | undefined,
+  harnessId: AgentId,
+  runner:
+    | {
+        residentRoute?: { kind: "account" | "reserved"; id: string } | undefined;
+        backgroundWorkDescriptions?: readonly string[];
+      }
+    | null
     | undefined,
-  credentialStore: Pick<CredentialStore, "getCredentialRoute"> | undefined,
-  now: number = Date.now(),
+  deps: SelectRouteDeps,
 ): boolean {
-  if (!session || !credentialStore) return false;
-  if (session.providerRouteKind !== "reserved" || !session.providerRouteId) return false;
-  const route = credentialStore.getCredentialRoute(session.providerRouteId);
-  if (route?.billingMode !== "sub") return false;
-  return isBenched(route.exhaustedUntil, now);
+  const resident = runner?.residentRoute;
+  if (!session || !resident) return false;
+  if ((runner?.backgroundWorkDescriptions?.length ?? 0) > 0) return false;
+  const selection = selectRouteForSelection(harnessId, selectionOf(session), deps, {
+    optimistic: true,
+    ...(resident.kind === "account" ? { residentAccountId: resident.id } : {}),
+  });
+  if (!selection.ok) return false;
+  return selection.route.kind !== resident.kind || selection.route.id !== resident.id;
 }
 
 // ---- Spawn shaping ---------------------------------------------------------
@@ -485,10 +514,7 @@ export function desiredSpawnIdentity(
 }
 
 export function sessionSpawnIdentity(
-  session: Pick<
-    SessionInfo,
-    "model" | "serviceId" | "billingMode" | "providerRouteKind" | "providerRouteId"
-  >,
+  session: Pick<SessionInfo, "model" | "serviceId" | "billingMode">,
   harnessId: AgentId,
 ): string {
   const selection =
@@ -496,6 +522,11 @@ export function sessionSpawnIdentity(
       ? { serviceId: session.serviceId, billingMode: session.billingMode, modelId: session.model }
       : undefined;
   const shaping = selection ? resolveSpawnShaping(harnessId, selection) : undefined;
+  // docs/260 — the credential ROUTE is deliberately no longer part of this
+  // tuple: it is decided per turn, not persisted on the row, and the resident
+  // process's account is compared separately against the turn's selection via
+  // `runner.residentRoute`. Keeping a dead row column here would pin every
+  // spawn identity to "-" anyway.
   return [
     harnessId,
     session.serviceId ?? "-",
@@ -503,8 +534,5 @@ export function sessionSpawnIdentity(
     session.model ?? "-",
     shaping?.style ?? "-",
     shaping?.endpoint.url ?? "-",
-    session.providerRouteKind && session.providerRouteId
-      ? `${session.providerRouteKind}:${session.providerRouteId}`
-      : "-",
   ].join("|");
 }

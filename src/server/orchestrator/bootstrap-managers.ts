@@ -900,6 +900,13 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     const modeKey = limitsModeKey(owner);
     limitsProvidersByMode.get(modeKey)?.setRateLimits(session, weekly, routeId);
     limitsRegistry?.markAuthRefreshed(modeKey);
+    // docs/260 req 9 — a healthy reading newer than a remembered refusal
+    // clears that memory immediately (the user's post-upgrade refresh, a
+    // fresh event from a probe turn). Both shapes are offered the reading;
+    // each clear no-ops unless the route is its own kind and blocked.
+    const reading = { session, weekly, fetchedAt: Date.now() };
+    providerAccountManager?.clearRefusalOnHealthyReading(owner.serviceId, routeId, reading);
+    credentialStore.clearCredentialRefusalOnHealthyReading(routeId, reading);
   };
 
   // ---- Session directory creation ----

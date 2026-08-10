@@ -498,7 +498,7 @@ export function createRunnerRegistry(
           // quick/child/CI-fix turn spawn with a sibling-rotated (dead) token →
           // "Not logged in". Idempotent with the service fn's earlier call.
           prepareAgentEnv: async (sessionId, agentId, envOpts) => {
-            await prepareSessionAgentEnvironment(runner, {
+            return prepareSessionAgentEnvironment(runner, {
               sessionId,
               agentId,
               // docs/150 req 13 — the dispatched/system-turn twin of the WS
@@ -509,6 +509,9 @@ export function createRunnerRegistry(
               // (`dispatched-turn.ts` captures it), so it needs the same
               // no-repair-under-a-live-CLI guarantee as the WS path.
               ...(envOpts?.reusingResidentAgent ? { reusingResidentAgent: true } : {}),
+              ...(envOpts?.excludeRouteIds ? { excludeRouteIds: envOpts.excludeRouteIds } : {}),
+              ...(envOpts?.residentRoute ? { residentRoute: envOpts.residentRoute } : {}),
+              ...(envOpts?.requireResidentRoute ? { requireResidentRoute: true } : {}),
               deps: {
                 credentialsDir, credentialStore, sessionManager, chatHistoryManager,
                 ...(providerAccountManager ? { providerAccountManager } : {}),
@@ -516,6 +519,10 @@ export function createRunnerRegistry(
               },
             });
           },
+          // docs/260 req 10 — labels for the attempt-loop notices.
+          routeLabel: (routeId: string) =>
+            providerAccountManager?.getByRouteId(routeId)?.label
+            ?? credentialStore.getCredentialRoute(routeId)?.label,
           // docs/252 phase 5 — a benched string-delivered subscription credential
           // retires the resident process on the same terms an exhausted account
           // does, so this is no longer gated on there being an account manager at
