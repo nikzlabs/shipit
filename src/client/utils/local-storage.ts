@@ -46,6 +46,7 @@ export function getLocalStorageObject<T>(
 }
 
 const SIDEBAR_COLLAPSED_KEY = "vibe-sidebar-collapsed";
+const SIDEBAR_VIEW_KEY = "shipit-sidebar-view";
 const RIGHT_TAB_KEY = "shipit-right-tab";
 const AGENT_PREFERENCE_KEY = "vibe-agent-id";
 const MODEL_PREFERENCE_KEY = "vibe-model-id";
@@ -65,6 +66,27 @@ export function getSavedSidebarCollapsed(): boolean {
 export function saveSidebarCollapsed(collapsed: boolean): void {
   try {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+// docs/260 — which of the sidebar's two views is showing: the repo tree
+// ("all") or the flat needs-attention list ("attention"). Browser-local view
+// state, like the collapse flag above; not server-persisted.
+export type SidebarView = "all" | "attention";
+
+export function getSavedSidebarView(): SidebarView {
+  try {
+    return localStorage.getItem(SIDEBAR_VIEW_KEY) === "attention" ? "attention" : "all";
+  } catch {
+    return "all";
+  }
+}
+
+export function saveSidebarView(view: SidebarView): void {
+  try {
+    localStorage.setItem(SIDEBAR_VIEW_KEY, view);
   } catch {
     // localStorage may be unavailable
   }
@@ -936,4 +958,4 @@ export function saveIncludeDone(includeDone: boolean): void {
   }
 }
 
-export { SIDEBAR_COLLAPSED_KEY, RIGHT_TAB_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, LAST_QUICK_SESSION_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, COLLAPSED_REPOS_KEY, COLLAPSED_PARENTS_KEY, ISSUE_FILTERS_KEY, ISSUE_INCLUDE_DONE_KEY };
+export { SIDEBAR_COLLAPSED_KEY, SIDEBAR_VIEW_KEY, RIGHT_TAB_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, LAST_QUICK_SESSION_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, COLLAPSED_REPOS_KEY, COLLAPSED_PARENTS_KEY, ISSUE_FILTERS_KEY, ISSUE_INCLUDE_DONE_KEY };

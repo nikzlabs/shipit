@@ -9,9 +9,12 @@ import {
   getSavedAgentId,
   getSavedSidebarCollapsed,
   saveSidebarCollapsed,
+  getSavedSidebarView,
+  saveSidebarView,
   getSavedRightTab,
   saveRightTab,
 } from "../utils/local-storage.js";
+import type { SidebarView } from "../utils/local-storage.js";
 import { newSessionAgentId } from "../utils/new-session-agent.js";
 
 export type RightTab =
@@ -98,6 +101,12 @@ interface UiState {
   /** Which tab the Project Settings dialog opens on. */
   projectSettingsTab: ProjectSettingsTab;
   sidebarCollapsed: boolean;
+  /**
+   * docs/260 req 13 — which of the sidebar's two views is showing: the repo
+   * tree (`"all"`) or the flat needs-attention list (`"attention"`). Persisted
+   * to localStorage so the sidebar reopens in the view the user chose.
+   */
+  sidebarView: SidebarView;
   mobileSidebarOpen: boolean;
   toast: ToastData | null;
   bootstrapLoaded: boolean;
@@ -166,6 +175,9 @@ interface UiState {
    */
   setProjectSettingsRepoUrl: (url: string | null, tab?: ProjectSettingsTab) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
+  setSidebarView: (view: SidebarView) => void;
+  /** Flip between the two sidebar views — the switch and the keyboard chord. */
+  toggleSidebarView: () => void;
   setMobileSidebarOpen: (open: boolean) => void;
   setToast: (toast: ToastData | null) => void;
   setDockerMemory: (stats: DockerMemoryStats | null) => void;
@@ -204,6 +216,7 @@ const initialState = {
   projectSettingsRepoUrl: null as string | null,
   projectSettingsTab: "secrets" as ProjectSettingsTab,
   sidebarCollapsed: getSavedSidebarCollapsed(),
+  sidebarView: getSavedSidebarView(),
   mobileSidebarOpen: false,
   toast: null as ToastData | null,
   bootstrapLoaded: false,
@@ -271,6 +284,18 @@ export const useUiStore = create<UiState>((set) => ({
     saveSidebarCollapsed(collapsed);
     set({ sidebarCollapsed: collapsed });
   },
+
+  setSidebarView: (sidebarView) => {
+    saveSidebarView(sidebarView);
+    set({ sidebarView });
+  },
+
+  toggleSidebarView: () =>
+    set((state) => {
+      const sidebarView: SidebarView = state.sidebarView === "attention" ? "all" : "attention";
+      saveSidebarView(sidebarView);
+      return { sidebarView };
+    }),
 
   setMobileSidebarOpen: (mobileSidebarOpen) => set({ mobileSidebarOpen }),
 
