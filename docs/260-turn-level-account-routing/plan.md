@@ -35,18 +35,16 @@ preference. Every routed turn asks `ProviderAccountManager.selectAccountForTurn`
     "try once to confirm".
   - **Refusal memory** (section 2) is the only skip — and even that yields
     under req 12 (section 3).
-- **Balanced mode and resident processes — OPEN QUESTION.** Under `strict`
-  the strategy is absolute: the session moves back to the primary the turn it
-  recovers (req 8), one process restart accepted. Under `balanced`
-  (least-recently-used) a literal per-turn reading makes a two-account
-  install alternate accounts every turn and restart the resident process each
-  time — and the cross-backend review is right that a "resident tiebreak" is
-  not a tiebreak there but a strategy change, which req 8 forbids the design
-  from deciding on its own. Whether `balanced` spreads *turns* (literal LRU,
-  accept the churn) or spreads *sessions* (a resident process keeps its
-  account while it stays eligible and under-cutoff) is parked in
-  `requirements.md` → Open questions; it blocks implementing this bullet
-  only.
+- **Balanced spreads sessions, strict is absolute (req 8, resolved
+  2026-08-10).** Under `strict` the session moves back to the primary the
+  turn it recovers, one process restart accepted. Under `balanced` the mode
+  spreads **sessions** over accounts, not individual turns: selection takes a
+  `residentRoute` option, and when the resident process's account is eligible
+  and under its cutoff, that account is chosen; otherwise the normal
+  least-recently-used walk runs. This is req 8's own definition of "better"
+  for balanced — not a design-level tiebreak — so a session without a
+  resident process still lands on the least-recently-used account, which is
+  what spreads new work.
 - The pre-capture check in `agent-execution.ts` becomes account-agnostic and
   trivial: run selection once before capturing the resident process; if the
   chosen account differs from the process's captured account (section 5),

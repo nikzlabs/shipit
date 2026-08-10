@@ -55,7 +55,12 @@ requirement below contradicts it.
 8. The strategy always wins. When a better account (per the selection
    strategy) becomes eligible again, the next turn moves onto it — even when
    the session's resident CLI process runs on another account. The restart
-   cost of that process is accepted; the conversation is preserved.
+   cost of that process is accepted; the conversation is preserved. Under
+   `balanced`, "better" is measured across sessions, not turns: the mode
+   spreads **sessions** over accounts, so a session's resident process keeps
+   its account while that account stays eligible and under its cutoff. Under
+   strict priority the primary is always better, and the move-back applies
+   literally.
 
 9. A quota refusal reported by the harness is remembered: the account is left
    alone until the provider-stated reset time, but re-tried after at most
@@ -146,18 +151,7 @@ not user-observable requirements.
 
 ## Open questions
 
-- **Balanced mode vs resident processes.** Under `balanced`
-  (least-recently-used ordering) a literal per-turn reading moves a
-  two-account install to the other account on every turn — killing the
-  resident CLI process each time, because the account a session just used
-  always sorts last. Requirement 8 was answered for strict priority and did
-  not decide this case, and the cross-backend design review flagged that a
-  "resident-process tiebreak" would quietly change what `balanced` means.
-  Options: (a) `balanced` spreads **sessions** — a session's resident process
-  keeps its account while that account stays eligible and under its cutoff
-  (recommended: it matches the mode's stated purpose of avoiding pile-up and
-  avoids a process restart on every turn); (b) `balanced` spreads **turns** —
-  literal least-recently-used, accepting the churn.
+None — design and implementation are unblocked.
 
 ## Resolved questions
 
@@ -185,6 +179,11 @@ not user-observable requirements.
   sub-agent review or agent-started background processes must not be killed
   for an account move — the cost would be the tokens already spent on that
   work. Recorded as requirement 13.
+- 2026-08-10 (design review) — Does `balanced` spread turns or sessions?
+  Raised by the cross-backend review: literal least-recently-used ordering
+  would alternate accounts and restart the resident process on every turn.
+  Nik: balanced spreads **sessions** — a resident process keeps its account
+  while it stays eligible and under its cutoff. Folded into requirement 8.
 - 2026-08-10 — Scope across credential shapes? Nik: all subscription-shaped
   credentials — Claude accounts, Codex accounts, string-delivered
   subscriptions. Recorded as requirement 11.
