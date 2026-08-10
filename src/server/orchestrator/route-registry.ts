@@ -804,9 +804,25 @@ export async function registerRoutes(
           if (buffered.type === "terminal_reconnecting") continue;
           send(buffered);
         }
-        if (runner.getQueueSnapshot().length > 0) {
-          send({ type: "queue_updated", queue: runner.getQueueSnapshot() });
-        }
+        // UNCONDITIONAL, empty queue included: an empty snapshot is exactly the
+        // correction a re-attaching viewer needs. The client clears
+        // `queuedMessages` only on a live `queue_updated`, an interrupt, or a
+        // switch to another session — a plain reconnect on the SAME session
+        // clears nothing. So a queue that drained while nobody was attached left
+        // the queued bubble on screen forever: the drain's live `queue_updated`
+        // reached no one, and `resetRunnerTurnState` clears the turn-event
+        // buffer when the drained turn starts, so the replay above can't carry
+        // it either. Same reasoning as the `active_runners` SSE snapshot.
+        send({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+        // Still conditional, deliberately: unlike the queue, neither half of a
+        // stale running state can survive. The chat status line is corrected by
+        // the re-attach itself — the client reloads HTTP history on every WS
+        // open and sets `isLoading` from the authoritative `agentRunning`
+        // there. The sidebar's `activeRunnerSessions` is corrected on a
+        // different channel rather than by this attach: live SSE
+        // `session_agent_finished` transitions, and the unconditional
+        // `active_runners` snapshot that replaces the set wholesale on every
+        // SSE (re)connect. Sending this unconditionally would add nothing.
         if (runner.running || runner.queueLength > 0) {
           send({ type: "session_status", sessionId: runner.sessionId, running: runner.running, queueLength: runner.queueLength });
         }

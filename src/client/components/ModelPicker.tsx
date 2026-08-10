@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react";
-import { CaretDownIcon, CheckIcon, LockIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, CheckIcon, LockIcon, RobotIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatModelName, resolveModelAlias } from "../utils/format-model.js";
 import { getSavedModelId, getSavedModelSelection } from "../utils/local-storage.js";
@@ -132,6 +132,18 @@ interface HarnessSelectorProps {
   /** See {@link ModelSelectorProps.hasActiveSession}. */
   hasActiveSession?: boolean;
   disabled?: boolean;
+  /**
+   * Mobile composer mode: show only the robot icon to conserve toolbar width,
+   * as {@link ReasoningSelector} does with its brain. The harness name is the
+   * widest label in the row ("Claude Code"), and with the model selector beside
+   * it the toolbar overflowed far enough to push Send off-screen.
+   *
+   * The icon is generic rather than per-harness, so it says *that* there is a
+   * harness choice and not *which* — the name moves into `title` and
+   * `aria-label`, and the open menu still checks the current one. Same trade the
+   * brain icon already makes for reasoning effort.
+   */
+  compactTrigger?: boolean;
 }
 
 /**
@@ -145,6 +157,7 @@ export function HarnessSelector({
   onAgentChange,
   hasActiveSession = false,
   disabled,
+  compactTrigger = false,
 }: HarnessSelectorProps) {
   const sessionId = useSessionStore((s) => s.sessionId);
   const sessions = useSessionStore((s) => s.sessions);
@@ -158,6 +171,9 @@ export function HarnessSelector({
   const installed = agents.filter((a) => a.installed);
   const displayAgent = agents.find((a) => a.id === (currentSession?.agentId ?? activeAgentId));
   const locked = !!pinnedAgentId;
+  // Carried into `title` / `aria-label` in every mode, because the compact
+  // trigger has no visible text to fall back on.
+  const harnessName = displayAgent?.name ?? "Loading...";
 
   return (
     <div data-testid="harness-selector">
@@ -167,16 +183,24 @@ export function HarnessSelector({
             disabled={disabled || locked}
             title={
               locked
-                ? "The harness is fixed for this session after the first message. Models stay switchable."
-                : undefined
+                ? `${harnessName}: fixed for this session after the first message. Models stay switchable.`
+                : compactTrigger
+                  ? harnessName
+                  : undefined
             }
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg transition-colors font-medium text-(--color-text-secondary) disabled:opacity-50 disabled:cursor-not-allowed ${
+            className={`flex items-center gap-1.5 text-xs rounded-lg transition-colors font-medium text-(--color-text-secondary) disabled:opacity-50 disabled:cursor-not-allowed ${
+              compactTrigger ? "h-8 justify-center px-2" : "px-2.5 py-1.5"
+            } ${
               disabled || locked ? "cursor-default" : "hover:bg-(--color-bg-hover) cursor-pointer"
             }`}
-            aria-label="Harness selector"
+            aria-label={`Harness selector: ${harnessName}`}
             data-testid="harness-trigger"
           >
-            <span>{displayAgent?.name ?? "Loading..."}</span>
+            {compactTrigger ? (
+              <RobotIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary)" />
+            ) : (
+              <span>{harnessName}</span>
+            )}
             {locked ? (
               <LockIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary)" />
             ) : (
