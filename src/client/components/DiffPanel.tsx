@@ -18,6 +18,7 @@ import { DiffTreeNode } from "./DiffTreeNode.js";
 import { ImageDiffView, SvgDiffView, isSvgPath } from "./DiffMediaView.js";
 import { SourceToggle, type ViewMode } from "./FileContentView/SourceToggle.js";
 import type { SendCommentsPayload } from "./FilePreviewModal.js";
+import { SendReviewDialog } from "./SendReviewDialog.js";
 
 /** Map file extensions to Monaco language IDs. */
 function getLanguageFromPath(filePath: string): string {
@@ -134,6 +135,9 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
   // Send is held while any is open so an accidental click can't submit the
   // review and silently drop the half-typed comment.
   const [composingPaths, setComposingPaths] = useState<ReadonlySet<string>>(() => new Set());
+  // docs/260 — send-confirmation dialog + its free-text note.
+  const [sendDialogOpen, setSendDialogOpen] = useState(false);
+  const [note, setNote] = useState("");
   const fileSectionRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const editorContainerRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const managersRef = useRef<Map<string, CommentWidgetManager>>(new Map());
@@ -151,6 +155,12 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
     [allComments, githubComments],
   );
   const commentCount = allComments.length;
+  // What the draft comments are on, for the send dialog's "N comments on …".
+  const commentFilePaths = useMemo(
+    () => Array.from(new Set(allComments.map((c) => c.filePath))),
+    [allComments],
+  );
+  const commentFileCount = commentFilePaths.length;
   const addLineComment = useCommentStore((s) => s.addLineComment);
   const editComment = useCommentStore((s) => s.editComment);
   const deleteComment = useCommentStore((s) => s.deleteComment);
@@ -284,7 +294,15 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
     managersRef.current.set(file.path, manager);
   }, [diff.files, sessionId, addLineComment, editComment, deleteComment, setComposingForPath, visibleComments]);
 
+  // docs/260 — Send opens the confirmation dialog; `confirmSendComments` is the
+  // send itself. The note lives here (not in the dialog) so cancelling and
+  // reopening restores what was typed.
   const handleSendComments = useCallback(() => {
+    if (commentCount === 0 || !onSendComments || composing) return;
+    setSendDialogOpen(true);
+  }, [commentCount, onSendComments, composing]);
+
+  const confirmSendComments = useCallback(() => {
     // Mirrors the disabled button: never send out from under an open editor.
     if (commentCount === 0 || !onSendComments || composing) return;
     const fileContents = new Map<string, string>();
@@ -292,7 +310,11 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
       fileContents.set(file.path, file.newContent);
     }
 
+    // The note is the first piece of feedback, before the anchored comments —
+    // the same placement the server's prompt builder uses (docs/260).
+    const trimmedNote = note.trim();
     let prompt = "I have the following comments on the code:\n\n";
+    if (trimmedNote) prompt += `${trimmedNote}\n\n`;
     const byFile = new Map<string, typeof allComments>();
     for (const c of allComments) {
       if (!byFile.has(c.filePath)) byFile.set(c.filePath, []);
@@ -324,7 +346,9 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
     const filePaths = Array.from(byFile.keys());
     onSendComments({ prompt, filePaths, commentCount });
     clearComments(sessionId);
-  }, [commentCount, onSendComments, allComments, diff.files, clearComments, sessionId, composing]);
+    setSendDialogOpen(false);
+    setNote("");
+  }, [commentCount, onSendComments, allComments, diff.files, clearComments, sessionId, composing, note]);
 
   if (diff.files.length === 0) {
     return (
@@ -495,6 +519,15 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
             Send {commentCount} comment{commentCount !== 1 ? "s" : ""}
           </Button>
         )}
+        <SendReviewDialog
+          open={sendDialogOpen}
+          commentCount={commentCount}
+          target={commentFileCount === 1 ? commentFilePaths[0] : `${commentFileCount} files`}
+          note={note}
+          onNoteChange={setNote}
+          onSend={confirmSendComments}
+          onClose={() => setSendDialogOpen(false)}
+        />
         {/* One trailing status slot: while a comment editor is open it explains
             why Send is held, otherwise it shows the commit range. Reusing the
             slot keeps the footer the same width on a phone either way. */}

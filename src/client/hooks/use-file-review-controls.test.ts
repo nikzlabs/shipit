@@ -145,8 +145,10 @@ describe("useFileReviewControls — canSend", () => {
     expect(result.current.canSend).toBe(false);
 
     // …and handleSend is a no-op while held, so a stray keyboard submit can't
-    // send the draft out from under the open editor.
-    await act(async () => { await result.current.handleSend(); });
+    // open the send dialog over the editor — nor send from it (docs/260).
+    act(() => { result.current.handleSend(); });
+    expect(result.current.sendDialogOpen).toBe(false);
+    await act(async () => { await result.current.confirmSend(); });
     expect(onSendComments).not.toHaveBeenCalled();
 
     seedDraft();
@@ -154,5 +156,101 @@ describe("useFileReviewControls — canSend", () => {
       useFileReviewStore.getState().setComposing("sess_1", "docs/x.md", false);
     });
     expect(result.current.canSend).toBe(true);
+  });
+});
+
+// docs/260 — Send is a two-step: it opens the confirmation dialog, and the
+// dialog's own Send is what reaches the agent.
+describe("useFileReviewControls — send dialog", () => {
+  const seedDraft = () => {
+    act(() => {
+      useFileReviewStore.setState({
+        draftByKey: {
+          "sess_1::docs/x.md": {
+            id: "d1",
+            sessionId: "sess_1",
+            filePath: "docs/x.md",
+            status: "draft",
+            comments: [{
+              id: "c1", kind: "selection", quotedText: "q", contextBefore: "", contextAfter: "",
+              text: "note",
+            }],
+            createdAt: "", updatedAt: "",
+          } as unknown as FileReview,
+        },
+      });
+    });
+  };
+
+  it("opens the dialog instead of sending", () => {
+    const onSendComments = vi.fn();
+    const { result } = renderHook(() =>
+      useFileReviewControls({ filePath: "docs/x.md", kind: "markdown", content: "# x", onSendComments }),
+    );
+    seedDraft();
+
+    expect(result.current.sendDialogOpen).toBe(false);
+    act(() => { result.current.handleSend(); });
+    expect(result.current.sendDialogOpen).toBe(true);
+    expect(onSendComments).not.toHaveBeenCalled();
+  });
+
+  it("does not open the dialog with an empty draft", () => {
+    const { result } = renderHook(() =>
+      useFileReviewControls({ filePath: "docs/x.md", kind: "markdown", content: "# x", onSendComments: vi.fn() }),
+    );
+    act(() => { result.current.handleSend(); });
+    expect(result.current.sendDialogOpen).toBe(false);
+  });
+
+  it("keeps the typed note when the dialog is cancelled", () => {
+    const { result } = renderHook(() =>
+      useFileReviewControls({ filePath: "docs/x.md", kind: "markdown", content: "# x", onSendComments: vi.fn() }),
+    );
+    seedDraft();
+
+    act(() => { result.current.handleSend(); });
+    act(() => { result.current.setNote("keep the structure"); });
+    act(() => { result.current.closeSendDialog(); });
+
+    expect(result.current.sendDialogOpen).toBe(false);
+    expect(result.current.note).toBe("keep the structure");
+  });
+
+  it("confirmSend passes the note to sendDraft and closes the dialog", async () => {
+    const onSendComments = vi.fn();
+    const sendDraft = vi.fn().mockResolvedValue({
+      prompt: "p", filePath: "docs/x.md", commentCount: 1,
+    });
+    const { result } = renderHook(() =>
+      useFileReviewControls({ filePath: "docs/x.md", kind: "markdown", content: "# x", onSendComments }),
+    );
+    seedDraft();
+    act(() => { useFileReviewStore.setState({ sendDraft }); });
+
+    act(() => { result.current.handleSend(); });
+    act(() => { result.current.setNote("  overall: close  "); });
+    await act(async () => { await result.current.confirmSend(); });
+
+    expect(sendDraft).toHaveBeenCalledWith("sess_1", "docs/x.md", "  overall: close  ");
+    expect(onSendComments).toHaveBeenCalledWith({
+      prompt: "p", filePaths: ["docs/x.md"], commentCount: 1,
+    });
+    expect(result.current.sendDialogOpen).toBe(false);
+    expect(result.current.note).toBe("");
+  });
+
+  it("keeps the note when the send fails", async () => {
+    const { result } = renderHook(() =>
+      useFileReviewControls({ filePath: "docs/x.md", kind: "markdown", content: "# x", onSendComments: vi.fn() }),
+    );
+    seedDraft();
+    act(() => { useFileReviewStore.setState({ sendDraft: vi.fn().mockResolvedValue(null) }); });
+
+    act(() => { result.current.handleSend(); });
+    act(() => { result.current.setNote("do not lose me"); });
+    await act(async () => { await result.current.confirmSend(); });
+
+    expect(result.current.note).toBe("do not lose me");
   });
 });

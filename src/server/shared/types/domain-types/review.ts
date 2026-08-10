@@ -74,6 +74,13 @@ export interface FileReview {
   createdAt: string;
   updatedAt: string;
   sentAt?: string;
+  /**
+   * docs/260 — the free-text note the user attached in the send dialog: the
+   * feedback that belongs to no single line (a summary, a constraint, why the
+   * review is happening). Composed at send time, so it is absent on a draft and
+   * set only on a sent review; absent too when the user sent without one.
+   */
+  note?: string;
 }
 
 // ---- Legacy client-side file comment types (DiffPanel only) ----

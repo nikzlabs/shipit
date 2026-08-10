@@ -17,6 +17,7 @@ interface ReviewRow {
   created_at: string;
   updated_at: string;
   sent_at: string | null;
+  note: string | null;
 }
 
 interface CommentRow {
@@ -89,6 +90,7 @@ export class FileReviewStore {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       sentAt: row.sent_at ?? undefined,
+      note: row.note ?? undefined,
     };
   }
 
@@ -232,11 +234,14 @@ export class FileReviewStore {
   }
 
   /** Mark a review as sent. */
-  markSent(reviewId: string): void {
+  markSent(reviewId: string, note?: string): void {
     const now = new Date().toISOString();
+    // A whitespace-only note is stored as NULL: "sent without a note" gets one
+    // representation, so readers never have to treat "" and NULL alike.
+    const trimmed = note?.trim();
     this.db.prepare(
-      "UPDATE file_reviews SET status = 'sent', sent_at = ?, updated_at = ? WHERE id = ?",
-    ).run(now, now, reviewId);
+      "UPDATE file_reviews SET status = 'sent', sent_at = ?, updated_at = ?, note = ? WHERE id = ?",
+    ).run(now, now, trimmed && trimmed.length > 0 ? trimmed : null, reviewId);
   }
 
   /** Delete a draft review and its comments. */

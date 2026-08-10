@@ -161,6 +161,27 @@ describe("FileReviewStore", () => {
     expect(review!.sentAt).toBeTruthy();
   });
 
+  // docs/260 — the send dialog's note rides along with markSent and comes back
+  // on the sent review, which is what "Past reviews" reads.
+  it("stores the send note on the sent review", () => {
+    const draft = store.createDraft("s1", "plan.md", "markdown", "h");
+    store.addSelectionComment(draft.id, "anchor", "", "", "feedback");
+
+    store.markSent(draft.id, "  Keep the structure.  ");
+
+    expect(store.getReview(draft.id)!.note).toBe("Keep the structure.");
+  });
+
+  it("stores no note when the note is absent or whitespace only", () => {
+    const a = store.createDraft("s1", "a.md", "markdown", "h");
+    store.markSent(a.id);
+    expect(store.getReview(a.id)!.note).toBeUndefined();
+
+    const b = store.createDraft("s1", "b.md", "markdown", "h");
+    store.markSent(b.id, "   \n  ");
+    expect(store.getReview(b.id)!.note).toBeUndefined();
+  });
+
   it("starts a fresh draft after the previous one is sent", () => {
     const first = store.createDraft("s1", "plan.md", "markdown", "h");
     store.markSent(first.id);

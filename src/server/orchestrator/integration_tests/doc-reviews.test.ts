@@ -405,6 +405,95 @@ Unit and integration tests.
     expect(body.prompt).toContain(":2");
   });
 
+  // docs/260 — the send dialog's free-text note.
+  it("POST /send carries the note into the prompt and onto the sent review", async () => {
+    const draft = (await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: planPath },
+    })).json() as FileReview;
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
+      payload: { kind: "selection", quotedText: "Plugin-based approach", text: "Add Netlify support" },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/send`,
+      payload: { note: "Overall this is close. Don't restructure the file." },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { prompt: string; review: FileReview };
+
+    // The note is the first piece of feedback: after the lead-in, before the
+    // first quoted comment.
+    const leadIn = body.prompt.indexOf("I've reviewed");
+    const note = body.prompt.indexOf("Overall this is close.");
+    const firstComment = body.prompt.indexOf("> Plugin-based approach");
+    expect(leadIn).toBe(0);
+    expect(note).toBeGreaterThan(leadIn);
+    expect(firstComment).toBeGreaterThan(note);
+
+    // …and it is stored, so "Past reviews" can show it again.
+    expect(body.review.note).toBe("Overall this is close. Don't restructure the file.");
+    const list = (await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/file-reviews?filePath=${encodeURIComponent(planPath)}`,
+    })).json() as { reviews: FileReview[] };
+    expect(list.reviews.find((r) => r.id === draft.id)?.note)
+      .toBe("Overall this is close. Don't restructure the file.");
+  });
+
+  it("POST /send still works with no body, and stores no note", async () => {
+    const draft = (await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: planPath },
+    })).json() as FileReview;
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
+      payload: { kind: "selection", quotedText: "Plugin-based approach", text: "x" },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/send`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as { review: FileReview }).review.note).toBeUndefined();
+  });
+
+  it("POST /send rejects an over-long note", async () => {
+    const draft = (await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: planPath },
+    })).json() as FileReview;
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
+      payload: { kind: "selection", quotedText: "Plugin-based approach", text: "x" },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/send`,
+      payload: { note: "x".repeat(4001) },
+    });
+    expect(res.statusCode).toBe(400);
+    // The draft survives a rejected send — nothing was marked sent.
+    const draftRes = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/file-reviews/draft?filePath=${encodeURIComponent(planPath)}`,
+    });
+    expect(draftRes.statusCode).toBe(200);
+  });
+
   it("POST /send rejects review with no comments", async () => {
     const draft = (await app.inject({
       method: "POST",

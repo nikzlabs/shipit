@@ -16,7 +16,7 @@
  */
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: one-shot draft load tied to (session, file) identity
-import { useEffect, useMemo, useCallback } from "react";
+import { useEffect, useMemo, useCallback, useState } from "react";
 import { useFileReviewStore } from "../stores/file-review-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -52,6 +52,16 @@ export interface FileReviewControls {
   history: FileReview[];
   /** Whether the Send button should be enabled. */
   canSend: boolean;
+  /** docs/260 — the send-confirmation dialog is open. */
+  sendDialogOpen: boolean;
+  /** The dialog's free-text note. Held here, not in the dialog, so cancelling
+   *  and reopening restores what was typed. */
+  note: string;
+  setNote: (note: string) => void;
+  /** Close the dialog without sending. The draft and the note both survive. */
+  closeSendDialog: () => void;
+  /** Send the draft with the note. Called by the dialog's Send button. */
+  confirmSend: () => Promise<void>;
   /**
    * True while an unsaved comment editor is open (add-comment input or an
    * in-place edit). Blocks `canSend` so an accidental submit can't drop a
@@ -62,8 +72,9 @@ export interface FileReviewControls {
   showAskReview: boolean;
   /** True while the agent is mid-turn (Ask-review is disabled, not hidden). */
   agentRunning: boolean;
-  /** Send the draft; surfaces the constructed prompt to `onSendComments`. */
-  handleSend: () => Promise<void>;
+  /** Open the send-confirmation dialog (docs/260). The send itself is
+   *  `confirmSend`, from inside the dialog. */
+  handleSend: () => void;
   /** Start a chat-native review turn via `onAskAgentReview`. */
   handleAskReview: () => void;
   /** Discard an empty draft (on close / sibling switch / carousel nav / tab blur). */
@@ -153,18 +164,35 @@ export function useFileReviewControls({
     onAskAgentReview(filePath);
   }, [sessionId, filePath, onAskAgentReview, agentRunning]);
 
-  const handleSend = useCallback(async () => {
-    // Mirrors the disabled button: never send out from under an open editor.
+  // docs/260 — Send opens a confirmation dialog instead of sending. The note
+  // lives here rather than in the dialog so a cancel (or an unmount) doesn't
+  // discard what was typed.
+  const [sendDialogOpen, setSendDialogOpen] = useState(false);
+  const [note, setNote] = useState("");
+
+  const handleSend = useCallback(() => {
+    // Mirrors the disabled button: never open out from under an open editor.
+    if (!sessionId || !onSendComments || composing || commentCount === 0) return;
+    setSendDialogOpen(true);
+  }, [sessionId, onSendComments, composing, commentCount]);
+
+  const closeSendDialog = useCallback(() => setSendDialogOpen(false), []);
+
+  const confirmSend = useCallback(async () => {
     if (!sessionId || !onSendComments || composing) return;
-    const result = await sendDraft(sessionId, filePath);
+    const result = await sendDraft(sessionId, filePath, note);
+    setSendDialogOpen(false);
     if (result) {
+      // Only clear the note once the send succeeded — a failed send keeps it
+      // so the user can retry without retyping.
+      setNote("");
       onSendComments({
         prompt: result.prompt,
         filePaths: [result.filePath],
         commentCount: result.commentCount,
       });
     }
-  }, [sessionId, filePath, sendDraft, onSendComments, composing]);
+  }, [sessionId, filePath, sendDraft, onSendComments, composing, note]);
 
   const discardEmptyDraftNow = useCallback(() => {
     // The store guards on emptiness, so this is a no-op when comments exist.
@@ -184,6 +212,11 @@ export function useFileReviewControls({
     showAskReview,
     agentRunning,
     handleSend,
+    sendDialogOpen,
+    note,
+    setNote,
+    closeSendDialog,
+    confirmSend,
     handleAskReview,
     discardEmptyDraftNow,
   };
