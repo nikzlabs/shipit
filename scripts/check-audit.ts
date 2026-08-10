@@ -96,16 +96,35 @@ function runAudit(): Record<string, AuditVulnerability> {
     }
   }
 
+  let parsed: {
+    vulnerabilities?: Record<string, AuditVulnerability>;
+    message?: string;
+    error?: { summary?: string; detail?: string };
+  };
   try {
-    const parsed = JSON.parse(raw) as {
-      vulnerabilities?: Record<string, AuditVulnerability>;
-    };
-    return parsed.vulnerabilities ?? {};
+    parsed = JSON.parse(raw);
   } catch {
     console.error("npm audit returned output that is not JSON:");
     console.error(raw.slice(0, 2000));
     process.exit(2);
   }
+
+  // A failed audit still prints JSON, but it carries `message`/`error` and no
+  // `vulnerabilities` key — a registry outage or a proxy 5xx looks like this.
+  // Defaulting that to {} would report "0 advisories, policy passes" and exit
+  // 0, so a network blip would silently green-light a vulnerable tree. Treat a
+  // missing `vulnerabilities` key as a tool failure, never as a clean result.
+  if (!parsed || typeof parsed !== "object" || !parsed.vulnerabilities) {
+    console.error("npm audit did not return a vulnerability report.");
+    const reason = parsed?.message ?? parsed?.error?.summary;
+    if (reason) console.error(`  ${reason}`);
+    console.error(
+      "  Refusing to pass on an audit that did not run — this is not a clean tree.",
+    );
+    process.exit(2);
+  }
+
+  return parsed.vulnerabilities;
 }
 
 function loadAllowlist(): AllowlistEntry[] {
