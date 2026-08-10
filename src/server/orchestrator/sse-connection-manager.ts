@@ -94,6 +94,21 @@ export class SseConnectionManager {
   get isConnected(): boolean { return this.sseConnection !== null; }
 
   /**
+   * Consecutive failed reconnect attempts since the stream last opened.
+   * Reset to 0 by `onOpen`, so a non-zero value means "we have not had a
+   * working stream since that many attempts ago" — with the backoff capped
+   * at {@link MAX_RECONNECT_DELAY_MS}, attempt N is roughly
+   * `min(2^k, 10s)` summed, i.e. ~95s at 12.
+   *
+   * Read by the missing-container reconciler (docs/121 gap E): a runner
+   * whose stream has failed this many times in a row is the cheap trigger
+   * for asking Docker whether its container is still alive. The manager
+   * itself never gives up on the schedule — deciding a worker is
+   * permanently gone is a container-lifecycle judgement, not an SSE one.
+   */
+  get reconnectAttempts(): number { return this.sseReconnectAttempts; }
+
+  /**
    * Advance the worker event cursor before the first SSE connection. Used when
    * the orchestrator is about to start a fresh agent against an already-idle
    * worker whose ring buffer may still contain events from a turn that

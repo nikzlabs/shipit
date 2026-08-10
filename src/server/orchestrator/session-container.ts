@@ -27,6 +27,7 @@ import {
 import {
   rediscoverContainers,
   adoptRunningContainer,
+  isTrackedContainerRunning,
   cleanupOrphanContainers,
   getSessionByContainerIp,
   type DiscoveryDeps,
@@ -84,6 +85,7 @@ export {
 export {
   rediscoverContainers,
   adoptRunningContainer,
+  isTrackedContainerRunning,
   cleanupOrphanContainers,
   getSessionByContainerIp,
   type DiscoveryDeps,
@@ -1102,6 +1104,35 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     } | undefined,
   ): Promise<boolean> {
     return adoptRunningContainer(this.discoveryDeps(), sessionId, sessionInfoResolver);
+  }
+
+  /**
+   * Ask Docker whether the tracked container for a session is still running.
+   * `undefined` means Docker could not answer — never treat that as death.
+   * See `isTrackedContainerRunning` in `container-discovery.ts`.
+   */
+  async isTrackedContainerRunning(sessionId: string): Promise<boolean | undefined> {
+    return isTrackedContainerRunning(this.discoveryDeps(), sessionId);
+  }
+
+  /**
+   * Apply the `die` we never received: drop the tracking entry for a container
+   * Docker has confirmed is no longer running.
+   *
+   * Deliberately the same *state* transition the `die` handler in
+   * `container-health.ts` performs — mark stopped, forget it — and deliberately
+   * NOT `destroy()`. There is nothing left to stop, and `destroy()` would also
+   * sweep the session's Compose children on a path whose only established fact
+   * is "the agent container is gone". The dead container's shell is reaped by
+   * `removeStaleContainer` on the next create for this session, and by
+   * startup orphan cleanup otherwise.
+   */
+  markContainerGone(sessionId: string): void {
+    const sc = this.containers.get(sessionId);
+    if (!sc) return;
+    sc.status = "stopped";
+    this.containers.delete(sessionId);
+    this.standbySessionIds.delete(sessionId);
   }
 
   // --- Health monitoring (delegates to container-health.ts) ---

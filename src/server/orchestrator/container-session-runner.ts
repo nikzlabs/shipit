@@ -703,6 +703,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   /** Timestamp of the most recent SSE event from the worker, or 0 if none yet. */
   get lastSseEventAt(): number { return this.sse.lastActivityAt; }
 
+  /**
+   * Consecutive failed `/events` reconnect attempts since the stream last
+   * opened (0 while connected). Surfaced for the missing-container
+   * reconciler — see `SseConnectionManager.reconnectAttempts`.
+   */
+  get sseReconnectAttempts(): number { return this.sse.reconnectAttempts; }
+
   /** Worker URL (read-only — used by the container health endpoint). */
   getWorkerUrl(): string { return this.workerUrl; }
 

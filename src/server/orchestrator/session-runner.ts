@@ -1328,6 +1328,17 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    */
   readonly lastSseEventAt?: number;
 
+  /**
+   * Consecutive failed worker `/events` reconnect attempts since the stream
+   * last opened; 0 while connected. Container-only — direct runners have no
+   * SSE stream and omit it.
+   *
+   * The missing-container reconciler uses this as the cheap "this worker is
+   * not answering" trigger before paying for a Docker liveness probe. See
+   * `SseConnectionManager.reconnectAttempts`.
+   */
+  readonly sseReconnectAttempts?: number;
+
   // Agent factory (container mode — returns a proxy that delegates to the worker)
   createAgent?(agentId: AgentId): AgentProcess;
 

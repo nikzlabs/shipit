@@ -222,6 +222,47 @@ export async function adoptRunningContainer(
 }
 
 // ---------------------------------------------------------------------------
+// Liveness probe for a tracked container
+// ---------------------------------------------------------------------------
+
+/**
+ * Ask Docker whether the container we have tracked for `sessionId` is still
+ * running.
+ *
+ * The manager's `containers` map is event-driven: an entry is removed when a
+ * `die` arrives on the Docker event stream. That stream is fragile — it
+ * reconnects with a 5s debounce, and a daemon restart takes it down entirely —
+ * so a `die` delivered during a gap is simply never seen and the entry keeps
+ * claiming `status: "running"` for a container that no longer exists. Nothing
+ * else re-verifies it after startup, which is what left a dead session looking
+ * alive (docs/121 gap E).
+ *
+ * Returns `undefined` — deliberately, not `false` — when Docker cannot answer.
+ * The caller declares a session dead on this result, so an ambiguous failure
+ * (daemon down, socket EAGAIN, permissions) must not be read as proof of
+ * death; a 404 is proof, and a daemon that comes back answers definitively on
+ * the next pass.
+ */
+export async function isTrackedContainerRunning(
+  deps: DiscoveryDeps,
+  sessionId: string,
+): Promise<boolean | undefined> {
+  const sc = deps.containers.get(sessionId);
+  if (!sc?.id) return undefined;
+  try {
+    const info = await deps.docker.getContainer(sc.id).inspect();
+    return info.State?.Running === true;
+  } catch (err) {
+    if ((err as { statusCode?: number }).statusCode === 404) return false;
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[container-liveness] inspect failed for ${sc.id.slice(0, 12)} (session ${sessionId}): ${detail}`,
+    );
+    return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Orphan cleanup
 // ---------------------------------------------------------------------------
 

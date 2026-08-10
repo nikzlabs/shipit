@@ -254,7 +254,12 @@ export function handleContainerExited(
   const runner = runnerRegistry.get(sessionId);
   if (runner) {
     if (chatHistoryManager) {
-      preservePartialTurnOnContainerExit(sessionId, runner, chatHistoryManager, exitDetail);
+      preservePartialTurnOnWorkerLoss(
+        sessionId,
+        runner,
+        chatHistoryManager,
+        `Session container exited unexpectedly${exitDetail}. The agent's progress up to this point has been preserved.`,
+      );
     }
     runner.emitMessage({
       type: "session_status",
