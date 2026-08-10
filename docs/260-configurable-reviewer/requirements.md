@@ -23,9 +23,17 @@ No open questions remain.
    model, and the reasoning level. Nothing about which reviewer runs is left to the agent to
    decide.
 
-2. The reviewer is **ShipIt's setting, not a repository's**. It applies to every session and
-   every repository, and it does not depend on any file in the repository being reviewed.
-   A repository may still say *when* to ask for a review; it never says *who* reviews.
+2. The reviewer is **ShipIt's setting**. It applies to every session and every repository
+   without depending on any file in the repository being reviewed, so a repository that says
+   nothing about reviewing still gets a fully configured reviewer — where today it gets
+   whatever `CLAUDE.md` happens to say.
+
+   That is a **default, not a prohibition**. A repository may override it, and ShipIt neither
+   prevents that nor tries to detect it: an instruction in a repository that names the
+   service, the model and the reasoning level explicitly is simply req 7's explicit path being
+   used. What this requirement fixes is where the *default* lives, not who is permitted to
+   depart from it. A repository overriding the reviewer must name **every** parameter, because
+   naming a role and naming a reviewer are the two different things req 6 separates.
 
 3. A reviewer is selected **the same way every other model is selected** (docs/252 req 3):
    it names a service, a billing mode and a model, and the harness that runs it is
@@ -37,12 +45,19 @@ No open questions remain.
    ShipIt uses whichever of them is **furthest from the implementer**.
 
    *Furthest* is stated as the goal because it is the goal: a second opinion is worth having
-   in proportion to how little it shares with the first. A different model **and** a
-   different harness is the ideal. What the install actually has may not allow it — a user
-   may have configured no second harness — so ShipIt takes the best available difference
-   rather than refusing. The exact ranking is design and belongs in `plan.md`; what this
-   requirement fixes is that ShipIt never reviews work with the thing that produced it when
-   it has any configured alternative.
+   in proportion to how little it shares with the first.
+
+   **The model family is what ShipIt checks first.** A reviewer from a different family is
+   preferred above every other kind of difference, because the family is what carries the
+   training a second opinion is trying not to share. A family is **not** a service: a gateway
+   can serve another vendor's model, so two different services can offer the same family and
+   differ in nothing that matters here. A different harness as well is better still.
+
+   What the install actually has may not allow the ideal — a user may have configured no
+   second harness, or only one family — so ShipIt takes the best available difference rather
+   than refusing. The rest of the ranking below family is design and belongs in `plan.md`;
+   what this requirement fixes is that family is the first axis, and that ShipIt never reviews
+   work with the thing that produced it when it has any configured alternative.
 
 5. The reasoning level is **part of the reviewer's configuration**, not a separate decision
    and not left to the harness's own default.
@@ -61,6 +76,18 @@ No open questions remain.
    **derived** default rather than a named model — the same argument docs/252 req 9 made for
    background work.
 
+   A reviewer the user has not pinned is **auto-configured**, and stays auto-configured: it
+   **re-derives as the install changes**, so adding a second service, or a model from a family
+   the install did not have, improves the reviewer without anyone editing it. Auto-configuring
+   is not a value written once at first run — that would freeze a one-service install's answer
+   in place, and the case this feature exists for (req 4's different family) is exactly the
+   one that only becomes possible *later*, when a second service is added.
+
+   **Auto-configured is a state the user can see.** For each reviewer the UI says whether it is
+   auto-configured or pinned, and what it currently resolves to — so a reviewer that changed
+   because a service was added is legible rather than surprising. A pin always wins: nothing
+   re-derives over a choice the user made.
+
 9. ShipIt reports what a review actually ran on, and its usage and cost are attributed to the
    service and billing mode that served it — as any other work is (docs/252 reqs 11 and 16).
    This restates existing behaviour because this feature must not lose it, not because it
@@ -78,6 +105,39 @@ child-session role is designed or built here. Strike this paragraph if that read
 _None._
 
 ## Resolved questions
+
+- 2026-08-10 — **Is the derived default a one-time value, or does it keep following the
+  install?** **Chosen: it keeps following, and the state is visible.** Raised by the human
+  reviewing this document: "We need to think how we auto-configure the best reviewer if the
+  user adds a second service or a different model. Probably need notion, visible in the UI
+  *auto-configured* for a reviewer." The agent's req 8 had said only that a fresh install
+  derives, which a one-time write at first run would satisfy — and that would be worst
+  precisely where this feature is aimed, because a single-service install cannot satisfy req
+  4's different-family preference at all, and the moment it could (a second service added) is
+  the moment a frozen value would stop improving. Req 8 gains the re-derivation and the
+  visible auto-configured/pinned state. A pin still wins outright; auto-configuration never
+  overrides a choice the user made.
+
+- 2026-08-10 — **May a repository override the reviewer?** **Chosen: yes — it is a default,
+  not a prohibition.** The agent's req 2 had said the reviewer is "not a repository's" and
+  that a repository "never says *who* reviews". The human: "let's allow the repo to override
+  the settings in the UI (in fact, we can't prevent it). In this case the agent needs to
+  specify all parameters explicitly." The parenthesis is the decisive part — a requirement
+  forbidding something ShipIt cannot detect or enforce is a claim the product cannot keep, and
+  writing it down would have made the design assert a guarantee it does not have. Req 2
+  rewritten: ShipIt owns the **default**, and an overriding repository uses req 7's explicit
+  path, naming every parameter. This adds no mechanism; it removes a false promise.
+
+- 2026-08-10 — **What is the first axis of req 4's distance ranking?** **Chosen: the model
+  family.** The agent had left the whole ranking to `plan.md` and drafted it there as
+  service-first. The human: "model needs to be checked first, i.e. better pick a model from a
+  different family." That is a stronger criterion than service, and the reason is a case
+  docs/252 deliberately created: a gateway serves another vendor's models, so OpenRouter and
+  Anthropic are two different *services* offering the same *family*, and a service-first
+  ranking would call that pair distant when it shares everything that matters. Req 4 now fixes
+  family as the first axis and leaves the rest below it to design. Consequence for the design:
+  the catalogue has no family notion today, so one has to be authored per model — recorded in
+  `plan.md`, not here.
 
 - 2026-08-10 — **What makes ShipIt use the second reviewer rather than the first?** **Chosen:
   neither of the three rules offered — state the goal instead.** The options put were "same
@@ -158,6 +218,15 @@ What he actually said:
   the call would be explicit, because for implicit calls … we will have custom support, which
   is the review case and the child session case." → req 7, and the *Scope* note. The
   generalization from "remove the defaults" to "roles are the only implicit path" is his.
+- "let's allow the repo to override the settings in the UI (in fact, we can't prevent it). In
+  this case the agent needs to specify all parameters explicitly." → the rewrite of req 2,
+  which the agent had drafted as a prohibition.
+- "model needs to be checked first, i.e. better pick a model from a different family" → req 4's
+  family-first axis, which the agent had drafted as service-first and had left entirely to the
+  design.
+- "We need to think how we auto-configure the best reviewer if the user adds a second service
+  or a different model. Probably need notion, visible in the UI *auto-configured* for a
+  reviewer." → req 8's re-derivation and its visible auto-configured state.
 
 Reqs 8 and 9 are the agent's recommendations, taken as offered; req 9 states an existing
 obligation rather than a new one — it is here so that attribution is not quietly lost, and
