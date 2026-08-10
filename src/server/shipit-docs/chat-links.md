@@ -36,6 +36,15 @@ whole mechanism — standard web APIs, and ShipIt adds no API of its own. When y
 build a page that should highlight or filter in response to a pointer, have it
 read its own URL.
 
+**A pointer at a place inside the page the user is already on does not reload
+it.** When the destination differs only by its fragment, ShipIt performs a
+same-document navigation: no request, no blink, no in-page state lost, and
+`hashchange` fires. A destination on a different **path or query string** is a
+real navigation and loads a new document, exactly as typing it would — unless
+the app routes on the Navigation API and intercepts it. So a page whose pointers
+should feel instant is best addressed by fragment, with the query reserved for
+state it is fine to load fresh.
+
 One consequence worth knowing: clicking the *same* pointer twice is a no-op —
 the page is already at that URL, so ShipIt does not navigate (reloading would
 throw away whatever state the app holds) and the page sees no second event. A

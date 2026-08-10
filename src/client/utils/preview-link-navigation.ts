@@ -7,7 +7,11 @@
  */
 
 export type PointerNavigation =
-  /** Assign this URL to the iframe. */
+  /**
+   * Send the frame to this URL. Whether that is a same-document hash change or
+   * a new document is decided inside the frame, where the live `location` is
+   * readable — this side only knows the page's last *reported* path.
+   */
   | { kind: "navigate"; url: string }
   /** The page is already there; navigating would reload it for nothing. */
   | { kind: "already-there" }

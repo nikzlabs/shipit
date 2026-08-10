@@ -383,13 +383,17 @@ export function PreviewFrame({
   // this slot, everything else has already happened (the service is running and
   // its port is selected). All that is left is to put the frame there.
   //
-  // Navigation is a plain `src` assignment. An earlier design added a `navigate`
-  // command to the injected preview script, on the belief that a parent cannot
-  // navigate a cross-origin iframe — cross-origin blocks *reading* `location`
-  // and calling `history`, not assigning `src`, which the refresh path above
-  // already does. The command would also have widened an injected listener that
-  // checks neither `event.source` nor origin, to do something the parent can do
-  // directly.
+  // The destination is handed to the injected preview script, for the same
+  // reason refresh is: a `src` assignment is always a *document load*, so a
+  // pointer at a place inside the page the user is already on tore the app down
+  // and rebuilt it — a visible blink, and every bit of in-page state gone. The
+  // script sits on the other side of the cross-origin boundary, where the live
+  // `location` is readable, so it can tell a same-document destination (only
+  // the fragment differs) from one that genuinely needs a new document.
+  //
+  // Slots without that script — a non-proxied local preview, a 502, an
+  // auth-gated response — never reported "loaded", and fall back to the `src`
+  // assignment, which is a document load but at least arrives.
   const previewLinkIntent = usePreviewStore((s) => s.previewLinkIntent);
   // eslint-disable-next-line no-restricted-syntax -- navigates a live iframe to an agent-authored destination
   useEffect(() => {
@@ -411,8 +415,14 @@ export function PreviewFrame({
     );
     clearIntent();
 
-    if (outcome.kind === "navigate") el.src = outcome.url;
-    else if (outcome.kind === "outside-preview") {
+    if (outcome.kind === "navigate") {
+      const win = el.contentWindow;
+      if (win && reloadableWindowsRef.current.get(activeSlotKey) === win) {
+        win.postMessage({ source: "shipit-toolbar", type: "navigate", url: outcome.url }, "*");
+      } else {
+        el.src = outcome.url;
+      }
+    } else if (outcome.kind === "outside-preview") {
       useUiStore.getState().setToast({
         message: "That link can't be opened — it points outside the preview.",
         variant: "error",

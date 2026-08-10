@@ -49,6 +49,10 @@ one requirement — with no way to make that pointer clickable.
 12. If the pointer names a service that is **not running, ShipIt starts it
     first** and then opens the destination. A stopped service is not by itself a
     reason to report a pointer as unopenable (req 10); a start that *fails* is.
+13. Clicking a pointer at a place **inside the page the Preview is already on
+    navigates within that page** — it does not reload it. The user must not see
+    the app blink and rebuild itself to be taken to an item on the page in front
+    of them.
 
 ## The page-facing contract
 
@@ -71,6 +75,18 @@ respond to every click is a page that should be a preview service.
 _None._
 
 ## Resolved questions
+
+- **2026-08-10 — Must a click navigate within the page rather than reload it?**
+  Reported by the requester against the shipped feature: *"pressing a link in
+  the conversation to open in the preview seems to reload the preview page, not
+  navigate within the page (visible blink)"*. Recorded as req 13. What ShipIt
+  can honour is bounded by the web platform, and the boundary is now stated in
+  [`plan.md`](./plan.md): a destination differing only by fragment is a
+  same-document navigation and never reloads; a different path or query is a
+  cross-document navigation and loads, unless the page's own router intercepts
+  it. Making *those* same-document too would need ShipIt to guess that the page
+  is client-routed, and a page that guesses wrong renders stale content under a
+  changed URL — worse than the blink.
 
 - **2026-08-09 — Which failures must req 10's toast cover?** Req 10 said "for
   any reason", which ShipIt cannot honour literally: some failures need a
