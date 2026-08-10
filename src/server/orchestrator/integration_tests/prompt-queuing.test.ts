@@ -95,6 +95,20 @@ describe("Integration: prompt queuing", () => {
     }
   });
 
+  /**
+   * Wait until the runner reports no agent running, read through the same
+   * `GET /history` field the real client hydrates `isLoading` from.
+   */
+  async function waitForAgentIdle(sessionId: string, timeoutMs = 3000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+      if ((res.json() as { agentRunning?: boolean }).agentRunning === false) return;
+      if (Date.now() > deadline) throw new Error("agent still running after timeout");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+
   /** Drain messages until predicate returns truthy, up to maxMsgs attempts. */
   async function drainUntil(client: TestClient, predicate: (m: AnyMsg) => boolean, maxMsgs = 30, timeoutMs = 2000): Promise<AnyMsg> {
     for (let i = 0; i < maxMsgs; i++) {
@@ -209,7 +223,10 @@ describe("Integration: prompt queuing", () => {
     const firstClaude = await waitForClaude(() => lastClaude);
     firstClaude.emit("event", { type: "agent_init", sessionId: "session-drain", model: "m", tools: [] });
 
-    // The viewer sees the enqueue, then leaves.
+    // The viewer sees the enqueue, then leaves. The sleep gives the server's
+    // close handler a tick to run; it is not what makes the assertion valid —
+    // client1's socket is closed either way, so the drain's `queue_updated`
+    // reaches no viewer whether or not the detach has been processed yet.
     client1.send({ type: "send_message", text: "Second" });
     expect(await drainUntil(client1, (m) => m.type === "message_queued")).toBeTruthy();
     client1.close();
@@ -223,10 +240,13 @@ describe("Integration: prompt queuing", () => {
     expect(secondClaude.lastPrompt).toBe("Second");
 
     // ...and the drained turn ends too, so the re-attach below finds an idle
-    // runner with an empty queue — the production shape.
+    // runner with an empty queue — the production shape. Waited on the observed
+    // `agentRunning` rather than a fixed sleep: the same runner-registry read
+    // the client's own history hydration uses, so the wait ends when the turn
+    // is really over.
     secondClaude.emit("event", { type: "agent_result", status: "success", sessionId: "session-drain", durationMs: 10 });
     secondClaude.emit("done", 0);
-    await new Promise((r) => setTimeout(r, 100));
+    await waitForAgentIdle(sessionId);
 
     const client2 = await TestClient.connect(port, sessionId);
     const queueUpdated = await drainUntil(client2, (m) => m.type === "queue_updated", 40, 3000);

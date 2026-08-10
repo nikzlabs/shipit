@@ -814,12 +814,15 @@ export async function registerRoutes(
         // buffer when the drained turn starts, so the replay above can't carry
         // it either. Same reasoning as the `active_runners` SSE snapshot.
         send({ type: "queue_updated", queue: runner.getQueueSnapshot() });
-        // Still conditional, deliberately: unlike the queue, a stale running
-        // state is already corrected on every re-attach. The client reloads
-        // HTTP history on each WS open and sets `isLoading` from the
-        // authoritative `agentRunning` there, and the sidebar's
-        // `activeRunnerSessions` is replaced wholesale by the `active_runners`
-        // SSE snapshot. Sending this unconditionally would add nothing.
+        // Still conditional, deliberately: unlike the queue, neither half of a
+        // stale running state can survive. The chat status line is corrected by
+        // the re-attach itself — the client reloads HTTP history on every WS
+        // open and sets `isLoading` from the authoritative `agentRunning`
+        // there. The sidebar's `activeRunnerSessions` is corrected on a
+        // different channel rather than by this attach: live SSE
+        // `session_agent_finished` transitions, and the unconditional
+        // `active_runners` snapshot that replaces the set wholesale on every
+        // SSE (re)connect. Sending this unconditionally would add nothing.
         if (runner.running || runner.queueLength > 0) {
           send({ type: "session_status", sessionId: runner.sessionId, running: runner.running, queueLength: runner.queueLength });
         }
