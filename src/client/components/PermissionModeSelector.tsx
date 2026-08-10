@@ -54,6 +54,32 @@ const MODE_META: Record<
 // Display order: most → least oversight.
 const LADDER: PermissionMode[] = ["plan", "guarded", "auto"];
 
+/**
+ * Whether the effective model can run guarded mode. Guarded needs Sonnet or
+ * Opus; Haiku is unsupported. The runtime init-field check is the backstop if a
+ * model turns out unsupported despite this gate.
+ *
+ * docs/260 — exported because the composer's settings menu offers the same
+ * choice below 700px of composer width, and a second copy of the rule would
+ * drift into offering a mode the server then refuses.
+ */
+export function isGuardedModelOk({
+  agents,
+  activeAgentId,
+  modelInfo,
+}: {
+  agents: AgentOption[];
+  activeAgentId: AgentId;
+  modelInfo?: ModelInfo | null;
+}): boolean {
+  const activeAgent = agents.find((a) => a.id === activeAgentId);
+  const effectiveAlias =
+    (modelInfo?.model ? resolveModelAlias(modelInfo.model) : undefined) ??
+    getSavedModelId() ??
+    activeAgent?.models[0];
+  return effectiveAlias !== "haiku";
+}
+
 export function PermissionModeSelector({
   mode,
   onChange,
@@ -81,14 +107,7 @@ export function PermissionModeSelector({
   // any other modes the agent advertises. Ordered along the oversight ladder.
   const available = LADDER.filter((m) => m === "auto" || supported.includes(m));
 
-  // Resolve the effective model alias to gate guarded's model coupling. Guarded
-  // needs Sonnet or Opus; Haiku is unsupported. The runtime init-field check is
-  // the backstop if a model turns out unsupported despite this gate.
-  const effectiveAlias =
-    (modelInfo?.model ? resolveModelAlias(modelInfo.model) : undefined) ??
-    getSavedModelId() ??
-    activeAgent?.models[0];
-  const guardedModelOk = effectiveAlias !== "haiku";
+  const guardedModelOk = isGuardedModelOk({ agents, activeAgentId, modelInfo });
 
   // Nothing meaningful to toggle (e.g. Codex: only `auto`). Hide the control —
   // this also fixes the latent gap where the old binary toggle showed `plan`

@@ -15,10 +15,13 @@ export function ContextDialMount({
   modelInfo,
   contextTokensFallback,
   onOpenUsageDetails,
+  compact = false,
 }: {
   modelInfo: ModelInfo | null;
   contextTokensFallback: number;
   onOpenUsageDetails?: () => void;
+  /** docs/260 — ring only, no figures beside it, in the narrow composer row. */
+  compact?: boolean;
 }) {
   // Two separate selector subscriptions, each returning a stable reference,
   // so React's `useSyncExternalStore` snapshot stays cached across renders.
@@ -57,6 +60,7 @@ export function ContextDialMount({
       cumulativeOutputTokens={cumulativeOutputTokens}
       onOpenUsageDetails={onOpenUsageDetails}
       authoritativeCompacted={authoritativeCompacted}
+      compact={compact}
     />
   );
 }

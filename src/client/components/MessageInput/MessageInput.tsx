@@ -4,10 +4,11 @@ import { useEventListener } from "../../hooks/useEventListener.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useIsMobile } from "../../hooks/useMediaQuery.js";
+import { useNarrowContainer } from "../../hooks/useNarrowContainer.js";
 import { PlusIcon, StopIcon, ArrowUpIcon, GitBranchIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { usePrStore } from "../../stores/pr-store.js";
-import { PermissionModeSelector } from "../PermissionModeSelector.js";
+import { PermissionModeSelector, isGuardedModelOk } from "../PermissionModeSelector.js";
 import { HarnessSelector, ModelSelector } from "../ModelPicker.js";
 import { ReasoningSelector } from "../ReasoningSelector.js";
 import { FileAutoComplete } from "../FileAutoComplete.js";
@@ -23,6 +24,7 @@ import { spliceTranscript } from "../../voice/insert-transcript.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useKeybinding } from "../../keybindings/use-keybinding.js";
 import { ContextDialMount } from "./ContextDialMount.js";
+import { ComposerSettingsMenu } from "./ComposerSettingsMenu.js";
 import { useTextareaSizing } from "./hooks/useTextareaSizing.js";
 import { useMessageDraft } from "./hooks/useMessageDraft.js";
 import { useUploadBackend } from "./hooks/useUploadBackend.js";
@@ -30,6 +32,15 @@ import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo, 
 import type { UploadItem } from "../../hooks/useFileUpload.js";
 import type { AgentOption, EligibleModelOption } from "../../agent-types.js";
 import type { ModelInfo } from "../../utils/model-info.js";
+
+/**
+ * docs/260 req 3 — below this many px of the COMPOSER's own width the toolbar
+ * collapses to `+ · settings · ring ⟶ mic · stop · send`. At or above it the row
+ * is exactly what shipped before. Deliberately a composer width and not a
+ * viewport one: the chat panel is a draggable split, so a wide window with a
+ * narrow panel needs the compact row and a media query cannot tell.
+ */
+const COMPOSER_NARROW_PX = 700;
 
 /** Render a hotkey string like "ctrl+shift+space" as "Ctrl+Shift+Space" for tooltips. */
 function formatHotkeyLabel(hotkey: string): string {
@@ -165,6 +176,16 @@ export function MessageInput({
   surface?: "chat" | "overlay";
 }) {
   const isMobile = useIsMobile();
+  // docs/260 req 2/3 — measured on the COMPOSER, not the window. The chat panel
+  // is a draggable split, so a wide window with a narrow panel is exactly the
+  // case a media query cannot see and the reported bug. `useNarrowContainer`
+  // reports `false` until measured and where ResizeObserver is absent (jsdom),
+  // so the first paint and every existing test get the wide row.
+  const composerRef = useRef<HTMLDivElement>(null);
+  const narrowComposer = useNarrowContainer(composerRef, COMPOSER_NARROW_PX);
+  // The same gate `PermissionModeSelector` applies to itself, hoisted so the
+  // narrow row's settings menu offers exactly the modes the wide row would.
+  const guardedModelOk = isGuardedModelOk({ agents, activeAgentId, modelInfo });
   // docs/257 req 3 — "disabled as a whole". Every affordance below reads this
   // rather than `disabled`, which guards submission only.
   const inert = !!disabledReason;
@@ -734,6 +755,7 @@ export function MessageInput({
 
   return (
     <div
+      ref={composerRef}
       className="px-4 pb-3 relative"
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
@@ -829,14 +851,137 @@ export function MessageInput({
             className="w-full resize-none bg-transparent px-4 pt-3 pb-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none field-sizing-content max-h-[40vh] overflow-y-auto disabled:cursor-not-allowed"
           />
 
-          {/* Toolbar row — below textarea.
+          {/* ── Narrow toolbar row (docs/260) ──────────────────────────────
+              Below 700px of the COMPOSER's own width — not the window's — the
+              permission mode, harness, model and reasoning controls leave the
+              row and live behind `ComposerSettingsMenu`, whose anchor carries
+              the model name (req 3, 4, 6).
+
+              The overflow guarantee (req 1) is structural, not arithmetic:
+              mic/stop/send sit OUTSIDE the clipping group and are `shrink-0`,
+              so no amount of content on the left can move them. Inside the
+              group the anchor is the only elastic item, so the model name
+              ellipsises first and the ring is only ever cut at the group's
+              edge — which is flush against the mic (no gap), so it reads as
+              clipped by the mic's own square (req 8). Measured: the ring only
+              starts to be cut below ~280px, narrower than any phone. */}
+          {narrowComposer ? (
+            <div className="flex items-center px-2 pb-2">
+              <div className="flex flex-1 min-w-0 items-center gap-1 overflow-hidden">
+                <WithTooltip label="Add files">
+                  <button
+                    onClick={handleAttachClick}
+                    disabled={inert}
+                    className="flex shrink-0 items-center justify-center rounded-lg p-1.5 text-(--color-text-tertiary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary) disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-(--color-text-tertiary)"
+                    aria-label="Add files"
+                  >
+                    <PlusIcon size={ICON_SIZE.SM} />
+                  </button>
+                </WithTooltip>
+
+                <ComposerSettingsMenu
+                  // Keyed on the session so an optimistic pick can't linger across a switch,
+                  // for the same reason `ReasoningSelector` is keyed in the wide row.
+                  key={sessionId ?? "__new__"}
+                  agents={agents}
+                  activeAgentId={activeAgentId}
+                  onAgentChange={onAgentChange}
+                  onModelChange={onModelChange}
+                  onReasoningChange={onReasoningChange}
+                  sessionReasoning={sessionReasoning}
+                  modelInfo={modelInfo ?? null}
+                  hasActiveSession={hasActiveSession}
+                  // Same split the wide row makes three lines apart: the harness
+                  // and model pickers key off "is a session bound", reasoning off
+                  // "is a session active".
+                  seedFromHistory={!sessionId}
+                  permissionMode={permissionMode}
+                  onPermissionModeChange={onPermissionModeChange}
+                  guardedModelOk={guardedModelOk}
+                  // Only `inert` closes the anchor. A running turn locks the
+                  // three pickers instead, so the mode stays changeable and the
+                  // settings stay readable — matching the wide row exactly.
+                  disabled={inert}
+                  pickersLocked={disabled || isLoading}
+                />
+
+                {surface === "chat" && (modelInfo ?? contextTokens > 0) && (
+                  <div className="flex shrink-0 items-center">
+                    <ContextDialMount
+                      modelInfo={modelInfo ?? null}
+                      contextTokensFallback={contextTokens}
+                      onOpenUsageDetails={onOpenUsageDetails}
+                      compact
+                    />
+                  </div>
+                )}
+              </div>
+
+              {voiceInputEnabled && !inert && (
+                <div className="flex shrink-0 items-center">
+                  <MicButton
+                    voice={voice}
+                    large={isMobile}
+                    hotkeyLabel={formatHotkeyLabel(isOverlay ? voiceHotkeyModeB : voiceHotkeyModeA)}
+                    onOpenSettings={() => {
+                      const ui = useUiStore.getState();
+                      ui.setSettingsTab("voice");
+                      ui.setSettingsOpen(true);
+                    }}
+                  />
+                </div>
+              )}
+              {voiceInputEnabled && !inert && isMobile && <MobileRecordingOverlay voice={voice} />}
+
+              {isLoading && onInterrupt ? (
+                <>
+                  <WithTooltip label="Stop the agent">
+                    <button
+                      onClick={onInterrupt}
+                      className={`ml-1 flex shrink-0 items-center justify-center rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-error) text-white transition-colors hover:brightness-110`}
+                      aria-label="Stop the agent"
+                      data-testid="stop-button"
+                    >
+                      <StopIcon size={isMobile ? ICON_SIZE.MD : ICON_SIZE.SM} weight="fill" />
+                    </button>
+                  </WithTooltip>
+                  {liveSteeringActive && (
+                    <button
+                      onClick={handleSubmit}
+                      disabled={disabled || inert || !text.trim()}
+                      className={`ml-1 flex shrink-0 items-center justify-center rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-30`}
+                      aria-label="Send message"
+                      data-testid="send-button"
+                    >
+                      <ArrowUpIcon size={isMobile ? ICON_SIZE.MD : ICON_SIZE.SM} weight="bold" />
+                    </button>
+                  )}
+                </>
+              ) : (
+                <button
+                  onClick={handleSubmit}
+                  disabled={disabled || inert || !text.trim()}
+                  className={`ml-1 flex shrink-0 items-center justify-center rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-30`}
+                  aria-label="Send message"
+                  data-testid="send-button"
+                >
+                  <ArrowUpIcon size={isMobile ? ICON_SIZE.MD : ICON_SIZE.SM} weight="bold" />
+                </button>
+              )}
+            </div>
+          ) : (
+          /* Toolbar row — below textarea.
               Desktop keeps the conventional split (add/mic/mode on the left,
               cost/model/send on the right) to match Claude Code and other
               desktop chat UIs. On mobile the order is swapped via CSS `order`
               so the frequently-tapped mic + send sit together as large thumb
               targets on the right, and the rarely-tapped add/mode/cost/model
               pack to the left (docs/144). The numeric `order` values leave gaps
-              so items can be inserted later without renumbering. */}
+              so items can be inserted later without renumbering.
+
+              docs/260 — this is now the WIDE row: it renders only when the
+              composer is at least 700px across. The `isMobile` order swaps stay
+              because a tablet can be both `isMobile` and ≥700px wide. */
           <div className="flex items-center gap-1 px-2 pb-2">
             {/* Add files button. Enabled even before a session is ready —
                 files attached then are buffered by useFileUpload and uploaded
@@ -936,7 +1081,6 @@ export function MessageInput({
                   // than describing whichever session is active behind it.
                   seedFromHistory={!sessionId}
                   disabled={disabled || isLoading}
-                  compactTrigger={isMobile}
                 />
               </div>
             )}
@@ -965,7 +1109,6 @@ export function MessageInput({
                   sessionReasoning={sessionReasoning}
                   onChange={onReasoningChange}
                   disabled={disabled || isLoading}
-                  compactTrigger={isMobile}
                   seedFromHistory={!hasActiveSession}
                 />
               </div>
@@ -1013,6 +1156,7 @@ export function MessageInput({
             )}
             </div>
           </div>
+          )}
 
           {/* Cleanup fell through to the raw transcript — non-fatal, dismissed
               on the next successful dictation (docs/144). */}

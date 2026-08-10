@@ -59,20 +59,15 @@ describe("ReasoningSelector (docs/217)", () => {
     expect(screen.getByTestId("reasoning-trigger").textContent).toContain("High");
   });
 
-  it("collapses the trigger to icon plus caret in compact mode", () => {
-    render(
-      <ReasoningSelector
-        agent={claude}
-        sessionReasoning="high"
-        onChange={() => {}}
-        compactTrigger
-      />,
-    );
+  // docs/260 — `compactTrigger` is gone for the same reason it is gone from the
+  // harness selector: below 700px of composer width this control is not in the
+  // row at all, so it never has to survive a width too small for its label.
+  it("always shows the current level and names the knob for a screen reader", () => {
+    render(<ReasoningSelector agent={claude} sessionReasoning="high" onChange={() => {}} />);
     const trigger = screen.getByTestId("reasoning-trigger");
-    expect(trigger.textContent).not.toContain("High");
+    expect(trigger.textContent).toContain("High");
     expect(trigger).toHaveAttribute("title", "Reasoning: High");
-    expect(trigger.querySelector("svg")).not.toBeNull();
-    expect(trigger.querySelectorAll("svg")).toHaveLength(2);
+    expect(trigger).toHaveAttribute("aria-label", "Reasoning selector");
   });
 
   it("falls back to the per-agent localStorage seed in the new-session composer", () => {

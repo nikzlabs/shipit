@@ -764,4 +764,133 @@ describe("MessageInput", () => {
     });
   });
 
+  /**
+   * docs/260 — the narrow composer row. `useNarrowContainer` reports `false`
+   * where `ResizeObserver` is missing, which is jsdom, so every test above sees
+   * the WIDE row unchanged and only these opt in by stubbing the observer and
+   * faking the composer's measured width.
+   */
+  describe("narrow composer row (docs/260)", () => {
+    class ResizeObserverStub {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+
+    /** Force every measured element to report `width`, so the hook sees it. */
+    function stubComposerWidth(width: number) {
+      vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+      Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+        configurable: true,
+        get: () => width,
+      });
+    }
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      // @ts-expect-error -- restoring the jsdom default (always 0)
+      delete HTMLElement.prototype.clientWidth;
+    });
+
+    const agents = [
+      {
+        id: "claude",
+        name: "Claude Code",
+        installed: true,
+        hasRunnableModels: true,
+        models: ["claude-opus-5"],
+        eligibleModels: [
+          {
+            serviceId: "anthropic",
+            serviceName: "Anthropic",
+            billingMode: "sub" as const,
+            modelId: "claude-opus-5",
+            label: "Opus 5",
+          },
+        ],
+        supportsReview: true,
+        supportedPermissionModes: ["plan", "guarded", "auto"] as PermissionMode[],
+      },
+    ];
+
+    function renderComposer(width: number, props: Record<string, unknown> = {}) {
+      stubComposerWidth(width);
+      return render(
+        <MessageInput
+          onSend={vi.fn()}
+          disabled={false}
+          agents={agents}
+          activeAgentId="claude"
+          onAgentChange={vi.fn()}
+          onModelChange={vi.fn()}
+          onReasoningChange={vi.fn()}
+          onPermissionModeChange={vi.fn()}
+          modelInfo={{ model: "claude-opus-5", contextWindowTokens: 200000 }}
+          contextTokens={24000}
+          hasActiveSession
+          {...props}
+        />,
+      );
+    }
+
+    it("collapses the settings into one control below 700px (req 3)", () => {
+      renderComposer(520);
+      expect(screen.getByTestId("composer-settings-trigger")).toBeInTheDocument();
+      // The four controls it replaces are gone from the row, not merely hidden.
+      expect(screen.queryByTestId("harness-trigger")).toBeNull();
+      expect(screen.queryByTestId("model-trigger")).toBeNull();
+      expect(screen.queryByTestId("reasoning-trigger")).toBeNull();
+      expect(screen.queryByTestId("permission-mode-selector")).toBeNull();
+    });
+
+    it("leaves the row exactly as it was at 700px and above (req 3)", () => {
+      renderComposer(760);
+      expect(screen.queryByTestId("composer-settings-trigger")).toBeNull();
+      expect(screen.getByTestId("harness-trigger")).toBeInTheDocument();
+      expect(screen.getByTestId("model-trigger")).toBeInTheDocument();
+    });
+
+    it("keys off the COMPOSER's width, not the window's (req 2)", () => {
+      // The reported bug: a desktop window with the chat panel dragged narrow.
+      // `isMobile` is false here, so a viewport-keyed rule would render the wide
+      // row and clip Send — which is what shipped before this feature.
+      mockMatchMedia(false);
+      renderComposer(520);
+      expect(screen.getByTestId("composer-settings-trigger")).toBeInTheDocument();
+    });
+
+    it("puts Send outside the clipping group so nothing can displace it (req 1)", () => {
+      renderComposer(320);
+      const send = screen.getByTestId("send-button");
+      const group = document.querySelector(".overflow-hidden.min-w-0");
+      expect(group).not.toBeNull();
+      // Send is a SIBLING of the group, never inside it — that, and `shrink-0`,
+      // is the whole overflow guarantee. It is not an arithmetic argument.
+      expect(group!.contains(send)).toBe(false);
+      expect(send.className).toContain("shrink-0");
+    });
+
+    it("keeps Stop and Send both reachable while a turn runs with live steering", () => {
+      renderComposer(320, { isLoading: true, onInterrupt: vi.fn(), liveSteeringActive: true });
+      const group = document.querySelector(".overflow-hidden.min-w-0");
+      for (const id of ["stop-button", "send-button"]) {
+        const el = screen.getByTestId(id);
+        expect(group!.contains(el)).toBe(false);
+        expect(el.className).toContain("shrink-0");
+      }
+    });
+
+    it("shows the context ring without its figures (req 15)", () => {
+      renderComposer(520);
+      expect(screen.getByTestId("context-dial")).toBeInTheDocument();
+      expect(screen.queryByTestId("context-dial-label")).toBeNull();
+      expect(screen.queryByTestId("context-dial-cost")).toBeNull();
+    });
+
+    it("keeps the attach button in the row rather than in the menu (req 16)", () => {
+      renderComposer(320);
+      expect(screen.getByLabelText("Add files")).toBeInTheDocument();
+    });
+  });
+
 });

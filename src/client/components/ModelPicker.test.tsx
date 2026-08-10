@@ -133,30 +133,18 @@ describe("HarnessSelector", () => {
     expect(trigger.getAttribute("title")).toMatch(/fixed for this session/i);
   });
 
-  it("drops the harness name for an icon on mobile, keeping it reachable by name", () => {
-    // The name is the widest label in the composer toolbar, and with the model
-    // selector beside it the row overflowed far enough to push Send off-screen.
-    // Losing the visible name is the trade; losing the name entirely is not, so
-    // it has to survive somewhere a screen reader and a long-press can find it.
-    render(
-      <HarnessSelector
-        agents={agents}
-        activeAgentId="claude"
-        onAgentChange={vi.fn()}
-        compactTrigger
-      />,
-    );
-    const trigger = screen.getByTestId("harness-trigger");
-    expect(trigger).not.toHaveTextContent("Claude Code");
-    expect(trigger.getAttribute("title")).toBe("Claude Code");
-    expect(trigger.getAttribute("aria-label")).toBe("Harness selector: Claude Code");
-  });
-
-  it("keeps the harness name visible when not compact", () => {
+  // docs/260 — the icon-only `compactTrigger` variant is gone. There is no
+  // longer a width at which this control renders but is too narrow for its own
+  // name: below 700px of composer width the harness moves into the composer's
+  // settings menu, where it gets a full row. So this control always shows its
+  // name, and `ComposerSettingsMenu.test.tsx` owns the narrow case.
+  it("always shows the harness name", () => {
     render(
       <HarnessSelector agents={agents} activeAgentId="claude" onAgentChange={vi.fn()} />,
     );
-    expect(screen.getByTestId("harness-trigger")).toHaveTextContent("Claude Code");
+    const trigger = screen.getByTestId("harness-trigger");
+    expect(trigger).toHaveTextContent("Claude Code");
+    expect(trigger.getAttribute("aria-label")).toBe("Harness selector: Claude Code");
   });
 
   it("does NOT lock in a new-session picker even when a background session is pinned (docs/166)", () => {

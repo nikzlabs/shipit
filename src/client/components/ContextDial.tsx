@@ -192,6 +192,14 @@ export function ContextDial({
    * `wasCompacted` heuristic remains as a fallback when it's false.
    */
   authoritativeCompacted,
+  /**
+   * docs/260 — the composer is narrower than 700px, so the dial renders as the
+   * ring alone (req 15). The token count and running cost are not shown beside
+   * it; both stay reachable in the popover this trigger opens. Distinct from the
+   * `hidden md:inline` on those spans, which is a WINDOW media query and so
+   * blind to a desktop chat panel dragged narrow — the bug this feature fixes.
+   */
+  compact = false,
 }: {
   modelInfo: ModelInfo | null;
   turnUsage: TurnUsage[];
@@ -201,6 +209,7 @@ export function ContextDial({
   cumulativeOutputTokens?: number;
   onOpenUsageDetails?: () => void;
   authoritativeCompacted?: boolean;
+  compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -300,7 +309,7 @@ export function ContextDial({
               />
             </svg>
           </span>
-          {contextTokens > 0 && (
+          {!compact && contextTokens > 0 && (
             <span
               className="hidden md:inline text-[11px] font-mono text-(--color-text-secondary)"
               data-testid="context-dial-label"
@@ -308,7 +317,7 @@ export function ContextDial({
               {formatTokenCount(contextTokens)}
             </span>
           )}
-          {running && (
+          {!compact && running && (
             <span
               className="hidden md:inline text-[11px] font-mono text-(--color-accent)"
               data-testid="context-dial-cost"
