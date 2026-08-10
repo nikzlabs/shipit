@@ -464,7 +464,7 @@ export function ProviderAccountsCard({
   };
 
   const installed = agent?.installed ?? true;
-  const authed = agent?.hasRunnableModels ?? false;
+  const runnable = agent?.hasRunnableModels ?? false;
 
   /**
    * docs/150 — the provider runs ONE login process, so only one row can be
@@ -490,7 +490,7 @@ export function ProviderAccountsCard({
               className={`w-2.5 h-2.5 rounded-full shrink-0 ${
                 !installed
                   ? "bg-(--color-text-tertiary)"
-                  : authed
+                  : runnable
                     ? "bg-(--color-success)"
                     : "bg-(--color-warning)"
               }`}
@@ -765,7 +765,7 @@ export function ProviderAccountsCard({
 
       {/* Escape hatch: stored-but-unverifiable credentials leave the agent
           reading as unauthenticated with no per-account row able to clear them. */}
-      {onClearApiKey && accounts.length > 0 && !authed && (
+      {onClearApiKey && accounts.length > 0 && !runnable && (
         <div className="px-1" data-testid={`provider-stale-credentials-${provider}`}>
           <p className="text-xs text-(--color-text-tertiary)">Saved credentials couldn&apos;t be verified.</p>
           <button
