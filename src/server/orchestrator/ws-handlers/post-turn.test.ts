@@ -1,10 +1,17 @@
 /**
- * docs/211 — the sandbox invariant at the post-turn commit boundary.
+ * docs/128 / docs/211 — the auto-commit invariant at the post-turn commit
+ * boundary: ShipIt performs NO automatic commit for `kind === "ops"` or
+ * `kind === "sandbox"`.
  *
  * `postTurnCommit` runs `git.autoCommit()` on the session dir unconditionally
- * today, which would error on a sandbox's non-repo root. So a `kind ===
- * "sandbox"` session must skip the whole session-level git flow (commit + push
- * + the PR card it gates) — explicitly by kind, NOT inferred from `remoteUrl`.
+ * otherwise, which would error on a sandbox's non-repo root; for ops it would
+ * write turn commits into a workspace whose agent is told (in its own system
+ * prompt) that it owns git itself. Both skip the whole session-level git flow
+ * (commit + push + the PR card it gates) — explicitly by kind, NOT inferred
+ * from `remoteUrl`. The shared rule lives in `services/auto-commit-gate.ts`.
+ *
+ * This REVERSES docs/128's original "ops COMMITS but never auto-pushes", at the
+ * operator's request.
  */
 
 import { describe, it, expect, vi } from "vitest";
@@ -29,25 +36,27 @@ function makeCtx(kind?: SessionInfo["kind"]) {
   return { ctx, autoCommit, scheduleAutoPush, createGitManager };
 }
 
-describe("postTurnCommit — sandbox invariant", () => {
-  it("skips auto-commit/push entirely for a kind=sandbox session", async () => {
-    const { ctx, autoCommit, scheduleAutoPush, createGitManager } = makeCtx("sandbox");
-    const result = await postTurnCommit(ctx, {
-      sessionDir: "/workspace",
-      sessionId: "s1",
-      emit: vi.fn(),
-      turnSummary: "did stuff",
+describe("postTurnCommit — auto-commit gate", () => {
+  for (const kind of ["sandbox", "ops"] as const) {
+    it(`skips auto-commit/push entirely for a kind=${kind} session`, async () => {
+      const { ctx, autoCommit, scheduleAutoPush, createGitManager } = makeCtx(kind);
+      const result = await postTurnCommit(ctx, {
+        sessionDir: "/workspace",
+        sessionId: "s1",
+        emit: vi.fn(),
+        turnSummary: "did stuff",
+      });
+      expect(result).toBeNull();
+      // The gate returns BEFORE constructing a GitManager — the unconditional
+      // autoCommit (which would error on a sandbox's non-repo root) never runs,
+      // and no push is scheduled (so no PR card downstream).
+      expect(createGitManager).not.toHaveBeenCalled();
+      expect(autoCommit).not.toHaveBeenCalled();
+      expect(scheduleAutoPush).not.toHaveBeenCalled();
     });
-    expect(result).toBeNull();
-    // The gate returns BEFORE constructing a GitManager — the unconditional
-    // autoCommit (which would error on the non-repo root) never runs, and no
-    // push is scheduled (so no PR card downstream).
-    expect(createGitManager).not.toHaveBeenCalled();
-    expect(autoCommit).not.toHaveBeenCalled();
-    expect(scheduleAutoPush).not.toHaveBeenCalled();
-  });
+  }
 
-  it("runs the normal commit flow for an ordinary (non-sandbox) session", async () => {
+  it("runs the normal commit flow for an ordinary session", async () => {
     const { ctx, autoCommit } = makeCtx(undefined);
     await postTurnCommit(ctx, {
       sessionDir: "/workspace",
@@ -58,26 +67,14 @@ describe("postTurnCommit — sandbox invariant", () => {
     // No kind → the gate doesn't fire and autoCommit is attempted as usual.
     expect(autoCommit).toHaveBeenCalledTimes(1);
   });
-
-  it("still commits for an ops session — only sandbox skips the commit", async () => {
-    const { ctx, autoCommit } = makeCtx("ops");
-    await postTurnCommit(ctx, {
-      sessionDir: "/workspace",
-      sessionId: "s1",
-      emit: vi.fn(),
-      turnSummary: "did stuff",
-    });
-    expect(autoCommit).toHaveBeenCalledTimes(1);
-  });
 });
 
 /**
- * docs/128 — an ops session commits but never auto-pushes. Its workspace is a
- * throwaway cockpit with no remote and no branch lifecycle; a `gh pr list --repo`
- * that wired an `origin` into it once got its template commits pushed at the real
- * ShipIt repo (rejected only because the histories were unrelated).
+ * The gate must not widen: an ordinary session still commits AND pushes, and
+ * the ops/sandbox refusal reaches the moved-HEAD branch too (where the push is
+ * armed off a HEAD move rather than off a commit we made).
  */
-describe("postTurnCommit — ops sessions never auto-push", () => {
+describe("postTurnCommit — gate does not widen, and covers the moved-HEAD push", () => {
   function makeCommittingCtx(kind?: SessionInfo["kind"]) {
     const autoCommit = vi.fn(async () => ({
       commitHash: "abc1234", conflictedFiles: [], rebaseInProgress: false, secretFindings: [],
@@ -98,29 +95,31 @@ describe("postTurnCommit — ops sessions never auto-push", () => {
     return { ctx, autoCommit, scheduleAutoPush };
   }
 
-  it("commits an ops session's turn but schedules no push", async () => {
+  it("makes no commit and emits no git_committed for an ops session", async () => {
     const emit = vi.fn();
     const { ctx, autoCommit, scheduleAutoPush } = makeCommittingCtx("ops");
     const hash = await postTurnCommit(ctx, {
       sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "investigated",
     });
-    expect(hash).toBe("abc1234");
-    expect(autoCommit).toHaveBeenCalledTimes(1);
-    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: "git_committed" }));
+    expect(hash).toBeNull();
+    expect(autoCommit).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: "git_committed" }));
     expect(scheduleAutoPush).not.toHaveBeenCalled();
   });
 
-  it("pushes an ordinary session's turn as before", async () => {
-    const { ctx, scheduleAutoPush } = makeCommittingCtx(undefined);
+  it("commits and pushes an ordinary session's turn as before", async () => {
+    const { ctx, scheduleAutoPush, autoCommit } = makeCommittingCtx(undefined);
     await postTurnCommit(ctx, {
       sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "did stuff",
     });
+    expect(autoCommit).toHaveBeenCalledTimes(1);
     expect(scheduleAutoPush).toHaveBeenCalledTimes(1);
   });
 
   it("skips the moved-HEAD push for an ops session too", async () => {
-    // The agent ran its own `git commit`, so autoCommit finds a clean tree and
-    // the push is armed off the HEAD move instead. Same gate applies.
+    // The agent ran its own `git commit` — the SUPPORTED way to keep work in an
+    // ops session now. autoCommit would find a clean tree and the push would be
+    // armed off the HEAD move; the gate returns before any of that.
     const autoCommit = vi.fn(async () => ({
       commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [],
     }));
@@ -144,6 +143,7 @@ describe("postTurnCommit — ops sessions never auto-push", () => {
     await postTurnCommit(ctx, {
       sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "x", turnStartHeadHash: "oldhead",
     });
+    expect(autoCommit).not.toHaveBeenCalled();
     expect(scheduleAutoPush).not.toHaveBeenCalled();
   });
 });

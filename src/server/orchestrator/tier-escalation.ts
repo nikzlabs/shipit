@@ -29,6 +29,7 @@ import {
 } from "./disk-utils.js";
 import { emitNoticePostTurn } from "./chat-card-persistence.js";
 import { formatEvictBlockedNotice, type EvictBlockReason } from "./services/evict-blocked-notice.js";
+import { autoCommitAllowed } from "./services/auto-commit-gate.js";
 
 /**
  * docs/161 — dependencies for the disk-tier escalation pass. Distinct from the
@@ -356,6 +357,38 @@ async function reclaimToEvicted(
   if (workspaceGone && !session.remoteUrl) {
     console.warn(`[disk-janitor] evict skipped for ${session.id} — workspace missing and no remote to restore from`);
     return "skipped";
+  }
+
+  // docs/128 / docs/211 — an `ops` or `sandbox` session is never evicted, and
+  // therefore never auto-committed on the way out (this function holds the only
+  // `git.autoCommit` call the disk janitor makes). Two independent reasons:
+  //
+  //  - **Eviction of these kinds is unrecoverable.** Step 3 below reads the
+  //    CHECKOUT's `refs/remotes/origin/<branch>`, not `session.remoteUrl` — so a
+  //    sandbox that ran `git clone <url> .` at the root, or an ops agent that
+  //    added an origin by hand mid-investigation, satisfies the durability gate
+  //    with a session row that still has NO `remoteUrl`. The wipe then succeeds
+  //    and `restoreSessionWorkspace` (`services/session.ts`) throws 410, because
+  //    restore re-clones from session METADATA. Refusing here closes that; do
+  //    NOT "fix" it by inferring the remote from the checkout, since neither kind
+  //    has a tracked branch lifecycle for restore to land on.
+  //  - **The remediation commit is itself forbidden.** ShipIt does not
+  //    auto-commit these kinds (`services/auto-commit-gate.ts`), and an idle ops
+  //    session whose investigation left scratch files is the common case, not a
+  //    corner — so the old path wrote `Auto-commit before disk eviction` commits
+  //    into exactly the history the gate exists to keep ShipIt out of.
+  //
+  // `blocked-by-push` is the honest outcome: the checkout is not durably
+  // recoverable. It still reclaims the regenerable dep caches (the expensive
+  // half) and, being reason-less, posts no user-facing notice — there is nothing
+  // the user can act on, and no commit was attempted to have been "refused".
+  if (!autoCommitAllowed(session)) {
+    console.warn(
+      `[disk-janitor] evict refused for ${session.id} — kind=${session.kind} sessions are never `
+      + "evicted: restore re-clones from session metadata they don't have, so the wipe would be "
+      + "unrecoverable; keeping the checkout at light",
+    );
+    return await blockedEvict(session, deps, "blocked-by-push");
   }
 
   // Durability guard: a `light` session keeps its checkout on disk, and the

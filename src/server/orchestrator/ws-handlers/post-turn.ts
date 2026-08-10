@@ -7,6 +7,7 @@ import { recordSecretBlock, clearSecretBlock } from "../services/secret-block.js
 import { evaluateMergedBranchPush, formatMergedPushNotice } from "../services/merged-push-guard.js";
 import { scanDiffForSecrets } from "../../shared/secret-scan.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
+import { sessionAutoCommitAllowed } from "../services/auto-commit-gate.js";
 import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
 
 /** Minimal handler context — postTurnCommit only needs git + chat history + auto-push + the session kind gate. */
@@ -55,35 +56,33 @@ export async function postTurnCommit(
     runner?: SessionRunnerInterface | null;
   },
 ): Promise<string | null> {
-  // docs/211 — the sandbox invariant: a `kind === "sandbox"` session has NO root
-  // git repo (the agent clones into subdirs), so session-level auto-commit /
-  // auto-push / PR card are skipped *explicitly by kind*, not inferred from
-  // `remoteUrl`. `git.autoCommit()` runs unconditionally below and would error on
-  // the non-repo root otherwise. Returning null also short-circuits the caller's
-  // PR-lifecycle flow (`runCommitAndPr` only runs it when a commit hash comes
-  // back), so no PR card or push fires for a sandbox.
-  if (opts.sessionId && ctx.sessionManager.get(opts.sessionId)?.kind === "sandbox") {
+  // docs/128 / docs/211 — ShipIt does not auto-commit an `ops` or `sandbox`
+  // session. The rule and its full rationale live in ONE place,
+  // `services/auto-commit-gate.ts`; this is one of its five consult sites.
+  //
+  // Two kinds, one gate, for two originally-different reasons:
+  //   - **sandbox** has NO root git repo (the agent clones into subdirs), so the
+  //     unconditional `git.autoCommit()` below would error on the non-repo root.
+  //   - **ops** is a throwaway host-debugging cockpit with no remote, no branch
+  //     lifecycle and no PR card. docs/128 originally let it COMMIT (calling the
+  //     workspace history "part of the incident log") while gating only the
+  //     push. That decision is REVERSED at the operator's request: an ops
+  //     session's history is no longer an incident log, and the ops agent is
+  //     told in its system prompt (`prompts/git-workflow-ops.md`) that it owns
+  //     git itself — so anything an investigation wants to keep is committed
+  //     deliberately by the agent, filed as an issue, or carried into a
+  //     `--shipit-source` fix session.
+  //
+  // Gated by KIND, never inferred from `remoteUrl`. Returning null also
+  // short-circuits the caller's PR-lifecycle flow (`runCommitAndPr` only runs it
+  // when a commit hash comes back), so no push and no PR card fire either.
+  //
+  // Only ShipIt's automatic commit is refused. An explicit agent-driven
+  // `gh pr create` still commits + pushes through its own path, so a cwd-scoped
+  // clone inside an ops workspace is unaffected.
+  if (!sessionAutoCommitAllowed(ctx.sessionManager, opts.sessionId)) {
     return null;
   }
-  // docs/128 — an ops session's workspace is a throwaway cockpit (the ops
-  // template's README + prompts, plus whatever the investigation writes). It
-  // has no remote, no branch lifecycle and no PR card, and the way it fixes a
-  // ShipIt bug is by spawning a `--shipit-source` session or filing an issue —
-  // never by pushing itself. So it COMMITS (the workspace is a real repo and
-  // the history is part of the incident log) but never auto-pushes.
-  //
-  // This is the second half of the ops-session push bug: `resolveGitHubRemote`
-  // is no longer able to hand this workspace an `origin` behind a `gh pr list`,
-  // and even if some other path does, the push never fires. Worth having both,
-  // because the failure mode is an ops session pushing its template commits at
-  // whatever repo it acquired, on branch `main` — that one was caught by
-  // unrelated histories, which is luck, not a guarantee.
-  //
-  // Only the debounced POST-TURN push is gated. An explicit agent-driven
-  // `gh pr create` still pushes through its own path, so a cwd-scoped clone
-  // inside an ops workspace is unaffected.
-  const isOpsSession =
-    !!opts.sessionId && ctx.sessionManager.get(opts.sessionId)?.kind === "ops";
   return withWorkspaceLock(opts.sessionDir, async () => {
     try {
       return await commitInLock();
@@ -107,16 +106,18 @@ export async function postTurnCommit(
    * the commit as an orphan nobody reviews. The commit above still stands (work is
    * never lost); only the silent push is refused, and only this one: an explicit
    * `gh pr create` pushes through its own force-pushing path, exactly like the
-   * ops-session gate above.
+   * auto-commit gate above.
    *
    * The refusal is loud by construction — it is the *silence* that made this a
    * user-reported bug twice, so a blocked push always leaves a persisted notice.
+   *
+   * No ops/sandbox check here: those kinds return at the top of `postTurnCommit`
+   * and never reach this function at all.
    */
   async function pushUnlessMerged(
     git: ReturnType<AppCtx["createGitManager"]>,
     commitHash: string | null,
   ): Promise<void> {
-    if (isOpsSession) return;
     const sessionId = opts.sessionId;
     const block = sessionId
       ? await evaluateMergedBranchPush(

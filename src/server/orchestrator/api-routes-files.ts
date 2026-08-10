@@ -30,6 +30,7 @@ import {
   ensureCatalogCloned,
   killAgent,
 } from "./services/index.js";
+import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
 import type { MarketplaceStore } from "./marketplace-store.js";
 import { getErrorMessage } from "./validation.js";
 import { pushToOrigin } from "./git-utils.js";
@@ -57,6 +58,12 @@ async function commitManualEdit(
 ): Promise<void> {
   const runner = deps.runnerRegistry.get(sessionId) as { running?: boolean } | undefined;
   if (runner?.running) return;
+  // docs/128 / docs/211 — ShipIt does not auto-commit an ops or sandbox session
+  // (`services/auto-commit-gate.ts`). A UI file edit is still ShipIt committing
+  // on its own: the agent asked for nothing, and for a sandbox `/workspace` is
+  // not even a repo. The edit is still written to disk; committing it is the
+  // agent's business in those kinds.
+  if (!sessionAutoCommitAllowed(deps.sessionManager, sessionId)) return;
   try {
     const git = deps.createGitManager(dir);
     const { commitHash } = await withWorkspaceLock(dir, () =>

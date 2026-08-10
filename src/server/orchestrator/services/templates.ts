@@ -170,6 +170,13 @@ export async function applyTemplate(
     try { await generatePackageLock(sessionDir); } catch { /* non-fatal */ }
   }
   const git = createGitManager(sessionDir);
+  // Deliberately NOT gated by `services/auto-commit-gate.ts`, even though
+  // `setKind(…, "ops")` ran a few lines above. That gate refuses ShipIt's
+  // *automatic* commits — turn-end, interrupt, late consult, UI edit, eviction.
+  // This is session CREATION, not a turn: it is what gives an ops workspace its
+  // `Apply template: Ops session` baseline, and skipping it would hand the agent
+  // a workspace that is dirty from its first second, with the template's own
+  // files showing as unstaged changes. Kept for every kind.
   await git.autoCommit(`Apply template: ${template.name}`);
 
   const session = sessionManager.get(appSessionId);

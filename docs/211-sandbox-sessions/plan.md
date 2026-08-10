@@ -385,6 +385,12 @@ What shipped, and where it diverged from the sketch above:
   before constructing a `GitManager`, which suppresses auto-commit, auto-push, and
   (being downstream of a commit hash) the PR card — all keyed on `kind`, not
   `remoteUrl`. `PostTurnCtx` gained `sessionManager` for the lookup.
+
+  **Widened since** (docs/128 §4b): the rule now lives in
+  `services/auto-commit-gate.ts` and covers `ops` as well as `sandbox`, and every
+  *other* automatic commit path consults it too — the turn executor's fallback
+  commit, a late sub-agent consult, a UI file edit, and the commit-before-disk-
+  eviction. `postTurnCommit` is one of five consult sites, not the whole gate.
 - **Branch-op shim.** Turned off via a `SHIPIT_SANDBOX=1` CLI env the orchestrator
   sets for sandbox sessions (a `sandbox` flag threaded
   buildAgentRunParams → Claude run-params-prep → adapter → `ClaudeProcess` spawn
