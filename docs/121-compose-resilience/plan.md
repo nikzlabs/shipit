@@ -77,6 +77,56 @@ alive. If not, re-spawn it. Also clear the buffer on transition (or
 keep the old buffer with a separator marker) so the user sees fresh
 output rather than stale lines from the previous instance.
 
+### G — A starting service is silent for the whole `compose up` (fixed)
+
+`startService` writes `starting`, awaits `docker compose up -d --build`,
+and spawns the log follower only once that returns. With a warm Docker
+layer cache the `up` takes ~2s and nobody notices. With a cold one — a
+fresh host, or any deploy that pruned the BuildKit cache — it is a full
+image build: this repo's own dogfood `dev` service (apt-get + the agent
+CLIs + a Playwright Chromium) runs for minutes.
+
+For that entire window the service sat at `starting` with an **empty log
+panel** and no diagnostic anywhere. Three mechanisms each correctly
+declined to speak:
+
+- `defaultComposeRunner` collected stderr into a local string and dropped
+  it on success; stdout was piped and never read at all.
+- the log follower had no container to follow, and isn't spawned until
+  after the `up` anyway.
+- `withUpInFlight` exempts an in-flight `up` from both the
+  missing-container reconciliation and the `starting` watchdog — right,
+  because an image build has no bound, but it means nothing times out.
+
+Users read that as "Start does nothing", stop the service, and start it
+again — which appears to work, because the first build has meanwhile
+warmed the cache.
+
+**Fix**: `ComposeRunner` takes an optional output sink; `ComposeCli.up` /
+`upService` pass one through; `ServiceManager.composeLogSink` relays each
+line into the log stream of the service(s) being brought up, prefixed
+`[compose] `. The sink deliberately does **not** write the durable log
+store — `streamLogs` decides `--tail 1000` vs `--tail 0` by asking
+whether the store already holds the channel (docs/192), and seeding it
+with build output would lose the container's first lines. The same change
+drains stdout (an unread pipe could have deadlocked a chatty command) and
+caps the stderr kept for the rejection message.
+
+**Known limitation of that choice**: on a service whose channel already
+holds container history, `snapshotLogs` returns the durable history and
+ignores the ring buffer, so a *later* build is visible only live — a
+panel opened mid-build sees it arrive but cannot scroll back to its
+start. Persisting compose output properly needs `hasChannel` (a
+file-size check over a raw-text channel) replaced by an explicit
+"container backlog seeded" marker, or a stack-level compose channel with
+UI aggregation. Both are docs/192 changes, not part of this fix.
+
+Compose's output is stack-global — a single `up` can build a service
+pulled in by `depends_on` that isn't named in the call — so a multi-service
+`up` copies each line to every named service. There is no per-line
+attribution to recover; the `[compose] ` prefix carries the distinction
+instead.
+
 ## Sequence
 
 D and F together close the "compose service recovers but UI thinks
