@@ -243,16 +243,32 @@ describe("buildAgentSystemInstructions", () => {
     }
   });
 
-  // The one sentence that would actively mislead an ops agent, pinned on its
-  // own: it must not survive anywhere in the ops rendering, however the
-  // fragments are later reshuffled.
+  // The sentence that would actively mislead an ops agent, pinned on its own:
+  // it must not survive anywhere in the privileged renderings, however the
+  // fragments are later reshuffled. Taken FROM the standard fragment at runtime
+  // rather than hardcoded, so rewording `git-workflow.md` cannot make this pass
+  // vacuously (the repo's prompt-testing convention: assert composition, never
+  // literal wording).
   it("never tells an ops or sandbox agent that ShipIt commits for it", () => {
-    const claim = "ShipIt automatically commits your changes";
+    const claim = fs
+      .readFileSync(new URL("./prompts/git-workflow.md", import.meta.url), "utf8")
+      .split("\n")
+      .find((l) => l.startsWith("ShipIt "))!;
+    expect(claim).toBeTruthy();
     expect(buildAgentSystemInstructions()).toContain(claim);
-    expect(buildAgentSystemInstructions({ isOps: true })).not.toContain(claim);
-    expect(buildAgentSystemInstructions({ isSandbox: true })).not.toContain(claim);
-    expect(buildAgentSystemInstructions({ agentId: "claude", isOps: true })).not.toContain(claim);
-    expect(buildAgentSystemInstructions({ agentId: "codex", isOps: true })).not.toContain(claim);
+    for (const opts of [{}, { agentId: "claude" as const }, { agentId: "codex" as const }]) {
+      expect(buildAgentSystemInstructions({ ...opts, isOps: true })).not.toContain(claim);
+      expect(buildAgentSystemInstructions({ ...opts, isSandbox: true })).not.toContain(claim);
+    }
+  });
+
+  // The skeleton is shared by every variant, so an auto-commit claim there
+  // reaches ops and sandbox no matter which Git fragment they get. This is how
+  // one leaked (the screenshot guidance said a relative filename "gets
+  // auto-committed into the repo"): assert the shared text makes no such claim.
+  it("keeps auto-commit claims out of the shared skeleton", () => {
+    const skeleton = fs.readFileSync(new URL("./prompts/skeleton.md", import.meta.url), "utf8");
+    expect(skeleton).not.toMatch(/auto-?committ?ed?\b/i);
   });
 
   it("composes each overlay with the per-agent axis into a distinct variant", () => {

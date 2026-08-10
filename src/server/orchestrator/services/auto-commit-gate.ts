@@ -37,9 +37,12 @@
  * | The turn executor's fallback commit (both `SystemTurnDeps.autoCommit` wirings) | `turn-executor.ts` |
  * | A sub-agent consult finishing after its parent turn | `services/sub-agent-commit.ts` |
  * | A file edited from the ShipIt UI | `api-routes-files.ts` |
- * | Commit-before-disk-eviction | `tier-escalation.ts` |
+ * | Disk eviction (which refuses the whole eviction, not just its commit) | `tier-escalation.ts` |
  *
  * ## Who deliberately does NOT
+ *
+ * All three are commits ShipIt makes on behalf of an explicit human or agent
+ * action, path-scoped or creation-time, never "sweeping up the workspace":
  *
  * - **`services/templates.ts`** — template application is session *creation*,
  *   not a turn. It is what gives an ops workspace its `Initial commit` +
@@ -50,6 +53,24 @@
  *   `gh pr create`, which cannot mean anything without its edits in a commit.
  *   It is a deliberate agent action, not an automatic one. (The *other* caller
  *   of that helper, `sub-agent-commit.ts`, is gated — see above.)
+ * - **`services/marketplace.ts` → plugin install** — the user clicked Install.
+ *   It commits through `git.commitPaths()` (the files it just wrote, not
+ *   `git add -A`), and that commit is what makes the install durable and
+ *   legible, exactly like the template baseline. Note it does NOT appear in a
+ *   `grep` for `autoCommit`; it is listed here because a census that only
+ *   greps that one method is incomplete.
+ *
+ * ## Known limit, deliberately not gated here
+ *
+ * `services/rebase-driver.ts` stages and runs `git rebase --continue`, driven by
+ * the PR poller's automatic conflict resolution. It reaches neither `autoCommit`
+ * nor this gate. It is out of reach for these kinds in practice — it requires an
+ * open pull request AND a `session.remoteUrl`, which an ops/sandbox session only
+ * acquires when a human adds an `origin` through the UI or the agent explicitly
+ * runs `gh pr create`. Both are deliberate acts that opt the session into the PR
+ * lifecycle, and finishing a rebase for a PR you asked for is not ShipIt
+ * committing behind your back. Named here so the next reader does not have to
+ * rediscover it.
  */
 
 import type { SessionInfo } from "../../shared/types.js";

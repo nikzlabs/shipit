@@ -359,6 +359,38 @@ async function reclaimToEvicted(
     return "skipped";
   }
 
+  // docs/128 / docs/211 — an `ops` or `sandbox` session is never evicted, and
+  // therefore never auto-committed on the way out (this function holds the only
+  // `git.autoCommit` call the disk janitor makes). Two independent reasons:
+  //
+  //  - **Eviction of these kinds is unrecoverable.** Step 3 below reads the
+  //    CHECKOUT's `refs/remotes/origin/<branch>`, not `session.remoteUrl` — so a
+  //    sandbox that ran `git clone <url> .` at the root, or an ops agent that
+  //    added an origin by hand mid-investigation, satisfies the durability gate
+  //    with a session row that still has NO `remoteUrl`. The wipe then succeeds
+  //    and `restoreSessionWorkspace` (`services/session.ts`) throws 410, because
+  //    restore re-clones from session METADATA. Refusing here closes that; do
+  //    NOT "fix" it by inferring the remote from the checkout, since neither kind
+  //    has a tracked branch lifecycle for restore to land on.
+  //  - **The remediation commit is itself forbidden.** ShipIt does not
+  //    auto-commit these kinds (`services/auto-commit-gate.ts`), and an idle ops
+  //    session whose investigation left scratch files is the common case, not a
+  //    corner — so the old path wrote `Auto-commit before disk eviction` commits
+  //    into exactly the history the gate exists to keep ShipIt out of.
+  //
+  // `blocked-by-push` is the honest outcome: the checkout is not durably
+  // recoverable. It still reclaims the regenerable dep caches (the expensive
+  // half) and, being reason-less, posts no user-facing notice — there is nothing
+  // the user can act on, and no commit was attempted to have been "refused".
+  if (!autoCommitAllowed(session)) {
+    console.warn(
+      `[disk-janitor] evict refused for ${session.id} — kind=${session.kind} sessions are never `
+      + "evicted: restore re-clones from session metadata they don't have, so the wipe would be "
+      + "unrecoverable; keeping the checkout at light",
+    );
+    return await blockedEvict(session, deps, "blocked-by-push");
+  }
+
   // Durability guard: a `light` session keeps its checkout on disk, and the
   // container is stopped — so we operate git directly on the host checkout.
   if (createGitManager && session.workspaceDir && !workspaceGone) {
@@ -383,28 +415,6 @@ async function reclaimToEvicted(
       //    dirty behind a successful commit) by construction. The returned
       //    fields only explain the block.
       if (!(await git.isClean())) {
-        // docs/128 / docs/211 — ShipIt does not auto-commit an ops or sandbox
-        // session (`services/auto-commit-gate.ts`), and this remediation is no
-        // exception: an idle ops session whose investigation left scratch files
-        // is exactly the common case, so leaving it ungated would keep writing
-        // "Auto-commit before disk eviction" commits into the very history the
-        // gate exists to keep ShipIt out of.
-        //
-        // Nothing is lost by refusing. The dirty tree simply fails the gate
-        // below, so the session stays at `light` with its checkout intact —
-        // which is where these kinds ended up anyway: step 3's durability gate
-        // requires the tip to be on `origin`, and neither kind has a remote, so
-        // an ops/sandbox session was never evictable. All this changes is that
-        // the refusal is now explicit instead of being preceded by a commit
-        // nobody asked for. No `reason` is passed: the commit was never
-        // attempted, so a "auto-commit refused" notice would be a lie.
-        if (!autoCommitAllowed(session)) {
-          console.warn(
-            `[disk-janitor] evict blocked for ${session.id} — kind=${session.kind} sessions are `
-            + "never auto-committed, and the tree is dirty; keeping the checkout at light",
-          );
-          return await blockedEvict(session, deps, "blocked-by-dirty");
-        }
         const { secretFindings, conflictedFiles, rebaseInProgress } =
           await git.autoCommit("Auto-commit before disk eviction (docs/161)");
         if (!(await git.isClean())) {

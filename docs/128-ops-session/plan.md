@@ -464,10 +464,36 @@ independently.)
     one, because the sandbox text assumes no root repo and free branch creation;
     an ops workspace is a repo, on a branch it may not leave.
 
-    Deliberately **left** committing: template application (`services/templates.ts`
-    — session creation, not a turn; without it the workspace is dirty from its
-    first second) and the `gh pr create` flush in `services/github.ts` (the agent's
-    own explicit action). Tests: `services/auto-commit-gate.test.ts`,
+    Deliberately **left** committing — all three are commits made on behalf of an
+    explicit human or agent action, path-scoped or creation-time, never sweeping
+    up the workspace: template application (`services/templates.ts` — session
+    creation, not a turn; without it the workspace is dirty from its first
+    second), the `gh pr create` flush in `services/github.ts` (the agent's own
+    explicit action), and plugin install (`services/marketplace.ts`, which commits
+    via `git.commitPaths()` and so does not appear in a `grep` for `autoCommit` —
+    a census of that one method is incomplete).
+
+    **`tier-escalation.ts` refuses the whole eviction, not just the commit.** The
+    first draft gated only the commit, reasoning that these kinds "have no remote
+    so they were never evictable". That inherited guarantee does not hold: the
+    durability gate reads the CHECKOUT's `refs/remotes/origin/<branch>`, not
+    `session.remoteUrl`, so a sandbox that ran `git clone <url> .` or an ops agent
+    that added an origin by hand satisfies it while the session row still records
+    no remote — the wipe then succeeds and `restoreSessionWorkspace` throws 410,
+    because restore re-clones from session *metadata*. `reclaimToEvicted` now
+    refuses by kind before any git work, returning `blocked-by-push` (the honest
+    outcome: not durably recoverable). Regenerable dep caches are still reclaimed;
+    no notice is posted, since there is nothing the user can act on. Found by the
+    Codex cross-review.
+
+    **Known limit, deliberately not gated:** `services/rebase-driver.ts` stages
+    and runs `git rebase --continue` under the PR poller's automatic conflict
+    resolution, reaching neither `autoCommit` nor the gate. It needs an open PR
+    *and* a `session.remoteUrl`, which these kinds acquire only when a human adds
+    an `origin` through the UI or the agent runs `gh pr create` — deliberate acts
+    that opt the session into the PR lifecycle. Recorded in the gate module.
+
+    Tests: `services/auto-commit-gate.test.ts`,
     `ws-handlers/post-turn.test.ts`, `turn-crash-commit.test.ts`,
     `services/sub-agent-commit.test.ts`, `disk-tier-escalation.test.ts`,
     `integration_tests/file-content.test.ts`, `agent-instructions.test.ts`.
