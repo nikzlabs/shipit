@@ -494,6 +494,32 @@ Unit and integration tests.
     expect(draftRes.statusCode).toBe(200);
   });
 
+  // docs/260 — the dialog has two send affordances over an async POST; only one
+  // of two concurrent sends may reach the agent.
+  it("POST /send fulfils only one of two concurrent sends of the same draft", async () => {
+    const draft = (await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: planPath },
+    })).json() as FileReview;
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
+      payload: { kind: "selection", quotedText: "Plugin-based approach", text: "x" },
+    });
+
+    const send = () => app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/send`,
+      payload: { note: "once" },
+    });
+    const [a, b] = await Promise.all([send(), send()]);
+
+    const codes = [a.statusCode, b.statusCode].sort();
+    expect(codes).toEqual([200, 400]);
+  });
+
   it("POST /send rejects review with no comments", async () => {
     const draft = (await app.inject({
       method: "POST",

@@ -240,6 +240,73 @@ describe("useFileReviewControls — send dialog", () => {
     expect(result.current.note).toBe("");
   });
 
+  // Two send affordances (the button and ⌘⏎) over an async POST: without the
+  // in-flight guard the review is sent twice — two prompts, two agent turns.
+  it("ignores a second confirm while the first send is in flight", async () => {
+    const onSendComments = vi.fn();
+    // A send held open on purpose, so a second confirm lands mid-flight.
+    let release: (v: unknown) => void = () => {};
+    const pending = new Promise((r) => { release = r; });
+    const sendDraft = vi.fn().mockImplementation(async () => {
+      await pending;
+      return { prompt: "p", filePath: "docs/x.md", commentCount: 1 };
+    });
+    const { result } = renderHook(() =>
+      useFileReviewControls({ filePath: "docs/x.md", kind: "markdown", content: "# x", onSendComments }),
+    );
+    seedDraft();
+    act(() => { useFileReviewStore.setState({ sendDraft }); });
+
+    act(() => { result.current.handleSend(); });
+    act(() => { void result.current.confirmSend(); });
+    expect(result.current.sending).toBe(true);
+    // …a second confirm lands while the first is still awaiting the server.
+    await act(async () => { await result.current.confirmSend(); });
+    expect(sendDraft).toHaveBeenCalledTimes(1);
+
+    await act(async () => { release(null); await pending; });
+    expect(sendDraft).toHaveBeenCalledTimes(1);
+    expect(onSendComments).toHaveBeenCalledTimes(1);
+    expect(result.current.sending).toBe(false);
+  });
+
+  // The hook follows the surface's active file (sibling tabs, Present
+  // carousel), so unkeyed dialog state would carry A's note into B's review.
+  it("drops the dialog and the note when the file changes", () => {
+    const { result, rerender } = renderHook(
+      ({ filePath }) => useFileReviewControls({
+        filePath, kind: "markdown", content: "# x", onSendComments: vi.fn(),
+      }),
+      { initialProps: { filePath: "docs/x.md" } },
+    );
+    seedDraft();
+
+    act(() => { result.current.handleSend(); });
+    act(() => { result.current.setNote("this is about file A"); });
+    expect(result.current.sendDialogOpen).toBe(true);
+
+    rerender({ filePath: "docs/other.md" });
+
+    expect(result.current.sendDialogOpen).toBe(false);
+    expect(result.current.note).toBe("");
+  });
+
+  it("keeps the dialog open and reports the failure when the send fails", async () => {
+    const { result } = renderHook(() =>
+      useFileReviewControls({ filePath: "docs/x.md", kind: "markdown", content: "# x", onSendComments: vi.fn() }),
+    );
+    seedDraft();
+    act(() => { useFileReviewStore.setState({ sendDraft: vi.fn().mockResolvedValue(null) }); });
+
+    act(() => { result.current.handleSend(); });
+    await act(async () => { await result.current.confirmSend(); });
+
+    // Closing on failure looked exactly like success — no card, nothing sent.
+    expect(result.current.sendDialogOpen).toBe(true);
+    expect(result.current.sendError).toBeTruthy();
+    expect(result.current.sending).toBe(false);
+  });
+
   it("keeps the note when the send fails", async () => {
     const { result } = renderHook(() =>
       useFileReviewControls({ filePath: "docs/x.md", kind: "markdown", content: "# x", onSendComments: vi.fn() }),

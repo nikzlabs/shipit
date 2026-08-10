@@ -234,14 +234,22 @@ export class FileReviewStore {
   }
 
   /** Mark a review as sent. */
-  markSent(reviewId: string, note?: string): void {
+  /**
+   * Mark a draft sent. Returns false when the row was NOT a draft any more —
+   * the `status = 'draft'` clause is the atomic half of the double-send guard:
+   * `sendReview` checks the status, then awaits file I/O before getting here,
+   * so two concurrent sends both pass that check and only this UPDATE can tell
+   * them apart. The loser gets 0 changes and is rejected (docs/260).
+   */
+  markSent(reviewId: string, note?: string): boolean {
     const now = new Date().toISOString();
     // A whitespace-only note is stored as NULL: "sent without a note" gets one
     // representation, so readers never have to treat "" and NULL alike.
     const trimmed = note?.trim();
-    this.db.prepare(
-      "UPDATE file_reviews SET status = 'sent', sent_at = ?, updated_at = ?, note = ? WHERE id = ?",
+    const result = this.db.prepare(
+      "UPDATE file_reviews SET status = 'sent', sent_at = ?, updated_at = ?, note = ? WHERE id = ? AND status = 'draft'",
     ).run(now, now, trimmed && trimmed.length > 0 ? trimmed : null, reviewId);
+    return result.changes > 0;
   }
 
   /** Delete a draft review and its comments. */

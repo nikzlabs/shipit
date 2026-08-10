@@ -411,7 +411,13 @@ export async function sendReview(
     content,
     note,
   );
-  reviewStore.markSent(reviewId, note);
+  // The status check above happened before the awaited file read, so it can't
+  // be trusted on its own: two concurrent sends of the same draft both reach
+  // here. The conditional UPDATE decides, and the loser is rejected rather than
+  // dispatching a second identical prompt to the agent.
+  if (!reviewStore.markSent(reviewId, note)) {
+    throw new ServiceError(400, "Review already sent");
+  }
   const updated = reviewStore.getReview(reviewId);
   return { prompt, review: updated ?? review };
 }

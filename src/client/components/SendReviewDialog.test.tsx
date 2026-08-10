@@ -95,4 +95,31 @@ describe("SendReviewDialog", () => {
     renderDialog({ open: false });
     expect(screen.queryByText("Send review")).toBeNull();
   });
+
+  it("holds both send affordances while the send is in flight", () => {
+    const props = renderDialog({ sending: true });
+    const send = screen.getByRole("button", { name: /Sending/ });
+    expect(send.hasAttribute("disabled")).toBe(true);
+
+    fireEvent.click(send);
+    fireEvent.keyDown(screen.getByLabelText(/Add a note for the agent/), {
+      key: "Enter",
+      metaKey: true,
+    });
+    expect(props.onSend).not.toHaveBeenCalled();
+  });
+
+  it("shows why a send failed, without closing", () => {
+    const props = renderDialog({ error: "Couldn't send the review." });
+    expect(screen.getByRole("alert").textContent).toContain("Couldn't send the review.");
+    expect(props.onClose).not.toHaveBeenCalled();
+  });
+
+  // The server rejects a note over 4000 characters; the field stops it first,
+  // so that 400 is unreachable by typing.
+  it("caps the note at the length the server accepts", () => {
+    renderDialog();
+    const field = screen.getByLabelText(/Add a note for the agent/) as HTMLTextAreaElement;
+    expect(field.maxLength).toBe(4000);
+  });
 });

@@ -58,6 +58,25 @@ The orphaned-comment section (markdown) and the snippet blocks (code) are untouc
 
 **`DiffPanel.tsx`** — same dialog, same note state. Its prompt is built client-side, so the note is inserted after its `"I have the following comments on the code:"` lead-in. The diff panel has no past-reviews surface, so req 7 does not apply there; the note only travels in the message.
 
+## Sending exactly once
+
+The dialog has two send affordances (the button and ⌘⏎) over an asynchronous POST, so "send twice" is the failure mode this design has to rule out — a duplicate is not a cosmetic glitch but a second prompt and a second agent turn.
+
+Two guards, because neither is sufficient alone:
+
+- **Client:** `confirmSend` sets an in-flight flag and returns early while a send is pending; the dialog disables both affordances and shows "Sending…".
+- **Server:** `sendReview`'s `status !== "draft"` check happens *before* an awaited file read, so two concurrent requests both pass it. `markSent`'s UPDATE carries `AND status = 'draft'` and returns whether it changed a row; the loser gets a `400`. That UPDATE is the only atomic point in the path.
+
+A failed send **keeps the dialog open** and shows the reason. Closing on failure was indistinguishable from success — no card, no message, and a review that never went anywhere. The note survives, so a retry costs no retyping.
+
+The note field carries `maxLength` equal to the server's `MAX_NOTE_LENGTH`, so the server's 400 is unreachable by typing; otherwise the user meets a rejection with no visible cause and retrying the same text fails again.
+
+## The dialog state follows the file
+
+`useFileReviewControls` is bound to whatever file the surface is showing — the file viewer swaps sibling tabs and Present swaps carousel entries through the *same* hook instance. Draft and history are keyed by `(session, file)` and follow along by construction, but the dialog's own state is plain component state and does not. Unreset, a note typed for file A would sit in the box for file B, and sending would attach A's note to B's review.
+
+So a render-phase reset (React's "adjust state when a prop changes" pattern, not an effect) clears the dialog, the note, the in-flight flag, and the error whenever the `(session, file)` key changes. No stale value is ever rendered.
+
 ## What this deliberately does not do
 
 - No comment list in the dialog and no per-comment removal (`requirements.md` → Later versions).

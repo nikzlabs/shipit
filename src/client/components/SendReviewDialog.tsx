@@ -31,6 +31,14 @@ import { Button } from "./ui/button.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { FileReviewControls } from "../hooks/use-file-review-controls.js";
 
+/**
+ * Client-side ceiling on the note, mirroring `MAX_NOTE_LENGTH` in
+ * `services/reviews.ts`. Enforced here as `maxLength` so the server's 400 is
+ * unreachable by typing — without it the user hits a rejection they can't see
+ * the cause of, and retrying the same text fails again.
+ */
+export const MAX_NOTE_LENGTH = 4000;
+
 export function SendReviewDialog({
   open,
   commentCount,
@@ -39,6 +47,8 @@ export function SendReviewDialog({
   onNoteChange,
   onSend,
   onClose,
+  sending = false,
+  error = null,
 }: {
   open: boolean;
   commentCount: number;
@@ -48,6 +58,11 @@ export function SendReviewDialog({
   onNoteChange: (note: string) => void;
   onSend: () => void;
   onClose: () => void;
+  /** The send is in flight: both send affordances are held so one review
+   *  can't be submitted twice. */
+  sending?: boolean;
+  /** Why the last send failed. The dialog stays open and shows it. */
+  error?: string | null;
 }) {
   const countLabel = `${commentCount} comment${commentCount !== 1 ? "s" : ""}`;
 
@@ -79,12 +94,13 @@ export function SendReviewDialog({
               // ⌘⏎ / Ctrl+⏎ sends from inside the dialog. This is NOT a bypass:
               // the dialog still always opens first (req 8).
               onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !sending) {
                   e.preventDefault();
                   onSend();
                 }
               }}
               rows={4}
+              maxLength={MAX_NOTE_LENGTH}
               autoFocus
               placeholder="Anything the comments don't say — priorities, constraints, why you're asking, what to leave alone…"
               className="w-full resize-y rounded-lg border border-(--color-border-secondary) bg-(--color-bg-primary) px-3 py-2 text-sm text-(--color-text-primary) placeholder:text-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus)"
@@ -92,16 +108,21 @@ export function SendReviewDialog({
             <p className="text-xs text-(--color-text-tertiary)">
               Goes first in the message, before the comments.
             </p>
+            {error && (
+              <p role="alert" className="text-xs text-(--color-error)">
+                {error}
+              </p>
+            )}
           </div>
         </div>
 
         <DialogFooter className="gap-2">
-          <Button variant="ghost" onClick={onClose}>
+          <Button variant="ghost" onClick={onClose} disabled={sending}>
             Cancel
           </Button>
-          <Button variant="primary" onClick={onSend}>
+          <Button variant="primary" onClick={onSend} disabled={sending}>
             <PaperPlaneTiltIcon size={ICON_SIZE.SM} className="mr-1" />
-            Send {countLabel}
+            {sending ? "Sending…" : `Send ${countLabel}`}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -131,6 +152,8 @@ export function FileReviewSendDialog({
       onNoteChange={controls.setNote}
       onSend={() => { void controls.confirmSend(); }}
       onClose={controls.closeSendDialog}
+      sending={controls.sending}
+      error={controls.sendError}
     />
   );
 }

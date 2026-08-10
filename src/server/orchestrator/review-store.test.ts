@@ -182,6 +182,19 @@ describe("FileReviewStore", () => {
     expect(store.getReview(b.id)!.note).toBeUndefined();
   });
 
+  // The atomic half of the double-send guard: sendReview's status check happens
+  // before an awaited file read, so only this UPDATE can separate two
+  // concurrent sends of the same draft.
+  it("refuses to mark an already-sent review sent again", () => {
+    const draft = store.createDraft("s1", "plan.md", "markdown", "h");
+    store.addSelectionComment(draft.id, "anchor", "", "", "feedback");
+
+    expect(store.markSent(draft.id, "first")).toBe(true);
+    expect(store.markSent(draft.id, "second")).toBe(false);
+    // …and the loser did not overwrite the winner's note.
+    expect(store.getReview(draft.id)!.note).toBe("first");
+  });
+
   it("starts a fresh draft after the previous one is sent", () => {
     const first = store.createDraft("s1", "plan.md", "markdown", "h");
     store.markSent(first.id);

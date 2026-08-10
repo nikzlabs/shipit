@@ -14,4 +14,8 @@
 - [x] `PastReviews` renders the stored note
 - [x] Tests: prompt placement, store round-trip, route body, dialog component, hook two-step, client store body
 - [x] Verified end to end in the dogfood instance (dialog, send, stored note in Past reviews)
-- [ ] Independent review by the other backend against every numbered requirement
+- [x] Independent review by the other backend against every numbered requirement (Codex)
+- [x] Fix: double send while the POST is pending — client in-flight guard + conditional `markSent`
+- [x] Fix: dialog state and note reset when the file changes (sibling tabs, Present carousel)
+- [x] Fix: a failed send keeps the dialog open and says why; `maxLength` matches the server cap
+- [x] Tests for all three, plus `PastReviews` note rendering
