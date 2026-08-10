@@ -4,7 +4,7 @@ title: Configurable reviewer — requirements
 description: A reviewer the user configures once in ShipIt, that works whichever model is implementing.
 ---
 
-# 260 — Configurable reviewer: requirements
+# 261 — Configurable reviewer: requirements
 
 **These are the things this feature changes. Everything ShipIt already does is a requirement
 too, and is not restated here** — existing behaviour must keep working at least as well as it
@@ -15,7 +15,8 @@ configured today. Part of it is a ShipIt setting (the sub-agent defaults, per ha
 the other part the agent decides for itself: it writes `--agent codex` because a line in
 `CLAUDE.md` tells it to. That is product behaviour living in a per-repository markdown file.
 
-No open questions remain.
+Two open questions are outstanding — see below. **No implementation work may start while they
+are open.**
 
 ## Requirements
 
@@ -66,15 +67,22 @@ No open questions remain.
    service, no model and no harness. Asking for a review and choosing who performs it become
    two different things, and only the first belongs to the agent.
 
-7. **Everything else a spawned agent runs on is explicit at the call.** Outside a role,
-   `shipit agent run` carries the harness, the model and the reasoning level on the
-   invocation itself, and ShipIt keeps **no** stored per-harness defaults for it. The
-   implicit paths are the roles, and they are the only implicit paths.
+7. **Everything else a spawned agent runs on is named at the call.** Outside a role, a
+   caller states the harness, the model — which means the service and the billing mode too,
+   since that is what identifies a model (req 3) — and the reasoning level. **No stored
+   setting fills in an omission**, and an incomplete call is refused rather than completed
+   from somewhere the caller cannot see. The roles are the implicit paths, and they are the
+   only implicit paths.
 
-8. **Review works on a fresh install**, before anyone has configured a reviewer, and it
-   never points at a service the user has no credential for. Both reviewers therefore have a
-   **derived** default rather than a named model — the same argument docs/252 req 9 made for
-   background work.
+8. **Review works without anyone having configured a reviewer**, on any install that can run
+   an agent at all, and it never points at a service the user has no credential for. Both
+   reviewers therefore have a **derived** default rather than a named model — the same
+   argument docs/252 req 9 made for background work.
+
+   An auto-configured reviewer is **complete**: it resolves to everything req 1 says a
+   reviewer is, reasoning level included. A reviewer that derived a model but left the
+   reasoning level to whatever the harness does by default would not satisfy req 5, and would
+   make "configured in one place" false for the case nobody has touched.
 
    A reviewer the user has not pinned is **auto-configured**, and stays auto-configured: it
    **re-derives as the install changes**, so adding a second service, or a model from a family
@@ -95,16 +103,57 @@ No open questions remain.
 
 ## Scope
 
-**The child-session case is not part of this feature.** It came up as evidence that removing
-the stored defaults costs nothing — the paths that need to be implicit have, or will have,
-their own support — and a child session already inherits its parent's selection. No
-child-session role is designed or built here. Strike this paragraph if that reading is wrong.
+The child-session case is **assumed** out of scope — see the first open question. Nothing is
+designed or built for it here.
 
 ## Open questions
 
-_None._
+- **What happens to the per-harness sub-agent defaults people have already set?** Req 7
+  removes the stored defaults, and some installs have a deliberately chosen model and
+  reasoning level per harness. Three answers, and this is a decision about other people's
+  configuration rather than one the agent should make: **(a) migrate** the existing Claude and
+  Codex defaults into the two reviewer slots as pins; **(b) discard them**, with a visible
+  notice saying what was cleared and where the setting went; **(c) keep reading them for one
+  release** as a compatibility path, then discard. Recommendation: **(b)**. Migration looks
+  kind but is wrong — those defaults applied to *every* consult, not only reviews, so
+  promoting them to reviewer pins asserts an intent the user never expressed, and it would
+  silently defeat req 8's auto-configuration on exactly the installs that had configured
+  something. Raised by the cross-backend review.
+
+- **Is the child-session case in scope?** The human named "the review case and the child
+  session case" as the two paths that get their own support, which the agent read as evidence
+  for removing the stored defaults rather than as a request to build a child-session role. A
+  child session already inherits its parent's selection, so the agent assumed no work is
+  needed. That assumption has not been confirmed, and the *Scope* section above depends on it.
+  Recommendation: **confirm out of scope**, and let a child-session role be its own feature if
+  it is wanted.
 
 ## Resolved questions
+
+- 2026-08-10 — **Cross-backend review of this document and its design** (Codex, under
+  CLAUDE.md's rule that the other backend reviews substantive work). Fifteen findings; all
+  fifteen were checked against the code and the material ones held. Three changed
+  *requirements* and are recorded here — the rest were design defects and are fixed in
+  `plan.md`, and two became the open questions above.
+
+  - **Req 7 was mechanism.** "ShipIt keeps **no** stored per-harness defaults" is an internal
+    storage decision, not an observable property. Rewritten to state what a caller
+    experiences — nothing fills an omission, and an incomplete call is refused — with the
+    deletion of the store moved to the design where it belongs. The reviewer also caught that
+    req 7 said "the model" while req 3 defines a model as `(service, billing mode, model)`, so
+    "explicit" was under-specified in the requirement itself.
+  - **An auto-configured reviewer was incomplete.** Req 5 makes the reasoning level part of
+    the reviewer; req 8 requires both reviewers to work before anyone pins them; and the
+    design derived service, mode, model and harness but *not* reasoning — so an untouched
+    reviewer fell back to the harness default, which is the one thing req 5 forbids. Req 8 now
+    says an auto-configured reviewer resolves to a complete reviewer.
+  - **"Fresh install" claimed more than the product does.** `shipit agent run` is gated by a
+    Multi-agent setting that is **off by default** (`credential-store.ts:1150`,
+    `enableSubAgents ?? false`, rejected at `sub-agent.ts:209`), and an install with no
+    credential at all can run nothing. Req 8 now says "without anyone having configured a
+    reviewer, on any install that can run an agent at all", which is what was actually meant.
+    Whether reviewing should bypass that gate is a separate product question and is not
+    assumed here.
 
 - 2026-08-10 — **Is the derived default a one-time value, or does it keep following the
   install?** **Chosen: it keeps following, and the state is visible.** Raised by the human
