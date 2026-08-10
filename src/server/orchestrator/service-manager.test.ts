@@ -8,6 +8,8 @@ import {
   NETWORK_JOIN_TIMEOUT_MS,
   STARTING_WATCHDOG_MS,
   STARTING_TIMEOUT_MESSAGE,
+  UP_SILENCE_TIMEOUT_MS,
+  UP_STALLED_MESSAGE,
   COMPOSE_LOG_PREFIX,
   MAX_COMPOSE_LOG_LINE,
   type ComposeRunner,
@@ -3244,5 +3246,528 @@ services:
     expect(stored.filter(t => t.includes("[compose]"))).toEqual([]);
 
     await mgr.stop();
+  });
+});
+
+/**
+ * docs/121 — the three remaining service-lifecycle gaps, all of them about a
+ * service that ends up in a state the user cannot get out of by any means the
+ * UI offers.
+ *
+ *   - requirement 2: a `docker compose up` that never returns pinned the
+ *     service at `starting` forever, because the (correct) exemption an
+ *     in-flight `up` gets from the watchdog had no outer bound.
+ *   - requirement 4: the log follower dies with the container it follows, and
+ *     nothing re-attached it on the AUTOMATIC recreate paths — so a service
+ *     that recovered on its own showed an empty log panel until the user
+ *     restarted it by hand.
+ *   - requirement 5: `stopService` ran `docker compose stop` while an earlier
+ *     `startService`'s `up` was still running, so the container came back after
+ *     the user asked for it to be gone.
+ */
+describe("ServiceManager service-lifecycle resilience (docs/121)", () => {
+  let tmpDir: string;
+
+  function setup() {
+    tmpDir = makeSessionDir("service-mgr-121-");
+    return path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
+  }
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function writeCompose(dir: string, content: string): void {
+    fs.writeFileSync(path.join(dir, "docker-compose.yml"), content);
+  }
+
+  const MANUAL_COMPOSE =
+    "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n    x-shipit-preview: manual\n";
+
+  interface ManagerOpts {
+    /**
+     * Runs in place of `docker compose up`. Receives the output sink, so a test
+     * can model a build that talks as well as one that has gone silent.
+     */
+    up?: (onOutput?: (chunk: string) => void) => Promise<void>;
+    /** Runs in place of `docker compose stop`. */
+    stop?: () => Promise<void>;
+    pollIntervalMs?: number;
+  }
+
+  function makeManager(dir: string, opts: ManagerOpts = {}) {
+    let psResponse = "";
+    const upCalls: string[][] = [];
+    const stopCalls: string[] = [];
+
+    const composeRunner: ComposeRunner = (args, _cwd, onOutput) => {
+      const upIdx = args.indexOf("up");
+      if (upIdx >= 0) {
+        upCalls.push(args.slice(upIdx));
+        return opts.up?.(onOutput) ?? Promise.resolve();
+      }
+      const stopIdx = args.indexOf("stop");
+      if (stopIdx >= 0) {
+        stopCalls.push(args[stopIdx + 1]);
+        return opts.stop?.() ?? Promise.resolve();
+      }
+      return Promise.resolve();
+    };
+
+    const composeQuery: ComposeQuery = (args) => {
+      const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
+      if (key === "ps") return Promise.resolve(psResponse);
+      if (key === "inspect") {
+        return Promise.resolve(JSON.stringify([{
+          State: { OOMKilled: false },
+          NetworkSettings: { Networks: { "shipit-session-test-session": { IPAddress: "172.16.0.9" } } },
+        }]));
+      }
+      return Promise.resolve("");
+    };
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: opts.pollIntervalMs ?? 0,
+    });
+
+    return {
+      mgr,
+      upCalls,
+      stopCalls,
+      poll: () => (mgr as unknown as { poller: { pollOnce(): Promise<void> } }).poller.pollOnce(),
+      logProcesses: () =>
+        (mgr as unknown as { logProcesses: Map<string, ChildProcess> }).logProcesses,
+      setPsResponse: (s: string) => { psResponse = s; },
+    };
+  }
+
+  const runningPs = JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 });
+  const exitedPs = (exitCode: number) =>
+    JSON.stringify({ Service: "web", ID: "abc", State: "exited", ExitCode: exitCode });
+
+  // -------------------------------------------------------------------------
+  // Requirement 2 — an in-flight `up` is exempt only while it is talking
+  // -------------------------------------------------------------------------
+
+  it("reports a compose up that has gone silent and never returned", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    // A wedged daemon: the `up` neither returns nor says anything.
+    const { mgr } = makeManager(dir, { up: () => new Promise<void>(() => {}) });
+
+    await mgr.start();
+    const startPromise = mgr.startService("web");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mgr.getService("web")?.status).toBe("starting");
+
+    await vi.advanceTimersByTimeAsync(UP_SILENCE_TIMEOUT_MS + STARTING_WATCHDOG_MS);
+
+    const web = mgr.getService("web");
+    expect(web?.status).toBe("error");
+    expect(web?.error).toBe(UP_STALLED_MESSAGE);
+    // No address may survive it — the container it described is unverifiable.
+    expect(mgr.getServices().find(s => s.name === "web")?.url).toBeUndefined();
+    void startPromise;
+  });
+
+  it("never bounds a build that is still producing output", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    // A cold image build: minutes long, but talking the whole way through.
+    // Requirement 2's non-requirements rule out putting a clock on this.
+    let emit: ((chunk: string) => void) | undefined;
+    const { mgr } = makeManager(dir, {
+      up: (onOutput) => new Promise<void>(() => { emit = onOutput; }),
+    });
+
+    await mgr.start();
+    void mgr.startService("web");
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Four silence windows' worth of build, with progress arriving throughout.
+    for (let i = 0; i < 8; i++) {
+      await vi.advanceTimersByTimeAsync(UP_SILENCE_TIMEOUT_MS / 2);
+      emit?.(`#${i} [2/9] RUN npm ci\n`);
+    }
+    expect(mgr.getService("web")?.status).toBe("starting");
+    expect(mgr.getService("web")?.error).toBeUndefined();
+
+    // The moment it stops talking, the bound applies.
+    await vi.advanceTimersByTimeAsync(UP_SILENCE_TIMEOUT_MS + STARTING_WATCHDOG_MS);
+    expect(mgr.getService("web")?.status).toBe("error");
+    expect(mgr.getService("web")?.error).toBe(UP_STALLED_MESSAGE);
+  });
+
+  it("recovers on its own if the slow up eventually succeeds", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    let finishUp: (() => void) | undefined;
+    const { mgr, setPsResponse } = makeManager(dir, {
+      up: () => new Promise<void>((resolve) => { finishUp = resolve; }),
+    });
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    const startPromise = mgr.startService("web");
+    await vi.advanceTimersByTimeAsync(UP_SILENCE_TIMEOUT_MS + STARTING_WATCHDOG_MS);
+    expect(mgr.getService("web")?.status).toBe("error");
+
+    // The `up` was never cancelled — the error is a report, not a verdict.
+    finishUp?.();
+    await startPromise;
+    expect(mgr.getService("web")?.status).toBe("running");
+    expect(mgr.getService("web")?.error).toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // Requirement 4 — the log follower survives an automatic recovery
+  // -------------------------------------------------------------------------
+
+  it("re-attaches a log follower when a service comes back on its own", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, poll, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    const first = logProcesses().get("web");
+    expect(first).toBeDefined();
+
+    // The container is recreated by an automatic path (a retry, an OOM
+    // recovery, the gated batch): the follower dies with its predecessor.
+    first!.emit("close", 0);
+    expect(logProcesses().has("web")).toBe(false);
+
+    // The service leaves and re-enters `running` — the transition every
+    // automatic recovery route ends at.
+    setPsResponse(exitedPs(1));
+    await poll();
+    setPsResponse(runningPs);
+    await poll();
+
+    const second = logProcesses().get("web");
+    expect(second).toBeDefined();
+    expect(second).not.toBe(first);
+  });
+
+  it("re-attaches even when the follower dies after the recovery poll", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, poll, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    const first = logProcesses().get("web");
+
+    // The replacement container is observed running BEFORE the old follower's
+    // `close` arrives. A check gated on the non-running -> running transition
+    // would no-op here and never get another chance.
+    setPsResponse(exitedPs(1));
+    await poll();
+    setPsResponse(runningPs);
+    await poll();
+    first!.emit("close", 0);
+
+    // The next ordinary poll of a still-running service re-attaches.
+    await poll();
+    const second = logProcesses().get("web");
+    expect(second).toBeDefined();
+    expect(second).not.toBe(first);
+  });
+
+  it("does not replace a follower that is still alive", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, poll, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    const follower = logProcesses().get("web");
+
+    // Replacing a live follower would clear the ring buffer `streamLogs` wipes
+    // on every spawn — throwing away the very backlog requirement 4 is about.
+    setPsResponse(exitedPs(0));
+    await poll();
+    setPsResponse(runningPs);
+    await poll();
+
+    expect(logProcesses().get("web")).toBe(follower);
+  });
+
+  it("retires a follower that exits so its liveness answer stays honest", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses } = makeManager(dir);
+
+    await mgr.start();
+    const cleanup = mgr.streamLogs("web");
+    const proc = logProcesses().get("web");
+    expect(proc).toBeDefined();
+    expect(proc!.listenerCount("close")).toBeGreaterThan(0);
+
+    proc!.emit("close", 0);
+    expect(logProcesses().has("web")).toBe(false);
+    cleanup();
+  });
+
+  // -------------------------------------------------------------------------
+  // Requirement 5 — the user's last instruction is the one that holds
+  // -------------------------------------------------------------------------
+
+  it("leaves a service stopped when the stop lands during an in-flight start", async () => {
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    let finishUp: (() => void) | undefined;
+    const { mgr, stopCalls, setPsResponse } = makeManager(dir, {
+      up: () => new Promise<void>((resolve) => { finishUp = resolve; }),
+    });
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    const startPromise = mgr.startService("web");
+    await Promise.resolve();
+
+    // Stop arrives while the `up` is still running — the exact moment a user
+    // reaches for Stop, because the service looks wedged.
+    const stopPromise = mgr.stopService("web");
+    await Promise.resolve();
+    // It does not wait for the build before acting.
+    expect(stopCalls).toEqual(["web"]);
+
+    // The stop reports its verdict without waiting for the build.
+    await stopPromise;
+    expect(mgr.getService("web")?.status).toBe("stopped");
+
+    finishUp?.();
+    await startPromise;
+
+    // A second stop follows in the background, against whatever the `up`
+    // created or restarted.
+    await vi.waitFor(() => expect(stopCalls).toEqual(["web", "web"]));
+    expect(mgr.getService("web")?.status).toBe("stopped");
+  });
+
+  it("does not hang the stop on an up that never returns", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    // The wedged-daemon case requirement 2 is about. Awaiting this `up` before
+    // reporting the stop would turn it into a requirement 5 failure too: Stop
+    // would never return and the service would never be reported stopped.
+    const { mgr, stopCalls } = makeManager(dir, { up: () => new Promise<void>(() => {}) });
+
+    await mgr.start();
+    void mgr.startService("web");
+    await vi.advanceTimersByTimeAsync(0);
+
+    await mgr.stopService("web");
+
+    expect(stopCalls).toEqual(["web"]);
+    expect(mgr.getService("web")?.status).toBe("stopped");
+  });
+
+  it("waits out every overlapping up, not just the last one", async () => {
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    // A user-initiated start racing a retry attempt: two `up` calls in flight
+    // for one service. The follow-up stop has to come after the LAST of them —
+    // if the shorter call's completion retired the record, the stop would fire
+    // early and the longer call would put the container back unopposed.
+    const events: string[] = [];
+    const releases: (() => void)[] = [];
+    const { mgr } = makeManager(dir, {
+      up: () => new Promise<void>((resolve) => {
+        const idx = releases.length;
+        releases.push(() => { events.push(`up${idx}-done`); resolve(); });
+      }),
+      stop: () => { events.push("stop"); return Promise.resolve(); },
+    });
+
+    await mgr.start();
+    const firstUp = mgr.startService("web");
+    await Promise.resolve();
+    const secondUp = mgr.startService("web");
+    await Promise.resolve();
+    expect(releases).toHaveLength(2);
+
+    await mgr.stopService("web");
+
+    // The second (shorter) call settles first.
+    releases[1]();
+    await secondUp;
+    releases[0]();
+    await firstUp;
+
+    await vi.waitFor(() => expect(events.filter(e => e === "stop")).toHaveLength(2));
+    expect(events).toEqual(["stop", "up1-done", "up0-done", "stop"]);
+    expect(mgr.getService("web")?.status).toBe("stopped");
+  });
+
+  it("abandons a restart when the stop lands during its own compose stop", async () => {
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    // `compose stop` can burn the full 10s SIGTERM grace, and a Stop arriving in
+    // that window registers no in-flight `up` to chase — so the restart has to
+    // check for itself before recreating the container.
+    let releaseStop: (() => void) | undefined;
+    let stopSeen = 0;
+    const { mgr, upCalls, setPsResponse } = makeManager(dir, {
+      stop: () => {
+        stopSeen += 1;
+        // Only the restart's own leading stop blocks.
+        return stopSeen === 1
+          ? new Promise<void>((resolve) => { releaseStop = resolve; })
+          : Promise.resolve();
+      },
+    });
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    const upsBefore = upCalls.length;
+
+    const restartPromise = mgr.restartService("web");
+    await Promise.resolve();
+    const stopPromise = mgr.stopService("web");
+    releaseStop?.();
+    await restartPromise;
+    await stopPromise;
+
+    // The restart must not have brought the container back.
+    expect(upCalls.length).toBe(upsBefore);
+    expect(mgr.getService("web")?.status).toBe("stopped");
+  });
+
+  it("leaves a gated service the user stopped alone when the gate opens", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr, upCalls } = makeManager(dir);
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    expect(mgr.getService("web")?.status).toBe("starting");
+
+    // Stopped while the install gate held it.
+    await mgr.stopService("web");
+    const upsBefore = upCalls.length;
+
+    // The gate opening is an automatic lifecycle event, not a newer instruction
+    // from the user, so it must not undo the stop.
+    mgr.setInstallRunning(false);
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(upCalls.length).toBe(upsBefore);
+    expect(mgr.getService("web")?.status).toBe("stopped");
+  });
+
+  it("does not report the stop's own SIGKILL as a crash", async () => {
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, poll, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    await mgr.stopService("web");
+
+    // `docker compose stop` SIGTERMs and then SIGKILLs a service that doesn't
+    // forward the signal, so the container exits 137/143. Read at face value
+    // that walked the service the user just stopped straight to `error`.
+    setPsResponse(exitedPs(137));
+    await poll();
+    expect(mgr.getService("web")?.status).toBe("stopped");
+    expect(mgr.getService("web")?.error).toBeUndefined();
+
+    setPsResponse(exitedPs(143));
+    await poll();
+    expect(mgr.getService("web")?.status).toBe("stopped");
+  });
+
+  it("corrects a running claim that raced the stop", async () => {
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, poll, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    await mgr.stopService("web");
+
+    // A poll that landed before compose had finished killing the container
+    // writes `running` back over the stop.
+    await poll();
+    expect(mgr.getService("web")?.status).toBe("running");
+
+    // The exit is now the ONLY thing that can correct that claim, and it is the
+    // exit our own stop produced — so ignoring it outright would leave a
+    // stopped service reporting `running` forever (requirement 3).
+    setPsResponse(exitedPs(137));
+    await poll();
+    expect(mgr.getService("web")?.status).toBe("stopped");
+  });
+
+  it("does not let an already-scheduled retry undo the stop", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(
+      dir,
+      "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n    x-shipit-depends-on-install: false\n",
+    );
+    const { mgr, upCalls, poll, setPsResponse } = makeManager(dir);
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    // Crash during the install window → a backoff retry is scheduled.
+    setPsResponse(exitedPs(1));
+    await poll();
+    expect(mgr.getService("web")?.status).toBe("starting");
+
+    await mgr.stopService("web");
+    const upsAtStop = upCalls.length;
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(upCalls.length).toBe(upsAtStop);
+    expect(mgr.getService("web")?.status).toBe("stopped");
+  });
+
+  it("treats a later start as the newest instruction", async () => {
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, poll, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    await mgr.stopService("web");
+    await mgr.startService("web");
+    expect(mgr.getService("web")?.status).toBe("running");
+
+    // The suppression is gone with the stop that armed it: a genuine crash
+    // after the restart is reported normally.
+    setPsResponse(exitedPs(1));
+    await poll();
+    expect(mgr.getService("web")?.status).toBe("error");
+    expect(mgr.getService("web")?.error).toContain("Exited with code 1");
   });
 });
