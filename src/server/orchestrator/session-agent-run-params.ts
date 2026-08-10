@@ -181,9 +181,30 @@ export async function buildAgentRunParams(
   let systemPrompt: string | undefined =
     [agentInstructions, userSystemPrompt].filter(Boolean).join("\n\n") || undefined;
 
-  // If the session was graduating from a warm slot and carried a one-shot
-  // conversation replay, append it to the system prompt and clear the
-  // resume id so the CLI doesn't try to attach to a non-existent session.
+  // A pending replay means the CLI-side conversation is either absent or must
+  // not be continued, so this turn starts a fresh one seeded with ShipIt's own
+  // persisted transcript. Dropping the resume id is half the mechanism, not a
+  // detail: `--resume` against a cleared/missing conversation is the docs/153
+  // "no conversation found" loop, and against a *live* one it would restore
+  // exactly the turns the replay was built to exclude.
+  //
+  // (This comment used to attribute the replay to a session graduating from a
+  // warm slot. No warm-pool path writes `sessions.conversation_replay` — a warm
+  // session has no conversation to replay.) The writers, all of which pair the
+  // arm with `clearAgentSessionId`:
+  //   - rewind chat / both / code — `ws-handlers/rollback-handlers.ts:197`,
+  //     `:308`, `:340`, `:373`. Chat and both replay the TRUNCATED history;
+  //     code replays the full one because only the tree moved.
+  //   - fork — `rollback-handlers.ts:264`. The child session id has no CLI
+  //     transcript of its own, so the parent's is replayed into it.
+  //   - rewind-snapshot restore — `rollback-handlers.ts:415`, `:441`.
+  //   - unresumable-conversation recovery — `session-agent-env.ts:869`
+  //     (`armConversationReplay`), when the docs/153 leak repair finds no
+  //     resumable jsonl on disk.
+  //
+  // Not on the list, deliberately: a provider-account failover keeps
+  // `agentSessionId` and resumes normally, because the resume files are local
+  // and carry no account identity (`services/provider-account-switch.ts`).
   if (replay) {
     agentSessionId = undefined;
     systemPrompt = systemPrompt ? `${systemPrompt}\n\n${replay}` : replay;
