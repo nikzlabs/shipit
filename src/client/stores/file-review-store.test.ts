@@ -193,6 +193,27 @@ describe("file-review-store", () => {
     expect(useFileReviewStore.getState().getHistory("s1", "plan.md")[0]?.id).toBe("d6");
   });
 
+  // docs/260 — the send dialog's note travels in the send request body.
+  it("sendDraft() puts the note in the send request body", async () => {
+    const draft = makeDraft({ id: "d6b", comments: [selectionComment("c1")] });
+    const fake = new FakeFetch();
+    fake.on("POST", "/api/sessions/s1/file-reviews/draft", () => draft);
+    fake.on("GET", /file-reviews\?filePath/, () => ({ reviews: [] }));
+    fake.on("POST", "/api/sessions/s1/file-reviews/d6b/send", () => ({
+      prompt: "p",
+      review: { ...draft, status: "sent", note: "keep the structure" },
+    }));
+    fake.install();
+
+    await useFileReviewStore.getState().load("s1", "plan.md");
+    await useFileReviewStore.getState().sendDraft("s1", "plan.md", "  keep the structure  ");
+
+    const send = fake.calls.find((c) => c.url.endsWith("/send"));
+    expect(send?.body).toEqual({ note: "keep the structure" });
+    expect(useFileReviewStore.getState().getHistory("s1", "plan.md")[0]?.note)
+      .toBe("keep the structure");
+  });
+
   it("sendDraft() refuses to send when there are no comments", async () => {
     const draft = makeDraft({ id: "d7", comments: [] });
     const fake = new FakeFetch();

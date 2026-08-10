@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Button } from "./ui/button.js";
 import { FileContentView } from "./FileContentView/FileContentView.js";
 import { FileReviewFooter } from "./FileContentView/FileReviewFooter.js";
+import { FileReviewSendDialog } from "./SendReviewDialog.js";
 import { SourceToggle, type ViewMode } from "./FileContentView/SourceToggle.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useFileReviewControls } from "../hooks/use-file-review-controls.js";
@@ -221,6 +222,7 @@ export function FilePreviewModal({
             composing={review.composing}
             onSend={review.handleSend}
             onCancel={handleClose}
+            sendDialog={<FileReviewSendDialog controls={review} filePath={filePath} />}
           />
         )}
       </DialogContent>

@@ -1,0 +1,21 @@
+# 260 — Send-review dialog: checklist
+
+- [x] `requirements.md` from the human's words, with dated receipts for every answered question
+- [x] Interactive prototype (`mockup.html`)
+- [x] `plan.md` design
+- [x] `FileReview.note` type + `file_reviews.note` migration
+- [x] `markSent(id, note?)` stores the trimmed note; whitespace-only becomes NULL
+- [x] `buildReviewPrompt` places the note after the lead-in and before the first comment (both builders)
+- [x] `sendReview` note plumbing + 4000-character cap
+- [x] `POST /send` accepts an optional `{ note }` body
+- [x] `SendReviewDialog` + `FileReviewSendDialog` (shared by all three send surfaces)
+- [x] `useFileReviewControls` splits Send into open-dialog / `confirmSend`
+- [x] `DiffPanel` uses the dialog and puts the note in its client-built prompt
+- [x] `PastReviews` renders the stored note
+- [x] Tests: prompt placement, store round-trip, route body, dialog component, hook two-step, client store body
+- [x] Verified end to end in the dogfood instance (dialog, send, stored note in Past reviews)
+- [x] Independent review by the other backend against every numbered requirement (Codex)
+- [x] Fix: double send while the POST is pending — client in-flight guard + conditional `markSent`
+- [x] Fix: dialog state and note reset when the file changes (sibling tabs, Present carousel)
+- [x] Fix: a failed send keeps the dialog open and says why; `maxLength` matches the server cap
+- [x] Tests for all three, plus `PastReviews` note rendering

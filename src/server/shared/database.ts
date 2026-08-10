@@ -1132,6 +1132,21 @@ const MIGRATIONS: Migration[] = [
     if (columns.some((c) => c.name === "non_turn_failure")) return;
     db.exec("ALTER TABLE messages ADD COLUMN non_turn_failure TEXT");
   },
+  // docs/260 (req 7) — the free-text note the user attaches when sending a
+  // review. Written once, beside `sent_at`, and read back by "Past reviews" so
+  // the note is still there next to the review it framed. Additive with no
+  // backfill: reviews sent before this feature have no note, and NULL is the
+  // single representation of "sent without one" (the service stores a
+  // whitespace-only note as NULL rather than as an empty string).
+  //
+  // Guarded like the migrations above: the migration tests rewind
+  // `user_version` to re-run an earlier step, which re-runs every step after it
+  // against a table that already has the column.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(file_reviews)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "note")) return;
+    db.exec("ALTER TABLE file_reviews ADD COLUMN note TEXT");
+  },
 ];
 
 /**

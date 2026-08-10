@@ -161,6 +161,40 @@ describe("FileReviewStore", () => {
     expect(review!.sentAt).toBeTruthy();
   });
 
+  // docs/260 — the send dialog's note rides along with markSent and comes back
+  // on the sent review, which is what "Past reviews" reads.
+  it("stores the send note on the sent review", () => {
+    const draft = store.createDraft("s1", "plan.md", "markdown", "h");
+    store.addSelectionComment(draft.id, "anchor", "", "", "feedback");
+
+    store.markSent(draft.id, "  Keep the structure.  ");
+
+    expect(store.getReview(draft.id)!.note).toBe("Keep the structure.");
+  });
+
+  it("stores no note when the note is absent or whitespace only", () => {
+    const a = store.createDraft("s1", "a.md", "markdown", "h");
+    store.markSent(a.id);
+    expect(store.getReview(a.id)!.note).toBeUndefined();
+
+    const b = store.createDraft("s1", "b.md", "markdown", "h");
+    store.markSent(b.id, "   \n  ");
+    expect(store.getReview(b.id)!.note).toBeUndefined();
+  });
+
+  // The atomic half of the double-send guard: sendReview's status check happens
+  // before an awaited file read, so only this UPDATE can separate two
+  // concurrent sends of the same draft.
+  it("refuses to mark an already-sent review sent again", () => {
+    const draft = store.createDraft("s1", "plan.md", "markdown", "h");
+    store.addSelectionComment(draft.id, "anchor", "", "", "feedback");
+
+    expect(store.markSent(draft.id, "first")).toBe(true);
+    expect(store.markSent(draft.id, "second")).toBe(false);
+    // …and the loser did not overwrite the winner's note.
+    expect(store.getReview(draft.id)!.note).toBe("first");
+  });
+
   it("starts a fresh draft after the previous one is sent", () => {
     const first = store.createDraft("s1", "plan.md", "markdown", "h");
     store.markSent(first.id);

@@ -38,6 +38,7 @@ import { PresentGallery } from "./PresentGallery.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { FileContentView } from "./FileContentView/FileContentView.js";
 import { FileReviewFooter } from "./FileContentView/FileReviewFooter.js";
+import { FileReviewSendDialog } from "./SendReviewDialog.js";
 import { SourceToggle, type ViewMode } from "./FileContentView/SourceToggle.js";
 import { useFileReviewControls } from "../hooks/use-file-review-controls.js";
 import { kindFromMimeType, supportsSourceToggle } from "../utils/file-content-kind.js";
@@ -447,6 +448,9 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
           canSend={review.canSend}
           composing={review.composing}
           onSend={review.handleSend}
+          sendDialog={
+            <FileReviewSendDialog controls={review} filePath={active?.filePath ?? ""} />
+          }
         />
       )}
     </div>
