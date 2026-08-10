@@ -181,22 +181,20 @@ issue: https://example.com/tickets/42
         contextBefore: "",
         contextAfter: "",
         text: "human comment",
-        source: "human",
       },
       {
         id: "c2",
         quotedText: "Architecture body",
         contextBefore: "",
         contextAfter: "",
-        text: "ai comment",
-        source: "ai",
+        text: "second comment",
       },
     ];
 
     it("renders existing comment text", () => {
       render(<MarkdownSelectionComments {...makeProps({ comments })} />);
       expect(screen.getByText("human comment")).toBeInTheDocument();
-      expect(screen.getByText("ai comment")).toBeInTheDocument();
+      expect(screen.getByText("second comment")).toBeInTheDocument();
     });
 
     it("shows the quoted text inside each comment card", () => {
@@ -206,28 +204,10 @@ issue: https://example.com/tickets/42
       expect(matches.length).toBeGreaterThanOrEqual(2);
     });
 
-    it("marks AI comments with an AI label", () => {
+    // Every review comment is human-authored (the AI write path was removed in
+    // docs/203 + docs/220), so no card carries an author label.
+    it("does not label a comment with an author", () => {
       render(<MarkdownSelectionComments {...makeProps({ comments })} />);
-      expect(screen.getByText("AI")).toBeInTheDocument();
-    });
-
-    it("does not show an AI label for human comments", () => {
-      render(
-        <MarkdownSelectionComments
-          {...makeProps({
-            comments: [
-              {
-                id: "c1",
-                quotedText: "Architecture body",
-                contextBefore: "",
-                contextAfter: "",
-                text: "x",
-                source: "human",
-              },
-            ],
-          })}
-        />,
-      );
       expect(screen.queryByText("AI")).not.toBeInTheDocument();
     });
   });
@@ -243,7 +223,6 @@ issue: https://example.com/tickets/42
           contextBefore: "",
           contextAfter: "",
           text: "old",
-          source: "human",
         },
       ];
       render(<MarkdownSelectionComments {...makeProps({ comments, onEditComment })} />);
@@ -267,7 +246,6 @@ issue: https://example.com/tickets/42
           contextBefore: "",
           contextAfter: "",
           text: "old",
-          source: "human",
         },
       ];
       render(<MarkdownSelectionComments {...makeProps({ comments })} />);
@@ -289,7 +267,6 @@ issue: https://example.com/tickets/42
           contextBefore: "",
           contextAfter: "",
           text: "x",
-          source: "human",
         },
       ];
       render(<MarkdownSelectionComments {...makeProps({ comments, onDeleteComment })} />);
@@ -307,7 +284,6 @@ issue: https://example.com/tickets/42
           contextBefore: "",
           contextAfter: "",
           text: "stale feedback",
-          source: "human",
         },
       ];
       render(<MarkdownSelectionComments {...makeProps({ comments })} />);
@@ -323,7 +299,6 @@ issue: https://example.com/tickets/42
           contextBefore: "",
           contextAfter: "",
           text: "anchored note",
-          source: "human",
         },
       ];
       render(<MarkdownSelectionComments {...makeProps({ comments })} />);
@@ -340,7 +315,6 @@ issue: https://example.com/tickets/42
           contextBefore: "",
           contextAfter: "",
           text: "comment on testing",
-          source: "human",
         },
       ];
       const { container } = render(
@@ -363,7 +337,6 @@ issue: https://example.com/tickets/42
           contextBefore: "Second ",
           contextAfter: "",
           text: "about the second cat",
-          source: "human",
         },
       ];
       render(<MarkdownSelectionComments {...makeProps({ content, comments })} />);
@@ -385,7 +358,6 @@ issue: https://example.com/tickets/42
           contextBefore: "Beta section repeats the ",
           contextAfter: ".",
           text: "about the beta occurrence",
-          source: "human",
         },
       ];
       const { container } = render(
@@ -414,7 +386,6 @@ issue: https://example.com/tickets/42
           contextBefore: "unique prior context.",
           contextAfter: " appears in the final block.",
           text: "about the final occurrence",
-          source: "human",
         },
       ];
       const { container } = render(
@@ -441,7 +412,6 @@ issue: https://example.com/tickets/42
           contextBefore: "",
           contextAfter: "",
           text: "about kestrels",
-          source: "human",
         },
         {
           id: "c2",
@@ -449,7 +419,6 @@ issue: https://example.com/tickets/42
           contextBefore: "",
           contextAfter: "",
           text: "about albatross",
-          source: "human",
         },
       ];
       const { container } = render(
@@ -494,7 +463,6 @@ issue: https://example.com/tickets/42
                   contextBefore,
                   contextAfter,
                   text,
-                  source: "human" as const,
                 };
                 setComments([comment]);
                 return Promise.resolve({ id: comment.id });
@@ -535,7 +503,6 @@ issue: https://example.com/tickets/42
           contextBefore: "",
           contextAfter: "",
           text: "about the code",
-          source: "human",
         },
       ];
       render(<MarkdownSelectionComments {...makeProps({ content, comments })} />);
@@ -552,7 +519,6 @@ issue: https://example.com/tickets/42
         contextBefore: "",
         contextAfter: "",
         text: "old",
-        source: "human",
       },
     ];
 

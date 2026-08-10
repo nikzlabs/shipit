@@ -2,10 +2,10 @@
  * Review services — server-persisted, per-(session, file) reviews.
  *
  * Backs the unified review surface (docs/112-unified-review-surface):
- * markdown human drafts get selection-anchored comments, code human drafts get
+ * markdown drafts get selection-anchored comments, code drafts get
  * line-anchored comments, and both share the same draft/sent/history lifecycle.
- * Agent review submissions can use either line or selection anchors for
- * markdown snapshots because subagents often review the source form of a doc.
+ * Every comment is human-authored: the AI write path was removed in docs/203
+ * (plain-text review) and docs/220 (cross-agent review surfacing).
  */
 
 import { createHash } from "node:crypto";
@@ -16,7 +16,6 @@ import type {
   FileReview,
   FileReviewType,
   ReviewComment,
-  ReviewCommentSource,
   SelectionReviewComment,
 } from "../../shared/types.js";
 import { ServiceError } from "./types.js";
@@ -173,7 +172,6 @@ export function addSelectionComment(
   contextBefore: string,
   contextAfter: string,
   text: string,
-  source: ReviewCommentSource = "human",
 ): ReviewComment {
   if (!text.trim()) {
     throw new ServiceError(400, "Comment text cannot be empty");
@@ -197,7 +195,6 @@ export function addSelectionComment(
     contextBefore,
     contextAfter,
     text,
-    source,
   );
 }
 
@@ -207,7 +204,6 @@ export function addLineComment(
   reviewId: string,
   line: number,
   text: string,
-  source: ReviewCommentSource = "human",
 ): ReviewComment {
   if (!text.trim()) {
     throw new ServiceError(400, "Comment text cannot be empty");
@@ -225,7 +221,7 @@ export function addLineComment(
   if (review.fileType !== "code") {
     throw new ServiceError(400, "Line comments are only valid on code files");
   }
-  return reviewStore.addLineComment(reviewId, line, text, source);
+  return reviewStore.addLineComment(reviewId, line, text);
 }
 
 /** Update a comment's text. */

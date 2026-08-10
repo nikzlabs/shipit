@@ -51,11 +51,7 @@ function PastReviews({ history }: { history: FileReview[] }) {
                   {review.comments.map((c) => (
                     <div
                       key={c.id}
-                      className={`text-xs p-2 rounded border-l-2 ${
-                        c.source === "ai"
-                          ? "border-l-purple-400 bg-purple-950/20"
-                          : "border-l-blue-400 bg-blue-950/20"
-                      }`}
+                      className="text-xs p-2 rounded border-l-2 border-l-blue-400 bg-blue-950/20"
                     >
                       <span className="text-(--color-text-tertiary)">
                         {c.kind === "selection"

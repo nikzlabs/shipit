@@ -1,7 +1,5 @@
 // ---- Review comment types (unified surface, server-persisted per session/file) ----
 
-export type ReviewCommentSource = "human" | "ai";
-
 export type ReviewStatus = "draft" | "sent";
 
 export type FileReviewType = "code" | "markdown";
@@ -12,7 +10,6 @@ export interface LineReviewComment {
   kind: "line";
   line: number;
   text: string;
-  source: ReviewCommentSource;
 }
 
 /**
@@ -30,7 +27,6 @@ export interface SelectionReviewComment {
   contextBefore: string;
   contextAfter: string;
   text: string;
-  source: ReviewCommentSource;
 }
 
 export type ReviewComment = LineReviewComment | SelectionReviewComment;
@@ -60,9 +56,11 @@ export interface AiReviewCard {
 }
 
 /**
- * A review of a single file inside one session. Drafts collect comments
- * from the user (and optionally from AI Review); sending freezes the
- * draft and dispatches a structured prompt to the agent.
+ * A review of a single file inside one session. Drafts collect comments from
+ * the user; sending freezes the draft and dispatches a structured prompt to
+ * the agent. Every comment is human-authored — the AI write path
+ * (`submit_review_comments`) was removed in docs/203 + docs/220, so a review
+ * has no author discriminator.
  */
 export interface FileReview {
   id: string;

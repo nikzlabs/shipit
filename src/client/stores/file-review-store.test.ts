@@ -67,12 +67,11 @@ function selectionComment(id: string, text = "x"): ReviewComment {
     contextBefore: "",
     contextAfter: "",
     text,
-    source: "human",
   };
 }
 
 function lineComment(id: string, line = 1, text = "x"): ReviewComment {
-  return { id, kind: "line", line, text, source: "human" };
+  return { id, kind: "line", line, text };
 }
 
 // ---------------------------------------------------------------------------
@@ -205,33 +204,6 @@ describe("file-review-store", () => {
     const result = await useFileReviewStore.getState().sendDraft("s1", "plan.md");
     expect(result).toBeNull();
     expect(fake.calls.find((c) => c.url.endsWith("/send"))).toBeUndefined();
-  });
-
-  it("applyReviewUpdate() replaces the local draft with the broadcast review (docs/125)", () => {
-    // Seed an existing draft so we can prove the WS update overwrites it.
-    useFileReviewStore.setState({
-      draftByKey: { "s1::plan.md": makeDraft({ id: "d8", comments: [] }) },
-    });
-
-    const updated = makeDraft({
-      id: "d8",
-      comments: [
-        {
-          id: "ai1",
-          kind: "selection",
-          quotedText: "anchored text",
-          contextBefore: "",
-          contextAfter: "",
-          text: "robot says",
-          source: "ai",
-        },
-      ],
-    });
-    useFileReviewStore.getState().applyReviewUpdate(updated);
-
-    const draftNow = useFileReviewStore.getState().getDraft("s1", "plan.md");
-    expect(draftNow?.comments).toHaveLength(1);
-    expect(draftNow?.comments[0].source).toBe("ai");
   });
 
   it("discardEmptyDraft() deletes empty drafts on the server", async () => {

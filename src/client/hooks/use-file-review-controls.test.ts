@@ -126,7 +126,7 @@ describe("useFileReviewControls — canSend", () => {
               status: "draft",
               comments: [{
                 id: "c1", kind: "selection", quotedText: "q", contextBefore: "", contextAfter: "",
-                text: "note", source: "human",
+                text: "note",
               }],
               createdAt: "", updatedAt: "",
             } as unknown as FileReview,

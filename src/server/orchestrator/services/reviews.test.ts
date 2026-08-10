@@ -16,7 +16,6 @@ function selectionComment(
     contextBefore?: string;
     contextAfter?: string;
     text: string;
-    source?: "human" | "ai";
   },
 ): SelectionReviewComment {
   return {
@@ -26,19 +25,17 @@ function selectionComment(
     contextBefore: partial.contextBefore ?? "",
     contextAfter: partial.contextAfter ?? "",
     text: partial.text,
-    source: partial.source ?? "human",
   };
 }
 
 function lineComment(
-  partial: { id?: string; line: number; text: string; source?: "human" | "ai" },
+  partial: { id?: string; line: number; text: string },
 ): ReviewComment {
   return {
     id: partial.id ?? "c1",
     kind: "line",
     line: partial.line,
     text: partial.text,
-    source: partial.source ?? "human",
   };
 }
 

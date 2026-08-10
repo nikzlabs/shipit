@@ -110,14 +110,6 @@ interface FileReviewState {
   ) => Promise<void>;
 
   /**
-   * Apply a `review_updated` WS message (docs/125): the chat-native review
-   * subagent wrote anchored comments via `submit_review_comments`, and the
-   * server broadcast the authoritative updated draft. Replace the local draft
-   * so an open modal renders the new AI comments live.
-   */
-  applyReviewUpdate: (review: FileReview) => void;
-
-  /**
    * Send the draft. Marks it sent, returns the constructed prompt + the
    * sent review (so callers can render a structured "Sent comments" card
    * with filePath + commentCount), moves the sent review into history, and
@@ -272,11 +264,6 @@ export const useFileReviewStore = create<FileReviewState>((set, get) => ({
     } catch (err) {
       console.error("[file-review-store] deleteComment failed:", err);
     }
-  },
-
-  applyReviewUpdate: (review) => {
-    const key = makeKey(review.sessionId, review.filePath);
-    set((s) => ({ draftByKey: { ...s.draftByKey, [key]: review } }));
   },
 
   sendDraft: async (sessionId, filePath) => {
