@@ -537,10 +537,11 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         },
       });
     },
-    finalizeAgentEnv: (sessionId, id) => {
+    finalizeAgentEnv: (sessionId, id, capturedRoute) => {
       finalizeSessionAgentEnvironment(runner, {
         sessionId,
         agentId: id,
+        ...(capturedRoute ? { capturedRoute } : {}),
         deps: {
           credentialsDir: ctx.credentialsDir,
           credentialStore: ctx.credentialStore,

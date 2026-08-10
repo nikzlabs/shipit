@@ -80,6 +80,7 @@ describe("wireAgentListeners", () => {
 
     wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
       capturedSessionId: "session-1",
+      getCapturedRouteId: () => "acct-old",
       isNewSession: false,
       persistUserMessage: vi.fn(),
     });
@@ -170,6 +171,7 @@ describe("wireAgentListeners", () => {
       };
       wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
         capturedSessionId: "session-1",
+        getCapturedRouteId: () => "acct-old",
         isNewSession: false,
         persistUserMessage: vi.fn(),
       });

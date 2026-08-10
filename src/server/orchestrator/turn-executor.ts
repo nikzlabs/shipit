@@ -25,7 +25,7 @@
  * `session-runner.ts`.
  */
 
-import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage, SessionMessageOrigin } from "../shared/types.js";
+import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage, SessionInfo, SessionMessageOrigin } from "../shared/types.js";
 import { desiredSpawnIdentity } from "./service-routing.js";
 import { buildTurnMessages, wireAgentListeners } from "./ws-handlers/agent-listeners.js";
 import { createAgentStderrTail } from "./agent-stderr-tail.js";
@@ -487,6 +487,12 @@ export async function executeAgentTurn(
   // Captured after env preparation, immediately before buildRunParams reads
   // the same DB pointer. This is the exact resume id owned by this process.
   let activeResumeSessionId: string | null = null;
+  // Listener registration happens before environment preparation. Failover
+  // happens inside that preparation, so the route becomes immutable only
+  // after it returns and immediately before this process starts.
+  let capturedCredentialRoute:
+    | Pick<SessionInfo, "providerRouteKind" | "providerRouteId">
+    | undefined;
   const recoverMissingConversation = (invalidId: string): boolean => {
     // eslint-disable-next-line no-restricted-syntax -- Claude-only CLI stderr/--resume recovery (docs/155)
     if (agentId !== "claude" || recoveryRetryUsed || invalidId !== activeResumeSessionId) return false;
@@ -633,7 +639,11 @@ export async function executeAgentTurn(
     const exhausted = detectHardExhaustion(err.message);
     if (!exhausted) return false;
     try {
-      deps.listenerDeps.markSessionAccountExhausted?.(sessionId, exhaustionLockoutUntil(exhausted));
+      deps.listenerDeps.markSessionAccountExhausted?.(
+        sessionId,
+        exhaustionLockoutUntil(exhausted),
+        capturedCredentialRoute?.providerRouteId,
+      );
       // Finalize what the first attempt already streamed, BEFORE the retry resets
       // every per-turn accumulator. The `agent_result` path gets this for free —
       // `wireAgentListeners` runs its own handler first and has already persisted
@@ -698,6 +708,7 @@ export async function executeAgentTurn(
     persistUserMessage: persistUserMessageOnce,
     fallbackTitle: input.fallbackTitle,
     capturedSessionId: sessionId,
+    getCapturedRouteId: () => capturedCredentialRoute?.providerRouteId,
     // docs/179 — auto-recovery hooks: the listener calls `willRecoverAuth`
     // synchronously to decide whether to suppress the sign-in card, then
     // `recoverAuth` to heal + re-dispatch. Omitted when this turn can't recover
@@ -841,7 +852,7 @@ export async function executeAgentTurn(
   const trySyncToken = (): void => {
     if (tokenSyncFired) return;
     tokenSyncFired = true;
-    deps.finalizeAgentEnv?.(sessionId, agentId);
+    deps.finalizeAgentEnv?.(sessionId, agentId, capturedCredentialRoute);
   };
 
   let drainFired = false;
@@ -1534,7 +1545,14 @@ export async function executeAgentTurn(
       reusingResidentAgent: input.reuseExistingAgent === true,
     });
     console.log(`[turn] env-prep for ${sessionId} took ${Date.now() - envBegan}ms`);
-    activeResumeSessionId = deps.listenerDeps.sessionManager.get(sessionId)?.agentSessionId ?? null;
+    const preparedSession = deps.listenerDeps.sessionManager.get(sessionId);
+    activeResumeSessionId = preparedSession?.agentSessionId ?? null;
+    capturedCredentialRoute = preparedSession
+      ? {
+          providerRouteKind: preparedSession.providerRouteKind,
+          providerRouteId: preparedSession.providerRouteId,
+        }
+      : undefined;
 
     if (input.reuseExistingAgent) {
       // docs/140 — carry the message into the resident streaming process. Push

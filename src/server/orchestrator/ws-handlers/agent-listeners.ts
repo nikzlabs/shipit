@@ -168,6 +168,12 @@ export interface WireListenersOpts {
    */
   capturedSessionId?: string;
   /**
+   * Credential route captured after environment preparation and before the
+   * CLI starts. Listener wiring happens earlier than failover, so reading the
+   * session row while wiring captures the outgoing route on a retry.
+   */
+  getCapturedRouteId?: () => string | undefined;
+  /**
    * The permission mode this turn actually requested from the CLI (docs/138),
    * AFTER any guarded→auto downgrade. When this is `"guarded"`, the
    * `agent_init` handler reads `init.permissionMode` to confirm the
@@ -266,10 +272,6 @@ export function wireAgentListeners(
     throw new Error("wireAgentListeners requires opts.capturedSessionId");
   }
   const sessionAtTurnStart = deps.sessionManager.get(opts.capturedSessionId);
-  // Quota belongs to the credential that started this turn. Keep that answer
-  // beside the other captured turn state: failover can repoint the persisted
-  // session before the outgoing process emits its last rate-limit event.
-  const routeIdAtTurnStart = sessionAtTurnStart?.providerRouteId;
   // Capture the model used for this turn — sourced from `agent_init` (what the
   // CLI actually picked) or falls back to the selected model. Used on
   // `agent_result` to attach the model to per-turn usage so the dial can
@@ -439,7 +441,7 @@ export function wireAgentListeners(
         event.session,
         event.weekly,
         opts.capturedSessionId,
-        routeIdAtTurnStart,
+        opts.getCapturedRouteId?.() ?? sessionAtTurnStart?.providerRouteId,
       );
       return;
     }
@@ -818,7 +820,7 @@ export function wireAgentListeners(
         deps.markSessionAccountExhausted(
           exhaustedSessionId,
           exhaustionLockoutUntil(detected),
-          routeIdAtTurnStart,
+          opts.getCapturedRouteId?.() ?? sessionAtTurnStart?.providerRouteId,
         );
       }
       // A turn the provider refused for quota is a FAILED turn even when the

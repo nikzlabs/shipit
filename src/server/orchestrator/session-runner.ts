@@ -7,7 +7,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import type { AgentProcess, AgentId, TerminalProcess, AgentRunParams, SessionMessageOrigin } from "../shared/types.js";
+import type { AgentProcess, AgentId, TerminalProcess, AgentRunParams, SessionInfo, SessionMessageOrigin } from "../shared/types.js";
 import type { WsServerMessage, ImageAttachment, FileContextRef, UploadRef, PermissionMode, ClaudeContentBlockToolUse, SkillInfo } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { ServiceManager } from "./service-manager.js";
@@ -712,7 +712,11 @@ export interface SystemTurnDeps {
    * `finalizeSessionAgentEnvironment` so the agent-spawned and CI-auto-fix
    * paths participate in the same rotating-token discipline as the WS path.
    */
-  finalizeAgentEnv?: (sessionId: string, agentId: AgentId) => void;
+  finalizeAgentEnv?: (
+    sessionId: string,
+    agentId: AgentId,
+    route?: Pick<SessionInfo, "providerRouteKind" | "providerRouteId">,
+  ) => void;
   /**
    * Run env prep (first-turn cred provision + agent pin, then the per-turn
    * OAuth token sync-in + agent-env push) immediately before building run
