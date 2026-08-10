@@ -93,6 +93,8 @@ export interface CredentialRoute {
   capabilities?: CredentialCapabilities;
   lastUsedAt?: number;
   exhaustedUntil?: number | null;
+  /** When the provider last reported hard exhaustion for this credential. */
+  exhaustedAt?: number | null;
   createdAt: number;
   updatedAt: number;
 }

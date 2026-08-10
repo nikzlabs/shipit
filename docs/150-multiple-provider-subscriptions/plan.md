@@ -29,6 +29,31 @@ This ordering prevents a healthy replacement credential from inheriting the
 old credential's bench or 100% cached quota while preserving normal hard
 exhaustion during turns.
 
+## Fresh quota supersedes an older hard-exhaustion bench (2026-08-10)
+
+A hard-exhaustion observation persists both its reset deadline and its
+observation time. Account selection and pinned-session preflight reconcile that
+stamp against the same live `SubscriptionLimits` snapshot that supplies the
+quota pill. A snapshot clears the persisted bench only when its `fetchedAt` is
+strictly newer than the hard observation and both the five-hour and weekly
+windows have numeric utilization below 100%. An absent window, a null
+percentage, a snapshot older than the hard observation, or either window still
+at 100% preserves the bench. Existing rows created before the observation time
+field use their persisted `updatedAt` as the migration clock, so they converge
+on the next newer healthy snapshot without reauthentication or database work.
+
+Every hard failure refreshes the observation clock even when its reset estimate
+does not extend the existing deadline. Thus a quota event that was current
+before a same-turn failure cannot undo that failure during retry.
+
+Session route pinning remains unchanged in this incident fix. It is still used
+as turn attribution and as the resident-process credential identity, and the
+preflight already moves a pin when that route is no longer eligible. Selecting
+the best account on every turn would change strict-priority and peer-balancing
+behavior for healthy pinned sessions and would cause more resident CLI restarts;
+that is a separate product decision, not required to make quota display and
+routing agree.
+
 ## Every provider-authenticated run (requirement 20)
 
 The account router is an execution invariant, not only a session-turn feature.
