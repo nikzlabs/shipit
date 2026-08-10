@@ -179,6 +179,28 @@ async function reclaimToLight(
     (runner as { removeVolumesOnDispose: boolean }).removeVolumesOnDispose = true;
   }
   runnerRegistry.dispose(session.id);
+  // planning#298's rule, which this ladder did not follow: a DECLINED dispose means
+  // "leave this container alone". `canAutoDescend` ran before `sleep(paceMs)`
+  // and before the git work above, so the runner can have picked up live work in
+  // between — and the destroy below is unconditional, so the work died anyway
+  // and the surviving runner was left pointed at a dead container. The window
+  // widened when a turn's post-turn sequence became a decline reason of its own
+  // (a turn that ends during the pace delay now holds the runner through its
+  // commit), which is what made this worth closing rather than noting.
+  if (runner && !runner.disposed) {
+    // Un-arm the volume drop as well. It is a demotion instruction, not a
+    // property of the runner: left set, the next ORDINARY dispose (idle
+    // cleanup) would silently wipe the session's node_modules volume without
+    // anything having decided to demote it.
+    if ("removeVolumesOnDispose" in runner) {
+      (runner as { removeVolumesOnDispose: boolean }).removeVolumesOnDispose = false;
+    }
+    console.log(
+      `[disk-janitor] light: skipping container destroy for ${session.id}`
+      + " — runner declined disposal (still holds live work)",
+    );
+    return false;
+  }
 
   if (deps.containerManager) {
     try {
@@ -494,6 +516,17 @@ async function reclaimToEvicted(
 
   // Tear down container (no runner should exist at light, but be defensive).
   deps.runnerRegistry.dispose(session.id);
+  // Same planning#298 rule as the `hot → light` rung, and it matters more here: the
+  // step after the destroy WIPES THE WORKSPACE. A declined dispose is the runner
+  // saying it still holds live work, so this must not be the path that deletes
+  // that work's checkout.
+  const evictRunner = deps.runnerRegistry.get(session.id);
+  if (evictRunner && !evictRunner.disposed) {
+    console.warn(
+      `[disk-janitor] evict skipped for ${session.id} — runner declined disposal (still holds live work)`,
+    );
+    return "skipped";
+  }
   if (deps.containerManager) {
     try {
       await deps.containerManager.destroy(session.id);

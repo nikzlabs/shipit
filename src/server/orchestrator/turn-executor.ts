@@ -1218,11 +1218,12 @@ export async function executeAgentTurn(
     }
     if (event.type !== "agent_result") return;
     receivedResult = true;
-    // Publish the same fact on the runner. The executor-local `receivedResult`
+    // Announce the same fact on the runner. The executor-local `receivedResult`
     // is invisible to the `disposed` / `turn_abandoned` nets in
     // `dispatchOnRunner`, which is why a completed turn whose runner went away
-    // mid-teardown was reported to the CI auto-fix loop as never-run.
-    if (runner) runner.turnProducedResult = true;
+    // mid-teardown was reported to the CI auto-fix loop as never-run. Each
+    // dispatch latches this for its own turn — see `SessionRunnerEvents`.
+    runner?.emit("turn_result");
     // docs/150 req 14 — before ANY post-turn work. Draining the queue or
     // broadcasting "finished" here would tell the user (and the next queued
     // turn) that a turn we are about to re-run is over. The retry owns

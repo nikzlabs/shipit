@@ -454,12 +454,6 @@ export function dispatchOnRunner(
   // system turn. Cleared by `executeAgentTurn` on completion.
   if (opts.systemTurn) runner.systemTurnInProgress = true;
   runner.running = true;
-  // Same tick, same reason: `runDispatchedTurn` is async, so `executeAgentTurn`
-  // (and with it `resetRunnerTurnState`) runs several awaits from here. The
-  // `disposed` net registered below is live for the whole of that gap, and a
-  // `turnProducedResult` still true from the PREVIOUS turn would make it report
-  // this one — which has not even spawned yet — as having run.
-  runner.turnProducedResult = false;
   // planning#266 — publish the delivery in the SAME synchronous tick as `running`,
   // for the same reason: `runDispatchedTurn` is async (attachment resolution,
   // agent creation, run-param assembly) and `executeAgentTurn` only sets it much
@@ -501,15 +495,25 @@ export function dispatchOnRunner(
   // the docs/121 dedup record was skipped, and the loop re-sent the identical
   // CI-fix prompt with the identical logs a minute later.
   //
-  // So the nets ask the runner what actually happened. A turn that produced its
+  // So the nets ask what actually happened to THIS turn. One that produced its
   // `agent_result` settles as `interrupted` — "the prompt reached a live agent
   // and the turn was then cut short", which is exactly true here and is the
   // status every consumer already reads as *do not re-deliver*. Only a turn
   // with nothing behind it is `dropped`, which keeps that status meaning what
   // its consumers assume.
+  //
+  // Latched from the runner's `turn_result` event rather than read off the
+  // runner at settle time, because the answer is per-TURN and the runner is
+  // shared. A finished turn's `tryDrain` starts the next queued turn BEFORE the
+  // finished turn settles, so runner-scoped state at that instant already
+  // describes the SUCCESSOR — and the predecessor, the one that actually ran,
+  // would be the turn reported as never-run. Registered in the same place as
+  // the two nets and torn down with them.
+  let sawTurnResult = false;
+  const onTurnResult = (): void => { sawTurnResult = true; };
   const settleAsDropped = (reason: string): void => {
     if (settlement.isSettled) return;
-    if (runner.turnProducedResult) {
+    if (sawTurnResult) {
       console.warn(
         `[dispatch] settling the dispatched turn for ${runner.sessionId} as interrupted — ${reason}`
         + " (the turn had already produced its result)",
@@ -525,10 +529,12 @@ export function dispatchOnRunner(
   const onRunnerDisposed = (): void => settleAsDropped("runner disposed mid-turn");
   const onTurnAbandoned = (): void =>
     settleAsDropped("turn abandoned — worker reported no agent running");
+  runner.on("turn_result", onTurnResult);
   runner.on("disposed", onRunnerDisposed);
   runner.on("turn_abandoned", onTurnAbandoned);
   void (async () => {
     await settlement.settled;
+    runner.off("turn_result", onTurnResult);
     runner.off("disposed", onRunnerDisposed);
     runner.off("turn_abandoned", onTurnAbandoned);
   })();
@@ -880,11 +886,6 @@ export function resetRunnerTurnState(runner: SessionRunnerInterface): void {
   runner.steeredMessages = [];
   runner.recordedCards = [];
   runner.wasInterrupted = false;
-  // A fresh turn has produced nothing yet. Load-bearing for the `disposed` /
-  // `turn_abandoned` nets in `dispatchOnRunner`, which ask this to tell a turn
-  // that RAN from one that never started — a stale `true` from the previous
-  // turn would report a genuinely-dropped turn as merely interrupted.
-  runner.turnProducedResult = false;
   runner.pendingCommitLink = null;
   // docs/244 / planning#299 — nothing of the new turn is on disk yet, so no body of
   // it may leave the reconnect snapshot until a boundary writes it.
@@ -984,6 +985,28 @@ export interface SessionRunnerEvents {
    * the handle as `dropped`, exactly as it does for a runner disposed mid-turn.
    */
   turn_abandoned: [];
+  /**
+   * The turn currently running on this runner produced its `agent_result` — the
+   * prompt reached a live agent process and that process reported a finished
+   * turn. Emitted by `executeAgentTurn`, once per turn.
+   *
+   * It exists so a dispatch can tell a turn that RAN from one that never
+   * started, at the moment its runner goes away. `dropped` means "discarded
+   * before it ever ran", and the CI auto-fix loop acts on exactly that
+   * definition; the 2026-08-10 incident is a completed fix turn reported as
+   * `dropped` because it was disposed inside its post-turn window, so the loop
+   * kept its budget, skipped the docs/121 dedup record, and re-sent the
+   * identical prompt.
+   *
+   * An EVENT rather than a flag on the runner, because the answer is per-TURN
+   * and the runner outlives the turn. A completed turn's `tryDrain` starts the
+   * next queued turn BEFORE its own settlement fires, so at the instant the
+   * predecessor's `disposed` net runs, runner-scoped state already describes the
+   * successor: a flag would report the finished predecessor as never-run
+   * (precisely the bug) while an event each dispatch latches for itself gives
+   * both turns the right answer.
+   */
+  turn_result: [];
   /**
    * planning#246 — this runner's `backgroundWorkDescriptions` changed: a background
    * task appeared or drained, a consult started or finished, or the resident
@@ -1165,21 +1188,6 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * half of the 2026-08-10 incident that outlived the commit itself.
    */
   readonly hasPendingPush: boolean;
-  /**
-   * True once the CURRENT turn has produced its `agent_result` — i.e. the prompt
-   * reached a live agent process and that process reported a finished turn.
-   *
-   * Set by `executeAgentTurn`, cleared at every turn start
-   * ({@link resetRunnerTurnState}) and synchronously by `dispatchOnRunner` when
-   * it claims the runner, so it can never describe a PREVIOUS turn.
-   *
-   * Read by exactly one consumer: the `disposed` / `turn_abandoned` nets in
-   * `dispatchOnRunner`, which must not report a turn that RAN as `dropped`.
-   * `dropped` is defined as "discarded before it ever ran", and the CI auto-fix
-   * loop acts on that definition — it treats the attempt as never-sent, keeps
-   * its budget, skips the docs/121 dedup record and re-fires the same prompt.
-   */
-  turnProducedResult: boolean;
   /** docs/235 — replace the background-task list wholesale (the backend reports a complete set). */
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void;
   /** docs/235 — drop all background-task state (agent process died; its tasks died with it). */
@@ -1635,8 +1643,6 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _lastAnnouncedWork = "[]";
   /** See `SessionRunnerInterface.postTurnWorkInFlight`. */
   private _postTurnHold = new PostTurnHold();
-  /** See `SessionRunnerInterface.turnProducedResult`. */
-  turnProducedResult = false;
 
   /**
    * Per-session agent factory (see `SessionRunnerInterface.createAgent`).

@@ -254,8 +254,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _lastAnnouncedWork = "[]";
   /** See `SessionRunnerInterface.postTurnWorkInFlight`. */
   private readonly _postTurnHold = new PostTurnHold();
-  /** See `SessionRunnerInterface.turnProducedResult`. */
-  turnProducedResult = false;
   private _workerResourcesStarted = false;
   /**
    * docs/240 — in-flight one-time worker-resource start. Concurrent callers

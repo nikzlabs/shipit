@@ -416,6 +416,63 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     expect(outcomes.map((o) => o.status)).toEqual(["interrupted"]);
   });
 
+  // The result marker cannot be runner-scoped state read at settle time. A
+  // finished turn's `tryDrain` starts the NEXT queued turn before the finished
+  // turn settles, so at the instant the predecessor's `disposed` net fires,
+  // anything living on the runner already describes the successor — and the
+  // predecessor, the turn that actually ran, is the one that would be reported
+  // as never-run. Each dispatch latches the runner's `turn_result` event for
+  // itself instead, so both turns get their own answer from one dispose.
+  it("a drained successor does not erase the predecessor's evidence that it ran", async () => {
+    const runner = newRunner();
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    // Live steering on + capable ⇒ these dispatches STREAM, so the resident
+    // process survives the first turn and the drained second turn reuses it.
+    // That is the shape where a predecessor is still unsettled while a
+    // successor owns the runner: a streaming turn settles at process exit, not
+    // at `agent_result`, and nothing retires the agent it shares.
+    deps.steerInputs = () => ({ liveSteering: true, steeringCapable: true });
+    runner.setSystemTurnDeps(deps);
+
+    const first: TurnOutcome[] = [];
+    const second: TurnOutcome[] = [];
+    runner.dispatch(testDispatch({
+      text: "fix the failing test",
+      onTurnComplete: (o) => first.push(o),
+    }));
+    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first turn start");
+
+    // A second turn arrives while the first is running. It carries a settlement,
+    // so it queues rather than being steered in.
+    runner.dispatch(testDispatch({
+      text: "and now this",
+      onTurnComplete: (o) => second.push(o),
+    }));
+    expect(runner.queueLength).toBe(1);
+
+    // The first turn completes. Its `tryDrain` clears `running` and starts the
+    // queued turn on the same resident process — while the first turn is still
+    // unsettled (no `done` yet: streaming keeps the process alive).
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => runner.queueLength === 0, "queued turn started");
+    expect(first).toHaveLength(0);
+
+    runner.dispose({ force: true });
+    await flushTurn();
+
+    // The turn that ran: cut short, not never-run. Read off the runner instead
+    // of latched per dispatch, this would be "dropped" — the successor's claim
+    // had already reset the shared marker.
+    expect(first.map((o) => o.status)).toEqual(["interrupted"]);
+    // …and the predecessor's result must not have leaked onto the successor,
+    // which never produced one. (A DRAINED turn re-enters `runDispatchedTurn`
+    // directly rather than through `dispatchOnRunner`, so it carries no
+    // disposal net of its own and settles nothing here — a pre-existing gap
+    // this change neither widens nor closes.)
+    expect(second.some((o) => o.status === "interrupted")).toBe(false);
+  });
+
   it("the runner stays busy across the post-turn window, so idle reclaim can't take it", async () => {
     const runner = newRunner();
     const agents: FakeAgent[] = [];

@@ -62,32 +62,58 @@ describe("escalateDiskTiers", () => {
     );
   }
 
-  /** Minimal runner-registry fake: only `get`/`dispose` are exercised. */
+  /**
+   * Minimal runner-registry fake: only `get` / `dispose` are exercised.
+   *
+   * `dispose` models the real runner's refusal, not just the call: both runner
+   * classes DECLINE a non-forced dispose while they hold live work (a running
+   * agent, an in-flight consult, a turn's post-turn sequence), and the ladder
+   * has to honor that — it destroys the container and, at `evict`, wipes the
+   * checkout. A fake that always disposed made the caller's decision
+   * untestable.
+   */
   function fakeRegistry(
     runners: Record<string, {
       running?: boolean;
       viewerCount?: number;
       /** docs/235 — outstanding agent-initiated background tasks. */
       backgroundTaskCount?: number;
+      /** A turn's terminal sequence (commit / PR flow / settlement) is running. */
+      postTurnWorkInFlight?: boolean;
     }> = {},
   ): { registry: SessionRunnerRegistry; disposed: string[] } {
     const disposed: string[] = [];
+    const state = new Map<string, { disposed: boolean }>();
     const registry = {
       get: (id: string) => {
         const r = runners[id];
         if (!r) return undefined;
         const running = r.running ?? false;
         const backgroundTaskCount = r.backgroundTaskCount ?? 0;
+        const postTurnWorkInFlight = r.postTurnWorkInFlight ?? false;
+        let slot = state.get(id);
+        if (!slot) { slot = { disposed: false }; state.set(id, slot); }
         return {
           running,
           viewerCount: r.viewerCount ?? 0,
           backgroundTaskCount,
+          postTurnWorkInFlight,
           // Mirrors the real runner's derivation so the guard under test sees
           // the same union the production code does.
-          agentBusy: running || backgroundTaskCount > 0,
+          agentBusy: running || backgroundTaskCount > 0 || postTurnWorkInFlight,
+          get disposed() { return slot.disposed; },
         };
       },
-      dispose: (id: string) => { disposed.push(id); },
+      dispose: (id: string) => {
+        disposed.push(id);
+        const r = runners[id];
+        if (!r) return;
+        let slot = state.get(id);
+        if (!slot) { slot = { disposed: false }; state.set(id, slot); }
+        // Non-forced: the real runner refuses while it holds live work.
+        if (r.running || r.postTurnWorkInFlight) return;
+        slot.disposed = true;
+      },
     } as unknown as SessionRunnerRegistry;
     return { registry, disposed };
   }
@@ -248,6 +274,54 @@ describe("escalateDiskTiers", () => {
     const after = await escalateDiskTiers(baseDeps(sm, registry));
     expect(after.toLight + after.toEvicted).toBeGreaterThan(0);
     expect(sm.get("reserved-old")?.diskTier).not.toBe("hot");
+  });
+
+  // planning#298's rule, applied to this ladder: a DECLINED dispose means "leave
+  // this container alone". `canAutoDescend` runs BEFORE `sleep(paceMs)` and
+  // before the git/network work, so a session can pick up live work in between
+  // — and the destroy was unconditional, so the work died anyway and the
+  // surviving runner was left pointed at a dead container. A turn's post-turn
+  // sequence (commit / PR flow / settlement) is now one of the things that
+  // declines, and a turn ending during the pace delay lands exactly here.
+  it("does not destroy the container when the runner declines disposal mid-pass", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-toctou");
+    fs.mkdirSync(wsDir, { recursive: true });
+    insertSession({
+      id: "toctou",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.lightAfterMs / 86_400_000 + 1),
+      diskTier: "hot",
+      workspaceDir: wsDir,
+    });
+
+    // Idle when the guard looks; a turn's terminal sequence has started by the
+    // time the rung actually disposes.
+    let busy = false;
+    const disposed: string[] = [];
+    const registry = {
+      get: () => ({
+        running: false,
+        viewerCount: 0,
+        backgroundTaskCount: 0,
+        get agentBusy() { const answer = busy; busy = true; return answer; },
+        get disposed() { return false; }, // declined — still holds live work
+      }),
+      dispose: (id: string) => { disposed.push(id); },
+    } as unknown as SessionRunnerRegistry;
+
+    const destroyed: string[] = [];
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      containerManager: { destroy: (id: string) => { destroyed.push(id); return Promise.resolve(); } },
+    } as TierEscalationDeps);
+
+    expect(disposed).toContain("toctou");
+    // The whole point: dispose was attempted and refused, so the container
+    // survives and the tier does not move. The next pass retries.
+    expect(destroyed).toEqual([]);
+    expect(result.toLight).toBe(0);
+    expect(sm.get("toctou")?.diskTier).toBe("hot");
   });
 
   it("paces age-based descents when paceMs is set", async () => {
