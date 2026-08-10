@@ -9,6 +9,8 @@
       `up` is reported instead of pinning `starting` forever (req 2)
 - [x] I — a stop issued during a start leaves the service stopped, and the stop's
       own SIGTERM/SIGKILL exit is not reported as a crash (req 5)
-- [ ] E — bound the SSE reconnect retries and surface `worker_unreachable`
-      (req 6). `container-session-runner.ts`, owned by a sibling session — not
-      part of the D/F/H/I work.
+- [x] E — a worker that is gone but still tracked as running is detected and
+      reported, instead of the session rendering as alive forever (req 6). Not
+      the originally-sketched shape: the unbounded SSE reconnect turned out to be
+      a symptom, so no retry cap and no `worker_unreachable` message were built —
+      the reconciler learned that a container-map entry is not proof of life.
