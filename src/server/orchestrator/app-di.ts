@@ -511,7 +511,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   //
   // docs/252 phase 2 — the stored service credentials go in the same way, under
   // their catalogue `storageEnv` names. That is what keeps the existing env
-  // probes (`AgentRegistry.isAuthConfigured`, `reservedRouteFor`) answering the
+  // probes (`AgentRegistry.deriveHasRunnableModels`, `reservedRouteFor`) answering the
   // same way once a key lives in the credential-route store instead of in
   // `agentEnv`: those read `process.env`, and this is where `process.env` is
   // seeded. Nothing here overwrites a value the deployment set itself.
@@ -560,7 +560,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
       : "[server] No harness install report; falling back to $PATH detection",
   );
   const installedStr = detectedAgents.map((a) => `${a.binary} ${a.installed ? "\u2713" : "\u2717"}`).join(", ");
-  const authStr = detectedAgents.map((a) => `${a.binary} ${a.authConfigured ? "\u2713" : "\u2717"}`).join(", ");
+  const authStr = detectedAgents.map((a) => `${a.binary} ${a.hasRunnableModels ? "\u2713" : "\u2717"}`).join(", ");
   console.log(`[server] Agent CLIs detected: ${installedStr}`);
   console.log(`[server] Agent auth status: ${authStr}`);
 

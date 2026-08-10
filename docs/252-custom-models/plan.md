@@ -767,12 +767,13 @@ the real binaries (CLI 2.1.220, codex-cli 0.146.0) driving a local HTTP recorder
 
 - **Eligibility could not be asked of the registry's existing question.** `authConfigured` was
   a per-`AgentId` credential probe; it is now "this harness has at least one eligible model",
-  computed from the catalogue join narrowed by the configured routes. The field keeps its name
-  because it is still the gate every "can this harness take a turn" site asks, and renaming it
-  across those sites is churn without a behaviour change — but `AgentInfo` gained
+  computed from the catalogue join narrowed by the configured routes. `AgentInfo` also gained
   `eligibleModels`, the triples the picker actually renders, and that is what the wire carries.
-  The design's "`authConfigured` leaves `AgentInfo`" is therefore **not** done; what is done is
-  the part that mattered, which is what it means.
+  The field kept its old name through phase 9 as deliberate churn-avoidance and is now
+  **`hasRunnableModels`** — an auth-shaped name describes the wrong axis once req 2 makes a
+  harness runnable with no account at its own vendor at all. It is still the single gate every
+  "can this harness take a turn" site reads, so the design's "`authConfigured` leaves
+  `AgentInfo`" landed as the rename, not as the split into two questions sketched below.
 - **The eligibility inputs are two sources, and the second is easy to forget.** A
   deployment-supplied `ANTHROPIC_API_KEY` has no row in the credential store — phase 2 is
   explicit that ShipIt only ever touches a value it put there — so a rule reading the store
@@ -870,10 +871,11 @@ storing an unreachable `sub` triple on a key-only install, because the store re-
 id to the first mode of the biased service — the service layer now passes the mode the id was
 chosen *from*.
 
-**One finding is recorded rather than fixed**, because it is pre-existing rather than
+**One finding was recorded rather than fixed here**, because it is pre-existing rather than
 introduced: the new-session picker reads the globally-active session for its *harness* display,
 as the pre-split picker did. The half this phase did introduce — reading only the saved bare id
-and so highlighting the wrong `(service, mode)` — is fixed.
+and so highlighting the wrong `(service, mode)` — was fixed with it. The recorded half is now
+closed too; see *The composer's harness display, and which session a composer is bound to*.
 
 **Phase 4 — In-session switching.** The resident process's identity was widened in phase 3 — to the whole spawn-relevant tuple: harness, service, billing mode, API style,
 endpoint, credential route, model — because phase 3 is where a same-id/different-service
@@ -1699,6 +1701,59 @@ walks now speak `CredentialRoute` and share `orderForSelectionMode`, so the
 unification is a small change rather than a translation — but it is a behaviour
 change, and this one was not.
 
+## The composer's harness display, and which session a composer is bound to
+
+The composer is rendered on three surfaces, and only two of them have a session of their own:
+the in-session composer, the new-session route, and Quick Capture. All three read the **same
+global session store**, so a picker that resolves `sessions.find(id === store.sessionId)`
+unconditionally describes whichever session happens to be active — including from a composer
+that will never send to it. Quick Capture over a Codex session showed "Codex" while it went on
+to create a Claude session from the saved seed. Pre-existing: the pre-split picker did the
+same, and phase 3 recorded it rather than fixing it.
+
+**What the picker shows with no session bound is the harness that session will actually be
+created on**, and there is exactly one rule for that — `agentIdForModel(savedModel) ??
+savedAgentId`, the model being the single source of truth so a stale `vibe-agent-id` cannot
+out-vote it (docs/142 Problem C). It was duplicated in `useSessionWebSocket` and Quick Capture
+and is now `newSessionAgentId` (`client/utils/new-session-agent.ts`), read by the creator and
+the display alike. The rejected alternative was the ui store's `activeAgentId`: it is *synced
+to the connected session* by `useConnectionSync`, deliberately, so it answers "what is the
+session I am looking at running on" — the wrong question here, and the contaminated value that
+made the App-side new-session composer wrong for the same reason.
+
+**`hasActiveSession` is the wrong gate, and this is the part worth remembering.** The
+new-session route claims a warm session up front and talks to it (`set_agent` goes over its
+socket, and the connect URL seeds it), so it is `hasActiveSession: false` and **bound** at the
+same time — gating on that flag would have stopped the display following a harness the user
+picked there. The gate is the narrower "is a session bound at all", passed as
+`seedFromHistory` (`!sessionId` in `MessageInput`), which is the shape and the name
+`ReasoningSelector` already used for the same distinction.
+
+**A bound session is not necessarily a *visible* one, and that is where the same bug survived
+its first fix.** `SessionManager.list()` filters `warm = 0`, so the claimed warm session is
+bound but absent from the store's `sessions` — the composer has a session it cannot look up,
+and falls back to `activeAgentId`. That fallback has to stay: it is the only channel carrying
+an explicit harness pick made on this route, which the seed cannot carry when the saved model
+belongs to the other harness (`newSessionAgentId` puts the model first, by docs/142). So the
+fix is to keep the fallback *truthful* rather than to remove it — `useUiStore.reset()`, which
+`resetSessionState` runs on exactly the "no session behind it any more" transition, returns
+`activeAgentId` to `newSessionAgentId`. Without that the route displayed the seeded harness
+before the claim landed and then flipped to the previous session's, while still creating the
+seeded one. Found by the cross-backend review; the first version of this fix shipped the flip.
+
+**`modelInfo` is global too, and scoping it by harness is not enough.** The live model is
+scoped to the displayed agent, which was sufficient while every composer had a session. Quick
+Capture is handed the *background* session's `modelInfo`, so when that session runs the seeded
+harness the id passes the agent check and outranks the seed — the overlay showed the background
+session's model while creating with the saved one. A session that does not exist yet has no
+live model, so `seedFromHistory` drops it outright.
+
+One wart is left as pre-existing and out of scope: in Quick Capture a harness pick alone does
+not move the display when the saved model belongs to the other harness — because the overlay
+derives the agent it *sends* from the model too (docs/166). The display is now honest about
+that rather than contradicting it, which is the change; making the pick move the model is a
+behaviour change and not one this took.
+
 ## What a third harness could break
 
 This design is derived from two CLIs, and `AgentId`'s conflation is the standing proof that
@@ -2121,7 +2176,8 @@ as a starting map, not an inventory — an earlier draft called it "six places, 
 was itself the over-claim it was warning about, and a missed gate does not fail loudly: it
 leaves a model selectable and then refuses the turn.
 
-Four kinds of site, all reading `AgentInfo.authConfigured` or its derivatives:
+Four kinds of site, all reading `AgentInfo.authConfigured` — since renamed
+`hasRunnableModels` — or its derivatives:
 
 - **Availability** — `AgentRegistry.available()` (`agent-registry.ts:401`).
 - **Selection** — HTTP (`services/settings.ts:323`), WS (`route-registry.ts:1164`), the
@@ -2147,6 +2203,12 @@ about individually:
 site that is not a mechanical substitution: "no harness is authenticated" becomes "no service
 has a credential", which is a different question about a different object, and it is the
 condition that actually blocks a first turn.
+
+**What shipped is the rename, not the split.** Phase 3 found the two questions are not
+separable at these sites after all: every one of them wants "can this harness take a turn
+here", which is `installed` **and** "has a runnable model" — so a single field with the honest
+name (`hasRunnableModels`) says it, and `available()` stays the conjunction. Onboarding did
+move to the credential question, as described above.
 
 **Eligibility** (req 8) moves from `hasAnyAuthForProvider(provider)` to a per-billing-mode
 question: *does the service offering this model have a credential?* With Anthropic as an
@@ -2606,7 +2668,8 @@ is key-authenticated.
 | `orchestrator/session-agent-env.ts` | `selectAgentEnvForPush` — credential delivery to a container |
 | `orchestrator/local-agent-home.ts` | `resolveLocalAgentHome` — why reserved routes are unscoped |
 | `shared/model-windows.ts` | First-frame context window |
-| `client/components/ModelPicker.tsx` | The split picker: `HarnessSelector` + `ModelSelector`, model rows grouped by `(service, billing mode)`. Replaced `ModelAgentSelector`, whose hand-kept `METERED_MODELS` set went with it |
+| `client/components/ModelPicker.tsx` | The split picker: `HarnessSelector` + `ModelSelector`, model rows grouped by `(service, billing mode)`. Replaced `ModelAgentSelector`, whose hand-kept `METERED_MODELS` set went with it. `boundSession` / `displayedHarness` decide whether it describes a session or previews the next one |
+| `client/utils/new-session-agent.ts` | `newSessionAgentId` — the one rule for the harness a brand-new session is created on, read by the connect URL and by the picker that displays it |
 | `shared/types/usage-limits-types.ts` | `SubscriptionLimits` — already keyed by `routeId` |
 | `orchestrator/agents/*/limits-provider.ts` | Per-`AgentId` today; becomes per service (req 10) |
 | `orchestrator/usage.ts` | `RecordedTurn` — token/cost accounting, distinct from quota |

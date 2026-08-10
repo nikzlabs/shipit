@@ -20,7 +20,7 @@ const agent: AgentOption = {
   id: "claude",
   name: "Claude",
   installed: true,
-  authConfigured: true,
+  hasRunnableModels: true,
   models: [],
   supportsReview: true,
 };

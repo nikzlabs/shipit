@@ -20,7 +20,7 @@ describe("isAgentAuthenticated", () => {
     let configured = false;
     const registry = {
       refreshAuth: vi.fn(() => { configured = true; }),
-      get: vi.fn(() => ({ authConfigured: configured })),
+      get: vi.fn(() => ({ hasRunnableModels: configured })),
     };
 
     expect(isAgentAuthenticated(registry as never, "claude")).toBe(true);
@@ -30,7 +30,7 @@ describe("isAgentAuthenticated", () => {
   it("rejects the turn when no provider auth route is configured", () => {
     const registry = {
       refreshAuth: vi.fn(),
-      get: vi.fn(() => ({ authConfigured: false })),
+      get: vi.fn(() => ({ hasRunnableModels: false })),
     };
 
     expect(isAgentAuthenticated(registry as never, "claude")).toBe(false);
@@ -38,10 +38,10 @@ describe("isAgentAuthenticated", () => {
 });
 
 describe("agentAdmissionError (docs/252 phase 9, req 14)", () => {
-  function registry(authConfigured: boolean, installed = false) {
+  function registry(hasRunnableModels: boolean, installed = false) {
     // `installed` here is the registry's own flag — a `which` probe wherever no
     // report exists. The gate must NOT read it; the tests below pin that.
-    return { refreshAuth: vi.fn(), get: vi.fn(() => ({ name: "Claude Code", installed, authConfigured })) };
+    return { refreshAuth: vi.fn(), get: vi.fn(() => ({ name: "Claude Code", installed, hasRunnableModels })) };
   }
 
   it("admits an installed, authenticated harness", () => {

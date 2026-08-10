@@ -24,8 +24,8 @@ afterEach(() => {
   });
 });
 
-const claudeAuthed = { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet"], supportsReview: true };
-const claudeUnauthed = { ...claudeAuthed, authConfigured: false };
+const claudeAuthed = { id: "claude", name: "Claude Code", installed: true, hasRunnableModels: true, models: ["claude-sonnet"], supportsReview: true };
+const claudeUnauthed = { ...claudeAuthed, hasRunnableModels: false };
 
 const defaultProps: SettingsProps = {
   initialContent: "",
@@ -565,7 +565,7 @@ describe("Settings - Agent → Codex tab", () => {
     id: "codex",
     name: "Codex",
     installed: true,
-    authConfigured: false,
+    hasRunnableModels: false,
     models: ["codex-mini-latest"],
     supportsReview: false,
   };

@@ -1316,7 +1316,7 @@ export function markProviderAccountUnauthenticated(opts: {
  * Recovery counterpart to {@link markProviderAccountUnauthenticated}. When the
  * OAuth refresher rotates a previously-revoked account's token back to a
  * healthy state, the account is genuinely usable again — flip its persisted
- * status back to `ready`, recompute the agent's cached `authConfigured`, and
+ * status back to `ready`, recompute the agent's cached `hasRunnableModels`, and
  * re-broadcast so the model selector clears its stale "needs auth" state.
  *
  * Without this, an account that was marked `auth_failed` (by the refresher's

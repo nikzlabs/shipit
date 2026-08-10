@@ -3,8 +3,8 @@ import { agentIdForModel } from "./agent-for-model.js";
 import type { AgentOption } from "../agent-types.js";
 
 const AGENTS: AgentOption[] = [
-  { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["sonnet", "opus", "haiku"], supportsReview: true },
-  { id: "codex", name: "Codex", installed: true, authConfigured: true, models: ["gpt-5.5", "gpt-5.3-codex"], supportsReview: true },
+  { id: "claude", name: "Claude Code", installed: true, hasRunnableModels: true, models: ["sonnet", "opus", "haiku"], supportsReview: true },
+  { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5.5", "gpt-5.3-codex"], supportsReview: true },
 ];
 
 describe("agentIdForModel", () => {

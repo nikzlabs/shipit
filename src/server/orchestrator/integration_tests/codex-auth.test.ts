@@ -12,8 +12,8 @@
  *     -> SSE `agent_auth_pending` { agentId: "codex", accountId, details: { kind: "device-code", ... } }
  *   fake codex writes auth.json + exits 0
  *     -> SSE `agent_auth_complete` { agentId: "codex" }
- *     -> agentRegistry.refreshAuth("codex") flips authConfigured
- *     -> SSE `agent_list` with codex authConfigured: true
+ *     -> agentRegistry.refreshAuth("codex") flips hasRunnableModels
+ *     -> SSE `agent_list` with codex hasRunnableModels: true
  *
  * The SSE event family is unified (docs/155 Phase 2b) — payload-shape
  * differences across backends live in the discriminated `details` field.
@@ -172,10 +172,10 @@ class SseTestClient {
 
 const findCodex = (
   data: Record<string, unknown>,
-): { authConfigured?: boolean; reasoning?: { options: unknown[] } } | undefined =>
+): { hasRunnableModels?: boolean; reasoning?: { options: unknown[] } } | undefined =>
   (
     data.agents as
-      | { id: string; authConfigured?: boolean; reasoning?: { options: unknown[] } }[]
+      | { id: string; hasRunnableModels?: boolean; reasoning?: { options: unknown[] } }[]
       | undefined
   )?.find((a) => a.id === "codex");
 
@@ -222,7 +222,7 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-codex-auth-"));
     // Force the API-key fallback off so codex starts unauthenticated and the
-    // only path to authConfigured: true is the device-auth file landing.
+    // only path to hasRunnableModels: true is the device-auth file landing.
     savedOpenAIKey = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
 
@@ -283,12 +283,12 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     }
   });
 
-  it("drives the device flow end to end and flips codex authConfigured", async () => {
+  it("drives the device flow end to end and flips codex hasRunnableModels", async () => {
     sse = await SseTestClient.connect(port);
 
     // Snapshot on connect reports codex unauthenticated (no file, no env key).
     const initial = await sse.waitFor("agent_list", (d) => !!findCodex(d));
-    expect(findCodex(initial)?.authConfigured).toBe(false);
+    expect(findCodex(initial)?.hasRunnableModels).toBe(false);
     // docs/217 — the connect snapshot must carry per-agent `reasoning` (it uses
     // the same listAgents() serializer as the broadcasts). A drifted inline copy
     // once omitted it, so the composer's reasoning control vanished on every SSE
@@ -323,7 +323,7 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     fs.writeFileSync(authFilePath, JSON.stringify({ tokens: { access_token: "tok" } }));
     fakeProc.emit("close", 0);
 
-    // Completion broadcast, then agent_list with codex authConfigured: true.
+    // Completion broadcast, then agent_list with codex hasRunnableModels: true.
     const complete = await sse.waitFor(
       "agent_auth_complete",
       (d) => (d as { agentId?: string }).agentId === "codex",
@@ -331,9 +331,9 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     expect(complete.accountId).toBe(accountId);
     const after = await sse.waitFor(
       "agent_list",
-      (d) => findCodex(d)?.authConfigured === true,
+      (d) => findCodex(d)?.hasRunnableModels === true,
     );
-    expect(findCodex(after)?.authConfigured).toBe(true);
+    expect(findCodex(after)?.hasRunnableModels).toBe(true);
 
     // The auth file ended up under the temp credentials dir (doc 119 §2.3).
     expect(fs.existsSync(authFilePath)).toBe(true);
@@ -366,7 +366,7 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     // No credentials file -> registry still reports codex unauthenticated.
     expect(fs.existsSync(authFilePath)).toBe(false);
     const boot = await app.inject({ method: "GET", url: "/api/bootstrap" });
-    expect(findCodex(boot.json())?.authConfigured).toBe(false);
+    expect(findCodex(boot.json())?.hasRunnableModels).toBe(false);
   });
 
   it("start is idempotent while a device flow is already in flight", async () => {

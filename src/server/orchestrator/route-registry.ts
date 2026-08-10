@@ -1290,7 +1290,7 @@ export async function registerRoutes(
             // docs/252 phase 3 — see `setAgent` in `services/settings.ts`: the
             // gate is now "has at least one eligible model" (req 8), so the
             // message names that rather than a vendor's env var.
-            if (!info.authConfigured) {
+            if (!info.hasRunnableModels) {
               send({
                 type: "error",
                 message: `${info.name} has no models available. Add a credential for a service it can reach in Settings → Services.`,

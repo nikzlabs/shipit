@@ -8,11 +8,11 @@ import type { AgentOption } from "../agent-types.js";
 import type { FileReview } from "../../server/shared/types.js";
 
 const claude: AgentOption = {
-  id: "claude", name: "Claude Code", installed: true, authConfigured: true,
+  id: "claude", name: "Claude Code", installed: true, hasRunnableModels: true,
   models: ["sonnet"], supportsReview: true,
 };
 const codex: AgentOption = {
-  id: "codex", name: "Codex", installed: true, authConfigured: true,
+  id: "codex", name: "Codex", installed: true, hasRunnableModels: true,
   models: ["gpt"], supportsReview: false,
 };
 

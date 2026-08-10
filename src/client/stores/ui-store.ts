@@ -12,6 +12,7 @@ import {
   getSavedRightTab,
   saveRightTab,
 } from "../utils/local-storage.js";
+import { newSessionAgentId } from "../utils/new-session-agent.js";
 
 export type RightTab =
   | "preview"
@@ -289,7 +290,7 @@ export const useUiStore = create<UiState>((set) => ({
   setTailnetPreviewHost: (tailnetPreviewHost) => set({ tailnetPreviewHost }),
 
   reset: () =>
-    set({
+    set((s) => ({
       settingsOpen: false,
       quickCaptureOpen: false,
       quickCaptureAutoMic: false,
@@ -300,13 +301,26 @@ export const useUiStore = create<UiState>((set) => ({
       contextTokens: 0,
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
+      // docs/252 — back to the seed, because this field is SYNCED TO THE
+      // CONNECTED SESSION by `useConnectionSync` and so goes stale the moment
+      // there is no longer a session behind it. Surviving the reset is what let
+      // the new-session route describe the session the user just left: its warm
+      // session is claimed but excluded from `sessions` (`SessionManager.list`
+      // filters `warm = 0`), so the composer has a bound session it cannot see
+      // and falls back to this value. Resetting it to what the next session will
+      // actually be created on makes that fallback correct instead of stale, and
+      // an explicit pick still overwrites it (`handleAgentChange`).
+      //
+      // localStorage is deliberately NOT written here — see `setActiveAgentId`:
+      // an internal sync must never move the global "new session default".
+      activeAgentId: newSessionAgentId(s.agentList),
       // On a session switch the mobile layout should always land on chat —
       // a new session's first thing to look at is its conversation, never the
       // workspace/preview tab the previous session happened to be parked on.
       // (Unlike rightTab, which is the desktop tab and is intentionally
       // preserved across switches via localStorage.)
       mobilePanel: "chat" as MobilePanel,
-    }),
+    })),
 
   fetchUsageStats: async (sessionId) => {
     const res = await fetch(`/api/sessions/${sessionId}/usage`, {

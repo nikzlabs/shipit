@@ -447,7 +447,7 @@ export function useServerEvents(): void {
           id: string;
           name: string;
           installed: boolean;
-          authConfigured: boolean;
+          hasRunnableModels: boolean;
           models?: string[];
           // 125 — every adapter now publishes a supportsReview flag, but old
           // server builds may omit it; default to false so a stale wire

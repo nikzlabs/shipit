@@ -94,15 +94,22 @@ export interface AgentInfo {
    * different one for req 2's case: a user whose only credential is a DeepSeek
    * key now has Claude Code configured, with no Anthropic account anywhere.
    *
-   * The field keeps its name because it is still the gate every "can this
-   * harness take a turn" site asks (`agent-auth-gate.ts`, `set_agent`, the
-   * sub-agent spawn), and renaming it across those sites is churn without a
-   * behaviour change. What moved is what it MEANS: a per-`AgentId` credential
-   * probe became the per-model rule of req 8, evaluated over the harness's own
-   * eligible set. `AgentRegistry.available()` is unchanged and still the
-   * conjunction with `installed` (req 14).
+   * It was called `authConfigured` up to and including phase 3, from when the
+   * answer really was a per-`AgentId` credential probe of the harness's own
+   * vendor. That is no longer what it asks: the probe became the per-model rule
+   * of req 8, evaluated over this harness's eligible set, so a name about *auth*
+   * now describes the wrong axis entirely — under req 2 a harness is runnable
+   * with no account at its own vendor at all. This is still the gate every "can
+   * this harness take a turn" site reads (`agent-auth-gate.ts`, `set_agent`, the
+   * sub-agent spawn), and `AgentRegistry.available()` is still the conjunction
+   * with `installed` (req 14); only the name moved.
+   *
+   * NOT a claim that {@link eligibleModels} is non-empty. With no credential
+   * source wired (a worker, a unit test) the legacy probe answers instead and
+   * the credential-filtered join is not computed — `capabilities.models` is the
+   * harness's full set there. See {@link deriveHasRunnableModels}.
    */
-  authConfigured: boolean;
+  hasRunnableModels: boolean;
   capabilities: AgentCapabilities;
   /**
    * The credential-filtered join for this install, in catalogue order (req 8).
@@ -336,7 +343,7 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
         name: def.name,
         binary: def.binary,
         installed,
-        authConfigured: this.isAuthConfigured(def.id, eligibleModels),
+        hasRunnableModels: this.deriveHasRunnableModels(def.id, eligibleModels),
         capabilities: this.capabilitiesFor(def, eligibleModels),
         eligibleModels,
       });
@@ -353,9 +360,9 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
     return Array.from(this.agents.values());
   }
 
-  /** List only agents that are installed and auth-configured. */
+  /** List only agents this deployment installed and that have a runnable model. */
   available(): AgentInfo[] {
-    return this.list().filter((a) => a.installed && a.authConfigured);
+    return this.list().filter((a) => a.installed && a.hasRunnableModels);
   }
 
   /**
@@ -371,13 +378,13 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
     const info = this.agents.get(id);
     if (!info) return;
     const def = AGENT_DEFS.find((d) => d.id === id);
-    const wasConfigured = info.authConfigured;
+    const wasRunnable = info.hasRunnableModels;
     info.eligibleModels = this.computeEligibleModels(id);
-    info.authConfigured = this.isAuthConfigured(id, info.eligibleModels);
+    info.hasRunnableModels = this.deriveHasRunnableModels(id, info.eligibleModels);
     if (def) info.capabilities = this.capabilitiesFor(def, info.eligibleModels);
-    // docs/144 — emit on a configured → not-configured edge so the sub-agent
+    // docs/144 — emit on a runnable → not-runnable edge so the sub-agent
     // service can sweep cross-agent creds left over from a spawn.
-    if (wasConfigured && !info.authConfigured) {
+    if (wasRunnable && !info.hasRunnableModels) {
       this.emit("sign-out", id);
     }
   }
@@ -388,7 +395,7 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
    *
    * Empty when no credential source is wired — see {@link listCredentials} for
    * why that is not the same as "nothing is eligible", and
-   * {@link isAuthConfigured} for how the probe fallback covers it.
+   * {@link deriveHasRunnableModels} for how the probe fallback covers it.
    */
   private computeEligibleModels(id: AgentId): EligibleModel[] {
     const configured = this.listCredentials?.();
@@ -425,7 +432,7 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
    * Translating rather than short-circuiting is what keeps ONE rule: eligibility
    * is a question about credentials, so a legacy credential becomes a credential
    * rather than a second way to answer "is this harness configured". The
-   * alternative — OR-ing the probe into `authConfigured` — would report a
+   * alternative — OR-ing the probe into `hasRunnableModels` — would report a
    * harness runnable while its picker had no rows, which is the state req 8
    * exists to prevent.
    */
@@ -454,13 +461,15 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
    * docs/252 phase 3 — "can this harness run anything here?", answered from the
    * per-model rule (req 8) when a credential source is wired.
    *
-   * That is the whole of req 2: a DeepSeek key makes Claude Code configured, and
+   * That is the whole of req 2: a DeepSeek key makes Claude Code runnable, and
    * a lapsed Anthropic subscription with no key makes it not — one rule, no
    * vendor special-cased. The probes below survive only as the fallback for a
    * registry with no credential source (a worker, a unit test); they are the
-   * pre-feature behaviour and are per-`AgentId` by construction.
+   * pre-feature behaviour and are per-`AgentId` by construction. That fallback
+   * is why the field is not simply `eligibleModels.length > 0` at its readers:
+   * there the join is not computed and this is the only answer there is.
    */
-  private isAuthConfigured(id: AgentId, eligibleModels: EligibleModel[]): boolean {
+  private deriveHasRunnableModels(id: AgentId, eligibleModels: EligibleModel[]): boolean {
     if (this.listCredentials) return eligibleModels.length > 0;
     if (id === "claude") {
       return this.checkClaudeAuth();

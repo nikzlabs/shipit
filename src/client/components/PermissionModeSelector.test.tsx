@@ -8,7 +8,7 @@ afterEach(cleanup);
 
 const claudeAll: AgentOption[] = [
   {
-    id: "claude", name: "Claude Code", installed: true, authConfigured: true,
+    id: "claude", name: "Claude Code", installed: true, hasRunnableModels: true,
     models: ["sonnet"], supportsReview: true,
     supportedPermissionModes: ["auto", "plan", "guarded"],
   },
@@ -27,7 +27,7 @@ describe("PermissionModeSelector", () => {
 
   it("hides entirely for an agent that advertises no permission modes (Codex)", () => {
     const codex: AgentOption[] = [
-      { id: "codex", name: "Codex", installed: true, authConfigured: true, models: ["gpt-5"], supportsReview: false, supportedPermissionModes: [] },
+      { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5"], supportsReview: false, supportedPermissionModes: [] },
     ];
     render(
       <PermissionModeSelector mode="auto" onChange={vi.fn()} agents={codex} activeAgentId="codex" modelInfo={null} />,
@@ -80,7 +80,7 @@ describe("PermissionModeSelector", () => {
   it("only offers plan + auto when the agent doesn't support guarded", async () => {
     const user = userEvent.setup();
     const claudePlanOnly: AgentOption[] = [
-      { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["sonnet"], supportsReview: true, supportedPermissionModes: ["auto", "plan"] },
+      { id: "claude", name: "Claude Code", installed: true, hasRunnableModels: true, models: ["sonnet"], supportsReview: true, supportedPermissionModes: ["auto", "plan"] },
     ];
     render(
       <PermissionModeSelector mode="auto" onChange={vi.fn()} agents={claudePlanOnly} activeAgentId="claude" modelInfo={sonnet} />,

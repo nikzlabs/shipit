@@ -13,7 +13,7 @@ const agents: AgentOption[] = [
     id: "claude",
     name: "Claude Code",
     installed: true,
-    authConfigured: true,
+    hasRunnableModels: true,
     models: ["claude-sonnet-5", "deepseek-v4-flash"],
     eligibleModels: [
       {
@@ -45,7 +45,7 @@ const agents: AgentOption[] = [
     id: "codex",
     name: "Codex",
     installed: true,
-    authConfigured: true,
+    hasRunnableModels: true,
     models: ["gpt-5.6-sol"],
     eligibleModels: [
       {
@@ -86,6 +86,7 @@ function resetSelectionEcho() {
 
 beforeEach(() => {
   localStorage.removeItem("vibe-model-id");
+  localStorage.removeItem("vibe-agent-id");
   setSessionState(undefined);
   resetSelectionEcho();
 });
@@ -165,6 +166,70 @@ describe("HarnessSelector", () => {
     );
     expect(screen.getByTestId("harness-trigger")).not.toBeDisabled();
   });
+
+  it("ignores the globally-active session and previews the persisted seed when no session is bound", () => {
+    // Quick Capture over a Codex session: the overlay creates a session from the
+    // saved seed, so naming the session sitting behind it says the new session
+    // will be Codex when it will not.
+    setSessionState(makeSession({ agentId: "codex" }));
+    localStorage.setItem("vibe-agent-id", "claude");
+    render(
+      <HarnessSelector
+        agents={agents}
+        activeAgentId="codex"
+        onAgentChange={vi.fn()}
+        seedFromHistory
+      />,
+    );
+    expect(screen.getByTestId("harness-trigger")).toHaveTextContent("Claude Code");
+  });
+
+  it("derives the seeded harness from the saved MODEL, which is what creates the session", () => {
+    // `newSessionAgentId` — the model is the single source of truth, so a stale
+    // `vibe-agent-id` must not out-vote it (docs/142 Problem C). Displaying the
+    // stale one would name a harness the connect URL will not use.
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem("vibe-model-id", "gpt-5.6-sol");
+    render(
+      <HarnessSelector
+        agents={agents}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        seedFromHistory
+      />,
+    );
+    expect(screen.getByTestId("harness-trigger")).toHaveTextContent("Codex");
+  });
+
+  it("falls back to activeAgentId while the bound session is a WARM one, invisible in `sessions`", () => {
+    // The claimed warm session is bound (`sessionId` is set, `set_agent` goes
+    // over its socket) but `SessionManager.list` filters `warm = 0`, so it never
+    // appears in `sessions` — the composer has a session it cannot see, and the
+    // fallback is the caller's `activeAgentId`. That is deliberate: the fallback
+    // has to carry an explicit harness pick made on the new-session route, which
+    // the seed cannot when the saved model belongs to the other harness. Keeping
+    // that fallback truthful is `useUiStore.reset()`'s job, pinned in
+    // `ui-store.test.ts` — this pins that the picker does use it.
+    useSessionStore.setState({ sessionId: "warm-1", sessions: [] });
+    localStorage.setItem("vibe-agent-id", "claude");
+    render(
+      <HarnessSelector agents={agents} activeAgentId="codex" onAgentChange={vi.fn()} />,
+    );
+    expect(screen.getByTestId("harness-trigger")).toHaveTextContent("Codex");
+  });
+
+  it("still follows the bound session's harness when there IS one", () => {
+    // The new-session route claims a warm session up front and talks to it, so
+    // `hasActiveSession` is false while a session is nonetheless bound. Its
+    // harness stays authoritative — this is the case `seedFromHistory` must not
+    // swallow.
+    setSessionState(makeSession({ agentId: "codex" }));
+    localStorage.setItem("vibe-agent-id", "claude");
+    render(
+      <HarnessSelector agents={agents} activeAgentId="claude" onAgentChange={vi.fn()} />,
+    );
+    expect(screen.getByTestId("harness-trigger")).toHaveTextContent("Codex");
+  });
 });
 
 describe("ModelSelector", () => {
@@ -240,6 +305,47 @@ describe("ModelSelector", () => {
     const rows = screen.getAllByTestId("model-option-claude-sonnet-5");
     const checked = rows.filter((r) => r.className.includes("color-accent-subtle"));
     expect(checked).toHaveLength(1);
+  });
+
+  it("lists the seeded harness's models, not the globally-active session's, when no session is bound", async () => {
+    // The harness is the axis that selects the list, so the harness bug showed
+    // up here as the wrong LIST: Quick Capture over a Codex session offered
+    // Codex's models while creating a Claude session from the saved seed.
+    const user = userEvent.setup();
+    setSessionState(makeSession({ agentId: "codex", model: "gpt-5.6-sol" }));
+    localStorage.setItem("vibe-agent-id", "claude");
+    render(
+      <ModelSelector
+        agents={agents}
+        activeAgentId="claude"
+        modelInfo={null}
+        onModelChange={vi.fn()}
+        seedFromHistory
+      />,
+    );
+    await user.click(screen.getByTestId("model-trigger"));
+    expect(screen.getByTestId("model-dropdown")).toHaveTextContent("DeepSeek");
+    expect(screen.queryByTestId("model-option-gpt-5.6-sol")).toBeNull();
+  });
+
+  it("ignores the background session's live model even when it runs the seeded harness", async () => {
+    // Scoping `modelInfo` by AGENT is not enough with no session of its own:
+    // Quick Capture is handed the background session's live model, and when that
+    // session runs the seeded harness the id passes the agent check and outranks
+    // the seed — so the overlay showed Sonnet while creating DeepSeek.
+    setSessionState(makeSession({ agentId: "claude", model: "claude-sonnet-5" }));
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem("vibe-model-id", "deepseek:key:deepseek-v4-flash");
+    render(
+      <ModelSelector
+        agents={agents}
+        activeAgentId="claude"
+        modelInfo={{ model: "claude-sonnet-5" } as never}
+        onModelChange={vi.fn()}
+        seedFromHistory
+      />,
+    );
+    expect(screen.getByTestId("model-trigger")).toHaveTextContent("V4 Flash");
   });
 
   it("checks exactly one row when nothing has pinned a group yet", async () => {

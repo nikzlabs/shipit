@@ -29,7 +29,7 @@ const claudeAgent = {
   id: "claude" as const,
   name: "Claude",
   installed: true,
-  authConfigured: false,
+  hasRunnableModels: false,
   models: [],
   supportsReview: true,
 };

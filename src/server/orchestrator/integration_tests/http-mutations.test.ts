@@ -40,7 +40,7 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
-    // Save and clear OPENAI_API_KEY so codex agent starts with authConfigured=false
+    // Save and clear OPENAI_API_KEY so codex agent starts with hasRunnableModels=false
     savedOpenAIKey = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-http-mutations-"));
@@ -898,7 +898,7 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       // no longer be auth-configured.
       expect(Array.isArray(body.agents)).toBe(true);
       const claude = body.agents.find((a: { id: string }) => a.id === "claude");
-      expect(claude?.authConfigured).toBe(false);
+      expect(claude?.hasRunnableModels).toBe(false);
     });
 
     // docs/150 — provider-wide sign-out drops every account row, so it needs
@@ -1356,7 +1356,7 @@ describe("Integration: Phase 2 HTTP agent mutations", () => {
       // Initially Codex auth is not configured
       const beforeRes = await app.inject({ method: "GET", url: "/api/bootstrap" });
       const codexBefore = beforeRes.json().agents.find((a: any) => a.id === "codex");
-      expect(codexBefore.authConfigured).toBe(false);
+      expect(codexBefore.hasRunnableModels).toBe(false);
 
       const res = await app.inject({
         method: "POST",
@@ -1369,7 +1369,7 @@ describe("Integration: Phase 2 HTTP agent mutations", () => {
       // Verify auth status updated
       const afterRes = await app.inject({ method: "GET", url: "/api/bootstrap" });
       const codexAfter = afterRes.json().agents.find((a: any) => a.id === "codex");
-      expect(codexAfter.authConfigured).toBe(true);
+      expect(codexAfter.hasRunnableModels).toBe(true);
     });
 
     it("returns 400 for disallowed env key", async () => {

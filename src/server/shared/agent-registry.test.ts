@@ -3,7 +3,7 @@
  * added in feature 119 (Codex subscription auth). The integration test in
  * `orchestrator/integration_tests/agent-registry.test.ts` exercises the
  * end-to-end flow with a real binary-detection mock; this file isolates the
- * `isAuthConfigured("codex")` branch table.
+ * `deriveHasRunnableModels("codex")` branch table.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,7 +19,7 @@ afterEach(() => {
   }
 });
 
-describe("AgentRegistry / isAuthConfigured('codex')", () => {
+describe("AgentRegistry / deriveHasRunnableModels('codex')", () => {
   beforeEach(() => {
     delete process.env.OPENAI_API_KEY;
   });
@@ -41,22 +41,22 @@ describe("AgentRegistry / isAuthConfigured('codex')", () => {
 
   it("returns true when only the ChatGPT subscription file is present", async () => {
     const codex = await detect({ fileAuth: true, envAuth: false });
-    expect(codex.authConfigured).toBe(true);
+    expect(codex.hasRunnableModels).toBe(true);
   });
 
   it("returns true when only OPENAI_API_KEY is set", async () => {
     const codex = await detect({ fileAuth: false, envAuth: true });
-    expect(codex.authConfigured).toBe(true);
+    expect(codex.hasRunnableModels).toBe(true);
   });
 
   it("returns true when both auth modes are present", async () => {
     const codex = await detect({ fileAuth: true, envAuth: true });
-    expect(codex.authConfigured).toBe(true);
+    expect(codex.hasRunnableModels).toBe(true);
   });
 
   it("returns false when neither auth mode is present", async () => {
     const codex = await detect({ fileAuth: false, envAuth: false });
-    expect(codex.authConfigured).toBe(false);
+    expect(codex.hasRunnableModels).toBe(false);
   });
 
   it("refreshAuth picks up a freshly-written subscription file", async () => {
@@ -67,12 +67,12 @@ describe("AgentRegistry / isAuthConfigured('codex')", () => {
       checkCodexAuth: () => fileAuth,
     });
     await registry.detect();
-    expect(registry.get("codex")?.authConfigured).toBe(false);
+    expect(registry.get("codex")?.hasRunnableModels).toBe(false);
 
     // Simulate a successful `codex login --device-auth` writing the file.
     fileAuth = true;
     registry.refreshAuth("codex");
-    expect(registry.get("codex")?.authConfigured).toBe(true);
+    expect(registry.get("codex")?.hasRunnableModels).toBe(true);
   });
 
   it("refreshAuth picks up a freshly-set OPENAI_API_KEY", async () => {
@@ -82,11 +82,11 @@ describe("AgentRegistry / isAuthConfigured('codex')", () => {
       checkCodexAuth: () => false,
     });
     await registry.detect();
-    expect(registry.get("codex")?.authConfigured).toBe(false);
+    expect(registry.get("codex")?.hasRunnableModels).toBe(false);
 
     process.env.OPENAI_API_KEY = "sk-fresh";
     registry.refreshAuth("codex");
-    expect(registry.get("codex")?.authConfigured).toBe(true);
+    expect(registry.get("codex")?.hasRunnableModels).toBe(true);
   });
 
   it("defaults checkCodexAuth to false when not injected (env-only behavior)", async () => {
@@ -96,11 +96,11 @@ describe("AgentRegistry / isAuthConfigured('codex')", () => {
       // checkCodexAuth omitted — should default to () => false
     });
     await registry.detect();
-    expect(registry.get("codex")?.authConfigured).toBe(false);
+    expect(registry.get("codex")?.hasRunnableModels).toBe(false);
 
     process.env.OPENAI_API_KEY = "sk-only";
     registry.refreshAuth("codex");
-    expect(registry.get("codex")?.authConfigured).toBe(true);
+    expect(registry.get("codex")?.hasRunnableModels).toBe(true);
   });
 });
 

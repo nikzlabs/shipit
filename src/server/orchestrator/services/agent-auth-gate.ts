@@ -25,7 +25,7 @@ export function isAgentAuthenticated(
   agentId: AgentId,
 ): boolean {
   agentRegistry.refreshAuth(agentId);
-  return agentRegistry.get(agentId)?.authConfigured ?? false;
+  return agentRegistry.get(agentId)?.hasRunnableModels ?? false;
 }
 
 /**

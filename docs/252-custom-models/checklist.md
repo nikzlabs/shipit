@@ -88,12 +88,27 @@ table — a phase is checked off when its PR has merged.
       pinned route's, so choosing a different one no longer means authenticating with the
       group's first.
 - [x] The **sub-agent defaults** picker gains its service axis *(done in phase 4)*
-- [ ] The new-session picker reads the globally-active session for its **harness** display.
+- [x] The new-session picker reads the globally-active session for its **harness** display.
       Pre-existing (the combined picker did the same); found by review and recorded rather
-      than fixed here, since untangling it is composer work with no bearing on billing.
-- [ ] `authConfigured` leaves `AgentInfo`. Its MEANING moved here — "this harness has at least
-      one eligible model" — which is the part req 2 needed; the rename across its six call
-      sites is churn with no behaviour change and was not taken.
+      than fixed then, since untangling it is composer work with no bearing on billing.
+      Closed after phase 9: both selectors take `seedFromHistory` — the shape
+      `ReasoningSelector` already had — and with no session bound they display
+      `newSessionAgentId`, the *same* rule that creates the session, rather than the ui
+      store's `activeAgentId` (which `useConnectionSync` syncs to whichever session is
+      connected). `hasActiveSession` turned out to be the wrong gate: the new-session route
+      claims a warm session up front and talks to it, so it is `hasActiveSession: false`
+      **and** bound at once, and must keep following that session. Cross-backend review then
+      found the bug surviving in a narrower window — a claimed warm session is bound but
+      **invisible** (`SessionManager.list` filters `warm = 0`), so the composer fell back to a
+      stale `activeAgentId`; `useUiStore.reset()` now returns that field to the seed. A second
+      finding with it: global `modelInfo` outranked the seed in Quick Capture whenever the
+      background session ran the seeded harness.
+- [x] `authConfigured` leaves `AgentInfo`. Its MEANING moved here — "this harness has at
+      least one eligible model" — which is the part req 2 needed; the rename was deferred as
+      churn. Taken after phase 9 as **`hasRunnableModels`**: an auth-shaped name describes
+      the wrong axis once req 2 makes a harness runnable with no account at its own vendor.
+      Pure rename, no shim — the field crosses the wire but nothing persists it, so every
+      payload is recomputed on connect.
 
 ## Phase 6 — Usage, cost and attribution
 

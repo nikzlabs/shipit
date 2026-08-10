@@ -67,7 +67,7 @@ export interface WsAgentAuthPending {
 
 /**
  * Server → Client (SSE-broadcast): a per-agent auth flow completed
- * successfully. Receivers refresh the agent list — `authConfigured` for the
+ * successfully. Receivers refresh the agent list — `hasRunnableModels` for the
  * named agent flips to `true`. (docs/155 Phase 2b)
  */
 export interface WsAgentAuthComplete {

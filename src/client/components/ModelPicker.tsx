@@ -3,6 +3,7 @@ import { CaretDownIcon, CheckIcon, LockIcon, RobotIcon } from "@phosphor-icons/r
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatModelName, resolveModelAlias } from "../utils/format-model.js";
 import { getSavedModelId, getSavedModelSelection } from "../utils/local-storage.js";
+import { newSessionAgentId } from "../utils/new-session-agent.js";
 import { useSessionStore } from "../stores/session-store.js";
 import {
   DropdownMenu,
@@ -11,7 +12,7 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
 } from "./ui/dropdown-menu.js";
-import type { AgentId } from "../../server/shared/types.js";
+import type { AgentId, SessionInfo } from "../../server/shared/types.js";
 import type { AgentOption, EligibleModelOption } from "../agent-types.js";
 import type { ModelInfo } from "../utils/model-info.js";
 
@@ -123,6 +124,61 @@ function disambiguator(rows: ModelRow[], row: ModelRow): string {
   return row.billingMode === "sub" ? "Subscription" : "API key";
 }
 
+/**
+ * The session this composer is bound to, or `undefined` when it is bound to
+ * none.
+ *
+ * The session store is global and these selectors are not: they are rendered by
+ * the in-session composer, by the new-session composer, and by Quick Capture,
+ * and only the first two have a session of their own. Reading
+ * `sessions.find(id === store.sessionId)` unconditionally is what made Quick
+ * Capture describe whichever session happened to be active *behind* it — a
+ * session it will never send to.
+ *
+ * `seedFromHistory` is the caller's answer to "is a session bound", and it is
+ * NOT the same question as `hasActiveSession`: the new-session route claims a
+ * warm session up front and talks to it (`set_agent` goes over its socket), so
+ * it has `hasActiveSession: false` and a bound session at the same time.
+ */
+function boundSession(
+  sessions: SessionInfo[],
+  storeSessionId: string | undefined,
+  seedFromHistory: boolean,
+): SessionInfo | undefined {
+  if (seedFromHistory || !storeSessionId) return undefined;
+  return sessions.find((s) => s.id === storeSessionId);
+}
+
+/**
+ * Which harness the picker is describing — and therefore which model list it
+ * shows, since the harness is the axis that selects the list.
+ *
+ * Two different questions, deliberately answered differently:
+ *
+ * - **Bound to a session** — that session's own persisted harness, falling back
+ *   to the ui-store's active id while its row is still loading. The session is
+ *   authoritative about what it runs (req 11).
+ * - **No session yet** — the persisted seed, via {@link newSessionAgentId},
+ *   which is the exact rule the connect URL and Quick Capture go on to create
+ *   the session with. Deliberately NOT the ui-store's `activeAgentId`, which
+ *   `useConnectionSync` syncs to whichever session is connected: with no session
+ *   of its own the picker inherited an unrelated session's harness and named one
+ *   the new session would not be created on.
+ *
+ * Same shape as {@link ReasoningSelector}'s `seedFromHistory`, for the same
+ * reason: a per-install seed *previews* what a new session will inherit, and is
+ * not a display fallback for a session that has its own answer.
+ */
+function displayedHarness(
+  agents: AgentOption[],
+  activeAgentId: AgentId,
+  session: SessionInfo | undefined,
+  seedFromHistory: boolean,
+): string {
+  if (seedFromHistory) return newSessionAgentId(agents);
+  return session?.agentId ?? activeAgentId;
+}
+
 // ---- Harness selector ------------------------------------------------------
 
 interface HarnessSelectorProps {
@@ -131,6 +187,8 @@ interface HarnessSelectorProps {
   onAgentChange: (agentId: AgentId) => void;
   /** See {@link ModelSelectorProps.hasActiveSession}. */
   hasActiveSession?: boolean;
+  /** See {@link ModelSelectorProps.seedFromHistory}. */
+  seedFromHistory?: boolean;
   disabled?: boolean;
   /**
    * Mobile composer mode: show only the robot icon to conserve toolbar width,
@@ -156,12 +214,13 @@ export function HarnessSelector({
   activeAgentId,
   onAgentChange,
   hasActiveSession = false,
+  seedFromHistory = false,
   disabled,
   compactTrigger = false,
 }: HarnessSelectorProps) {
   const sessionId = useSessionStore((s) => s.sessionId);
   const sessions = useSessionStore((s) => s.sessions);
-  const currentSession = sessionId ? sessions.find((s) => s.id === sessionId) : undefined;
+  const currentSession = boundSession(sessions, sessionId, seedFromHistory);
   const pinnedAgentId =
     hasActiveSession && currentSession?.agentPinned ? currentSession.agentId : undefined;
 
@@ -169,7 +228,8 @@ export function HarnessSelector({
   // no models and appears nowhere. An installed-but-unauthenticated one stays
   // visible, because that is actionable.
   const installed = agents.filter((a) => a.installed);
-  const displayAgent = agents.find((a) => a.id === (currentSession?.agentId ?? activeAgentId));
+  const displayedAgentId = displayedHarness(agents, activeAgentId, currentSession, seedFromHistory);
+  const displayAgent = agents.find((a) => a.id === displayedAgentId);
   const locked = !!pinnedAgentId;
   // Carried into `title` / `aria-label` in every mode, because the compact
   // trigger has no visible text to fall back on.
@@ -211,12 +271,12 @@ export function HarnessSelector({
         <DropdownMenuContent side="top" align="end" className="w-56" data-testid="harness-dropdown">
           {installed.map((agent) => {
             const rows = modelRowsFor(agent);
-            const isCurrent = agent.id === (currentSession?.agentId ?? activeAgentId);
+            const isCurrent = agent.id === displayedAgentId;
             return (
               <DropdownMenuItem
                 key={agent.id}
                 onSelect={() => onAgentChange(agent.id as AgentId)}
-                disabled={!agent.authConfigured}
+                disabled={!agent.hasRunnableModels}
                 className={`px-3 py-1.5 text-sm ${
                   isCurrent ? "bg-(--color-accent-subtle) text-(--color-text-link)" : ""
                 }`}
@@ -231,7 +291,7 @@ export function HarnessSelector({
                   session's life.
                 */}
                 <span className="text-xs text-(--color-text-tertiary)">
-                  {agent.authConfigured
+                  {agent.hasRunnableModels
                     ? `${rows.length} model${rows.length === 1 ? "" : "s"}`
                     : "needs a credential"}
                 </span>
@@ -262,6 +322,17 @@ interface ModelSelectorProps {
    * without this gate it would inherit a background session's state.
    */
   hasActiveSession?: boolean;
+  /**
+   * True when this composer is bound to **no session at all** — Quick Capture,
+   * and the new-session route before its warm session has been claimed. There
+   * the picker previews what the session about to be created will inherit
+   * (see {@link displayedHarness}) instead of describing the store's session,
+   * which belongs to someone else.
+   *
+   * A narrower question than `hasActiveSession`: the new-session route is
+   * `hasActiveSession: false` and yet bound to the warm session it claimed.
+   */
+  seedFromHistory?: boolean;
   disabled?: boolean;
 }
 
@@ -276,6 +347,7 @@ export function ModelSelector({
   onModelChange,
   modelInfo,
   hasActiveSession = false,
+  seedFromHistory = false,
   disabled,
 }: ModelSelectorProps) {
   // docs/252 phase 4 — the optimistic pick is the whole TRIPLE, not a model id.
@@ -294,12 +366,15 @@ export function ModelSelector({
   const pendingEchoRef = useRef<number>(0);
   const selectionEcho = useSessionStore((s) => (sessionId ? (s.modelSelectionEcho[sessionId] ?? 0) : 0));
   const sessions = useSessionStore((s) => s.sessions);
-  const currentSession = sessionId ? sessions.find((s) => s.id === sessionId) : undefined;
+  const currentSession = boundSession(sessions, sessionId, seedFromHistory);
   const sessionModel = currentSession?.model;
 
-  const activeAgent = agents.find((a) => a.id === activeAgentId);
-  const sessionAgent = agents.find((a) => a.id === currentSession?.agentId);
-  const displayAgent = sessionAgent ?? activeAgent;
+  // The harness decides which list this is, so it is resolved exactly as
+  // `HarnessSelector` resolves its own label — otherwise the two controls
+  // sitting side by side could name different harnesses.
+  const displayAgent = agents.find(
+    (a) => a.id === displayedHarness(agents, activeAgentId, currentSession, seedFromHistory),
+  );
 
   const rows = modelRowsFor(displayAgent);
   const groups = groupRows(rows);
@@ -340,7 +415,14 @@ export function ModelSelector({
   // UI state, so it is trusted only when the reported model belongs to the
   // active session's agent; otherwise a session switch could show the previous
   // session's model.
-  const liveModel = modelInfo?.model ?? undefined;
+  //
+  // Scoping by AGENT is not enough for a composer with no session of its own:
+  // Quick Capture is handed the *background* session's `modelInfo`, and when
+  // that session happens to run the seeded harness the id passes the agent check
+  // and outranks the seed below — so the overlay showed the background session's
+  // model while creating with the saved one. There is no live model for a
+  // session that does not exist yet, so drop it outright.
+  const liveModel = seedFromHistory ? undefined : (modelInfo?.model ?? undefined);
   const liveModelAlias = liveModel ? resolveModelAlias(liveModel) : undefined;
   const knownIds = rows.map((r) => r.modelId);
   const liveModelRow =

@@ -17,7 +17,7 @@ const agents: AgentOption[] = [
     id: "claude",
     name: "Claude Code",
     installed: true,
-    authConfigured: true,
+    hasRunnableModels: true,
     models: ["deepseek-v4-flash"],
     eligibleModels: [
       {
@@ -34,7 +34,7 @@ const agents: AgentOption[] = [
     id: "codex",
     name: "Codex",
     installed: true,
-    authConfigured: true,
+    hasRunnableModels: true,
     models: ["deepseek-v4-flash"],
     // The SAME triple on a second installed harness. The harness is derived
     // (req 9), so this must not become a second row the user picks between.
