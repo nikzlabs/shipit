@@ -70,8 +70,8 @@ inherited from a doc:
 - Docker emits `die` → `container-health.ts` deletes the map entry and
   emits `container_exited` → `handleContainerExited`
   (`startup-tasks.ts`) writes a log-ring breadcrumb, finalizes the
-  interrupted turn's chat rows, appends a visible assistant error, emits
-  `session_status {running:false}` and force-disposes the runner. Dispose
+  interrupted turn's chat rows, emits a visible notice and
+  `session_status {running:false}`, and force-disposes the runner. Dispose
   calls `sse.disconnect()`, so the retry loop stops as a consequence. The
   worker is PID 1 in the container, so worker death *is* container death
   and this is the common case.
@@ -96,37 +96,61 @@ never resolved, and the SSE loop retried for the life of the process.
 
 **Fix**: teach the reconciler that a map entry is not proof of life.
 
-- `SseConnectionManager.reconnectAttempts` — the existing backoff counter,
-  reset to 0 on every successful open — is surfaced on the runner as
-  `sseReconnectAttempts`.
-- A runner whose stream has failed `WORKER_UNREACHABLE_RECONNECT_ATTEMPTS`
-  = 12 times in a row (~95s at the 10s cap) has its container checked
-  against Docker via `isTrackedContainerRunning`. The gate keeps the probe
-  off healthy sessions entirely — a connected stream never accumulates
-  attempts — and off the slow-image-build case the requirements exclude.
+- `SseConnectionManager.streamDownSince` — a timestamp latched when the
+  stream goes down and cleared when one opens — is surfaced on the runner
+  as `workerStreamDownSince`. Deliberately a timestamp and *not* the
+  reconnect counter: `onDisconnect` can abort the reconnect schedule
+  entirely (the runner does exactly that once the terminal-only reconnect
+  cap is exhausted), which freezes any attempt count forever — an
+  attempt-count gate would never fire in precisely the sessions that are
+  most thoroughly stuck. It is latched before `onDisconnect` for the same
+  reason.
+- A runner whose stream has been down for `WORKER_UNREACHABLE_MS` (90s)
+  has its container checked against Docker via `isTrackedContainerRunning`.
+  The gate keeps the probe off healthy sessions entirely — an open stream
+  keeps the timestamp at 0 — and off the slow-image-build case the
+  requirements exclude, which happens before the runner has a worker URL at
+  all (`awaitingContainer`, checked first).
 - Docker saying "not running" (or 404) is treated as the missed `die`:
-  `markContainerGone` applies the same state transition the `die` handler
-  would have, and the session falls through to the reconciler's existing
-  vanished path. Docker *failing to answer* returns `undefined` and is
-  never read as death, so a daemon outage cannot reap the fleet.
+  `markContainerGone` does what that handler would have — reap the
+  incarnation's egress sidecars, then drop the entry — and the session
+  falls through to the reconciler's existing vanished path. It refuses to
+  act on a container id other than the one that was probed, so a rescue
+  that swaps the container during the inspect cannot have its replacement
+  deleted. Docker *failing to answer* returns `undefined` and is never read
+  as death, so a daemon outage cannot reap the fleet.
+- Docker saying "running" is not the end of it. Requirement 6 is about an
+  unreachable **worker**, so a live container gets one confirming
+  `/health` probe; a worker that does not answer that either is reported
+  the same way, with a notice pointing at Restart rather than "send a
+  message" (a fresh message would reconnect to the same wedged worker).
+  Its map entry is deliberately kept — the container is alive, and
+  forgetting it would have the next activation build a second one beside
+  it.
 
 No new WS message type and no new banner: `session_status
 {running:false}` already clears the client's running state, and what the
-user actually reads is a persisted transcript row. That row is the second
-half of the fix — the vanished path previously wrote only a log-ring entry
-(`session_status.error` is not rendered anywhere), so it stopped the
-spinner without saying why and let the next turn's `replaceInProgress`
-delete the interrupted turn's rows. It now calls the same
-`preservePartialTurnOnWorkerLoss` rescue `handleContainerExited` uses.
+user actually reads is a transcript row. That row is the second half of
+the fix — the vanished path previously wrote only a log-ring entry
+(`session_status.error` is rendered nowhere), so it stopped the spinner
+without saying why and let the next turn's `replaceInProgress` delete the
+interrupted turn's rows. It now calls the same
+`preservePartialTurnOnWorkerLoss` rescue `handleContainerExited` uses, and
+that rescue was corrected in two ways that fix the `die` path too: it
+persists the **canonical** turn snapshot (`persistTurnInProgress`, which
+re-interleaves live-steered user messages and recorded cards) instead of a
+groups-only rebuild that `replaceInProgress` would have silently dropped,
+and it delivers the explanation with `emitNoticePostTurn` — emit **and**
+persist — instead of an append the attached viewer never sees until a
+reload.
 
-**Deliberately out of scope**: a live container whose worker is wedged.
-Docker reports it running, and killing it would cost a turn that may still
-be making progress; the health strip's `workerReachable: false` already
-describes that state. **Known and pre-existing**: force-disposing a runner
-mid-turn drops the agent proxy without settling `executeAgentTurn`'s
-promise, so the post-turn commit does not run and edits can sit
-uncommitted in the session dir. That is identical on the Docker-`die`
-path and is not specific to this gap.
+**Known and pre-existing, not fixed here**: force-disposing a runner
+mid-turn tears down the proxy without running the turn's post-turn commit,
+so edits can sit uncommitted in the session dir. (`dispatchOnRunner` does
+settle the external `TurnHandle` as dropped, so nothing hangs — but the
+commit is skipped.) This is identical on the Docker-`die` path and wants
+a fix at the dispose boundary that covers both; it is not specific to this
+gap.
 
 ### F — Compose log streamer doesn't restart when service comes back (fixed)
 
@@ -314,10 +338,12 @@ stack, living in the runner's SSE channel and the container map rather than in
   `isTrackedContainerRunning`, the Docker liveness probe.
 - `src/server/orchestrator/session-container.ts` — `markContainerGone`.
 - `src/server/orchestrator/sse-connection-manager.ts` —
-  `reconnectAttempts`, the "worker stopped answering" signal.
+  `streamDownSince`, the "worker stopped answering" signal.
 - `src/server/orchestrator/startup-tasks.ts` —
   `handleContainerExited` and the shared
   `preservePartialTurnOnWorkerLoss` rescue.
+- `src/server/orchestrator/chat-card-persistence.ts` —
+  `persistTurnInProgress` / `emitNoticePostTurn`, reused by that rescue.
 
 No client, WS-type or `ServiceStatus` changes anywhere in this feature: D, F, H
 and I are all expressed in the existing `ServiceStatus` union and the existing

@@ -9,6 +9,7 @@ import type { PresentStore } from "./present-store.js";
 import type { SessionRunnerFactory, SessionRunnerRegistry } from "./session-runner.js";
 import { cleanupOrphanComposeResources } from "./container-discovery.js";
 import { preservePartialTurnOnWorkerLoss } from "./startup-tasks.js";
+import { workerGet } from "./worker-http.js";
 import { isOverlayEnabled } from "./overlay-session.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { createDockerProxy, resolveOwnContainerIp } from "./docker-proxy.js";
@@ -758,16 +759,47 @@ export function buildRunnerFactory(
 // ---- Missing-container reconciler ----
 
 /**
- * Consecutive failed worker `/events` reconnect attempts after which the
- * reconciler stops trusting the container map and asks Docker directly.
+ * How long the worker `/events` stream must have been down before the
+ * reconciler stops trusting the container map and checks reality.
  *
- * With the SSE backoff capped at 10s (1, 2, 4, 8, then 10s), twelve attempts
- * is roughly 95 seconds of a worker not answering — comfortably past a
- * container restart, an orchestrator-side blip, or the 45s SSE idle timeout,
- * and short enough that a genuinely dead session is reported inside a couple
- * of minutes rather than never.
+ * 90s is comfortably past a container restart, an orchestrator-side blip and
+ * the 45s SSE idle timeout, and short enough that a genuinely dead session is
+ * reported inside a couple of minutes rather than never. It does not bound a
+ * slow image build: a build happens before the runner has a worker URL at all
+ * (`awaitingContainer`), and a healthy worker holds its stream open regardless
+ * of what its container is busy doing.
  */
-export const WORKER_UNREACHABLE_RECONNECT_ATTEMPTS = 12;
+export const WORKER_UNREACHABLE_MS = 90_000;
+
+/** Timeout for the confirming worker `/health` probe. A wedged worker fails fast. */
+const WORKER_PROBE_TIMEOUT_MS = 3_000;
+
+/**
+ * The container itself is gone — the ordinary case, and the one the old
+ * pre-gap-E loop already handled when the map agreed.
+ */
+const VANISHED_NOTICE =
+  "This session's container is gone — no Docker exit event was received, and Docker reports it is no longer running. "
+  + "The agent's progress up to this point has been preserved. Send a message to start a fresh container.";
+
+/**
+ * The container is up but its worker never answers. Different fact, different
+ * remedy: a fresh message reconnects to the SAME wedged worker, so point the
+ * user at the restart action instead.
+ */
+const WEDGED_NOTICE =
+  "This session's agent container is running but its worker has stopped responding, so the session is not live. "
+  + "The agent's progress up to this point has been preserved. Restart the agent container to recover it.";
+
+/** Does the worker answer `/health` right now? */
+async function probeWorkerHealth(workerUrl: string): Promise<boolean> {
+  try {
+    await workerGet(workerUrl, "/health", { timeoutMs: WORKER_PROBE_TIMEOUT_MS });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** Dependencies for the missing-container reconciler. */
 export interface MissingContainerReconcilerDeps {
@@ -783,6 +815,12 @@ export interface MissingContainerReconcilerDeps {
    * `replaceInProgress` deletes the orphaned rows.
    */
   chatHistoryManager?: ChatHistoryManager;
+  /**
+   * Does the worker answer right now? Defaults to a short `/health` GET.
+   * Injectable so tests can exercise the live-container branch without a
+   * socket, and so the probe stays a named seam rather than a hidden call.
+   */
+  workerResponds?: (workerUrl: string) => Promise<boolean>;
   /**
    * Resolves a session's workspace dir + Docker limits, used to re-adopt a
    * live-but-untracked container before force-disposing its runner. Same
@@ -841,6 +879,7 @@ export function createMissingContainerReconciler(
 ): () => Promise<void> {
   const {
     containerManager, runnerRegistry, broadcastLog, sessionInfoResolver, chatHistoryManager,
+    workerResponds = probeWorkerHealth,
   } = deps;
   return async () => {
     if (!containerManager) return;
@@ -861,29 +900,48 @@ export function createMissingContainerReconciler(
       // never a candidate for it, even transiently.
       if (runner.awaitingContainer) continue;
       // Tracked container: believe it unless the runner's own transport says
-      // the worker has stopped answering AND Docker confirms the container is
-      // gone. `confirmedGone` also suppresses the adoption attempt below —
-      // we have just proved there is nothing running to adopt.
-      let confirmedGone = false;
-      if (containerManager.get(sid)) {
-        const attempts = runner.sseReconnectAttempts ?? 0;
-        if (attempts < WORKER_UNREACHABLE_RECONNECT_ATTEMPTS) continue;
+      // the worker has stopped answering AND reality agrees. `containerGone`
+      // also suppresses the adoption attempt below — there is nothing running
+      // to adopt.
+      let containerGone = false;
+      let notice = VANISHED_NOTICE;
+      const tracked = containerManager.get(sid);
+      if (tracked) {
+        const downSince = runner.workerStreamDownSince ?? 0;
+        if (downSince === 0 || Date.now() - downSince < WORKER_UNREACHABLE_MS) continue;
+        const downSeconds = Math.round((Date.now() - downSince) / 1000);
+        // Capture the id BEFORE awaiting — `markContainerGone` refuses to act
+        // on a different incarnation, so a rescue that swaps the container
+        // underneath this probe cannot have its replacement deleted.
+        const probedId = tracked.id;
         const alive = await containerManager.isTrackedContainerRunning(sid);
         // `undefined` = Docker could not answer. Never read that as death:
         // during a daemon outage every session would look dead at once.
-        if (alive !== false) continue;
-        console.error(
-          `[orphan-runner] Session ${sid} worker unreachable after ${attempts} SSE reconnects and Docker reports its container not running — applying the missed exit`,
-        );
-        containerManager.markContainerGone(sid);
-        confirmedGone = true;
+        if (alive === undefined) continue;
+        if (alive) {
+          // The container is up but the stream is not. Requirement 6 is about
+          // an unreachable WORKER, not only a missing container, so confirm
+          // with a direct probe rather than assuming the container implies a
+          // live worker — and rather than assuming it doesn't.
+          if (await workerResponds(tracked.workerUrl)) continue;
+          console.error(
+            `[orphan-runner] Session ${sid} worker has not answered for ${downSeconds}s (container still running) — reporting it unreachable`,
+          );
+          notice = WEDGED_NOTICE;
+        } else {
+          console.error(
+            `[orphan-runner] Session ${sid} worker unreachable for ${downSeconds}s and Docker reports its container not running — applying the missed exit`,
+          );
+          if (!await containerManager.markContainerGone(sid, probedId)) continue;
+          containerGone = true;
+        }
       }
       // Inverse-leak backstop (C3): the runner has no container entry, but
       // a live Docker container may still exist — orphaned because a
       // `die`/`oom` event deleted a healthy container's map entry. Try to
       // re-adopt it before force-disposing; a successful adoption heals
       // the session in place instead of churning another container.
-      if (sessionInfoResolver && !confirmedGone) {
+      if (sessionInfoResolver && !containerGone && !tracked) {
         try {
           const adopted = await containerManager.adoptRunningContainer(sid, sessionInfoResolver);
           if (adopted) {
@@ -902,33 +960,24 @@ export function createMissingContainerReconciler(
         }
       }
       console.error(
-        `[orphan-runner] Session ${sid} has runner but container is missing — force-disposing`,
+        `[orphan-runner] Session ${sid} has runner but no reachable worker — force-disposing`,
       );
-      broadcastLog(
-        sid,
-        "server",
-        "Session container vanished (no Docker exit event received). Send a message to start a fresh container.",
-      );
+      broadcastLog(sid, "server", notice);
       // Say it where the user is actually looking. The log ring feeds the
       // diagnostics panel and `session_status.error` is not rendered at all,
-      // so without a persisted transcript row the only visible effect of this
-      // path is a spinner that stops for no stated reason — and a turn that
-      // was mid-flight loses its in-progress rows to the next turn's
-      // `replaceInProgress`. Runs BEFORE dispose: dispose discards the
-      // turn-event buffer and tears the channel down.
+      // so without this the only visible effect of this path is a spinner that
+      // stops for no stated reason — and a turn that was mid-flight loses its
+      // in-progress rows to the next turn's `replaceInProgress`. Runs BEFORE
+      // dispose: dispose discards the turn-event buffer and tears the channel
+      // down, so a notice emitted afterwards reaches nobody.
       if (chatHistoryManager) {
-        preservePartialTurnOnWorkerLoss(
-          sid,
-          runner,
-          chatHistoryManager,
-          "Session container vanished — no Docker exit event was received, and Docker reports it is no longer running. The agent's progress up to this point has been preserved. Send a message to start a fresh container.",
-        );
+        preservePartialTurnOnWorkerLoss(sid, runner, chatHistoryManager, notice);
       }
       runner.emitMessage({
         type: "session_status",
         sessionId: sid,
         running: false,
-        error: "Session container vanished — no Docker exit event received.",
+        error: notice,
       });
       runner.dispose({ force: true });
     }

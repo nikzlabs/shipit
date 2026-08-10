@@ -1,17 +1,22 @@
 /**
- * Tests for `SseConnectionManager.reconnectAttempts`.
+ * Tests for `SseConnectionManager.streamDownSince`.
  *
- * The counter itself is old — it drives the exponential backoff — but
- * docs/121 gap E promoted it to a *decision* input: the missing-container
- * reconciler reads it as "this worker has stopped answering" and, on a high
- * enough value, asks Docker whether the container is still alive. Two
- * properties have to hold for that gate to be safe, and neither is obvious
- * from the field's original purpose:
+ * docs/121 gap E promotes "is this stream down?" from an internal backoff
+ * detail to a decision input: the missing-container reconciler reads it as
+ * "this worker has stopped answering" and, past a threshold, checks the
+ * container against Docker. Three properties have to hold for that gate to
+ * be safe, and the third is why this is a timestamp rather than the reconnect
+ * counter:
  *
- *   1. It climbs while the worker is unreachable, so a dead session
- *      eventually crosses the threshold.
+ *   1. It latches when the stream goes down, so a dead session eventually
+ *      crosses the threshold.
  *   2. It returns to 0 the moment a stream opens, so a healthy session can
  *      never drift across the threshold no matter how long it runs.
+ *   3. It latches even when `onDisconnect` ABORTS the reconnect schedule.
+ *      The runner does exactly that once the terminal-only reconnect cap is
+ *      exhausted (`ContainerSessionRunner.onSseDisconnect`), which freezes
+ *      any attempt count at the cap forever — an attempt-count gate would
+ *      never fire in precisely the sessions that are most thoroughly stuck.
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest";
@@ -41,17 +46,17 @@ async function deadPort(): Promise<number> {
   return port;
 }
 
-function makeManager(getUrl: () => string): {
-  manager: SseConnectionManager;
-  disconnects: number[];
-} {
+function makeManager(
+  getUrl: () => string,
+  onDisconnect: (attempt: number) => boolean = () => true,
+): { manager: SseConnectionManager; disconnects: number[] } {
   const disconnects: number[] = [];
   const manager = new SseConnectionManager({
     logLabel: "test",
     getWorkerUrl: getUrl,
     workerReady: async () => undefined,
     onEvent: () => undefined,
-    onDisconnect: (attempt) => { disconnects.push(attempt); return true; },
+    onDisconnect: (attempt) => { disconnects.push(attempt); return onDisconnect(attempt); },
     isDisposed: () => false,
     resourcesStarted: () => true,
   });
@@ -67,33 +72,53 @@ async function until(predicate: () => boolean, timeoutMs = 5000): Promise<void> 
   }
 }
 
-describe("SseConnectionManager.reconnectAttempts", () => {
+describe("SseConnectionManager.streamDownSince", () => {
   const managers: SseConnectionManager[] = [];
   afterEach(() => {
     for (const m of managers.splice(0)) m.disconnect();
     vi.restoreAllMocks();
   });
 
-  it("starts at zero", () => {
+  it("is zero before the stream has ever gone down", () => {
     const { manager } = makeManager(() => "http://127.0.0.1:1");
     managers.push(manager);
-    expect(manager.reconnectAttempts).toBe(0);
+    expect(manager.streamDownSince).toBe(0);
   });
 
-  it("climbs while the worker refuses connections", async () => {
+  it("latches when the worker refuses connections and does not move on retries", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const port = await deadPort();
     const { manager, disconnects } = makeManager(() => `http://127.0.0.1:${port}`);
     managers.push(manager);
 
     void manager.connect();
-    // The first two backoff steps are 1s and 2s, so three failures land well
-    // inside the timeout without any fake-timer plumbing.
-    await until(() => disconnects.length >= 3);
+    await until(() => disconnects.length >= 1);
+    const latched = manager.streamDownSince;
+    expect(latched).toBeGreaterThan(0);
 
-    expect(manager.reconnectAttempts).toBeGreaterThanOrEqual(3);
-    // `onDisconnect` sees 1-based attempt numbers in order.
-    expect(disconnects.slice(0, 3)).toEqual([1, 2, 3]);
+    // It marks when the stream went down, not when it last retried — so the
+    // elapsed time the reconciler measures keeps growing.
+    await until(() => disconnects.length >= 3);
+    expect(manager.streamDownSince).toBe(latched);
+  });
+
+  it("latches even when onDisconnect aborts the reconnect schedule", async () => {
+    // This is the terminal-cap case. No further reconnects will ever be
+    // attempted, so nothing else would ever advance a counter — but the
+    // session is as dead as it gets and must still be detectable.
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const port = await deadPort();
+    const { manager, disconnects } = makeManager(() => `http://127.0.0.1:${port}`, () => false);
+    managers.push(manager);
+
+    void manager.connect();
+    await until(() => disconnects.length >= 1);
+
+    expect(manager.streamDownSince).toBeGreaterThan(0);
+    // Aborted: exactly one disconnect, no retry schedule behind it.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(disconnects).toEqual([1]);
+    expect(manager.streamDownSince).toBeGreaterThan(0);
   });
 
   it("resets to zero as soon as a stream opens", async () => {
@@ -105,7 +130,7 @@ describe("SseConnectionManager.reconnectAttempts", () => {
 
     void manager.connect();
     await until(() => disconnects.length >= 2);
-    expect(manager.reconnectAttempts).toBeGreaterThan(0);
+    expect(manager.streamDownSince).toBeGreaterThan(0);
 
     // Point the manager at a live worker; the next scheduled attempt succeeds.
     const server = await startServer();
@@ -113,8 +138,8 @@ describe("SseConnectionManager.reconnectAttempts", () => {
     await until(() => manager.isConnected);
 
     // This is what keeps a long-lived healthy session away from the
-    // reconciler's threshold: a working stream zeroes the counter.
-    expect(manager.reconnectAttempts).toBe(0);
+    // reconciler's threshold.
+    expect(manager.streamDownSince).toBe(0);
     manager.disconnect();
     await server.close();
   });

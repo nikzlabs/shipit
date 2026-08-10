@@ -36,7 +36,7 @@ interface FakeRunner {
   setRunning: (running: boolean) => void;
 }
 
-function makeFakeRunner(sessionId: string, sseReconnectAttempts = 0): FakeRunner {
+function makeFakeRunner(sessionId: string, workerStreamDownSince = 0): FakeRunner {
   const emitted: WsServerMessage[] = [];
   const disposeCalls: { force?: boolean }[] = [];
   const runner = Object.assign(new EventEmitter(), {
@@ -47,10 +47,14 @@ function makeFakeRunner(sessionId: string, sseReconnectAttempts = 0): FakeRunner
     queueLength: 0,
     viewerCount: 0,
     lastSseEventAt: 0,
-    sseReconnectAttempts,
+    workerStreamDownSince,
     disposed: false,
     wasInterrupted: false,
     chatMessageGroups: [] as ChatMessageGroup[],
+    // `persistTurnInProgress` interleaves these with the assistant groups;
+    // a fake without them silently persists nothing.
+    steeredMessages: [],
+    recordedCards: [],
     emitMessage: (msg: WsServerMessage) => { emitted.push(msg); },
     getAgent: () => null,
     setAgent: () => undefined,
@@ -130,7 +134,13 @@ function makeFakeContainerManager(
     isTrackedContainerRunning: liveness
       ? async (sid: string) => { liveness.calls.push(sid); return liveness.impl(sid); }
       : async () => true,
-    markContainerGone: (sid: string) => { gone.push(sid); containers.delete(sid); },
+    markContainerGone: async (sid: string, expectedId: string) => {
+      const sc = containers.get(sid);
+      if (sc?.id !== expectedId) return false;
+      gone.push(sid);
+      containers.delete(sid);
+      return true;
+    },
     _gone: gone,
   } as unknown as SessionContainerManager;
 }
@@ -250,9 +260,13 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
       });
       expect(calls.finalizeInProgress).toEqual(["sess-oom"]);
       expect(calls.append).toHaveLength(1);
+      // A `system_notice` row, not a bare assistant error: `emitNoticePostTurn`
+      // both broadcasts and persists, so an attached viewer is told at the
+      // moment it happens rather than only on the next reload.
       expect(calls.append[0]?.message).toMatchObject({
         role: "assistant",
-        isError: true,
+        notice: true,
+        noticeLevel: "warn",
       });
       expect(calls.append[0]?.message.text).toContain("OOMKilled");
     });
@@ -371,7 +385,7 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     expect(disposeCalls).toEqual([{ force: true }]);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.sid).toBe("sess-orphan");
-    expect(calls[0]?.text).toMatch(/vanished/i);
+    expect(calls[0]?.text).toMatch(/container is gone/i);
     expect(emitted.find((m) => m.type === "session_status")).toBeDefined();
   });
 
@@ -538,10 +552,15 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
   // stream then reconnects on a 10s-capped backoff for the life of the
   // process, the session renders as alive, and a parked turn never resolves.
 
-  const TRACKED = new Map([["sess-e", { id: "c-e", sessionId: "sess-e" } as Partial<SessionContainer>]]);
+  const TRACKED = new Map([["sess-e", { id: "c-e", sessionId: "sess-e", workerUrl: "http://10.0.0.1:9100" } as Partial<SessionContainer>]]);
+
+  /** A stream that went down comfortably past WORKER_UNREACHABLE_MS. */
+  const DOWN_LONG_AGO = (): number => Date.now() - 5 * 60_000;
+  /** Down, but not yet long enough to act on. */
+  const DOWN_RECENTLY = (): number => Date.now() - 5_000;
 
   it("declares a tracked-but-dead container gone once the worker stops answering", async () => {
-    const { runner, emitted, disposeCalls } = makeFakeRunner("sess-e", 12);
+    const { runner, emitted, disposeCalls } = makeFakeRunner("sess-e", DOWN_LONG_AGO());
     const registry = makeFakeRegistry(new Map([["sess-e", runner]]));
     const liveness = { impl: async () => false, calls: [] as string[] };
     const containerManager = makeFakeContainerManager(
@@ -558,7 +577,7 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
 
     expect(liveness.calls).toEqual(["sess-e"]);
     expect(disposeCalls).toEqual([{ force: true }]);
-    expect(logged[0]).toMatch(/vanished/i);
+    expect(logged[0]).toMatch(/container is gone/i);
     expect(emitted.find((m) => m.type === "session_status")).toBeDefined();
     // The stale entry is dropped so the next activation creates a fresh
     // container instead of "reconnecting" to the dead one.
@@ -566,7 +585,7 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
   });
 
   it("does not probe Docker while the worker's stream is healthy", async () => {
-    // A connected stream keeps `sseReconnectAttempts` at 0, so a healthy
+    // A connected stream keeps `workerStreamDownSince` at 0, so a healthy
     // session can never reach the probe — the gate makes a false positive
     // structurally impossible, and costs no Docker call per tick.
     const { runner, disposeCalls } = makeFakeRunner("sess-e", 0);
@@ -587,8 +606,8 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     expect(disposeCalls).toEqual([]);
   });
 
-  it("leaves a slow-to-reconnect worker alone below the attempt threshold", async () => {
-    const { runner, disposeCalls } = makeFakeRunner("sess-e", 11);
+  it("leaves a slow-to-reconnect worker alone below the time threshold", async () => {
+    const { runner, disposeCalls } = makeFakeRunner("sess-e", DOWN_RECENTLY());
     const registry = makeFakeRegistry(new Map([["sess-e", runner]]));
     const liveness = { impl: async () => false, calls: [] as string[] };
     const containerManager = makeFakeContainerManager(
@@ -606,31 +625,63 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     expect(disposeCalls).toEqual([]);
   });
 
-  it("keeps a session whose container Docker still reports running", async () => {
-    // An unreachable worker inside a live container is not this pass's call:
-    // killing it would cost the user a turn that may still be running.
-    const { runner, disposeCalls } = makeFakeRunner("sess-e", 40);
+  it("keeps a session whose container is running and whose worker answers", async () => {
+    // A stream that is merely between reconnects, on a worker that is fine.
+    const { runner, disposeCalls } = makeFakeRunner("sess-e", DOWN_LONG_AGO());
     const registry = makeFakeRegistry(new Map([["sess-e", runner]]));
     const liveness = { impl: async () => true, calls: [] as string[] };
     const containerManager = makeFakeContainerManager(
       new Map(TRACKED), new Set(), undefined, liveness,
     );
+    const probed: string[] = [];
 
     const reconcile = createMissingContainerReconciler({
       containerManager,
       runnerRegistry: registry,
       broadcastLog: () => undefined,
+      workerResponds: async (url) => { probed.push(url); return true; },
     });
     await reconcile();
 
     expect(liveness.calls).toEqual(["sess-e"]);
+    expect(probed).toEqual(["http://10.0.0.1:9100"]);
     expect(disposeCalls).toEqual([]);
+  });
+
+  it("reports a live container whose worker never answers, without forgetting it", async () => {
+    // Requirement 6 is about an unreachable WORKER, not only a missing
+    // container. The container being up is not evidence the worker is.
+    const { runner, disposeCalls, emitted } = makeFakeRunner("sess-e", DOWN_LONG_AGO());
+    const registry = makeFakeRegistry(new Map([["sess-e", runner]]));
+    const liveness = { impl: async () => true, calls: [] as string[] };
+    const containerManager = makeFakeContainerManager(
+      new Map(TRACKED), new Set(), undefined, liveness,
+    );
+    const logged: string[] = [];
+
+    const reconcile = createMissingContainerReconciler({
+      containerManager,
+      runnerRegistry: registry,
+      broadcastLog: (_sid, _source, text) => logged.push(text),
+      workerResponds: async () => false,
+    });
+    await reconcile();
+
+    expect(disposeCalls).toEqual([{ force: true }]);
+    expect(emitted.find((m) => m.type === "session_status")).toBeDefined();
+    // Different fact, different remedy — a fresh message would reconnect to
+    // the same wedged worker, so the notice points at the restart action.
+    expect(logged[0]).toMatch(/stopped responding/i);
+    expect(logged[0]).toMatch(/restart/i);
+    // The container is alive: do NOT drop its tracking entry, or the next
+    // activation would create a second container beside it.
+    expect((containerManager as unknown as { _gone: string[] })._gone).toEqual([]);
   });
 
   it("never declares a session dead when Docker cannot answer", async () => {
     // A daemon outage makes every probe ambiguous. Reading `undefined` as
     // death would reap every session in the fleet at once.
-    const { runner, disposeCalls } = makeFakeRunner("sess-e", 40);
+    const { runner, disposeCalls } = makeFakeRunner("sess-e", DOWN_LONG_AGO());
     const registry = makeFakeRegistry(new Map([["sess-e", runner]]));
     const liveness = { impl: async () => undefined, calls: [] as string[] };
     const containerManager = makeFakeContainerManager(
@@ -650,7 +701,7 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
   it("never probes a runner whose container is still being created", async () => {
     // `awaitingContainer` is checked ahead of the liveness gate, so a
     // half-created session can't be a probe candidate even transiently.
-    const { runner, disposeCalls } = makeFakeRunner("sess-e", 40);
+    const { runner, disposeCalls } = makeFakeRunner("sess-e", DOWN_LONG_AGO());
     (runner as unknown as { awaitingContainer: boolean }).awaitingContainer = true;
     const registry = makeFakeRegistry(new Map([["sess-e", runner]]));
     const liveness = { impl: async () => false, calls: [] as string[] };
@@ -670,7 +721,7 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
   });
 
   it("does not try to adopt a container it has just proved is not running", async () => {
-    const { runner, disposeCalls } = makeFakeRunner("sess-e", 12);
+    const { runner, disposeCalls } = makeFakeRunner("sess-e", DOWN_LONG_AGO());
     const registry = makeFakeRegistry(new Map([["sess-e", runner]]));
     const adopt = { impl: async () => true, calls: [] as string[] };
     const liveness = { impl: async () => false, calls: [] as string[] };
@@ -692,10 +743,37 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     expect(disposeCalls).toEqual([{ force: true }]);
   });
 
+  it("ignores a probe answer about a container that has since been replaced", async () => {
+    // Rescue can swap the container while the inspect is in flight; a late
+    // "not running" about the OLD one must not delete the healthy new entry.
+    const { runner, disposeCalls } = makeFakeRunner("sess-e", DOWN_LONG_AGO());
+    const registry = makeFakeRegistry(new Map([["sess-e", runner]]));
+    const containers = new Map(TRACKED);
+    const liveness = {
+      calls: [] as string[],
+      impl: async () => {
+        // The replacement lands during the await.
+        containers.set("sess-e", { id: "c-e2", sessionId: "sess-e" } as Partial<SessionContainer>);
+        return false;
+      },
+    };
+    const containerManager = makeFakeContainerManager(containers, new Set(), undefined, liveness);
+
+    const reconcile = createMissingContainerReconciler({
+      containerManager,
+      runnerRegistry: registry,
+      broadcastLog: () => undefined,
+    });
+    await reconcile();
+
+    expect(disposeCalls).toEqual([]);
+    expect(containers.get("sess-e")?.id).toBe("c-e2");
+  });
+
   // ---- The vanished path must leave a mark in the transcript ----
 
   it("preserves an interrupted turn and appends a visible notice", async () => {
-    const { runner, setRunning, setChatMessageGroups } = makeFakeRunner("sess-e", 12);
+    const { runner, emitted, setRunning, setChatMessageGroups } = makeFakeRunner("sess-e", DOWN_LONG_AGO());
     setRunning(true);
     setChatMessageGroups([{ text: "half a turn", toolUse: [] }]);
     const registry = makeFakeRegistry(new Map([["sess-e", runner]]));
@@ -717,14 +795,16 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     // replaceInProgress deletes everything the agent produced.
     expect(calls.replaceInProgress[0]?.messages[0]?.text).toBe("half a turn");
     expect(calls.finalizeInProgress).toEqual(["sess-e"]);
-    // `session_status.error` is not rendered by the client, so the persisted
-    // row is the only place the user is actually told.
-    expect(calls.append[0]?.message.text).toMatch(/vanished/i);
-    expect(calls.append[0]?.message.isError).toBe(true);
+    // `session_status.error` is not rendered by the client, so this row and
+    // its live twin are the only places the user is actually told.
+    expect(calls.append[0]?.message.text).toMatch(/container is gone/i);
+    expect(calls.append[0]?.message.notice).toBe(true);
+    // …and the same text reached the attached viewer live.
+    expect(emitted.find((m) => m.type === "system_notice")).toBeDefined();
   });
 
   it("still force-disposes when the chat-history write throws", async () => {
-    const { runner, disposeCalls, setRunning } = makeFakeRunner("sess-e", 12);
+    const { runner, disposeCalls, setRunning } = makeFakeRunner("sess-e", DOWN_LONG_AGO());
     setRunning(true);
     const registry = makeFakeRegistry(new Map([["sess-e", runner]]));
     const liveness = { impl: async () => false, calls: [] as string[] };

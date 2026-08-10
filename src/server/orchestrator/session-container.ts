@@ -32,6 +32,7 @@ import {
   getSessionByContainerIp,
   type DiscoveryDeps,
 } from "./container-discovery.js";
+import { reapSessionEgressSidecars } from "./egress-orphan-reaper.js";
 import {
   startHealthMonitor,
   stopHealthMonitor,
@@ -1117,22 +1118,44 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
 
   /**
    * Apply the `die` we never received: drop the tracking entry for a container
-   * Docker has confirmed is no longer running.
+   * Docker has confirmed is no longer running, and reap what that `die` would
+   * have reaped. Returns `false` when nothing was done.
    *
-   * Deliberately the same *state* transition the `die` handler in
-   * `container-health.ts` performs — mark stopped, forget it — and deliberately
-   * NOT `destroy()`. There is nothing left to stop, and `destroy()` would also
-   * sweep the session's Compose children on a path whose only established fact
-   * is "the agent container is gone". The dead container's shell is reaped by
-   * `removeStaleContainer` on the next create for this session, and by
-   * startup orphan cleanup otherwise.
+   * Deliberately the same work the `die` handler in `container-health.ts`
+   * performs — reap the egress sidecars, mark stopped, forget it — and
+   * deliberately NOT `destroy()`. There is nothing left to stop, and
+   * `destroy()` would also sweep the session's Compose children on a path
+   * whose only established fact is "the agent container is gone". The dead
+   * container's own shell is removed by name on the next create for this
+   * session (`removeStaleContainer`).
+   *
+   * The sidecar reap is not optional and must happen BEFORE the map entry
+   * goes: the Tier B/C egress sidecars share the agent container's netns and
+   * are dead weight without it, and every later `destroyContainer(sessionId)`
+   * early-returns once the entry is gone — so skipping it here latches the
+   * leak for the life of the orchestrator. Startup orphan cleanup does not
+   * save us either: it protects every active session's id.
+   *
+   * `expectedContainerId` guards against an incarnation race. The caller
+   * inspected one container and then awaited; a rescue or manual restart can
+   * replace the entry in that window, and a late "not running" answer about
+   * the OLD container must not delete the healthy replacement. Same guard the
+   * `die` handler applies for the same reason.
    */
-  markContainerGone(sessionId: string): void {
+  async markContainerGone(sessionId: string, expectedContainerId: string): Promise<boolean> {
     const sc = this.containers.get(sessionId);
-    if (!sc) return;
+    if (!sc) return false;
+    if (sc.id !== expectedContainerId) {
+      console.warn(
+        `[container] markContainerGone(${sessionId}) ignored — tracked ${sc.id.slice(0, 12)} != probed ${expectedContainerId.slice(0, 12)} (container was replaced)`,
+      );
+      return false;
+    }
+    await reapSessionEgressSidecars(this.docker, sessionId, sc.id);
     sc.status = "stopped";
     this.containers.delete(sessionId);
     this.standbySessionIds.delete(sessionId);
+    return true;
   }
 
   // --- Health monitoring (delegates to container-health.ts) ---
