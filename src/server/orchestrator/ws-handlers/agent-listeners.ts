@@ -544,6 +544,26 @@ export function wireAgentListeners(
             count: runner.backgroundTaskCount,
             descriptions: runner.backgroundTaskDescriptions,
           });
+          // …and the CROSS-SESSION half. `emitToViewers` reaches only the
+          // clients attached to THIS session's WebSocket, so on its own it can
+          // never light the sidebar dot of a session the user is not looking at
+          // — which is the whole point of the marker. docs/235 §5b added the
+          // ids to the `session_attention` CONNECT snapshot, but a snapshot only
+          // covers work that was already outstanding when the SSE opened;
+          // anything started afterwards stayed invisible until the user either
+          // reloaded the page or opened the session (whose WS attach replays
+          // the message above — the reported "it only goes active once I open
+          // it"). This is the incremental counterpart, matching the shape the
+          // awaiting-permission signal already uses three branches below.
+          //
+          // Descriptions ride along rather than ids alone: the snapshot has no
+          // room for them and falls back to the unnamed label, but a live
+          // transition can name the task, so a session switched into mid-task
+          // gets the good label immediately.
+          deps.sseBroadcast("session_attention", {
+            sessionId: turnSessionId,
+            backgroundTasks: runner.backgroundWorkDescriptions,
+          });
         }
       }
       return;
@@ -1547,6 +1567,15 @@ export function wireAgentListeners(
         // unreclaimable — the same failure this whole block guards against for
         // `running`.
         runner.clearBackgroundTasks();
+        // A crashed process emits no draining `agent_background_tasks` event,
+        // so say it ourselves — otherwise the cross-session marker keeps a dead
+        // session pulsing green in every sidebar until the next SSE connect.
+        if (turnSessionId) {
+          deps.sseBroadcast("session_attention", {
+            sessionId: turnSessionId,
+            backgroundTasks: runner.backgroundWorkDescriptions,
+          });
+        }
       }
       runner.running = false;
       // docs/182 — a process-level error is a terminal turn error: record it on

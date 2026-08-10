@@ -171,3 +171,42 @@ describe("ContainerSessionRunner — sub-agent spawn cancellation (planning#280)
     expect(Number.isFinite(SUB_AGENT_TRANSPORT_TIMEOUT_MS)).toBe(true);
   });
 });
+
+/**
+ * planning#246 — what the sidebar dot and the chat status line report as "busy
+ * outside a turn". A consult is the case the CLI's background-task list cannot
+ * see: it outlives its parent turn, needs no resident streaming process, and
+ * Codex reports no background tasks at all — so the union is what every marker
+ * surface has to read.
+ */
+describe("ContainerSessionRunner — background-work marker", () => {
+  it("names an in-flight consult, and stops naming it once the run settles", async () => {
+    const runner = makeRunner();
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ status: "success", text: "ok", truncated: false, durationMs: 1, costUsd: 0 }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no server address");
+    runner.setWorkerUrl(`http://127.0.0.1:${addr.port}`);
+
+    expect(runner.backgroundWorkDescriptions).toEqual([]);
+
+    const spawn = runner.spawnSubAgent({
+      agentId: "codex", prompt: "review", spawnId: "spawn-1", depth: 0,
+    });
+    // Read WITHOUT awaiting: `runSubAgent` announces the marker the moment
+    // `spawnSubAgent` returns its promise, so the registration has to happen
+    // synchronously, ahead of the method's first `await`. An `await` inserted
+    // before it would make the consult invisible to the announcement — this
+    // assertion is what turns that into a red build.
+    expect(runner.backgroundWorkDescriptions).toEqual(["Codex consult"]);
+    expect(runner.subAgentSpawnsInFlight).toBe(1);
+
+    await spawn;
+    expect(runner.backgroundWorkDescriptions).toEqual([]);
+
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+});

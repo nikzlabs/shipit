@@ -157,6 +157,7 @@ export function useServerEvents(): void {
         backgroundTaskSessionIds?: string[];
         sessionId?: string;
         awaitingPermission?: boolean;
+        backgroundTasks?: string[];
       };
       const store = useSessionStore.getState();
       if (Array.isArray(data.awaitingPermissionSessionIds)) {
@@ -175,11 +176,36 @@ export function useServerEvents(): void {
         );
         return;
       }
-      if (data.sessionId) {
-        const sid = data.sessionId;
+      if (!data.sessionId) return;
+      const sid = data.sessionId;
+      // Each live form carries exactly one axis, so each is applied only when
+      // its own field is present. Reacting to a missing `awaitingPermission` as
+      // `false` would let a background-task transition silently clear an
+      // outstanding permission prompt's sidebar signal.
+      if (data.awaitingPermission !== undefined) {
         store.setAwaitingPermissionSessions((prev) => {
           const next = new Set(prev);
           if (data.awaitingPermission) next.add(sid);
+          else next.delete(sid);
+          return next;
+        });
+      }
+      // The live counterpart of the snapshot's `backgroundTaskSessionIds`
+      // (docs/235 §5b). Without it the sidebar only ever learned about a
+      // session's background work if that work was already outstanding when the
+      // SSE connected: a `shipit agent run` consult backgrounded *after* connect
+      // reached only the viewers attached to that session's WebSocket, so the
+      // session read as idle in the sidebar until it was opened — which is what
+      // delivered the WS `background_tasks` and lit the dot.
+      //
+      // An empty list means drained, so the entry is removed. Descriptions ride
+      // along (unlike the ids-only snapshot) so the chat status line can name
+      // the task on a switch rather than falling back to its unnamed label.
+      if (data.backgroundTasks) {
+        const descriptions = data.backgroundTasks;
+        store.setBackgroundTaskSessions((prev) => {
+          const next = new Map(prev);
+          if (descriptions.length > 0) next.set(sid, descriptions);
           else next.delete(sid);
           return next;
         });
@@ -621,6 +647,17 @@ export function useServerEvents(): void {
       useSessionStore.getState().setActiveRunnerSessions((prev) => {
         if (!prev.has(data.sessionId)) return prev;
         const next = new Set(prev);
+        next.delete(data.sessionId);
+        return next;
+      });
+      // …and from the background-work set, for the same reason. The container
+      // is gone, so nothing can still be outstanding in it — and the disposal
+      // paths clear the runner's own trackers directly, without a draining
+      // event of their own. Without this the sidebar dot would keep pulsing on
+      // a reaped session until the next SSE connect.
+      useSessionStore.getState().setBackgroundTaskSessions((prev) => {
+        if (!prev.has(data.sessionId)) return prev;
+        const next = new Map(prev);
         next.delete(data.sessionId);
         return next;
       });

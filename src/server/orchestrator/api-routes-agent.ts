@@ -140,6 +140,9 @@ export async function registerAgentRoutes(
             runnerRegistry: deps.runnerRegistry,
             usageManager: deps.usageManager,
             chatHistoryManager: deps.chatHistoryManager,
+            // planning#246 — the cross-session busy marker, so a backgrounded
+            // consult shows in the sidebar without opening the session.
+            sseBroadcast: deps.sseBroadcast,
             ...(deps.recordAgentRateLimits ? { recordAgentRateLimits: deps.recordAgentRateLimits } : {}),
             ...(deps.credentialsDir ? { credentialsDir: deps.credentialsDir } : {}),
             // planning#301 — lets the service commit work a backgrounded consult left

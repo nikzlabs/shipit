@@ -1253,6 +1253,22 @@ export async function executeAgentTurn(
           // our copy rather than leaving a stale count pinning `agentBusy` true
           // and blocking idle reclaim forever.
           runner.clearBackgroundTasks();
+          // …and re-state the marker to every sidebar. The drain that normally
+          // clears it arrives as an `agent_background_tasks` event from the CLI;
+          // a process that EXITS emits no such event, so without this the
+          // cross-session marker (now pushed live, not only snapshotted on SSE
+          // connect) would keep a dead session pulsing green until the user
+          // reloaded the page.
+          //
+          // The UNION, not a bare `[]`: a backgrounded consult routinely
+          // outlives the primary turn that started it — that is the shape
+          // docs/236 recommends — so asserting "nothing outstanding" here would
+          // blank the marker on exactly the session that is still waiting on a
+          // 30-minute review.
+          deps.listenerDeps.sseBroadcast("session_attention", {
+            sessionId,
+            backgroundTasks: runner.backgroundWorkDescriptions,
+          });
         }
       }
 

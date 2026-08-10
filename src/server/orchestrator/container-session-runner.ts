@@ -45,6 +45,7 @@ import type { ServiceManager, ManagedService, SecretsStatusInternalSnapshot } fr
 import { stripAnsi } from "../shared/strip-ansi.js";
 import { SseConnectionManager } from "./sse-connection-manager.js";
 import { BackgroundTaskTracker, type BackgroundTaskInfo } from "./background-task-tracker.js";
+import { getAgentDisplayName } from "../shared/agent-registry.js";
 import { TurnAccumulator } from "./turn-accumulator.js";
 import type { CommittedBodyIds } from "./transcript-projection.js";
 import { TerminalBufferManager } from "./terminal-buffer-manager.js";
@@ -243,9 +244,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * spawnId. The container runner's counterpart to `SessionRunner`'s
    * `_subAgentHandles`: a container spawn is an HTTP request, not a local
    * process handle, so cancelling it means aborting the request. Aborted on
-   * dispose so a force-teardown can't leave one hanging.
+   * dispose so a force-teardown can't leave one hanging. Carries the agent
+   * being consulted so planning#246 can name the consult in the busy marker
+   * instead of only counting it.
    */
-  private readonly _subAgentAborts = new Map<string, AbortController>();
+  private readonly _subAgentAborts = new Map<string, { controller: AbortController; agentId: AgentId }>();
   private _workerResourcesStarted = false;
   /**
    * docs/240 — in-flight one-time worker-resource start. Concurrent callers
@@ -397,6 +400,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   // set), not a reported hint, so it needs no `isStreamingActive` gate. This is
   // what keeps a backgrounded `shipit agent run` off the idle-eviction list.
   get subAgentSpawnsInFlight(): number { return this._subAgentAborts.size; }
+  get subAgentSpawnLabels(): string[] {
+    return [...this._subAgentAborts.values()].map((s) => `${getAgentDisplayName(s.agentId)} consult`);
+  }
+  get backgroundWorkDescriptions(): string[] {
+    return [...this.backgroundTaskDescriptions, ...this.subAgentSpawnLabels];
+  }
   get agentBusy(): boolean {
     return this._isRunning || this.backgroundTaskCount > 0 || this.subAgentSpawnsInFlight > 0;
   }
@@ -456,7 +465,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    */
   async spawnSubAgent(req: SubAgentSpawnRequest): Promise<SubAgentRunResult> {
     const controller = new AbortController();
-    this._subAgentAborts.set(req.spawnId, controller);
+    this._subAgentAborts.set(req.spawnId, { controller, agentId: req.agentId });
     const startedAt = Date.now();
     console.log(
       `[sub-agent] worker-post session=${this.sessionId} spawn=${req.spawnId} agent=${req.agentId} `
@@ -504,9 +513,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * `runSubAgent`'s catch via `WorkerAbortedError` and names who cancelled.
    */
   private cancelInFlightSubAgents(reason: string): void {
-    for (const [spawnId, controller] of this._subAgentAborts) {
+    for (const [spawnId, spawn] of this._subAgentAborts) {
       console.warn(`[sub-agent] cancelled session=${this.sessionId} spawn=${spawnId} by=${reason}`);
-      try { controller.abort(reason); } catch { /* best-effort */ }
+      try { spawn.controller.abort(reason); } catch { /* best-effort */ }
     }
     this._subAgentAborts.clear();
   }
