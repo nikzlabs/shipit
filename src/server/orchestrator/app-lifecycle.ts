@@ -23,7 +23,7 @@ import { markMergedAndPruneExcess } from "./services/session.js";
 import { emitResetEligibleSignal } from "./services/pre-turn-reset.js";
 import { runAutoResolveAttempt } from "./services/rebase-driver.js";
 import type { AutoResolveResult, RebaseAndResolveCb } from "./auto-conflict-resolve-manager.js";
-import type { AutoFixResult } from "./auto-fix-manager.js";
+import { autoFixResultForOutcome, type AutoFixResult } from "./auto-fix-manager.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { UsageManager } from "./usage.js";
 import type { CredentialStore } from "./credential-store.js";
@@ -1043,13 +1043,25 @@ export function createPrStatusPoller(
     // re-arm accounting. Returns "noop" (don't burn budget) when there is
     // nothing to fix; "fixed" when a fix turn actually ran.
     fetchAndFixCb: async (sessionId, owner, repo, failedChecks): Promise<AutoFixResult> => {
+      // This path emitted NOTHING until the check-run logs were already on their
+      // way to the agent, which is why confirming the 2026-08-10 duplicate
+      // dispatch from the host needed inference from turn timing rather than a
+      // record of what was sent. One line per attempt, naming the exact
+      // check-run ids — those ids ARE the docs/121 dedup key, so a repeat send
+      // is visible by reading two log lines instead of reconstructing it.
+      const checkLabel = failedChecks.map((c) => `${c.name}#${c.databaseId}`).join(", ") || "(none)";
+      const noop = (lastError: string): AutoFixResult => {
+        console.log(`[auto-fix] ${sessionId} ${owner}/${repo} — no attempt sent (${lastError}); checks: ${checkLabel}`);
+        return { outcome: "noop", lastError };
+      };
       const runner = runnerRegistry.get(sessionId);
-      if (!runner) return { outcome: "noop", lastError: "no_runner" };
-      if (failedChecks.length === 0) return { outcome: "noop", lastError: "no_failed_checks" };
+      if (!runner) return noop("no_runner");
+      if (failedChecks.length === 0) return noop("no_failed_checks");
 
       const logs = await fetchCIFailureLogs(githubAuthManager, owner, repo, failedChecks, runner.sessionDir);
-      if (logs.length === 0) return { outcome: "noop", lastError: "no_logs" };
+      if (logs.length === 0) return noop("no_logs");
       const prompt = buildCIFixPrompt(logs);
+      console.log(`[auto-fix] ${sessionId} ${owner}/${repo} — dispatching a fix turn for ${checkLabel}`);
 
       // docs/240 — await the OWNED settlement the dispatch hands back rather
       // than a hand-rolled `new Promise(resolve => onTurnComplete: resolve)`.
@@ -1075,18 +1087,12 @@ export function createPrStatusPoller(
         deliveryId: undefined,
         dictated: undefined,
       })).settled;
-      // A turn that NEVER RAN doesn't burn budget: `dropped` (runner disposed
-      // mid-turn, queue cleared) and `steered` (unreachable for a system turn,
-      // mapped for completeness) are "noop", so the loop re-arms on the shorter
-      // deferred cooldown with the budget intact. `errored` / `no-result` DID
-      // consume an attempt — they are counted, exactly as before this call site
-      // learned to tell the outcomes apart, so a session whose fix turns keep
-      // dying still exhausts after MAX_AUTO_FIX_ATTEMPTS instead of retrying
-      // forever.
-      if (outcome.status === "dropped" || outcome.status === "steered") {
-        return { outcome: "noop", lastError: `fix turn ${outcome.status}` };
-      }
-      return { outcome: "fixed" };
+      const detail = outcome.detail ? ` (${outcome.detail})` : "";
+      console.log(`[auto-fix] ${sessionId} ${owner}/${repo} — fix turn settled as ${outcome.status}${detail}`);
+      // A turn that NEVER RAN doesn't burn budget, and only `dropped` / `steered`
+      // mean that — see `autoFixResultForOutcome` for why `interrupted` is on the
+      // other side of the line.
+      return autoFixResultForOutcome(outcome);
     },
     // docs/194 — drive the issue-lifecycle "→ completed" transition off the
     // merged PR body. Wired only when the tracker plumbing is present (the

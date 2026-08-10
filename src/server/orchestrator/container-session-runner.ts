@@ -45,6 +45,7 @@ import type { ServiceManager, ManagedService, SecretsStatusInternalSnapshot } fr
 import { stripAnsi } from "../shared/strip-ansi.js";
 import { SseConnectionManager } from "./sse-connection-manager.js";
 import { BackgroundTaskTracker, type BackgroundTaskInfo } from "./background-task-tracker.js";
+import { PostTurnHold } from "./post-turn-hold.js";
 import { getAgentDisplayName } from "../shared/agent-registry.js";
 import { TurnAccumulator } from "./turn-accumulator.js";
 import type { CommittedBodyIds } from "./transcript-projection.js";
@@ -251,6 +252,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private readonly _subAgentAborts = new Map<string, { controller: AbortController; agentId: AgentId }>();
   /** planning#246 — last announced `backgroundWorkDescriptions`, for change detection. */
   private _lastAnnouncedWork = "[]";
+  /** See `SessionRunnerInterface.postTurnWorkInFlight`. */
+  private readonly _postTurnHold = new PostTurnHold();
+  /** See `SessionRunnerInterface.turnProducedResult`. */
+  turnProducedResult = false;
   private _workerResourcesStarted = false;
   /**
    * docs/240 — in-flight one-time worker-resource start. Concurrent callers
@@ -413,8 +418,18 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     return [...this.backgroundTaskDescriptions, ...this.subAgentSpawnLabels];
   }
   get agentBusy(): boolean {
-    return this._isRunning || this.backgroundTaskCount > 0 || this.subAgentSpawnsInFlight > 0;
+    return this._isRunning
+      || this.backgroundTaskCount > 0
+      || this.subAgentSpawnsInFlight > 0
+      // The turn's terminal sequence and the auto-push it arms both happen once
+      // `running` is false, and reclaim destroys both. See the interface doc.
+      || this._postTurnHold.active
+      || this._pushTimer !== null;
   }
+  get postTurnWorkInFlight(): boolean { return this._postTurnHold.active; }
+  beginPostTurnWork(): void { this._postTurnHold.begin(); }
+  endPostTurnWork(): void { this._postTurnHold.end(); }
+  get hasPendingPush(): boolean { return this._pushTimer !== null; }
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void {
     this._backgroundTasks.set(tasks);
     this.announceBackgroundWork();
@@ -2621,7 +2636,20 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       );
       return;
     }
+    // …and for a turn's TERMINAL SEQUENCE, which runs with `running` already
+    // false: the auto-commit, the PR flow and the settlement all land after
+    // `tryDrain` clears the flag. Production disposed a runner 31 ms after a
+    // completed turn's commit, which cancelled the debounced push below and
+    // reported the finished turn to the CI auto-fix loop as never-run. Bounded
+    // by `post-turn-hold.ts`, so a wedged sequence cannot pin the container.
+    if (this._postTurnHold.active && !opts?.force) {
+      console.log(
+        `[container-runner:${this.sessionId}] dispose() skipped — a turn's post-turn sequence is still running`,
+      );
+      return;
+    }
     this._disposed = true;
+    this._postTurnHold.reset();
 
     // docs/113 — `preserveAgent` is the orchestrator-shutdown path, and it must
     // not reach into the worker AT ALL. Keeping the container alive across an

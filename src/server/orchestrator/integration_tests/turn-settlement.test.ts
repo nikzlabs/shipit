@@ -365,6 +365,99 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     expect(outcomes.filter((o) => o.detail === "via-handle")).toHaveLength(1);
   });
 
+  // The 2026-08-10 duplicate-CI-fix incident (session 1cfb9c2c, PR #2127).
+  //
+  // A dispatched CI-fix turn ran to completion and auto-committed its fix. 31 ms
+  // later the idle enforcer disposed the runner — legally, as far as it could
+  // tell: `tryDrain` had already cleared `running`, so `agentBusy` read false
+  // while the commit / PR flow / settlement were still to come. The `disposed`
+  // net then settled the FINISHED turn as `dropped`, `fetchAndFixCb` maps
+  // `dropped` to "noop" on the documented assumption that it means the turn
+  // never ran, and so `AutoFixManager` skipped the docs/121 dedup record, kept
+  // its budget and re-sent the identical prompt with the identical logs a minute
+  // later — to a session with no viewer attached, so nobody could have asked
+  // for it.
+  //
+  // Two guarantees, one per half of that chain.
+  it("a completed turn disposed inside its post-turn window is NOT reported as never-run", async () => {
+    const runner = newRunner();
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    runner.setSystemTurnDeps(deps);
+
+    const outcomes: TurnOutcome[] = [];
+    const handle = runner.dispatch(testDispatch({
+      text: "CI is red — fix it",
+      systemTurn: true,
+      onTurnComplete: (o) => outcomes.push(o),
+    }));
+
+    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "fix turn start");
+    // The turn RUNS to completion — the agent reports its result. On the
+    // non-streaming path this drains (clearing `running`) and leaves the commit
+    // to `done`, which has not arrived: exactly the production window.
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await flushTurn();
+    expect(runner.running).toBe(false);
+    expect(outcomes).toHaveLength(0);
+
+    // Forced, because a lifecycle-driven dispose is now refused outright in this
+    // window (the other half of the fix, asserted below). Archive / shutdown /
+    // full reset still land here, and a completed turn must not read as
+    // never-run on those paths either.
+    runner.dispose({ force: true });
+
+    const outcome = await handle.settled;
+    // Before the fix: "dropped". `interrupted` is the status that means "the
+    // prompt reached a live agent and the turn was cut short" — which is what
+    // happened, and which every consumer already reads as do-not-re-deliver.
+    expect(outcome.status).toBe("interrupted");
+    expect(outcome.errored).toBe(false);
+    expect(outcomes.map((o) => o.status)).toEqual(["interrupted"]);
+  });
+
+  it("the runner stays busy across the post-turn window, so idle reclaim can't take it", async () => {
+    const runner = newRunner();
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "CI is red — fix it", systemTurn: true }));
+    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "fix turn start");
+
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await flushTurn();
+
+    // `running` is already false — this is precisely the state the idle
+    // enforcer read as idle — but the turn's commit has not run yet.
+    expect(runner.running).toBe(false);
+    expect(runner.postTurnWorkInFlight).toBe(true);
+    expect(runner.agentBusy).toBe(true);
+
+    // …and the runner-level guard agrees, so the two decisions cannot disagree.
+    runner.dispose();
+    expect(runner.disposed).toBe(false);
+
+    agents[0]!.emit("done", 0);
+    await flushTurn();
+    expect(runner.postTurnWorkInFlight).toBe(false);
+    expect(runner.agentBusy).toBe(false);
+  });
+
+  it("a debounced auto-push keeps the runner busy — reclaim would cancel it", async () => {
+    const runner = newRunner();
+    expect(runner.agentBusy).toBe(false);
+    // What `scheduleAutoPush` arms after a turn's commit. `dispose()` clears the
+    // timer, so a runner reclaimed inside the 5 s debounce loses the push and
+    // the fix commit never reaches the remote — the half of the 2026-08-10
+    // incident that outlived the commit itself.
+    runner.setPushTimer(setTimeout(() => { /* never fires in this test */ }, 60_000));
+    expect(runner.hasPendingPush).toBe(true);
+    expect(runner.agentBusy).toBe(true);
+    runner.clearPushTimer();
+    expect(runner.agentBusy).toBe(false);
+  });
+
   it("a turn that completes normally is NOT re-settled when its runner is later disposed", async () => {
     const runner = newRunner();
     const agents: FakeAgent[] = [];

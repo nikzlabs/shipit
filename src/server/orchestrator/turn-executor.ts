@@ -430,11 +430,16 @@ export async function executeAgentTurn(
       // Heal genuinely failed (token revoked / rate-limited / no rotation). The
       // `done` handler stood down for us, so run the same terminal teardown it
       // would have, then return false so the listener surfaces the sign-in card.
-      if (runner) runner.running = false;
-      await postTurnStep("drain", tryDrain);
-      await postTurnStep("commit", runCommitAndPr);
-      await postTurnStep("finished", emitFinishedIfIdle);
-      finishTurn();
+      holdPostTurn();
+      try {
+        if (runner) runner.running = false;
+        await postTurnStep("drain", tryDrain);
+        await postTurnStep("commit", runCommitAndPr);
+        await postTurnStep("finished", emitFinishedIfIdle);
+        finishTurn();
+      } finally {
+        releasePostTurn();
+      }
       return false;
     }
     // Healed — re-dispatch this turn once on a fresh agent. The retried turn
@@ -677,11 +682,16 @@ export async function executeAgentTurn(
     void retryOnNextAccount().catch(async (retryErr: unknown) => {
       console.error("[turn] quota retry from the error path failed:", retryErr);
       // The claim is now a lie — run the teardown the listener would have.
-      if (runner) runner.running = false;
-      await postTurnStep("drain", tryDrain);
-      await postTurnStep("commit", runCommitAndPr);
-      await postTurnStep("finished", emitFinishedIfIdle);
-      finishTurn();
+      holdPostTurn();
+      try {
+        if (runner) runner.running = false;
+        await postTurnStep("drain", tryDrain);
+        await postTurnStep("commit", runCommitAndPr);
+        await postTurnStep("finished", emitFinishedIfIdle);
+        finishTurn();
+      } finally {
+        releasePostTurn();
+      }
     });
     return true;
   };
@@ -738,9 +748,14 @@ export async function executeAgentTurn(
     // this turn's commit.
     onError: async () => {
       agentErrored = true;
-      finishTurn();
-      await postTurnStep("drain", tryDrain);
-      await postTurnStep("commit", runCommitAndPr);
+      holdPostTurn();
+      try {
+        finishTurn();
+        await postTurnStep("drain", tryDrain);
+        await postTurnStep("commit", runCommitAndPr);
+      } finally {
+        releasePostTurn();
+      }
     },
     ...(input.useStreaming !== undefined ? { useStreaming: input.useStreaming } : {}),
   });
@@ -805,6 +820,38 @@ export async function executeAgentTurn(
     } catch (err) {
       console.error(`[turn] post-turn step "${label}" failed for ${sessionId} (continuing):`, err);
     }
+  };
+
+  /**
+   * Keep the runner off the idle-reclaim list for the length of a terminal
+   * sequence (the 2026-08-10 duplicate-CI-fix incident).
+   *
+   * `tryDrain` clears `running` FIRST, so that every step after it — the
+   * auto-commit, the PR / re-arm / release flows, the settlement, and the
+   * debounced push the commit arms — runs while `agentBusy` reads false. The
+   * idle enforcer consults exactly `agentBusy` + `viewerCount` on a 30 s tick,
+   * so in a session whose last viewer detached more than the grace period ago
+   * (the ordinary shape for an autonomous CI-fix turn) it may dispose the runner
+   * mid-sequence. Production did, 31 ms after the commit: `dispose()` cancelled
+   * the pending auto-push, so the fix commit never reached the remote, and the
+   * `disposed` net settled the already-finished turn as `dropped`.
+   *
+   * Latched per `executeAgentTurn` call so `begin`/`end` are always balanced
+   * even when several terminal paths run (a `done` arriving after a clean
+   * `agent_result`, an `error` followed by a `done`). A retry hand-off leaves
+   * two live closures over one runner, which is why the runner side counts
+   * rather than flags.
+   */
+  let postTurnHeld = false;
+  const holdPostTurn = (): void => {
+    if (postTurnHeld || !runner) return;
+    postTurnHeld = true;
+    runner.beginPostTurnWork();
+  };
+  const releasePostTurn = (): void => {
+    if (!postTurnHeld || !runner) return;
+    postTurnHeld = false;
+    runner.endPostTurnWork();
   };
 
   // An auth-required turn legitimately ends without an `agent_result` — the
@@ -1171,6 +1218,11 @@ export async function executeAgentTurn(
     }
     if (event.type !== "agent_result") return;
     receivedResult = true;
+    // Publish the same fact on the runner. The executor-local `receivedResult`
+    // is invisible to the `disposed` / `turn_abandoned` nets in
+    // `dispatchOnRunner`, which is why a completed turn whose runner went away
+    // mid-teardown was reported to the CI auto-fix loop as never-run.
+    if (runner) runner.turnProducedResult = true;
     // docs/150 req 14 — before ANY post-turn work. Draining the queue or
     // broadcasting "finished" here would tell the user (and the next queued
     // turn) that a turn we are about to re-run is over. The retry owns
@@ -1209,20 +1261,35 @@ export async function executeAgentTurn(
       // planning#249 — published as `streamingPostTurn` in this same synchronous
       // block so a self-wake landing mid-flow waits it out before re-arming
       // (see `rearmForSelfWokenTurn`). The sequence and its order are unchanged.
+      //
+      // The whole sequence runs under the post-turn hold: `agent-listeners`
+      // cleared `running` before this handler was reached, so without it every
+      // step below — including the commit and the push it arms — is exposed to
+      // idle reclaim.
+      holdPostTurn();
       streamingPostTurn = (async () => {
-        await postTurnStep("token-sync", trySyncToken);
-        // agent-listeners already set running=false; the resident process is NOT
-        // cleared (the next top-level turn reuses it via reuseExistingAgent).
-        // Drain through the guarded `tryDrain` (not `input.drainNext` directly)
-        // so the streaming `done` handler's drain — added for the abnormal-exit
-        // case below — can't double-drain after this normal end-of-turn drain.
-        await postTurnStep("drain", tryDrain);
-        await postTurnStep("finished-sse", broadcastFinishedIfIdle);
-        await postTurnStep("commit", runCommitAndPr);
-        await postTurnStep("idle", signalIdleIfIdle);
+        try {
+          await postTurnStep("token-sync", trySyncToken);
+          // agent-listeners already set running=false; the resident process is NOT
+          // cleared (the next top-level turn reuses it via reuseExistingAgent).
+          // Drain through the guarded `tryDrain` (not `input.drainNext` directly)
+          // so the streaming `done` handler's drain — added for the abnormal-exit
+          // case below — can't double-drain after this normal end-of-turn drain.
+          await postTurnStep("drain", tryDrain);
+          await postTurnStep("finished-sse", broadcastFinishedIfIdle);
+          await postTurnStep("commit", runCommitAndPr);
+          await postTurnStep("idle", signalIdleIfIdle);
+        } finally {
+          releasePostTurn();
+        }
       })();
       await streamingPostTurn;
     } else {
+      // Non-streaming ends across TWO events: this one drains (clearing
+      // `running`) and `done` commits. The hold therefore opens here and is
+      // released by the `done` handler's `finally` — the window the CI-fix turn
+      // in the 2026-08-10 incident was reclaimed inside.
+      holdPostTurn();
       await postTurnStep("token-sync", trySyncToken);
       await postTurnStep("drain", tryDrain);
     }
@@ -1235,12 +1302,19 @@ export async function executeAgentTurn(
     // owns the agent ref, the re-dispatch, and ALL terminal work (drain / commit
     // / finished). Stand down so we don't double-drain, emit a spurious error,
     // or finalize a turn that's about to be retried.
-    if (automaticRecoveryInProgress) return;
+    // Both stand-downs hand every terminal step to the re-dispatched turn, which
+    // opens its own hold — so this turn's must not stay open behind it.
+    if (automaticRecoveryInProgress) { releasePostTurn(); return; }
     // docs/150 req 14 — same stand-down for the quota retry: `retryOnNextAccount`
     // killed this process on purpose and the re-dispatched turn owns every
     // terminal step. Without this, the kill's `done` would drain the queue and
     // finalize a turn that is being re-run.
-    if (quotaRetryInProgress) return;
+    if (quotaRetryInProgress) { releasePostTurn(); return; }
+    // Hold the runner for the whole terminal sequence below — including the
+    // early `return`s, which the `finally` covers. On the non-streaming path
+    // this ADOPTS the hold `agent_result` already opened (the latch makes it a
+    // no-op) and is the point that finally closes it.
+    holdPostTurn();
     // docs/240 — everything below is wrapped so the turn SETTLES on every exit
     // path, including the early `return`s. The one that mattered is the
     // no-result hand-off near the bottom: it returns without calling
@@ -1500,6 +1574,9 @@ export async function executeAgentTurn(
       // No-op whenever a branch above already called `finishTurn()`; the
       // backstop for the ones that returned early.
       settleTurn(turnNoResult(`agent process exited (code ${code}) without settling the turn`));
+      // Released only after the settlement, so the reclaim window this hold
+      // exists to close does not reopen one statement before it shuts.
+      releasePostTurn();
     }
   });
 

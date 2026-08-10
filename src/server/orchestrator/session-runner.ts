@@ -57,10 +57,12 @@ import {
   settleDroppedQueueEntries,
   turnDropped,
   turnErrored,
+  turnInterrupted,
   TURN_STEERED,
   type TurnHandle,
   type TurnOutcome,
 } from "./turn-settlement.js";
+import { PostTurnHold } from "./post-turn-hold.js";
 export {
   prepareDispatch,
   queuedMessageToDispatchOptions,
@@ -452,6 +454,12 @@ export function dispatchOnRunner(
   // system turn. Cleared by `executeAgentTurn` on completion.
   if (opts.systemTurn) runner.systemTurnInProgress = true;
   runner.running = true;
+  // Same tick, same reason: `runDispatchedTurn` is async, so `executeAgentTurn`
+  // (and with it `resetRunnerTurnState`) runs several awaits from here. The
+  // `disposed` net registered below is live for the whole of that gap, and a
+  // `turnProducedResult` still true from the PREVIOUS turn would make it report
+  // this one — which has not even spawned yet — as having run.
+  runner.turnProducedResult = false;
   // planning#266 — publish the delivery in the SAME synchronous tick as `running`,
   // for the same reason: `runDispatchedTurn` is async (attachment resolution,
   // agent creation, run-param assembly) and `executeAgentTurn` only sets it much
@@ -483,8 +491,34 @@ export function dispatchOnRunner(
   // eventually notices — it asks the worker, is told nothing is running, and
   // resets. That reset is the turn's real terminal moment, so it settles here
   // through the same `dropped` path for the same reason.
+  //
+  // But `dropped` means one specific thing — "discarded before it ever ran" —
+  // and neither net can promise that on its own. The 2026-08-10 incident is the
+  // counter-example: the runner was disposed 31 ms after the fix turn's own
+  // auto-commit, INSIDE the post-turn window where `running` is already false
+  // and the settlement has not yet fired. The turn had run to completion; the
+  // net reported it as never-run; `fetchAndFixCb` therefore returned "noop",
+  // the docs/121 dedup record was skipped, and the loop re-sent the identical
+  // CI-fix prompt with the identical logs a minute later.
+  //
+  // So the nets ask the runner what actually happened. A turn that produced its
+  // `agent_result` settles as `interrupted` — "the prompt reached a live agent
+  // and the turn was then cut short", which is exactly true here and is the
+  // status every consumer already reads as *do not re-deliver*. Only a turn
+  // with nothing behind it is `dropped`, which keeps that status meaning what
+  // its consumers assume.
   const settleAsDropped = (reason: string): void => {
     if (settlement.isSettled) return;
+    if (runner.turnProducedResult) {
+      console.warn(
+        `[dispatch] settling the dispatched turn for ${runner.sessionId} as interrupted — ${reason}`
+        + " (the turn had already produced its result)",
+      );
+      chained.onTurnComplete?.(
+        turnInterrupted(`${reason} — after the turn produced its result`),
+      );
+      return;
+    }
     console.warn(`[dispatch] settling the dispatched turn for ${runner.sessionId} as dropped — ${reason}`);
     chained.onTurnComplete?.(turnDropped(reason));
   };
@@ -846,6 +880,11 @@ export function resetRunnerTurnState(runner: SessionRunnerInterface): void {
   runner.steeredMessages = [];
   runner.recordedCards = [];
   runner.wasInterrupted = false;
+  // A fresh turn has produced nothing yet. Load-bearing for the `disposed` /
+  // `turn_abandoned` nets in `dispatchOnRunner`, which ask this to tell a turn
+  // that RAN from one that never started — a stale `true` from the previous
+  // turn would report a genuinely-dropped turn as merely interrupted.
+  runner.turnProducedResult = false;
   runner.pendingCommitLink = null;
   // docs/244 / planning#299 — nothing of the new turn is on disk yet, so no body of
   // it may leave the reconnect snapshot until a boundary writes it.
@@ -1088,8 +1127,59 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * `send-message.ts` branches on it to decide whether an incoming user message
    * is queued/steered into an in-flight turn or starts a fresh one, and there is
    * no turn to queue behind while a task is merely pending.
+   *
+   * Two more terms, both added for the 2026-08-10 reclaim-mid-teardown incident
+   * and both about work that happens once `running` is ALREADY false:
+   * {@link postTurnWorkInFlight} (the turn's own terminal sequence — commit, PR
+   * flow, settlement) and {@link hasPendingPush} (the debounced auto-push that
+   * sequence armed). Reclaim destroys both — `dispose()` clears the push timer
+   * outright — so a session in either state is not idle.
    */
   readonly agentBusy: boolean;
+  /**
+   * True while a turn's TERMINAL SEQUENCE is running: `running` has already been
+   * cleared by `tryDrain` (so a queued turn may start) but the auto-commit, the
+   * PR / re-arm / release flows and the settlement have not finished.
+   *
+   * Held by `executeAgentTurn` around each of its terminal sequences and folded
+   * into {@link agentBusy}. Before it, the ~1 s between "the turn ended" and
+   * "the turn's work is in git and its handle is settled" read as fully idle:
+   * production disposed a runner 31 ms after the commit, which cancelled the
+   * debounced push and reported the finished turn to the CI auto-fix loop as
+   * `dropped` — never ran — so the identical fix prompt was sent again.
+   *
+   * Bounded by `POST_TURN_HOLD_MAX_MS` (see `post-turn-hold.ts`): a hold that
+   * leaked would pin the container forever, which is worse than the window.
+   */
+  readonly postTurnWorkInFlight: boolean;
+  /** Enter a terminal sequence. Pair with {@link endPostTurnWork} in a `finally`. */
+  beginPostTurnWork(): void;
+  /** Leave a terminal sequence. Unbalanced calls are no-ops. */
+  endPostTurnWork(): void;
+  /**
+   * True while a debounced auto-push is armed but has not fired.
+   *
+   * The push is orchestrator-side git, but `dispose()` clears the timer, so a
+   * runner reclaimed inside the 5 s debounce loses the push entirely — the
+   * commit stays local, the PR never updates and CI never re-runs. That is the
+   * half of the 2026-08-10 incident that outlived the commit itself.
+   */
+  readonly hasPendingPush: boolean;
+  /**
+   * True once the CURRENT turn has produced its `agent_result` — i.e. the prompt
+   * reached a live agent process and that process reported a finished turn.
+   *
+   * Set by `executeAgentTurn`, cleared at every turn start
+   * ({@link resetRunnerTurnState}) and synchronously by `dispatchOnRunner` when
+   * it claims the runner, so it can never describe a PREVIOUS turn.
+   *
+   * Read by exactly one consumer: the `disposed` / `turn_abandoned` nets in
+   * `dispatchOnRunner`, which must not report a turn that RAN as `dropped`.
+   * `dropped` is defined as "discarded before it ever ran", and the CI auto-fix
+   * loop acts on that definition — it treats the attempt as never-sent, keeps
+   * its budget, skips the docs/121 dedup record and re-fires the same prompt.
+   */
+  turnProducedResult: boolean;
   /** docs/235 — replace the background-task list wholesale (the backend reports a complete set). */
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void;
   /** docs/235 — drop all background-task state (agent process died; its tasks died with it). */
@@ -1543,6 +1633,10 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _subAgentHandles = new Map<SubAgentRunHandle, AgentId>();
   /** planning#246 — last announced `backgroundWorkDescriptions`, for change detection. */
   private _lastAnnouncedWork = "[]";
+  /** See `SessionRunnerInterface.postTurnWorkInFlight`. */
+  private _postTurnHold = new PostTurnHold();
+  /** See `SessionRunnerInterface.turnProducedResult`. */
+  turnProducedResult = false;
 
   /**
    * Per-session agent factory (see `SessionRunnerInterface.createAgent`).
@@ -1600,8 +1694,16 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     return [...this.backgroundTaskDescriptions, ...this.subAgentSpawnLabels];
   }
   get agentBusy(): boolean {
-    return this._isRunning || this.backgroundTaskCount > 0 || this.subAgentSpawnsInFlight > 0;
+    return this._isRunning
+      || this.backgroundTaskCount > 0
+      || this.subAgentSpawnsInFlight > 0
+      || this._postTurnHold.active
+      || this._pushTimer !== null;
   }
+  get postTurnWorkInFlight(): boolean { return this._postTurnHold.active; }
+  beginPostTurnWork(): void { this._postTurnHold.begin(); }
+  endPostTurnWork(): void { this._postTurnHold.end(); }
+  get hasPendingPush(): boolean { return this._pushTimer !== null; }
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void {
     this._backgroundTasks.set(tasks);
     this.announceBackgroundWork();
@@ -1887,7 +1989,22 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
       );
       return;
     }
+    // Same protection for a turn's TERMINAL SEQUENCE. `running` is already false
+    // there (`tryDrain` clears it so a queued turn can start) while the commit,
+    // the PR flow and the settlement are still to come, so without this a
+    // lifecycle-driven teardown reclaims a session whose finished turn has not
+    // reached git yet. `agentBusy` already declines to list such a runner as
+    // idle; this is the runner-level half of the same answer, so the two
+    // decisions cannot disagree. Bounded (`post-turn-hold.ts`), so a wedged
+    // sequence cannot make the session permanently unreclaimable.
+    if (this._postTurnHold.active && !opts?.force) {
+      console.log(
+        `[session-runner:${this.sessionId}] dispose() skipped — a turn's post-turn sequence is still running`,
+      );
+      return;
+    }
     this._disposed = true;
+    this._postTurnHold.reset();
     // docs/144 — cancel any in-flight sub-agent spawns before tearing down.
     for (const handle of this._subAgentHandles.keys()) {
       try { handle.cancel(); } catch { /* best-effort */ }

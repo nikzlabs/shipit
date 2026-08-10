@@ -29,6 +29,7 @@ import type { SessionRunnerInterface } from "./session-runner.js";
 import { getErrorMessage } from "./validation.js";
 import { AutoRemediationManager } from "./auto-remediation-manager.js";
 import type { RemediationArbiter } from "./auto-remediation-arbiter.js";
+import type { TurnOutcome } from "./turn-settlement.js";
 
 export const MAX_AUTO_FIX_ATTEMPTS = 3;
 /**
@@ -53,6 +54,32 @@ interface FailedCheck { databaseId: number; name: string; conclusion: string; ti
  * couldn't even start (no logs / no runner) — defer without burning budget.
  */
 export interface AutoFixResult { outcome: "fixed" | "noop"; lastError?: string }
+
+/**
+ * Map a dispatched fix turn's settlement onto the loop's accounting.
+ *
+ * Only two statuses mean the prompt never reached an agent: `dropped` ("the turn
+ * was discarded before it ever ran") and `steered` (folded into a running turn,
+ * unreachable for a system turn and mapped for completeness). Those defer on the
+ * shorter cooldown with the budget intact and — via `runAttempt` — leave the
+ * docs/121 dedup record unwritten, so the same logs are re-sent later.
+ *
+ * Everything else counts, including `errored`, `no-result` and `interrupted`. A
+ * turn that RAN has been seen by the agent whether or not it tore down cleanly,
+ * so re-sending it is a duplicate, not a recovery. `interrupted` is the status
+ * the 2026-08-10 incident turned on: the fix turn completed, its runner was
+ * disposed inside the post-turn window, the settlement nets reported `dropped`,
+ * and the loop re-sent the identical prompt with the identical logs.
+ *
+ * Extracted from `app-lifecycle.ts` so this mapping — the whole reason a fix
+ * turn does or does not burn budget — is testable without standing up the app.
+ */
+export function autoFixResultForOutcome(outcome: TurnOutcome): AutoFixResult {
+  if (outcome.status === "dropped" || outcome.status === "steered") {
+    return { outcome: "noop", lastError: `fix turn ${outcome.status}` };
+  }
+  return { outcome: "fixed" };
+}
 
 /**
  * Callback that performs the actual fix: fetch CI logs, dispatch the fix turn
