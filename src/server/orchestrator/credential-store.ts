@@ -732,13 +732,13 @@ export class CredentialStore {
     snapshot: { session?: unknown; weekly?: unknown; fetchedAt?: unknown } | undefined,
   ): boolean {
     const route = this.getCredentialRoute(routeId);
-    if (!route || route.exhaustedUntil === null || route.exhaustedUntil === undefined) return false;
+    if (route?.exhaustedUntil === null || route?.exhaustedUntil === undefined) return false;
     if (!snapshot || typeof snapshot.fetchedAt !== "number" || !Number.isFinite(snapshot.fetchedAt)) return false;
     const observedAt = typeof route.exhaustedAt === "number" ? route.exhaustedAt : 0;
     if (snapshot.fetchedAt <= observedAt) return false;
     for (const key of ["session", "weekly"] as const) {
       const window = snapshot[key] as { usedPct?: unknown } | null | undefined;
-      if (window && typeof window.usedPct === "number" && window.usedPct >= 100) return false;
+      if (typeof window?.usedPct === "number" && window.usedPct >= 100) return false;
     }
     this.upsertCredentialRoute({ ...route, exhaustedUntil: null, exhaustedAt: null });
     return true;

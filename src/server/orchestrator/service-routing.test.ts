@@ -5,7 +5,6 @@ import {
   listConfiguredCredentials,
   selectRouteForSelection,
   serviceRoutingForSelection,
-  sessionNeedsCredentialFailover,
   sessionSpawnIdentity,
 } from "./service-routing.js";
 import type { CredentialRoute } from "../shared/types/domain-types/credential-route.js";
@@ -269,7 +268,7 @@ describe("string-delivered subscription failover", () => {
   it("moves to the next credential when the first is benched", () => {
     const selected = pick(
       [
-        sub("cred_a", { priority: 0, exhaustedUntil: NOW + 60_000 }),
+        sub("cred_a", { priority: 0, exhaustedUntil: NOW + 60_000, exhaustedAt: NOW - 1_000 }),
         sub("cred_b", { priority: 1 }),
       ],
       { cred_a: "k1", cred_b: "k2" },
@@ -282,8 +281,8 @@ describe("string-delivered subscription failover", () => {
     // says so, exactly as it does for a key".
     const selected = pick(
       [
-        sub("cred_a", { priority: 0, exhaustedUntil: NOW + 90_000 }),
-        sub("cred_b", { priority: 1, exhaustedUntil: NOW + 30_000 }),
+        sub("cred_a", { priority: 0, exhaustedUntil: NOW + 90_000, exhaustedAt: NOW - 1_000 }),
+        sub("cred_b", { priority: 1, exhaustedUntil: NOW + 30_000, exhaustedAt: NOW - 1_000 }),
       ],
       { cred_a: "k1", cred_b: "k2" },
     );
@@ -299,7 +298,7 @@ describe("string-delivered subscription failover", () => {
     // could neither bench it after it failed nor name it in the transcript.
     // Rolling onto it would replace req 13's reset time with a second failure.
     const selected = selectRouteForSelection("claude", glm, {
-      credentialStore: store([sub("cred_a", { exhaustedUntil: NOW + 60_000 })], { cred_a: "k1" }),
+      credentialStore: store([sub("cred_a", { exhaustedUntil: NOW + 60_000, exhaustedAt: NOW - 1_000 })], { cred_a: "k1" }),
       env: { ZAI_CODING_PLAN_KEY: "from-env" } as NodeJS.ProcessEnv,
       now: () => NOW,
     });
@@ -337,7 +336,7 @@ describe("string-delivered subscription failover", () => {
       {
         credentialStore: store(
           [
-            route({ id: "cred_a", serviceId: "deepseek", priority: 0, exhaustedUntil: NOW + 60_000 }),
+            route({ id: "cred_a", serviceId: "deepseek", priority: 0, exhaustedUntil: NOW + 60_000, exhaustedAt: NOW - 1_000 }),
             route({ id: "cred_b", serviceId: "deepseek", priority: 1 }),
           ],
           { cred_a: "k1", cred_b: "k2" },
@@ -347,50 +346,6 @@ describe("string-delivered subscription failover", () => {
       },
     );
     expect(selected).toEqual({ ok: true, route: { kind: "reserved", id: "cred_a" } });
-  });
-});
-
-describe("sessionNeedsCredentialFailover", () => {
-  const NOW = 1_000_000;
-
-  it("is true for a pinned subscription credential that is benched", () => {
-    const benched = route({
-      id: "cred_a",
-      serviceId: "zai",
-      billingMode: "sub",
-      exhaustedUntil: NOW + 1,
-    });
-    expect(
-      sessionNeedsCredentialFailover(
-        { providerRouteKind: "reserved", providerRouteId: "cred_a" },
-        store([benched]),
-        NOW,
-      ),
-    ).toBe(true);
-  });
-
-  it("is false for a key, an account, and an unpinned session", () => {
-    const keyRoute = route({
-      id: "cred_k",
-      serviceId: "deepseek",
-      billingMode: "key",
-      exhaustedUntil: NOW + 1,
-    });
-    expect(
-      sessionNeedsCredentialFailover(
-        { providerRouteKind: "reserved", providerRouteId: "cred_k" },
-        store([keyRoute]),
-        NOW,
-      ),
-    ).toBe(false);
-    expect(
-      sessionNeedsCredentialFailover(
-        { providerRouteKind: "account", providerRouteId: "acct_1" },
-        store([]),
-        NOW,
-      ),
-    ).toBe(false);
-    expect(sessionNeedsCredentialFailover({}, store([]), NOW)).toBe(false);
   });
 });
 
@@ -520,11 +475,14 @@ describe("sessionSpawnIdentity — the resident-process boundary", () => {
     expect(sessionSpawnIdentity(sub, "claude")).not.toBe(sessionSpawnIdentity(key, "claude"));
   });
 
-  it("distinguishes the credential route", () => {
+  it("does NOT include the credential route — accounts are decided per turn (docs/260)", () => {
+    // The route left this tuple with the pin: the resident process's account
+    // is compared separately via `runner.residentRoute`, so two sessions on
+    // different accounts with the same shaping share one identity.
     const base = { model: "claude-opus-5", serviceId: "anthropic", billingMode: "sub" as const };
-    const a = session({ ...base, providerRouteKind: "account", providerRouteId: "acct_1" });
-    const b = session({ ...base, providerRouteKind: "account", providerRouteId: "acct_2" });
-    expect(sessionSpawnIdentity(a, "claude")).not.toBe(sessionSpawnIdentity(b, "claude"));
+    expect(sessionSpawnIdentity(session(base), "claude")).toBe(
+      sessionSpawnIdentity(session(base), "claude"),
+    );
   });
 
   it("is stable across two reads of an unchanged session", () => {
@@ -534,8 +492,6 @@ describe("sessionSpawnIdentity — the resident-process boundary", () => {
       model: "claude-opus-5",
       serviceId: "anthropic",
       billingMode: "sub",
-      providerRouteKind: "account",
-      providerRouteId: "acct_1",
     });
     expect(sessionSpawnIdentity(s, "claude")).toBe(sessionSpawnIdentity(s, "claude"));
     expect(desiredSpawnIdentity({ get: () => s }, "s1", "claude")).toBe(

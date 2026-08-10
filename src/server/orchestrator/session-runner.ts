@@ -439,6 +439,22 @@ export function dispatchOnRunner(
     return enqueueAndReport();
   }
 
+  // docs/260 req 13 — a resident process holding background work (a sub-agent
+  // review, agent-started background tasks) may not be displaced by a system
+  // turn: a system turn always spawns fresh, and the fresh spawn retires the
+  // resident (`dispatched-turn.ts`), losing the tokens already spent on that
+  // work. Enqueue instead; the queue drains the moment the work clears (the
+  // `background_work` nudge in `runner-registry-factory.ts`) or on the next
+  // turn boundary. User-initiated turns are unaffected — they reuse the
+  // resident process or run on its own account (`requireResidentRoute`).
+  if (
+    opts.systemTurn
+    && runner.getAgent() !== null
+    && runner.backgroundWorkDescriptions.length > 0
+  ) {
+    return enqueueAndReport();
+  }
+
   // Flip running=true synchronously BEFORE scheduling the async dispatched
   // turn. Without this, the microtask gap between `void runDispatchedTurn(...)`
   // and the executor's own `runner.running = true` is a window where a
@@ -757,7 +773,7 @@ export interface SystemTurnDeps {
        */
       requireResidentRoute?: boolean;
     },
-  ) => Promise<{ turnRoute?: { kind: ProviderRouteKind; id: string } } | void>;
+  ) => Promise<{ turnRoute?: { kind: ProviderRouteKind; id: string } } | undefined>;
   /**
    * docs/260 — whether the resident streaming process's credential differs
    * from what this turn's selection would choose. The dispatch adapter uses
@@ -766,6 +782,15 @@ export interface SystemTurnDeps {
    * the process holds background work (req 13).
    */
   needsAccountFailover?: (sessionId: string, agentId: AgentId) => boolean;
+  /**
+   * docs/260 §5 — recover a re-adopted resident process's credential identity
+   * from the session's credential-subtree account marker. The account a
+   * surviving CLI runs on IS the marker: any account change retires the
+   * process before reprovisioning, so the two cannot diverge. Wired by the
+   * registry factory; optional in tests (adoption then runs unattributed,
+   * exactly as before docs/260).
+   */
+  recoverResidentRoute?: (sessionId: string, agentId: AgentId) => { kind: ProviderRouteKind; id: string } | undefined;
   /**
    * docs/260 req 10 — the user-facing label for a credential route id
    * (account label or stored-credential label), for the attempt-loop notices

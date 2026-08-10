@@ -1,3 +1,4 @@
+import { REFUSAL_REPROBE_MS, refusalBlockedUntil } from "../shared/types/domain-types/credential-route.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -733,7 +734,7 @@ describe("ProviderAccountManager", () => {
       const until = Date.now() + 3_600_000;
       mgr.markAccountExhausted("anthropic", a.id, until);
 
-      expect(mgr.isRouteUsableForTurn("anthropic", { kind: "account", id: a.id })).toBe(false);
+      expect(refusalBlockedUntil(mgr.get("anthropic", a.id)!, Date.now())).not.toBeNull();
       expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: b.id } });
     });
 
@@ -748,7 +749,7 @@ describe("ProviderAccountManager", () => {
         credentialsDir: root,
         credentialStore: new CredentialStore(root),
       });
-      expect(reloaded.isRouteUsableForTurn("anthropic", { kind: "account", id: a.id })).toBe(false);
+      expect(refusalBlockedUntil(reloaded.get("anthropic", a.id)!, Date.now())).not.toBeNull();
     });
 
     it("expires on its own, so a lockout can never outlive its reset", () => {
@@ -757,7 +758,7 @@ describe("ProviderAccountManager", () => {
       mgr.setAccountStatus("anthropic", a.id, "ready");
       mgr.markAccountExhausted("anthropic", a.id, Date.now() - 1_000);
 
-      expect(mgr.isRouteUsableForTurn("anthropic", { kind: "account", id: a.id })).toBe(true);
+      expect(refusalBlockedUntil(mgr.get("anthropic", a.id)!, Date.now())).toBeNull();
     });
 
     // A later failure carrying a vaguer reset must not shorten a lockout the
@@ -994,11 +995,14 @@ describe("ProviderAccountManager", () => {
       expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
     });
 
-    it("still reports all_exhausted when accounts are genuinely spent, not merely over cutoff", () => {
+    // docs/260 reqs 5, 9 — telemetry claiming 100% ORDERS an account to the
+    // back but cannot block it: the account is still tried, once, to confirm.
+    // Only a refusal the harness itself reported may skip an account.
+    it("still tries a telemetry-spent account rather than refusing untried (reqs 5, 9)", () => {
       const { a, b } = twoReadyAccounts();
       const mgr = mgrWith({ [a]: { session: win(100) }, [b]: { session: win(100) } });
 
-      expect(mgr.selectAccountForTurn("anthropic")).toMatchObject({ ok: false, reason: "all_exhausted" });
+      expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
     });
 
     it("honours a configured cutoff instead of the default", () => {
@@ -1018,62 +1022,57 @@ describe("ProviderAccountManager", () => {
       expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
     });
 
-    describe("isRouteUsableForTurn", () => {
-      it("displaces a pinned session that is over its cutoff when a better account exists (reqs 6, 8)", () => {
+    // docs/260 — the pinned-route probes (`isRouteUsableForTurn`,
+    // `classifyRouteForTurn`) are gone with pinning itself: selection answers
+    // every routing question, and cutoffs are ordering, never displacement.
+    describe("per-turn ordering (docs/260 reqs 5, 8)", () => {
+      it("orders an over-cutoff account behind a clear one, and a telemetry-spent one last", () => {
         const { a, b } = twoReadyAccounts();
-        const mgr = mgrWith({ [a]: { session: win(92) }, [b]: { session: win(10) } });
+        const mgr = mgrWith({ [a]: { session: win(92) }, [b]: { session: win(100) } });
 
-        expect(mgr.isRouteUsableForTurn("anthropic", { kind: "account", id: a })).toBe(false);
+        // a is over its cutoff (has quota left), b LOOKS spent — a wins, and b
+        // would still be tried if a were excluded (req 5: never block untried).
+        expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
+        expect(mgr.selectAccountForTurn("anthropic", { exclude: [a] })).toEqual({
+          ok: true,
+          route: { kind: "account", id: b },
+        });
       });
 
-      // Without this, `failoverPinnedSession` would hand the session a
-      // different over-cutoff account every turn, killing the resident process
-      // each time for no benefit.
-      it("leaves a pinned session alone when every account is over its cutoff (no churn)", () => {
+      it("under balanced, an eligible resident account keeps serving its session (req 8)", () => {
         const { a, b } = twoReadyAccounts();
-        const mgr = mgrWith({ [a]: { session: win(92) }, [b]: { session: win(97) } });
+        store.setSelectionMode("anthropic", "sub", "balanced");
+        const mgr = mgrWith({ [a]: { session: win(10) }, [b]: { session: win(10) } });
+        // Make b the least-recently-used, which plain balanced would pick.
+        mgr.markAccountUsed("anthropic", a);
 
-        expect(mgr.isRouteUsableForTurn("anthropic", { kind: "account", id: a })).toBe(true);
-        expect(mgr.isRouteUsableForTurn("anthropic", { kind: "account", id: b })).toBe(true);
+        expect(mgr.selectAccountForTurn("anthropic", { residentAccountId: a })).toEqual({
+          ok: true,
+          route: { kind: "account", id: a },
+        });
+        store.setSelectionMode("anthropic", "sub", "strict");
       });
 
-      it("still reports a genuinely spent account as unusable", () => {
-        const { a, b } = twoReadyAccounts();
-        const mgr = mgrWith({ [a]: { session: win(100) }, [b]: { session: win(100) } });
-
-        expect(mgr.isRouteUsableForTurn("anthropic", { kind: "account", id: a })).toBe(false);
-      });
-    });
-
-    // docs/150 reqs 6, 7, 11 — the notice the user reads depends on *which*
-    // of these happened, so the three must not collapse into one another.
-    describe("classifyRouteForTurn", () => {
-      it("separates a cutoff from real exhaustion", () => {
-        const { a, b } = twoReadyAccounts();
-        const overCutoff = mgrWith({ [a]: { session: win(92) }, [b]: { session: win(10) } });
-        const spent = mgrWith({ [a]: { session: win(100) }, [b]: { session: win(10) } });
-
-        expect(overCutoff.classifyRouteForTurn("anthropic", { kind: "account", id: a })).toBe("over_cutoff");
-        expect(spent.classifyRouteForTurn("anthropic", { kind: "account", id: a })).toBe("exhausted");
-      });
-
-      it("reports a disconnected or signed-out account as unavailable, not out of quota", () => {
-        const { a } = twoReadyAccounts();
-        const mgr = mgrWith({});
-        mgr.setAccountStatus("anthropic", a, "auth_failed");
-
-        expect(mgr.classifyRouteForTurn("anthropic", { kind: "account", id: a })).toBe("unavailable");
-        expect(mgr.classifyRouteForTurn("anthropic", { kind: "account", id: "acct_gone" })).toBe("unavailable");
-      });
-
-      it("agrees with isRouteUsableForTurn — null exactly when usable", () => {
+      it("under strict, the strategy is absolute and the resident option is ignored (req 8)", () => {
         const { a, b } = twoReadyAccounts();
         const mgr = mgrWith({ [a]: { session: win(10) }, [b]: { session: win(10) } });
 
-        expect(mgr.classifyRouteForTurn("anthropic", { kind: "account", id: a })).toBeNull();
-        expect(mgr.isRouteUsableForTurn("anthropic", { kind: "account", id: a })).toBe(true);
-        // A reserved route has no subscription window to leave (req 12).
-        expect(mgr.classifyRouteForTurn("anthropic", { kind: "reserved", id: "claude-api-key" })).toBeNull();
+        expect(mgr.selectAccountForTurn("anthropic", { residentAccountId: b })).toEqual({
+          ok: true,
+          route: { kind: "account", id: a },
+        });
+      });
+
+      it("a resident account that is over its cutoff stops being preferred (req 8)", () => {
+        const { a, b } = twoReadyAccounts();
+        store.setSelectionMode("anthropic", "sub", "balanced");
+        const mgr = mgrWith({ [a]: { session: win(95) }, [b]: { session: win(10) } });
+
+        expect(mgr.selectAccountForTurn("anthropic", { residentAccountId: a })).toEqual({
+          ok: true,
+          route: { kind: "account", id: b },
+        });
+        store.setSelectionMode("anthropic", "sub", "strict");
       });
     });
   });
@@ -1115,7 +1114,11 @@ describe("ProviderAccountManager", () => {
       });
     });
 
-    it("reports all_exhausted with the soonest reset when every account is spent (req 13)", () => {
+    // docs/260 req 9 — telemetry alone cannot produce all_exhausted: an
+    // account whose DATA says spent is tried once to confirm. Only remembered
+    // refusals (below) can make selection fail — and even those yield to an
+    // optimistic caller (req 12).
+    it("tries the first telemetry-spent account instead of failing untried (reqs 5, 9)", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
       const a = mgr.create("anthropic", "A");
       const b = mgr.create("anthropic", "B");
@@ -1130,9 +1133,27 @@ describe("ProviderAccountManager", () => {
       });
 
       expect(quota.selectAccountForTurn("anthropic")).toEqual({
-        ok: false,
-        reason: "all_exhausted",
-        earliestResetAt: sooner,
+        ok: true,
+        route: { kind: "account", id: a.id },
+      });
+    });
+
+    it("reports all_exhausted only from remembered refusals, with the soonest re-try (req 9)", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      const a = mgr.create("anthropic", "A");
+      const b = mgr.create("anthropic", "B");
+      mgr.setAccountStatus("anthropic", a.id, READY);
+      mgr.setAccountStatus("anthropic", b.id, READY);
+      mgr.markAccountExhausted("anthropic", a.id, Date.now() + 7_200_000);
+      mgr.markAccountExhausted("anthropic", b.id, Date.now() + 7_200_000);
+
+      const selection = mgr.selectAccountForTurn("anthropic");
+      expect(selection).toMatchObject({ ok: false, reason: "all_exhausted" });
+      // req 12 — a caller that will ATTEMPT the result gets the best blocked
+      // account instead of the failure, so a resend re-tries every account.
+      expect(mgr.selectAccountForTurn("anthropic", { optimistic: true })).toEqual({
+        ok: true,
+        route: { kind: "account", id: a.id },
       });
     });
 
@@ -1145,10 +1166,16 @@ describe("ProviderAccountManager", () => {
         [a.id]: { session: { usedPct: 100, resetAt: new Date(Date.now() + 3_600_000).toISOString() } },
       });
 
-      // The reserved API-key route exists, but an exhausted *subscription* must
-      // not silently spend pay-as-you-go money.
-      const selection = quota.selectAccountForTurn("anthropic");
-      expect(selection.ok).toBe(false);
+      // The reserved API-key route exists, but a spent-looking *subscription*
+      // must be tried (req 5) — and never silently replaced by pay-as-you-go
+      // money (req 7). Bench it with a real refusal and the answer is a
+      // failure, still not the metered key.
+      expect(quota.selectAccountForTurn("anthropic")).toEqual({
+        ok: true,
+        route: { kind: "account", id: a.id },
+      });
+      quota.markAccountExhausted("anthropic", a.id, Date.now() + 3_600_000);
+      expect(quota.selectAccountForTurn("anthropic").ok).toBe(false);
     });
 
     it("treats unknown quota as usable rather than locking out a fresh account", () => {
@@ -1196,17 +1223,14 @@ describe("ProviderAccountManager", () => {
       expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: false, reason: "auth_required" });
     });
 
-    it("keeps a persisted exhaustedUntil out of the running until it lapses (req 7)", () => {
+    it("keeps a remembered refusal out of the running until it lapses (req 9)", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
       const a = mgr.create("anthropic", "A");
       const b = mgr.create("anthropic", "B");
       mgr.setAccountStatus("anthropic", a.id, READY);
       mgr.setAccountStatus("anthropic", b.id, READY);
-      // Hard exhaustion reported mid-turn, before any new snapshot arrives.
-      store.upsertCredentialRoute({
-        ...mgr.list("anthropic").find((x) => x.id === a.id)!,
-        exhaustedUntil: Date.now() + 3_600_000,
-      });
+      // Hard refusal reported mid-turn, before any new snapshot arrives.
+      mgr.markAccountExhausted("anthropic", a.id, Date.now() + 3_600_000);
 
       expect(mgr.selectAccountForTurn("anthropic")).toEqual({
         ok: true,
@@ -1214,7 +1238,48 @@ describe("ProviderAccountManager", () => {
       });
     });
 
-    describe("hard-exhaustion reconciliation", () => {
+    it("treats a LEGACY bench with no observation clock as expired — the deploy migration (req 9)", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      const a = mgr.create("anthropic", "A");
+      mgr.setAccountStatus("anthropic", a.id, READY);
+      // A pre-260 bench: exhaustedUntil far in the future, no exhaustedAt.
+      // These are exactly the rows the 2026-08-10 incident showed can go
+      // permanently stale; the read rule bounds them to nothing at all.
+      store.upsertCredentialRoute({
+        ...mgr.get("anthropic", a.id)!,
+        exhaustedUntil: Date.now() + 7 * 24 * 3_600_000,
+        exhaustedAt: null,
+      });
+
+      expect(mgr.selectAccountForTurn("anthropic")).toEqual({
+        ok: true,
+        route: { kind: "account", id: a.id },
+      });
+    });
+
+    it("re-probes a refusal after the cap even when the stated reset is far away (req 9)", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      const a = mgr.create("anthropic", "A");
+      mgr.setAccountStatus("anthropic", a.id, READY);
+      const weekly = Date.now() + 7 * 24 * 3_600_000;
+      // A refusal observed 31 minutes ago with a week-long stated reset: the
+      // cap (REFUSAL_REPROBE_MS) makes it eligible again — one probe attempt,
+      // not a week of silence.
+      store.upsertCredentialRoute({
+        ...mgr.get("anthropic", a.id)!,
+        exhaustedUntil: weekly,
+        exhaustedAt: Date.now() - REFUSAL_REPROBE_MS - 60_000,
+      });
+
+      expect(mgr.selectAccountForTurn("anthropic")).toEqual({
+        ok: true,
+        route: { kind: "account", id: a.id },
+      });
+    });
+
+    // docs/260 req 9 — refusal memory clears on a HEALTHY reading newer than
+    // the refusal (lazily, at the selection read), and never on anything less.
+    describe("refusal memory clearing (req 9)", () => {
       function setupBenchedPair() {
         const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
         const healthy = mgr.create("anthropic", "Healthy");
@@ -1232,13 +1297,13 @@ describe("ProviderAccountManager", () => {
         return { healthy, spent, exhaustedAt };
       }
 
-      const windows = (fetchedAt: number, weeklyPct = 19) => ({
+      const windows = (fetchedAt: number, weeklyPct: number | null = 19) => ({
         session: { usedPct: 2, resetAt: new Date(Date.now() + 3_600_000).toISOString() },
         weekly: { usedPct: weeklyPct, resetAt: new Date(Date.now() + 7_200_000).toISOString() },
         fetchedAt,
       });
 
-      it("selects a globally benched account for a new session after a newer 2%/19% snapshot", () => {
+      it("a newer healthy snapshot clears the refusal during selection", () => {
         const { healthy, spent, exhaustedAt } = setupBenchedPair();
         const quota = withLimits(root, store, {
           [healthy.id]: windows(exhaustedAt + 1),
@@ -1253,44 +1318,58 @@ describe("ProviderAccountManager", () => {
           route: { kind: "account", id: healthy.id },
         });
         expect(store.getCredentialRoute(healthy.id)?.exhaustedUntil).toBeNull();
+        // A still-100% reading clears nothing; that account stays blocked.
         expect(store.getCredentialRoute(spent.id)?.exhaustedUntil).not.toBeNull();
       });
 
-      it("also heals an existing session pinned to the account", () => {
+      it("a null usedPct counts as HEALTHY — below the warning threshold, not unknown-bad", () => {
+        // The old machinery demanded numeric proof and could never clear a
+        // bench for a lightly-used account (the provider reports numbers only
+        // above a warning threshold). A wrong clear now costs one refused
+        // attempt (req 5), so silence is read as health.
         const { healthy, exhaustedAt } = setupBenchedPair();
-        const quota = withLimits(root, store, { [healthy.id]: windows(exhaustedAt + 1) });
+        const quota = withLimits(root, store, { [healthy.id]: windows(exhaustedAt + 1, null) });
 
-        expect(quota.classifyRouteForTurn("anthropic", { kind: "account", id: healthy.id })).toBeNull();
+        expect(quota.selectAccountForTurn("anthropic")).toEqual({
+          ok: true,
+          route: { kind: "account", id: healthy.id },
+        });
         expect(store.getCredentialRoute(healthy.id)?.exhaustedUntil).toBeNull();
       });
 
-      it.each([
-        ["absent", undefined],
-        ["unknown", { session: null, weekly: null, fetchedAt: Date.now() }],
-      ])("keeps the bench when quota is %s", (_label, snapshot) => {
-        const { healthy } = setupBenchedPair();
-        const quota = withLimits(root, store, snapshot ? { [healthy.id]: snapshot } : {});
-        expect(quota.isRouteUsableForTurn("anthropic", { kind: "account", id: healthy.id })).toBe(false);
+      it("keeps the memory when quota is absent — but the cap still bounds it", () => {
+        const { healthy, spent } = setupBenchedPair();
+        const quota = withLimits(root, store, {});
+        // No snapshot to clear with: both stay blocked and selection fails
+        // (non-optimistic); the ~30-minute cap is what bounds this state.
+        expect(quota.selectAccountForTurn("anthropic")).toMatchObject({ ok: false, reason: "all_exhausted" });
+        expect(store.getCredentialRoute(healthy.id)?.exhaustedUntil).not.toBeNull();
+        expect(store.getCredentialRoute(spent.id)?.exhaustedUntil).not.toBeNull();
       });
 
-      it("keeps the bench when either window remains exhausted", () => {
+      it("keeps the memory when either window remains exhausted", () => {
         const { healthy, exhaustedAt } = setupBenchedPair();
         const quota = withLimits(root, store, { [healthy.id]: windows(exhaustedAt + 1, 100) });
-        expect(quota.isRouteUsableForTurn("anthropic", { kind: "account", id: healthy.id })).toBe(false);
+        quota.selectAccountForTurn("anthropic");
+        expect(store.getCredentialRoute(healthy.id)?.exhaustedUntil).not.toBeNull();
       });
 
-      it("rejects an older snapshot but accepts a later snapshot after restart", () => {
+      it("rejects an older snapshot but accepts a later one after a restart", () => {
         const { healthy, exhaustedAt } = setupBenchedPair();
         const stale = withLimits(root, store, { [healthy.id]: windows(exhaustedAt - 1) });
-        expect(stale.isRouteUsableForTurn("anthropic", { kind: "account", id: healthy.id })).toBe(false);
+        stale.selectAccountForTurn("anthropic");
+        expect(store.getCredentialRoute(healthy.id)?.exhaustedUntil).not.toBeNull();
 
         const restartedStore = new CredentialStore(root);
         const fresh = withLimits(root, restartedStore, { [healthy.id]: windows(exhaustedAt + 1) });
-        expect(fresh.isRouteUsableForTurn("anthropic", { kind: "account", id: healthy.id })).toBe(true);
+        expect(fresh.selectAccountForTurn("anthropic")).toEqual({
+          ok: true,
+          route: { kind: "account", id: healthy.id },
+        });
         expect(restartedStore.getCredentialRoute(healthy.id)?.exhaustedUntil).toBeNull();
       });
 
-      it("does not let a pre-failure snapshot weaken same-turn hard exhaustion", () => {
+      it("does not let a pre-failure snapshot weaken same-turn failover", () => {
         const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
         const account = mgr.create("anthropic", "Account");
         mgr.setAccountStatus("anthropic", account.id, READY);
@@ -1298,10 +1377,10 @@ describe("ProviderAccountManager", () => {
         const quota = withLimits(root, store, { [account.id]: windows(snapshotAt) });
         quota.markAccountExhausted("anthropic", account.id, Date.now() + 3_600_000);
 
-        expect(quota.isRouteUsableForTurn("anthropic", { kind: "account", id: account.id })).toBe(false);
+        expect(quota.selectAccountForTurn("anthropic")).toMatchObject({ ok: false, reason: "all_exhausted" });
       });
 
-      it("refreshes precedence on a repeated hard failure without shortening its bench", () => {
+      it("refreshes the observation clock on a repeated refusal without shortening the memory", () => {
         const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
         const account = mgr.create("anthropic", "Account");
         mgr.setAccountStatus("anthropic", account.id, READY);
@@ -1313,27 +1392,8 @@ describe("ProviderAccountManager", () => {
         const quota = withLimits(root, store, { [account.id]: windows(snapshotAt) });
         quota.markAccountExhausted("anthropic", account.id, Date.now() + 60_000);
 
-        expect(quota.isRouteUsableForTurn("anthropic", { kind: "account", id: account.id })).toBe(false);
+        expect(quota.selectAccountForTurn("anthropic")).toMatchObject({ ok: false, reason: "all_exhausted" });
         expect(store.getCredentialRoute(account.id)?.exhaustedUntil).toBe(far);
-      });
-
-      it("heals a legacy persisted row using updatedAt as its observation clock", () => {
-        const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-        const account = mgr.create("anthropic", "Legacy");
-        mgr.setAccountStatus("anthropic", account.id, READY);
-        store.upsertCredentialRoute({
-          ...mgr.get("anthropic", account.id)!,
-          exhaustedUntil: Date.now() + 3_600_000,
-        });
-        const legacy = store.getCredentialRoute(account.id)!;
-        let fetchedAt = Date.now();
-        while (fetchedAt <= legacy.updatedAt) fetchedAt = Date.now();
-        const quota = withLimits(root, store, { [account.id]: windows(fetchedAt) });
-
-        expect(quota.selectAccountForTurn("anthropic")).toEqual({
-          ok: true,
-          route: { kind: "account", id: account.id },
-        });
       });
     });
   });

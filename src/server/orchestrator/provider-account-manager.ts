@@ -1024,7 +1024,7 @@ export class ProviderAccountManager {
     if (snapshot.fetchedAt <= observedAt) return false;
     for (const key of ["session", "weekly"] as const) {
       const window = snapshot[key] as { usedPct?: unknown } | null | undefined;
-      if (window && typeof window.usedPct === "number" && window.usedPct >= 100) return false;
+      if (typeof window?.usedPct === "number" && window.usedPct >= 100) return false;
     }
     this.credentialStore.upsertCredentialRoute({ ...account, exhaustedUntil: null, exhaustedAt: null });
     return true;

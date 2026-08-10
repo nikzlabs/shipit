@@ -736,13 +736,12 @@ describe("SessionRunner", () => {
       },
       // Wire the REAL env-prep over the hanging container runner so the test
       // exercises the actual fail-open timeout, not a stub.
-      prepareAgentEnv: async (sessionId, agentId) => {
-        await prepareSessionAgentEnvironment(envRunner as any, {
+      prepareAgentEnv: async (sessionId, agentId) =>
+        prepareSessionAgentEnvironment(envRunner as any, {
           sessionId,
           agentId,
           deps: { credentialsDir: "/tmp/shipit-env-prep-hang-test", credentialStore, sessionManager },
-        });
-      },
+        }),
       buildRunParams: vi.fn().mockResolvedValue({ prompt: "fix ci", cwd: "/tmp/s1" }),
     });
 

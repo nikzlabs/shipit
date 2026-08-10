@@ -106,8 +106,12 @@ export function writeSessionAccountMarker(
   const dir = perSessionCredentialsDir(credentialsRoot, sessionId);
   if (!fs.existsSync(dir)) return;
   const current = readSessionAccountMarker(credentialsRoot, sessionId);
-  if (accountId === null) delete current[agentId];
-  else current[agentId] = accountId;
+  if (accountId === null) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- keyed by the AgentId union, not arbitrary input
+    delete current[agentId];
+  } else {
+    current[agentId] = accountId;
+  }
   fs.writeFileSync(path.join(dir, SESSION_ACCOUNT_MARKER), JSON.stringify(current));
 }
 

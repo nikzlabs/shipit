@@ -356,8 +356,12 @@ describe("wireAgentListeners", () => {
       willRecoverAuth?: () => boolean;
       recoverAuth?: () => Promise<boolean>;
       onAgentAuthRequired?: (agentId: string) => void;
-      markSessionAccountExhausted?: (sessionId: string, until: number) => void;
+      markSessionAccountExhausted?: (sessionId: string, until: number, routeId?: string) => void;
       session?: Record<string, unknown>;
+      // docs/260 — the turn's captured route, which replaced the session row
+      // as the source of reserved-vs-account branching in the auth handler.
+      getCapturedRouteId?: () => string | undefined;
+      getCapturedRouteKind?: () => "account" | "reserved" | "string" | undefined;
     }) {
       const { session, onAgentAuthRequired, markSessionAccountExhausted, ...opts } = extra;
       const agent = new FakeAgent();
@@ -600,12 +604,18 @@ describe("wireAgentListeners", () => {
 
       it("benches the credential so the next turn fails over", async () => {
         const markSessionAccountExhausted = vi.fn();
-        const { agent, runner } = wireAuth({ markSessionAccountExhausted, session: glmSession });
+        const { agent, runner } = wireAuth({
+          markSessionAccountExhausted,
+          session: glmSession,
+          // docs/260 — reserved-ness comes from the turn's captured route.
+          getCapturedRouteId: () => "cred_a",
+          getCapturedRouteKind: () => "reserved",
+        });
 
         agent.emit("auth_required");
         await tick();
 
-        expect(markSessionAccountExhausted).toHaveBeenCalledWith("session-1", expect.any(Number));
+        expect(markSessionAccountExhausted).toHaveBeenCalledWith("session-1", expect.any(Number), "cred_a");
         runner.dispose({ force: true });
       });
 
@@ -652,7 +662,11 @@ describe("wireAgentListeners", () => {
       });
 
       it("says the credential was set aside, not that you should sign in", async () => {
-        const { agent, runner, d } = wireAuth({ session: glmSession });
+        const { agent, runner, d } = wireAuth({
+          session: glmSession,
+          getCapturedRouteId: () => "cred_a",
+          getCapturedRouteKind: () => "reserved",
+        });
 
         agent.emit("auth_required");
         await tick();

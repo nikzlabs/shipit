@@ -266,12 +266,13 @@ describe("ProviderAccountsCard inline results and errors (docs/257 req 5)", () =
     expect(useUiStore.getState().toast).toBeNull();
   });
 
-  it("reports a SUCCESSFUL disconnect's result on the card — the row is gone", async () => {
-    // The results half of req 5, and the reason it is card-scoped rather than
-    // row-scoped: a successful disconnect deletes the row its result describes.
+  it("disconnects in one click with no session bookkeeping to report (docs/260 req 3)", async () => {
+    // No pinning means no "moved N sessions" story: the row disappears and the
+    // remaining accounts render, nothing else. Sessions route among what
+    // remains at their next turn.
     vi.stubGlobal("fetch", vi.fn(() =>
       Promise.resolve(new Response(
-        JSON.stringify({ accounts: [account("b", true)], switchedSessionIds: ["s1", "s2"] }),
+        JSON.stringify({ accounts: [account("b", true)] }),
         { status: 200 },
       )),
     ));
@@ -281,9 +282,9 @@ describe("ProviderAccountsCard inline results and errors (docs/257 req 5)", () =
     fireEvent.click(within(row).getByText("Disconnect"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("provider-accounts-notice-claude"))
-        .toHaveTextContent("Moved 2 session(s) to the replacement account.");
+      expect(screen.queryByTestId("provider-account-row-a")).toBeNull();
     });
+    expect(screen.queryByTestId("provider-accounts-notice-claude")).toBeNull();
     expect(useUiStore.getState().toast).toBeNull();
   });
 

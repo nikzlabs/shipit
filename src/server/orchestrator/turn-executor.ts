@@ -59,11 +59,7 @@ export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
     const reset = entry.resetAt ? ` (resets at ${entry.resetAt})` : "";
     return `- ${entry.label}${reset}: ${entry.providerMessage}`;
   });
-  return (
-    "Every connected account refused this turn for quota:\n"
-    + lines.join("\n")
-    + "\nSend this message again to re-try every account, or connect another account in Settings."
-  );
+  return `Every connected account refused this turn for quota:\n${lines.join("\n")}\nSend this message again to re-try every account, or connect another account in Settings.`;
 }
 import { resetRunnerTurnState } from "./session-runner.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
@@ -1567,7 +1563,18 @@ export async function executeAgentTurn(
   // listeners above are the whole job. Skip env-prep and the spawn entirely
   // (re-running `/agent/start` would 409 against the live process, and a
   // `sendUserMessage` would inject a phantom message into the user's turn).
-  if (input.adopt) return;
+  //
+  // docs/260 §5 — its route capture comes from the recovered resident identity
+  // (`turn-adoption.ts` restores it from the account marker), so refusals,
+  // rate-limit events, and write-back from the surviving process attribute to
+  // the account it actually runs on.
+  if (input.adopt) {
+    const resident = runner?.residentRoute;
+    capturedCredentialRoute = resident
+      ? { providerRouteKind: resident.kind, providerRouteId: resident.id }
+      : undefined;
+    return;
+  }
 
   try {
     // Sync the freshest OAuth token (and provision/pin on the first turn)

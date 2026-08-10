@@ -111,6 +111,7 @@ describe("stale turn teardown is turn-scoped", () => {
             // in-turn, recorded + persisted as an in_progress row.
             prepareAgentEnv: async () => {
               emitNoticeInTurn(runner, SESSION, NOTICE, chatHistory);
+              return undefined;
             },
           }
         : {}),

@@ -1,7 +1,9 @@
+import { readSessionAccountMarker } from "./session-credentials.js";
+import { queuedMessageToDispatchOptions } from "./prepared-dispatch.js";
 import type { GitManager } from "../shared/git.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
-import { AgentTurnAdmissionError, SessionRunnerRegistry } from "./session-runner.js";
-import type { SessionRunnerInterface } from "./session-runner.js";
+import { AgentTurnAdmissionError, SessionRunnerRegistry, dispatchOnRunner } from "./session-runner.js";
+import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
 import type { ChatHistoryManager } from "./chat-history.js";
@@ -329,6 +331,23 @@ export function createRunnerRegistry(
           sessionId: runner.sessionId,
           backgroundTasks: runner.backgroundWorkDescriptions,
         });
+        // docs/260 req 13 — a system turn deferred behind background work
+        // (the dispatch gate in `dispatchOnRunner`) drains the moment the
+        // work clears, rather than waiting for the next user turn. Re-enter
+        // through `dispatchOnRunner` so the entry keeps its settlement (the
+        // planning#257/planning#261 rule). `systemTurnDeps` is initialized below in
+        // this same creation block, before any event can fire.
+        if (
+          runner.backgroundWorkDescriptions.length === 0
+          && !runner.running
+          && runner.queueLength > 0
+        ) {
+          const next = runner.dequeue();
+          if (next) {
+            runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+            dispatchOnRunner(runner, systemTurnDeps, queuedMessageToDispatchOptions(next));
+          }
+        }
       });
       // planning#341 — keep the composer's "start from the latest base" control
       // honest between turns: recompute + push `reset_eligible` when the
@@ -416,7 +435,7 @@ export function createRunnerRegistry(
           }
         }, autoPushDebounceMs));
       };
-      runner.setSystemTurnDeps({
+      const systemTurnDeps: SystemTurnDeps = {
         authorizeDispatch: (sessionId) => {
           const session = sessionManager.get(sessionId);
           assertSessionCanDispatch(sessionId, session, (remoteUrl) =>
@@ -519,6 +538,13 @@ export function createRunnerRegistry(
               },
             });
           },
+          // docs/260 §5 — post-restart resident identity, from the marker.
+          ...(credentialsDir ? {
+            recoverResidentRoute: (sessionId: string, agentId: AgentId) => {
+              const marked = readSessionAccountMarker(credentialsDir, sessionId)[agentId];
+              return marked !== undefined ? { kind: "account" as const, id: marked } : undefined;
+            },
+          } : {}),
           // docs/260 req 10 — labels for the attempt-loop notices.
           routeLabel: (routeId: string) =>
             providerAccountManager?.getByRouteId(routeId)?.label
@@ -650,7 +676,8 @@ export function createRunnerRegistry(
             }
           },
         } : {}),
-      });
+      };
+      runner.setSystemTurnDeps(systemTurnDeps);
 
       // In local mode (dogfooding), the orchestrator can't manage Docker —
       // skip ServiceManager wiring entirely for inner sessions. This also

@@ -1354,7 +1354,7 @@ export function wireAgentListeners(
             // turn's own capture (never the session row, which records no
             // route any more). The durable input to req 10's change notice.
             ...(opts.getCapturedRouteId?.()
-              ? { credentialRouteId: opts.getCapturedRouteId() as string }
+              ? { credentialRouteId: opts.getCapturedRouteId()! }
               : {}),
           },
         );

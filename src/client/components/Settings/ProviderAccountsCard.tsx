@@ -150,8 +150,6 @@ export function ProviderAccountsCard({
   const [apiKeyError, setApiKeyError] = useState("");
   const [apiKeySaving, setApiKeySaving] = useState(false);
   const [clearing, setClearing] = useState(false);
-  const [pendingDisconnect, setPendingDisconnect] = useState<{ accountId: string; message: string } | null>(null);
-  const [replacementChoice, setReplacementChoice] = useState("");
   /**
    * docs/257 req 5 — where a result or a failure lands.
    *
@@ -184,10 +182,6 @@ export function ProviderAccountsCard({
   /** This row's own Claude sign-in diagnostics (docs/150), empty if it has none. */
   const diagnosticsFor = (accountId: string): ClaudeAuthDiagnostics =>
     allDiagnostics[accountId] ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
-
-  /** Accounts a pinned session could be moved to — connected, and not this one. */
-  const otherReadyAccounts = (excludeId: string) =>
-    accounts.filter((account) => account.id !== excludeId && account.status === "ready");
 
   const messageOf = (err: unknown, fallback: string): string =>
     err instanceof Error && err.message ? err.message : fallback;
@@ -328,63 +322,26 @@ export function ProviderAccountsCard({
   };
 
   /**
-   * Disconnect, resolving the pinned-session case inline rather than by toast.
-   *
-   * When the account's pinned sessions have somewhere to go, the server answers
-   * with the accounts they could move to (req 9). That is a question, so it gets
-   * asked here — a row-local picker — instead of being flattened into an error
-   * toast the user can only retry verbatim.
-   *
-   * When they have nowhere to go, there is no question: the server disconnects
-   * (req 23) and reports which sessions it left without an account, and this
-   * says so afterwards. It is deliberately not a confirmation prompt — the
-   * button that deletes an *unpinned* account's credentials doesn't ask either,
-   * and the last account was precisely the case that used to have no way
-   * through.
+   * docs/260 req 3 — disconnect is one click. There is no pinned-session
+   * question to ask (no session is pinned to anything), no replacement to
+   * pick, and nothing to report about moved or stranded sessions: each
+   * session's next turn routes among whatever accounts remain. The one
+   * refusal the server still makes — a live process running a turn or holding
+   * background work on this account (req 13) — is a wait, and its message
+   * lands on the row.
    */
-  const disconnect = async (account: CredentialRoute, replacementAccountId?: string) => {
+  const disconnect = async (account: CredentialRoute) => {
     setSavingId(account.id);
     clearRow(account.id);
     setCardNotice(provider, null);
     try {
-      const query = replacementAccountId
-        ? `?replacementAccountId=${encodeURIComponent(replacementAccountId)}`
-        : "";
-      const result = await request<{
-        accounts: CredentialRoute[];
-        switchedSessionIds: string[];
-        strandedSessionIds?: string[];
-      }>(
-        `/api/provider-accounts/${provider}/${account.id}${query}`,
+      const result = await request<{ accounts: CredentialRoute[] }>(
+        `/api/provider-accounts/${provider}/${account.id}`,
         { method: "DELETE" },
       );
       setProviderAccounts(result.accounts);
-      setPendingDisconnect(null);
-      // Card-scoped, and not by preference: a successful disconnect deletes the
-      // row this result is about, so there is no row left to render it on.
-      const stranded = result.strandedSessionIds?.length ?? 0;
-      if (result.switchedSessionIds.length > 0) {
-        setCardNotice(provider, {
-          kind: "info",
-          message: `Moved ${result.switchedSessionIds.length} session(s) to the replacement account.`,
-        });
-      } else if (stranded > 0) {
-        setCardNotice(provider, {
-          kind: "info",
-          message: `Disconnected. ${stranded} session(s) have no connected ${name} account — connect one before their next turn.`,
-        });
-      }
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to disconnect account";
-      // Only the "choose a replacement" refusal is answerable in place; a
-      // running session (or any other failure) is not something a picker fixes.
-      const movable = otherReadyAccounts(account.id);
-      if (message.includes("session(s) are pinned") && movable.length > 0) {
-        setPendingDisconnect({ accountId: account.id, message });
-        setReplacementChoice(movable[0]?.id ?? "");
-      } else {
-        failRow(account.id, err, "Failed to disconnect account");
-      }
+      failRow(account.id, err, "Failed to disconnect account");
     } finally {
       setSavingId(null);
     }
@@ -650,39 +607,6 @@ export function ProviderAccountsCard({
                     notice={rowNotices[account.id]}
                     testId={`provider-account-notice-${account.id}`}
                   />
-                )}
-
-                {pendingDisconnect?.accountId === account.id && (
-                  <div
-                    className="space-y-2 rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) p-3"
-                    data-testid={`provider-account-replacement-${account.id}`}
-                  >
-                    <p className="text-xs text-(--color-text-secondary)">{pendingDisconnect.message}</p>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <select
-                        value={replacementChoice}
-                        onChange={(event) => setReplacementChoice(event.target.value)}
-                        aria-label={`Replacement account for ${account.label}`}
-                        className="min-w-0 flex-1 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1.5 text-sm text-(--color-text-primary) focus:outline-none focus:border-(--color-border-focus)"
-                      >
-                        {otherReadyAccounts(account.id).map((candidate) => (
-                          <option key={candidate.id} value={candidate.id}>{candidate.label}</option>
-                        ))}
-                      </select>
-                      <Button
-                        variant="primary"
-                        size="md"
-                        disabled={busy || !replacementChoice}
-                        onClick={() => void disconnect(account, replacementChoice)}
-                        data-testid={`provider-account-confirm-replacement-${account.id}`}
-                      >
-                        Move and disconnect
-                      </Button>
-                      <Button variant="ghost" size="md" onClick={() => setPendingDisconnect(null)}>
-                        Cancel
-                      </Button>
-                    </div>
-                  </div>
                 )}
 
                 {/* Claude's CLI-driven sign-in is the one that strands users, so

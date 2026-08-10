@@ -6,5 +6,5 @@
 - [x] Simplification review round (removal brief) applied to the design
 - [x] Cross-backend design review (Codex, run e9d4edbb) — all 11 findings triaged into the plan
 - [x] Open question from the review (balanced-mode semantics) answered by Nik (2026-08-10: balanced spreads sessions)
-- [ ] Implementation
+- [x] Implementation (per-turn routing, refusal memory, attempt loop, marker-based identity, req-13 guards, disconnect/UI shrink; tests + typecheck + lint green)
 - [ ] Independent cross-backend review of the implementation against every numbered requirement

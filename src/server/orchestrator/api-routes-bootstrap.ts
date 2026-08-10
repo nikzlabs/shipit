@@ -302,7 +302,7 @@ export async function registerBootstrapRoutes(
     "/api/credential-routes/:routeId",
     async (request, reply) => {
       try {
-        const result = deleteCredentialRoute(deps.credentialStore, request.params.routeId);
+        const result = deleteCredentialRoute(deps.credentialStore, request.params.routeId, deps.runnerRegistry);
         propagateCredentialChange();
         deps.sseBroadcast("credential_routes", { routes: result.routes });
         return result;
