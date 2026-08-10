@@ -31,11 +31,11 @@ The row already contained three controls that had been collapsed to icons to buy
 
 ## Requirements
 
-1. Send is always fully visible and tappable, at every composer width, in every state. So are Stop and the mic. No control may push them out of view.
+1. Send is always fully visible and tappable, at every composer width, in every state, in **both** layouts. So are Stop and the mic. No control may push them out of view. **Anything that does not fit is clipped instead** — clipping is always preferred to displacing these three.
 
 2. This holds for any composer width, not any window width. A wide window with a narrow chat panel must behave like a narrow screen.
 
-3. Below a composer width of **700 px**, the row uses a compact layout. At 700 px and above it renders exactly as it does today, with no change of any kind.
+3. Below a composer width of **700 px**, the row uses a compact layout. At 700 px and above it renders as it does today. "As today" describes what the user sees whenever the row fits; it does not license the wide row to break requirement 1, which outranks it.
 
 4. In the compact layout, the model currently in use is readable in the row itself, without opening anything. When there is not enough room for the whole name it is truncated with an ellipsis.
 
@@ -45,7 +45,7 @@ The row already contained three controls that had been collapsed to icons to buy
 
 7. The context usage ring stays in the row, immediately to the right of the settings control.
 
-8. When the ring does not fit, it is cut off at the left edge of the mic button rather than being allowed to displace anything. The mic, Stop and Send keep their positions regardless.
+8. Whatever does not fit — the context ring in the compact layout, a control's label in the wide one — is cut off at the left edge of the mic button rather than being allowed to displace anything. The mic, Stop and Send keep their positions regardless, in both layouts.
 
 9. Every control removed from the compact row remains reachable behind the settings control, and none of them loses its name to a screen reader or a long press.
 
@@ -57,7 +57,7 @@ The row already contained three controls that had been collapsed to icons to buy
 
 13. Composer widths below 360 px are explicitly not a target. Behaviour there only has to be non-destructive — requirement 1 still holds, and the model name may be truncated to nothing.
 
-14. How large the mic, Stop and Send targets are follows the device, not the composer. On a phone or a tablet they stay large enough to hit with a thumb at every composer width; on a desktop they stay compact even when the chat panel is narrow.
+14. How large the mic, Stop and Send targets are follows the **viewport**, not the composer: at a viewport under 768 px they are large enough to hit with a thumb at every composer width, and at or above it they stay compact even when the chat panel is dragged narrow. The viewport is a proxy for "is this being touched", and an imperfect one — see the issue linked in the receipt below.
 
 15. In the compact layout the context ring shows as a ring alone. Its token count and running cost are not shown beside it, and remain one tap away in the ring's own popover.
 
@@ -75,13 +75,14 @@ No requirement is an unreviewed agent inference.
 
 ## Open questions
 
-Both raised by the cross-backend review of the implementation (2026-08-10), and both are conflicts between requirements rather than gaps in them — so neither can be settled by the agent.
-
-- **Requirements 1 and 3 are incompatible between 700 px and ~808 px, and requirement 1 currently loses.** "Why this exists" records that the un-compacted row needs a panel of 595–808 px depending on state; requirement 3 hands back to that row at exactly 700 px. So in the guarded-mode and ambiguous-model states a composer of 700–808 px still pushes Send off the edge — the original bug, in a narrower band. This band also got slightly worse: with the icon-only `compactTrigger` variants removed, a viewport under 768 px now renders full harness and reasoning labels where it used to render icons, which is reachable on a tablet in portrait. Three ways out. **(a)** Raise the threshold to ~810 px, so the wide row is only used where it demonstrably fits — one number, contradicts the 700 you chose, and puts more desktops on the compact row. **(b)** Keep 700 px and give the wide row the same pinned action cluster, so its *labels* clip instead of Send disappearing — preserves requirement 1 absolutely and is invisible whenever the row fits, but it does modify the wide row, which requirement 3 promises is untouched. **(c)** Accept it and narrow requirement 1 to "below 700 px". *Recommendation: (b) — requirement 1 is the whole point of the feature, and the change is invisible in every state that fits today.*
-
-- **Requirement 14 says the target size follows "the device"; the code follows the viewport width.** `useIsMobile()` is `(max-width: 767px)`, a window-width proxy rather than an input-modality test, so a landscape tablet at 768 px gets compact targets and a narrow desktop window gets thumb-sized ones. This is pre-existing behaviour that the feature inherited rather than introduced. **(a)** Reword requirement 14 to say the viewport, as the proxy it is — honest, no code change. **(b)** Switch to a `pointer: coarse` media query — actually implements what requirement 14 says, but changes hit-area behaviour for the wide row too, beyond this feature's scope. *Recommendation: (a) now, (b) as its own change if you want it.*
+- **Should the permission mode be an icon rather than a labelled pill in the wide row?** Today a non-auto mode renders as an icon plus its name — "Guarded mode" measures 123.5 px, which is the single widest contributor to the wide row's worst case and half the reason that row can need an 808 px panel. The human's expectation on 2026-08-10 was "guarded mode is an icon at most", which would cut it to roughly 28 px and take the worst case with it. Held open rather than written in because the human asked to see it first: a mock of the wide row in the 700–808 px band, in the guarded and ambiguous-model states, is the evidence this should be decided against. **(a)** Icon only, with the name in `title` / `aria-label`, matching what the harness and reasoning controls already do in that row. **(b)** Icon plus name, as today. *Recommendation: (a), pending the mock.*
 
 ## Resolved questions
+
+- 2026-08-10 — The cross-backend review found requirements 1 and 3 incompatible between 700 px and ~808 px: the un-compacted row can need up to 808 px, and requirement 3 hands back to it at 700 px, so guarded mode and an ambiguous model id could still push Send off the edge in that band. Chosen: **clipping is the universal rule** — "if something is overflown, it is clipped, never affecting mic/send/cancel". The wide row gets the same pinned action cluster as the compact one, so a label is cut off instead of Send disappearing. Requirements 1, 3 and 8 were rewritten to say this: requirement 3's "as today" now describes what the user sees *whenever the row fits*, and is explicitly outranked by requirement 1. The rejected alternatives were raising the threshold to ~810 px (contradicts the 700 px the human chose, and puts more desktops on the compact row) and narrowing requirement 1 to "below 700 px" (leaves the original bug alive in a band nobody would think to test).
+
+- 2026-08-10 — Requirement 14 said target size follows "the device"; the code reads `(max-width: 767px)`, a viewport-width proxy rather than an input-modality test, so a landscape tablet at 768 px gets compact targets. Chosen: **say the viewport**, because that is what ships and the wording was the inaccurate half. Requirement 14 now names the viewport and admits it is a proxy. Switching to a `pointer: coarse` test is filed separately as planning#350 — it would change hit-area behaviour for the wide row too, which is beyond this feature.
+
 
 - 2026-08-10 — Should touch-target size follow the composer's width, like everything else, or the input device? Chosen: **the input device**. Layout density follows the composer width (requirement 3), but hit-area size keeps following the screen, because whether a target needs to be thumb-sized is a question about fingers and not about panel width. Requirement 14 follows. Visible consequence, accepted: a 600 px chat panel on a desktop keeps compact buttons while a 600 px tablet keeps large ones — the two look different at the same composer width, deliberately.
 

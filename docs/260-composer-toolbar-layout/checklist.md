@@ -20,6 +20,11 @@
       `lockedHarnessReason` re-export and the unused `rows` field; corrected requirement 15
       (figures live in the ring's popover, not the menu) and the action-cluster floor in
       `plan.md` (the recording mic has auto width, so ≈218 px not ≈190 px)
-- [ ] **Blocked on a human decision** — the review found requirements 1 and 3 conflict between
-      700 and ~808 px, and that requirement 14 describes the device where the code reads the
-      viewport. Both are in `## Open questions`.
+- [x] Human decisions taken on both review findings: clipping is the universal rule (requirements
+      1, 3 and 8 rewritten), and requirement 14 now names the viewport, with `pointer: coarse`
+      filed as planning#350
+- [x] Mock of the wide row at 700–808 px, presented — today's overflow, the clipping fix, and
+      guarded-as-an-icon side by side
+- [ ] **Open question**: guarded as an icon in the wide row (mock presented, awaiting the call)
+- [ ] Implement the clipping rule in the wide row (pinned action cluster), once the guarded
+      question is closed — both touch the same lines
