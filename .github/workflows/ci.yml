@@ -116,6 +116,7 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run check-deps
+      - run: npm run check-audit
       - run: npm run build
 
   test:
