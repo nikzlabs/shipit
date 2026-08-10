@@ -215,12 +215,16 @@ Two deliberate differences from the repo-level control:
 - **Collapsed by default**, and the persisted state is therefore the *expanded*
   set (`expandedResolvedChildren` in `repo-store`, keyed by root session id;
   `shipit-expanded-resolved-children` in localStorage). Absence = hidden.
-- **A brood member that is itself a parent inside the brood is never tucked
-  away**, even when resolved. The brood renders flat at one indent level, so
-  hiding a middle child would leave its own descendants with no visible
-  ancestor. The predicate mirrors `parentsWithChildren` in
-  `useSessionGrouping`'s sort, keeping the split consistent with the order the
-  list arrives in.
+- **Two kinds of member are never tucked away**, even when resolved:
+  - One that is **itself a parent** inside the brood. The brood renders flat at
+    one indent level, so hiding a middle child would leave its own descendants
+    with no visible ancestor. The predicate mirrors `parentsWithChildren` in
+    `useSessionGrouping`'s sort, keeping the split consistent with the order the
+    list arrives in.
+  - One that is **pinned** — docs/110's rule that an explicit pin outranks the
+    automatic resolved-demotion. A pinned child stays under its parent rather
+    than joining the pinned sub-section (`pinnedSessions` excludes a child whose
+    parent is in the group), so this split is its *only* render path.
 
 The root's own collapse caret still counts the **whole** brood, resolved members
 included — collapsing the parent hides everything, so the total is the honest

@@ -1044,6 +1044,20 @@ describe("SessionSidebar", () => {
       expect(screen.queryByText("Live child")).toBeNull();
     });
 
+    it("keeps a merged child visible when it is pinned", () => {
+      // docs/110 — an explicit pin outranks the automatic resolved-demotion. A
+      // pinned child renders under its parent rather than in the pinned
+      // sub-section, so this split is its only render path.
+      const pinnedMerged = baseSession({
+        ...mergedChild,
+        title: "Pinned merged child",
+        pinnedAt: "2024-01-03T00:00:00.000Z",
+      });
+      render(<SessionSidebar {...defaultProps} sessions={[parent, liveChild, pinnedMerged]} />);
+      expect(screen.getByText("Pinned merged child")).toBeTruthy();
+      expect(screen.queryByTestId("resolved-children-toggle")).toBeNull();
+    });
+
     it("keeps a merged child visible when it has its own children in the brood", () => {
       // Tucking away an intermediate merged child would leave its grandchild
       // rendered at the same indent with no visible ancestor.

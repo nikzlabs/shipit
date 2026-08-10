@@ -624,8 +624,13 @@ export function RepoGroup({
                 for (const m of brood) {
                   if (m.parentSessionId) parentsInBrood.add(m.parentSessionId);
                 }
+                // A PINNED member is never tucked away either: docs/110 —
+                // an explicit pin outranks the automatic resolved-demotion. A
+                // pinned child stays under its parent rather than joining the
+                // pinned sub-section (see the `pinnedSessions` memo), so this
+                // split is its ONLY render path.
                 const isResolvedMember = (m: SessionInfo): boolean =>
-                  isRecentlyResolved(m) && !parentsInBrood.has(m.id);
+                  isRecentlyResolved(m) && !parentsInBrood.has(m.id) && !m.pinnedAt;
                 const renderMember = (member: SessionInfo) => (
                   <SessionItem
                     key={member.id}
