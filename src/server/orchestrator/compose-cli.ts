@@ -23,8 +23,27 @@ import { spawn } from "node:child_process";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 
-/** Runs a docker compose command. Resolves on exit 0, rejects otherwise. */
-export type ComposeRunner = (args: string[], cwd: string) => Promise<void>;
+/**
+ * Receives a compose command's own output (stdout + stderr) as it arrives.
+ *
+ * This is how the image build / pull phase becomes visible. See
+ * {@link ComposeRunner} and `ServiceManager.composeLogSink`.
+ */
+export type ComposeOutputSink = (chunk: string) => void;
+
+/**
+ * Runs a docker compose command. Resolves on exit 0, rejects otherwise.
+ *
+ * `onOutput`, when supplied, is called with each chunk of the command's output
+ * as it is produced — NOT buffered until exit. `up` is the caller that needs
+ * this: with `--build` it can run for minutes with nothing else to show for
+ * itself, and until this existed that whole window was silent.
+ */
+export type ComposeRunner = (
+  args: string[],
+  cwd: string,
+  onOutput?: ComposeOutputSink,
+) => Promise<void>;
 
 /** Runs a docker compose command and returns stdout. */
 export type ComposeQuery = (args: string[], cwd: string) => Promise<string>;
@@ -104,26 +123,32 @@ export class ComposeCli {
    * the no-change case cheap (all cache hits). For services that only declare
    * `image:` (the common case — most user repos pull a prebuilt image), there
    * is nothing to build and `--build` is a harmless no-op.
+   *
+   * `onOutput` receives the command's own progress as it runs — the build /
+   * pull output that otherwise reaches no one.
    */
-  up(serviceNames?: string[]): Promise<void> {
-    return this.upWithConflictRecovery("up", "-d", "--build", "--remove-orphans", ...(serviceNames ?? []));
+  up(serviceNames?: string[], onOutput?: ComposeOutputSink): Promise<void> {
+    return this.upWithConflictRecovery(
+      onOutput,
+      "up", "-d", "--build", "--remove-orphans", ...(serviceNames ?? []),
+    );
   }
 
   /** Run `docker compose up -d --build` for a specific manual service. */
-  upService(name: string): Promise<void> {
-    return this.upWithConflictRecovery("up", "-d", "--build", name);
+  upService(name: string, onOutput?: ComposeOutputSink): Promise<void> {
+    return this.upWithConflictRecovery(onOutput, "up", "-d", "--build", name);
   }
 
   /** Run `docker compose stop <service>`. */
   stop(name: string): Promise<void> {
-    return this.run("stop", name);
+    return this.run(undefined, "stop", name);
   }
 
   /** Run `docker compose down --remove-orphans`, optionally dropping volumes. */
   down(opts: { removeVolumes: boolean }): Promise<void> {
     const args = ["down", "--remove-orphans"];
     if (opts.removeVolumes) args.push("--volumes");
-    return this.run(...args);
+    return this.run(undefined, ...args);
   }
 
   /**
@@ -256,9 +281,12 @@ export class ComposeCli {
    * disturbed. The conflicting container can't be useful anyway — its name
    * is blocking the create we're about to issue.
    */
-  private async upWithConflictRecovery(...subArgs: string[]): Promise<void> {
+  private async upWithConflictRecovery(
+    onOutput: ComposeOutputSink | undefined,
+    ...subArgs: string[]
+  ): Promise<void> {
     try {
-      await this.run(...subArgs);
+      await this.run(onOutput, ...subArgs);
     } catch (err) {
       const conflictId = extractConflictContainerId((err as Error).message);
       if (!conflictId) throw err;
@@ -272,14 +300,14 @@ export class ComposeCli {
         // is clear, rather than masking it with the removal failure.
         throw err;
       }
-      await this.run(...subArgs);
+      await this.run(onOutput, ...subArgs);
     }
   }
 
   /** Run a docker compose command and resolve/reject based on exit code. */
-  private run(...subArgs: string[]): Promise<void> {
+  private run(onOutput: ComposeOutputSink | undefined, ...subArgs: string[]): Promise<void> {
     const args = this.args(...subArgs);
-    return this.runner(args, this.workspaceDir);
+    return this.runner(args, this.workspaceDir, onOutput);
   }
 }
 
@@ -287,7 +315,22 @@ export class ComposeCli {
 // Default compose runner / query
 // ---------------------------------------------------------------------------
 
-function defaultComposeRunner(args: string[], cwd: string): Promise<void> {
+/**
+ * How much of a failed command's stderr survives into the rejection message.
+ *
+ * Unbounded before: a failing `up --build` can emit megabytes of build output,
+ * and the whole string ends up in `ManagedService.error` — which is rendered in
+ * the services drawer and returned by `shipit service list`. The TAIL is kept
+ * because that is where the actual failure is; the preceding cache hits are
+ * noise, and they now stream live anyway.
+ */
+const MAX_ERROR_STDERR = 8_000;
+
+function defaultComposeRunner(
+  args: string[],
+  cwd: string,
+  onOutput?: ComposeOutputSink,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn("docker", args, {
       cwd,
@@ -295,8 +338,19 @@ function defaultComposeRunner(args: string[], cwd: string): Promise<void> {
     });
 
     let stderr = "";
+    // Both streams are drained unconditionally, sink or no sink. stdout used to
+    // be piped and never read, so a command that wrote more than the pipe's
+    // buffer (~64 KiB) would block on write and never reach `close` — the
+    // promise would never settle. Compose keeps progress on stderr today, which
+    // is the only reason that never fired.
+    proc.stdout?.on("data", (chunk: Buffer) => {
+      onOutput?.(chunk.toString());
+    });
     proc.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
+      const text = chunk.toString();
+      stderr += text;
+      if (stderr.length > MAX_ERROR_STDERR) stderr = stderr.slice(-MAX_ERROR_STDERR);
+      onOutput?.(text);
     });
 
     proc.on("close", (code) => {

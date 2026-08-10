@@ -3080,3 +3080,113 @@ describe("ServiceManager starting-state address hygiene (#2044)", () => {
     await mgr.stop();
   });
 });
+
+/**
+ * Compose-up output reaches the service's log stream.
+ *
+ * `startService` writes `starting`, awaits `docker compose up -d --build`, and
+ * only then spawns the log follower. With a cold layer cache that `up` is a full
+ * image build — minutes during which the service sat at `starting` with an empty
+ * log panel and no diagnostic anywhere, because the runner dropped its own
+ * output and `withUpInFlight` (correctly) exempts an in-flight `up` from both
+ * the missing-container reconciliation and the `starting` watchdog. The user
+ * reads that as "Start does nothing".
+ */
+describe("ServiceManager — compose up output reaches the service log", () => {
+  let tmpDir: string;
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const MANUAL_COMPOSE = `
+services:
+  dev:
+    image: node:24
+    ports: ["3000:3000"]
+    x-shipit-preview: manual
+`;
+
+  /**
+   * A manager whose `up` emits build-shaped progress, plus a log store spy. The
+   * chunk boundaries deliberately split a line — compose writes in arbitrary
+   * chunks and the sink has to buffer to whole lines before prefixing.
+   */
+  function makeBuildingManager(dir: string) {
+    const logs: { name: string; text: string }[] = [];
+    const stored: string[] = [];
+    /** Ring-buffer contents sampled WHILE the `up` is still running. */
+    let bufferDuringUp = "";
+
+    const composeRunner: ComposeRunner = (args, _cwd, onOutput) => {
+      if (args.includes("up")) {
+        onOutput?.("#4 [2/9] RUN apt-get update\n#4 sha256:abc 0.4s done\n");
+        onOutput?.("#5 [3/9] RUN playwright ");
+        onOutput?.("install-deps chromium\n");
+        bufferDuringUp = mgr.getLogBuffer("dev");
+      }
+      return Promise.resolve();
+    };
+
+    const logStore = {
+      hasChannel: () => false,
+      append: (_sid: string, _channel: string, text: string) => { stored.push(text); },
+      snapshotText: () => "",
+    } as unknown as ConstructorParameters<typeof ServiceManager>[0]["logStore"];
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery: emptyComposeQuery,
+      pollIntervalMs: 0,
+      ...(logStore ? { logStore } : {}),
+    });
+    mgr.on("service_log", (name: string, text: string) => { logs.push({ name, text }); });
+
+    return { mgr, logs, stored, getBufferDuringUp: () => bufferDuringUp };
+  }
+
+  it("relays build progress line by line while the container does not exist yet", async () => {
+    tmpDir = makeSessionDir("service-mgr-");
+    const dir = path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
+    fs.writeFileSync(path.join(dir, "docker-compose.yml"), MANUAL_COMPOSE);
+    const { mgr, logs, getBufferDuringUp } = makeBuildingManager(dir);
+
+    await mgr.start();
+    logs.length = 0;
+    await mgr.startService("dev");
+
+    expect(logs.map(l => l.text)).toEqual([
+      "[compose] #4 [2/9] RUN apt-get update\n",
+      "[compose] #4 sha256:abc 0.4s done\n",
+      "[compose] #5 [3/9] RUN playwright install-deps chromium\n",
+    ]);
+    expect(logs.every(l => l.name === "dev")).toBe(true);
+    // Also readable by a panel opened mid-build: `snapshotLogs` falls back to
+    // the ring buffer while `docker compose logs` has no container to answer for.
+    expect(getBufferDuringUp()).toContain("[compose] #5 [3/9] RUN playwright install-deps chromium");
+
+    await mgr.stop();
+  });
+
+  it("does not persist compose output to the durable log store", async () => {
+    tmpDir = makeSessionDir("service-mgr-");
+    const dir = path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
+    fs.writeFileSync(path.join(dir, "docker-compose.yml"), MANUAL_COMPOSE);
+    const { mgr, stored } = makeBuildingManager(dir);
+
+    await mgr.start();
+    await mgr.startService("dev");
+
+    // docs/192: `streamLogs` picks `--tail 1000` vs `--tail 0` by asking whether
+    // the store already holds this channel. Seeding it with build output would
+    // flip that predicate before the container was ever followed, losing the
+    // container's first lines for good.
+    expect(stored.filter(t => t.includes("[compose]"))).toEqual([]);
+
+    await mgr.stop();
+  });
+});

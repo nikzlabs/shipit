@@ -50,7 +50,12 @@ import {
 import { ServicePoller } from "./service-poller.js";
 import { ServiceRetryManager } from "./service-retry-manager.js";
 import { removeSessionServiceEnvDir, removeSessionSecretsDir } from "./secret-resolver.js";
-import { ComposeCli, type ComposeRunner, type ComposeQuery } from "./compose-cli.js";
+import {
+  ComposeCli,
+  type ComposeRunner,
+  type ComposeQuery,
+  type ComposeOutputSink,
+} from "./compose-cli.js";
 
 // ---------------------------------------------------------------------------
 // Re-exports — preserve the public surface tests / consumers import from
@@ -67,7 +72,7 @@ export type {
   SecretsStatusInternalSnapshot,
 } from "./service-secrets-resolver.js";
 
-export type { ComposeRunner, ComposeQuery } from "./compose-cli.js";
+export type { ComposeRunner, ComposeQuery, ComposeOutputSink } from "./compose-cli.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -122,6 +127,27 @@ export interface ManagedService {
  */
 export const INSTALL_FAILED_GATE_MESSAGE =
   "agent.install failed — dependent service not started";
+
+/**
+ * Prefix on every line of `docker compose up` output relayed into a service's
+ * log stream, so the image build / pull phase reads as what it is rather than
+ * as output from the user's own container.
+ *
+ * Why this exists at all: `startService` writes `starting`, then awaits
+ * `docker compose up -d --build`, and only spawns the log follower once that
+ * returns. With a warm layer cache the `up` takes ~2s and nobody notices. With
+ * a cold one — a fresh host, or any deploy that pruned the BuildKit cache — it
+ * is a full image build, and this repo's own dogfood `dev` service (apt-get +
+ * agent CLIs + a Playwright Chromium) takes minutes. For that whole window the
+ * service sat at `starting` with an EMPTY log panel and no diagnostic anywhere:
+ * the runner collected stderr into a local string and dropped it on success,
+ * the follower had no container to follow, and `withUpInFlight` correctly
+ * exempts an in-flight `up` from both the missing-container reconciliation and
+ * the {@link STARTING_WATCHDOG_MS} watchdog — so nothing ever spoke. The user
+ * reads that as "Start does nothing", stops, and starts again, which appears to
+ * work because the first build has meanwhile warmed the cache.
+ */
+export const COMPOSE_LOG_PREFIX = "[compose] ";
 
 /**
  * How long {@link ServiceManager.joinSessionNetwork} may block before its
@@ -993,7 +1019,7 @@ export class ServiceManager extends EventEmitter {
       // `stopped` and gated services stay `starting` until install completes.
       const autoNames = startNow.map(s => s.name);
       if (autoNames.length > 0) {
-        await this.withUpInFlight(autoNames, () => this.compose.up(autoNames));
+        await this.withUpInFlight(autoNames, () => this.compose.up(autoNames, this.composeLogSink(autoNames)));
       }
       this._started = true;
 
@@ -1059,7 +1085,7 @@ export class ServiceManager extends EventEmitter {
     this.retry.resetOomBudget(name);
     this.updateServiceStatus(name, "starting");
     try {
-      await this.withUpInFlight([name], () => this.compose.upService(name));
+      await this.withUpInFlight([name], () => this.compose.upService(name, this.composeLogSink([name])));
       // The first manual-service start is the moment the compose network
       // actually gets created (compose materializes the network on `up`,
       // not just when the file is parsed). If this stack is all-manual,
@@ -1088,7 +1114,7 @@ export class ServiceManager extends EventEmitter {
     this.updateServiceStatus(name, "starting");
     try {
       await this.compose.stop(name);
-      await this.withUpInFlight([name], () => this.compose.upService(name));
+      await this.withUpInFlight([name], () => this.compose.upService(name, this.composeLogSink([name])));
       // Defensive: if a previous all-manual `start()` skipped the network
       // join (see startService comment), the first restartService after
       // adoption could be the first time the orchestrator gets attached.
@@ -1151,18 +1177,9 @@ export class ServiceManager extends EventEmitter {
 
     const handleData = (chunk: Buffer) => {
       const text = chunk.toString();
-
       // Durable backlog (docs/192) — survives reconcile/restart/container rm.
       this.logStore?.append(this.sessionId, channel, text);
-
-      // Append to per-service ring buffer (hot cache: live fan-out + diagnostics)
-      let buf = (this.logBuffers.get(name) ?? "") + text;
-      if (buf.length > ServiceManager.MAX_LOG_BUFFER) {
-        buf = truncateTerminalBuffer(buf, ServiceManager.MAX_LOG_BUFFER);
-      }
-      this.logBuffers.set(name, buf);
-
-      this.emit("service_log", name, text);
+      this.bufferServiceLog(name, text);
     };
 
     proc.stdout?.on("data", handleData);
@@ -1355,7 +1372,7 @@ export class ServiceManager extends EventEmitter {
       .map(s => s.name);
     if (autoNames.length === 0) return;
     try {
-      await this.withUpInFlight(autoNames, () => this.compose.up(autoNames));
+      await this.withUpInFlight(autoNames, () => this.compose.up(autoNames, this.composeLogSink(autoNames)));
       await this.poller.pollOnce();
     } catch (err) {
       console.warn(`[compose:${this.sessionId}] refreshSecrets compose up failed:`, (err as Error).message);
@@ -1403,13 +1420,64 @@ export class ServiceManager extends EventEmitter {
     }
   }
 
+  /**
+   * Append text to a service's in-memory ring buffer and fan it out to
+   * listeners. The hot path shared by the container log follower and the
+   * compose-output sink; the durable store (docs/192) is deliberately NOT
+   * written here — see {@link composeLogSink} and `streamLogs`.
+   */
+  private bufferServiceLog(name: string, text: string): void {
+    let buf = (this.logBuffers.get(name) ?? "") + text;
+    if (buf.length > ServiceManager.MAX_LOG_BUFFER) {
+      buf = truncateTerminalBuffer(buf, ServiceManager.MAX_LOG_BUFFER);
+    }
+    this.logBuffers.set(name, buf);
+    this.emit("service_log", name, text);
+  }
+
+  /**
+   * Build a sink that relays a `docker compose up`'s own output into the log
+   * stream of the service(s) that `up` is bringing up — see
+   * {@link COMPOSE_LOG_PREFIX} for why the silence it replaces was a bug.
+   *
+   * Line-buffered, because compose emits progress in arbitrary chunks and a
+   * per-chunk prefix would land mid-line.
+   *
+   * Deliberately NOT persisted to the durable log store, even though every
+   * other line in this channel is. `streamLogs` decides between replaying the
+   * container's history (`--tail 1000`) and following only new lines
+   * (`--tail 0`) by asking whether the store already holds this channel — its
+   * guard against duplicating history across follower restarts (docs/192).
+   * Seeding the channel with build output would flip that predicate before the
+   * container has ever been followed, and the container's first lines — emitted
+   * in the gap between `up` returning and the follower attaching, which spans a
+   * network join and a poll — would be lost for good. Live emission plus the
+   * ring buffer covers both viewers that matter: an open panel gets the lines as
+   * they arrive, and a panel opened mid-build gets them from `snapshotLogs`,
+   * which falls back to the ring buffer while `docker compose logs` has no
+   * container to answer for.
+   */
+  private composeLogSink(names: string[]): ComposeOutputSink {
+    let pending = "";
+    return (chunk: string) => {
+      pending += chunk;
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const text = `${COMPOSE_LOG_PREFIX}${line}\n`;
+        for (const name of names) this.bufferServiceLog(name, text);
+      }
+    };
+  }
+
   /** Run a single restart attempt for a service in retry-backoff. */
   private async runRetryNow(name: string): Promise<void> {
     if (this._disposed) return;
     const svc = this.services.get(name);
     if (!svc) return;
     try {
-      await this.withUpInFlight([name], () => this.compose.upService(name));
+      await this.withUpInFlight([name], () => this.compose.upService(name, this.composeLogSink([name])));
       // See `startService` — first manual-service start is the moment
       // the network actually exists, so re-attempt the orchestrator
       // network join here too. Idempotent on subsequent retries.
@@ -1497,7 +1565,7 @@ export class ServiceManager extends EventEmitter {
   private async startGatedBatch(names: string[]): Promise<void> {
     if (this._disposed) return;
     try {
-      await this.withUpInFlight(names, () => this.compose.up(names));
+      await this.withUpInFlight(names, () => this.compose.up(names, this.composeLogSink(names)));
       // First `up` for an otherwise all-gated/all-manual stack is the moment
       // the compose network materializes — attach the orchestrator + agent.
       await this.joinSessionNetwork();
