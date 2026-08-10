@@ -194,6 +194,23 @@ Two rules, both enforced by `npm run check-deps` (`scripts/check-dependency-age.
 
 To bump: edit `package.json` to the exact version, `npm install` to refresh the lockfile, then `npm run check-deps` before opening the PR.
 
+A third rule is enforced separately by `npm run check-audit` (`scripts/check-audit.ts`):
+
+3. **No advisory at `high` or above** may affect the dependency tree unless it is
+   allowlisted in `.audit-allowlist.json` with a reason and an expiry date. The
+   allowlist — not a lowered threshold — is the escape hatch for an advisory
+   with no fix available yet; an expired entry fails the build on purpose, as
+   the reminder to revisit it.
+
+**Transitive vulnerabilities are fixed in the `overrides` block, and nothing
+updates that block for you.** Dependabot manages `dependencies` /
+`devDependencies` only, and an override is absolute, so `npm audit fix` and
+`npm update` cannot move a pin either. A pin left alone becomes the vulnerable
+version it was added to escape, and then blocks every automatic fix — that is
+exactly how the block silently went stale for roughly three months before
+`check-audit` existed. When `check-audit` names a transitive package, raise its
+pin (or add one) in `overrides`, then run `npm install`.
+
 ## Releasing
 
 ShipIt's own repo uses the **`release-branch`** mechanism (`shipit.yaml` `release:` block, docs/214): releases are **merge-triggered**. Cut one by opening a version-bump PR into `stable` and merging it — `.github/workflows/release.yml` then derives the tag `v<package.json version>` from the merged commit, gates on a green build, and **creates + pushes the tag and Release itself**. **Never hand-push a final `vX.Y.Z` tag** — CI owns that. rc's are the exception: cut via the tag path (push `vX.Y.Z-rc.N`), never by merging into `stable`. Use the **`shipit release`** command (`plan` to propose, `prepare` to open/update the PR, `--prerelease --confirm` for an rc), not a hand-rolled bump + `gh pr create`. The stable channel follows the latest **final** tag reachable from `origin/stable` (not the branch tip), failing closed if none exists. Full ritual: `RELEASING.md`; agent-facing copy: `src/server/shipit-docs/release.md` + `prompts/releases.md`.
