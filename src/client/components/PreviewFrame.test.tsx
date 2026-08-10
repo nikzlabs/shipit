@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { PreviewFrame, formatErrorForMessage, type PreviewStatus } from "./PreviewFrame.js";
 import { usePreviewStore } from "../stores/preview-store.js";
@@ -1400,20 +1400,37 @@ describe("PreviewFrame", () => {
       // Run out the retry budget without ever reporting "loaded": two silent
       // reloads, then the verdict.
       //
-      // Advance until the verdict rather than exactly `MAX_AUTH_RETRIES + 1`
-      // times. Each of the first two expiries has to complete a `setRefreshKey`
-      // state update, a re-render and an effect re-arm before the next advance
-      // finds a timer to fire, and that re-render is React's to schedule — a
-      // fixed count leaves zero slack and loses the race on a loaded CI box
-      // while passing every time locally. Extra iterations are inert: once the
-      // verdict lands, `authSettledRef` stops the effect re-arming, so there is
-      // no timer left for an advance to fire. The assertions this test exists
-      // for are the two after the rerender below, and they are untouched.
+      // Each of the first two expiries has to complete a `setRefreshKey` state
+      // update, a re-render and an effect re-arm before the next advance finds
+      // a timer to fire. A bare `advanceTimersByTimeAsync` leaves that flush to
+      // React's own scheduler, which runs on a *real* macrotask captured before
+      // `useFakeTimers()` — so it is not ordered against the real `setTimeout`
+      // the advance yields on. Nothing about the fake clock makes progress:
+      // replace the advance with the synchronous `advanceTimersByTime` and the
+      // verdict never appears, however many times you advance. That is why both
+      // an exact `MAX_AUTH_RETRIES + 1` count and the bounded retry loop that
+      // replaced it flaked on a loaded CI box while passing every time locally
+      // — under load the loop can burn every iteration before React flushes
+      // once, and then falls through to a failing assertion (nikzlabs/shipit#2139).
+      //
+      // `act` flushes React's work before the call returns, so each advance is
+      // guaranteed to find a re-armed timer — three advances suffice with zero
+      // real macrotasks in between. `vi.waitFor` keeps the bound wall-clock
+      // rather than iteration-count, so a slow box buys more time instead of
+      // running out of tries. Extra iterations are inert: once the verdict
+      // lands, `authSettledRef` stops the effect re-arming, so there is no
+      // timer left for an advance to fire. The assertions this test exists for
+      // are the two after the rerender below, and they are untouched.
       await vi.waitFor(() => expect(screen.queryByTitle("Live Preview")).toBeInTheDocument());
-      for (let i = 0; i < 10 && !screen.queryByText("Preview authentication required"); i++) {
-        await vi.advanceTimersByTimeAsync(MAX_AUTH_TIMEOUT_MS + 1);
-      }
-      expect(screen.getByText("Preview authentication required")).toBeInTheDocument();
+      await vi.waitFor(
+        async () => {
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(MAX_AUTH_TIMEOUT_MS + 1);
+          });
+          expect(screen.getByText("Preview authentication required")).toBeInTheDocument();
+        },
+        { timeout: 10_000, interval: 10 },
+      );
 
       const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
       rerender(<PreviewFrame preview={previewB} sessionId="session-b" {...defaultProps} />);
@@ -1432,7 +1449,9 @@ describe("PreviewFrame", () => {
       vi.useRealTimers();
       vi.unstubAllEnvs();
     }
-  });
+    // Above the 10s `waitFor` budget, so a genuinely stuck wait reports what it
+    // was waiting for instead of being cut short by the 5s default.
+  }, 20_000);
 });
 
 describe("formatErrorForMessage", () => {
