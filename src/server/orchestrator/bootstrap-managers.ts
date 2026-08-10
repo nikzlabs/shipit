@@ -489,9 +489,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
    * session's turns are billed to", asked at ~6 call sites, and re-keying them
    * would be churn without a behaviour change.
    */
-  const markSessionAccountExhausted = (sessionId: string, until: number): void => {
+  const markSessionAccountExhausted = (sessionId: string, until: number, capturedRouteId?: string): void => {
     const session = sessionManager.get(sessionId);
-    if (!session?.providerRouteId) return;
+    const routeId = capturedRouteId ?? session?.providerRouteId;
+    if (!session || !routeId) return;
     if (session.providerRouteKind === "account") {
       if (!session.agentId) return;
       const marked = providerAccountManager?.markAccountExhausted(
@@ -500,12 +501,12 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         // harness's own vendor — that is what `via: "account"` means — so the
         // conversion is total, not a guess.
         accountServiceForHarness(session.agentId),
-        session.providerRouteId,
+        routeId,
         until,
       );
       if (marked) {
         console.log(
-          `[quota] ${session.agentId} account ${session.providerRouteId} reported exhausted by session `
+          `[quota] ${session.agentId} account ${routeId} reported exhausted by session `
           + `${sessionId}; benched until ${new Date(until).toISOString()}`,
         );
       }
@@ -513,7 +514,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     }
     // `markCredentialRouteExhausted` is what refuses a `key` route, so the rule
     // lives with the store rather than being re-stated per caller.
-    const benched = credentialStore.markCredentialRouteExhausted(session.providerRouteId, until);
+    const benched = credentialStore.markCredentialRouteExhausted(routeId, until);
     if (benched) {
       console.log(
         `[quota] ${benched.serviceId}:${benched.billingMode} credential ${benched.id} reported exhausted `

@@ -90,6 +90,13 @@ export interface AgentListenerDeps {
      * account. Omitted only where no session owns the turn.
      */
     sessionId?: string,
+    /**
+     * Credential route captured with the turn. A session can be repointed
+     * during quota failover while its old process is still emitting terminal
+     * telemetry; resolving the route from the mutable session row then files
+     * the old account's windows under the new account.
+     */
+    routeId?: string,
   ) => void;
   /** Optional: latest subscription-limits snapshot, used to reclassify generic CLI errors. */
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
@@ -104,7 +111,7 @@ export interface AgentListenerDeps {
    * orchestrator's job, not this module's. Optional — tests and local runtime
    * omit it, in which case the live quota telemetry remains the only signal.
    */
-  markSessionAccountExhausted?: (sessionId: string, until: number) => void;
+  markSessionAccountExhausted?: (sessionId: string, until: number, routeId?: string) => void;
   /**
    * docs/153 — fire-and-forget nudge to the orchestrator-owned Claude OAuth
    * refresher. Triggered from the session-level `auth_required` handler so a
@@ -259,6 +266,10 @@ export function wireAgentListeners(
     throw new Error("wireAgentListeners requires opts.capturedSessionId");
   }
   const sessionAtTurnStart = deps.sessionManager.get(opts.capturedSessionId);
+  // Quota belongs to the credential that started this turn. Keep that answer
+  // beside the other captured turn state: failover can repoint the persisted
+  // session before the outgoing process emits its last rate-limit event.
+  const routeIdAtTurnStart = sessionAtTurnStart?.providerRouteId;
   // Capture the model used for this turn — sourced from `agent_init` (what the
   // CLI actually picked) or falls back to the selected model. Used on
   // `agent_result` to attach the model to per-turn usage so the dial can
@@ -423,7 +434,13 @@ export function wireAgentListeners(
     // single callback — the orchestrator dispatches to the right provider.
     // See docs/135.
     if (event.type === "agent_rate_limits") {
-      deps.recordAgentRateLimits?.(agent.agentId, event.session, event.weekly, opts.capturedSessionId);
+      deps.recordAgentRateLimits?.(
+        agent.agentId,
+        event.session,
+        event.weekly,
+        opts.capturedSessionId,
+        routeIdAtTurnStart,
+      );
       return;
     }
 
@@ -798,7 +815,11 @@ export function wireAgentListeners(
         : detectHardExhaustionInTurnText(noticeText);
       const exhaustedSessionId = opts.capturedSessionId;
       if (exhaustedSessionId && deps.markSessionAccountExhausted && detected) {
-        deps.markSessionAccountExhausted(exhaustedSessionId, exhaustionLockoutUntil(detected));
+        deps.markSessionAccountExhausted(
+          exhaustedSessionId,
+          exhaustionLockoutUntil(detected),
+          routeIdAtTurnStart,
+        );
       }
       // A turn the provider refused for quota is a FAILED turn even when the
       // CLI dressed it up as a successful one. Promote it here, where both

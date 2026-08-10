@@ -207,7 +207,7 @@ export interface AppCtx {
    * next turn fails over instead of hitting the same wall. Optional — test
    * contexts and non-WS callers don't wire it.
    */
-  markSessionAccountExhausted?: (sessionId: string, until: number) => void;
+  markSessionAccountExhausted?: (sessionId: string, until: number, routeId?: string) => void;
   /**
    * docs/153 — fire-and-forget nudge to the orchestrator-owned Claude OAuth
    * refresher. Invoked from the session-level `auth_required` handler so that

@@ -66,6 +66,44 @@ function deps(): AgentListenerDeps {
 }
 
 describe("wireAgentListeners", () => {
+  it("attributes quota telemetry to the credential route captured for the turn", () => {
+    const agent = new FakeAgent();
+    const runner = new SessionRunner({
+      sessionId: "session-1",
+      sessionDir: "/tmp/session-1",
+      defaultAgentId: "codex",
+    });
+    const d = deps();
+    const session = { providerRouteId: "acct-old" };
+    d.sessionManager.get = vi.fn(() => session) as never;
+    d.recordAgentRateLimits = vi.fn();
+
+    wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+      capturedSessionId: "session-1",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+    });
+
+    // Failover can repoint the row while the outgoing process is still
+    // emitting its terminal rate-limit event.
+    session.providerRouteId = "acct-new";
+    const event = {
+      type: "agent_rate_limits",
+      session: { usedPct: 100, resetAt: "2026-08-10T13:00:00Z" },
+      weekly: { usedPct: 52, resetAt: "2026-08-15T00:00:00Z" },
+    } satisfies AgentEvent;
+    agent.emit("event", event);
+
+    expect(d.recordAgentRateLimits).toHaveBeenCalledWith(
+      "codex",
+      event.session,
+      event.weekly,
+      "session-1",
+      "acct-old",
+    );
+    runner.dispose({ force: true });
+  });
+
   it("keeps Codex stream-completion events internal so live text is not duplicated", () => {
     const agent = new FakeAgent();
     const runner = new SessionRunner({
@@ -124,26 +162,38 @@ describe("wireAgentListeners", () => {
         defaultAgentId: "codex",
       });
       const d = deps();
-      const marked: { sessionId: string; until: number }[] = [];
-      d.markSessionAccountExhausted = (sessionId, until) => { marked.push({ sessionId, until }); };
+      const session = { providerRouteId: "acct-old" };
+      d.sessionManager.get = vi.fn(() => session) as never;
+      const marked: { sessionId: string; until: number; routeId?: string }[] = [];
+      d.markSessionAccountExhausted = (sessionId, until, routeId) => {
+        marked.push({ sessionId, until, routeId });
+      };
       wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
         capturedSessionId: "session-1",
         isNewSession: false,
         persistUserMessage: vi.fn(),
       });
-      return { agent, runner, marked };
+      return { agent, runner, marked, session };
     }
 
     it("benches the session's account until the reset the provider named", () => {
-      const { agent, runner, marked } = wireForResult();
+      const { agent, runner, marked, session } = wireForResult();
       const resetAt = new Date(Date.now() + 3_600_000).toISOString();
+
+      // The old process can finish after failover has already repointed the
+      // persisted session. Its exhaustion still belongs to the old route.
+      session.providerRouteId = "acct-new";
 
       agent.emit("event", {
         type: "agent_result",
         error: `You've hit Codex's 5h usage limit. It resets at ${resetAt}.`,
       } as AgentEvent);
 
-      expect(marked).toEqual([{ sessionId: "session-1", until: Date.parse(resetAt) }]);
+      expect(marked).toEqual([{
+        sessionId: "session-1",
+        until: Date.parse(resetAt),
+        routeId: "acct-old",
+      }]);
       runner.dispose({ force: true });
     });
 
