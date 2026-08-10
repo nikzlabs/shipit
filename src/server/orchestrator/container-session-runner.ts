@@ -2562,7 +2562,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get disposed(): boolean { return this._disposed; }
 
-  dispose(opts?: { force?: boolean }): void {
+  dispose(opts?: { force?: boolean; preserveAgent?: boolean }): void {
     if (this._disposed) return;
     // Diagnostic: log caller. Field reports show runners being disposed
     // without any of the known dispose-path log prefixes appearing.
@@ -2592,22 +2592,40 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     }
     this._disposed = true;
 
-    // planning#280 — cancel in-flight sub-agent spawns BEFORE the container goes
-    // away. Their HTTP requests are the only handle we have on them; without
-    // this abort the awaiting `runSubAgent` either hangs on a half-open socket
-    // or rejects minutes later, and either way the consult vanishes from the
-    // transcript with no terminal card.
-    this.cancelInFlightSubAgents("runner disposed");
+    // docs/113 — `preserveAgent` is the orchestrator-shutdown path, and it must
+    // not reach into the worker AT ALL. Keeping the container alive across an
+    // update is only half of "running turns survive": the CLI inside it has to
+    // keep running too. The kill below clears the worker's `turnActive`
+    // (`agent-controller.ts` → `endTurn()`), and the next orchestrator's
+    // `reattachInFlightTurns()` (docs/240) adopts a turn ONLY while
+    // `turnActive === true` — so killing here leaves a live turn unadoptable,
+    // its transcript tail unpersisted and its post-turn commit unrun, with the
+    // edits sitting in the working tree. That is the half of the 2026-08-10
+    // incident that surviving containers alone does not fix.
+    //
+    // Everything below this block is local state and still runs: the runner
+    // object dies with the process either way.
+    if (!opts?.preserveAgent) {
+      // planning#280 — cancel in-flight sub-agent spawns BEFORE the container goes
+      // away. Their HTTP requests are the only handle we have on them; without
+      // this abort the awaiting `runSubAgent` either hangs on a half-open socket
+      // or rejects minutes later, and either way the consult vanishes from the
+      // transcript with no terminal card.
+      this.cancelInFlightSubAgents("runner disposed");
 
-    // Kill agent on worker (fire and forget). Names ITS OWN spawn as the
-    // victim: the container outlives this runner (a new runner may reconnect
-    // and adopt or start a fresh spawn), so an untargeted kill delayed on a
-    // slow worker could land on that successor's live process — the 2026-08-09
-    // incident class. Targeted, a late execution against a reused slot no-ops.
-    if (this._agent) {
-      workerPost(this.workerUrl, "/agent/kill", { runToken: this._agent.runToken }).catch(() => {});
-      this._agent = null;
+      // Kill agent on worker (fire and forget). Names ITS OWN spawn as the
+      // victim: the container outlives this runner (a new runner may reconnect
+      // and adopt or start a fresh spawn), so an untargeted kill delayed on a
+      // slow worker could land on that successor's live process — the 2026-08-09
+      // incident class. Targeted, a late execution against a reused slot no-ops.
+      if (this._agent) {
+        workerPost(this.workerUrl, "/agent/kill", { runToken: this._agent.runToken }).catch(() => {});
+      }
     }
+    // Drop the local proxy either way — it is an in-memory object that cannot
+    // outlive this process. On the preserve path its worker-side spawn keeps
+    // running and is re-proxied by the next orchestrator's reattach sweep.
+    this._agent = null;
 
     // Don't stop worker resources (preview, file watcher) — the container
     // stays alive and a new runner may reconnect to it. Stopping the preview

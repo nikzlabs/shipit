@@ -597,7 +597,19 @@ async function sweepOrphanSessionNetworks(
   // Preserve networks for every session that still holds on-disk state, i.e.
   // anything not `evicted` (see `sweepOrphanSessionVolumes` for why `list()`
   // is too narrow here).
-  const livePrefixes = new Set(
+  //
+  // Re-read per call rather than snapshotting once: this sweep is
+  // fire-and-forget from boot (`startup-monitors.ts`) and paced, so it can
+  // still be running well after the server starts accepting session creates. A
+  // session created after a one-shot snapshot would be invisible to it, and its
+  // network exists BEFORE its container joins (`container-lifecycle.ts` creates
+  // the network, then prepares overlays, then attaches) — so it is `dangling`
+  // and unprotected for exactly the window that matters. That is the same
+  // create-vs-prune race that made `docker network prune -f` in `deploy.sh`
+  // delete 18 live session networks on 2026-08-10; a narrower window is still
+  // the same bug. The read is a synchronous in-memory/SQLite list against a
+  // 500ms-paced loop, so per-removal is free.
+  const livePrefixes = (): Set<string> => new Set(
     sessionManager.listAll()
       .filter((s) => s.diskTier !== "evicted")
       .map((s) => s.id.slice(0, 12).toLowerCase()),
@@ -616,21 +628,26 @@ async function sweepOrphanSessionNetworks(
     return 0;
   }
 
-  const toRemove: string[] = [];
+  const candidates: { name: string; prefix: string }[] = [];
+  const listed = livePrefixes();
   for (const raw of listOut.split("\n")) {
     const name = raw.trim();
     if (!name) continue;
     const m = SESSION_NETWORK_RE.exec(name);
     if (!m) continue;
     const prefix = m[1].toLowerCase();
-    if (livePrefixes.has(prefix)) continue;
-    toRemove.push(name);
+    if (listed.has(prefix)) continue;
+    candidates.push({ name, prefix });
   }
 
   let removed = 0;
-  for (const name of toRemove) {
+  for (const { name, prefix } of candidates) {
     try {
       await sleep(paceMs);
+      // Re-check immediately before the destructive call: a session created
+      // since the listing above owns this name now, and its network is
+      // `dangling` until its container attaches.
+      if (livePrefixes().has(prefix)) continue;
       await runDocker(["network", "rm", name]);
       removed += 1;
     } catch {

@@ -88,6 +88,19 @@ describe("registerShutdownHook", () => {
     ]);
   });
 
+  it("disposes runners with preserveAgent, so live turns are left for the next boot to adopt", async () => {
+    const { app, run } = captureOnClose();
+    const { deps } = buildDeps();
+
+    registerShutdownHook(app, deps);
+    await run();
+
+    // Without this the forced dispose posts `/agent/kill`, the worker clears
+    // `turnActive`, and `reattachInFlightTurns()` refuses to adopt the turn.
+    // The behavior itself is guarded in `container-session-runner.test.ts`.
+    expect(deps.runnerRegistry.disposeAll).toHaveBeenCalledWith({ preserveAgent: true });
+  });
+
   it("tolerates a missing container manager (local runtime mode)", async () => {
     const { app, run } = captureOnClose();
     const { deps } = buildDeps();

@@ -1434,8 +1434,15 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * running — lifecycle events (idle cleanup, transient WebSocket disconnects)
    * must never kill a running agent. Pass `{ force: true }` from a shutdown /
    * full-reset path that explicitly wants to tear down everything.
+   *
+   * `preserveAgent` additionally spares everything on the WORKER side (the
+   * `/agent/kill` post and the sub-agent aborts), leaving the CLI running so
+   * the next orchestrator can adopt its in-flight turn. Only the
+   * orchestrator-shutdown path passes it — see docs/113 and
+   * `ContainerSessionRunner.dispose`. It is a no-op for the local runner,
+   * whose agent is a child of this very process.
    */
-  dispose(opts?: { force?: boolean }): void;
+  dispose(opts?: { force?: boolean; preserveAgent?: boolean }): void;
 
   /**
    * Reconcile the local `running` flag with the actual agent state.
@@ -1941,14 +1948,20 @@ export class SessionRunnerRegistry {
    * (the underlying runner enforces this). Pass `{ force: true }` only from
    * shutdown / full-reset paths that explicitly need unconditional teardown.
    */
-  dispose(sessionId: string, opts?: { force?: boolean }): void {
+  dispose(sessionId: string, opts?: { force?: boolean; preserveAgent?: boolean }): void {
     this.runners.get(sessionId)?.dispose(opts);
   }
 
-  /** Dispose all runners (for full_reset / shutdown). Forced — kills running agents. */
-  disposeAll(): void {
+  /**
+   * Dispose all runners (for full_reset / shutdown). Forced — kills running
+   * agents, unless the caller passes `{ preserveAgent: true }`, which the
+   * orchestrator-shutdown path does so the CLI in each container keeps working
+   * and the next orchestrator can adopt its turn (docs/113 + docs/240). Full
+   * reset does NOT: the user is wiping everything.
+   */
+  disposeAll(opts?: { preserveAgent?: boolean }): void {
     for (const runner of this.runners.values()) {
-      runner.dispose({ force: true });
+      runner.dispose({ force: true, ...(opts?.preserveAgent ? { preserveAgent: true } : {}) });
     }
     this.runners.clear();
   }

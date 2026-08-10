@@ -897,10 +897,16 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   // docs/113 zero-downtime updates got defeated: `deploy.sh` stopped killing
   // session containers, and the orchestrator's own shutdown hook kept doing it.
   // Teardown is per-session and explicit (`destroy(sessionId)`), owned by the
-  // idle enforcer, archive/repo-delete, tier escalation and Rescue. Full reset
-  // does not need a sweep either: it disposes the runners and wipes the
-  // workspace, and the boot-time `cleanupOrphanContainers()` reaps whatever no
-  // longer maps to an active session.
+  // idle enforcer, archive/repo-delete, tier escalation and Rescue.
+  //
+  // `full_reset` is the one path that arguably wants a sweep and never had one:
+  // `fullReset()` (`services/misc.ts`) disposes the runners and wipes the
+  // workspace but takes no container manager, so the containers run on against
+  // a deleted workspace until the idle enforcer's capacity limit or the next
+  // boot's `cleanupOrphanContainers()` reaps them. That is pre-existing — this
+  // method was never wired there despite its old "for full_reset" docstring —
+  // and fixing it means giving `fullReset` a container manager, not resurrecting
+  // an all-sessions sweep on a path that doesn't need one.
 
   /**
    * Forcibly reap any compose-child resources still labeled
