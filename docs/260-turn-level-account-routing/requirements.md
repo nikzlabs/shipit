@@ -52,6 +52,28 @@ requirement below contradicts it.
    account-agnostic, verified in docs/150); credentials are never rewritten
    under a turn that is running right now (decision of 2026-08-03).
 
+8. The strategy always wins. When a better account (per the selection
+   strategy) becomes eligible again, the next turn moves onto it — even when
+   the session's resident CLI process runs on another account. The restart
+   cost of that process is accepted; the conversation is preserved.
+
+9. A quota refusal reported by the harness is remembered: the account is left
+   alone until the provider-stated reset time, but re-tried after at most
+   ~30 minutes. When ShipIt's quota data says an account is out of quota, the
+   account is still tried once to confirm — and after that refusal it is left
+   alone on the same terms. An account is never re-tried on every turn while
+   its refusal is remembered, and never blocked without having been tried.
+
+10. The transcript shows every actual attempt: a refused attempt is shown
+    when it happens, and a turn that runs on a different account than the
+    previous turn says so, in the user's own account labels. This is not
+    noisy by construction — requirement 9 means a refused account is left
+    alone until it recovers, so repeated identical notices cannot occur.
+
+11. This applies to every subscription-shaped credential: Claude accounts,
+    Codex/ChatGPT accounts, and string-delivered subscriptions (e.g. the GLM
+    coding plan).
+
 ## Design context — constraints, not requirements
 
 The agent supplied these during the diagnosis; they bound the design but are
@@ -72,13 +94,14 @@ not user-observable requirements.
   locally-refreshed token — the account-blind expiry guard in
   `token-sync-manager.ts` is exactly the bug shape req 4 forbids.
 - **Resident-process churn.** Switching accounts kills a resident CLI process
-  (seconds of latency, conversation preserved). How much the router should
-  prefer the currently-running process's account is Open question 1.
-- **Repeated-refusal cost.** With every subscription genuinely spent, req 6
-  naively spawns and fails once per account on every message. How long a
-  provider refusal may be remembered is Open question 2 — a remembered refusal
-  is still harness-reported, so it does not violate req 5, but an unbounded
-  memory recreates the stale-bench deadlock this feature exists to remove.
+  (seconds of latency, conversation preserved). Req 8 accepts this: the
+  strategy wins; stickiness is at most a tiebreak among equally-ranked
+  accounts.
+- **Repeated-refusal cost.** Bounded by req 9: a refusal is remembered until
+  the stated reset with a ~30-minute re-probe cap. The remembered refusal is
+  still harness-reported, so it does not violate req 5, and the cap prevents
+  the unbounded memory that recreated the stale-bench deadlock this feature
+  removes.
 - **Machinery this deletes** (the 2026-08-10 trace found all three permanent
   stuck states inside it): the bench-vs-snapshot reconciliation
   (`reconcileHardExhaustion`, `isTrustedHealthySnapshot`, the `exhaustedAt`/
@@ -97,29 +120,24 @@ not user-observable requirements.
 
 ## Open questions
 
-- **Q1 — moving back when a better account recovers.** Strict-priority mode:
-  a session's resident process runs on the secondary account and the primary
-  becomes eligible again. Should the next turn move back to the primary
-  (restart the resident process, a few seconds), or stay on the secondary
-  while it remains eligible? Recommendation: follow the strategy — move back;
-  stickiness is only a tiebreak, mainly relevant under `balanced`.
-- **Q2 — how long a harness refusal is remembered.** Options: (a) until the
-  provider-stated reset time; (b) until the stated reset but never longer
-  than a fixed cap (e.g. 30–60 min) without re-probing; (c) not at all —
-  always try. Recommendation: (b); the cap is the insurance against
-  wrong-attribution bugs making a remembered refusal stale.
-- **Q3 — transcript notices for account changes.** When a turn runs on a
-  different account than the previous turn, or hops accounts mid-turn after a
-  refusal: one notice per actual change, a notice for every attempted hop, or
-  silence? Recommendation: one notice per actual change, in the user's own
-  account labels, as today.
-- **Q4 — scope across credential shapes.** Apply the same turn-level model to
-  Codex/ChatGPT accounts and to string-delivered subscriptions (e.g. GLM
-  coding plan), or Claude accounts only first? Recommendation: one policy for
-  every subscription-shaped credential; the string shape currently has no
-  bench-recovery path at all, so it needs this most.
+None — design and implementation are unblocked.
 
 ## Resolved questions
+
+- 2026-08-10 — Moving back when a better account recovers (strict priority,
+  resident process on the secondary)? Nik: follow the strategy — the next
+  turn moves back. Recorded as requirement 8.
+- 2026-08-10 — How long is a harness refusal remembered? Nik: until the
+  provider-stated reset, with a ~30-minute re-probe cap. Recorded as
+  requirement 9.
+- 2026-08-10 — Transcript notices for account attempts? Nik: show every
+  actual attempt — and rejected the "noisy" concern as wrong: a refused
+  account is left alone until it recovers (requirement 9), so an account is
+  tried once when our data says it is out of quota, not on every turn.
+  Repeated identical notices cannot occur. Recorded as requirement 10.
+- 2026-08-10 — Scope across credential shapes? Nik: all subscription-shaped
+  credentials — Claude accounts, Codex accounts, string-delivered
+  subscriptions. Recorded as requirement 11.
 
 - 2026-08-10 — Should the standalone incident fix (per-session token identity
   check) ship before this rework? Nik: no — sessions recovered on their own,
