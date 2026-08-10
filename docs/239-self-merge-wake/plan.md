@@ -186,6 +186,22 @@ Three changes, each closing one link of that chain:
   genuinely in flight. Fails open — an unreachable worker is the failure the retry
   exists for.
 
+**Follow-up, 2026-08-10 — retirement is displacement too.** The same duplicate wake
+recurred (session 18d04568, PR #2104 sent twice three minutes apart) through a route the
+first bullet does not cover. `supersedeDisplacedAgent` fires on a slot **replacement** —
+`setAgent(next)` over a still-installed proxy. Both retirement blocks in
+`runDispatchedTurn`'s `runOnce` take the other shape, `kill(); setAgent(null);
+createAgent()`, so the incoming proxy is installed over an already-empty slot and the
+hook has nothing to compare against. Wake A had produced its `agent_result` and its
+post-turn drain started wake B; B is a system turn, so it declined to adopt A's resident
+process and retired it here; A's own `agent_done` was then dropped by the docs/146
+stale-spawn guard, and A never settled at all. `dispatched-turn.ts` now calls
+`supersedeRetiredTurn(outgoing)` at both retirement sites, before the kill (and, in the
+failover block, before `removeAllListeners` — the settlement travels on one of those
+listeners). Settlement only, same as the displacement hook; the outcome is `completed`
+when the retired turn's result had arrived, `interrupted` when it had not, and never
+`no-result`.
+
 The wider `systemTurn && !reuse` preemption is **not** fixed here: its comment ("only
 reachable with no turn in flight — `dispatchOnRunner` enqueues while `running`") is
 accurate as far as the flag goes, and every other system-turn dispatcher (rebase
@@ -304,6 +320,7 @@ reordered call site.
 | Delivery | `merge-watch.ts` | Self branch: anchor comparison, closed-note, `watchId` settlement check, `reconcilePending` branch; planning#318 `interrupted` is terminal + the retry's `hasTurnInFlight` gate |
 | Settlement | `turn-settlement.ts`, `turn-executor.ts` | planning#318 `interrupted` outcome; settle on the `superseded` event |
 | Slot displacement | `container-session-runner.ts`, `session-runner.ts`, `proxy-agent-process.ts` | planning#318 emit `superseded` on a proxy pushed out by a newer spawn |
+| Slot retirement | `dispatched-turn.ts` | planning#318 follow-up: `supersedeRetiredTurn` at both `runOnce` retirement sites, which clear the slot before spawning and so bypass the displacement hook |
 | Wake | `wake-session.ts` | Restore the checkout if missing |
 | Reset | `services/pre-turn-reset.ts` | Explicit mode: setting-blind, idempotent, strict push failure, ownership handback |
 | Prompt | `orchestrator/prompts/self-merge-wake.md` | Co-located template |

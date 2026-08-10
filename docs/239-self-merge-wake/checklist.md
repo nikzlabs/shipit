@@ -82,6 +82,9 @@ it has been cut — see the plan's "Resolved decisions".
 - [x] `interrupted` `TurnOutcome`; `no-result` reserved for "never ran"
 - [x] `merge-watch` treats `interrupted` as terminal (`delivered`), not retryable
 - [x] `retryStalledDeliveries` gates on the worker's `turnActive` (`hasTurnInFlight`)
+- [x] Follow-up (2026-08-10): a turn whose resident process is RETIRED at a spawn
+      boundary (`kill(); setAgent(null); createAgent()`) settles too — the retirement
+      sites clear the slot first, so the displacement hook never saw them
 
 ## Docs
 

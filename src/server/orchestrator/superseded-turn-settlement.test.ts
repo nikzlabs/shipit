@@ -166,6 +166,94 @@ describe("a superseded turn settles (planning#318)", () => {
     expect(agents).toHaveLength(1);
   });
 
+  it("settles the turn whose resident process a drained system turn RETIRES", async () => {
+    // The prod route the `setAgent`-replacement hook above does not cover
+    // (2026-08-10, session 18d04568). Two merge wakes land back to back:
+    //   • wake A runs, produces its `agent_result`, and its post-turn drain
+    //     starts wake B while A's streaming process is still resident;
+    //   • B is a system turn, so it declines to adopt that process and RETIRES
+    //     it — `kill(); setAgent(null); createAgent()`.
+    // The slot is empty by the time B's proxy is installed, so
+    // `supersedeDisplacedAgent` never fires, and A's own `agent_done` is dropped
+    // by the docs/146 stale-spawn guard. A therefore never settled at all: its
+    // merge-watch sat at `merge-observed` and the retry supervisor re-sent the
+    // identical wake three minutes later.
+    const { runner, agents } = makeRunnerWithDeps();
+    const outcomesA: TurnOutcome[] = [];
+
+    runner.dispatch(testDispatch({
+      text: "Child PR #2104 merged.",
+      systemTurn: true,
+      deliveryId: "watch-2104:1",
+      onTurnComplete: (o) => outcomesA.push(o),
+    }));
+    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "wake A started");
+
+    // The second wake arrives while A is running, so it queues.
+    runner.dispatch(testDispatch({
+      text: "Child PR #2105 merged.",
+      systemTurn: true,
+      deliveryId: "watch-2105:1",
+    }));
+    expect(runner.queueLength).toBe(1);
+
+    // A's result runs its post-turn flow, which drains B on top of A's
+    // still-resident process.
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "wake B started");
+
+    // 1. B really did retire A's process rather than adopt it.
+    expect(agents[0]!.kill).toHaveBeenCalled();
+    // 2. A settled — the property that was missing. `completed` because A's
+    //    `agent_result` had arrived; the outcome that matters is that it is
+    //    NOT `no-result`, which is the only one planning#260's supervisor retries.
+    //    `merge-watch` marks `completed` and `interrupted` alike as delivered.
+    expect(outcomesA).toHaveLength(1);
+    expect(outcomesA[0]!.status).toBe("completed");
+    // 3. …and A's late `agent_done` (the one prod dropped as stale) cannot
+    //    re-settle it into a retryable outcome.
+    agents[0]!.emit("done", 0);
+    await flushTurn();
+    expect(outcomesA).toHaveLength(1);
+    expect(outcomesA[0]!.status).toBe("completed");
+
+    runner.clearQueue();
+    runner.dispose({ force: true });
+  });
+
+  it("settles a RETIRED turn that never produced a result as `interrupted`", async () => {
+    // Same retirement, reached with no `agent_result` behind it: the settlement
+    // must still not read as `no-result`, or the supervisor re-delivers a wake
+    // whose prompt a live agent already received.
+    const { runner, agents } = makeRunnerWithDeps();
+    const outcomes: TurnOutcome[] = [];
+
+    runner.dispatch(testDispatch({
+      text: "Child PR #2104 merged.",
+      systemTurn: true,
+      deliveryId: "watch-2104:1",
+      onTurnComplete: (o) => outcomes.push(o),
+    }));
+    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "wake A started");
+
+    // Drive the retirement directly — the shape the drain reaches, minus A's
+    // result. `runDispatchedTurn`'s `systemTurn && !reuse` block is what runs.
+    void runner.runDispatchedTurn(testDispatch({
+      text: "Child PR #2105 merged.",
+      systemTurn: true,
+      deliveryId: "watch-2105:1",
+    }));
+    await waitForTurn(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "wake B started");
+
+    expect(agents[0]!.kill).toHaveBeenCalled();
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.status).toBe("interrupted");
+    expect(outcomes[0]!.errored).toBe(false);
+
+    runner.clearQueue();
+    runner.dispose({ force: true });
+  });
+
   it("still settles as `no-result` when the turn genuinely never ran", async () => {
     const { runner, agents } = makeRunnerWithDeps();
     const outcomes: TurnOutcome[] = [];
