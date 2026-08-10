@@ -224,9 +224,12 @@ describe("PreviewFrame", () => {
       targetPath: "/requirements?focus=7#req-7", clickId: 1, startedAt: Date.now(),
     });
 
+    // Targeted at the slot's origin, not "*": a WindowProxy keeps its identity
+    // across origin changes, so the capability gate alone would hand the URL to
+    // a page the preview navigated itself to.
     await vi.waitFor(() => expect(postMessage).toHaveBeenCalledWith(
       { source: "shipit-toolbar", type: "navigate", url: "http://localhost:5173/requirements?focus=7#req-7" },
-      "*",
+      "http://localhost:5173",
     ));
     expect(srcSetter).not.toHaveBeenCalled();
     // The intent is consumed either way — it describes one click.

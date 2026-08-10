@@ -417,8 +417,16 @@ export function PreviewFrame({
 
     if (outcome.kind === "navigate") {
       const win = el.contentWindow;
-      if (win && reloadableWindowsRef.current.get(activeSlotKey) === win) {
-        win.postMessage({ source: "shipit-toolbar", type: "navigate", url: outcome.url }, "*");
+      // Targeted at the slot's own origin, never `"*"`. A `WindowProxy` keeps
+      // its identity across document AND origin changes, so a frame that has
+      // since navigated itself somewhere else still matches the capability
+      // gate — and this message carries the agent-authored URL, which a foreign
+      // page must not be handed. A mismatch drops the message in the browser;
+      // that leaves the click doing nothing, which is the accepted best-effort
+      // class (req 10), not a leak.
+      const expectedOrigin = previewOrigin(activeSlotUrl);
+      if (win && expectedOrigin && reloadableWindowsRef.current.get(activeSlotKey) === win) {
+        win.postMessage({ source: "shipit-toolbar", type: "navigate", url: outcome.url }, expectedOrigin);
       } else {
         el.src = outcome.url;
       }

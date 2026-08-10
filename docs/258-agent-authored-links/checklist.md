@@ -31,11 +31,15 @@
 - [x] A new slot is created at the destination; a live slot is handed the
       destination, and left alone when the page already reports it is there
 - [x] Navigating within the page (req 13): the injected script's `navigate`
-      command changes only the fragment in place, uses `navigation.navigate()` /
+      command changes only the fragment in place, removes one by hand
+      (`pushState` + synthetic `hashchange`), uses `navigation.navigate()` /
       `location.assign` for a real navigation, and the parent falls back to
       `src` for a slot with no injected script
-- [x] Toolbar commands are accepted only from the embedding window, and a
-      `navigate` URL off the preview's origin is refused
+- [x] Toolbar commands are accepted only from the embedding window; a `navigate`
+      URL off the preview's origin is refused; the command is posted to the
+      slot's origin, not `"*"`, since a `WindowProxy` outlives its document
+- [ ] Whether req 13 extends past the fragment to path/query changes — open
+      question in `requirements.md`, awaiting a human call
 - [x] Cancel on session switch; last-click-wins on rapid clicks
 - [x] A click is scoped to the transcript's own session, so a deferred render of
       the outgoing one cannot act on the incoming session's services

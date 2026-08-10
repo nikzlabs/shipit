@@ -117,7 +117,20 @@ const HMR_WS_PATCH = `<script>(function(){` +
       // Same second check the parent makes. What follows is a navigation, and
       // this side is the one that can compare against the live location.
       `if(t.origin!==c.origin||t.href===c.href)return;` +
-      `if(t.pathname===c.pathname&&t.search===c.search&&t.hash){location.hash=t.hash;return}` +
+      `if(t.pathname===c.pathname&&t.search===c.search){` +
+        `if(t.hash){location.hash=t.hash;return}` +
+        // Same page, fragment REMOVED. `location.hash=""` would leave a bare
+        // "#", and falling through to a real navigation would reload the app to
+        // drop a fragment — the exact blink req 13 exists to remove. The
+        // browser's own fragment path doesn't cover this (the navigation
+        // algorithm takes it only for a non-null destination fragment), so do
+        // it by hand: rewrite the entry, then say so. `pushState` is the one we
+        // wrapped, so the parent's path report fires from it.
+        `history.pushState(history.state,"",t.href);` +
+        `try{window.dispatchEvent(new HashChangeEvent("hashchange",` +
+          `{oldURL:c.href,newURL:t.href}))}catch(e2){}` +
+        `return` +
+      `}` +
       // A different path or query is a cross-document navigation by web
       // semantics, so it reloads — unless the app runs its own router on the
       // Navigation API, which gets to intercept this and stay same-document.
@@ -125,6 +138,10 @@ const HMR_WS_PATCH = `<script>(function(){` +
       // for History-API routers too, but it is a guess about the page: one that
       // reads `location.search` at load and never routes would keep rendering
       // the old content under the new URL, which is worse than the reload.
+      // A rejection here is swallowed rather than recovered from: the causes are
+      // an interceptor deliberately aborting (an unsaved-changes guard) and a
+      // superseding navigation, and forcing `location.assign` would override the
+      // app in the first case and fight it in the second.
       `if(nav&&nav.navigate){var r=nav.navigate(t.href);` +
         `r.committed.catch(swallow);r.finished.catch(swallow);return}` +
       `location.assign(t.href)` +

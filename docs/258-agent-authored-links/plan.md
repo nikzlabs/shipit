@@ -209,6 +209,12 @@ apart:
 - **Only the fragment differs** → `location.hash = …`, a same-document
   navigation. No request, no reload, and `hashchange` fires — which is the
   reaction channel req 11 already promises the page.
+- **Same page, fragment removed** → the browser's own fragment path does not
+  cover this (the navigation algorithm takes it only for a non-null destination
+  fragment), so it is done by hand: `pushState` to the new URL — the wrapped
+  one, so the parent's path report follows — plus a synthetic `hashchange`,
+  since nothing else would tell the page. Without it, a pointer at *the app as a
+  whole* would reload the app to drop a `#`.
 - **A different path or query** → a cross-document navigation by web semantics,
   so it loads. It goes through `navigation.navigate()` where the Navigation API
   exists, which lets an app that routes on it intercept and stay same-document,
@@ -230,6 +236,21 @@ The command travels the same unauthenticated channel as `back`/`forward`/
 `event.source === window.parent`, and `go` refuses any URL off the preview's own
 origin — so the widening is a command that only the embedder can send and that
 cannot leave the origin.
+
+**The message is posted to the slot's origin, never `"*"`.** Unlike `reload`, it
+carries the agent-authored URL. `reloadableWindowsRef` records a *capability*
+and is deliberately not cleared on refresh, but a `WindowProxy` keeps its
+identity across document and origin changes — so a frame the previewed app has
+since navigated somewhere else still matches the gate. An explicit target origin
+is what stops that URL reaching a foreign page; the browser drops the message
+instead, which leaves the click doing nothing — the accepted best-effort class
+(req 10), not a leak.
+
+**A rejected `navigation.navigate()` is swallowed, not recovered from.** Its
+causes are an interceptor deliberately aborting (an unsaved-changes guard) and a
+superseding navigation; forcing `location.assign` would override the app in the
+first case and fight it in the second. Reporting it instead would need the
+correlated request/result protocol req 10 explicitly declines.
 
 ### Present (req 3)
 

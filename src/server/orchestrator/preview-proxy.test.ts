@@ -121,6 +121,7 @@ function runInjectedScript(
   const pushed: unknown[][] = [];
   const traversed: string[] = [];
   const history = {
+    state: null,
     pushState: (...args: unknown[]) => { pushed.push(args); return "original-return"; },
     replaceState: (...args: unknown[]) => { pushed.push(args); },
     back: () => { traversed.push("history.back"); },
@@ -136,6 +137,7 @@ function runInjectedScript(
     assign: (u: string) => { assigned.push(u); },
   };
   const parent = { postMessage: (m: PostedMessage) => posted.push(m) };
+  const dispatched: unknown[] = [];
   const window = {
     WebSocket: function FakeWebSocket() {},
     navigation,
@@ -144,11 +146,24 @@ function runInjectedScript(
       const existing = listeners.get(type) ?? [];
       listeners.set(type, [...existing, fn]);
     },
+    dispatchEvent: (e: unknown) => { dispatched.push(e); return true; },
   };
+  /** Stand-in for the constructor the script uses to announce a hash rewrite. */
+  class FakeHashChangeEvent {
+    type: string;
+    oldURL: unknown;
+    newURL: unknown;
+    constructor(type: string, init: { oldURL?: unknown; newURL?: unknown } = {}) {
+      this.type = type;
+      this.oldURL = init.oldURL;
+      this.newURL = init.newURL;
+    }
+  }
   const html = injectPreviewBootstrap("<html><head></head></html>");
   const body = html.slice(html.indexOf("<script>") + "<script>".length, html.indexOf("</script>"));
   vm.runInContext(body, vm.createContext({
     window, history, location, URL, WebSocket: window.WebSocket, Promise,
+    HashChangeEvent: FakeHashChangeEvent,
   }));
   // Commands arrive from the embedding window, which is what the script checks.
   const toolbar = (type: string, extra: Record<string, unknown> = {}, source: unknown = parent) => {
@@ -156,7 +171,7 @@ function runInjectedScript(
       fn({ data: { source: "shipit-toolbar", type, ...extra }, source });
     }
   };
-  return { posted, listeners, history, location, pushed, traversed, toolbar, assigned };
+  return { posted, listeners, history, location, pushed, traversed, toolbar, assigned, dispatched };
 }
 
 /** A Navigation API stub that records which traversals were attempted. */
@@ -361,6 +376,42 @@ describe("injected preview script — pointer navigation", () => {
     expect(location.hash).toBe("#req-3");
     expect(assigned).toEqual([]);
     expect(calls).toEqual([]);
+  });
+
+  it("removes the fragment in place rather than reloading to drop it", () => {
+    // The browser's own fragment path does not cover removal (the navigation
+    // algorithm takes it only for a non-null destination fragment), so this
+    // would otherwise reload the app to get rid of a "#" — the exact blink the
+    // fix exists to remove. A pointer at the app as a whole is this shape.
+    const { nav, calls } = fakeNavigation();
+    const { toolbar, assigned, pushed, dispatched } = runInjectedScript({ ...AT }, nav);
+
+    toolbar("navigate", { url: "https://preview.localhost:3001/requirements?focus=3" });
+
+    expect(assigned).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(pushed).toEqual([[null, "", "https://preview.localhost:3001/requirements?focus=3"]]);
+    // And the page is told, since the browser fires no event for a rewrite.
+    expect(dispatched).toEqual([{
+      type: "hashchange",
+      oldURL: "https://preview.localhost:3001/requirements?focus=3#req-3",
+      newURL: "https://preview.localhost:3001/requirements?focus=3",
+    }]);
+  });
+
+  it("reports the new path after removing the fragment", () => {
+    // The rewrite goes through the wrapped `pushState`, so the toolbar's path
+    // display follows it — a bare `history.pushState` would freeze it.
+    const { nav } = fakeNavigation();
+    const { toolbar, posted, location } = runInjectedScript({ ...AT }, nav);
+    // The stub does not update `location` for us; the script's report reads it.
+    const advance = () => { location.hash = ""; };
+
+    advance();
+    toolbar("navigate", { url: "https://preview.localhost:3001/requirements?focus=3" });
+
+    expect(posted.filter((m) => m.type === "path").map((m) => m.path))
+      .toEqual(["/requirements?focus=3#req-3", "/requirements?focus=3"]);
   });
 
   it("navigates through the Navigation API when the query differs", () => {

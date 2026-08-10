@@ -72,7 +72,17 @@ respond to every click is a page that should be a preview service.
 
 ## Open questions
 
-_None._
+- **Does req 13 hold for a pointer that changes the query string or the path,
+  not just the fragment?** As shipped, a destination differing only by fragment
+  is a same-document navigation and never reloads; a different path or query
+  loads a new document, exactly as typing the URL would — so the worked shape in
+  this doc, `?focus=7#req-7` → `?focus=9#req-9`, still blinks. Making those
+  same-document too is possible (`history.pushState` plus a synthetic
+  `popstate`, which every mainstream client-side router reacts to), but it
+  requires ShipIt to decide that the page *is* client-routed; a page that reads
+  `location.search` once at load and never routes would then render stale
+  content under a changed URL. Either req 13 narrows to fragments, or ShipIt
+  takes that bet — a human call, because the failure it risks is silent.
 
 ## Resolved questions
 
