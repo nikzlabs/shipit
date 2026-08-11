@@ -18,15 +18,40 @@ export interface FileUploadChipsProps {
 
 /** Render an image upload as a thumbnail with overlay controls. */
 function ImageThumbnail({ u, index, onRemove }: { u: UploadItem; index: number; onRemove: (i: number) => void }) {
+  const openImagePreview = () => {
+    const store = useFileStore.getState();
+    const sid = useSessionStore.getState().sessionId;
+    // The uploaded copy is the better source wherever it exists: it carries the
+    // real path in the dialog header, and the dialog renders an `.svg` as
+    // markup — which a blob URL cannot supply.
+    if (u.status === "ready" && u.path && sid) {
+      void store.openPreview(sid, u.path);
+      return;
+    }
+    // No server copy yet — a pasted image, or one still uploading, previews
+    // from the bytes the browser already holds, so the click works right away.
+    const local = u.dataUrl ?? u.previewUrl;
+    if (local) store.openPreviewWithContent(u.name, local, "image");
+  };
+
   return (
     <div className="relative group" title={u.name}>
-      <img
-        src={u.previewUrl}
-        alt={u.name}
-        className="w-16 h-16 object-cover rounded-md border border-(--color-border-secondary)"
-      />
+      <button
+        onClick={openImagePreview}
+        className="block rounded-md cursor-pointer"
+        aria-label={`View ${u.name} full size`}
+        title={`Preview ${u.name}`}
+      >
+        <img
+          src={u.previewUrl}
+          alt={u.name}
+          className="w-16 h-16 object-cover rounded-md border border-(--color-border-secondary) hover:border-(--color-border-primary) transition-colors"
+        />
+      </button>
       {u.status === "uploading" && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/40 rounded-md">
+        // pointer-events-none: the overlay covers the button, and a pasted
+        // image is previewable from local bytes before the POST finishes.
+        <div className="absolute inset-0 flex items-center justify-center bg-black/40 rounded-md pointer-events-none">
           <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin text-white" />
         </div>
       )}

@@ -185,6 +185,8 @@ The 500 MB session quota is checked by summing existing files in the uploads dir
 | Ready | Filename + file size + remove button |
 | Error | Filename + error icon + retry button |
 
+An **image** upload renders as a 64px thumbnail instead of a text chip, and the thumbnail opens the file-preview dialog on click — the same affordance the text chip's filename has. The preview source depends on what exists yet: a ready upload opens its `/uploads/...` path through `openPreview` (real path in the dialog header, and an `.svg` gets markup rather than a URL), while an image that is still uploading, or one buffered by the quick-capture overlay with no session behind it, opens from the bytes the browser already holds (`dataUrl ?? previewUrl`). That fallback is what makes a Ctrl+V paste clickable the moment its chip appears, before the POST completes.
+
 #### Icons
 
 - Attach button: `PaperclipIcon` (MD size) — already exists in `MessageInput.tsx`
