@@ -508,12 +508,18 @@ describe("useServerEvents — foreground reconnect", () => {
     Object.defineProperty(document, "hidden", { value: hidden, configurable: true });
   }
 
+  /** The hidden→visible round trip a real app-switch performs. */
+  function backgroundAndReturn(): void {
+    setHidden(true);
+    document.dispatchEvent(new Event("visibilitychange"));
+    setHidden(false);
+  }
+
   it.each([
     ["visibilitychange", () => document.dispatchEvent(new Event("visibilitychange"))],
-    // A standalone-PWA app-switch / bfcache restore surfaces as pageshow or
-    // focus — the resume paths a visibility-only trigger misses.
+    // A standalone-PWA app-switch / bfcache restore surfaces as pageshow — a
+    // resume path a visibility-only trigger misses.
     ["pageshow", () => window.dispatchEvent(new Event("pageshow"))],
-    ["focus", () => window.dispatchEvent(new Event("focus"))],
     ["online", () => window.dispatchEvent(new Event("online"))],
   ])("reopens the stream on %s", (_name, fire) => {
     renderHook(() => useServerEvents());
@@ -540,7 +546,7 @@ describe("useServerEvents — foreground reconnect", () => {
     // A later, genuinely separate resume is not swallowed by the coalesce window.
     act(() => {
       vi.advanceTimersByTime(1000);
-      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new Event("pageshow"));
     });
     expect(FakeEventSource.created).toBe(3);
   });
@@ -555,5 +561,63 @@ describe("useServerEvents — foreground reconnect", () => {
     });
 
     expect(FakeEventSource.created).toBe(1);
+  });
+
+  // The two channels must agree on what a resume is, or they drift back apart:
+  // the WebSocket and this stream share `useForegroundSignal` precisely so a
+  // bare window `focus` — which the preview iframe fires on every load — cannot
+  // tear down a live stream here either. Each teardown re-sends the whole
+  // connect snapshot (sessions, repos, PR statuses), so the storm was visible
+  // across the sidebar as well as in the chat.
+  it("does not tear down a live stream on a bare focus event", () => {
+    renderHook(() => useServerEvents());
+
+    for (let i = 0; i < 5; i++) {
+      act(() => {
+        vi.advanceTimersByTime(1000); // clear the coalesce window
+        window.dispatchEvent(new Event("focus"));
+      });
+    }
+
+    expect(FakeEventSource.created).toBe(1);
+  });
+
+  it("still reopens on focus after the page was actually backgrounded", () => {
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      backgroundAndReturn();
+      window.dispatchEvent(new Event("focus"));
+    });
+
+    expect(FakeEventSource.created).toBe(2);
+  });
+
+  it("still reopens on focus after pagehide", () => {
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+      window.dispatchEvent(new Event("focus"));
+    });
+
+    expect(FakeEventSource.created).toBe(2);
+  });
+
+  // Nothing healthy to protect — the spec's "fail the connection" path left
+  // this stream CLOSED with only our own backoff behind it, so returning to the
+  // window is a good moment to short-circuit that wait.
+  it("reopens on focus when the stream is already closed", () => {
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      FakeEventSource.last!.failConnection();
+    });
+    expect(FakeEventSource.created).toBe(1);
+
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(FakeEventSource.created).toBe(2);
   });
 });
