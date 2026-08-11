@@ -43,7 +43,14 @@ beforeEach(() => {
   useSettingsStore.getState().setCredentialRoutes([]);
   useSettingsStore.getState().setProviderAccounts([]);
   useUiStore.getState().setToast(null);
-  useSettingsStore.setState({ providerAccountNotices: {} });
+  // Auth state is keyed by (provider, account id), and these tests reuse ids —
+  // a live challenge left by one case makes the next one's account look
+  // mid-sign-in rather than stalled.
+  useSettingsStore.setState({
+    providerAccountNotices: {},
+    providerAccountAuths: {},
+    providerAccountAuthErrors: {},
+  });
   vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
     fetchCalls.push({
       url,
@@ -172,6 +179,124 @@ describe("ServicesPanel", () => {
       expect(dialog.getByTestId("provider-account-challenge-acct-openai-1")).toBeInTheDocument();
       expect(dialog.getByTestId("provider-account-user-code-acct-openai-1")).toHaveTextContent("WXYZ-1234");
     });
+  });
+
+  it("keeps the attempt abandonable when the login fails to START (req 17)", async () => {
+    // The account exists from the moment the create call returns; the login is
+    // a second request. Awaiting both before learning the id left a failed
+    // start un-abandonable — Cancel had nothing to delete, and each retry
+    // created another orphan. Cross-backend review found it.
+    const created = {
+      id: "acct-openai-1",
+      serviceId: "openai", billingMode: "sub", via: "account",
+      label: "OpenAI account 1",
+      isPrimary: true,
+      status: "unavailable",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+      if (url.endsWith("/login")) {
+        return Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({ error: "codex CLI is not installed" }) });
+      }
+      const accounts = init?.method === "DELETE" ? [] : [created];
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account: created, accounts }) });
+    });
+
+    render(<ServicesPanel agentList={[codexAgent]} />);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    await userEvent.click(screen.getByTestId("add-service-option-openai"));
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+    await userEvent.click(screen.getByTestId("add-service-sign-in"));
+
+    // The failure is stated in the dialog, with a way forward...
+    await waitFor(() => expect(screen.getByTestId("add-service-error")).toHaveTextContent("codex CLI is not installed"));
+    expect(screen.getByTestId("add-service-sign-in")).toHaveTextContent("Try again");
+
+    // ...and Cancel can still take the orphan away, which is the whole point.
+    await userEvent.click(within(screen.getByTestId("add-service-dialog")).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(fetchCalls.some(
+      (c) => c.url === "/api/provider-accounts/codex/acct-openai-1" && c.method === "DELETE",
+    )).toBe(true));
+  });
+
+  it("retries on the same account rather than creating a second one (req 17)", async () => {
+    const created = {
+      id: "acct-openai-1",
+      serviceId: "openai", billingMode: "sub", via: "account",
+      label: "OpenAI account 1",
+      isPrimary: true,
+      status: "unavailable",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+      if (url.endsWith("/login")) {
+        return Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({ error: "spawn failed" }) });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account: created, accounts: [created] }) });
+    });
+
+    render(<ServicesPanel agentList={[codexAgent]} />);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    await userEvent.click(screen.getByTestId("add-service-option-openai"));
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+    await userEvent.click(screen.getByTestId("add-service-sign-in"));
+    await waitFor(() => expect(screen.getByTestId("add-service-sign-in")).toHaveTextContent("Try again"));
+    await userEvent.click(screen.getByTestId("add-service-sign-in"));
+
+    await waitFor(() => expect(fetchCalls.filter(
+      (c) => c.url === "/api/provider-accounts/codex/acct-openai-1/login",
+    ).length).toBe(2));
+    // One account, two login attempts — not two accounts.
+    expect(fetchCalls.filter((c) => c.url === "/api/provider-accounts" && c.method === "POST").length).toBe(1);
+  });
+
+  it("offers a retry when the provider REJECTS a live challenge (req 17)", async () => {
+    // `agent_auth_failed` clears the challenge and files the reason under
+    // `providerAccountAuthErrors`. The dialog did not read that, so it rendered
+    // an empty step with Sign in already hidden — the hand-off req 17 removes,
+    // rebuilt on the error path.
+    const created = {
+      id: "acct-openai-1",
+      serviceId: "openai", billingMode: "sub", via: "account",
+      label: "OpenAI account 1",
+      isPrimary: true,
+      status: "authenticating",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account: created, accounts: [created] }) });
+    });
+
+    render(<ServicesPanel agentList={[codexAgent]} />);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    await userEvent.click(screen.getByTestId("add-service-option-openai"));
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+    await userEvent.click(screen.getByTestId("add-service-sign-in"));
+
+    useSettingsStore.getState().setProviderAccountAuth("codex", "acct-openai-1", {
+      provider: "codex",
+      accountId: "acct-openai-1",
+      verificationUri: "https://auth.openai.com/device",
+      userCode: "WXYZ-1234",
+    });
+    // Scoped to the dialog: the account row on the card behind it renders the
+    // same shared challenge, which is the point of sharing it.
+    await waitFor(() => expect(
+      within(screen.getByTestId("add-service-dialog")).getByTestId("provider-account-challenge-acct-openai-1"),
+    ).toBeInTheDocument());
+
+    // What the failure event does: clear the challenge, file the reason.
+    useSettingsStore.getState().setProviderAccountAuth("codex", "acct-openai-1", null);
+    useSettingsStore.getState().setProviderAccountAuthError("codex", "acct-openai-1", "That code expired.");
+
+    await waitFor(() => expect(screen.getByTestId("add-service-signin-stalled")).toHaveTextContent("That code expired."));
+    expect(screen.getByTestId("add-service-sign-in")).toHaveTextContent("Try again");
   });
 
   it("abandons the account when the sign-in is cancelled, leaving nothing listed (req 17)", async () => {

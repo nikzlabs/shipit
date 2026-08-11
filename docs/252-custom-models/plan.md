@@ -2785,6 +2785,28 @@ Three consequences, each a decision:
 - **One sign-in per provider** is the server's rule (409). The dialog states it before the
   click — `signInBlockedReason`, shared with the row's own `blockedBy` — rather than after.
 
+**What cross-backend review found, all of it on the paths where the sign-in does *not* simply
+work:**
+
+- **A login that fails to START left an orphan the dialog could not abandon.** The account is
+  created by one request and the login started by a second, and a single
+  `createAccountAndStartLogin` awaited both before returning the id — so a CLI spawn failure
+  or a 409 race threw *after* the row existed, leaving `signInAccountId` unset, *Cancel* with
+  nothing to delete, and every retry creating another orphan. Split into `createAccount` +
+  `startAccountLogin`, with the dialog taking the id between them. The user still presses once.
+- **A challenge the provider REJECTED dead-ended.** `agent_auth_failed` clears
+  `providerAccountAuths` and files the reason under `providerAccountAuthErrors`; the dialog
+  read only the former, so `AccountChallenge` rendered nothing and *Sign in* was already
+  hidden — the only retry left was the Connect button on the card *behind the modal*, which is
+  the hand-off req 17 deletes, rebuilt by accident. There is now one **stalled** state (an
+  account, no live challenge, not ready) carrying the provider's reason and a **Try again**
+  that reuses the same account rather than creating a second.
+- **Two tabs could claim each other's account.** The created row was inferred by diffing the
+  returned list against a pre-request snapshot, and two dialogs starting the same provider at
+  once each see both new rows — so one could go on to cancel and delete the other's attempt.
+  The endpoint has always returned the `account` it created (`services/settings.ts:687`); the
+  client now reads it, keeping the diff only as a fallback for older payloads.
+
 **The cost, accepted knowingly:** adding a second account is a few clicks longer, since it
 walks the whole flow. That is the trade recorded in req 17's receipt — rare action, permanent
 surface.

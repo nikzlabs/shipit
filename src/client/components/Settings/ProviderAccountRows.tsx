@@ -19,8 +19,8 @@ import {
  *
  * **Nothing here adds an account any more** (docs/252 req 17). The card's "Add
  * account" button is gone; what is left in its place is
- * {@link createAccountAndStartLogin} and {@link AccountChallenge}, called and
- * rendered by `AddServiceDialog`, which is the one way in. The challenge is a
+ * {@link createAccount}, {@link startAccountLogin} and {@link AccountChallenge},
+ * called and rendered by `AddServiceDialog`, which is the one way in. The challenge is a
  * shared component rather than a copy per host for the reason docs/150 req 16
  * exists: a user's first account was once connected by different code than
  * their second.
@@ -148,38 +148,54 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-const startLogin = (provider: AgentId, accountId: string): Promise<unknown> =>
+/**
+ * Start (or restart) the provider's login for an account that already exists.
+ *
+ * Exported because the add-service dialog needs it as its own step — see
+ * {@link createAccount} for why the two are not one call — and because a failed
+ * attempt is retried by calling it again on the same account.
+ */
+export const startAccountLogin = (provider: AgentId, accountId: string): Promise<unknown> =>
   request(`/api/provider-accounts/${provider}/${accountId}/login`, { method: "POST" });
 
 /**
- * req 17 — create the account row and start its sign-in, as one act.
+ * req 17 — create the account row that a sign-in will fill.
  *
- * **The row exists before the login finishes, and that is deliberate.** If the
- * login fails to start, the row still exists and its own Connect button
- * retries; a half-created account the user can see and delete beats one that
- * vanishes. It also means the sign-in outlives whatever started it — which is
- * what lets the add-service dialog host the challenge without owning it.
+ * **Deliberately NOT "create and start the login" in one call**, although that
+ * is what the user's single press does. The row is created server-side first
+ * and the login started second, so a helper that awaited both before returning
+ * would throw on a login-start failure *after* the account existed — leaving
+ * the caller without the id of a row it had just caused, and therefore unable
+ * to abandon it. That is the orphan req 17 forbids, and it was there until
+ * cross-backend review found it. So the caller takes the id first and starts
+ * the login itself.
+ *
+ * The created account is read from the response's own `account` field rather
+ * than inferred by diffing the list: two dialogs (two tabs) starting the same
+ * provider at once can each see the other's new row in their response, and a
+ * diff picks whichever sorts first — so one dialog would go on to cancel and
+ * delete the other's attempt. The diff survives only as a fallback for payloads
+ * that predate the field.
  *
  * Was `AddAccountButton`, a control on the service card. req 17 removed the
  * card's own way in, so what is left is this function, called from the one
  * flow: `AddServiceDialog`'s last step.
  */
-export async function createAccountAndStartLogin(
+export async function createAccount(
   provider: AgentId,
   knownAccountIds: Iterable<string>,
 ): Promise<CredentialRoute | undefined> {
   const known = new Set(knownAccountIds);
-  const result = await request<{ accounts: CredentialRoute[] }>("/api/provider-accounts", {
-    method: "POST",
-    body: JSON.stringify({ provider }),
-  });
+  const result = await request<{ account?: CredentialRoute; accounts: CredentialRoute[] }>(
+    "/api/provider-accounts",
+    { method: "POST", body: JSON.stringify({ provider }) },
+  );
   useSettingsStore.getState().setProviderAccounts(result.accounts);
+  if (result.account) return result.account;
   const serviceId = serviceIdForProvider(provider);
-  const created = result.accounts.find(
+  return result.accounts.find(
     (account) => account.serviceId === serviceId && !known.has(account.id),
   );
-  if (created) await startLogin(provider, created.id);
-  return created;
 }
 
 /**
@@ -481,7 +497,7 @@ export function ProviderAccountRows({
     clearRow(account.id);
     setCardNotice(provider, null);
     try {
-      await startLogin(provider, account.id);
+      await startAccountLogin(provider, account.id);
     } catch (err) {
       failRow(account.id, err, "Failed to start sign-in");
     } finally {

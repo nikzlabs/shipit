@@ -71,13 +71,14 @@ import {
 } from "../../../server/shared/catalogue/index.js";
 import { Button } from "../ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog.js";
-import { useSettingsStore } from "../../stores/settings-store.js";
+import { providerAccountAuthKey, useSettingsStore } from "../../stores/settings-store.js";
 import {
   AccountChallenge,
   ProviderAccountRows,
   abandonAccount,
-  createAccountAndStartLogin,
+  createAccount,
   signInBlockedReason,
+  startAccountLogin,
   useProviderAccounts,
 } from "./ProviderAccountRows.js";
 import { MODE_LABEL, NothingToRouteYet, ServiceCard } from "./ServiceCard.js";
@@ -703,15 +704,44 @@ function AddServiceDialog({
   // docs/150 — the provider runs ONE login process, so a second one is a 409.
   // Said here rather than after the click.
   const blockedBySignIn = signInProvider ? signInBlockedReason(accounts, signInAccountId) : undefined;
+  /**
+   * **An attempt that stopped without connecting** — no live challenge, not
+   * ready, but this dialog's account still there.
+   *
+   * Two different things arrive here and both used to dead-end. A login that
+   * never *started* (CLI spawn failure, a 409 race) leaves the account with no
+   * challenge at all; and a challenge the provider then *rejects* clears
+   * `providerAccountAuths` and files the reason under
+   * `providerAccountAuthErrors`, which this dialog did not read — so
+   * `AccountChallenge` rendered nothing, *Sign in* was already hidden, and the
+   * only retry left was the Connect button on the card behind the modal. That
+   * is precisely the hand-off req 17 deletes, rebuilt by accident on the error
+   * path. Found by cross-backend review.
+   */
+  const authKey = signInProvider && signInAccountId
+    ? providerAccountAuthKey(signInProvider, signInAccountId)
+    : undefined;
+  const pendingAuth = useSettingsStore((s) => (authKey ? s.providerAccountAuths[authKey] : undefined));
+  const authError = useSettingsStore((s) => (authKey ? s.providerAccountAuthErrors[authKey] : undefined));
+  const signInStalled = !!signInAccount && !signedIn && !pendingAuth;
 
   const startSignIn = async (): Promise<void> => {
     if (!signInProvider) return;
     setStartingSignIn(true);
     setError("");
     try {
-      const created = await createAccountAndStartLogin(signInProvider, accounts.map((a) => a.id));
-      if (created) setSignInAccountId(created.id);
-      else setError("Could not start the sign-in — no account was created.");
+      // Two calls, and the id is taken between them **on purpose**: the account
+      // exists from the moment the first returns, so learning its id only after
+      // the login had also started left a failed start un-abandonable —
+      // `signInAccountId` unset, Cancel with nothing to delete, and a retry
+      // creating a second orphan each time.
+      const created = signInAccount ?? await createAccount(signInProvider, accounts.map((a) => a.id));
+      if (!created) {
+        setError("Could not start the sign-in — no account was created.");
+        return;
+      }
+      setSignInAccountId(created.id);
+      await startAccountLogin(signInProvider, created.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start the sign-in");
     } finally {
@@ -832,6 +862,11 @@ function AddServiceDialog({
                     Connected. {service.name} {MODE_LABEL[billingMode].toLowerCase()} is ready —
                     its models are selectable now.
                   </p>
+                ) : signInStalled ? (
+                  <p className="text-xs text-(--color-text-error)" data-testid="add-service-signin-stalled">
+                    {authError ?? "The sign-in stopped before the account connected."} Try again
+                    below, or <b>Cancel</b> to add nothing.
+                  </p>
                 ) : signInAccount ? (
                   <>
                     {/* The provider's challenge, in the flow that asked for it —
@@ -843,7 +878,7 @@ function AddServiceDialog({
                       onError={setError}
                     />
                     <p className="text-[11px] text-(--color-text-tertiary)">
-                      This closes itself once the account connects. Closing it first is safe —
+                      When the account connects, this step says so. Closing this first is safe —
                       the sign-in carries on, and you finish it on the service&rsquo;s card.
                       <b> Cancel</b> calls it off and adds nothing.
                     </p>
@@ -948,9 +983,12 @@ function AddServiceDialog({
               {saving ? "Saving..." : "Save"}
             </Button>
           )}
-          {/* Gone once the challenge is up: there is nothing to press twice, and
-              the provider would refuse a second login anyway. */}
-          {acceptsAccount && !signInAccount && (
+          {/* Hidden only while a challenge is actually live: there is nothing to
+              press twice, and the provider would refuse a second login anyway.
+              An attempt that stalled keeps it, as **Try again** on the account
+              already created — which is why `startSignIn` reuses
+              `signInAccount` instead of creating a second one. */}
+          {acceptsAccount && (!signInAccount || signInStalled) && !signedIn && (
             <Button
               variant="primary"
               size="md"
@@ -959,7 +997,11 @@ function AddServiceDialog({
               onClick={() => void startSignIn()}
               data-testid="add-service-sign-in"
             >
-              {startingSignIn ? "Starting..." : `Sign in to ${service?.name ?? "the service"}`}
+              {startingSignIn
+                ? "Starting..."
+                : signInStalled
+                  ? "Try again"
+                  : `Sign in to ${service?.name ?? "the service"}`}
             </Button>
           )}
         </div>
