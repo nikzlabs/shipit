@@ -179,6 +179,14 @@ describe("ServicesPanel", () => {
       expect(dialog.getByTestId("provider-account-challenge-acct-openai-1")).toBeInTheDocument();
       expect(dialog.getByTestId("provider-account-user-code-acct-openai-1")).toHaveTextContent("WXYZ-1234");
     });
+    // ONCE. The account exists the moment the sign-in starts, so its card is
+    // rendered behind the modal — and the card's rows host the same shared
+    // challenge, which put the provider's code on screen twice (and two
+    // paste-code inputs on Anthropic, of which only one submits). The rows
+    // stand down for the account the dialog is hosting, and only that one:
+    // a challenge nothing else is showing — after a reload, or started in
+    // another tab — still belongs to the row (`Settings.test.tsx` pins that).
+    expect(screen.getAllByTestId("provider-account-challenge-acct-openai-1")).toHaveLength(1);
   });
 
   it("keeps the attempt abandonable when the login fails to START (req 17)", async () => {
@@ -285,8 +293,6 @@ describe("ServicesPanel", () => {
       verificationUri: "https://auth.openai.com/device",
       userCode: "WXYZ-1234",
     });
-    // Scoped to the dialog: the account row on the card behind it renders the
-    // same shared challenge, which is the point of sharing it.
     await waitFor(() => expect(
       within(screen.getByTestId("add-service-dialog")).getByTestId("provider-account-challenge-acct-openai-1"),
     ).toBeInTheDocument());

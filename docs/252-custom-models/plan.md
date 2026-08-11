@@ -2788,6 +2788,14 @@ Three consequences, each a decision:
   account is not an unfinished attempt, so Done and Esc are the same harmless exit there.
 - **One sign-in per provider** is the server's rule (409). The dialog states it before the
   click — `signInBlockedReason`, shared with the row's own `blockedBy` — rather than after.
+- **Only one host shows the challenge at a time.** The account exists the moment the sign-in
+  starts, so its card renders *behind* the modal — and the card's rows host the same shared
+  `AccountChallenge`, which put the provider's code on screen twice (and on Anthropic, two
+  paste-code inputs of which only one submits). The panel therefore owns
+  `signInAccountId` — lifted out of the dialog for exactly this — and passes it down so the
+  rows stand down for that one account. Suppressed, not removed: the row's copy is what
+  finishes a challenge nothing else is hosting, after a reload or in another tab, which is
+  also the one case where an unfinished attempt survives (see the unmount note above).
 
 **What cross-backend review found, all of it on the paths where the sign-in does *not* simply
 work:**

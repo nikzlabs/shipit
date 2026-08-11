@@ -117,6 +117,15 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
   const accounts = useSettingsStore((s) => s.providerAccounts);
   const notices = useSettingsStore((s) => s.providerAccountNotices);
   const [addOpen, setAddOpen] = useState(false);
+  /**
+   * The account whose sign-in the dialog is currently hosting, if any.
+   *
+   * Lives here rather than in the dialog because the cards behind the dialog
+   * are what it is for: see the prop's docstring on `AddServiceDialog`. Cleared
+   * with the dialog, so a card is only ever asked to stand down while there is
+   * something on top of it doing the job.
+   */
+  const [signInAccountId, setSignInAccountId] = useState<string | undefined>(undefined);
 
   /**
    * **A service appears once it has a credential — never before** (req 17).
@@ -154,10 +163,18 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
       billingMode={billingMode}
       routes={routes.filter((r) => r.serviceId === service.id && r.billingMode === billingMode)}
       agentList={agentList}
+      hostedSignInAccountId={signInAccountId}
     />
   ));
 
-  const dialog = addOpen && <AddServiceDialog agentList={agentList} onClose={() => setAddOpen(false)} />;
+  const dialog = addOpen && (
+    <AddServiceDialog
+      agentList={agentList}
+      signInAccountId={signInAccountId}
+      onSignInAccount={setSignInAccountId}
+      onClose={() => { setAddOpen(false); setSignInAccountId(undefined); }}
+    />
+  );
 
   // "Nothing configured" is the caption under the heading rather than a box of
   // its own: empty, the whole panel is two lines and a button.
@@ -282,11 +299,14 @@ function ServiceModeCard({
   billingMode,
   routes,
   agentList,
+  hostedSignInAccountId,
 }: {
   service: ServiceDef;
   billingMode: BillingMode;
   routes: CredentialRoute[];
   agentList: AgentOption[];
+  /** An account whose challenge the add-service dialog is showing — see there. */
+  hostedSignInAccountId?: string;
 }) {
   // A mode can hold BOTH shapes at once — Anthropic's subscription takes an
   // OAuth account and an env-supplied token — so this renders whichever are
@@ -392,6 +412,7 @@ function ServiceModeCard({
         <ProviderAccountRows
           provider={provider}
           agent={agentList.find((a) => a.id === provider)}
+          challengeHostedElsewhere={hostedSignInAccountId}
         />
       )}
       {stringRoutes.length > 0 && (
@@ -642,12 +663,33 @@ function AddServiceDialog({
   initialService,
   initialMode,
   agentList = [],
+  signInAccountId,
+  onSignInAccount,
   onClose,
 }: {
   initialService?: ServiceDef;
   initialMode?: BillingMode;
   /** Only to tell whether the harness that runs a sign-in is installed. */
   agentList?: AgentOption[];
+  /**
+   * The account this dialog created, if it created one — **state of the panel,
+   * not of the dialog**.
+   *
+   * Held by id and re-read from the store on every render rather than kept as a
+   * snapshot: the row's `status` is what says the sign-in finished, and it
+   * arrives on the `provider_accounts` broadcast, not from the call that
+   * started it.
+   *
+   * It is lifted because the panel behind this modal needs the same fact. The
+   * account exists the moment the sign-in starts, so its card renders — and the
+   * card's rows render the same shared `AccountChallenge` this dialog does,
+   * putting the provider's code on screen **twice**, with two paste-code inputs
+   * on Anthropic where only one can submit. The card is the right host for a
+   * challenge nothing else is hosting (a reload, another tab); it is the wrong
+   * one for the sign-in happening in the dialog on top of it.
+   */
+  signInAccountId?: string;
+  onSignInAccount: (accountId: string | undefined) => void;
   onClose: () => void;
 }) {
   const [service, setService] = useState<ServiceDef | undefined>(initialService);
@@ -655,15 +697,6 @@ function AddServiceDialog({
   const [secret, setSecret] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-  /**
-   * The account this dialog created, if it created one.
-   *
-   * Held by id and re-read from the store on every render rather than kept as a
-   * snapshot: the row's `status` is what says the sign-in finished, and it
-   * arrives on the `provider_accounts` broadcast, not from the call that
-   * started it.
-   */
-  const [signInAccountId, setSignInAccountId] = useState<string | undefined>(undefined);
   const [startingSignIn, setStartingSignIn] = useState(false);
 
   const pickService = (next: ServiceDef): void => {
@@ -740,7 +773,7 @@ function AddServiceDialog({
         setError("Could not start the sign-in — no account was created.");
         return;
       }
-      setSignInAccountId(created.id);
+      onSignInAccount(created.id);
       await startAccountLogin(signInProvider, created.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start the sign-in");

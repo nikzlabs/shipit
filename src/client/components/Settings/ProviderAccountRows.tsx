@@ -349,9 +349,22 @@ export function AccountChallenge({
 export function ProviderAccountRows({
   provider,
   agent,
+  challengeHostedElsewhere,
 }: {
   provider: AgentId;
   agent: AgentOption | undefined;
+  /**
+   * An account whose login challenge something in front of this card is already
+   * showing — today, the add-service dialog that started it.
+   *
+   * The rows stand down for exactly that account, and for no other reason. The
+   * challenge is one shared component with two hosts, so while the dialog is
+   * open both were rendering it: the provider's code on screen twice, and on
+   * Anthropic two paste-code inputs of which only one submits. The row's copy
+   * is what finishes a sign-in nothing else is hosting — after a reload, or one
+   * started in another tab — so it is suppressed rather than removed.
+   */
+  challengeHostedElsewhere?: string;
 }) {
   const accounts = useProviderAccounts(provider);
   const setProviderAccounts = useSettingsStore((s) => s.setProviderAccounts);
@@ -617,6 +630,7 @@ export function ProviderAccountRows({
                 {/* The shared challenge — the same component the add-service
                     dialog renders, so the first sign-in and the fifth are one
                     implementation (docs/150 req 16). */}
+                {challengeHostedElsewhere !== account.id && (
                 <AccountChallenge
                   provider={provider}
                   account={account}
@@ -626,6 +640,7 @@ export function ProviderAccountRows({
                     [account.id]: { kind: "error", message },
                   }))}
                 />
+                )}
 
                 {authError && (
                   <p className="text-xs text-(--color-error)" data-testid={`provider-account-error-${account.id}`}>
