@@ -6,6 +6,7 @@ import {
   CaretRightIcon,
   CheckIcon,
   FastForwardIcon,
+  GearSixIcon,
   LockIcon,
   NotepadIcon,
   RobotIcon,
@@ -289,7 +290,7 @@ export function ComposerSettingsMenu({
           // truncates before anything else is clipped (req 8).
           className="flex flex-[0_1_auto] min-w-0 items-center gap-1.5 overflow-hidden rounded-lg p-1.5 text-xs font-medium text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) disabled:cursor-not-allowed disabled:opacity-50"
         >
-          <SparkleIcon size={ICON_SIZE.SM} className="shrink-0 text-(--color-text-tertiary)" />
+          <GearSixIcon size={ICON_SIZE.SM} className="shrink-0 text-(--color-text-tertiary)" />
           <span className="truncate" data-testid="composer-settings-model-name">
             {modelName}
           </span>
