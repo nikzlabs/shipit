@@ -14,13 +14,17 @@
  * subscriptions were two rows here and one group in the picker, with the two
  * surfaces counting differently.
  *
- * Two card bodies, because credentials genuinely arrive two ways:
- *
- *   - **account-backed subscriptions** (Anthropic, OpenAI) render the existing
- *     `ProviderAccountsCard`, which owns the login flow, the account order and
- *     the routing settings. Not a new implementation of any of that;
- *   - **string-delivered credentials** — an API key, or a subscription
- *     authenticated by one (GLM's coding plan) — render below.
+ * **And one card *component*.** Credentials arrive two ways — a login-backed
+ * account (Anthropic, OpenAI) or a supplied string (an API key, or a
+ * subscription authenticated by one, like GLM's coding plan) — and for a while
+ * each way brought its own card with it: the string one bordered and inside
+ * this list, the account one borderless, titled after the *harness* vendor, and
+ * rendered *outside* it. Now `ServiceCard` owns the chrome for both and the two
+ * delivery shapes are just two bodies inside it. A mode that takes both at once
+ * (Anthropic's subscription accepts an OAuth account *and* an env-supplied
+ * token) is still ONE card, with both bodies stacked — collapsing to a single
+ * body is what would hide a credential the user could then neither see nor
+ * revoke.
  *
  * An API-key card has **no routing controls at all** — not a disabled group,
  * not an empty section, and no sentence explaining the absence. Keys do not
@@ -30,7 +34,8 @@
  * **Deliberately not welded to Settings' page chrome.** docs/257's onboarding
  * panel hosts this component as-is — same card list, same dialog, same steps —
  * so it takes no props from the Settings route and renders no dialog shell of
- * its own.
+ * its own. Since the per-vendor Claude/Codex tabs were removed, it is also the
+ * *only* place a credential of any kind is added, seen or revoked.
  */
 
 import { useState } from "react";
@@ -51,10 +56,10 @@ import { Button } from "../ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
-import { ProviderAccountsCard } from "./ProviderAccountsCard.js";
+import { AddAccountButton, ProviderAccountRows, useProviderAccounts } from "./ProviderAccountRows.js";
+import { MODE_LABEL, NothingToRouteYet, ServiceCard } from "./ServiceCard.js";
+import { CredentialSelectionModeControl, FailoverCutoffControls } from "./CredentialRouting.js";
 import { BackgroundWorkSection } from "./BackgroundWorkSection.js";
-
-const MODE_LABEL: Record<BillingMode, string> = { sub: "Subscription", key: "API key" };
 
 /** Every `(service, mode)` the catalogue declares, flattened in catalogue order. */
 function catalogueModes(): { service: ServiceDef; billingMode: BillingMode }[] {
@@ -221,179 +226,143 @@ function ServiceModeCard({
   // present rather than choosing one. Collapsing to a single body is what would
   // hide a credential the user could then neither see nor revoke.
   const provider = accountProviderFor(service, billingMode);
+  // The rows' own narrowing, not a second one that looks like it — see the
+  // hook. A card with `provider === undefined` has no account body, so the
+  // placeholder harness it is called with contributes nothing.
+  const providerAccounts = useProviderAccounts(provider ?? "claude");
+  const accounts = provider ? providerAccounts : [];
   const stringRoutes = routes.filter((r) => r.via === "string");
   const multiple = modeAllowsMultipleCredentials(billingMode);
-  return (
+  // Counted from both feeds rather than from `routes` alone: `credentialRoutes`
+  // is a superset of `providerAccounts` on the wire, but the two are broadcast
+  // by different events, so a freshly connected account is in one and not yet
+  // in the other.
+  const credentialCount = accounts.length + stringRoutes.length;
+  /**
+   * A mode holding BOTH shapes at once — Anthropic's subscription takes an
+   * OAuth account *and* an env-supplied token.
+   *
+   * Rare, and load-bearing for everything below, because **the two shapes are
+   * not one routing pool**: `selectAccountForTurn` answers for the accounts,
+   * and phase 5 decided that an `all_exhausted` account walk is returned
+   * unchanged rather than falling through to this mode's env-delivered token
+   * (`service-routing.ts`). Presenting the total as one number and offering
+   * "spread across accounts" over it would describe a pool the server does not
+   * have.
+   */
+  const mixedDelivery = provider !== undefined && stringRoutes.length > 0;
+  /**
+   * What one credential of this mode *is*, in the user's words. An
+   * account-backed subscription has accounts; everything else has credentials,
+   * and calling a pasted key an "account" is the conflation this whole feature
+   * removes. A mixed card holds both, so it says the wider word.
+   */
+  const noun = provider && !mixedDelivery ? "account" : "credential";
+  /** The credentials the routing controls actually route between. */
+  const routedCredentials = provider ? accounts : stringRoutes;
+  const routedNoun = provider ? "account" : "credential";
+
+  // req 12 — `key` is single-credential by definition, so an API-key card gets
+  // no routing band at all: not a disabled group, not an empty section, and no
+  // sentence explaining the absence.
+  const routing = !multiple ? undefined : routedCredentials.length > 1 ? (
     <>
-    {/* The docs/150 accounts card, whole: the login flow, the fallback order
-        and the routing settings all live there and are not reimplemented here.
-        `showApiKeyFallback={false}` because that same credential is this
-        service's `(key)` card, one row down. */}
-    {provider && (
-      <ProviderAccountsCard
-        provider={provider}
-        agent={agentList.find((a) => a.id === provider)}
-        showApiKeyFallback={false}
+      <CredentialSelectionModeControl
+        serviceId={service.id}
+        billingMode={billingMode}
+        serviceName={service.name}
+        noun={routedNoun}
       />
-    )}
-    {stringRoutes.length > 0 && (
-    <div
-      className="rounded-md border border-(--color-border-secondary) p-3 space-y-3"
-      data-testid={`service-card-${credentialModeKey(service.id, billingMode)}`}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <h3 className="text-sm font-medium text-(--color-text-primary)">{service.name}</h3>
-            <span className="rounded border border-(--color-border-secondary) px-1.5 py-0.5 text-[10px] text-(--color-text-tertiary)">
-              {MODE_LABEL[billingMode]}
-            </span>
-          </div>
-          <p className="mt-0.5 text-xs text-(--color-text-tertiary)">
-            {billingMode === "key"
-              ? "Metered — no quota to report, so this card shows no usage."
-              : "A plan, authenticated by a supplied key."}
-          </p>
-        </div>
-        {multiple && (
-          <AddCredentialButton service={service} billingMode={billingMode} />
-        )}
-      </div>
-
-      <div className="space-y-1.5">
-        {stringRoutes.map((route, index) => (
-          <CredentialRow
-            key={route.id}
-            route={route}
-            order={
-              // req 2's fallback order, and in phase 2 it is not cosmetic: the
-              // FIRST credential of a group is the one delivered, so moving a
-              // row changes which key sessions receive.
-              multiple && stringRoutes.length > 1
-                ? { index, total: stringRoutes.length, ids: stringRoutes.map((r) => r.id) }
-                : undefined
-            }
-          />
-        ))}
-      </div>
-
-      {/* docs/252 phase 5 — the routing control phase 2 had nowhere to put.
-          Only with two or more credentials: with one there is nowhere to fail
-          over to, so the setting could never do anything. An API-key card never
-          reaches here (`modeAllowsMultipleCredentials` is false for `key`),
-          which is req 12 rendered — keys do not fail over, so there is nothing
-          to order and nothing to spread. */}
-      {multiple && stringRoutes.length > 1 && (
-        <CredentialSelectionModeControl
-          service={service}
+      {/* D14 / planning#339 — a cutoff is a percentage of a *reported* quota,
+          and only account-backed subscriptions report one today. On a
+          string-delivered plan the control would set a number that can never
+          fire, which is the dishonesty req 10 refuses one surface over. */}
+      {provider && accounts.length > 1 && (
+        <FailoverCutoffControls
+          serviceId={service.id}
           billingMode={billingMode}
+          serviceName={service.name}
+          provider={provider}
         />
       )}
-
-      <div className="flex flex-wrap gap-1">
-        {modelIds(service, billingMode).map((id) => (
-          <span
-            key={id}
-            className="rounded bg-(--color-bg-secondary) px-1.5 py-0.5 text-[10px] text-(--color-text-tertiary)"
-          >
-            {id}
-          </span>
-        ))}
-      </div>
-    </div>
-    )}
     </>
-  );
-}
-
-/**
- * docs/150 req 21 / docs/252 phase 5 — how a string-delivered subscription's
- * credentials relate to each other.
- *
- * The same setting `ProviderAccountsCard` offers an account-backed subscription,
- * re-keyed onto `(service, billing mode)` — which is where phase 2 already
- * stored it, with no control able to reach it. It does something as of phase 5:
- * `strict` takes the user's own fallback order, `balanced` takes the
- * least-recently-used credential, and both now skip a credential ShipIt has
- * benched (req 12).
- *
- * **The cutoffs are deliberately absent, and that is not an oversight.** A
- * cutoff is a percentage of a reported quota, and nothing reports one for a
- * string-delivered subscription until phase 6 builds its quota reader — so the
- * control would set a number that can never fire. Shipping it disabled or inert
- * would be the dishonesty req 10 refuses for the usage indicator, one surface
- * over.
- */
-function CredentialSelectionModeControl({
-  service,
-  billingMode,
-}: {
-  service: ServiceDef;
-  billingMode: BillingMode;
-}) {
-  const key = credentialModeKey(service.id, billingMode);
-  const stored = useSettingsStore((s) => s.accountSelectionMode[key]);
-  const mode = stored ?? "strict";
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  const save = async (next: "strict" | "balanced"): Promise<void> => {
-    if (next === mode) return;
-    const previous = mode;
-    useSettingsStore.getState().setAccountSelectionMode(key, next);
-    setSaving(true);
-    setError("");
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountSelectionMode: { [key]: next } }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    } catch (err) {
-      useSettingsStore.getState().setAccountSelectionMode(key, previous);
-      setError("Failed to update the credential order");
-      console.error("[services] credential selection mode save failed:", err);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const option = (value: "strict" | "balanced", label: string, hint: string) => (
-    <label className="flex items-start gap-2 text-xs cursor-pointer">
-      <input
-        type="radio"
-        name={`credential-selection-mode-${key}`}
-        checked={mode === value}
-        disabled={saving}
-        onChange={() => void save(value)}
-        aria-label={`${service.name} credential selection: ${label}`}
-        className="mt-0.5 accent-(--color-accent)"
-        data-testid={`credential-selection-mode-${key}-${value}`}
-      />
-      <span>
-        <span className="text-(--color-text-secondary)">{label}</span>
-        <span className="block text-(--color-text-tertiary)">{hint}</span>
-      </span>
-    </label>
-  );
+  ) : routedCredentials.length === 1 ? (
+    // Exactly one, never zero: with none connected the card is already asking
+    // for the first one, and "nothing to route between yet" under that ask
+    // states the obvious twice.
+    <NothingToRouteYet noun={routedNoun} />
+  ) : undefined;
 
   return (
-    <div className="space-y-2" data-testid={`credential-selection-mode-${key}`}>
-      {option(
-        "strict",
-        "Use in order",
-        "New sessions start on the first credential with quota left. Best when they differ — a bigger plan first, a smaller one as backup.",
+    <ServiceCard
+      service={service}
+      billingMode={billingMode}
+      credentialCount={credentialCount}
+      countNoun={noun}
+      description={
+        provider
+          ? "Connect one or more subscriptions. ShipIt fails over between them when one runs out."
+          : billingMode === "key"
+            ? "Metered — no quota to report, so this card shows no usage."
+            : "A plan, authenticated by a supplied key."
+      }
+      action={
+        provider ? (
+          <AddAccountButton provider={provider} agent={agentList.find((a) => a.id === provider)} />
+        ) : multiple ? (
+          <AddCredentialButton service={service} billingMode={billingMode} />
+        ) : undefined
+      }
+      models={modelIds(service, billingMode)}
+      routing={routing}
+      routingTitle={
+        routedCredentials.length > 1 ? `How ShipIt picks between these ${routedNoun}s` : undefined
+      }
+      testId={`service-card-${credentialModeKey(service.id, billingMode)}`}
+    >
+      {/* The docs/150 account rows, whole: the login flow and the fallback
+          order live there and are not reimplemented here. */}
+      {provider && (
+        <ProviderAccountRows
+          provider={provider}
+          agent={agentList.find((a) => a.id === provider)}
+        />
       )}
-      {option(
-        "balanced",
-        "Spread across credentials",
-        "New sessions go to whichever credential has been used least, so quota drains evenly. Best when they are equivalent.",
+      {stringRoutes.length > 0 && (
+        <div className="space-y-1.5">
+          {mixedDelivery && (
+            <p
+              className="text-xs text-(--color-text-tertiary)"
+              data-testid={`service-string-fallback-${credentialModeKey(service.id, billingMode)}`}
+            >
+              Supplied by an environment variable, and used only while no account above is
+              connected — ShipIt does not move onto it when the accounts run out.
+            </p>
+          )}
+          {stringRoutes.map((route, index) => (
+            <CredentialRow
+              key={route.id}
+              route={route}
+              order={
+                // req 2's fallback order, and it is not cosmetic: the FIRST
+                // credential of a group is the one delivered, so moving a row
+                // changes which key sessions receive.
+                //
+                // Never offered on a mixed card: the reorder endpoint requires
+                // EVERY route of the `(service, mode)` exactly once
+                // (`reorderCredentialRoutes`), and the account rows are in that
+                // set — so a list of just these ids is a 400. There is nothing
+                // to order anyway, since the env token is not in the accounts'
+                // failover chain.
+                multiple && !mixedDelivery && stringRoutes.length > 1
+                  ? { index, total: stringRoutes.length, ids: stringRoutes.map((r) => r.id) }
+                  : undefined
+              }
+            />
+          ))}
+        </div>
       )}
-      {error && (
-        <p className="text-xs text-(--color-text-error)" role="alert">{error}</p>
-      )}
-    </div>
+    </ServiceCard>
   );
 }
 

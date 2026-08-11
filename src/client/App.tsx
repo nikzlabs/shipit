@@ -181,7 +181,7 @@ export default function App() {
     reconnectAttempt,
     reconnect,
   } = useSessionWebSocket(wsSessionId);
-  const { get: apiGet, post: apiPost, put: apiPut, del: apiDel } = useApi();
+  const { get: apiGet, post: apiPost, put: apiPut } = useApi();
   const terminalRef = useRef<InteractiveTerminalHandle>(null);
   const messages = useSessionStore((s) => s.messages);
   const rewindPreviews = useSessionStore((s) => s.rewindPreviews);
@@ -1108,8 +1108,7 @@ export default function App() {
   const handleSettingsOpen = useCallback(
     async (
       tab?:
-        | "agent-claude"
-        | "agent-codex"
+        | "services"
         | "integrations"
         | "git"
         | "instructions"
@@ -2245,31 +2244,7 @@ export default function App() {
                 .gitHubLogout()
                 .catch(() => {})
             }
-            onApiKey={(key) => {
-              apiPost("/api/auth/api-key", { key }).catch(() => {});
-            }}
-            onClearApiKey={async () => {
-              // Full Claude sign-out: clears the stored API key AND the OAuth
-              // credentials on disk. The DELETE response carries the refreshed
-              // agent list; the server also fires an SSE `agent_list` broadcast
-              // so other open tabs repaint too. Mirrors onSignOutCodex.
-              try {
-                const result = await apiDel<{ agents?: AgentOption[] }>(
-                  "/api/auth/api-key",
-                );
-                if (result.agents) {
-                  useUiStore.getState().setAgentList(result.agents);
-                }
-              } catch (err) {
-                console.error("[settings] Claude sign-out failed:", err);
-              }
-            }}
             agentList={agentList}
-            onSetAgentEnv={(agentId, key, value) => {
-              apiPost(`/api/agents/${agentId}/env`, { key, value }).catch(
-                () => {},
-              );
-            }}
             onFullReset={async () => {
               try {
                 await apiPost("/api/reset", {});

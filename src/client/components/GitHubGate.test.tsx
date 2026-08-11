@@ -39,7 +39,7 @@ describe("GitHubGate", () => {
     expect(screen.queryByTestId("step-dots")).not.toBeInTheDocument();
     expect(screen.queryByText("Connect an agent")).not.toBeInTheDocument();
     expect(screen.queryByTestId("get-started")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("provider-accounts-card-claude")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("provider-account-rows-claude")).not.toBeInTheDocument();
   });
 
   it("blocks the product — it is a fixed overlay with a backdrop", () => {

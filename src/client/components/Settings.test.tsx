@@ -17,12 +17,25 @@ afterEach(() => {
     missingRequired: [],
   });
   useSettingsStore.getState().setProviderAccounts([]);
+  useSettingsStore.getState().setCredentialRoutes([]);
   useSettingsStore.setState({
     providerAccountAuths: {},
     providerAccountAuthErrors: {},
     claudeAuthDiagnostics: {},
+    providerAccountNotices: {},
   });
+  useUiStore.setState({ revealedServiceModes: [] });
 });
+
+/**
+ * docs/252 — Settings → Services lists only what the user configured, so a
+ * `(service, mode)` with no credential yet has no card. The add-flow's handoff
+ * to a sign-in reveals one; these tests take that same route rather than
+ * inventing a second way for a card to exist.
+ */
+function revealAnthropicSubscription() {
+  useUiStore.getState().revealServiceMode("anthropic:sub");
+}
 
 const claudeAuthed = { id: "claude", name: "Claude Code", installed: true, hasRunnableModels: true, models: ["claude-sonnet"], supportsReview: true };
 const claudeUnauthed = { ...claudeAuthed, hasRunnableModels: false };
@@ -33,8 +46,6 @@ const defaultProps: SettingsProps = {
   githubStatus: { authenticated: false },
   onGitHubTokenSubmit: vi.fn(),
   onGitHubLogout: vi.fn(),
-  onApiKey: vi.fn(),
-  onClearApiKey: vi.fn(),
   agentList: [claudeAuthed],
   gitIdentity: { name: "", email: "" },
   onGitIdentitySave: vi.fn(),
@@ -89,25 +100,35 @@ describe("Settings", () => {
   });
 });
 
-describe("Settings - Agent → Claude tab", () => {
-  it("shows Claude tab by default", () => {
+describe("Settings - Services → Anthropic subscription", () => {
+  it("opens on Services, with no per-vendor tab to open on instead", () => {
     render(<Settings {...defaultProps} />);
-    const tab = screen.getByRole("tab", { name: "Claude" });
-    expect(tab).toHaveAttribute("data-state", "active");
+    expect(screen.getByRole("tab", { name: "Services" })).toHaveAttribute("data-state", "active");
+    expect(screen.queryByRole("tab", { name: "Claude" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Codex" })).not.toBeInTheDocument();
   });
 
-  it("renders the unified provider-accounts card as the only connect surface (req 16)", () => {
+  /**
+   * The whole point of the unification: the account rows sit INSIDE the same
+   * `ServiceCard` a string-delivered credential gets, rather than in a
+   * borderless block above the list. A card-shaped assertion is what catches a
+   * regression back to two components; asserting the rows exist would not.
+   */
+  it("renders the account rows inside the service's own card, titled by service", () => {
+    revealAnthropicSubscription();
     render(<Settings {...defaultProps} />);
-    expect(screen.getByTestId("provider-accounts-card-claude")).toBeInTheDocument();
+    const card = screen.getByTestId("service-card-anthropic:sub");
+    expect(within(card).getByTestId("provider-account-rows-claude")).toBeInTheDocument();
+    expect(within(card).getByRole("heading", { name: "Anthropic" })).toBeInTheDocument();
+    // The harness vendor never titles a credential card (docs/252 D2).
+    expect(screen.queryByText(/Claude subscriptions/i)).not.toBeInTheDocument();
     // The provider-wide singleton card is gone — connecting the first account
     // must not be a different flow from connecting the second.
     expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
-    // Settings is the full-density rendering: onboarding passes `compact` and
-    // drops this line, so pin that it is only dropped there.
-    expect(screen.getByText(/fails over between them/i)).toBeInTheDocument();
   });
 
   it("offers the same Add account affordance when no accounts exist yet", () => {
+    revealAnthropicSubscription();
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
     expect(screen.getByTestId("provider-accounts-empty-claude")).toBeInTheDocument();
     expect(screen.getByTestId("provider-account-add-claude")).toBeInTheDocument();
@@ -127,6 +148,7 @@ describe("Settings - Agent → Claude tab", () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ accounts: [created] }) });
     vi.stubGlobal("fetch", fetchMock);
 
+    revealAnthropicSubscription();
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
     await userEvent.click(screen.getByTestId("provider-account-add-claude"));
 
@@ -215,6 +237,9 @@ describe("Settings - Agent → Claude tab", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
+    // Revealed so the card outlives its last account and the empty state is
+    // observable; without it the card is simply dropped from the list.
+    revealAnthropicSubscription();
     render(<Settings {...defaultProps} />);
     await userEvent.click(within(screen.getByTestId("provider-account-row-acct-a")).getByRole("button", { name: "Disconnect" }));
 
@@ -233,32 +258,17 @@ describe("Settings - Agent → Claude tab", () => {
     vi.unstubAllGlobals();
   });
 
-  it("exposes the API key fallback via a collapsed disclosure with metered-billing copy", async () => {
+  /**
+   * The collapsed "Use an API key instead" disclosure is gone with the vendor
+   * tabs. It wrote through to the very credential the Services add-flow writes
+   * (`anthropic:key`), so it was a second editor for one fact — and the card it
+   * produced is one row down in the same list.
+   */
+  it("offers no second API-key editor on the subscription card", () => {
+    revealAnthropicSubscription();
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+    expect(screen.queryByTestId("provider-toggle-api-key-claude")).not.toBeInTheDocument();
     expect(screen.queryByTestId("provider-api-key-input-claude")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByTestId("provider-toggle-api-key-claude"));
-    const input = screen.getByTestId("provider-api-key-input-claude");
-    expect(input).toHaveAttribute("type", "password");
-    expect(screen.getByTestId("provider-api-key-panel-claude")).toHaveTextContent(/never fails over onto API billing/i);
-  });
-
-  it("calls onApiKey when an API key is submitted via the disclosure", async () => {
-    const onApiKey = vi.fn();
-    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} onApiKey={onApiKey} />);
-    await userEvent.click(screen.getByTestId("provider-toggle-api-key-claude"));
-    fireEvent.change(screen.getByTestId("provider-api-key-input-claude"), { target: { value: "sk-ant-test123" } });
-    await userEvent.click(screen.getByTestId("provider-api-key-submit-claude"));
-    await waitFor(() => expect(onApiKey).toHaveBeenCalledWith("sk-ant-test123"));
-  });
-
-  it("rejects an API key with the wrong prefix before calling the handler", async () => {
-    const onApiKey = vi.fn();
-    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} onApiKey={onApiKey} />);
-    await userEvent.click(screen.getByTestId("provider-toggle-api-key-claude"));
-    fireEvent.change(screen.getByTestId("provider-api-key-input-claude"), { target: { value: "sk-wrong" } });
-    await userEvent.click(screen.getByTestId("provider-api-key-submit-claude"));
-    expect(await screen.findByTestId("provider-api-key-error-claude")).toHaveTextContent("sk-ant-");
-    expect(onApiKey).not.toHaveBeenCalled();
   });
 
   it("renders provider accounts and primary state", () => {
@@ -312,7 +322,7 @@ describe("Settings - Agent → Claude tab", () => {
 
     render(<Settings {...defaultProps} agentList={[claudeAuthed]} />);
 
-    expect(screen.getByRole("link", { name: "Open Claude authentication page" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Open Anthropic authentication page" })).toHaveAttribute(
       "href",
       "https://claude.ai/oauth/authorize?secondary=true",
     );
@@ -525,7 +535,7 @@ describe("Settings - Instructions tab", () => {
   });
 });
 
-describe("Settings - Agent → Codex tab", () => {
+describe("Settings - Services → OpenAI subscription", () => {
   const codexInstalled = {
     id: "codex",
     name: "Codex",
@@ -535,38 +545,23 @@ describe("Settings - Agent → Codex tab", () => {
     supportsReview: false,
   };
 
-  async function switchToCodexTab() {
-    await userEvent.click(screen.getByTestId("settings-tab-agent-codex"));
-  }
-
-  it("shows the Codex sub-tab when codex is in agentList", () => {
+  it("renders OpenAI's account rows in the same card component, not a Codex tab", () => {
+    useUiStore.getState().revealServiceMode("openai:sub");
     render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
-    expect(screen.getByTestId("settings-tab-agent-codex")).toBeInTheDocument();
-  });
-
-  it("hides the Codex sub-tab when agentList has no codex", () => {
-    render(<Settings {...defaultProps} agentList={[claudeAuthed]} />);
-    expect(screen.queryByTestId("settings-tab-agent-codex")).not.toBeInTheDocument();
-  });
-
-  it("renders the unified provider-accounts card inside the Codex sub-tab", async () => {
-    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
-    await switchToCodexTab();
-    expect(screen.getByTestId("provider-accounts-card-codex")).toBeInTheDocument();
+    const card = screen.getByTestId("service-card-openai:sub");
+    expect(within(card).getByTestId("provider-account-rows-codex")).toBeInTheDocument();
+    expect(within(card).getByRole("heading", { name: "OpenAI" })).toBeInTheDocument();
     expect(screen.queryByTestId("codex-auth-card")).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Codex" })).not.toBeInTheDocument();
   });
 
-  it("calls onSetAgentEnv when the codex API key fallback is submitted", async () => {
-    const onSetAgentEnv = vi.fn();
-    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} onSetAgentEnv={onSetAgentEnv} />);
-    await switchToCodexTab();
-    await userEvent.click(screen.getByTestId("provider-toggle-api-key-codex"));
-    fireEvent.change(screen.getByTestId("provider-api-key-input-codex"), { target: { value: "sk-test-key" } });
-    await userEvent.click(screen.getByTestId("provider-api-key-submit-codex"));
-    await waitFor(() => expect(onSetAgentEnv).toHaveBeenCalledWith("codex", "OPENAI_API_KEY", "sk-test-key"));
+  it("offers no second API-key editor for OpenAI either", () => {
+    useUiStore.getState().revealServiceMode("openai:sub");
+    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
+    expect(screen.queryByTestId("provider-toggle-api-key-codex")).not.toBeInTheDocument();
   });
 
-  it("renders a Codex device code on the row that started the sign-in (req 16)", async () => {
+  it("renders a Codex device code on the row that started the sign-in (req 16)", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([{
       id: "acct-codex-2",
@@ -585,19 +580,18 @@ describe("Settings - Agent → Codex tab", () => {
     });
 
     render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
-    await switchToCodexTab();
 
     // The device code belongs to the row, not to a provider-wide card — the
     // shared row shell renders the device-code variant here and the
     // code-paste variant for Claude.
     expect(screen.getByTestId("provider-account-user-code-acct-codex-2")).toHaveTextContent("WXYZ-1234");
-    expect(screen.getByRole("link", { name: "Open Codex authentication page" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Open OpenAI authentication page" })).toHaveAttribute(
       "href",
       "https://auth.openai.com/device",
     );
   });
 
-  it("keeps two concurrent row sign-ins independent", async () => {
+  it("keeps two concurrent row sign-ins independent", () => {
     const now = Date.now();
     const base = { serviceId: "openai" as const, billingMode: "sub" as const, via: "account" as const, isPrimary: false, createdAt: now, updatedAt: now };
     useSettingsStore.getState().setProviderAccounts([
@@ -612,7 +606,6 @@ describe("Settings - Agent → Codex tab", () => {
     });
 
     render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
-    await switchToCodexTab();
 
     expect(screen.getByTestId("provider-account-user-code-acct-a")).toHaveTextContent("AAAA-1111");
     expect(screen.getByTestId("provider-account-user-code-acct-b")).toHaveTextContent("BBBB-2222");
@@ -886,30 +879,27 @@ describe("Settings - Advanced tab", () => {
   });
 });
 
-describe("Settings - Sidebar groups", () => {
-  it("renders Agent heading", () => {
+describe("Settings - Sidebar", () => {
+  /**
+   * docs/252 — one flat list, led by Services. The "Agent" group and its two
+   * per-vendor tabs are gone: a credential belongs to a service, not to the
+   * harness that drives it, so there is no vendor axis left to group on.
+   */
+  it("lists one flat group with Services first and no vendor tabs", () => {
     render(<Settings {...defaultProps} />);
-    // The Agent group header is rendered as plain text in the sidebar (the
-    // sub-tabs underneath are labelled "Claude" / "Codex").
-    const headings = screen.getAllByText("Agent");
-    expect(headings.length).toBeGreaterThan(0);
-  });
-
-  it("renders General heading", () => {
-    render(<Settings {...defaultProps} />);
-    expect(screen.getByText("General")).toBeInTheDocument();
-  });
-
-  it("renders Claude sub-tab in sidebar", () => {
-    render(<Settings {...defaultProps} />);
-    expect(screen.getByTestId("settings-tab-agent-claude")).toBeInTheDocument();
+    const tabs = screen.getAllByRole("tab");
+    expect(tabs[0]).toHaveTextContent("Services");
+    expect(screen.queryByText("Agent")).not.toBeInTheDocument();
+    expect(screen.queryByText("General")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("settings-tab-agent-claude")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("settings-tab-agent-codex")).not.toBeInTheDocument();
   });
 });
 
 describe("Settings - Tab switching", () => {
-  it("Agent → Claude tab is selected by default", () => {
+  it("Services is selected by default", () => {
     render(<Settings {...defaultProps} />);
-    expect(screen.getByTestId("provider-accounts-card-claude")).toBeInTheDocument();
+    expect(screen.getByTestId("services-panel")).toBeInTheDocument();
   });
 
   it("clicking Integrations tab switches to integrations section", async () => {
@@ -941,11 +931,11 @@ describe("Settings - Tab switching", () => {
     expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
   });
 
-  it("clicking Claude tab switches back", async () => {
+  it("clicking Services switches back", async () => {
     render(<Settings {...defaultProps} />);
     await userEvent.click(screen.getByRole("tab", { name: "Integrations" }));
-    await userEvent.click(screen.getByRole("tab", { name: "Claude" }));
-    expect(screen.getByTestId("provider-accounts-card-claude")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "Services" }));
+    expect(screen.getByTestId("services-panel")).toBeInTheDocument();
     expect(screen.queryByTestId("github-token-form")).not.toBeInTheDocument();
   });
 });
