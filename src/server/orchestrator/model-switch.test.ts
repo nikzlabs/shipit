@@ -25,6 +25,7 @@ const OPENROUTER_OPUS: EligibleModel = {
   billingMode: "key",
   modelId: "anthropic/claude-opus-5",
   label: "Opus 5",
+  canonicalModelKey: "claude-opus-5",
 };
 const VERCEL_OPUS: EligibleModel = {
   serviceId: "vercel",
@@ -32,6 +33,7 @@ const VERCEL_OPUS: EligibleModel = {
   billingMode: "key",
   modelId: "anthropic/claude-opus-5",
   label: "Opus 5",
+  canonicalModelKey: "claude-opus-5",
 };
 const ANTHROPIC_SUB_OPUS: EligibleModel = {
   serviceId: "anthropic",
@@ -39,6 +41,7 @@ const ANTHROPIC_SUB_OPUS: EligibleModel = {
   billingMode: "sub",
   modelId: "claude-opus-5",
   label: "Opus 5",
+  canonicalModelKey: "claude-opus-5",
 };
 
 function agent(

@@ -18,6 +18,14 @@ export interface EligibleModelOption {
   billingMode: "sub" | "key";
   modelId: string;
   label: string;
+  /**
+   * docs/261 phase 6 — the catalogue's authored model identity, mirroring
+   * `EligibleModel.canonicalModelKey`. Two options carrying one key are one
+   * model, so changing the service can keep the model the user had. Optional
+   * here alone: an older wire payload or a test fixture may omit it, and the
+   * caller then falls back to the service's first model.
+   */
+  canonicalModelKey?: string;
 }
 
 export interface AgentOption {

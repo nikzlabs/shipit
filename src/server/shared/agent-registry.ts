@@ -81,6 +81,19 @@ export interface EligibleModel {
   billingMode: BillingMode;
   modelId: string;
   label: string;
+  /**
+   * docs/261 phase 6 (req 11) — phase 0's authored identity, carried to the
+   * client.
+   *
+   * Two rows with this key ARE one model, whatever their ids say. The client
+   * needs it to answer one question: the user changed the service, so does the
+   * new service offer *the model they had*? Comparing `modelId` gets exactly the
+   * motivating pair wrong — `anthropic/claude-opus-5` through a gateway and
+   * `claude-opus-5` direct differ as strings and are the same weights — and
+   * re-deriving the identity in the browser would be a second implementation of
+   * a rule the catalogue already authors.
+   */
+  canonicalModelKey: string;
 }
 
 export interface AgentInfo {
@@ -419,6 +432,7 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
       billingMode: entry.selection.billingMode,
       modelId: entry.model.id,
       label: entry.model.label,
+      canonicalModelKey: entry.model.canonicalModelKey,
     }));
   }
 

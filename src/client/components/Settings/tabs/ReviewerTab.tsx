@@ -29,23 +29,30 @@
  *    slot — a pinned level over a still-derived model — is not expressible, on
  *    the wire or here.
  *
- * The model menu is the composer's own grouping, down to `ModelGroupHeader` and
- * its billing-mode pill: a model is selected by `(service, billing mode, model)`
- * everywhere in ShipIt, and a reviewer is a model like any other (req 3).
+ * **Phase 6 (reqs 11, 12, 13) changed what is selectable here.** The tab shipped
+ * with the service as a *report* — named on the resolution line, and again as a
+ * group header inside one flat menu holding every eligible model of every
+ * service. Now the service is its own control carrying its billing-mode pill
+ * (req 11), the model menu lists only that service's models (req 12), and all
+ * three controls are the shared `Picker` the composer renders (req 13). What a
+ * reviewer *is* did not change: still `(service, billing mode, model)` plus a
+ * level, still one atomic pin.
  */
 
 import { useRef, useState } from "react";
-import { ArrowCounterClockwiseIcon, CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
+import { ArrowCounterClockwiseIcon, BrainIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../../design-tokens.js";
 import { Badge } from "../../ui/badge.js";
 import { Button } from "../../ui/button.js";
+import { Picker, PickerOption } from "../../pickers/Picker.js";
+import { ServiceSelector } from "../../pickers/ServiceSelector.js";
 import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-} from "../../ui/dropdown-menu.js";
-import { ModelGroupHeader } from "../../ModelPicker.js";
+  eligibleModelsOf,
+  modelAfterServiceChange,
+  modelsOfService,
+  servicesOf,
+  type ServiceChoice,
+} from "../../pickers/model-choice.js";
 import { BillingModePill } from "../../BillingModePill.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
@@ -80,43 +87,6 @@ const SLOT_TITLE: Record<string, string> = {
   second: "Reviewer 2",
 };
 
-/**
- * Every eligible triple across INSTALLED harnesses, de-duplicated and grouped
- * by `(service, billing mode)`.
- *
- * De-duplicated because the harness is derived (req 3): one model offered on
- * both installed harnesses is one choice here, not two. Which harness ends up
- * running it is the server's derivation — and for a reviewer it can even differ
- * per review, since the ranking prefers a harness that is not the implementer's
- * — so offering the same model twice would imply a decision the user does not
- * make.
- */
-function modelGroups(agents: AgentOption[]) {
-  const seen = new Set<string>();
-  const groups: { key: string; serviceName: string; billingMode: "sub" | "key"; models: EligibleModelOption[] }[] = [];
-  for (const agent of agents) {
-    if (!agent.installed) continue;
-    for (const model of agent.eligibleModels ?? []) {
-      const id = `${model.serviceId}|${model.billingMode}|${model.modelId}`;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      const key = `${model.serviceId}:${model.billingMode}`;
-      let group = groups.find((g) => g.key === key);
-      if (!group) {
-        group = {
-          key,
-          serviceName: model.serviceName,
-          billingMode: model.billingMode,
-          models: [],
-        };
-        groups.push(group);
-      }
-      group.models.push(model);
-    }
-  }
-  return groups;
-}
-
 /** The reasoning levels the slot's *derived* harness offers, or none. */
 function reasoningFor(agents: AgentOption[], harnessId: string | undefined) {
   if (!harnessId) return undefined;
@@ -143,7 +113,10 @@ export function ReviewerTab({ agentList = [] }: { agentList?: AgentOption[] }) {
    * only if no later write has started since it was issued.
    */
   const latestWrite = useRef(0);
-  const groups = modelGroups(agentList);
+  // One list, split by the two controls that read it (reqs 11, 12): the services
+  // fill the first menu, and the second shows only what the chosen one offers.
+  const models = eligibleModelsOf(agentList);
+  const services = servicesOf(models);
 
   /**
    * Write one slot and adopt the server's answer for BOTH.
@@ -215,7 +188,8 @@ export function ReviewerTab({ agentList = [] }: { agentList?: AgentOption[] }) {
           <ReviewerSlotCard
             key={view.slot}
             view={view}
-            groups={groups}
+            models={models}
+            services={services}
             reasoning={reasoningFor(agentList, view.resolved?.harnessId)}
             busy={saving.has(view.slot)}
             onSave={(value) => void save(view.slot, value)}
@@ -228,19 +202,64 @@ export function ReviewerTab({ agentList = [] }: { agentList?: AgentOption[] }) {
 
 function ReviewerSlotCard({
   view,
-  groups,
+  models,
+  services,
   reasoning,
   busy,
   onSave,
 }: {
   view: ReviewerSlotView;
-  groups: ReturnType<typeof modelGroups>;
+  models: EligibleModelOption[];
+  services: ServiceChoice[];
   reasoning: AgentOption["reasoning"];
   busy: boolean;
   onSave: (value: ReviewerPinPatch | null) => void;
 }) {
   const { resolved } = view;
   const pinned = view.source === "pinned";
+  // Req 12's bound: the model menu shows one service's models, not the whole
+  // catalogue. An unresolved slot has no service, so it offers no models either
+  // — the service control is the one to use first, which is the order the
+  // controls sit in.
+  const serviceModels = modelsOfService(models, resolved);
+  // The resolution names a triple but carries no model identity, so the option
+  // it corresponds to is looked up here — that is what lets a service change
+  // keep the same model across two services that spell its id differently.
+  const currentModel = serviceModels.find((m) => m.modelId === resolved?.modelId);
+
+  /**
+   * Changing the service pins the whole tuple, like every other edit here.
+   *
+   * The level rides along only when the model stayed the same. A different
+   * model may resolve on a different harness with a different level set, and
+   * deriving that in the browser is the re-derivation req 8 rules out — so the
+   * patch omits it and the server completes the tuple from the harness it
+   * derives.
+   *
+   * "The same model" is the canonical key, not the id: moving Opus 5 from
+   * Anthropic to a gateway changes the id and nothing else, and dropping the
+   * level there would silently downgrade a level the user pinned deliberately —
+   * which is the one thing req 5 rules out. If the level does not survive the
+   * derived harness the server refuses and says so, which is visible and
+   * recoverable in a way a silent replacement is not.
+   */
+  const changeService = (service: ServiceChoice) => {
+    const next = modelAfterServiceChange(currentModel, modelsOfService(models, service));
+    if (!next) return;
+    const keptModel =
+      !!currentModel
+      && (currentModel.canonicalModelKey
+        ? next.canonicalModelKey === currentModel.canonicalModelKey
+        : next.modelId === currentModel.modelId);
+    onSave({
+      serviceId: next.serviceId,
+      billingMode: next.billingMode,
+      modelId: next.modelId,
+      ...(keptModel && resolved?.reasoningEffort
+        ? { reasoningEffort: resolved.reasoningEffort }
+        : {}),
+    });
+  };
 
   // The derived answer, named. Rendered even on a pinned slot — as the *Reset
   // to auto* affordance's subject — because "what would happen if I un-pinned
@@ -319,18 +338,27 @@ function ReviewerSlotCard({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {/*
+            First control, first question: who pays (req 11). It is deliberately
+            ahead of the model, because it is what bounds the model list — and
+            because "is this my subscription or my card" is answerable here
+            without opening anything.
+          */}
+          <ServiceSelector
+            services={services}
+            selected={resolved}
+            onChange={changeService}
+            disabled={busy}
+            idPrefix={`reviewer-${view.slot}`}
+          />
           <ModelMenu
             slot={view.slot}
-            groups={groups}
+            models={serviceModels}
             autoDetail={autoDetail}
             pinned={pinned}
             triggerLabel={resolved ? resolved.label : (view.pin?.modelId ?? "Unavailable")}
             disabled={busy}
-            selected={
-              pinned && view.pin
-                ? `${view.pin.serviceId}:${view.pin.billingMode}:${view.pin.modelId}`
-                : undefined
-            }
+            selected={pinned ? resolved?.modelId : undefined}
             onPick={(model) =>
               onSave({
                 serviceId: model.serviceId,
@@ -387,12 +415,16 @@ function ReviewerSlotCard({
   );
 }
 
-const triggerClass =
-  "flex items-center gap-1.5 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2.5 py-1.5 text-xs font-medium text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) disabled:cursor-not-allowed disabled:opacity-50";
-
+/**
+ * The model, bounded by the chosen service (req 12).
+ *
+ * No group headers any more: with the service chosen on its own control, every
+ * row here belongs to it, and a header repeating the service on each row would
+ * be stating the answer to a question the user has already been asked.
+ */
 function ModelMenu({
   slot,
-  groups,
+  models,
   autoDetail,
   pinned,
   triggerLabel,
@@ -402,82 +434,50 @@ function ModelMenu({
   onReset,
 }: {
   slot: string;
-  groups: ReturnType<typeof modelGroups>;
+  models: EligibleModelOption[];
   autoDetail: string;
   pinned: boolean;
   triggerLabel: string;
+  /** The pinned model id, or undefined on an auto-configured slot. */
   selected: string | undefined;
   disabled: boolean;
   onPick: (model: EligibleModelOption) => void;
   onReset: () => void;
 }) {
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          disabled={disabled}
-          className={triggerClass}
-          aria-label={`Model for ${SLOT_TITLE[slot] ?? slot}`}
-          data-testid={`reviewer-model-trigger-${slot}`}
-        >
-          <span className="truncate">{triggerLabel}</span>
-          <CaretDownIcon size={ICON_SIZE.XS} />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-72" data-testid={`reviewer-model-menu-${slot}`}>
-        {/*
-          The derived default as a LABELLED option (req 8), always first and
-          never a blank. On an auto slot it names what auto currently resolves
-          to; on a pinned slot it is the way back.
-
-          Two lines, name over detail — the same shape the harness rows use, and
-          for the same reason: on one line the resolved value is what gets
-          truncated, which turns the labelled option back into the bare
-          "Auto-configured" the requirement exists to replace.
-        */}
-        <DropdownMenuItem
-          onSelect={onReset}
-          className={`px-3 py-1.5 text-sm ${
-            pinned ? "" : "bg-(--color-accent-subtle) text-(--color-text-link)"
-          }`}
-          data-testid={`reviewer-model-auto-${slot}`}
-        >
-          <span className="min-w-0 flex-1">
-            <span className="block truncate">Auto-configured</span>
-            <span className="block truncate text-xs text-(--color-text-tertiary)">
-              {autoDetail}
-            </span>
-          </span>
-          <span className="flex w-4 shrink-0 justify-end">
-            {!pinned && <CheckIcon size={ICON_SIZE.SM} className="text-(--color-accent)" />}
-          </span>
-        </DropdownMenuItem>
-        {groups.map((group) => (
-          <div key={group.key}>
-            <ModelGroupHeader serviceName={group.serviceName} billingMode={group.billingMode} />
-            {group.models.map((model) => {
-              const key = `${model.serviceId}:${model.billingMode}:${model.modelId}`;
-              const isCurrent = selected === key;
-              return (
-                <DropdownMenuItem
-                  key={key}
-                  onSelect={() => onPick(model)}
-                  className={`pl-5 pr-3 py-1.5 text-sm ${
-                    isCurrent ? "bg-(--color-accent-subtle) text-(--color-text-link)" : ""
-                  }`}
-                  data-testid={`reviewer-model-option-${slot}-${model.modelId}`}
-                >
-                  <span className="min-w-0 flex-1 truncate">{model.label}</span>
-                  <span className="flex w-4 shrink-0 justify-end">
-                    {isCurrent && <CheckIcon size={ICON_SIZE.SM} className="text-(--color-accent)" />}
-                  </span>
-                </DropdownMenuItem>
-              );
-            })}
-          </div>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <Picker
+      label={triggerLabel}
+      ariaLabel={`Model for ${SLOT_TITLE[slot] ?? slot}`}
+      triggerTestId={`reviewer-model-trigger-${slot}`}
+      menuTestId={`reviewer-model-menu-${slot}`}
+      menuWidth="w-72"
+      disabled={disabled}
+    >
+      {/*
+        The derived default as a LABELLED option (req 8), always first and never
+        a blank. On an auto slot it names what auto currently resolves to; on a
+        pinned slot it is the way back. The second line is `PickerOption`'s
+        `detail` — on one line the resolved value is what gets truncated, which
+        turns the labelled option back into the bare "Auto-configured" the
+        requirement exists to replace.
+      */}
+      <PickerOption
+        label="Auto-configured"
+        detail={autoDetail}
+        selected={!pinned}
+        onSelect={onReset}
+        testId={`reviewer-model-auto-${slot}`}
+      />
+      {models.map((model) => (
+        <PickerOption
+          key={`${model.serviceId}:${model.billingMode}:${model.modelId}`}
+          label={model.label}
+          selected={selected === model.modelId}
+          onSelect={() => onPick(model)}
+          testId={`reviewer-model-option-${slot}-${model.modelId}`}
+        />
+      ))}
+    </Picker>
   );
 }
 
@@ -489,6 +489,9 @@ function ModelMenu({
  * makes the level part of the reviewer, so a reviewer with no level is exactly
  * the state the requirement rules out. Every option is a real level, and an
  * auto-configured slot already carries the one ShipIt authored for its harness.
+ *
+ * That difference is in the OPTIONS, not in the control (req 13): same trigger,
+ * same rows, same brain glyph the composer's level carries.
  */
 function ReasoningMenu({
   slot,
@@ -507,37 +510,26 @@ function ReasoningMenu({
 }) {
   const currentLabel = options.find((o) => o.value === current)?.label ?? current ?? label;
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          disabled={disabled}
-          className={triggerClass}
-          aria-label={`${label} for ${SLOT_TITLE[slot] ?? slot}`}
-          data-testid={`reviewer-reasoning-trigger-${slot}`}
-        >
-          <span>{currentLabel}</span>
-          <CaretDownIcon size={ICON_SIZE.XS} />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-48" data-testid={`reviewer-reasoning-menu-${slot}`}>
-        {options.map((option) => (
-          <DropdownMenuItem
-            key={option.value}
-            onSelect={() => onPick(option.value)}
-            className={`px-3 py-1.5 text-sm ${
-              option.value === current ? "bg-(--color-accent-subtle) text-(--color-text-link)" : ""
-            }`}
-            data-testid={`reviewer-reasoning-option-${slot}-${option.value}`}
-          >
-            <span className="min-w-0 flex-1 truncate">{option.label}</span>
-            <span className="flex w-4 shrink-0 justify-end">
-              {option.value === current && (
-                <CheckIcon size={ICON_SIZE.SM} className="text-(--color-accent)" />
-              )}
-            </span>
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <Picker
+      label={currentLabel}
+      icon={<BrainIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary)" />}
+      ariaLabel={`${label} for ${SLOT_TITLE[slot] ?? slot}`}
+      triggerTestId={`reviewer-reasoning-trigger-${slot}`}
+      menuTestId={`reviewer-reasoning-menu-${slot}`}
+      menuLabel={label}
+      menuWidth="w-48"
+      disabled={disabled}
+    >
+      {options.map((option) => (
+        <PickerOption
+          key={option.value}
+          label={option.label}
+          selected={option.value === current}
+          onSelect={() => onPick(option.value)}
+          testId={`reviewer-reasoning-option-${slot}-${option.value}`}
+          indent
+        />
+      ))}
+    </Picker>
   );
 }

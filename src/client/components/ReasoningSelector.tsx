@@ -1,14 +1,8 @@
 import { useCallback, useState } from "react";
-import { BrainIcon, CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
+import { BrainIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { getSavedReasoning, saveReasoning } from "../utils/local-storage.js";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-} from "./ui/dropdown-menu.js";
+import { Picker, PickerOption } from "./pickers/Picker.js";
 import type { AgentOption } from "../agent-types.js";
 
 /**
@@ -90,6 +84,11 @@ export function useReasoningPickerState({
  * docs/260 — the composer's WIDE row only. Below 700px of composer width the
  * reasoning knob moves into `ComposerSettingsMenu`, so the old icon-only
  * `compactTrigger` variant no longer has a width to exist at.
+ *
+ * docs/261 phase 6 (req 13) — the markup is now `Picker`, shared with Settings.
+ * This control is the *reference*: the screenshot the requirement was written
+ * against is this button beside the model one, so what moved into the shared
+ * component is what was already here.
  */
 export function ReasoningSelector({
   agent,
@@ -116,47 +115,30 @@ export function ReasoningSelector({
 
   return (
     <div data-testid="reasoning-selector">
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            disabled={disabled}
-            className={`flex items-center justify-center gap-1.5 text-xs rounded-lg transition-colors font-medium text-(--color-text-secondary) disabled:opacity-50 disabled:cursor-not-allowed px-2.5 py-1.5 ${
-              disabled ? "cursor-default" : "hover:bg-(--color-bg-hover) cursor-pointer"
-            }`}
-            aria-label={`${label} selector`}
-            title={`${label}: ${currentLabel}`}
-            data-testid="reasoning-trigger"
-          >
-            <BrainIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary)" />
-            <span>{currentLabel}</span>
-            {/* The caret is the affordance, so it goes when the control cannot
-                open — the same rule `ModelSelector` follows, and what stopped a
-                dead composer's row from reading as three live menus. */}
-            {!disabled && <CaretDownIcon size={ICON_SIZE.XS} />}
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent side="top" align="end" className="w-44" data-testid="reasoning-dropdown">
-          <DropdownMenuLabel>{label}</DropdownMenuLabel>
-          {options.map((opt) => {
-            const isCurrent = (opt.value ?? undefined) === (current ?? undefined);
-            return (
-              <DropdownMenuItem
-                key={opt.value ?? "__default__"}
-                onSelect={() => handleSelect(opt.value)}
-                className={`pl-5 pr-3 py-1.5 text-sm ${
-                  isCurrent ? "bg-(--color-accent-subtle) text-(--color-text-link)" : ""
-                }`}
-                data-testid={`reasoning-option-${opt.value ?? "default"}`}
-              >
-                <span className="flex-1">{opt.label}</span>
-                <span className="flex w-4 shrink-0 justify-end">
-                  {isCurrent && <CheckIcon size={ICON_SIZE.SM} className="text-(--color-accent)" />}
-                </span>
-              </DropdownMenuItem>
-            );
-          })}
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <Picker
+        label={currentLabel}
+        icon={<BrainIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary)" />}
+        ariaLabel={`${label} selector`}
+        title={`${label}: ${currentLabel}`}
+        triggerTestId="reasoning-trigger"
+        menuTestId="reasoning-dropdown"
+        menuLabel={label}
+        menuWidth="w-44"
+        side="top"
+        align="end"
+        disabled={disabled}
+      >
+        {options.map((opt) => (
+          <PickerOption
+            key={opt.value ?? "__default__"}
+            label={opt.label}
+            selected={(opt.value ?? undefined) === (current ?? undefined)}
+            onSelect={() => handleSelect(opt.value)}
+            testId={`reasoning-option-${opt.value ?? "default"}`}
+            indent
+          />
+        ))}
+      </Picker>
     </div>
   );
 }

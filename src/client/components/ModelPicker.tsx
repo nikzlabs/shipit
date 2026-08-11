@@ -1,17 +1,10 @@
 import { useState, useRef, useCallback } from "react";
-import { CaretDownIcon, CheckIcon, LockIcon } from "@phosphor-icons/react";
-import { ICON_SIZE } from "../design-tokens.js";
 import { formatModelName, resolveModelAlias } from "../utils/format-model.js";
 import { getSavedModelId, getSavedModelSelection } from "../utils/local-storage.js";
 import { newSessionAgentId } from "../utils/new-session-agent.js";
 import { useSessionStore } from "../stores/session-store.js";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-} from "./ui/dropdown-menu.js";
+import { DropdownMenuLabel } from "./ui/dropdown-menu.js";
+import { Picker, PickerOption } from "./pickers/Picker.js";
 import { BillingModePill } from "./BillingModePill.js";
 import type { BillingMode } from "../../server/shared/catalogue/index.js";
 import type { AgentId, SessionInfo } from "../../server/shared/types.js";
@@ -270,73 +263,51 @@ export function HarnessSelector({
 
   return (
     <div data-testid="harness-selector">
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            disabled={disabled || locked}
-            title={locked ? lockedHarnessReason(harnessName) : undefined}
-            className={`flex items-center gap-1.5 text-xs rounded-lg transition-colors font-medium text-(--color-text-secondary) disabled:opacity-50 disabled:cursor-not-allowed px-2.5 py-1.5 ${
-              disabled || locked ? "cursor-default" : "hover:bg-(--color-bg-hover) cursor-pointer"
-            }`}
-            aria-label={`Harness selector: ${harnessName}`}
-            data-testid="harness-trigger"
-          >
-            <span>{harnessName}</span>
-            {/* Locked says *why* it cannot open, so it keeps an icon. Merely
-                disabled — a running turn, or a composer with nothing to run —
-                drops the caret, because a caret is a promise the control will
-                open. */}
-            {locked ? (
-              <LockIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary)" />
-            ) : disabled ? null : (
-              <CaretDownIcon size={ICON_SIZE.XS} />
-            )}
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent side="top" align="end" className="w-56" data-testid="harness-dropdown">
-          {installed.map((agent) => {
-            const rows = modelRowsFor(agent);
-            const isCurrent = agent.id === currentAgentId;
-            return (
-              <DropdownMenuItem
-                key={agent.id}
-                onSelect={() => onAgentChange(agent.id as AgentId)}
-                disabled={!agent.hasRunnableModels}
-                className={`px-3 py-1.5 text-sm ${
-                  isCurrent ? "bg-(--color-accent-subtle) text-(--color-text-link)" : ""
-                }`}
-                data-testid={`harness-option-${agent.id}`}
-              >
-                {/*
-                  Two lines, name over count: the count is a property OF the
-                  harness, and right-aligning it on the same line made it read as
-                  a second column the eye compares across rows — which is
-                  precisely the "how many models am I giving up" comparison the
-                  control is not for. The composer's settings menu says the same
-                  thing through `ChoiceRow`'s description slot.
+      <Picker
+        label={harnessName}
+        locked={locked}
+        lockedTitle={lockedHarnessReason(harnessName)}
+        ariaLabel={`Harness selector: ${harnessName}`}
+        triggerTestId="harness-trigger"
+        menuTestId="harness-dropdown"
+        menuWidth="w-56"
+        side="top"
+        align="end"
+        disabled={disabled}
+      >
+        {installed.map((agent) => {
+          const rows = modelRowsFor(agent);
+          return (
+            /*
+              Two lines, name over count: the count is a property OF the
+              harness, and right-aligning it on the same line made it read as a
+              second column the eye compares across rows — which is precisely
+              the "how many models am I giving up" comparison the control is not
+              for. `PickerOption`'s `detail` slot is that second line, and the
+              composer's settings menu says the same thing through `ChoiceRow`.
 
-                  The model count lands on the control that would act on it,
-                  which is why there is no "N more models on Codex" footer in the
-                  MODEL menu: that footer grows with every installed harness and
-                  is useless the moment the harness is pinned, which is most of a
-                  session's life.
-                */}
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate">{agent.name}</span>
-                  <span className="block text-xs text-(--color-text-tertiary)">
-                    {agent.hasRunnableModels
-                      ? `${rows.length} model${rows.length === 1 ? "" : "s"} available`
-                      : "needs a credential"}
-                  </span>
-                </span>
-                <span className="flex w-4 shrink-0 justify-end">
-                  {isCurrent && <CheckIcon size={ICON_SIZE.SM} className="text-(--color-accent)" />}
-                </span>
-              </DropdownMenuItem>
-            );
-          })}
-        </DropdownMenuContent>
-      </DropdownMenu>
+              The model count lands on the control that would act on it, which
+              is why there is no "N more models on Codex" footer in the MODEL
+              menu: that footer grows with every installed harness and is
+              useless the moment the harness is pinned, which is most of a
+              session's life.
+            */
+            <PickerOption
+              key={agent.id}
+              label={agent.name}
+              detail={
+                agent.hasRunnableModels
+                  ? `${rows.length} model${rows.length === 1 ? "" : "s"} available`
+                  : "needs a credential"
+              }
+              selected={agent.id === currentAgentId}
+              disabled={!agent.hasRunnableModels}
+              onSelect={() => onAgentChange(agent.id as AgentId)}
+              testId={`harness-option-${agent.id}`}
+            />
+          );
+        })}
+      </Picker>
     </div>
   );
 }
@@ -631,55 +602,37 @@ export function ModelSelector({
 
   return (
     <div data-testid="model-selector">
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            disabled={disabled}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg transition-colors font-medium text-(--color-text-secondary) disabled:opacity-50 disabled:cursor-not-allowed ${
-              disabled ? "cursor-default" : "hover:bg-(--color-bg-hover) cursor-pointer"
-            }`}
-            aria-label="Model selector"
-            data-testid="model-trigger"
-          >
-            <span>{displayName}</span>
-            {!disabled && <CaretDownIcon size={ICON_SIZE.XS} />}
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent side="top" align="end" className="w-60" data-testid="model-dropdown">
-          {groups.map((group) => (
-            <div key={group.key || "__ungrouped__"}>
-              {group.serviceName && (
-                <ModelGroupHeader
-                  serviceName={group.serviceName}
-                  billingMode={group.billingMode}
-                />
-              )}
-              {group.rows.map((row) => {
-                const isCurrentModel =
+      <Picker
+        label={displayName}
+        ariaLabel="Model selector"
+        triggerTestId="model-trigger"
+        menuTestId="model-dropdown"
+        menuWidth="w-60"
+        side="top"
+        align="end"
+        disabled={disabled}
+      >
+        {groups.map((group) => (
+          <div key={group.key || "__ungrouped__"}>
+            {group.serviceName && (
+              <ModelGroupHeader serviceName={group.serviceName} billingMode={group.billingMode} />
+            )}
+            {group.rows.map((row) => (
+              <PickerOption
+                key={`${row.groupKey}-${row.modelId}`}
+                label={row.label || formatModelName(row.modelId)}
+                selected={
                   selectedModel === row.modelId
-                  && (!selectedGroupKey || !row.groupKey || row.groupKey === selectedGroupKey);
-                return (
-                  <DropdownMenuItem
-                    key={`${row.groupKey}-${row.modelId}`}
-                    onSelect={() => handleModelSelect(row)}
-                    className={`pl-5 pr-3 py-1.5 text-sm ${
-                      isCurrentModel ? "bg-(--color-accent-subtle) text-(--color-text-link)" : ""
-                    }`}
-                    data-testid={`model-option-${row.modelId}`}
-                  >
-                    <span className="flex-1">{row.label || formatModelName(row.modelId)}</span>
-                    <span className="flex w-4 shrink-0 justify-end">
-                      {isCurrentModel && (
-                        <CheckIcon size={ICON_SIZE.SM} className="text-(--color-accent)" />
-                      )}
-                    </span>
-                  </DropdownMenuItem>
-                );
-              })}
-            </div>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
+                  && (!selectedGroupKey || !row.groupKey || row.groupKey === selectedGroupKey)
+                }
+                onSelect={() => handleModelSelect(row)}
+                testId={`model-option-${row.modelId}`}
+                indent
+              />
+            ))}
+          </div>
+        ))}
+      </Picker>
     </div>
   );
 }

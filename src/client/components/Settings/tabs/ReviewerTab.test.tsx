@@ -22,7 +22,7 @@ const agents: AgentOption[] = [
     name: "Claude Code",
     installed: true,
     hasRunnableModels: true,
-    models: ["claude-opus-5", "deepseek-v4"],
+    models: ["claude-opus-5", "claude-sonnet-5", "anthropic/claude-opus-5", "deepseek-v4"],
     eligibleModels: [
       {
         serviceId: "anthropic",
@@ -30,6 +30,26 @@ const agents: AgentOption[] = [
         billingMode: "sub",
         modelId: "claude-opus-5",
         label: "Opus 5",
+        canonicalModelKey: "claude-opus-5",
+      },
+      {
+        serviceId: "anthropic",
+        serviceName: "Anthropic",
+        billingMode: "sub",
+        modelId: "claude-sonnet-5",
+        label: "Sonnet 5",
+        canonicalModelKey: "claude-sonnet-5",
+      },
+      {
+        // The SAME model as Anthropic's Opus 5, through a gateway, spelled
+        // differently. Two strings, one set of weights — which is why changing
+        // the service compares `canonicalModelKey` and not the id.
+        serviceId: "openrouter",
+        serviceName: "OpenRouter",
+        billingMode: "key",
+        modelId: "anthropic/claude-opus-5",
+        label: "Opus 5",
+        canonicalModelKey: "claude-opus-5",
       },
       {
         serviceId: "deepseek",
@@ -37,6 +57,7 @@ const agents: AgentOption[] = [
         billingMode: "key",
         modelId: "deepseek-v4",
         label: "V4",
+        canonicalModelKey: "deepseek-v4",
       },
     ],
     supportsReview: true,
@@ -63,6 +84,7 @@ const agents: AgentOption[] = [
         billingMode: "key",
         modelId: "deepseek-v4",
         label: "V4",
+        canonicalModelKey: "deepseek-v4",
       },
     ],
     supportsReview: true,
@@ -92,6 +114,19 @@ const autoSlot = (slot: "first" | "second", over: Partial<ReviewerSlotView> = {}
   },
   ...over,
 });
+
+/** A slot that has resolved onto DeepSeek — the fixture's other service. */
+const deepseekResolution = {
+  serviceId: "deepseek",
+  billingMode: "key" as const,
+  modelId: "deepseek-v4",
+  serviceName: "DeepSeek",
+  label: "V4",
+  harnessId: "claude" as const,
+  harnessName: "Claude Code",
+  reasoningEffort: "high",
+  reasoningLabel: "High",
+};
 
 function bodyOf(fetchMock: ReturnType<typeof vi.fn>, call = 0): Record<string, unknown> {
   const args = fetchMock.mock.calls[call] as unknown as [string, { body: string }];
@@ -192,7 +227,10 @@ describe("ReviewerTab", () => {
    */
   it("offers a model reachable on both harnesses exactly once", async () => {
     const user = userEvent.setup();
-    useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
+    useSettingsStore.getState().setReviewers([
+      autoSlot("first", { resolved: deepseekResolution }),
+      autoSlot("second"),
+    ]);
     render(<ReviewerTab agentList={agents} />);
 
     await user.click(screen.getByTestId("reviewer-model-trigger-first"));
@@ -213,12 +251,12 @@ describe("ReviewerTab", () => {
 
     render(<ReviewerTab agentList={agents} />);
     await user.click(screen.getByTestId("reviewer-model-trigger-first"));
-    await user.click(screen.getByTestId("reviewer-model-option-first-deepseek-v4"));
+    await user.click(screen.getByTestId("reviewer-model-option-first-claude-sonnet-5"));
 
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(bodyOf(fetchMock)).toEqual({
       reviewers: {
-        first: { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4" },
+        first: { serviceId: "anthropic", billingMode: "sub", modelId: "claude-sonnet-5" },
       },
     });
   });
@@ -327,8 +365,8 @@ describe("ReviewerTab", () => {
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
 
     render(<ReviewerTab agentList={agents} />);
-    await user.click(screen.getByTestId("reviewer-model-trigger-first"));
-    await user.click(screen.getByTestId("reviewer-model-option-first-deepseek-v4"));
+    await user.click(screen.getByTestId("reviewer-first-service-trigger"));
+    await user.click(screen.getByTestId("reviewer-first-service-option-deepseek:key"));
 
     expect(useSettingsStore.getState().reviewers).toEqual(answered);
     expect(await screen.findByText(/Codex/)).toBeTruthy();
@@ -428,8 +466,8 @@ describe("ReviewerTab", () => {
     await user.click(screen.getByTestId("reviewer-reasoning-trigger-second"));
     await user.click(screen.getByTestId("reviewer-reasoning-option-second-low"));
     // Write 2 — resolves immediately and is the newest.
-    await user.click(screen.getByTestId("reviewer-model-trigger-first"));
-    await user.click(screen.getByTestId("reviewer-model-option-first-deepseek-v4"));
+    await user.click(screen.getByTestId("reviewer-first-service-trigger"));
+    await user.click(screen.getByTestId("reviewer-first-service-option-deepseek:key"));
     expect(useSettingsStore.getState().reviewers).toEqual(fresh);
 
     // Now let the older one land. It must NOT win.
@@ -456,8 +494,8 @@ describe("ReviewerTab", () => {
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
 
     render(<ReviewerTab agentList={agents} />);
-    await user.click(screen.getByTestId("reviewer-model-trigger-first"));
-    await user.click(screen.getByTestId("reviewer-model-option-first-deepseek-v4"));
+    await user.click(screen.getByTestId("reviewer-first-service-trigger"));
+    await user.click(screen.getByTestId("reviewer-first-service-option-deepseek:key"));
 
     const first = screen.getByTestId("reviewer-model-trigger-first") as HTMLButtonElement;
     const second = screen.getByTestId("reviewer-model-trigger-second") as HTMLButtonElement;
@@ -485,12 +523,100 @@ describe("ReviewerTab", () => {
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
 
     render(<ReviewerTab agentList={agents} />);
-    await user.click(screen.getByTestId("reviewer-model-trigger-first"));
-    await user.click(screen.getByTestId("reviewer-model-option-first-deepseek-v4"));
+    await user.click(screen.getByTestId("reviewer-first-service-trigger"));
+    await user.click(screen.getByTestId("reviewer-first-service-option-deepseek:key"));
 
     const { useUiStore } = await import("../../../stores/ui-store.js");
     expect(useUiStore.getState().toast?.message).toContain("No installed harness can run");
     // The store is untouched, so the tab still shows what the server holds.
     expect(useSettingsStore.getState().reviewers[0].source).toBe("auto");
+  });
+
+  /**
+   * docs/261 req 11 — the service is a CONTROL, and the billing mode rides on
+   * the row that acts on it. The tab shipped naming both in prose and offering
+   * neither, which answers "who reviews" and leaves "who pays" as something to
+   * read.
+   */
+  it("offers the service as its own control, with its billing mode on each row", async () => {
+    const user = userEvent.setup();
+    useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
+    render(<ReviewerTab agentList={agents} />);
+
+    await user.click(screen.getByTestId("reviewer-first-service-trigger"));
+    expect(screen.getByTestId("reviewer-first-service-option-anthropic:sub").textContent)
+      .toContain("Subscription");
+    expect(screen.getByTestId("reviewer-first-service-option-deepseek:key").textContent)
+      .toContain("API key");
+    // Two modes of one service would be two rows; one mode is one row.
+    expect(screen.getAllByTestId(/^reviewer-first-service-option-/)).toHaveLength(3);
+  });
+
+  /**
+   * docs/261 req 12 — the model list is bounded by the chosen service. The
+   * catalogue is meant to grow, so a menu holding every model of every service
+   * is a control that stops working later rather than one that works now.
+   */
+  it("lists only the chosen service's models", async () => {
+    const user = userEvent.setup();
+    useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
+    render(<ReviewerTab agentList={agents} />);
+
+    await user.click(screen.getByTestId("reviewer-model-trigger-first"));
+    expect(screen.getByTestId("reviewer-model-option-first-claude-opus-5")).toBeTruthy();
+    expect(screen.getByTestId("reviewer-model-option-first-claude-sonnet-5")).toBeTruthy();
+    expect(screen.queryByTestId("reviewer-model-option-first-deepseek-v4")).toBeNull();
+  });
+
+  /**
+   * The deciding case for the service switch, and the reason it cannot compare
+   * model ids: Anthropic's `claude-opus-5` and OpenRouter's
+   * `anthropic/claude-opus-5` are two strings and one set of weights. A user
+   * changing only who pays keeps the model they chose — and therefore keeps the
+   * level too, since neither the model nor its harness moved.
+   */
+  it("keeps the model when the new service offers the same one", async () => {
+    const user = userEvent.setup();
+    const fetchMock = okFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
+
+    render(<ReviewerTab agentList={agents} />);
+    await user.click(screen.getByTestId("reviewer-first-service-trigger"));
+    await user.click(screen.getByTestId("reviewer-first-service-option-openrouter:key"));
+
+    expect(bodyOf(fetchMock)).toEqual({
+      reviewers: {
+        first: {
+          serviceId: "openrouter",
+          billingMode: "key",
+          modelId: "anthropic/claude-opus-5",
+          reasoningEffort: "high",
+        },
+      },
+    });
+  });
+
+  /**
+   * And the other half: a service that does not offer the model takes its own
+   * first one, without the level — the new model may resolve on a different
+   * harness with a different level set, and deriving that here is the
+   * client-side re-derivation req 8 rules out.
+   */
+  it("falls back to the service's first model, leaving the level to the server", async () => {
+    const user = userEvent.setup();
+    const fetchMock = okFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
+
+    render(<ReviewerTab agentList={agents} />);
+    await user.click(screen.getByTestId("reviewer-first-service-trigger"));
+    await user.click(screen.getByTestId("reviewer-first-service-option-deepseek:key"));
+
+    expect(bodyOf(fetchMock)).toEqual({
+      reviewers: {
+        first: { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4" },
+      },
+    });
   });
 });
