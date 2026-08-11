@@ -243,25 +243,45 @@ describe("ServicesPanel", () => {
       expect(screen.queryByTestId("service-card-openai:sub")).not.toBeInTheDocument();
     });
 
-    it("keeps a way to start again while no code has arrived", async () => {
-      // A login can reach `authenticating` and never produce a challenge, and
-      // nothing here can tell that from a code still on its way. Without the
-      // button the dialog's only exit would be Cancel.
+    it("offers one button while the sign-in runs itself, and it says Cancel", async () => {
+      // A second button beside a box the user is watching fill in is a live
+      // control they did not ask for, in the one place where an accidental
+      // click restarts the login they are in the middle of. The retry it
+      // carried is traded for closing and starting again — the same recovery
+      // everything else in this dialog uses.
       stubAccountApi();
       render(<ServicesPanel agentList={[codexAgent]} />);
       await userEvent.click(screen.getByTestId("services-add-empty"));
       await userEvent.click(screen.getByTestId("add-service-option-openai"));
       await userEvent.click(screen.getByTestId("add-service-mode-sub"));
 
-      await waitFor(() => expect(screen.getByTestId("add-service-sign-in")).toHaveTextContent("Start again"));
-      expect(screen.getByTestId("add-service-sign-in")).toBeEnabled();
+      await waitFor(() => expect(logins()).toBe(1));
+      const footer = () => within(screen.getByTestId("add-service-dialog"))
+        .getAllByRole("button").map((b) => b.textContent);
+      expect(screen.queryByTestId("add-service-sign-in")).not.toBeInTheDocument();
+      expect(footer()).toContain("Cancel");
 
-      // It goes when the code arrives: there is nothing to press twice then.
       useSettingsStore.getState().setProviderAccountAuth("codex", "acct-openai-1", {
         provider: "codex", accountId: "acct-openai-1",
         verificationUri: "https://auth.openai.com/device", userCode: "WXYZ-1234",
       });
-      await waitFor(() => expect(screen.queryByTestId("add-service-sign-in")).not.toBeInTheDocument());
+      await waitFor(() => expect(
+        within(screen.getByTestId("add-service-dialog")).getByTestId("provider-account-user-code-acct-openai-1"),
+      ).toBeInTheDocument());
+      expect(screen.queryByTestId("add-service-sign-in")).not.toBeInTheDocument();
+    });
+
+    it("draws the code's own box, at its own size, while it is on its way", async () => {
+      stubAccountApi();
+      render(<ServicesPanel agentList={[codexAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-openai"));
+      await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+
+      const placeholder = await screen.findByTestId("add-service-signin-starting");
+      expect(placeholder).toHaveAttribute("aria-busy", "true");
+      // The same shell as the challenge, so nothing moves when the code lands.
+      expect(placeholder.className).toContain("rounded-md border");
     });
 
     it("leaves a mode that also takes a key alone — there the sign-in is a choice", async () => {

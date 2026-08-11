@@ -2892,13 +2892,27 @@ at is the one carrying the provider's code.
   render behind the question) is set by `cancel` and read by `startSignIn` after each await,
   so whichever of the two finishes last does the cleanup. Verified against the real API:
   escaping 5 ms into the create leaves zero rows server-side.
-- **"Waiting for the code" cannot be told from "hung", so it keeps the button.** A login can
-  reach `authenticating` and never produce a challenge — a CLI that stays alive saying
-  nothing — and the tightened predicate correctly calls that *starting*, which had hidden the
-  retry until the provider's own timeout (15 minutes on OpenAI). The sign-in button is now
-  hidden only while a challenge is genuinely live; in the waiting state it stands there
-  disabled during the request and enabled after, as **Start again**. It never appears
-  mid-wait — it is on screen from the step's first frame and leaves when the code arrives.
+- **"Waiting for the code" cannot be told from "hung".** A login can reach `authenticating`
+  and never produce a challenge — a CLI that stays alive saying nothing — and the tightened
+  predicate correctly calls that *starting*, which hides the retry until the provider's own
+  timeout (15 minutes on OpenAI). The review's fix kept the button through the wait as **Start
+  again**; the human reversed it on sight: *"there should be no blue button like this at all
+  … it should be always only Cancel."* While the flow runs itself the user is watching a box
+  fill in, and a second button beside it is a live control they did not ask for, in the one
+  place where a stray click restarts the login they are in the middle of. So the button is
+  gone from the start, the wait and the challenge; it returns only when nothing is happening
+  (stopped, or never started), and is **secondary** even then, since the step's own next
+  action is no longer a button. A hung login is recovered the way everything else here is —
+  close it and start again. A mode that also takes a key keeps its primary *Sign in*, because
+  nothing auto-starts there.
+
+**Waiting looks like what it is waiting for.** The step renders `ChallengePlaceholder` — the
+same `CHALLENGE_BOX` shell as the real challenge, its lines drawn as a pulse — and the two
+measure **98px** each, which is why the first bar is `h-4` rather than the `h-5` the link's
+font size suggests (the link is inline, so its line box is 16). It is keyed off
+`startingSignIn`, not off the account: keyed off the account it arrived one request late, so
+the dialog opened short on a line of prose and then grew by the height of a panel. Measured
+live, step 3 is 326px from its first frame and does not move when the code lands.
 
 ## Key files
 

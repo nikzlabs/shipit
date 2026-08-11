@@ -74,6 +74,7 @@ import { Dialog, DialogContent, DialogTitle } from "../ui/dialog.js";
 import { providerAccountAuthKey, useSettingsStore } from "../../stores/settings-store.js";
 import {
   AccountChallenge,
+  ChallengePlaceholder,
   ProviderAccountRows,
   abandonAccount,
   cancelAccountLogin,
@@ -769,6 +770,8 @@ function AddServiceDialog({
   const acceptsAccount =
     service && billingMode ? !!modeCredentialFor(service.id, billingMode, "account") : false;
 
+  /** This step signs itself in (req 18) — so it owns what the footer shows. */
+  const autoStarts = service && billingMode ? signInIsTheWholeStep(service, billingMode) : false;
   const signInProvider = service && billingMode ? accountProviderFor(service, billingMode) : undefined;
   // Called unconditionally, narrowed after — a hook cannot hide behind the
   // step the user has reached.
@@ -1046,9 +1049,9 @@ function AddServiceDialog({
                     {authError ?? "The sign-in stopped before the account connected."} Try again
                     below, or close this to add nothing.
                   </p>
-                ) : signInAccount ? (
+                ) : signInAccount || startingSignIn ? (
                   <>
-                    {pendingAuth ? (
+                    {pendingAuth && signInAccount ? (
                       // The provider's challenge, in the flow that asked for it —
                       // the same component the account row renders.
                       <AccountChallenge
@@ -1058,13 +1061,16 @@ function AddServiceDialog({
                         onError={setError}
                       />
                     ) : (
-                      <p
-                        className="text-xs text-(--color-text-secondary)"
-                        data-testid="add-service-signin-starting"
-                      >
-                        Starting the sign-in with {service.name} — its code appears here in a
-                        moment.
-                      </p>
+                      /*
+                        The same box the code lands in, at the same size, so
+                        nothing on the step moves when it does — and it is here
+                        from the step's FIRST frame, keyed off `startingSignIn`
+                        rather than off the account. Keyed off the account it
+                        arrived one request late, so the dialog opened short on
+                        a line of prose and then grew by the height of a panel,
+                        which is the jump this placeholder exists to remove.
+                      */
+                      <ChallengePlaceholder testId="add-service-signin-starting" />
                     )}
                     <p className="text-[11px] text-(--color-text-tertiary)">
                       Keep this open until the account connects — this step will say so.
@@ -1172,23 +1178,31 @@ function AddServiceDialog({
             </Button>
           )}
           {/*
-            **Hidden only while a challenge is actually live**: there is nothing
-            to press twice, and the provider would refuse a second login anyway.
-            Every other state keeps it, on the account already created — which
-            is why `startSignIn` reuses that account rather than making a second.
+            **While a sign-in is under way there is one button, and it says
+            Cancel.** Where the flow starts itself (req 18) the user is watching
+            a box fill in, and a second button beside it — however it is
+            labelled — is a live control they did not ask for, in the one place
+            where an accidental click restarts the login they are in the middle
+            of. So: nothing during the start, nothing during the wait, nothing
+            while the challenge is up.
 
-            "Waiting for the code" is one of those states, and deliberately so.
-            A login can reach `authenticating` and never produce a challenge —
-            a CLI that stays alive saying nothing — and nothing on the client
-            can tell that apart from a code still on its way. Only the button
-            standing there stops the wait becoming a dialog with one exit, so it
-            is disabled while the request is in flight and enabled after, as
-            **Start again**. It never appears mid-wait: it is there from the
-            first frame of the step and leaves when the code arrives.
+            It comes back only when nothing is happening — the attempt stopped,
+            or it never started (no harness, another login in flight) — and even
+            then it is secondary, because the flow's own next step is not a
+            button any more. The cost, chosen knowingly: a login that hangs at
+            `authenticating` without ever sending a code offers no one-press
+            retry, and is recovered the way everything else in this dialog is,
+            by closing it and starting again.
+
+            A mode that also takes a key keeps the old button, primary and
+            labelled to sign in: nothing auto-starts there, so it is still the
+            step's own action rather than a second way to do what is already
+            happening.
           */}
-          {acceptsAccount && !pendingAuth && !signedIn && (
+          {acceptsAccount && !pendingAuth && !signedIn
+            && (!signInAccount || signInStalled) && !(autoStarts && startingSignIn) && (
             <Button
-              variant="primary"
+              variant={autoStarts ? "secondary" : "primary"}
               size="md"
               className="rounded-md"
               disabled={startingSignIn || !harnessInstalled || !!blockedBySignIn}
@@ -1199,9 +1213,7 @@ function AddServiceDialog({
                 ? "Starting..."
                 : signInStalled
                   ? "Try again"
-                  : signInAccount
-                    ? "Start again"
-                    : `Sign in to ${service?.name ?? "the service"}`}
+                  : `Sign in to ${service?.name ?? "the service"}`}
             </Button>
           )}
         </div>

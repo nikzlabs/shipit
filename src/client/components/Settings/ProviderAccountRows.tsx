@@ -294,6 +294,31 @@ export function signInBlockedReason(accounts: CredentialRoute[], accountId?: str
   return `Finish or cancel the sign-in on "${signingIn.label}" first.`;
 }
 
+const CHALLENGE_BOX =
+  "space-y-2 rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) p-3";
+
+/**
+ * The challenge box before the provider's code has arrived: **the same box, at
+ * the same size**, with the lines it is about to hold drawn as a pulse.
+ *
+ * It shares `CHALLENGE_BOX` with the real thing rather than approximating it,
+ * because the whole job here is that nothing moves when the code lands — a
+ * placeholder of a different height is the jump it exists to remove.
+ */
+export function ChallengePlaceholder({ testId }: { testId?: string }) {
+  return (
+    <div className={CHALLENGE_BOX} data-testid={testId} aria-busy="true">
+      {/* `h-4`, not `h-5`: the link above is inline, so its line box is 16px.
+          Measured — the two boxes are 98px each. */}
+      <div className="h-4 w-52 animate-pulse rounded bg-(--color-bg-secondary)" />
+      <div>
+        <div className="h-4 w-40 animate-pulse rounded bg-(--color-bg-secondary)" />
+        <div className="mt-1 h-7 w-44 animate-pulse rounded bg-(--color-bg-secondary)" />
+      </div>
+    </div>
+  );
+}
+
 /**
  * The provider's login challenge — **one implementation, two hosts.**
  *
@@ -346,7 +371,7 @@ export function AccountChallenge({
   return (
     <>
       <div
-        className="space-y-2 rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) p-3"
+        className={CHALLENGE_BOX}
         data-testid={`provider-account-challenge-${account.id}`}
       >
         <a

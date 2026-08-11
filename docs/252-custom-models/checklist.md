@@ -248,5 +248,7 @@ landed ahead of this checklist's per-phase sections.
       window before the code arrives says the sign-in is starting instead of that it stopped.
       Two review findings fixed with it: an account created after the user left is abandoned
       by whichever of `cancel`/`startSignIn` finishes last (a `left` ref), and the waiting
-      state keeps a **Start again** button, since a login that hangs at `authenticating`
-      cannot be told from a code still on its way.
+      state is the code's own box drawn as a pulse (`ChallengePlaceholder`, same shell, both
+      98px, on screen from the step's first frame) with **no button beside it** — while the
+      flow runs itself there is one control and it says Cancel, so a stray click cannot
+      restart a live login.
