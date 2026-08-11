@@ -8,6 +8,7 @@ import { SkillsTab } from "../SkillsTab.js";
 import { KeybindingSettings } from "../KeybindingSettings.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { ServicesPanel } from "./ServicesPanel.js";
+import { BackgroundWorkSection } from "./BackgroundWorkSection.js";
 import { InstructionsTab } from "./tabs/InstructionsTab.js";
 import { GitTab } from "./tabs/GitTab.js";
 import { VoiceTab } from "./tabs/VoiceTab.js";
@@ -180,11 +181,25 @@ export function Settings({
             <VoiceTab />
           </TabsContent>
 
-          {/* docs/252 phase 2 — the one place credentials live. Rendered as a
-              self-contained panel taking no Settings props, because docs/257's
-              onboarding hosts the same component. */}
+          {/* docs/252 phase 2 — the one place credentials live. The panel takes
+              no Settings props and brings no chrome, because docs/257's
+              onboarding hosts the same component; the tab supplies the padding
+              and the scroll container every other tab here supplies.
+
+              docs/252 phase 7 (req 9) — the background-work model sits under the
+              services it draws from: it is a `(service, billing mode, model)`
+              choice like any other, and the list it offers is exactly what the
+              cards above made eligible. It lives at this level rather than
+              inside the panel so that onboarding, which hosts the panel, does
+              not ask a first-run user to pick one — the setting defaults to
+              whatever the install can run. */}
           <TabsContent value="services">
-            <ServicesPanel agentList={agentList} />
+            <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
+              <ServicesPanel agentList={agentList} />
+              <div className="border-t border-(--color-border-secondary) pt-4">
+                <BackgroundWorkSection agentList={agentList} />
+              </div>
+            </div>
           </TabsContent>
 
           {/* docs/261 phase 3 (reqs 1, 5, 8) — the two configured reviewers,

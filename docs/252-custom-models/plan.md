@@ -1260,6 +1260,15 @@ the production `generateText` in `bootstrap-managers.ts`. `session-namer.ts` tak
 target instead of an `AgentId`, and the notice is a persisted `NonTurnFailureCard`. Settings →
 Services grew a **Background work** row (`BackgroundWorkSection.tsx`).
 
+**Where that row lives (2026-08-11).** It sits in the Settings **tab**, below a divider under
+`ServicesPanel` — not *inside* the panel, which is where it was first put. Same place on
+screen, different owner, and the owner is the point: docs/257's onboarding hosts
+`ServicesPanel`, so anything inside the panel is also asked of a first-run user who has not yet
+connected anything. The setting's whole design is that unset is a working state which follows
+the install (req 9's derived default), so there is nothing for that user to decide and the row
+was spending the screen the credential needed. Req 9 is unchanged: the setting is visible, in
+Settings, with the default labelled by what it resolves to.
+
 **What phase 7 found.** Six things, and three of them change a claim this document made.
 
 - **The shaping rules had to leave `src/server/session/`.** Naming shells out to a CLI from

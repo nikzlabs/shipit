@@ -308,6 +308,21 @@ kept — a first-time user still needs to be told what ShipIt is (that is the dr
 names) — but as a compact lede, not a facing panel. This is also what makes the mobile case
 fall out for free rather than needing the `hidden md:flex` the hero uses today.
 
+**Density pass (2026-08-11).** As first shipped the lede was still a wizard hero with the
+`max-w-3xl` habits removed rather than the budget re-thought: a logo lockup on its own line, a
+three-line paragraph, and three stacked feature rows each with a bolded lead and a gloss. At
+1280×720 that pushed the "Add a service" button — the only control the panel has — to the
+bottom edge, so the surface the panel exists for read as an afterthought under a page of
+marketing. Three changes, all layout and copy, none of them behavioural:
+
+- The wordmark and the heading share one baseline row; the paragraph loses the sentence
+  enumerating files/preview/terminal, which the chips below already carry.
+- The feature rows become **chips** — icon plus claim, no gloss.
+- The Services surface itself is the compact one described below.
+
+The lede still says what ShipIt is and still ends on "the chat is the one thing waiting on
+this", which is the drop-off req 3 names; what came out was the second telling of it.
+
 ### The steps (req 4)
 
 **There is no step rail.** The panel's own step is one — **Add a service**, the docs/252
@@ -370,6 +385,21 @@ Density may differ and that is already the established pattern: `ProviderAccount
 `compact` prop for exactly this reason and its docstring is explicit that it changes "how much
 prose sits above" the rows and nothing else (`ProviderAccountsCard.tsx:60–73`). The Services
 surface gets the same treatment if it needs it.
+
+**And in the event it needed none (2026-08-11).** The density pass above began as an
+onboarding-only `variant` on `ServicesPanel` and ended with no variant at all: the compact
+form — heading, one-line caption and the "Add a service" button on a single row, instead of a
+header paragraph above a dashed box holding two paragraphs and a third copy of the button — is
+no worse on the Settings page than in the chat pane, so both hosts get it. Two consequences
+worth recording, because they are what a variant would have hidden:
+
+- **The panel now brings no padding and no scroll container.** Each host frames it: Settings
+  with the `px-5 py-4 … overflow-y-auto h-full` wrapper every other tab already uses,
+  onboarding with its card. A component that renders `h-full` inside somebody else's card was
+  always the wrong ownership; the shared use made it visible.
+- **The background-work model moved out of the panel** and into the Settings tab that hosts it
+  — see docs/252 phase 7's note. It is a setting *about* services rather than a service, and
+  it is the one thing in that column onboarding must not ask a first-run user for.
 
 **One dialog, never two — scoped to what the flow itself opens.** The panel is not a modal, so
 the add dialog is the only thing *this flow* puts on top, which is what req 5 asks for and what

@@ -33,9 +33,26 @@
  *
  * **Deliberately not welded to Settings' page chrome.** docs/257's onboarding
  * panel hosts this component as-is — same card list, same dialog, same steps —
- * so it takes no props from the Settings route and renders no dialog shell of
- * its own. Since the per-vendor Claude/Codex tabs were removed, it is also the
+ * so it takes no props from the Settings route, renders no dialog shell of its
+ * own, and brings **no padding and no scroll container**: each host frames it
+ * (Settings with the tab padding every other tab uses, onboarding inside its
+ * card). Since the per-vendor Claude/Codex tabs were removed, it is also the
  * *only* place a credential of any kind is added, seen or revoked.
+ *
+ * **One dense layout, both hosts.** The heading, the caption and the "Add a
+ * service" button share one row, and "no services yet" is that caption rather
+ * than a dashed box with two paragraphs and a third copy of the button. It was
+ * written at Settings-page density and then hosted in the chat pane, where a
+ * three-line header and a six-unit empty state pushed the one control the panel
+ * exists for below the fold — but the compact form is no worse on the Settings
+ * page, so there is one layout rather than a variant per host.
+ *
+ * **The background-work model is NOT here.** It is a setting about services
+ * rather than a service, it has a working default that follows whatever the
+ * install can run (`BackgroundWorkSection`, "ShipIt's default"), and a first-run
+ * user has nothing to decide about it — so onboarding must not spend its screen
+ * asking. Since the panel is shared, the section moved out to the Settings tab
+ * that hosts it, which is also where someone who wants to pin it goes looking.
  */
 
 import { useState } from "react";
@@ -59,7 +76,6 @@ import { useUiStore } from "../../stores/ui-store.js";
 import { AddAccountButton, ProviderAccountRows, useProviderAccounts } from "./ProviderAccountRows.js";
 import { MODE_LABEL, NothingToRouteYet, ServiceCard } from "./ServiceCard.js";
 import { CredentialSelectionModeControl, FailoverCutoffControls } from "./CredentialRouting.js";
-import { BackgroundWorkSection } from "./BackgroundWorkSection.js";
 
 /** Every `(service, mode)` the catalogue declares, flattened in catalogue order. */
 function catalogueModes(): { service: ServiceDef; billingMode: BillingMode }[] {
@@ -133,79 +149,58 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
       || revealed.includes(credentialModeKey(service.id, billingMode));
   });
 
+  const cards = configured.map(({ service, billingMode }) => (
+    <ServiceModeCard
+      key={credentialModeKey(service.id, billingMode)}
+      service={service}
+      billingMode={billingMode}
+      routes={routes.filter((r) => r.serviceId === service.id && r.billingMode === billingMode)}
+      agentList={agentList}
+    />
+  ));
+
+  const dialog = addOpen && (
+    <AddServiceDialog
+      onClose={() => setAddOpen(false)}
+      onReveal={(modeKey) => useUiStore.getState().revealServiceMode(modeKey)}
+    />
+  );
+
+  // The heading and the button share one row, and "nothing configured" is the
+  // caption under that heading rather than a box of its own: empty, the whole
+  // panel is two lines and a button.
+  const empty = configured.length === 0;
+
   return (
-    <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full" data-testid="services-panel">
-      <div>
-        <h3 className="text-sm font-medium text-(--color-text-primary)">Services</h3>
-        <p className="mt-0.5 text-xs text-(--color-text-tertiary)">
-          ShipIt defines the services; you supply the credential. A model is offered once the
-          billing mode that carries it has one.
-        </p>
-      </div>
-
-      {configured.length === 0 ? (
-        <div
-          className="rounded-md border border-dashed border-(--color-border-secondary) p-6 text-center"
-          data-testid="services-empty"
-        >
-          <p className="text-sm text-(--color-text-secondary)">No services yet</p>
-          <p className="mx-auto mt-1 max-w-sm text-xs text-(--color-text-tertiary)">
-            Add one to start. ShipIt ships with first-party providers, direct providers and
-            gateways.
-          </p>
-          <Button
-            variant="primary"
-            size="md"
-            className="mt-3 rounded-md"
-            onClick={() => setAddOpen(true)}
-            data-testid="services-add-empty"
+    <div className="flex flex-col gap-3" data-testid="services-panel">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="text-sm font-medium text-(--color-text-primary)">Services</h3>
+          <p
+            className="mt-0.5 text-xs text-(--color-text-tertiary)"
+            // The empty state keeps its own test id, because "nothing
+            // configured" is still a distinct state — it is just said in a line
+            // now instead of a dashed box.
+            {...(empty ? { "data-testid": "services-empty" } : {})}
           >
-            Add a service
-          </Button>
+            {empty
+              ? "Connect one to start — a subscription you already pay for, or an API key."
+              : "ShipIt defines the services; you supply the credential."}
+          </p>
         </div>
-      ) : (
-        <>
-          {configured.map(({ service, billingMode }) => (
-            <ServiceModeCard
-              key={credentialModeKey(service.id, billingMode)}
-              service={service}
-              billingMode={billingMode}
-              routes={routes.filter(
-                (r) => r.serviceId === service.id && r.billingMode === billingMode,
-              )}
-              agentList={agentList}
-            />
-          ))}
-          <div>
-            <Button
-              variant="secondary"
-              size="md"
-              className="rounded-md"
-              onClick={() => setAddOpen(true)}
-              data-testid="services-add"
-            >
-              <PlusIcon size={ICON_SIZE.XS} /> Add a service
-            </Button>
-          </div>
-        </>
-      )}
-
-      {/*
-        docs/252 phase 7 (req 9) — the background-work model sits here, under the
-        services it draws from: it is a `(service, billing mode, model)` choice
-        like any other, and the list it offers is exactly what the cards above
-        made eligible.
-      */}
-      <div className="border-t border-(--color-border-secondary) pt-4">
-        <BackgroundWorkSection agentList={agentList} />
+        <Button
+          variant={empty ? "primary" : "secondary"}
+          size="sm"
+          className="rounded-md shrink-0"
+          onClick={() => setAddOpen(true)}
+          data-testid={empty ? "services-add-empty" : "services-add"}
+        >
+          <PlusIcon size={ICON_SIZE.XS} /> Add a service
+        </Button>
       </div>
 
-      {addOpen && (
-        <AddServiceDialog
-          onClose={() => setAddOpen(false)}
-          onReveal={(modeKey) => useUiStore.getState().revealServiceMode(modeKey)}
-        />
-      )}
+      {cards}
+      {dialog}
     </div>
   );
 }
