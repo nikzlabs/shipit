@@ -353,29 +353,38 @@ function ReviewerSlotCard({
             disabled={busy}
             idPrefix={`reviewer-${view.slot}`}
           />
-          <ModelMenu
-            slot={view.slot}
-            models={serviceModels}
-            autoDetail={autoDetail}
-            pinned={pinned}
-            triggerLabel={resolved ? resolved.label : (view.pin?.modelId ?? "Unavailable")}
-            disabled={busy}
-            selected={pinned ? resolved?.modelId : undefined}
-            onPick={(model) =>
-              onSave({
-                serviceId: model.serviceId,
-                billingMode: model.billingMode,
-                modelId: model.modelId,
-                // The level is deliberately OMITTED. The model may resolve on a
-                // different harness with a different level set, and which
-                // harness that is (req 3) is the server's derivation — guessing
-                // it here is the re-derivation req 8 rules out. The server
-                // completes the tuple from the harness it derives, so the pin
-                // stays atomic either way.
-              })
-            }
-            onReset={() => onSave(null)}
-          />
+          {/*
+            req 14 — no models, no control. The auto row alone is not a choice:
+            it restates the state the card's own line above already reports, and
+            on an install with no service that is the whole menu. The *Reset to
+            auto* button below stays, so a slot pinned to a model whose
+            credential went away can still be un-pinned with nothing to pick.
+          */}
+          {serviceModels.length > 0 && (
+            <ModelMenu
+              slot={view.slot}
+              models={serviceModels}
+              autoDetail={autoDetail}
+              pinned={pinned}
+              triggerLabel={resolved ? resolved.label : (view.pin?.modelId ?? "Unavailable")}
+              disabled={busy}
+              selected={pinned ? resolved?.modelId : undefined}
+              onPick={(model) =>
+                onSave({
+                  serviceId: model.serviceId,
+                  billingMode: model.billingMode,
+                  modelId: model.modelId,
+                  // The level is deliberately OMITTED. The model may resolve on a
+                  // different harness with a different level set, and which
+                  // harness that is (req 3) is the server's derivation — guessing
+                  // it here is the re-derivation req 8 rules out. The server
+                  // completes the tuple from the harness it derives, so the pin
+                  // stays atomic either way.
+                })
+              }
+              onReset={() => onSave(null)}
+            />
+          )}
 
           {reasoning && reasoning.options.length > 0 && (
             <ReasoningMenu

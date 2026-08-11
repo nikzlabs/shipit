@@ -53,7 +53,9 @@ export function ServiceSelector({
       triggerTestId={`${idPrefix}-service-trigger`}
       menuTestId={`${idPrefix}-service-menu`}
       menuWidth="w-64"
-      disabled={disabled || services.length === 0}
+      // No `services.length === 0` clause: an empty list renders no control at
+      // all (req 14), which is what this used to try to say with `disabled`.
+      disabled={disabled}
     >
       {services.map((service) => {
         const key = serviceKeyOf(service);

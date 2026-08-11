@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { HarnessSelector, ModelSelector } from "../ModelPicker.js";
 import { ReasoningSelector } from "../ReasoningSelector.js";
 import { ReviewerTab } from "../Settings/tabs/ReviewerTab.js";
 import { BackgroundWorkSection } from "../Settings/BackgroundWorkSection.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
-import { PICKER_TRIGGER_CLASS } from "./Picker.js";
+import { Picker, PickerOption, PICKER_TRIGGER_CLASS } from "./Picker.js";
+import { ServiceSelector } from "./ServiceSelector.js";
 import type { AgentOption } from "../../agent-types.js";
 import type { ReviewerSlotView } from "../../../server/shared/types/agent-types.js";
 
@@ -147,5 +149,73 @@ describe("picker consistency (req 13)", () => {
 
     const { container: background } = render(<BackgroundWorkSection agentList={agents} />);
     expect(background.querySelectorAll("select")).toHaveLength(0);
+  });
+
+  /**
+   * req 14 — a picker with nothing to pick is not rendered.
+   *
+   * `disabled` was the first attempt and it does not hold: the trigger below was
+   * already disabled when this was written, and clicking it still opened an
+   * empty menu, because Radix binds the trigger on `pointerdown`. So the
+   * assertion is ABSENCE, not a disabled attribute — a test for the latter would
+   * have passed against the reported bug.
+   */
+  it("renders no service control at all when there are no services", async () => {
+    const user = userEvent.setup();
+    render(
+      <ServiceSelector services={[]} selected={undefined} onChange={() => {}} idPrefix="empty" />,
+    );
+
+    expect(screen.queryByTestId("empty-service-trigger")).toBeNull();
+    // And nothing a user could click into existence.
+    expect(screen.queryByTestId("empty-service-menu")).toBeNull();
+    await user.click(document.body);
+    expect(screen.queryByTestId("empty-service-menu")).toBeNull();
+  });
+
+  /** The general rule, at the component every picker goes through. */
+  it("renders nothing when its options are all absent", () => {
+    // Typed rather than literal so the guard survives lint: what is under test
+    // is the FALSE branch of an ordinary `&&`, which leaves a boolean in the
+    // children array where a caller might expect a hole.
+    const anyToShow = [].length > 0;
+    render(
+      <Picker label="Nothing" ariaLabel="Nothing" triggerTestId="nothing-trigger">
+        {[].map(() => (
+          <PickerOption key="x" label="x" onSelect={() => {}} />
+        ))}
+        {anyToShow && <PickerOption label="hidden" onSelect={() => {}} />}
+        {null}
+      </Picker>,
+    );
+
+    // The `&&` guard and the `null` are holes, not options — counting slots
+    // rather than renderable children would keep a menu of nothing.
+    expect(screen.queryByTestId("nothing-trigger")).toBeNull();
+  });
+
+  /**
+   * An install with no service at all: the two Settings surfaces say so in
+   * prose and offer no dead controls.
+   */
+  it("shows no pickers on either Settings surface when nothing is runnable", () => {
+    const none: AgentOption[] = [
+      { id: "claude", name: "Claude Code", installed: true, hasRunnableModels: false, models: [], eligibleModels: [], supportsReview: true },
+    ];
+    useSettingsStore.getState().setReviewers([
+      { slot: "first", source: "auto", resolved: undefined },
+      { slot: "second", source: "auto", resolved: undefined },
+    ]);
+    const { container: reviewer } = render(<ReviewerTab agentList={none} />);
+    expect(reviewer.querySelectorAll("button[aria-label^='Service for']")).toHaveLength(0);
+    expect(reviewer.querySelectorAll("button[aria-label^='Model for']")).toHaveLength(0);
+    // Both slots say it — the prose is what replaces the controls.
+    expect(screen.getAllByText(/Nothing to review with yet/)).toHaveLength(2);
+    cleanup();
+
+    const { container: background } = render(<BackgroundWorkSection agentList={none} />);
+    expect(background.querySelectorAll("button[aria-label^='Service for']")).toHaveLength(0);
+    expect(background.querySelectorAll("button[aria-label='Model for background work']")).toHaveLength(0);
+    expect(screen.getByText(/Nothing to run it on yet/)).toBeTruthy();
   });
 });

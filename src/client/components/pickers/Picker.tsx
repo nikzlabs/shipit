@@ -24,7 +24,7 @@
  * class overridden at the call site.
  */
 
-import { forwardRef, type ComponentPropsWithoutRef, type ReactNode } from "react";
+import { Children, forwardRef, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import { CaretDownIcon, CheckIcon, LockIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import {
@@ -124,6 +124,7 @@ export function Picker({
   side,
   align = "start",
   disabled,
+  whenEmpty = "hide",
   children,
 }: {
   label: string;
@@ -141,8 +142,55 @@ export function Picker({
   side?: "top" | "bottom";
   align?: "start" | "end";
   disabled?: boolean;
+  /**
+   * What to do when there is nothing to pick (req 14).
+   *
+   * `hide` — render nothing. The default, and what Settings wants: a control
+   * that offers no choice is a claim there is one, and the surrounding text
+   * already explains the empty install.
+   *
+   * `readout` — keep the trigger, inert and unopenable. The composer wants this
+   * and it is not a loophole: its row is a *status* line as much as a control,
+   * and on a first-run install "No model" beside a disabled input is the
+   * sentence that tells the user what would run if they added a service. The
+   * menu is still never rendered, so the reported bug — an empty dropdown
+   * opening on click — cannot happen either way.
+   */
+  whenEmpty?: "hide" | "readout";
   children: ReactNode;
 }) {
+  /**
+   * req 14 — **a picker with nothing to pick is not rendered at all.**
+   *
+   * `disabled` is not the alternative it looks like, and that is the whole
+   * finding: the empty service control was already disabled and its menu opened
+   * anyway, because Radix binds the trigger on `pointerdown` and a disabled
+   * button does not reliably suppress it. So the fix cannot be a state — the
+   * control has to be absent.
+   *
+   * `Children.toArray` is what makes this exact rather than approximate: it
+   * flattens the `.map()` every caller passes and DROPS `null`, `undefined` and
+   * the booleans a `&&` guard leaves behind, so what it counts is what the menu
+   * would actually show. `Children.count` counts those empty slots and would
+   * keep a menu of nothing but holes.
+   *
+   * Deliberately here rather than at each call site: every picker gets it,
+   * including ones nobody has thought about the empty state of yet.
+   */
+  if (Children.toArray(children).length === 0) {
+    if (whenEmpty === "hide") return null;
+    return (
+      <PickerTrigger
+        label={label}
+        icon={icon}
+        disabled
+        title={title}
+        aria-label={ariaLabel}
+        data-testid={triggerTestId}
+      />
+    );
+  }
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>

@@ -639,6 +639,31 @@ alternative, re-deriving identity in the browser, is the same mistake phase 3 re
 harness and the level: a second implementation of a rule, in the surface least able to be
 right about it.
 
+## A picker with nothing to pick (req 14)
+
+`Picker` renders **nothing** when its options are empty. The rule lives there rather than at
+each call site, so a surface nobody has thought about the empty state of gets it anyway, and
+`Children.toArray` is what makes it exact — it flattens the `.map()` callers pass and drops the
+`null`s and booleans an `&&` guard leaves, so what is counted is what the menu would show.
+
+**`disabled` was the first attempt and it does not work.** The empty service control already
+carried `disabled` and its menu opened anyway: Radix binds the trigger on `pointerdown`, which a
+disabled button does not reliably suppress. That is why req 14 says "not a disabled one" — the
+control has to be *absent*, and a test asserting a disabled attribute would have passed against
+the reported bug.
+
+Two consequences worth stating, because both look like the rule and are not:
+
+- **The composer keeps its trigger** (`whenEmpty="readout"`): an inert label, still no menu.
+  Its row is a status line as much as a control, and `main` had *just* shipped the empty-install
+  answer for it — "No model", and "Loading" only for the frame before the agent list arrives.
+  Deleting that to satisfy a rule aimed at Settings would undo a considered decision on a
+  surface the user meets every turn. The half both agree on — no empty menu, ever — holds on
+  both surfaces.
+- **A stale background-work pin is named in the warning, not on a control.** Its service offers
+  nothing, so the model picker is gone; the pin the server still holds has to stay visible
+  somewhere, and prose is the honest place once the control is not.
+
 **Nothing about pinning changes.** Every one of the three controls writes the whole resolved
 tuple, so pinning stays atomic (above) and *Reset to auto* stays the only way back. A service
 change is a pin like any other.

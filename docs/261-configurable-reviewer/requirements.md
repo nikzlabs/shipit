@@ -135,6 +135,14 @@ No open questions remain.
     This covers every place ShipIt asks a user to choose a model: the reviewer slots, the
     background-work model (docs/252 req 9) and the session's own composer.
 
+14. **A control with nothing to choose is not shown.** Where a picker would offer no options,
+    ShipIt renders no picker — not a disabled one, and not one that opens an empty menu.
+
+    This is about what the user meets, not about which state a component is in: a control that
+    is visible is a claim that there is a choice behind it, and an install with no service has
+    no choice to make until it has one. The place to say so is the surrounding text, which
+    already does.
+
 ## Scope
 
 Child sessions keep the behaviour req 10 states, and this feature builds nothing for them.
@@ -148,6 +156,18 @@ the ones the other surfaces must match.
 _None._
 
 ## Resolved questions
+
+- 2026-08-11 — **What should a picker with no options do?** **Chosen: not exist.** The human,
+  of the first cut: "'no service' shouldn't open an empty dropdown on click. So in general,
+  whenever the dropdown would be empty, the picker would be empty, it should not be shown at
+  all." Req 14, stated generally because he stated it generally — it is not a fix to the
+  service control, it is a rule about every picker.
+
+  Checked before writing, and the first cut was worse than the report says: the empty-service
+  trigger was **already `disabled`**, and its menu opened anyway. Radix binds the trigger on
+  `pointerdown`, which `disabled` does not reliably suppress — so "disable it" was never the
+  mechanism it appeared to be, and the requirement's "not a disabled one" is load-bearing
+  rather than stylistic.
 
 - 2026-08-11 — **Why can the reviewer not be chosen by service?** **Chosen: because nobody
   asked for it until now — and the answer is reqs 11 and 12.** The human, of the shipped
@@ -376,6 +396,9 @@ What he actually said:
 - "Service is important - I need to know if it is subscription or not, for example. Also, the
   list of models can grow too big for a single picker." → reqs 11 and 12. Both are his, and
   the second is a requirement about a catalogue that has not grown yet.
+- "'no service' shouldn't open an empty dropdown on click. So in general, whenever the dropdown
+  would be empty, the picker would be empty, it should not be shown at all." → req 14. The
+  generalization from the one control he met to every picker is his.
 - "In the settings there should be exactly the same UI for the pickers of the model and
   thinking level, extract to reusable components. The service selector needs to be in the same
   style." → req 13, with a screenshot of the composer's own model and reasoning controls

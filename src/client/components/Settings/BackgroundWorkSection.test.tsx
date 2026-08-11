@@ -228,11 +228,16 @@ describe("BackgroundWorkSection", () => {
 
     render(<BackgroundWorkSection agentList={agents} />);
 
-    expect((screen.getByTestId("background-work-model") as HTMLButtonElement).textContent)
-      .toContain("gpt-5.4-mini");
+    // The pin is named in the warning, not on a control: its service is gone, so
+    // the model picker has nothing to offer and req 14 removes it. What must not
+    // happen is the control reading as the DEFAULT while the server holds a pin
+    // it fails on every job — that is the regression this test was written for,
+    // and it is still caught.
+    expect(screen.getByText(/gpt-5.4-mini is no longer available/)).toBeTruthy();
     expect((screen.getByTestId("background-work-service-trigger") as HTMLButtonElement).textContent)
       .toContain("openai");
-    expect(screen.getByText(/no longer available/)).toBeTruthy();
+    expect(screen.queryByTestId("background-work-model")).toBeNull();
+    expect(screen.queryByTestId("background-work-model-default")).toBeNull();
   });
 
   /**

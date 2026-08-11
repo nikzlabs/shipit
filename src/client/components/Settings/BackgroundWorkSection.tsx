@@ -171,10 +171,18 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
               {agentList.find((a) => a.id === resolved.harnessId)?.name ?? resolved.harnessId}
             </p>
           )}
-          {!resolved && pinnedIsStale && (
+          {!resolved && pinnedIsStale && pinned && (
+            /*
+              The pinned model is NAMED here rather than on the model control,
+              because that control is gone: its service offers nothing, so under
+              req 14 there is no picker to read it off. Naming it in the warning
+              keeps the promise the control used to keep — the server still holds
+              this pin and fails it on every background job, so the two must
+              agree about what it is.
+            */
             <p className="mt-1 text-[11px] text-(--color-warning)">
-              The model you chose is no longer available — its credential or its harness is
-              gone. Background work is failing until you pick another.
+              {pinned.modelId} is no longer available — its credential or its harness is gone.
+              Background work is failing until you pick another service.
             </p>
           )}
           {!resolved && !pinnedIsStale && (
@@ -192,44 +200,47 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
             idPrefix="background-work"
             fallbackLabel={pinnedIsStale && pinned ? pinned.serviceId : "No service"}
           />
-          <Picker
-            label={
-              resolved ? resolved.label : pinnedIsStale && pinned ? pinned.modelId : "Default"
-            }
-            ariaLabel="Model for background work"
-            triggerTestId="background-work-model"
-            menuTestId="background-work-model-menu"
-            menuWidth="w-72"
-            align="end"
-            disabled={busy}
-          >
-            {/*
-              Unset as a labelled option rather than a blank (req 9), first in
-              the list and carrying what it currently resolves to.
-            */}
-            <PickerOption
-              label="ShipIt's default"
-              detail={defaultDetail}
-              selected={!pinned}
-              onSelect={() => void save(null)}
-              testId="background-work-model-default"
-            />
-            {serviceModels.map((model) => (
+          {/* req 14 — see the Reviewer tab: the default row alone is not a choice. */}
+          {serviceModels.length > 0 && (
+            <Picker
+              label={
+                resolved ? resolved.label : pinnedIsStale && pinned ? pinned.modelId : "Default"
+              }
+              ariaLabel="Model for background work"
+              triggerTestId="background-work-model"
+              menuTestId="background-work-model-menu"
+              menuWidth="w-72"
+              align="end"
+              disabled={busy}
+            >
+              {/*
+                Unset as a labelled option rather than a blank (req 9), first in
+                the list and carrying what it currently resolves to.
+              */}
               <PickerOption
-                key={`${serviceKeyOf(model)}:${model.modelId}`}
-                label={model.label}
-                selected={!!pinned && pinned.modelId === model.modelId}
-                onSelect={() =>
-                  void save({
-                    serviceId: model.serviceId,
-                    billingMode: model.billingMode,
-                    modelId: model.modelId,
-                  })
-                }
-                testId={`background-work-model-option-${model.modelId}`}
+                label="ShipIt's default"
+                detail={defaultDetail}
+                selected={!pinned}
+                onSelect={() => void save(null)}
+                testId="background-work-model-default"
               />
-            ))}
-          </Picker>
+              {serviceModels.map((model) => (
+                <PickerOption
+                  key={`${serviceKeyOf(model)}:${model.modelId}`}
+                  label={model.label}
+                  selected={!!pinned && pinned.modelId === model.modelId}
+                  onSelect={() =>
+                    void save({
+                      serviceId: model.serviceId,
+                      billingMode: model.billingMode,
+                      modelId: model.modelId,
+                    })
+                  }
+                  testId={`background-work-model-option-${model.modelId}`}
+                />
+              ))}
+            </Picker>
+          )}
         </div>
       </div>
     </div>

@@ -170,3 +170,10 @@ it.
       are not covered, so a `PickerOption.className` override could still diverge unseen
 - [x] Driven in the dogfood instance: the service switch on both surfaces, and the two controls
       side by side against the reference screenshot
+- [x] req 14 — a picker with no options renders nothing (`Picker`, via `Children.toArray`), so
+      the Settings surfaces show prose and no dead controls on an install with no service.
+      `disabled` was the first attempt and did NOT hold: Radix opens on `pointerdown`, which a
+      disabled button does not suppress, so the empty menu opened anyway
+- [x] The composer opts into `whenEmpty="readout"` — an inert trigger, still no menu — because
+      `main` had just shipped "No model"/"Loading" there deliberately, and that is a status line
+      rather than a control claiming a choice

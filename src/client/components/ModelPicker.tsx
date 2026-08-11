@@ -271,6 +271,9 @@ export function HarnessSelector({
         triggerTestId="harness-trigger"
         menuTestId="harness-dropdown"
         menuWidth="w-56"
+        // Same as the model trigger: the composer row names what it would run
+        // even when this deployment installed no harness to choose between.
+        whenEmpty="readout"
         side="top"
         align="end"
         disabled={disabled}
@@ -608,6 +611,10 @@ export function ModelSelector({
         triggerTestId="model-trigger"
         menuTestId="model-dropdown"
         menuWidth="w-60"
+        // `displayName` answers the empty install with "No model" (and "Loading"
+        // for the one frame before the agent list arrives), so the trigger stays
+        // as that readout rather than vanishing from the composer row.
+        whenEmpty="readout"
         side="top"
         align="end"
         disabled={disabled}
