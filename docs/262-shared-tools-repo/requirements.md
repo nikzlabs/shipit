@@ -46,8 +46,9 @@ receives data when someone clicks buttons in the previewed pages.
 5. Wiring the tools into a new project costs one declaration. No per-project
    copies of service definitions or install boilerplate that must be kept in
    sync across project repos. The tools repository owns the service
-   definitions and install setup its services need; a project declaration
-   identifies the repository and ref (and may select services by stable
+   definitions, the companion-CLI setup, and the install setup its tools
+   need, under stable service and command names; a project declaration
+   identifies the repository and ref (and may select tools by those stable
    names) — it never repeats their commands, ports, or compose definitions.
 6. This works when the repositories are private.
 7. The tools checkout in a project session is **read-only**. Tool changes are
@@ -73,19 +74,26 @@ receives data when someone clicks buttons in the previewed pages.
     ShipIt install that is authorized for the declared repositories.
 12. A session resolves the tracked branch at session start. Mid-session, the
     user or the agent can request a tools refresh: the read-only checkout
-    updates to the branch tip and the affected tool services reload, within
-    seconds, without recreating the session and with no publish, deploy, or
-    authentication step. This is the edit-a-tool-and-test-it loop: push from a
+    updates to the branch tip and the affected tool services and companion
+    CLIs update, within seconds, without recreating the session and with no
+    publish, deploy, or authentication step. This is the edit-a-tool-and-test-it loop: push from a
     tools-repo session, refresh in the project session, test.
 13. When a tools repository, its selected ref, or a tool service definition
     cannot be loaded, the project session still opens and stays usable for
     project work. It clearly reports that shared tools are unavailable or
     stale, and why. It never silently runs a partial or unknown tools version.
 14. A project may declare **multiple** tools repositories, each with its own
-    independently selected branch or pin.
-15. The session shows which tools ref and exact commit are in use. The files
-    the agent sees and the running tool services correspond to that same
-    commit: an update either completes coherently or leaves the prior version
+    independently selected branch or pin. The declaration, freshness,
+    refresh, failure, and coherence requirements (reqs 5, 8, 10, 12, 13, 15)
+    apply to each declared repository independently: one repository can be
+    refreshed on its own, and its failure leaves the project's own services
+    and the other tools repositories unaffected. "Partial version" in req 13
+    means an incoherent version within one repository, not the absence of
+    another, independently failing one.
+15. The session shows, per tools repository, which ref and exact commit are
+    in use. The files the agent sees, the companion CLIs, and the running
+    tool services of that repository all correspond to that same commit: an
+    update either completes coherently or leaves the prior complete version
     active with a visible failure.
 16. Tool services follow the same start, health, preview, stop, and
     session-disposal behavior as equivalent same-repo services. Only services
@@ -96,6 +104,26 @@ receives data when someone clicks buttons in the previewed pages.
     things programmatically. The CLI and the tool's UI work on the same live
     state: the user observes the result of a CLI change in the UI, and the
     user can also make changes through the UI.
+18. A tool's **durable output** — the data it manages for the project, such
+    as requirements it maintains or images it generates — is written into the
+    project's workspace as ordinary project changes: versioned, committed,
+    and kept like any other project file. Everything else a tool holds is
+    session-scoped runtime state: it survives page reloads, tool-service
+    restarts, tools refreshes (req 12), and routine container restarts, and
+    is discarded only when the session itself is reset or deleted. Neither
+    kind of data is ever stored by modifying the read-only tools checkout.
+19. A checked-in tools declaration is a **standing grant** to fetch and
+    execute that repository's declared setup, services, and companion CLIs at
+    the selected revision — including each new commit on a tracked branch,
+    which runs without a further approval. ShipIt visibly identifies the
+    repository, ref, and exact commit being executed (req 15). Credentials
+    used to fetch repositories are never exposed to tool code.
+20. Every surfaced tool service and companion CLI command has an unambiguous
+    identity across the project and all declared tools repositories. When two
+    would collide — with each other or with the project's own services —
+    ShipIt reports the collision before running the ambiguous one, and the
+    collision is resolvable in the declaration without copying service,
+    command, port, or compose definitions.
 
 ## Out of scope (v1)
 
@@ -116,7 +144,11 @@ review of 2026-08-11 (brokered reviewer; coverage and contradiction brief),
 whose findings the user resolved the same day — see Resolved questions.
 Requirement 17 restates the user's follow-up (voice message, 2026-08-11):
 tools may also be companion CLIs the agent drives, with the user observing and
-acting through the UI.
+acting through the UI. Requirements 18–20 and the amendments to reqs 5, 12,
+14, and 15 come from the second independent review of 2026-08-11 (same
+brokered-reviewer setup; CLI coverage, multi-repo semantics, and trust
+boundary), whose findings the user resolved the same day — see Resolved
+questions.
 
 ## Open questions
 
@@ -152,3 +184,15 @@ acting through the UI.
   commit/workspace boundary (→ req 7), one-time authorization (→ reqs 10,
   11), version observability and coherence (→ req 15), service lifecycle
   parity (→ req 16).
+- **2026-08-11 — Where does tool data live?** (second review, finding 1).
+  Answer: **durable output in project files as ordinary project changes;
+  everything else is session-scoped runtime state** that survives reloads,
+  restarts, and refreshes and dies only with the session. → req 18.
+- **2026-08-11 — Trust boundary** (second review, finding 3). Answer: **the
+  checked-in declaration is a standing grant** — new commits on a tracked
+  branch execute without re-approval; the running repo/ref/commit stays
+  visible; fetch credentials are never exposed to tool code. → req 19.
+- **2026-08-11 — Second-review clarifications** (second review, findings 2,
+  4, 5). Answer: **apply all three** — CLI parity in onboarding, refresh, and
+  coherence (→ reqs 5, 12, 15), per-repository independence (→ req 14),
+  collision reporting and resolution (→ req 20).
