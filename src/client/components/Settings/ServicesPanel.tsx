@@ -71,9 +71,19 @@ import {
 } from "../../../server/shared/catalogue/index.js";
 import { Button } from "../ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog.js";
-import { useSettingsStore } from "../../stores/settings-store.js";
-import { useUiStore } from "../../stores/ui-store.js";
-import { AddAccountButton, ProviderAccountRows, useProviderAccounts } from "./ProviderAccountRows.js";
+import { providerAccountAuthKey, useSettingsStore } from "../../stores/settings-store.js";
+import {
+  AccountChallenge,
+  ProviderAccountRows,
+  abandonAccount,
+  cancelAccountLogin,
+  createAccount,
+  isUnconnectedAttempt,
+  signInBlockedReason,
+  startAccountLogin,
+  useAllProviderAccounts,
+  useProviderAccounts,
+} from "./ProviderAccountRows.js";
 import { MODE_LABEL, NothingToRouteYet, ServiceCard } from "./ServiceCard.js";
 import { CredentialSelectionModeControl, FailoverCutoffControls } from "./CredentialRouting.js";
 
@@ -109,44 +119,50 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
   const routes = useSettingsStore((s) => s.credentialRoutes);
   const accounts = useSettingsStore((s) => s.providerAccounts);
   const notices = useSettingsStore((s) => s.providerAccountNotices);
+  /**
+   * The accounts the user *has*, which is not every row the store holds: a
+   * sign-in in flight has a row and is not a credential yet. See
+   * {@link isUnconnectedAttempt} — deriving it from the account is what stops
+   * the panel flickering a card in and out around one.
+   */
+  const connectedAccounts = accounts.filter((a) => !isUnconnectedAttempt(a));
   const [addOpen, setAddOpen] = useState(false);
   /**
-   * Modes the user picked in the dialog that have no credential yet.
+   * The account whose sign-in the dialog is currently hosting, if any.
    *
-   * An account-backed subscription cannot be connected by pasting anything —
-   * it needs a login, which `ProviderAccountsCard` owns. Without this the
-   * dialog was a dead end: picking OpenAI → Subscription told the user to press
-   * "Add account on its card" while no such card existed, because a card only
-   * appeared once an account already did. Revealing the card is the handoff,
-   * and it keeps the screen's "only what you configured" property for everyone
-   * who has not asked for it.
-   *
-   * It lives in the UI store rather than here because Settings renders its tabs
-   * through Radix `TabsContent`, which UNMOUNTS the inactive one: as component
-   * state the reveal was lost by switching to any other Settings tab and back,
-   * and the only route back to "Add account" was to walk the whole add-flow
-   * again. `settingsTab` sits in the same store for the same reason.
+   * Lives here rather than in the dialog because the cards behind the dialog
+   * are what it is for: see the prop's docstring on `AddServiceDialog`. Cleared
+   * with the dialog, so a card is only ever asked to stand down while there is
+   * something on top of it doing the job.
    */
-  const revealed = useUiStore((s) => s.revealedServiceModes);
 
   /**
-   * docs/257 req 5 — a card with something to say stays on screen.
+   * **A service appears once it has a credential — never before** (req 17).
    *
-   * Without this clause, disconnecting the LAST account of a service removed
-   * the account and this filter dropped the card in the same commit — so the
-   * result of that disconnect ("N sessions have no connected account") was
-   * mounted and unmounted together and the user never saw which sessions the
-   * removal had stranded. Found by cross-backend review; the notice being in
-   * the store rather than in the card's own state is what makes rendering it
-   * again possible at all.
+   * There used to be a fourth clause here: modes the user had *picked* in the
+   * dialog, held in the UI store as `revealedServiceModes`. It existed because
+   * the dialog was a dead end for a subscription connected by signing in —
+   * picking OpenAI → Subscription told the user to press "Add account on its
+   * card" while no such card existed — so the dialog revealed an empty card for
+   * the button to live on. That hand-off is gone: the sign-in happens inside the
+   * dialog now, and the account exists before any card does.
+   *
+   * Deleting the clause is also the fix for what the reveal cost. The other
+   * three all have a way out — remove the key, disconnect the account, dismiss
+   * the notice — and a revealed mode had none, so a user who chose a
+   * subscription and stopped was left with a service they could not remove.
+   *
+   * The notice clause (docs/257 req 5) stays: disconnecting the LAST account
+   * removes the account and would drop the card in the same commit, so the
+   * result of that disconnect would mount and unmount together and the user
+   * would never see which sessions the removal stranded.
    */
   const configured = catalogueModes().filter(({ service, billingMode }) => {
     const provider = accountProviderFor(service, billingMode);
     return routes.some((r) => r.serviceId === service.id && r.billingMode === billingMode && r.via === "string")
       || (provider !== undefined
-        && accounts.some((a) => a.serviceId === service.id && a.billingMode === billingMode))
-      || (provider !== undefined && notices[provider] !== undefined)
-      || revealed.includes(credentialModeKey(service.id, billingMode));
+        && connectedAccounts.some((a) => a.serviceId === service.id && a.billingMode === billingMode))
+      || (provider !== undefined && notices[provider] !== undefined);
   });
 
   const cards = configured.map(({ service, billingMode }) => (
@@ -159,12 +175,7 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
     />
   ));
 
-  const dialog = addOpen && (
-    <AddServiceDialog
-      onClose={() => setAddOpen(false)}
-      onReveal={(modeKey) => useUiStore.getState().revealServiceMode(modeKey)}
-    />
-  );
+  const dialog = addOpen && <AddServiceDialog agentList={agentList} onClose={() => setAddOpen(false)} />;
 
   // "Nothing configured" is the caption under the heading rather than a box of
   // its own: empty, the whole panel is two lines and a button.
@@ -367,6 +378,12 @@ function ServiceModeCard({
     <NothingToRouteYet noun={routedNoun} />
   ) : undefined;
 
+  // req 17 — **no card action of any kind.** A card shows what is there and
+  // lets the user manage it; everything is added through the panel's one "Add a
+  // service" button, including the second account of a service and the second
+  // key of a subscription that allows several. This card used to carry "Add
+  // account" for one delivery shape and "Add another" for the other — two doors
+  // into one dialog, permanently on screen, for something done rarely.
   return (
     <ServiceCard
       service={service}
@@ -379,13 +396,6 @@ function ServiceModeCard({
           : billingMode === "key"
             ? "Metered — no quota to report, so this card shows no usage."
             : "A plan, authenticated by a supplied key."
-      }
-      action={
-        provider ? (
-          <AddAccountButton provider={provider} agent={agentList.find((a) => a.id === provider)} />
-        ) : multiple ? (
-          <AddCredentialButton service={service} billingMode={billingMode} />
-        ) : undefined
       }
       models={modelIds(service, billingMode)}
       routing={routing}
@@ -620,67 +630,61 @@ function CredentialRow({ route, order }: { route: CredentialRoute; order?: RowOr
   );
 }
 
-/** "Add another" for a subscription that can hold several credentials (req 12). */
-function AddCredentialButton({
-  service,
-  billingMode,
-}: {
-  service: ServiceDef;
-  billingMode: BillingMode;
-}) {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <Button
-        variant="secondary"
-        size="sm"
-        className="rounded-md shrink-0"
-        onClick={() => setOpen(true)}
-        data-testid={`service-add-credential-${credentialModeKey(service.id, billingMode)}`}
-      >
-        Add another
-      </Button>
-      {open && (
-        <AddServiceDialog
-          initialService={service}
-          initialMode={billingMode}
-          onClose={() => setOpen(false)}
-        />
-      )}
-    </>
-  );
-}
-
 /**
- * The add-flow: service → billing mode → credential.
+ * The add-flow: service → billing mode → credential — **the only way any
+ * credential is added** (req 17).
  *
  * Step 2 exists because the two modes are **not interchangeable** (req 5): they
  * can offer different models and they bill differently, so the user picks one
  * per credential rather than discovering later which one a turn resolved to. It
  * is skipped when a service has only one mode — a one-option choice is not a
  * choice.
+ *
+ * **Step 3 signs the user in, here, rather than sending them somewhere to do
+ * it.** For an account-backed mode it used to end with "Continue to sign in",
+ * which closed the dialog and revealed an empty service card carrying an "Add
+ * account" button — a hand-off inside a flow the user had already started, and
+ * the source of a listed service with no credential and no way to remove it.
+ * Now pressing the button creates the account and starts the login, and the
+ * provider's challenge renders in this dialog: the same `AccountChallenge` the
+ * account row renders, never a second copy of it (docs/150 req 16).
+ *
+ * **An attempt is the dialog's, and only the dialog's.** `POST
+ * /api/provider-accounts` creates the account row before the login completes,
+ * because the login needs something to hang on — but a row that has never
+ * authenticated is not a credential, so nothing else lists it
+ * ({@link isUnconnectedAttempt}). Every way out of this dialog abandons it, and
+ * the panel behind never gains or loses a card while the user is still in here.
  */
 function AddServiceDialog({
   initialService,
   initialMode,
+  agentList = [],
   onClose,
-  onReveal,
 }: {
   initialService?: ServiceDef;
   initialMode?: BillingMode;
+  /** Only to tell whether the harness that runs a sign-in is installed. */
+  agentList?: AgentOption[];
   onClose: () => void;
-  /**
-   * Hand off to the accounts card for a mode that is connected by signing in
-   * rather than by pasting a secret. Absent from the "Add another" entry point,
-   * which is only ever opened on a card that already exists.
-   */
-  onReveal?: (modeKey: string) => void;
 }) {
   const [service, setService] = useState<ServiceDef | undefined>(initialService);
   const [billingMode, setBillingMode] = useState<BillingMode | undefined>(initialMode);
   const [secret, setSecret] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [startingSignIn, setStartingSignIn] = useState(false);
+  /**
+   * The attempt this dialog is conducting.
+   *
+   * Held by id and re-read from the store on every render rather than kept as a
+   * snapshot: the row's `status` is what says the sign-in finished, and it
+   * arrives on the `provider_accounts` broadcast, not from the call that
+   * started it. Nothing outside this dialog needs it — the panel decides what
+   * to list from the accounts themselves ({@link isUnconnectedAttempt}), which
+   * is what keeps the two from disagreeing for a frame.
+   */
+  const [signInAccountId, setSignInAccountId] = useState<string | undefined>(undefined);
 
   const pickService = (next: ServiceDef): void => {
     setService(next);
@@ -698,9 +702,127 @@ function AddServiceDialog({
   const acceptsAccount =
     service && billingMode ? !!modeCredentialFor(service.id, billingMode, "account") : false;
 
-  const revealAccountCard = (): void => {
-    if (!service || !billingMode) return;
-    onReveal?.(credentialModeKey(service.id, billingMode));
+  const signInProvider = service && billingMode ? accountProviderFor(service, billingMode) : undefined;
+  // Called unconditionally, narrowed after — a hook cannot hide behind the
+  // step the user has reached.
+  // Attempts included: this is the one caller that is conducting one.
+  const providerAccounts = useAllProviderAccounts(signInProvider ?? "claude");
+  const accounts = signInProvider ? providerAccounts : [];
+  const signInAccount = signInAccountId
+    ? accounts.find((a) => a.id === signInAccountId)
+    : undefined;
+  /**
+   * The sign-in finished — **read off the row, not off the call that started
+   * it.** That call returns long before the user has finished on the provider's
+   * page; what says it worked is the account turning `ready` on the
+   * `provider_accounts` broadcast. Derived rather than watched, so the dialog
+   * needs no effect and survives a reload mid-challenge exactly as the row does.
+   */
+  const signedIn = signInAccount?.status === "ready";
+  const harnessInstalled = signInProvider
+    ? (agentList.find((a) => a.id === signInProvider)?.installed ?? true)
+    : true;
+  /**
+   * An attempt this flow would adopt rather than compete with — this dialog's
+   * own, or one stranded by a reload. Derived once, and used twice: to start
+   * the sign-in, and to decide whether anything is in the way of starting it.
+   */
+  const adoptable = signInAccount ?? accounts.find(isUnconnectedAttempt);
+  /**
+   * docs/150 — the provider runs ONE login process, so a second one is a 409.
+   * Said here rather than after the click.
+   *
+   * Measured against the attempt we would **adopt**, not against
+   * `signInAccountId` alone. A stranded attempt is `authenticating` and
+   * invisible in the panel, so reading it as somebody else's sign-in disabled
+   * the one button that could recover it: the flow refused to start, citing a
+   * row the user could not see, and there was no other way to reach it. A
+   * *connected* row re-authenticating still blocks, which is the case the guard
+   * is actually for.
+   */
+  const blockedBySignIn = signInProvider ? signInBlockedReason(accounts, adoptable?.id) : undefined;
+  /**
+   * **An attempt that stopped without connecting** — no live challenge, not
+   * ready, but this dialog's account still there.
+   *
+   * Two different things arrive here and both used to dead-end. A login that
+   * never *started* (CLI spawn failure, a 409 race) leaves the account with no
+   * challenge at all; and a challenge the provider then *rejects* clears
+   * `providerAccountAuths` and files the reason under
+   * `providerAccountAuthErrors`, which this dialog did not read — so
+   * `AccountChallenge` rendered nothing, *Sign in* was already hidden, and the
+   * only retry left was the Connect button on the card behind the modal. That
+   * is precisely the hand-off req 17 deletes, rebuilt by accident on the error
+   * path. Found by cross-backend review.
+   */
+  const authKey = signInProvider && signInAccountId
+    ? providerAccountAuthKey(signInProvider, signInAccountId)
+    : undefined;
+  const pendingAuth = useSettingsStore((s) => (authKey ? s.providerAccountAuths[authKey] : undefined));
+  const authError = useSettingsStore((s) => (authKey ? s.providerAccountAuthErrors[authKey] : undefined));
+  const signInStalled = !!signInAccount && !signedIn && !pendingAuth;
+
+  const startSignIn = async (): Promise<void> => {
+    if (!signInProvider) return;
+    setStartingSignIn(true);
+    setError("");
+    try {
+      /**
+       * **Adopt an attempt rather than starting a second one.** Three cases,
+       * one line: this dialog's own attempt (*Try again* after a failure), an
+       * attempt stranded by a reload — invisible in the panel now, and holding
+       * the provider's single login slot with nothing on screen to release it —
+       * and, otherwise, no attempt yet, so make one.
+       */
+      const existing = adoptable;
+      const account = existing ?? await createAccount(signInProvider, accounts.map((a) => a.id));
+      if (!account) {
+        setError("Could not start the sign-in — no account was created.");
+        return;
+      }
+      // Taken BEFORE the login starts, on purpose: the account exists from the
+      // moment it is created, so learning its id only after the login had also
+      // started left a failed start un-abandonable — Cancel with nothing to
+      // delete, and a retry creating a second orphan each time.
+      setSignInAccountId(account.id);
+      // An adopted attempt may still have a login running against it (the CLI
+      // outlives the browser). Cancelling first is what makes the challenge
+      // this dialog then shows the live one, rather than a 409.
+      if (existing) await cancelAccountLogin(signInProvider, account.id);
+      await startAccountLogin(signInProvider, account.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start the sign-in");
+    } finally {
+      setStartingSignIn(false);
+    }
+  };
+
+  /**
+   * **Leaving the flow before it finishes abandons it** — by *Cancel*, by Esc,
+   * by the backdrop, by the close button. All four land here, so the account
+   * this dialog created and the login it started both go, and nothing
+   * unfinished is ever left listed (req 17).
+   *
+   * An earlier cut made *Cancel* abandon and a dismissal keep, reasoning that
+   * the provider may already have authorised the code on screen so the card
+   * should carry it to the end. Rejected by the human on the requirement it
+   * contradicts: req 17 says a service the user has not finished connecting
+   * does not appear, and "unless you pressed Escape" is not a clause anybody
+   * would predict. Losing a live challenge is recoverable in one press; a
+   * listed service nobody asked for is the bug this feature exists to remove.
+   *
+   * Not guarded: the component unmounting with a challenge live. It is
+   * unreachable in practice — this is a modal, so the tab behind it cannot be
+   * switched, and the one unmount that does happen (onboarding yielding the
+   * pane) is *caused* by the account connecting, which this no-ops on. A page
+   * reload is the honest exception, and no client cleanup covers that anyway:
+   * the row is server-side, so it shows up on the card, where Disconnect
+   * reaches it.
+   */
+  const cancel = (): void => {
+    if (signInProvider && signInAccountId && !signedIn) {
+      void abandonAccount(signInProvider, signInAccountId);
+    }
     onClose();
   };
 
@@ -726,7 +848,7 @@ function AddServiceDialog({
   };
 
   return (
-    <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
+    <Dialog open onOpenChange={(isOpen) => { if (!isOpen) cancel(); }}>
       <DialogContent className="max-w-md rounded-lg border-(--color-border-secondary) p-4" data-testid="add-service-dialog">
         <DialogTitle className="text-sm font-semibold">
           Add a service{service ? ` — ${service.name}` : ""}
@@ -794,11 +916,50 @@ function AddServiceDialog({
               3 · {acceptsAccount ? "Sign in" : "Paste the key"}
             </p>
             {acceptsAccount && (
-              <p className="text-xs text-(--color-text-secondary)" data-testid="add-service-account-only">
-                {service.name}&rsquo;s {MODE_LABEL[billingMode].toLowerCase()} can be connected by
-                signing in. <b>Continue</b> opens its card, where <b>Add account</b> starts the login
-                — ShipIt never sees your password.
-              </p>
+              <div className="space-y-2" data-testid="add-service-account-only">
+                {signedIn ? (
+                  <p className="text-xs text-(--color-success)" data-testid="add-service-signed-in">
+                    Connected. {service.name} {MODE_LABEL[billingMode].toLowerCase()} is ready —
+                    its models are selectable now.
+                  </p>
+                ) : signInStalled ? (
+                  <p className="text-xs text-(--color-text-error)" data-testid="add-service-signin-stalled">
+                    {authError ?? "The sign-in stopped before the account connected."} Try again
+                    below, or close this to add nothing.
+                  </p>
+                ) : signInAccount ? (
+                  <>
+                    {/* The provider's challenge, in the flow that asked for it —
+                        the same component the account row renders. */}
+                    <AccountChallenge
+                      provider={signInProvider ?? "claude"}
+                      account={signInAccount}
+                      serviceName={service.name}
+                      onError={setError}
+                    />
+                    <p className="text-[11px] text-(--color-text-tertiary)">
+                      Keep this open until the account connects — this step will say so.
+                      Closing it, however you close it, calls the sign-in off and adds nothing.
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-xs text-(--color-text-secondary)">
+                    {service.name}&rsquo;s {MODE_LABEL[billingMode].toLowerCase()} is connected by
+                    signing in, which happens right here — ShipIt never sees your password.
+                  </p>
+                )}
+                {!harnessInstalled && (
+                  <p className="text-xs text-(--color-text-error)" data-testid="add-service-harness-missing">
+                    The harness that runs this sign-in is not installed, so this subscription
+                    cannot be connected on this install.
+                  </p>
+                )}
+                {!signInAccount && blockedBySignIn && (
+                  <p className="text-xs text-(--color-text-error)" data-testid="add-service-signin-blocked">
+                    {blockedBySignIn}
+                  </p>
+                )}
+              </div>
             )}
             {acceptsString && (
               <>
@@ -844,9 +1005,25 @@ function AddServiceDialog({
         )}
 
         <div className="mt-4 flex justify-end gap-2">
-          <Button variant="ghost" size="md" className="rounded-md" onClick={onClose}>
-            Cancel
-          </Button>
+          {/* Once the account is connected there is nothing left to call off,
+              so the way out stops being "Cancel" and becomes "Done" — which is
+              also the confirmation, since the flow's last screen is the one
+              saying the service is ready. */}
+          {signedIn ? (
+            <Button
+              variant="primary"
+              size="md"
+              className="rounded-md"
+              onClick={onClose}
+              data-testid="add-service-done"
+            >
+              Done
+            </Button>
+          ) : (
+            <Button variant="ghost" size="md" className="rounded-md" onClick={cancel}>
+              Cancel
+            </Button>
+          )}
           {/*
             Button order follows the same rule as the heading: the account path
             is primary wherever it exists, and *Save* steps down to secondary
@@ -865,15 +1042,25 @@ function AddServiceDialog({
               {saving ? "Saving..." : "Save"}
             </Button>
           )}
-          {acceptsAccount && (
+          {/* Hidden only while a challenge is actually live: there is nothing to
+              press twice, and the provider would refuse a second login anyway.
+              An attempt that stalled keeps it, as **Try again** on the account
+              already created — which is why `startSignIn` reuses
+              `signInAccount` instead of creating a second one. */}
+          {acceptsAccount && (!signInAccount || signInStalled) && !signedIn && (
             <Button
               variant="primary"
               size="md"
               className="rounded-md"
-              onClick={revealAccountCard}
-              data-testid="add-service-continue"
+              disabled={startingSignIn || !harnessInstalled || !!blockedBySignIn}
+              onClick={() => void startSignIn()}
+              data-testid="add-service-sign-in"
             >
-              Continue to sign in
+              {startingSignIn
+                ? "Starting..."
+                : signInStalled
+                  ? "Try again"
+                  : `Sign in to ${service?.name ?? "the service"}`}
             </Button>
           )}
         </div>

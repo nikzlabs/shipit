@@ -11,7 +11,7 @@
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor, within, act } from "@testing-library/react";
-import { AddAccountButton, ProviderAccountRows } from "./ProviderAccountRows.js";
+import { ProviderAccountRows } from "./ProviderAccountRows.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import type { AgentOption } from "../../agent-types.js";
@@ -39,16 +39,15 @@ function account(id: string, isPrimary = false): CredentialRoute {
 }
 
 /**
- * The two halves as `ServiceCard` hosts them: the action in the header slot,
- * the rows in the body. Rendered together because a failed "Add account" is
- * raised by the button and reported by the rows.
+ * The body as `ServiceCard` hosts it. There is no longer an "Add account"
+ * button to render beside it: docs/252 req 17 moved adding into the
+ * add-service dialog, so a failure while *creating* an account is that
+ * dialog's to report (`ServicesPanel.test.tsx`), and what is left here is
+ * everything done to an account that already exists.
  */
 function renderRows(provider: "claude" | "codex" = "claude") {
   return render(
-    <>
-      <AddAccountButton provider={provider} agent={provider === "claude" ? agent : undefined} />
-      <ProviderAccountRows provider={provider} agent={provider === "claude" ? agent : undefined} />
-    </>,
+    <ProviderAccountRows provider={provider} agent={provider === "claude" ? agent : undefined} />,
   );
 }
 
@@ -74,18 +73,6 @@ afterEach(() => {
 });
 
 describe("ProviderAccountRows inline results and errors (docs/257 req 5)", () => {
-  it("reports a failed 'Add account' on the card, because no row exists yet", async () => {
-    installFailingFetch("GitHub says no");
-    renderRows();
-
-    fireEvent.click(screen.getByTestId("provider-account-add-claude"));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("provider-accounts-notice-claude")).toHaveTextContent("GitHub says no");
-    });
-    expect(useUiStore.getState().toast).toBeNull();
-  });
-
   it("reports a failed disconnect on the row it belongs to", async () => {
     installFailingFetch("that session is running");
     renderRows();
@@ -160,8 +147,10 @@ describe("ProviderAccountRows naming", () => {
     useSettingsStore.getState().setProviderAccounts([]);
     renderRows();
     expect(screen.getByTestId("provider-accounts-empty-claude")).toHaveTextContent(
-      /No Anthropic subscription connected yet/,
+      /No Anthropic subscription connected/,
     );
+    // req 17 — it points at the one way in, which is not on this card.
+    expect(screen.getByTestId("provider-accounts-empty-claude")).toHaveTextContent(/Add a service/);
     expect(screen.queryByText(/Claude subscription connected/)).toBeNull();
   });
 

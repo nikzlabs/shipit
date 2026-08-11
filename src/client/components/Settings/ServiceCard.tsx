@@ -11,9 +11,14 @@
  *
  * So the chrome lives here and nowhere else, and both bodies are children of
  * it. The card is deliberately dumb: it owns the border, the header (avatar,
- * service name, billing-mode pill, credential count, one action), the model
- * chips and the shaded routing band, and it owns no credential logic at all.
- * Which rows go inside, and what the routing band contains, is the caller's.
+ * service name, billing-mode pill, credential count), the model chips and the
+ * shaded routing band, and it owns no credential logic at all. Which rows go
+ * inside, and what the routing band contains, is the caller's.
+ *
+ * **It has no header action.** It carried one — "Add account" on an
+ * account-backed card, "Add another" on a key one — until docs/252 req 17 made
+ * the panel's "Add a service" the single way in. What is left is a card that
+ * shows and manages what exists.
  *
  * The header names the **service** (`Anthropic`), never the harness that
  * happens to drive it (`Claude`). A credential belongs to a service; the
@@ -54,7 +59,6 @@ export function ServiceCard({
   credentialCount,
   countNoun,
   description,
-  action,
   models,
   routing,
   routingTitle,
@@ -71,8 +75,6 @@ export function ServiceCard({
   /** "account" for a login-backed mode, "credential" for a supplied secret. */
   countNoun: string;
   description: string;
-  /** The single header action — "Add account", "Add another". */
-  action?: ReactNode;
   models: string[];
   /**
    * The shaded band under the body. Given a heading rather than left inline
@@ -113,7 +115,6 @@ export function ServiceCard({
             </div>
             <p className="mt-0.5 text-xs text-(--color-text-tertiary)">{description}</p>
           </div>
-          {action}
         </div>
 
         {children}
