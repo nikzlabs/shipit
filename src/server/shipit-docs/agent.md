@@ -1,25 +1,40 @@
 # Sub-agents — `shipit agent run`
 
-`shipit agent run` spawns **another** registered agent for a one-shot sub-task
-and gives you its final text back, synchronously, in the same turn. Use it when
-the user wants a second model's eyes or hands — "review this with Codex", "ask
-Claude to draft the migration" — without you leaving the session or surrendering
-the session's pinned agent.
+`shipit agent run` spawns **another** agent for a one-shot sub-task and gives you
+its final text back, synchronously, in the same turn. Use it when the user wants
+a second model's eyes or hands — "review this", "ask another model to draft the
+migration" — without you leaving the session or surrendering the session's
+pinned agent.
 
-This is a generic delegation primitive, not a review tool: you spawn any
-registered agent with any prompt and read its text back. Review is just the most
-common prompt shape.
+This is a generic delegation primitive with a review path built into it. Which
+one you use decides **who you are allowed to name**:
+
+- **A review → name the ROLE.** `--role reviewer` asks for a review and lets
+  ShipIt pick the reviewer, from settings the user owns.
+- **Anything else → name EVERYTHING.** An explicit run states the harness, the
+  service, the billing mode, the model and the reasoning level. Nothing is filled
+  in from a stored default, so an incomplete call is refused.
+
+The two do not mix, and a call in between is rejected with an error naming what
+is missing (docs/261).
 
 ## When to use it
 
 The user says something like:
 
-- "review this with Codex" / "get a second opinion from the other model"
-- "ask Claude to write the test fixtures for this"
-- "have Codex explain how this subsystem works"
+- "review this" / "get a second opinion from another model"
+- "ask another model to write the test fixtures for this"
+- "have a second model explain how this subsystem works"
 
 Recognize the intent and run the command yourself. There is no slash command and
 no button — the natural-language request is the trigger.
+
+**Do not choose the reviewer yourself.** If the user names a backend ("review
+this with Codex"), still use `--role reviewer`: which model reviews is a ShipIt
+setting, not a judgement call you make per turn, and it is what keeps the
+reviewer distant from the implementer when the implementer changes. Tell the
+user which reviewer actually ran (the consult card names it) and that ShipIt's own
+reviewer settings are where they change it.
 
 **Never reach for the raw `codex` / `claude` CLI to do this.** Per-agent
 credential isolation mounts only *your* pinned agent's credentials in this
@@ -41,19 +56,68 @@ is for a *different* agent (or a deliberately fresh-context helper).
 ## The command
 
 ```
-shipit agent run --agent claude|codex --prompt-file FILE [--model M] [--json]
+shipit agent run --role reviewer --prompt-file FILE [--json]
+shipit agent run --agent claude|codex --service S --billing-mode sub|key \
+                 --model M --effort LEVEL --prompt-file FILE [--json]
 shipit agent result [RUN-ID] [--wait [--timeout SECONDS]] [--json]
 ```
 
-- **`--agent`** (required) — the agent to spawn (`claude` or `codex`). May be the
-  same provider as you (a fresh-context helper) or a different one.
-- **`--prompt-file`** (required) — the prompt, read from a file or from **stdin**
-  with `--prompt-file -`. There is no inline `-p`/`--prompt` flag: a prompt on
-  the command line gets mangled the moment it contains backticks or `$(...)`.
-  Use a single-quoted heredoc, exactly like `gh pr create --body-file -`.
-- **`--model`** (optional) — a model alias/id for the sub-agent.
+- **`--prompt-file`** (required, both shapes) — the prompt, read from a file or
+  from **stdin** with `--prompt-file -`. There is no inline `-p`/`--prompt` flag:
+  a prompt on the command line gets mangled the moment it contains backticks or
+  `$(...)`. Use a single-quoted heredoc, exactly like `gh pr create --body-file -`.
 - **`--json`** (optional) — print the full result object instead of just the
   text.
+
+### The role — `--role reviewer`
+
+Names **what you want done**, not who does it. ShipIt resolves the reviewer from
+its own settings and ranks the two configured reviewers by distance from what
+*you* are running: a different model family first, then a different harness,
+degrading to the best difference the install actually offers. The reviewer is
+resolved and routed once, when the spawn is admitted, so retries and the consult
+card all report the same model.
+
+`--role` may not be combined with any of the five explicit flags — a call
+carrying both is asking two different questions ("who should review this?" and
+"run exactly this model"), and is refused.
+
+### The explicit run — all five, or nothing
+
+Outside a role you name everything the run executes on:
+
+- **`--agent`** — the harness to spawn (`claude` or `codex`).
+- **`--service`** and **`--billing-mode`** (`sub` for a subscription, `key` for a
+  metered API key) — together with `--model` these identify *which* offering
+  runs, because one model id can be served by several services and only the pair
+  says which credential pays.
+- **`--model`** — the model id as the catalogue lists it for that service.
+- **`--effort`** — the reasoning level, validated against the named harness's own
+  levels. An unrecognized level is an error, not a silently dropped flag.
+
+**Omitting any of them is an error**, and the message names the missing flags.
+Nothing is filled in from a stored setting, so a half-specified call can never be
+completed from somewhere you cannot see. In practice this means: use the explicit
+shape only when all five values were handed to you — by the user, or by a
+repository's own instructions overriding ShipIt's reviewer. Do not guess values
+to fill the shape out; use `--role reviewer`.
+
+### Not the same as a child session
+
+There are three ways an agent gets started, and each answers "what does it run
+on" differently. Keep them apart:
+
+| Path | What it runs on |
+|---|---|
+| `shipit agent run --role reviewer` | ShipIt's reviewer settings resolve it |
+| `shipit agent run` (explicit) | Named in full at the call; an omission is refused |
+| `shipit session create` | **Inherited from you**, with partial override (`--agent`, `--model`) |
+
+The child-session rule is deliberately the opposite of the one-shot rule: a child
+session has a parent to inherit from, and a one-shot run has nothing but its own
+arguments. So `shipit session create --agent codex` is a complete, valid command,
+while a one-shot run given only those same two flags is refused for the four it
+did not name.
 
 The prompt is the **single context channel**. Put everything the sub-agent needs
 into it: the task, any `git diff`, file references, focus hints. The sub-agent
@@ -62,7 +126,9 @@ starts with a fresh context and sees only what you give it.
 ### Example — second-opinion review
 
 ```
-shipit agent run --agent codex --prompt-file - <<'EOF'
+shipit agent run --role reviewer --prompt-file - <<'EOF'
+Review only — do not edit this workspace.
+
 Review this diff for correctness bugs and security issues. Report each finding
 as `file:line — comment`. Be concise; skip praise.
 
@@ -79,10 +145,10 @@ whose fix needs a decision or authority you don't have; ask about *that* finding
 and act on the rest.
 
 You also do **not** need to paste the output back for the user to see it: ShipIt
-surfaces the sub-agent's verbatim output inline, in the persisted "Consulted
-Codex" card, with attribution (docs/220). So treat stdout as input for *acting*,
-not as something to re-type into chat — re-pasting it just duplicates what the
-card already shows.
+surfaces the sub-agent's verbatim output inline, in the persisted consult card,
+with attribution (docs/220) — which is also where the user sees which reviewer
+ShipIt picked. So treat stdout as input for *acting*, not as something to re-type
+into chat — re-pasting it just duplicates what the card already shows.
 
 **Your copy and the user's copy are the same document.** stdout and the card are
 written from one string, so there is no "the UI has more" — if you and the user
@@ -197,10 +263,16 @@ id or a bad flag, since neither condition can ever clear.
 - **Opt-in.** The feature only works when the user has enabled **Settings →
   Multi-agent sessions**. Otherwise the command returns a clear "disabled" error.
 - **Only harnesses this deployment installed.** Which agent CLIs an install has is
-  chosen when ShipIt is deployed, so a backend may simply not be present here —
-  the command then fails with "<name> is not installed in this deployment". That
-  is not something you or the user can fix from inside a session; report it and
-  carry on without the second opinion.
+  chosen when ShipIt is deployed, so a backend an *explicit* call names may simply
+  not be present here — the command then fails with "<name> is not installed in
+  this deployment". That is not something you or the user can fix from inside a
+  session; report it and carry on without the second opinion. `--role reviewer`
+  never hits this: ShipIt only ever picks a harness that is installed and has a
+  usable credential.
+- **A role can still find nobody.** If neither configured reviewer has a
+  credential that can run right now — none connected, or every account
+  quota-exhausted — the run is refused rather than silently downgraded. Say so; the
+  fix is in ShipIt's reviewer settings or a quota reset, not in your prompt.
 - **No recursion.** A spawned sub-agent cannot itself spawn a sub-agent.
 - **At most 3 spawns per turn.** Enough for "review with both other models" or a
   couple of delegations. A 4th returns an error without spawning. The budget

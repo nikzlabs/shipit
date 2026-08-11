@@ -60,14 +60,14 @@ Open questions block only the active feature. They do not prevent unrelated fixe
 Before declaring implementation complete, have an independent reviewer compare the code with every numbered requirement. Run it through the ShipIt CLI:
 
 ```
-shipit agent run --agent codex --prompt-file - <<'EOF'
+shipit agent run --role reviewer --prompt-file - <<'EOF'
 Review only — do not edit this workspace. …
 EOF
 ```
 
 **This is not a subagent in your harness's sense.** `shipit agent run` is an ordinary shell command asking ShipIt to run a *separate, out-of-process* agent; it is not the built-in `Task` / AgentTool. A harness rule like "don't spawn subagents unless the user asks" governs that in-process tool and does not apply here — and the user opted into this review when they put the feature under requirements discipline, so it is asked-for work, not extra initiative.
 
-Prefer a backend other than your own (`--agent codex` if you are Claude, `--agent claude` if you are Codex) — a same-model reviewer shares your blind spots. If only your own backend is configured, run it anyway for a fresh context. If the command is unavailable (Settings → Multi-agent sessions is off), say so in chat; do not silently substitute your own pass.
+**Name the role, not a reviewer.** Working out which model is far enough from yours is no longer your job: ShipIt keeps two configured reviewers and picks the one furthest from what you are running — a different model family first, a different harness after that — falling back to the best difference the install actually offers. That is why `--role reviewer` takes no `--agent`, no `--model` and no reasoning level, and refuses a call that supplies them. If the review cannot run at all (Settings → Multi-agent sessions is off, or neither reviewer has a credential with quota left), say so in chat; do not silently substitute your own pass.
 
 The reviewer shares this workspace and its writes get committed under your session, so the prompt must say **review only, do not edit**. Give it pointers, not pasted content — it can read the repo itself:
 
