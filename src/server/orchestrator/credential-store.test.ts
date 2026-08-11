@@ -109,174 +109,6 @@ describe("CredentialStore", () => {
     });
   });
 
-  describe("agentSubAgentDefaults", () => {
-    it("returns an empty object for an unset agent", () => {
-      const store = new CredentialStore(createTmpDir());
-      expect(store.getAgentSubAgentDefaults("codex")).toEqual({});
-    });
-
-    it("set/get round-trips and persists across reloads", () => {
-      const dir = createTmpDir();
-      const store = new CredentialStore(dir);
-      store.setAgentSubAgentDefaults("codex", { reasoningEffort: "high" });
-      expect(store.getAgentSubAgentDefaults("codex")).toEqual({ reasoningEffort: "high" });
-
-      const reloaded = new CredentialStore(dir);
-      expect(reloaded.getAgentSubAgentDefaults("codex")).toEqual({ reasoningEffort: "high" });
-    });
-
-    it("keeps per-agent entries independent", () => {
-      const store = new CredentialStore(createTmpDir());
-      store.setAgentSubAgentDefaults("claude", { reasoningEffort: "xhigh" });
-      store.setAgentSubAgentDefaults("codex", { reasoningEffort: "low" });
-      expect(store.getAllAgentSubAgentDefaults()).toEqual({
-        claude: { reasoningEffort: "xhigh" },
-        codex: { reasoningEffort: "low" },
-      });
-    });
-
-    it("clears the entry when reasoningEffort is set to null", () => {
-      const store = new CredentialStore(createTmpDir());
-      store.setAgentSubAgentDefaults("codex", { reasoningEffort: "high" });
-      store.setAgentSubAgentDefaults("codex", { reasoningEffort: null });
-      expect(store.getAgentSubAgentDefaults("codex")).toEqual({});
-      expect(store.getAllAgentSubAgentDefaults()).toEqual({});
-    });
-
-    it("round-trips a model default and persists it", () => {
-      const dir = createTmpDir();
-      const store = new CredentialStore(dir);
-      store.setAgentSubAgentDefaults("codex", { model: "gpt-5.5" });
-      // docs/252 — a model write carries its `(service, mode)` identity, because
-      // the sub-agent spawn resolves its credential route from `subAgentId`
-      // BEFORE reading this default: a bare id could not say which service.
-      expect(store.getAgentSubAgentDefaults("codex")).toEqual({
-        model: "gpt-5.5",
-        serviceId: "openai",
-        billingMode: "sub",
-      });
-
-      const reloaded = new CredentialStore(dir);
-      expect(reloaded.getAgentSubAgentDefaults("codex")).toEqual({
-        model: "gpt-5.5",
-        serviceId: "openai",
-        billingMode: "sub",
-      });
-    });
-
-    // docs/252 — the third persisted model selection, and the easiest to miss.
-    describe("model selection identity (docs/252)", () => {
-      it("backfills a value written before the triple existed, once, at load", () => {
-        const dir = createTmpDir();
-        fs.writeFileSync(
-          path.join(dir, "shipit-credentials.json"),
-          JSON.stringify({ agentSubAgentDefaults: { claude: { model: "claude-opus-5" } } }),
-        );
-        const store = new CredentialStore(dir);
-        expect(store.getAgentSubAgentDefaults("claude")).toEqual({
-          model: "claude-opus-5",
-          serviceId: "anthropic",
-          billingMode: "sub",
-        });
-        // Persisted, so it is a migration rather than a read-time fill.
-        const onDisk = JSON.parse(
-          fs.readFileSync(path.join(dir, "shipit-credentials.json"), "utf-8"),
-        ) as { agentSubAgentDefaults: Record<string, { serviceId?: string }> };
-        expect(onDisk.agentSubAgentDefaults.claude.serviceId).toBe("anthropic");
-      });
-
-      it("biases the backfill to the agent's own vendor", () => {
-        // The frozen fact for anything written before this feature: a harness
-        // could reach nothing but its own vendor.
-        const dir = createTmpDir();
-        fs.writeFileSync(
-          path.join(dir, "shipit-credentials.json"),
-          JSON.stringify({ agentSubAgentDefaults: { codex: { model: "gpt-5.6-sol" } } }),
-        );
-        expect(new CredentialStore(dir).getAgentSubAgentDefaults("codex").serviceId).toBe("openai");
-      });
-
-      it("leaves a model the catalogue cannot place without a fabricated service", () => {
-        const dir = createTmpDir();
-        fs.writeFileSync(
-          path.join(dir, "shipit-credentials.json"),
-          JSON.stringify({ agentSubAgentDefaults: { claude: { model: "opus" } } }),
-        );
-        expect(new CredentialStore(dir).getAgentSubAgentDefaults("claude")).toEqual({
-          model: "opus",
-        });
-      });
-
-      // docs/252 phase 8 — a sub-agent default strands on a retired model
-      // exactly as a session does: the spawn would forward an id the CLI can no
-      // longer run (req 13).
-      it("moves a retired model default onto its successor, and persists it", () => {
-        const dir = createTmpDir();
-        fs.writeFileSync(
-          path.join(dir, "shipit-credentials.json"),
-          JSON.stringify({
-            agentSubAgentDefaults: {
-              codex: { model: "gpt-5.6", serviceId: "openai", billingMode: "sub" },
-            },
-          }),
-        );
-        const store = new CredentialStore(dir);
-        expect(store.getAgentSubAgentDefaults("codex")).toEqual({
-          model: "gpt-5.6-sol",
-          serviceId: "openai",
-          billingMode: "sub",
-        });
-        const onDisk = JSON.parse(
-          fs.readFileSync(path.join(dir, "shipit-credentials.json"), "utf-8"),
-        ) as { agentSubAgentDefaults: Record<string, { model?: string }> };
-        expect(onDisk.agentSubAgentDefaults.codex.model).toBe("gpt-5.6-sol");
-      });
-
-      it("resolves a retired default that predates the triple", () => {
-        const dir = createTmpDir();
-        fs.writeFileSync(
-          path.join(dir, "shipit-credentials.json"),
-          JSON.stringify({ agentSubAgentDefaults: { codex: { model: "gpt-5.6" } } }),
-        );
-        // The load-time backfill cannot place a retired id (it is not a current
-        // model of any mode), so the retirement record is what carries it — and
-        // the settings payload must agree with what the spawn will use.
-        expect(new CredentialStore(dir).getAllAgentSubAgentDefaults()).toEqual({
-          codex: { model: "gpt-5.6-sol", serviceId: "openai", billingMode: "sub" },
-        });
-      });
-
-      it("drops the identity when the model is cleared", () => {
-        const store = new CredentialStore(createTmpDir());
-        store.setAgentSubAgentDefaults("claude", { model: "claude-opus-5" });
-        store.setAgentSubAgentDefaults("claude", { reasoningEffort: "high" });
-        expect(store.getAgentSubAgentDefaults("claude").serviceId).toBe("anthropic");
-        store.setAgentSubAgentDefaults("claude", { model: null });
-        expect(store.getAgentSubAgentDefaults("claude")).toEqual({ reasoningEffort: "high" });
-      });
-    });
-
-    it("merges reasoningEffort and model independently", () => {
-      const store = new CredentialStore(createTmpDir());
-      store.setAgentSubAgentDefaults("claude", { reasoningEffort: "high" });
-      store.setAgentSubAgentDefaults("claude", { model: "opus" });
-      expect(store.getAgentSubAgentDefaults("claude")).toEqual({ reasoningEffort: "high", model: "opus" });
-
-      // Clearing one field leaves the other intact.
-      store.setAgentSubAgentDefaults("claude", { reasoningEffort: null });
-      expect(store.getAgentSubAgentDefaults("claude")).toEqual({ model: "opus" });
-    });
-
-    it("drops the entry only once both fields are cleared", () => {
-      const store = new CredentialStore(createTmpDir());
-      store.setAgentSubAgentDefaults("codex", { reasoningEffort: "low", model: "gpt-5.5" });
-      store.setAgentSubAgentDefaults("codex", { model: null });
-      expect(store.getAgentSubAgentDefaults("codex")).toEqual({ reasoningEffort: "low" });
-      store.setAgentSubAgentDefaults("codex", { reasoningEffort: null });
-      expect(store.getAllAgentSubAgentDefaults()).toEqual({});
-    });
-  });
-
   // ---- Agent env ----
 
   describe("agentEnv", () => {
@@ -883,11 +715,20 @@ describe("CredentialStore — the two reviewers (docs/261 phase 1)", () => {
   });
 
   // The stored sub-agent defaults are DROPPED, not migrated (requirements.md's
-  // 2026-08-10 receipt). Nothing seeds a reviewer slot from them, so an install
-  // that had configured one starts auto-configured and reconfigures.
+  // 2026-08-10 receipt). docs/261 phase 2 deleted the store that wrote them, so
+  // the legacy key is written by hand here — which is exactly what an install
+  // that had configured one looks like on disk after upgrading. It must load
+  // without error, seed nothing, and leave both slots auto-configured.
   it("does not seed a slot from the sub-agent defaults it replaces", () => {
-    const store = new CredentialStore(dir);
-    store.setAgentSubAgentDefaults("codex", { model: "gpt-5.4-mini", reasoningEffort: "high" });
+    const file = path.join(dir, "shipit-credentials.json");
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        agentSubAgentDefaults: {
+          codex: { model: "gpt-5.4-mini", serviceId: "openai", billingMode: "sub", reasoningEffort: "high" },
+        },
+      }),
+    );
     expect(new CredentialStore(dir).getReviewerPins()).toEqual({});
   });
 });

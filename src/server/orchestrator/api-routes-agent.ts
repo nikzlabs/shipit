@@ -21,6 +21,7 @@ import {
   dispatchAgentMessage,
   materializeRunner,
   runSubAgent,
+  parseSubAgentSpawnTarget,
   getSubAgentResult,
   waitForSubAgentResult,
   DEFAULT_SUB_AGENT_WAIT_MS,
@@ -118,19 +119,32 @@ export async function registerAgentRoutes(
   // forwards the body. Blocks until the sub-agent exits, then returns its final
   // text. Errors map to the shim's non-zero exit (disabled, unknown agent, cap
   // exceeded, recursion, crash, …).
+  //
+  // docs/261 reqs 6 + 7 — the body carries the spawn TARGET: either `role`, or
+  // all five explicit fields. `parseSubAgentSpawnTarget` is the authority on
+  // which (the shim's own check only buys a better message), and it refuses an
+  // incomplete explicit call rather than completing it. The four model fields
+  // are new here: until this phase the route declared `{agentId, prompt, depth}`
+  // only, so the shim's `--model` was parsed and then silently dropped.
   app.post<{
     Params: { id: string };
-    Body: { agentId?: AgentId; prompt?: string; depth?: number };
+    Body: {
+      prompt?: string;
+      depth?: number;
+      role?: string;
+      agentId?: AgentId;
+      serviceId?: string;
+      billingMode?: string;
+      modelId?: string;
+      reasoningEffort?: string;
+    };
   }>(
     "/api/sessions/:id/agent/spawn",
     { config: { containerAccessible: true } },
     async (request, reply) => {
       try {
         const body = request.body ?? {};
-        if (!body.agentId) {
-          reply.code(400).send({ error: "agentId is required" });
-          return;
-        }
+        const target = parseSubAgentSpawnTarget(body);
         const result = await runSubAgent(
           {
             sessionManager: deps.sessionManager,
@@ -148,7 +162,7 @@ export async function registerAgentRoutes(
           },
           request.params.id,
           {
-            subAgentId: body.agentId,
+            target,
             prompt: body.prompt ?? "",
             depth: typeof body.depth === "number" ? body.depth : 0,
           },

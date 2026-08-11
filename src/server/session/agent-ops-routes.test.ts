@@ -698,6 +698,41 @@ describe("agent-ops routes", () => {
     expect(res.json().error).toContain("rate limit reached");
   });
 
+  /**
+   * docs/261 req 7 — every explicit parameter survives the worker→orchestrator
+   * hop. This is the hop `--model` died on: the shim parsed it, and the route
+   * declared `{agentId, prompt, depth}`, so it was silently dropped before the
+   * spawn. A per-hop assertion is what would have caught that.
+   */
+  it("POST /agent-ops/agent/spawn forwards the whole explicit target", async () => {
+    client.setResponse("POST", "/agent/spawn", { ok: true, status: 200, body: { status: "success", text: "ok" } });
+    const payload = {
+      agentId: "codex",
+      serviceId: "openai",
+      billingMode: "sub",
+      modelId: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      prompt: "review",
+      depth: 0,
+    };
+    const res = await app.inject({ method: "POST", url: "/agent-ops/agent/spawn", payload });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/agent/spawn");
+    expect(client.calls[0].body).toEqual(payload);
+  });
+
+  // docs/261 req 6 — and a role goes over the same hop, alone.
+  it("POST /agent-ops/agent/spawn forwards a role", async () => {
+    client.setResponse("POST", "/agent/spawn", { ok: true, status: 200, body: { status: "success", text: "ok" } });
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/agent/spawn",
+      payload: { role: "reviewer", prompt: "review", depth: 0 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].body).toEqual({ role: "reviewer", prompt: "review", depth: 0 });
+  });
+
   it("GET /agent-ops/agent/result forwards the run id as ?spawnId (planning#247)", async () => {
     client.setResponse("GET", "/agent/result", {
       ok: true, status: 200,

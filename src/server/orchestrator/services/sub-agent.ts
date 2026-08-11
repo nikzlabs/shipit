@@ -34,7 +34,17 @@
 import { randomUUID } from "node:crypto";
 import { resolveTurnCost, turnAttributionFor } from "../turn-attribution.js";
 import { selectRouteForSelection, serviceRoutingForSelection } from "../service-routing.js";
-import type { AgentId, SubAgentConsultCard, WsServerMessage } from "../../shared/types.js";
+import type {
+  AgentId,
+  SubAgentConsultCard,
+  SubAgentSpawnTarget,
+  WsServerMessage,
+} from "../../shared/types.js";
+import {
+  assertHarnessCanRunSelection,
+  resolveSubAgentSpawnTarget,
+  type ResolvedSpawnTarget,
+} from "./sub-agent-target.js";
 import type { SessionManager } from "../sessions.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
@@ -94,7 +104,7 @@ export interface ConsultCardPersister extends InProgressPersister {
  */
 function rejectSpawn(
   sessionId: string,
-  subAgentId: AgentId,
+  subAgentId: string,
   statusCode: number,
   reason: string,
   message: string,
@@ -154,7 +164,14 @@ export interface RunSubAgentDeps {
 }
 
 export interface RunSubAgentInput {
-  subAgentId: AgentId;
+  /**
+   * docs/261 reqs 6 + 7 — what this spawn runs on: a **role** ShipIt resolves
+   * from the user's settings, or an **explicit** call naming all five
+   * parameters. There is no third shape, and in particular no "just the
+   * harness": that was the shape a stored per-harness default completed, and
+   * completing it from somewhere the caller cannot see is what this replaces.
+   */
+  target: SubAgentSpawnTarget;
   prompt: string;
   /**
    * The caller's recursion depth, forwarded from the shim's inherited
@@ -196,25 +213,75 @@ export async function runSubAgent(
   sessionId: string,
   input: RunSubAgentInput,
 ): Promise<RunSubAgentResult> {
-  const { subAgentId, prompt, depth } = input;
+  const { target, prompt, depth } = input;
+  const requested = target.kind === "role" ? `role:${target.role}` : target.subAgentId;
   const promptBytes = typeof prompt === "string" ? Buffer.byteLength(prompt) : 0;
   console.log(
-    `[sub-agent] requested session=${sessionId} agent=${subAgentId} depth=${depth} promptBytes=${promptBytes}`,
+    `[sub-agent] requested session=${sessionId} target=${requested} depth=${depth} promptBytes=${promptBytes}`,
   );
 
   const session = deps.sessionManager.get(sessionId);
-  if (!session) throw rejectSpawn(sessionId, subAgentId, 404, "session_not_found", "Session not found");
+  if (!session) throw rejectSpawn(sessionId, requested, 404, "session_not_found", "Session not found");
 
   // §1 — the global gate, checked on EVERY spawn (not cached at boot) so toggling
   // it off mid-session takes effect on the next attempt.
   if (!deps.credentialStore.getEnableSubAgents()) {
-    throw rejectSpawn(sessionId, subAgentId, 403, "sub_agents_disabled",
+    throw rejectSpawn(sessionId, requested, 403, "sub_agents_disabled",
       "Sub-agents are disabled. Enable them in Settings → Multi-agent sessions.");
   }
 
   if (typeof prompt !== "string" || prompt.trim().length === 0) {
-    throw rejectSpawn(sessionId, subAgentId, 400, "empty_prompt",
+    throw rejectSpawn(sessionId, requested, 400, "empty_prompt",
       "A prompt is required (pass it via --prompt-file -).");
+  }
+
+  // §3 — a pre-pin session has no primary identity to spawn on behalf of.
+  //
+  // docs/261 moved this ABOVE the registry gates, where it used to sit below
+  // them. It is now a precondition of resolving a role rather than a check on
+  // the callee: the reviewer is ranked against what the CALLER is running
+  // (req 4), so without a pinned agent there is no implementer to be distant
+  // from — and defaulting one would rank against a harness nobody is using.
+  // `agentId` is checked alongside the flag for the same reason: "pinned" with
+  // no agent recorded is the same absence wearing a different field.
+  if (!session.agentPinned || !session.agentId) {
+    throw rejectSpawn(sessionId, requested, 409, "session_not_pinned",
+      "This session has no pinned agent yet — send a message first.");
+  }
+  const implementerHarness = session.agentId;
+
+  // docs/261 reqs 6 + 7 — **the target is captured here, once, and never
+  // recomputed.** A role resolves through the reviewer ranking (and is routed by
+  // it); an explicit call is taken literally, with an omission already refused
+  // at the edge. Everything below — the gates, the spawn, the attribution — runs
+  // against this one frozen answer, because "resolved at read time" needs a
+  // boundary or a retry can land on a different model than the card names.
+  //
+  // It runs before the registry gates because those need a harness id, and for
+  // a role the harness is *derived* rather than given. That is safe: the
+  // reviewer ranking only ever returns an installed, credentialed, routable
+  // harness, so it cannot smuggle one past the checks below.
+  let resolvedTarget: ResolvedSpawnTarget;
+  try {
+    resolvedTarget = resolveSubAgentSpawnTarget(target, { ...session, agentId: implementerHarness }, {
+      credentialStore: deps.credentialStore,
+      ...(deps.providerAccountManager ? { providerAccountManager: deps.providerAccountManager } : {}),
+    });
+  } catch (err) {
+    if (err instanceof ServiceError) {
+      throw rejectSpawn(sessionId, requested, err.statusCode, "target_unresolvable", err.message);
+    }
+    throw err;
+  }
+  const subAgentId = resolvedTarget.harnessId;
+  if (resolvedTarget.reviewer) {
+    const r = resolvedTarget.reviewer;
+    console.log(
+      `[sub-agent] reviewer session=${sessionId} slot=${r.slot} source=${r.source} `
+      + `tier=${r.tier} basis=${r.tierBasis} harness=${subAgentId} `
+      + `model=${resolvedTarget.selection.serviceId}/${resolvedTarget.selection.billingMode}/`
+      + `${resolvedTarget.selection.modelId} effort=${resolvedTarget.reasoningEffort}`,
+    );
   }
 
   // §3 — the agent must be registered and authed. Re-probe first so a just-
@@ -238,12 +305,6 @@ export async function runSubAgent(
   if (!info.hasRunnableModels) {
     throw rejectSpawn(sessionId, subAgentId, 400, "not_signed_in",
       `${info.name} is not signed in. Connect it in Settings before spawning it.`);
-  }
-
-  // §3 — a pre-pin session has no primary identity to spawn on behalf of.
-  if (!session.agentPinned) {
-    throw rejectSpawn(sessionId, subAgentId, 409, "session_not_pinned",
-      "This session has no pinned agent yet — send a message first.");
   }
 
   // §3 — best-effort recursion guard. A non-zero forwarded depth means the
@@ -271,54 +332,47 @@ export async function runSubAgent(
   }
   runner.subAgentSpawnsThisTurn += 1;
 
-  // docs/217 — a sub-agent runs with the invoked agent's OWN global defaults
-  // (reasoning effort + model, set on its Settings tab), independent of the
-  // caller's session composer value. Resolved per spawn so a Settings change
-  // applies next time. An unset model lets the adapter pick `models[0]`.
-  //
-  // docs/252 phase 3 — that default is a `(service, billing mode, model)`
-  // selection (phase 1 widened it), and it is read HERE, before the route, for
-  // the reason the whole phase exists: the route belongs to the selected mode.
-  // Asking the router for the harness's own vendor first would resolve an
-  // Anthropic account for a consult whose default model is a DeepSeek one, and
-  // the spawn would then be shaped — or not shaped — against the wrong
-  // credential.
-  const { reasoningEffort, model, serviceId, billingMode } =
-    deps.credentialStore.getAgentSubAgentDefaults(subAgentId);
-  // An UNSET default is not an absence of a selection — it means "the harness's
-  // own first model", which is what the adapter falls back to (`models[0]`). So
-  // resolve it to the first ELIGIBLE entry rather than leaving the consult
-  // selectionless, which had two consequences the phase plan rules out: every
-  // such consult wrote an unattributed `legacy` row forever (legacy is supposed
-  // to mean "before ShipIt tracked this"), and on an install whose only
-  // credential is a custom service's the spawn fell back to native-vendor
-  // routing and refused a consult the harness could perfectly well have run.
-  const fallbackModel = info.eligibleModels?.[0];
-  const subSelection =
-    model && serviceId && billingMode
-      ? { serviceId, billingMode, modelId: model }
-      : !model && fallbackModel
-        ? {
-            serviceId: fallbackModel.serviceId,
-            billingMode: fallbackModel.billingMode,
-            modelId: fallbackModel.modelId,
-          }
-        : undefined;
+  // docs/261 req 7 — what the spawn runs on is the CAPTURED target and nothing
+  // else. There is no stored per-harness default left to read and no fallback to
+  // the adapter's own `models[0]`: an explicit call named the triple, and a role
+  // resolved one that the install can actually run. The old `fallbackModel`
+  // branch is gone with the store — it existed to give an *unset* default a
+  // model, and a spawn can no longer be unset.
+  const subSelection = resolvedTarget.selection;
+  const reasoningEffort = resolvedTarget.reasoningEffort;
   const subAttribution = turnAttributionFor(subSelection);
-  // What the spawn actually runs. The resolved triple when there is one, else
-  // the bare default (an install whose stored default predates the triple), else
-  // nothing — which lets the adapter pick its own first model, exactly as before.
-  const spawnModel = subSelection?.modelId ?? model;
+  const spawnModel = subSelection.modelId;
+
+  // docs/261 req 7 — an explicit call is taken literally, so a harness pointed
+  // at a model no credential of its own can drive is an error rather than
+  // something to reroute. A role never reaches this: the ranking only offers
+  // selections the harness it chose is eligible for.
+  if (target.kind === "explicit") {
+    try {
+      assertHarnessCanRunSelection(info.name, info.eligibleModels, subSelection);
+    } catch (err) {
+      if (err instanceof ServiceError) {
+        throw rejectSpawn(sessionId, subAgentId, err.statusCode, "harness_cannot_run", err.message);
+      }
+      throw err;
+    }
+  }
 
   // §4 — resolve the sub-agent's credential route exactly as the primary turn
   // path does, so a multi-account user provisions from the freshest account
   // root rather than the stale flat root.
-  const selection = deps.providerAccountManager
-    ? selectRouteForSelection(subAgentId, subSelection, {
-        credentialStore: deps.credentialStore,
-        providerAccountManager: deps.providerAccountManager,
-      })
-    : undefined;
+  //
+  // docs/261 — a role arrives already ROUTED: `selectReviewer` ranks only
+  // reviewers with a usable route, so re-asking here would answer a question
+  // that has been answered, and could answer it differently.
+  const selection = resolvedTarget.route
+    ? undefined
+    : deps.providerAccountManager
+      ? selectRouteForSelection(subAgentId, subSelection, {
+          credentialStore: deps.credentialStore,
+          providerAccountManager: deps.providerAccountManager,
+        })
+      : undefined;
   if (selection && !selection.ok) {
     if (selection.reason === "all_exhausted") {
       throw rejectSpawn(sessionId, subAgentId, 429, "all_accounts_exhausted",
@@ -327,7 +381,7 @@ export async function runSubAgent(
     throw rejectSpawn(sessionId, subAgentId, 400, "no_account_route",
       `${info.name} is not signed in. Connect it in Settings before spawning it.`);
   }
-  let route = selection?.route ?? null;
+  let route = resolvedTarget.route ?? selection?.route ?? null;
   let accountId = route?.kind === "account" ? route.id : undefined;
 
   // A same-provider spawn reuses the pinned agent's already-present credentials
@@ -364,9 +418,10 @@ export async function runSubAgent(
 
   console.log(
     `[sub-agent] accepted session=${sessionId} spawn=${spawnId} card=${cardId} agent=${subAgentId} `
-    + `depth=${depth} promptBytes=${promptBytes} route=${route?.kind ?? "default"}:${accountId ?? "-"} `
-    + `model=${model ?? "default"} effort=${reasoningEffort ?? "default"} `
-    + `spawnsThisTurn=${runner.subAgentSpawnsThisTurn}`,
+    + `target=${requested} depth=${depth} promptBytes=${promptBytes} `
+    + `route=${route?.kind ?? "default"}:${accountId ?? "-"} `
+    + `model=${subSelection.serviceId}/${subSelection.billingMode}/${spawnModel} `
+    + `effort=${reasoningEffort} spawnsThisTurn=${runner.subAgentSpawnsThisTurn}`,
   );
 
   // §7 / planning#280 — the DURABLE in-flight record. Emitted `pending` at spawn time
@@ -445,12 +500,12 @@ export async function runSubAgent(
       prompt,
       spawnId,
       depth,
-      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-      // The RESOLVED model, so what runs and what is recorded are the same by
-      // construction. Letting the adapter fall back to its own `models[0]`
-      // instead would run the catalogue join's first entry, which on an install
-      // with no first-party credential is a model this install cannot run.
-      ...(spawnModel !== undefined ? { model: spawnModel } : {}),
+      // docs/261 reqs 5 + 7 — both are always present now: the reasoning level
+      // is part of what a reviewer IS and part of what an explicit call must
+      // name, so there is no "pass no flag" branch left. The RESOLVED model, so
+      // what runs and what is recorded are the same by construction.
+      reasoningEffort,
+      model: spawnModel,
       ...(subServiceRouting !== undefined ? { serviceRouting: subServiceRouting } : {}),
     });
     let result = await spawn();
@@ -581,7 +636,7 @@ export async function runSubAgent(
         {
           subAgentId,
           costSource: consultCost.costSource,
-          ...(spawnModel !== undefined ? { model: spawnModel } : {}),
+          model: spawnModel,
           ...(subAttribution ? { attribution: subAttribution } : {}),
           ...(result.cacheReadTokens !== undefined ? { cacheRead: result.cacheReadTokens } : {}),
           ...(result.cacheCreateTokens !== undefined ? { cacheCreate: result.cacheCreateTokens } : {}),

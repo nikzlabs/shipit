@@ -3,7 +3,7 @@
  */
 
 import type { AgentId, PermissionMode } from "../../shared/types.js";
-import type { AgentReasoningCapability, SubAgentDefaults } from "../../shared/types/agent-types.js";
+import type { AgentReasoningCapability } from "../../shared/types/agent-types.js";
 import type { EligibleModel } from "../../shared/agent-registry.js";
 import type { AccountSelectionMode, CredentialRoute, FailoverCutoffs, SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
@@ -114,12 +114,6 @@ export interface GlobalSettings {
    * agent for a one-shot sub-task (`shipit agent run`). Default off.
    */
   enableSubAgents: boolean;
-  /**
-   * docs/217 — per-agent defaults applied when an agent is invoked as a
-   * sub-agent (governs the `shipit agent run` path). Keyed by agent id; set on
-   * each agent's Settings tab. Empty object when nothing is configured.
-   */
-  agentSubAgentDefaults: Record<string, SubAgentDefaults>;
   /**
    * docs/252 phase 7 (req 9) — the model the user PINNED for non-turn work
    * (session naming, pull-request descriptions), or absent for "follow the

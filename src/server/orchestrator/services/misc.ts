@@ -114,7 +114,6 @@ export async function getBootstrapData(deps: {
         autoFixCi: false,
         autoResetMergedBranch: true,
         enableSubAgents: false,
-        agentSubAgentDefaults: {},
         voiceDeliveryMode: "native",
         voiceWebhookConfigured: false,
         providerAccounts: [],
