@@ -98,9 +98,13 @@ it.
       registered — this is a nested field on an existing card), rehydration, history round-trip
       test. **No column and no migration**: the card serializes to one json column, the same
       exemption `BranchAutoResetCard.forced` records
-- [x] It survives every hop, each with a test: the pending → terminal patch in-turn AND on a
-      finalized row (`updateSubAgentConsultCard` merges, and the terminal patch carries no
-      `runOn` of its own), and the serve-path wire projection that strips the output
+- [x] Guarded on the hops that can DROP it — each of which merges or rewrites the card, so a
+      regression to a replace would lose it silently: the pending → terminal patch in-turn and on
+      a finalized row (`updateSubAgentConsultCard`), the boot reconcile's cancel patch, and the
+      serve-path wire projection that strips the output. `getSubAgentResult` and the `/agent/result`
+      route pass the stored card through verbatim, so a test there could not fail and is
+      deliberately absent (cross-backend review named this hop; the honest answer was to fix the
+      claim, not to add a check that cannot fail)
 
 ## Phase 5 — Product-owned callers
 

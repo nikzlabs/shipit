@@ -502,6 +502,16 @@ reasoning option), each falling back to the raw id — so a model the catalogue 
 as a worse label rather than disappearing, which is the rule `client/utils/service-label.ts`
 already follows for service names.
 
+**What the cross-backend review changed.** Codex confirmed the no-migration decision and found no
+requirement weakened, with one finding: the checklist **overstated its own coverage**, claiming
+every hop was guarded when the boot reconcile and the result read-back were not. Half of that is a
+missing test and half is a false claim, and the two need opposite fixes. The boot reconcile
+genuinely can drop the field — it patches a stranded card, so a regression from merge to replace
+would lose it — and now has a fixture and an assertion. `getSubAgentResult` and its route pass the
+stored card through verbatim, so a test there could not fail; the claim was corrected instead of
+padded, which is the same judgement the phase-1 record reaches twice about checks that cannot
+fail.
+
 The audit's Services work — one card component (D2) and Services-first (D1) — is docs/252's
 and is deliberately **not** in this table. It touches `ServicesPanel.tsx` /
 `ProviderAccountsCard.tsx`; nothing here does, so the two can run in parallel without
