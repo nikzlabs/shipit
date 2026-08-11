@@ -63,6 +63,28 @@ The main stores (partial — `ls src/client/stores/` for the full set, currently
 - Returns `{ send, lastMessage, status, reconnectAttempt, reconnect }`
 - `status`: `"connecting"` | `"open"` | `"closed"`
 
+### `useForegroundSignal`
+
+`src/client/hooks/useForegroundSignal.ts` — decides what counts as a
+background-to-foreground transition. Used by **all three** hooks that react to
+one: `useWebSocket`, `useServerEvents`, `useConnectionSync`.
+
+- Exists because the two long-lived connections force a fresh socket on resume
+  (a backgrounded mobile socket reads OPEN while being dead), so the trigger
+  cannot be "the connection looks unhealthy" — it has to be page lifecycle.
+- **Window `focus` is not a foreground signal on its own.** It also fires when
+  focus returns from an iframe to the top-level document, which the preview
+  iframe does on every load — that produced one forced reconnect per second on
+  both channels, seen as preview flicker and a composer toggling disabled.
+- `visibilitychange`→visible / `pageshow` / `online` always reconnect;
+  `visibilitychange`→hidden / `pagehide` / `freeze` record a transition;
+  `focus` is classified against the preceding `blur` (`document.hasFocus()` is
+  true when an iframe took focus, false when the window lost system focus) and
+  only the provably-internal case is suppressed.
+- Coalesces one reactivation's event burst into a single reconnect (1s).
+- **Never add a bare `focus` listener that treats focus as a resume** — use
+  this hook, so the surfaces cannot drift apart on the question again.
+
 ### `useSessionWebSocket`
 
 `src/client/hooks/useSessionWebSocket.ts` — wraps `useWebSocket` for per-session connections.

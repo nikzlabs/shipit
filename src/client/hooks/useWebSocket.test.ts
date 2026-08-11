@@ -48,18 +48,49 @@ class FakeWebSocket {
   }
 }
 
+/** jsdom's `document.hidden` is read-only; drive it through this instead. */
+let pageHidden = false;
+function setHidden(hidden: boolean): void {
+  pageHidden = hidden;
+}
+
+/**
+ * `document.hasFocus()` at blur time is what separates "the preview iframe took
+ * focus" (true — the window keeps system focus) from "the browser window lost
+ * focus to another app" (false). See `useForegroundSignal`.
+ */
+let windowKeptSystemFocus = true;
+
+/** The preview iframe stealing focus, then `MessageInput` reclaiming it. */
+function iframeFocusSteal(): void {
+  windowKeptSystemFocus = true;
+  window.dispatchEvent(new Event("blur"));
+  window.dispatchEvent(new Event("focus"));
+}
+
+/** The hidden→visible round trip a real app-switch performs. */
+function backgroundAndReturn(): void {
+  setHidden(true);
+  document.dispatchEvent(new Event("visibilitychange"));
+  setHidden(false);
+}
+
 beforeEach(() => {
   FakeWebSocket.instances = [];
   vi.stubGlobal("WebSocket", FakeWebSocket);
   vi.useFakeTimers();
+  pageHidden = false;
+  windowKeptSystemFocus = true;
   Object.defineProperty(document, "hidden", {
     configurable: true,
-    get: () => false,
+    get: () => pageHidden,
   });
+  vi.spyOn(document, "hasFocus").mockImplementation(() => windowKeptSystemFocus);
 });
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -339,7 +370,7 @@ describe("useWebSocket", () => {
     act(() => latestWs().simulateOpen());
 
     const countBefore = FakeWebSocket.instances.length;
-    act(() => { window.dispatchEvent(new Event("focus")); });
+    act(() => { backgroundAndReturn(); window.dispatchEvent(new Event("focus")); });
     act(() => latestWs().simulateOpen());
     expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
 
@@ -347,8 +378,126 @@ describe("useWebSocket", () => {
     void act(() => vi.advanceTimersByTime(5000));
     act(() => latestWs().simulateOpen());
     const countAfterRetries = FakeWebSocket.instances.length;
-    act(() => { window.dispatchEvent(new Event("focus")); });
+    act(() => { backgroundAndReturn(); window.dispatchEvent(new Event("focus")); });
     expect(FakeWebSocket.instances.length).toBe(countAfterRetries + 1);
+  });
+
+  // --- `focus` is not, on its own, a foreground signal ---
+  //
+  // The window `focus` event also fires when focus returns from an iframe to
+  // the top-level document. The preview iframe does that on every load, and
+  // `MessageInput` then reclaims focus to the textarea, firing it again — so
+  // wiring `focus` straight to "reconnect" produced exactly one forced
+  // reconnect per second (the coalesce window) on a perfectly healthy socket.
+  // Each one re-ran the whole attach burst: the preview flicker, plus a
+  // composer that flipped disabled/enabled with the socket status.
+
+  it("does not tear down a live socket on an iframe focus steal", () => {
+    renderHook(() => useWebSocket("ws://test"));
+    act(() => latestWs().simulateOpen());
+    const openSocket = latestWs();
+
+    const countBefore = FakeWebSocket.instances.length;
+    for (let i = 0; i < 5; i++) {
+      act(() => { iframeFocusSteal(); });
+      void act(() => vi.advanceTimersByTime(1000)); // clear the coalesce window
+    }
+
+    expect(FakeWebSocket.instances.length).toBe(countBefore);
+    expect(openSocket.closed).toBe(false);
+  });
+
+  it("does not tear down a still-connecting socket on an iframe focus steal", () => {
+    renderHook(() => useWebSocket("ws://test"));
+    const connectingSocket = latestWs();
+    expect(connectingSocket.readyState).toBe(FakeWebSocket.CONNECTING);
+
+    const countBefore = FakeWebSocket.instances.length;
+    act(() => { iframeFocusSteal(); });
+
+    expect(FakeWebSocket.instances.length).toBe(countBefore);
+    expect(connectingSocket.closed).toBe(false);
+  });
+
+  // Not to be confused with the above: the browser window itself losing and
+  // regaining system focus IS a resume, and on desktop it is often the only
+  // signal of one (the window stayed visible, so no `visibilitychange`). A
+  // socket the OS killed while the user was in another app still reads OPEN, so
+  // this must force a fresh one.
+  it("reconnects when focus returns from another window, even on a live socket", () => {
+    renderHook(() => useWebSocket("ws://test"));
+    act(() => latestWs().simulateOpen());
+
+    const countBefore = FakeWebSocket.instances.length;
+    act(() => {
+      windowKeptSystemFocus = false;
+      window.dispatchEvent(new Event("blur"));
+      window.dispatchEvent(new Event("focus"));
+    });
+
+    expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
+  });
+
+  // The recovery path the `focus` listener exists for in the first place: a
+  // mobile app-switch or bfcache restore leaves `readyState` reading OPEN over
+  // a socket the OS already killed, so the resume MUST still force a fresh one.
+  it("still reconnects on focus after the page was actually backgrounded", () => {
+    renderHook(() => useWebSocket("ws://test"));
+    act(() => latestWs().simulateOpen());
+
+    const countBefore = FakeWebSocket.instances.length;
+    act(() => { backgroundAndReturn(); });
+    act(() => { window.dispatchEvent(new Event("focus")); });
+
+    expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
+  });
+
+  // `pagehide` is the bfcache/app-switch signal that does NOT come with a
+  // `visibilitychange` the page is awake to process — an iframe focus change
+  // never fires it, so it is safe evidence that the resume is real.
+  it("still reconnects on focus after pagehide", () => {
+    renderHook(() => useWebSocket("ws://test"));
+    act(() => latestWs().simulateOpen());
+
+    const countBefore = FakeWebSocket.instances.length;
+    act(() => { window.dispatchEvent(new Event("pagehide")); });
+    act(() => { window.dispatchEvent(new Event("focus")); });
+
+    expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
+  });
+
+  // Nothing healthy to protect: returning to the window is a good moment to
+  // short-circuit the backoff ladder.
+  it("reconnects on focus when the socket is already closed", () => {
+    renderHook(() => useWebSocket("ws://test"));
+    act(() => latestWs().simulateOpen());
+    act(() => latestWs().simulateClose());
+
+    const countBefore = FakeWebSocket.instances.length;
+    act(() => { window.dispatchEvent(new Event("focus")); });
+
+    expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
+  });
+
+  it("one backgrounding buys one reconnect, not one per subsequent focus", () => {
+    renderHook(() => useWebSocket("ws://test"));
+    act(() => latestWs().simulateOpen());
+
+    const countBefore = FakeWebSocket.instances.length;
+    act(() => { backgroundAndReturn(); });
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    act(() => latestWs().simulateOpen());
+    expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
+
+    // The iframe storm that follows the resume must not keep reconnecting.
+    void act(() => vi.advanceTimersByTime(5000));
+    act(() => latestWs().simulateOpen());
+    const countAfterResume = FakeWebSocket.instances.length;
+    for (let i = 0; i < 3; i++) {
+      act(() => { iframeFocusSteal(); });
+      void act(() => vi.advanceTimersByTime(1000));
+    }
+    expect(FakeWebSocket.instances.length).toBe(countAfterResume);
   });
 
   it("foreground reconnect retries quickly before normal backoff if the socket is not open", () => {

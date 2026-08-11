@@ -13,7 +13,7 @@ import type { ReviewerSlotView } from "../../server/shared/types/agent-types.js"
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
 import { getSavedModelId, saveAgentId, saveModelId } from "../utils/local-storage.js";
 import { resolveAuthedSelection } from "../utils/resolve-authed-selection.js";
-import { useEventListeners } from "./useEventListener.js";
+import { useForegroundSignal } from "./useForegroundSignal.js";
 
 let reloadingForClientUpdate = false;
 
@@ -24,14 +24,6 @@ let reloadingForClientUpdate = false;
 function backoffMs(attempt: number): number {
   return Math.min(1000 * Math.pow(2, attempt), 30_000);
 }
-
-/**
- * One window reactivation fires several listeners within a few milliseconds
- * (`visibilitychange` + `focus`, plus `pageshow` on a bfcache restore). Treat
- * them as one signal so a resume opens ONE stream, not three — same constant and
- * reason as `useWebSocket`'s `handleForeground`.
- */
-const FOREGROUND_COALESCE_MS = 1000;
 
 /**
  * SSE hook for global push events — session list, repo updates, auth, activity dots.
@@ -46,11 +38,12 @@ const FOREGROUND_COALESCE_MS = 1000;
  * snapshot (PR statuses, sessions, repos — see `/api/events` initial-state
  * writes) so the UI catches up immediately.
  *
- * That foreground signal must be the SAME set the WebSocket listens for —
- * `visibilitychange` + `pageshow` + `focus` + `online` — not `visibilitychange`
- * alone. A standalone-PWA app-switch or a bfcache restore surfaces as
- * `pageshow`/`focus` with `visibilitychange` either absent or already delivered
- * while the page was frozen, so a visibility-only trigger misses the resume the
+ * That foreground signal must be the SAME set the WebSocket listens for, on the
+ * same terms — hence the shared `useForegroundSignal`, not a second hand-rolled
+ * listener set — and NOT `visibilitychange` alone. A standalone-PWA app-switch
+ * or a bfcache restore surfaces as `pageshow`/`focus` with `visibilitychange`
+ * either absent or already delivered while the page was frozen, so a
+ * visibility-only trigger misses the resume the
  * WebSocket recovers from. That asymmetry is directly visible in the product:
  * the chat reconnects and looks healthy while every *cross-session* surface fed
  * only by SSE — the sidebar's PR / CI indicators above all, since
@@ -75,7 +68,6 @@ export function useServerEvents(): void {
   const [connectAttempt, setConnectAttempt] = useState(0);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastForegroundReconnectRef = useRef(0);
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
@@ -734,21 +726,17 @@ export function useServerEvents(): void {
   // cleanup, which re-runs when `connectAttempt` changes. The attempt counter is
   // reset first so a user-visible return to the app reconnects immediately
   // rather than inheriting a long backoff delay from the outage.
-  function reconnectNow(): void {
-    reconnectAttemptRef.current = 0;
-    setConnectAttempt((n) => n + 1);
-  }
-  function handleForeground(): void {
-    if (document.hidden) return;
-    const now = Date.now();
-    if (now - lastForegroundReconnectRef.current < FOREGROUND_COALESCE_MS) return;
-    lastForegroundReconnectRef.current = now;
-    reconnectNow();
-  }
-  useEventListeners([
-    { target: document, type: "visibilitychange", handler: handleForeground },
-    { target: window, type: "pageshow", handler: handleForeground },
-    { target: window, type: "focus", handler: handleForeground },
-    { target: window, type: "online", handler: handleForeground },
-  ]);
+  //
+  // Which events count as a resume — and why a bare window `focus` does not —
+  // lives in `useForegroundSignal`, shared with `useWebSocket` so the two
+  // channels can never drift apart on that question again.
+  useForegroundSignal({
+    onForeground: () => {
+      reconnectAttemptRef.current = 0;
+      setConnectAttempt((n) => n + 1);
+    },
+    isConnectionLive: () =>
+      eventSourceRef.current !== null &&
+      eventSourceRef.current.readyState !== EventSource.CLOSED,
+  });
 }

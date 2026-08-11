@@ -4,7 +4,7 @@ import type { WsClientMessage } from "../../server/shared/types.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { loadBootstrapData, loadSessionHistory } from "../utils/session-data.js";
-import { useEventListeners } from "./useEventListener.js";
+import { useForegroundSignal } from "./useForegroundSignal.js";
 
 export function useConnectionSync(params: {
   status: string;
@@ -23,8 +23,14 @@ export function useConnectionSync(params: {
   // reconnect/replay path a short window before treating a streaming close as
   // a real agent error. Touches refs only, so the per-render closure is safe to
   // hand to the listener hook (it reads the latest one at fire time).
+  //
+  // This has to use the SAME genuine-resume test as the two connection hooks,
+  // not its own `focus` listener. A bare `focus` is fired by the preview iframe
+  // on every load, so counting it as a foregrounding kept this 8s suppression
+  // window permanently open next to a live preview — and a genuine mid-stream
+  // disconnect then skipped the "connection lost" message below, stranding the
+  // composer in its loading state with nothing on screen to explain it.
   function markRecentlyForegrounded() {
-    if (document.hidden) return;
     recentlyForegroundedRef.current = true;
     if (foregroundTimerRef.current) clearTimeout(foregroundTimerRef.current);
     foregroundTimerRef.current = setTimeout(() => {
@@ -33,11 +39,13 @@ export function useConnectionSync(params: {
     }, 8000);
   }
 
-  useEventListeners([
-    { target: document, type: "visibilitychange", handler: markRecentlyForegrounded },
-    { target: window, type: "pageshow", handler: markRecentlyForegrounded },
-    { target: window, type: "focus", handler: markRecentlyForegrounded },
-  ]);
+  useForegroundSignal({
+    onForeground: markRecentlyForegrounded,
+    // The window this suppression protects is exactly the one where a live-
+    // looking socket turns out to be dead, so an open socket is not a reason to
+    // skip marking the resume.
+    isConnectionLive: () => status === "open",
+  });
 
   // The foreground timer used to be cleared in the listener effect's cleanup;
   // useEventListeners only owns the add/remove pairs, so preserve that teardown
