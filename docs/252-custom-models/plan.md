@@ -2932,6 +2932,73 @@ work:**
 walks the whole flow. That is the trade recorded in req 17's receipt — rare action, permanent
 surface.
 
+### The mode click starts the sign-in (req 18)
+
+With the hand-off gone, OpenAI → Subscription landed on a step that was **one sentence and
+one button**: account-only, so no field, no choice, and the button only repeated the click
+that had just been made. Choosing the mode now starts the login, so the step the user arrives
+at is the one carrying the provider's code.
+
+- **The condition is a catalogue fact, not a service name.** `signInIsTheWholeStep` asks
+  whether the mode accepts an account **and nothing else**. Anthropic's subscription also
+  takes an env-supplied token, so its step has a field to fill in and a sign-in that is one
+  option among two — auto-starting there would pre-empt a real choice. Nothing about OpenAI
+  is named anywhere.
+- **Nothing auto-starts that would fail on arrival.** A missing harness or another login in
+  flight leaves step 3 exactly as it was, saying so, with the button to retry once the way is
+  clear — the same two guards the button had, checked before the start rather than after it.
+- **Handlers read the store, not the last render.** The click that chooses the mode also
+  starts its sign-in, and `service` / `billingMode` / the accounts hook are all a render
+  behind at that moment. So `startSignIn` takes the pair as arguments (defaulting to state
+  for the button) and both it and the guard read accounts through `providerAccountsOf(...)`
+  on the store's current value. `adoptableAttempt` is one function for the same reason: the
+  rule is now read at the render, at the start, and at the guard.
+- **The gap before the code arrives had to be given a name.** The challenge is broadcast a
+  moment after the login starts, and "an account, no live challenge, not ready" was the
+  definition of *stalled* — so the interim said **"the sign-in stopped before the account
+  connected"** about a sign-in that was starting normally. That was a flash behind a button
+  press; as the landing screen it would be the first thing the user reads. A stopped attempt
+  now has to have actually stopped — the requests done, and then a reason filed against it or
+  a status that is no longer `authenticating` — and the interim says it is starting. The
+  `startingSignIn` clause is not belt-and-braces: the row is created **before** the login is
+  asked for and is created `unavailable`, so between the two requests it is neither
+  authenticating nor failed. Measured in the dogfood instance, that was a 35 ms flash of the
+  wrong sentence on the way to the code.
+
+**What the independent review found, both on paths req 18 made easy to reach:**
+
+- **Leaving while the account was still being created left it behind.** `cancel` can only
+  abandon an id it has, and `createAccount` had not returned one yet — so Esc in that window
+  closed the dialog over an account that appeared *after* the user had gone: hidden by
+  `isUnconnectedAttempt`, holding the provider's single login slot, with nothing on screen to
+  release it. That is req 17's "leaving is leaving" broken by a race, and it predates req 18
+  — but starting the sign-in on the mode click is what turns "be quick after pressing Sign
+  in" into a window anyone can hit. A `left` **ref** (not state — the answer must not be a
+  render behind the question) is set by `cancel` and read by `startSignIn` after each await,
+  so whichever of the two finishes last does the cleanup. Verified against the real API:
+  escaping 5 ms into the create leaves zero rows server-side.
+- **"Waiting for the code" cannot be told from "hung".** A login can reach `authenticating`
+  and never produce a challenge — a CLI that stays alive saying nothing — and the tightened
+  predicate correctly calls that *starting*, which hides the retry until the provider's own
+  timeout (15 minutes on OpenAI). The review's fix kept the button through the wait as **Start
+  again**; the human reversed it on sight: *"there should be no blue button like this at all
+  … it should be always only Cancel."* While the flow runs itself the user is watching a box
+  fill in, and a second button beside it is a live control they did not ask for, in the one
+  place where a stray click restarts the login they are in the middle of. So the button is
+  gone from the start, the wait and the challenge; it returns only when nothing is happening
+  (stopped, or never started), and is **secondary** even then, since the step's own next
+  action is no longer a button. A hung login is recovered the way everything else here is —
+  close it and start again. A mode that also takes a key keeps its primary *Sign in*, because
+  nothing auto-starts there.
+
+**Waiting looks like what it is waiting for.** The step renders `ChallengePlaceholder` — the
+same `CHALLENGE_BOX` shell as the real challenge, its lines drawn as a pulse — and the two
+measure **98px** each, which is why the first bar is `h-4` rather than the `h-5` the link's
+font size suggests (the link is inline, so its line box is 16). It is keyed off
+`startingSignIn`, not off the account: keyed off the account it arrived one request late, so
+the dialog opened short on a line of prose and then grew by the height of a panel. Measured
+live, step 3 is 326px from its first frame and does not move when the code lands.
+
 ## Key files
 
 | File | Why it matters |

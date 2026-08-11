@@ -130,6 +130,203 @@ describe("ServicesPanel", () => {
     expect(screen.getByTestId("add-service-step-credential")).toBeInTheDocument();
   });
 
+  describe("choosing the mode starts its sign-in (req 18)", () => {
+    const created = {
+      id: "acct-openai-1",
+      serviceId: "openai", billingMode: "sub", via: "account",
+      label: "OpenAI account 1",
+      isPrimary: true,
+      status: "authenticating",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const stubAccountApi = (): void => {
+      vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account: created, accounts: [created] }) });
+      });
+    };
+    const logins = (): number => fetchCalls.filter((c) => c.url.endsWith("/login")).length;
+
+    it("lands on the provider's code, with nothing to press in between", async () => {
+      // OpenAI's subscription is account-only, so step 3 was one button over
+      // one sentence: a click that asked nothing and could be answered one way.
+      stubAccountApi();
+      render(<ServicesPanel agentList={[codexAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-openai"));
+      await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+
+      await waitFor(() => expect(logins()).toBe(1));
+      useSettingsStore.getState().setProviderAccountAuth("codex", "acct-openai-1", {
+        provider: "codex",
+        accountId: "acct-openai-1",
+        verificationUri: "https://auth.openai.com/device",
+        userCode: "WXYZ-1234",
+      });
+      await waitFor(() => expect(
+        within(screen.getByTestId("add-service-dialog")).getByTestId("provider-account-user-code-acct-openai-1"),
+      ).toHaveTextContent("WXYZ-1234"));
+      expect(screen.queryByTestId("add-service-sign-in")).not.toBeInTheDocument();
+    });
+
+    it("says it is starting, rather than that it stopped, before the code arrives", async () => {
+      // The code arrives on a broadcast after the login starts. That gap read
+      // as "the sign-in stopped before the account connected" — a flash behind
+      // a button press before, and the landing screen now.
+      stubAccountApi();
+      render(<ServicesPanel agentList={[codexAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-openai"));
+      await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+
+      await waitFor(() => expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument());
+      expect(screen.queryByTestId("add-service-signin-stalled")).not.toBeInTheDocument();
+    });
+
+    it("says the same between the two requests, where the row is not authenticating yet", async () => {
+      // The row is created BEFORE the login is asked for, and it is created
+      // `unavailable` — so between the two requests it is neither
+      // authenticating nor failed. Measured live, that was a 35 ms flash of
+      // "the sign-in stopped" on the way to the code.
+      const fresh = { ...created, status: "unavailable" };
+      vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+        // The login never answers, so the dialog stays in that window.
+        if (url.endsWith("/login")) return new Promise(() => {});
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account: fresh, accounts: [fresh] }) });
+      });
+
+      render(<ServicesPanel agentList={[codexAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-openai"));
+      await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+
+      await waitFor(() => expect(logins()).toBe(1));
+      expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument();
+      expect(screen.queryByTestId("add-service-signin-stalled")).not.toBeInTheDocument();
+    });
+
+    it("abandons an account that arrives after the user has left (req 17)", async () => {
+      // `cancel` can only abandon an id it has, and the create had not returned
+      // one yet — so leaving during that window closed the dialog over an
+      // account that appeared behind the user: hidden from the panel, holding
+      // the provider's login slot, with nothing on screen to release it. The
+      // sign-in starting on the mode click is what makes the window easy to
+      // hit. Found by the independent review.
+      let releaseCreate = (): void => {};
+      const createPending = new Promise<void>((resolve) => { releaseCreate = resolve; });
+      vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+        const answer = { ok: true, status: 200, json: () => Promise.resolve({ account: created, accounts: [created] }) };
+        if (url === "/api/provider-accounts" && init?.method === "POST") {
+          return (async () => { await createPending; return answer; })();
+        }
+        return Promise.resolve(answer);
+      });
+
+      render(<ServicesPanel agentList={[codexAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-openai"));
+      await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+      // Out before the account exists.
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByTestId("add-service-dialog")).not.toBeInTheDocument());
+
+      releaseCreate();
+
+      await waitFor(() => expect(fetchCalls.some(
+        (c) => c.url === "/api/provider-accounts/codex/acct-openai-1" && c.method === "DELETE",
+      )).toBe(true));
+      // And no login was started on it on the way out.
+      expect(logins()).toBe(0);
+      expect(screen.queryByTestId("service-card-openai:sub")).not.toBeInTheDocument();
+    });
+
+    it("offers one button while the sign-in runs itself, and it says Cancel", async () => {
+      // A second button beside a box the user is watching fill in is a live
+      // control they did not ask for, in the one place where an accidental
+      // click restarts the login they are in the middle of. The retry it
+      // carried is traded for closing and starting again — the same recovery
+      // everything else in this dialog uses.
+      stubAccountApi();
+      render(<ServicesPanel agentList={[codexAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-openai"));
+      await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+
+      await waitFor(() => expect(logins()).toBe(1));
+      const footer = () => within(screen.getByTestId("add-service-dialog"))
+        .getAllByRole("button").map((b) => b.textContent);
+      expect(screen.queryByTestId("add-service-sign-in")).not.toBeInTheDocument();
+      expect(footer()).toContain("Cancel");
+
+      useSettingsStore.getState().setProviderAccountAuth("codex", "acct-openai-1", {
+        provider: "codex", accountId: "acct-openai-1",
+        verificationUri: "https://auth.openai.com/device", userCode: "WXYZ-1234",
+      });
+      await waitFor(() => expect(
+        within(screen.getByTestId("add-service-dialog")).getByTestId("provider-account-user-code-acct-openai-1"),
+      ).toBeInTheDocument());
+      expect(screen.queryByTestId("add-service-sign-in")).not.toBeInTheDocument();
+    });
+
+    it("draws the code's own box, at its own size, while it is on its way", async () => {
+      stubAccountApi();
+      render(<ServicesPanel agentList={[codexAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-openai"));
+      await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+
+      const placeholder = await screen.findByTestId("add-service-signin-starting");
+      expect(placeholder).toHaveAttribute("aria-busy", "true");
+      // The same shell as the challenge, so nothing moves when the code lands.
+      expect(placeholder.className).toContain("rounded-md border");
+    });
+
+    it("leaves a mode that also takes a key alone — there the sign-in is a choice", async () => {
+      // Anthropic's subscription accepts an env-supplied token too, so step 3
+      // has a field. Starting a login nobody asked for would pre-empt it.
+      render(<ServicesPanel agentList={[claudeAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+      await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+
+      expect(screen.getByTestId("add-service-secret")).toBeInTheDocument();
+      expect(screen.getByTestId("add-service-sign-in")).toBeInTheDocument();
+      expect(logins()).toBe(0);
+    });
+
+    it("starts nothing that would fail on arrival, and says why", async () => {
+      // A harness that cannot run the login: the step stays as it was, with the
+      // reason on it, rather than auto-starting into an error.
+      stubAccountApi();
+      render(<ServicesPanel agentList={[{ ...codexAgent, installed: false }]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-openai"));
+      await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+
+      expect(screen.getByTestId("add-service-harness-missing")).toBeInTheDocument();
+      expect(logins()).toBe(0);
+      expect(fetchCalls.some((c) => c.url === "/api/provider-accounts" && c.method === "POST")).toBe(false);
+    });
+
+    it("starts nothing while another sign-in of the provider is in flight", async () => {
+      // docs/150 — one login per provider, so the server would refuse a second.
+      stubAccountApi();
+      useSettingsStore.getState().setProviderAccounts([
+        route({ id: "acct-openai-9", serviceId: "openai", billingMode: "sub", via: "account", status: "authenticating", externalId: "ext-9", label: "OpenAI account 9" }),
+      ]);
+      render(<ServicesPanel agentList={[codexAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add"));
+      await userEvent.click(screen.getByTestId("add-service-option-openai"));
+      await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+
+      expect(screen.getByTestId("add-service-signin-blocked")).toBeInTheDocument();
+      expect(logins()).toBe(0);
+    });
+  });
+
   it("signs in inside the dialog for a mode connected only by signing in (req 17)", async () => {
     // The hand-off is gone. It sent the user out of a flow they had started —
     // "press Add account on its card" — and paid for it with a revealed empty
@@ -155,8 +352,6 @@ describe("ServicesPanel", () => {
     expect(screen.getByTestId("add-service-account-only")).toBeInTheDocument();
     // OpenAI's subscription takes no supplied secret, so there is no input.
     expect(screen.queryByTestId("add-service-secret")).not.toBeInTheDocument();
-
-    await userEvent.click(screen.getByTestId("add-service-sign-in"));
 
     // One act: the account is created and its login started.
     await waitFor(() => expect(fetchCalls.some(
@@ -215,8 +410,8 @@ describe("ServicesPanel", () => {
     render(<ServicesPanel agentList={[codexAgent]} />);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-openai"));
+    // The mode click starts the sign-in (req 18) — no second press.
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
-    await userEvent.click(screen.getByTestId("add-service-sign-in"));
 
     // The failure is stated in the dialog, with a way forward...
     await waitFor(() => expect(screen.getByTestId("add-service-error")).toHaveTextContent("codex CLI is not installed"));
@@ -250,8 +445,8 @@ describe("ServicesPanel", () => {
     render(<ServicesPanel agentList={[codexAgent]} />);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-openai"));
+    // The mode click starts the sign-in (req 18) — no second press.
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
-    await userEvent.click(screen.getByTestId("add-service-sign-in"));
     await waitFor(() => expect(screen.getByTestId("add-service-sign-in")).toHaveTextContent("Try again"));
     await userEvent.click(screen.getByTestId("add-service-sign-in"));
 
@@ -284,8 +479,8 @@ describe("ServicesPanel", () => {
     render(<ServicesPanel agentList={[codexAgent]} />);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-openai"));
+    // The mode click starts the sign-in (req 18) — no second press.
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
-    await userEvent.click(screen.getByTestId("add-service-sign-in"));
 
     useSettingsStore.getState().setProviderAccountAuth("codex", "acct-openai-1", {
       provider: "codex",
@@ -324,8 +519,8 @@ describe("ServicesPanel", () => {
     render(<ServicesPanel agentList={[codexAgent]} />);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-openai"));
+    // The mode click starts the sign-in (req 18) — no second press.
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
-    await userEvent.click(screen.getByTestId("add-service-sign-in"));
     await waitFor(() => expect(fetchCalls.some((c) => c.url === "/api/provider-accounts")).toBe(true));
 
     await userEvent.click(within(screen.getByTestId("add-service-dialog")).getByRole("button", { name: "Cancel" }));
@@ -366,8 +561,8 @@ describe("ServicesPanel", () => {
     render(<ServicesPanel agentList={[codexAgent]} />);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-openai"));
+    // The mode click starts the sign-in (req 18) — no second press.
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
-    await userEvent.click(screen.getByTestId("add-service-sign-in"));
     await waitFor(() => expect(fetchCalls.some(
       (c) => c.url === "/api/provider-accounts" && c.method === "POST",
     )).toBe(true));
@@ -410,8 +605,8 @@ describe("ServicesPanel", () => {
     render(<ServicesPanel agentList={[codexAgent]} />);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-openai"));
+    // The mode click starts the sign-in (req 18) — no second press.
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
-    await userEvent.click(screen.getByTestId("add-service-sign-in"));
     await waitFor(() => expect(screen.getByTestId("add-service-signed-in")).toBeInTheDocument());
     // The card appears the moment the account connects, and that is not a
     // flicker: it is a credential now, so it appears once and stays. What must
@@ -895,7 +1090,6 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
       await userEvent.click(screen.getByTestId("services-add-empty"));
       await userEvent.click(screen.getByTestId("add-service-option-openai"));
       await userEvent.click(screen.getByTestId("add-service-mode-sub"));
-      await userEvent.click(screen.getByTestId("add-service-sign-in"));
 
       // No second account, and the stale login is cleared before the new one
       // starts so the challenge shown is the live one rather than a 409.
