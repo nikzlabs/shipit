@@ -319,7 +319,7 @@ export function HarnessSelector({
                 */}
                 <span className="min-w-0 flex-1">
                   <span className="block truncate">{agent.name}</span>
-                  <span className="block text-[11px] text-(--color-text-tertiary)">
+                  <span className="block text-xs text-(--color-text-tertiary)">
                     {agent.hasRunnableModels
                       ? `${rows.length} model${rows.length === 1 ? "" : "s"} available`
                       : "needs a credential"}

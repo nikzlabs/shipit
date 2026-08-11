@@ -265,25 +265,21 @@ describe("ModelSelector", () => {
     expect(menu).toHaveTextContent("API key");
   });
 
-  it("states the billing mode as a pill, the same one Settings puts on a service card (D10)", async () => {
+  it("states each group's billing mode as a pill, not as text after the name (D10)", async () => {
     // Plain tertiary text run on after the service name read as a qualifier of
     // the service. The mode is the other half of the pair a model is selected
-    // by (req 5), so it gets its own coloured pill at the right edge — and the
-    // same component as the card, so the two surfaces cannot drift.
+    // by (req 5), so it gets its own pill — the same component Settings puts on
+    // a service card. What the pill LOOKS like is `BillingModePill`'s own
+    // contract and is pinned in its co-located test; what belongs here is that
+    // each group gets one, carrying that group's mode.
     const user = userEvent.setup();
     render(
       <ModelSelector agents={agents} activeAgentId="claude" modelInfo={null} onModelChange={vi.fn()} />,
     );
     await user.click(screen.getByTestId("model-trigger"));
 
-    const sub = screen.getByTestId("model-group-mode-sub");
-    const key = screen.getAllByTestId("model-group-mode-key")[0];
-    expect(sub).toHaveTextContent("Subscription");
-    expect(key).toHaveTextContent("API key");
-    expect(sub.className).toContain("rounded-full");
-    // Purple for a subscription, green for a key — the mock's two colours.
-    expect(sub.className).toContain("--color-accent-subtle");
-    expect(key.className).toContain("--color-success-subtle");
+    expect(screen.getByTestId("model-group-mode-sub")).toHaveTextContent("Subscription");
+    expect(screen.getAllByTestId("model-group-mode-key")[0]).toHaveTextContent("API key");
   });
 
   it("hands the caller the whole triple, not a bare model id", async () => {

@@ -27,7 +27,13 @@ export function BillingModePill({
       // it onto the accent tint — the mock's purple — while `success` already
       // carries the green the key pill wants.
       variant={billingMode === "sub" ? "default" : "success"}
-      className={`px-1.5 text-[10px] ${
+      // `normal-case tracking-normal` is load-bearing, not tidiness: the model
+      // menu nests this inside `DropdownMenuLabel`, whose base style is
+      // `uppercase tracking-wider`. Without the reset the same pill reads
+      // "SUBSCRIPTION" in the menu and "Subscription" on the card — the exact
+      // drift this component exists to prevent. It belongs here rather than at
+      // the call site so reuse stays context-independent.
+      className={`px-1.5 text-[10px] normal-case tracking-normal ${
         billingMode === "sub" ? "bg-(--color-accent-subtle) text-(--color-accent) " : ""
       }${className}`}
       {...rest}
