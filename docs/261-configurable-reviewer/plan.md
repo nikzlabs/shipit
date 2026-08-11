@@ -88,6 +88,25 @@ agrees on its `family`, and that the alias groups are declared once and referenc
 retyped per offering — a free-form string copied into every row makes a typo compile, pass,
 and cause ShipIt to call a same-model review independent.
 
+**Phase 0 has landed.** `shared/catalogue/model-identity.ts` is the declaration; `ModelDef`
+carries the two fields and every row in `services.ts` supplies them by **spreading** a
+declaration (`...MODEL_IDENTITIES.opus5`) rather than typing two strings. The spread is what
+turns "declared once and referenced" from a convention into a property of the source: a
+mismatched pair is unwritable, not merely caught. Both fields are additionally typed as literal
+unions derived from the table, so a typo is a compile error, and `catalogue.test.ts` asserts that
+every pair reaching a row is one the table carries — the check that catches a row which typed
+the fields by hand anyway.
+
+Two authoring decisions the design left open:
+
+- **Families are vendor-scoped** (`claude`, `gpt`, `deepseek`, `glm`), not generation-scoped.
+  Req 4 wants the axis carrying shared training, and Haiku 4.5 sits beside Opus 5 in the
+  catalogue — a generation-scoped family would have called that pair distant on a difference that
+  changes nothing.
+- **`RetiredModel` carries no identity.** The ranking is computed against *resolved* selections
+  and a retired pin resolves through its successor before anything asks who it is, so a retired
+  row has no identity because nothing ever runs on one.
+
 ## Picking between the two: the distance ranking
 
 Req 4 fixes the first axis — the model **family** — and leaves the rest here. It is an ordered
@@ -206,6 +225,45 @@ labelled option carrying what it resolves to, rather than a blank — and its
 `nonTurnModelResolved` wire member is the precedent to copy, including its rule that the
 server sends the resolution rather than the client re-deriving it (a second implementation of
 the rule is how the two drift).
+
+**Phase 1 has landed.** `orchestrator/reviewer-model.ts` holds the ranking
+(`reviewerDistanceTier`), the Settings view (`resolveReviewerSlots`) and the review-time choice
+(`selectReviewer`); `CredentialStore.getReviewerPin` / `setReviewerPin` hold the two slots.
+Nothing calls any of it yet, which is the phase boundary this table sets.
+
+Five things worth recording, three of which sharpen the design rather than merely implement it:
+
+- **Slot derivation is implementer-INDEPENDENT; only the harness bends.** A slot is a *setting*,
+  so it must have one answer whether or not a session is in front of the user — otherwise "what
+  it currently resolves to" would mean something different on every screen. So the derived
+  *model* for each slot ignores the implementer, and the "prefer a harness that is not the
+  implementer's" preference is applied at review time, in `selectReviewer`. The design did not
+  separate the two, and conflating them would have made req 8's visible state ill-defined.
+- **The route check applies to derivation too**, not only to ranking. `plan.md` said reviewer 1 is
+  `firstEligibleNonTurnSelection` "unchanged"; it is that ordering narrowed to candidates that
+  also resolve a credential route. An auto-configured reviewer with a spent subscription is one
+  the review would fall through anyway, so naming it would only make Settings promise something
+  that never runs. This is a stated departure, not an oversight.
+- **The harness preference is a preference, not a filter** — a model only the implementer's own
+  harness can run still resolves. `harnessesForSelection` (extracted from
+  `harnessForNonTurnSelection`, so eligibility and retirement-successor handling have ONE
+  implementation) returns every eligible harness in preference order, and the resolver walks it
+  until one routes. Trying only the first would drop a reviewer whose *other* harness
+  authenticates perfectly well.
+- **The tie rule is the ranking's sixth rung applied at every rung.** "Otherwise the first
+  configured reviewer" is implemented as a strictly-lower comparison, so equal distance always
+  keeps the earlier slot rather than only doing so when everything is tier 6.
+- **`selectReviewer` returns a frozen target**, which is the half of "resolved once, at spawn
+  admission" that phase 1 can deliver. The call site that captures it when a spawn is admitted is
+  phase 2's; what phase 1 guarantees is that the value cannot be mutated once resolved.
+
+**One property is deliberately untested end to end, and it should not be mistaken for covered.**
+No shipped model runs on both harnesses — Claude's family speaks only Anthropic-Messages and
+GPT's only Responses — so tiers 3 and 5 are unreachable through the real catalogue, and the
+avoid-the-implementer's-harness preference has nothing to prefer between. The ranking's rungs are
+therefore pinned as a pure function, and what *is* asserted end to end is the property whose
+failure would break the product: that the preference does not refuse a model only one harness can
+run. One gateway row gaining a style makes the rest reachable.
 
 ## The CLI (reqs 6, 7)
 

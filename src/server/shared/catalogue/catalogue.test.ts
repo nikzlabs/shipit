@@ -23,6 +23,10 @@ import {
   getModel,
   isContextSentinel,
   isPriceSentinel,
+  MODEL_FAMILY_IDS,
+  MODEL_IDENTITIES,
+  MODEL_IDENTITY_BY_KEY,
+  modelIdentityFor,
   modesOfferingModel,
   catalogueModelIdsForHarness,
   eligibleEntriesForHarness,
@@ -116,6 +120,103 @@ describe("a model's declared styles are reachable", () => {
     for (const { service, mode, model } of everyRow()) {
       expect(model.styles.length, `${service.id}/${mode.kind}/${model.id}`).toBeGreaterThan(0);
     }
+  });
+});
+
+/**
+ * docs/261 phase 0 (req 4) — model identity and lineage.
+ *
+ * The invariant is deliberately NOT "one model id offered by two services
+ * declares the same family in both". That check cannot catch anything, because
+ * the pair this feature exists for has **different** ids: Anthropic's
+ * `claude-opus-5` and OpenRouter's `anthropic/claude-opus-5` are one model under
+ * two spellings. What has to hold is that both name the same
+ * `canonicalModelKey`, and that everything sharing a key agrees on its family.
+ */
+describe("model identity and lineage (docs/261 req 4)", () => {
+  it("every offering declares both fields, from the declared sets", () => {
+    for (const { service, mode, model } of everyRow()) {
+      const where = `${service.id}/${mode.kind}/${model.id}`;
+      expect(model.canonicalModelKey, `${where} has no canonicalModelKey`).toBeTruthy();
+      expect(MODEL_FAMILY_IDS, `${where} declares an unknown family`).toContain(model.family);
+    }
+  });
+
+  // "Declared once and referenced, not retyped per offering." A row is meant to
+  // spread `MODEL_IDENTITIES.<handle>`, which makes a mismatched pair
+  // unwritable; this is what catches a row that spelled the two fields by hand
+  // and got them out of step — the typo that would otherwise compile, pass, and
+  // make ShipIt call a same-model review independent.
+  it("every authored pair is one the shared declaration carries", () => {
+    for (const { service, mode, model } of everyRow()) {
+      const declared = MODEL_IDENTITY_BY_KEY[model.canonicalModelKey];
+      const where = `${service.id}/${mode.kind}/${model.id}`;
+      expect(declared, `${where} names an undeclared canonical model`).toBeTruthy();
+      expect(declared?.family, `${where} disagrees with the declared family`).toBe(model.family);
+    }
+  });
+
+  it("every member of a canonicalModelKey group agrees on its family", () => {
+    const byKey = new Map<string, { family: string; where: string }>();
+    for (const { service, mode, model } of everyRow()) {
+      const where = `${service.id}/${mode.kind}/${model.id}`;
+      const seen = byKey.get(model.canonicalModelKey);
+      if (!seen) {
+        byKey.set(model.canonicalModelKey, { family: model.family, where });
+        continue;
+      }
+      expect(model.family, `${where} disagrees with ${seen.where}`).toBe(seen.family);
+    }
+  });
+
+  // The motivating pair, named so a future catalogue edit that splits it fails
+  // for a reason a reader can act on rather than as an anonymous group mismatch.
+  it("a gateway-served model IS the vendor-served one", () => {
+    const direct = getModel({ serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" });
+    const gateway = getModel({
+      serviceId: "openrouter",
+      billingMode: "key",
+      modelId: "anthropic/claude-opus-5",
+    });
+    expect(direct?.canonicalModelKey).toBe(gateway?.canonicalModelKey);
+    // Two different ids, which is the whole point — an id-equality invariant
+    // would pass here vacuously and prove nothing.
+    expect(direct?.id).not.toBe(gateway?.id);
+  });
+
+  // The same statement within one service: `[1m]` is a Claude Code instruction
+  // that selects the long-context variant, not a different model.
+  it("GLM's two spellings are one model", () => {
+    const plan = getModel({ serviceId: "zai", billingMode: "sub", modelId: "glm-5.2[1m]" });
+    const key = getModel({ serviceId: "zai", billingMode: "key", modelId: "glm-5.2" });
+    expect(plan?.canonicalModelKey).toBe(key?.canonicalModelKey);
+  });
+
+  // Lineage is not identity: Opus and Sonnet are siblings and NOT the same
+  // model. A single field could not say both, which is why there are two.
+  it("siblings share a family and differ as models", () => {
+    const opus = getModel({ serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" });
+    const sonnet = getModel({ serviceId: "anthropic", billingMode: "sub", modelId: "claude-sonnet-5" });
+    expect(opus?.family).toBe(sonnet?.family);
+    expect(opus?.canonicalModelKey).not.toBe(sonnet?.canonicalModelKey);
+  });
+
+  it("declares no identity no row uses", () => {
+    const used = new Set(everyRow().map((r) => r.model.canonicalModelKey));
+    for (const entry of Object.values(MODEL_IDENTITIES)) {
+      expect(used, `${entry.canonicalModelKey} is declared and unused`).toContain(
+        entry.canonicalModelKey,
+      );
+    }
+  });
+
+  it("reports a selection's identity, and nothing for a triple naming no row", () => {
+    expect(
+      modelIdentityFor({ serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-pro" }),
+    ).toEqual({ canonicalModelKey: "deepseek-v4-pro", family: "deepseek" });
+    expect(
+      modelIdentityFor({ serviceId: "deepseek", billingMode: "key", modelId: "nope" }),
+    ).toBeUndefined();
   });
 });
 

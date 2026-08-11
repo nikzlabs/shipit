@@ -90,6 +90,44 @@ export interface SubAgentDefaultsPatch {
   billingMode?: BillingMode;
 }
 
+/**
+ * docs/261 req 4 — which of the two configured reviewers a slot is.
+ *
+ * The order is the user's, and it is load-bearing in exactly two places: it
+ * breaks a tie when both reviewers are equally distant from the implementer, and
+ * it is what reviewer 2 is derived *against* when neither slot is pinned. It is
+ * NOT a preference — the ranking picks whichever is furthest, so `second` beats
+ * `first` routinely.
+ */
+export type ReviewerSlot = "first" | "second";
+
+/** Both slots, in the user's own order. Iterate this rather than re-listing them. */
+export const REVIEWER_SLOTS: readonly ReviewerSlot[] = ["first", "second"];
+
+/**
+ * docs/261 reqs 1, 3, 5 — a reviewer the user pinned: a model like any other
+ * (`(service, billing mode, model)`, req 3) plus the reasoning level (req 5).
+ *
+ * **The harness is absent on purpose.** Req 3 keeps it derived from the model,
+ * exactly as background work already resolves it — and docs/261 derives it with
+ * one extra preference (avoid the implementer's), so storing it would freeze an
+ * answer that has to be recomputed per review anyway.
+ *
+ * **`reasoningEffort` is required, and that is the type-level statement of
+ * "pinning is atomic".** Editing any field of an auto-configured slot pins the
+ * whole resolved tuple; a half-pinned slot — a pinned effort over a derived
+ * model — is not expressible, because the alternative is a slot that silently
+ * re-derives half of itself when a service is added. A reviewer that left the
+ * level to the harness's own default would also fail req 5 outright.
+ */
+export interface ReviewerPin {
+  serviceId: string;
+  billingMode: BillingMode;
+  modelId: string;
+  /** A value from the derived harness's `reasoning.options`. */
+  reasoningEffort: string;
+}
+
 export interface AgentCapabilities {
   /** Whether the agent can resume a previous conversation (e.g. --resume). */
   supportsResume: boolean;

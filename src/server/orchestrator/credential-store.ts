@@ -13,10 +13,12 @@ import type {
   CredentialBillingMode,
   CredentialRoute,
   FailoverCutoffs,
+  ReviewerPin,
+  ReviewerSlot,
   SubAgentDefaults,
   SubAgentDefaultsPatch,
 } from "../shared/types.js";
-import { credentialModeKey, DEFAULT_SELECTION_MODE } from "../shared/types.js";
+import { credentialModeKey, DEFAULT_SELECTION_MODE, REVIEWER_SLOTS } from "../shared/types.js";
 import { DEFAULT_FAILOVER_CUTOFF } from "../shared/types.js";
 import type { VoiceDeliveryMode } from "../shared/types/voice-note-types.js";
 import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js";
@@ -144,6 +146,27 @@ interface CredentialData {
    * reports on.
    */
   nonTurnModel?: { serviceId: string; billingMode: BillingMode; modelId: string };
+  /**
+   * docs/261 (reqs 1, 4, 5, 8) — the two reviewers, as the user pinned them.
+   *
+   * **A slot holds either a pin or nothing, and nothing is a STATE.** Unset means
+   * *auto-configured*, and the answer is derived at read time from the install as
+   * it currently stands (`reviewer-model.ts`) — never written back here. That is
+   * req 8's re-derivation: adding a second service, or a model from a family the
+   * install did not have, improves the reviewer with no user action, no
+   * migration and no staleness. A value written once at first run would freeze a
+   * one-service install's answer in place, which is worst precisely where this
+   * feature is aimed.
+   *
+   * A pin always wins. Nothing re-derives over a choice the user made.
+   *
+   * **Deliberately not seeded from {@link CredentialData.agentSubAgentDefaults}.**
+   * Those values are dropped rather than migrated — a decision recorded in
+   * `docs/261-configurable-reviewer/requirements.md`, whose whole justification
+   * is the size of the install population. Anyone who had configured one
+   * reconfigures the reviewer instead.
+   */
+  reviewers?: Partial<Record<ReviewerSlot, ReviewerPin>>;
   /**
    * Account-level MCP server configs keyed by name (docs/088). Values use
    * `$secret:` placeholders — the raw secret values live in `agentEnv` under
@@ -1231,6 +1254,88 @@ export class CredentialStore {
       );
     }
     this.data.nonTurnModel = { ...selection };
+    this.save();
+  }
+
+  // ---- The two reviewers (docs/261, reqs 1, 4, 5, 8) ----
+
+  /**
+   * The user's pin for one reviewer slot, or `undefined` for *auto-configured*.
+   *
+   * Deliberately NOT resolved here, for the same reason {@link getNonTurnModel}
+   * is not: the derived answer is a rule evaluated where the review runs
+   * (`reviewer-model.ts`), so pinned and auto-configured stay distinguishable
+   * all the way to the UI — which is exactly what req 8's *visible* state needs.
+   *
+   * A pin naming no catalogue row reads as unset, degrading to the derived
+   * default rather than to a triple nothing can resolve (docs/252 phase 1's
+   * invariant: a stored selection either names a real row, or carries no service
+   * and mode at all). A **retired** model is not that state — it named a real row
+   * when it was written and req 13 has a successor to move it to, so it is
+   * returned and `reviewer-model.ts` resolves it through the retirement. Reading
+   * it as unset here would discard the user's choice on a retirement instead of
+   * following it through one.
+   */
+  getReviewerPin(slot: ReviewerSlot): ReviewerPin | undefined {
+    const stored = this.data.reviewers?.[slot];
+    if (!stored) return undefined;
+    if (selectionExists(stored)) return { ...stored };
+    const retired = getMode(stored.serviceId, stored.billingMode)?.retired.some(
+      (r) => r.id === stored.modelId,
+    );
+    return retired ? { ...stored } : undefined;
+  }
+
+  /** Both slots as stored, for the settings payload. */
+  getReviewerPins(): Partial<Record<ReviewerSlot, ReviewerPin>> {
+    const out: Partial<Record<ReviewerSlot, ReviewerPin>> = {};
+    for (const slot of REVIEWER_SLOTS) {
+      const pin = this.getReviewerPin(slot);
+      if (pin) out[slot] = pin;
+    }
+    return out;
+  }
+
+  /**
+   * Pin a reviewer slot, or return it to auto-configuration with `null`.
+   *
+   * The whole tuple is written at once because pinning is atomic (req 8): a
+   * pinned effort over a derived model would be a slot that silently re-derives
+   * half of itself when a service is added, so it is not expressible — which
+   * {@link ReviewerPin} states in the type and this only enforces on the value.
+   *
+   * The effort is checked for presence and not against the harness's own level
+   * set: the harness is derived from the model and can differ per review (it
+   * avoids the implementer's), so this store cannot know which set applies. A
+   * level the harness rejects is the harness's error to report — the corollary
+   * docs/252 already recorded for reasoning being a harness property.
+   */
+  setReviewerPin(slot: ReviewerSlot, pin: ReviewerPin | null): void {
+    // Rebuild the map (rather than `delete current[slot]`) so clearing a slot
+    // drops it without a dynamic-delete, exactly as `setAgentSubAgentDefaults`
+    // rebuilds its own.
+    const current: Partial<Record<ReviewerSlot, ReviewerPin>> = {};
+    for (const other of REVIEWER_SLOTS) {
+      const existing = this.data.reviewers?.[other];
+      if (other !== slot && existing) current[other] = existing;
+    }
+    if (pin !== null) {
+      if (!selectionExists(pin)) {
+        throw new Error(
+          `No catalogue entry for ${pin.serviceId}/${pin.billingMode}/${pin.modelId}`,
+        );
+      }
+      if (!pin.reasoningEffort.trim()) {
+        throw new Error("A pinned reviewer must name a reasoning level (docs/261 req 5)");
+      }
+      current[slot] = {
+        serviceId: pin.serviceId,
+        billingMode: pin.billingMode,
+        modelId: pin.modelId,
+        reasoningEffort: pin.reasoningEffort,
+      };
+    }
+    this.data.reviewers = current;
     this.save();
   }
 

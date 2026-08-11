@@ -14,6 +14,19 @@
  * advertising hundreds contributes a short curated list. Breadth is a judgement
  * ShipIt makes and revises.
  *
+ * ## Who each model is
+ *
+ * Every row spreads an identity from `model-identity.ts`
+ * (`...MODEL_IDENTITIES.opus5`), which supplies its `canonicalModelKey` and its
+ * `family` together. Do NOT type the two fields into a row: declaring them once
+ * and referencing them is what makes a mismatched pair unwritable, and a
+ * free-form string copied per offering is exactly the typo that would make
+ * ShipIt call a same-model review independent (docs/261 req 4).
+ *
+ * A new service offering a model already listed here adds NO declaration — it
+ * references the existing one, which is what proves that OpenRouter's
+ * `anthropic/claude-opus-5` and Anthropic's `claude-opus-5` are one model.
+ *
  * ## Where the numbers came from
  *
  * `price` is ALWAYS the service's published API rate per **million** tokens —
@@ -53,6 +66,7 @@
  * changing it would move a number on screen, which phase 1 must not do.
  */
 
+import { MODEL_IDENTITIES } from "./model-identity.js";
 import type { ServiceDef } from "./types.js";
 
 const A_MSG = "anthropic-messages" as const;
@@ -126,9 +140,9 @@ export const SERVICES = [
         ],
         retired: [],
         models: [
-          { id: "claude-opus-5", label: "Opus 5", styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
-          { id: "claude-sonnet-5", label: "Sonnet 5", styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
-          { id: "haiku", label: "Haiku 4.5", styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
+          { id: "claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
+          { id: "claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
+          { id: "haiku", label: "Haiku 4.5", ...MODEL_IDENTITIES.haiku45, styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
           // Fable appears under BOTH modes, which is what phase 1's research
           // settled (catalogue.md's checklist item 4). Anthropic publishes it on
           // the ordinary API at the rate below, a subscription reaches it, and
@@ -141,7 +155,7 @@ export const SERVICES = [
           // is the LAST thing asserting it. Deleting the set is a user-visible
           // change (it drives a `$` icon), so it belongs to phase 3's picker
           // rebuild — see plan.md. Do not resurrect the claim from that comment.
-          { id: "claude-fable-5", label: "Fable 5", styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
+          { id: "claude-fable-5", label: "Fable 5", ...MODEL_IDENTITIES.fable5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
         ],
       },
       {
@@ -150,10 +164,10 @@ export const SERVICES = [
         credentials: [{ via: "string", storageEnv: "ANTHROPIC_API_KEY" }],
         retired: [],
         models: [
-          { id: "claude-opus-5", label: "Opus 5", styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
-          { id: "claude-sonnet-5", label: "Sonnet 5", styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
-          { id: "haiku", label: "Haiku 4.5", styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
-          { id: "claude-fable-5", label: "Fable 5", styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
+          { id: "claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
+          { id: "claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
+          { id: "haiku", label: "Haiku 4.5", ...MODEL_IDENTITIES.haiku45, styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
+          { id: "claude-fable-5", label: "Fable 5", ...MODEL_IDENTITIES.fable5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
         ],
       },
     ],
@@ -180,14 +194,14 @@ export const SERVICES = [
         // resolved by `retirementSuccessor` (req 13).
         retired: [{ id: "gpt-5.6", styles: [O_RESP], successors: { [O_RESP]: "gpt-5.6-sol" } }],
         models: [
-          { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
-          { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
-          { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.luna },
-          { id: "gpt-5.4", label: "GPT-5.4", styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54 },
-          { id: "gpt-5.4-mini", label: "GPT-5.4 Mini", styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54mini },
-          { id: "gpt-5.5", label: "GPT-5.5", styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt55 },
-          { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt53codex },
-          { id: "gpt-5.2", label: "GPT-5.2", styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt52 },
+          { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
+          { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
+          { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", ...MODEL_IDENTITIES.gpt56luna, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.luna },
+          { id: "gpt-5.4", label: "GPT-5.4", ...MODEL_IDENTITIES.gpt54, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54 },
+          { id: "gpt-5.4-mini", label: "GPT-5.4 Mini", ...MODEL_IDENTITIES.gpt54mini, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54mini },
+          { id: "gpt-5.5", label: "GPT-5.5", ...MODEL_IDENTITIES.gpt55, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt55 },
+          { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", ...MODEL_IDENTITIES.gpt53codex, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt53codex },
+          { id: "gpt-5.2", label: "GPT-5.2", ...MODEL_IDENTITIES.gpt52, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt52 },
         ],
       },
       {
@@ -197,14 +211,14 @@ export const SERVICES = [
         credentials: [{ via: "string", storageEnv: "OPENAI_API_KEY" }],
         retired: [{ id: "gpt-5.6", styles: [O_RESP], successors: { [O_RESP]: "gpt-5.6-sol" } }],
         models: [
-          { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
-          { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
-          { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.luna },
-          { id: "gpt-5.4", label: "GPT-5.4", styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54 },
-          { id: "gpt-5.4-mini", label: "GPT-5.4 Mini", styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54mini },
-          { id: "gpt-5.5", label: "GPT-5.5", styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt55 },
-          { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt53codex },
-          { id: "gpt-5.2", label: "GPT-5.2", styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt52 },
+          { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
+          { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
+          { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", ...MODEL_IDENTITIES.gpt56luna, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.luna },
+          { id: "gpt-5.4", label: "GPT-5.4", ...MODEL_IDENTITIES.gpt54, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54 },
+          { id: "gpt-5.4-mini", label: "GPT-5.4 Mini", ...MODEL_IDENTITIES.gpt54mini, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54mini },
+          { id: "gpt-5.5", label: "GPT-5.5", ...MODEL_IDENTITIES.gpt55, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt55 },
+          { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", ...MODEL_IDENTITIES.gpt53codex, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt53codex },
+          { id: "gpt-5.2", label: "GPT-5.2", ...MODEL_IDENTITIES.gpt52, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt52 },
         ],
       },
     ],
@@ -225,8 +239,8 @@ export const SERVICES = [
         credentials: [{ via: "string", storageEnv: "DEEPSEEK_API_KEY" }],
         retired: [],
         models: [
-          { id: "deepseek-v4-flash", label: "V4 Flash", styles: [O_CC, A_MSG], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4flash },
-          { id: "deepseek-v4-pro", label: "V4 Pro", styles: [O_CC, A_MSG], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4pro },
+          { id: "deepseek-v4-flash", label: "V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [O_CC, A_MSG], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4flash },
+          { id: "deepseek-v4-pro", label: "V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [O_CC, A_MSG], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4pro },
         ],
       },
     ],
@@ -268,7 +282,7 @@ export const SERVICES = [
           // `id` and many `styles`. Rather than invent a per-style id map in a
           // phase that ships no behaviour, this mode declares only the
           // Anthropic style, which is the path ShipIt would actually drive.
-          { id: "glm-5.2[1m]", label: "GLM-5.2", styles: [A_MSG], contextWindow: ONE_M, price: GLM_PRICES.glm52 },
+          { id: "glm-5.2[1m]", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [A_MSG], contextWindow: ONE_M, price: GLM_PRICES.glm52 },
         ],
       },
       {
@@ -280,7 +294,7 @@ export const SERVICES = [
         credentials: [{ via: "string", storageEnv: "ZAI_API_KEY" }],
         retired: [],
         models: [
-          { id: "glm-5.2", label: "GLM-5.2", styles: [O_CC, A_MSG], contextWindow: ONE_M, price: GLM_PRICES.glm52 },
+          { id: "glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [O_CC, A_MSG], contextWindow: ONE_M, price: GLM_PRICES.glm52 },
         ],
       },
     ],
@@ -314,11 +328,11 @@ export const SERVICES = [
         // reaches Claude Code and not Codex today. If the Responses surface is
         // confirmed, adding the style to these rows is the whole change.
         models: [
-          { id: "anthropic/claude-opus-5", label: "Opus 5", styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
-          { id: "anthropic/claude-sonnet-5", label: "Sonnet 5", styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
-          { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", styles: [A_MSG, O_CC], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4flash },
-          { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro", styles: [A_MSG, O_CC], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4pro },
-          { id: "z-ai/glm-5.2", label: "GLM-5.2", styles: [A_MSG, O_CC], contextWindow: ONE_M, price: GLM_PRICES.glm52 },
+          { id: "anthropic/claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
+          { id: "anthropic/claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
+          { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4flash },
+          { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4pro },
+          { id: "z-ai/glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: GLM_PRICES.glm52 },
         ],
       },
     ],
@@ -338,13 +352,13 @@ export const SERVICES = [
         credentials: [{ via: "string", storageEnv: "AI_GATEWAY_API_KEY" }],
         retired: [],
         models: [
-          { id: "anthropic/claude-opus-5", label: "Opus 5", styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
-          { id: "anthropic/claude-sonnet-5", label: "Sonnet 5", styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
+          { id: "anthropic/claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
+          { id: "anthropic/claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
           // Vercel documents a Responses-compatible surface, so these reach
           // Codex as well as any OpenAI-chat-completions consumer.
-          { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
-          { id: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra", styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
-          { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", styles: [A_MSG, O_CC], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4flash },
+          { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
+          { id: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
+          { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4flash },
         ],
       },
     ],

@@ -17,6 +17,7 @@
 
 import type { AgentId } from "../types/agent-types.js";
 import type { AgentCapabilities } from "../types/agent-types.js";
+import type { CanonicalModelKey, ModelFamily } from "./model-identity.js";
 
 /**
  * An API wire format. Both services and harnesses hold a SET of these; the
@@ -120,6 +121,23 @@ export interface ModelDef {
   /** Human-facing label. Absorbs the client's old `MODEL_DISPLAY_NAMES` record. */
   label: string;
   /**
+   * docs/261 req 4 — WHO this model is, across services. Two offerings sharing
+   * this key are the same model, so one is not a second opinion on the other.
+   *
+   * Authored, never derived: `anthropic/claude-opus-5` and `claude-opus-5` are
+   * one model under two ids, while `glm-5.2` and `glm-5.2[1m]` are one model
+   * under two spellings of one service. Write it by spreading a declaration from
+   * `model-identity.ts` (`...MODEL_IDENTITIES.opus5`) rather than typing the two
+   * fields — that is what makes a mismatched pair unwritable.
+   */
+  canonicalModelKey: CanonicalModelKey;
+  /**
+   * docs/261 req 4 — what this model shares its TRAINING with. Req 4's first
+   * ranking axis, and the reason a gateway-served Opus is not a distant reviewer
+   * for an Anthropic-served one. Spread it with `canonicalModelKey`.
+   */
+  family: ModelFamily;
+  /**
    * Styles this model is usable under, at this service, under this mode (req 6).
    *
    * INVARIANT: every entry must also be a key of the owning mode's `endpoints`.
@@ -142,6 +160,12 @@ export interface ModelDef {
  * the model is gone from `models` — that is the record the successor check
  * compares against, and a bare `oldId → newId` map could neither express a
  * successor that differs by style nor check the constraint at all.
+ *
+ * It deliberately carries **no** `canonicalModelKey` or `family` (docs/261): the
+ * reviewer ranking is computed against *resolved* selections, and a retired pin
+ * resolves through {@link RetiredModel.successors} onto a current model before
+ * anything asks who it is. A retired row needs no identity because nothing ever
+ * runs on one.
  */
 export interface RetiredModel {
   id: string;
