@@ -139,3 +139,41 @@ it.
       which catches a regression to the old shape without forbidding the documented
       explicit path
 
+## Phase 6 — One set of controls, and a service you can choose
+
+- [x] `components/pickers/` holds the shared control — `PickerTrigger` / `Picker` / `PickerOption`
+      — and every surface renders it: the composer's model, reasoning and harness selectors, the
+      Reviewer tab's three controls, Background work's two. What is shared is the **control**,
+      not the state: the composer's optimistic pending pick and the Settings tab's deliberate
+      non-optimism stay where they are
+- [x] `ServiceSelector` (req 11) on the Reviewer tab and Background work, selecting the
+      `(service, billing mode)` PAIR and carrying `BillingModePill` on each row — the same pill
+      the service card and the model menu's group header use
+- [x] The model menu is scoped to the chosen service (req 12); its group headers go, because a
+      header repeating the service on every row answers a question already asked
+- [x] Background work's native `<select>` replaced. No reasoning control there — non-turn work
+      has no level, and adding one would make docs/261 a second source of requirements for a
+      docs/252 setting
+- [x] `canonicalModelKey` reaches the client on `EligibleModel`, so changing the service can keep
+      the model. An **id** comparison gets the motivating pair wrong (`claude-opus-5` vs
+      `anthropic/claude-opus-5`), and re-deriving identity in the browser is a second
+      implementation of a rule the catalogue authors
+- [x] Pinning stays atomic: the service control writes the whole tuple, and carries the pinned
+      level only when the model survives by canonical key — a level the derived harness rejects
+      is refused by the server rather than silently replaced (req 5)
+- [x] Req 13 is **guarded**, not asserted in prose: `picker-consistency.test.tsx` compares the
+      rendered `className` of all eight triggers against `PICKER_TRIGGER_CLASS`, and forbids a
+      native `<select>` on either Settings surface. Verified by injecting a divergent class and
+      watching it go red — an assertion nobody has seen fail is a claim, not a check.
+      **Scope, stated precisely because the first draft of this line overstated it**: the guard
+      covers trigger styling and the absence of a native control. Menu rows, icons and wording
+      are not covered, so a `PickerOption.className` override could still diverge unseen
+- [x] Driven in the dogfood instance: the service switch on both surfaces, and the two controls
+      side by side against the reference screenshot
+- [x] req 14 — a picker with no options renders nothing (`Picker`, via `Children.toArray`), so
+      the Settings surfaces show prose and no dead controls on an install with no service.
+      `disabled` was the first attempt and did NOT hold: Radix opens on `pointerdown`, which a
+      disabled button does not suppress, so the empty menu opened anyway
+- [x] The composer opts into `whenEmpty="readout"` — an inert trigger, still no menu — because
+      `main` had just shipped "No model"/"Loading" there deliberately, and that is a status line
+      rather than a control claiming a choice

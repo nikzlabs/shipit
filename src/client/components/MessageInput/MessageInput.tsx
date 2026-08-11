@@ -30,7 +30,7 @@ import { useMessageDraft } from "./hooks/useMessageDraft.js";
 import { useUploadBackend } from "./hooks/useUploadBackend.js";
 import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo, UploadRef } from "../../../server/shared/types.js";
 import type { UploadItem } from "../../hooks/useFileUpload.js";
-import type { AgentOption, EligibleModelOption } from "../../agent-types.js";
+import type { AgentOption, ModelChoice } from "../../agent-types.js";
 import type { ModelInfo } from "../../utils/model-info.js";
 
 /**
@@ -155,7 +155,7 @@ export function MessageInput({
   agents?: AgentOption[];
   activeAgentId?: AgentId;
   onAgentChange?: (agentId: AgentId) => void;
-  onModelChange?: (selection: EligibleModelOption) => void;
+  onModelChange?: (selection: ModelChoice) => void;
   /** docs/217 — per-session reasoning effort change; `null` clears to default. */
   onReasoningChange?: (effort: string | null) => void;
   /** docs/217 — the active session's persisted reasoning effort, if any. */

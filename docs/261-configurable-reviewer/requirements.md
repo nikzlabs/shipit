@@ -112,15 +112,106 @@ No open questions remain.
     inconsistency — a child session *has* a parent to inherit from, and a one-shot run has
     nothing but the call.
 
+11. **The service is something the user chooses, not only something ShipIt reports.** A
+    reviewer already names a service and a billing mode (req 3), and the user must be able to
+    **choose** them as their own step — before, and independently of, reading a list of
+    models. Whether a subscription or an API key pays for the review has to be answerable, and
+    changeable, at the moment of choosing.
+
+    This is a **control**, not a ranking axis. Req 4 is unchanged: the service still says
+    nothing about how far a reviewer is from the implementer, because two services can offer
+    one family.
+
+12. **Choosing a model stays usable as the catalogue grows.** The list of models a user reads
+    at one time is bounded by the service they chose, rather than being every model of every
+    service in a single menu. The catalogue is meant to grow (docs/252 req 15), so a control
+    that only works while it is small is a control that stops working.
+
+13. **One set of controls, everywhere.** The model and the reasoning level are chosen with the
+    same control in Settings as in a session — the same appearance, the same behaviour, the
+    same words. The service control matches them. A user who has learned one of these controls
+    has learned all of them, and a change to one is a change to all of them.
+
+    This covers every place ShipIt asks a user to choose a model: the reviewer slots, the
+    background-work model (docs/252 req 9) and the session's own composer.
+
+14. **A control with nothing to choose is not shown.** Where a picker would offer no options,
+    ShipIt renders no picker — not a disabled one, and not one that opens an empty menu.
+
+    This is about what the user meets, not about which state a component is in: a control that
+    is visible is a claim that there is a choice behind it, and an install with no service has
+    no choice to make until it has one. The place to say so is the surrounding text, which
+    already does.
+
 ## Scope
 
 Child sessions keep the behaviour req 10 states, and this feature builds nothing for them.
+
+The composer gains no service control (req 11 is a Settings requirement — see the 2026-08-11
+receipt). It is in req 13's scope for **appearance**, because the controls it already has are
+the ones the other surfaces must match.
 
 ## Open questions
 
 _None._
 
 ## Resolved questions
+
+- 2026-08-11 — **What should a picker with no options do?** **Chosen: not exist.** The human,
+  of the first cut: "'no service' shouldn't open an empty dropdown on click. So in general,
+  whenever the dropdown would be empty, the picker would be empty, it should not be shown at
+  all." Req 14, stated generally because he stated it generally — it is not a fix to the
+  service control, it is a rule about every picker.
+
+  Checked before writing, and the first cut was worse than the report says: the empty-service
+  trigger was **already `disabled`**, and its menu opened anyway. Radix binds the trigger on
+  `pointerdown`, which `disabled` does not reliably suppress — so "disable it" was never the
+  mechanism it appeared to be, and the requirement's "not a disabled one" is load-bearing
+  rather than stylistic.
+
+- 2026-08-11 — **Why can the reviewer not be chosen by service?** **Chosen: because nobody
+  asked for it until now — and the answer is reqs 11 and 12.** The human, of the shipped
+  Reviewer tab: "Service is important - I need to know if it is subscription or not, for
+  example. Also, the list of models can grow too big for a single picker." Two separate
+  defects in one sentence, and the tab had a plausible-looking answer to neither.
+
+  Checked before writing, because the obvious reading is that req 4 forbids this: it does
+  not. Req 4's "a family is **not** a service" governs the **distance ranking** — which
+  reviewer is furthest from the implementer — and says nothing about how a user selects one.
+  Req 3 has named the service as part of a reviewer since the beginning. So this is a control
+  the design never built, not a requirement being reversed, and req 11 says so explicitly to
+  stop the next reader from re-deriving the contradiction.
+
+  What the tab did have: the service name and a billing-mode pill on the resolution line, and
+  the same pair as group headers inside the model menu. Both are **reports**. The only
+  selectable thing was a model, in one flat menu holding every eligible model of every
+  service.
+
+- 2026-08-11 — **Which surfaces get the service control?** **Chosen: the Reviewer tab and
+  Background work — not the composer.** Put to the human as three; he took the two Settings
+  surfaces. Background work is included because it is the other place Settings asks for a
+  model, and it asks with a plain HTML dropdown — the one surface that matches nothing else.
+  The composer is deliberately left alone: it is the surface a user touches every turn, its
+  width is contested, and req 13 already binds it to the *same* controls without adding a
+  third one to the row.
+
+- 2026-08-11 — **After the service changes, which model does the slot hold?** **Chosen: keep
+  the model when the new service offers the same model; otherwise take that service's first
+  model.** Offered against "always the first model" and "leave it unpicked". The deciding
+  case is the one docs/252 built the catalogue around: a gateway and a vendor offering the
+  *same weights* under two ids, where always-first would silently move the user off the model
+  they had chosen while they were changing only who pays for it. "Unpicked" was rejected for
+  a stated reason — it makes a slot briefly incomplete, and pinning is one atomic write
+  (`plan.md`). ShipIt already knows which ids are one model (`canonicalModelKey`, phase 0),
+  so the kind answer is also the cheap one.
+
+- 2026-08-11 — **Should "extract to reusable components" be a requirement?** **Chosen: no —
+  req 13 states the observable half.** The human asked for the mechanism by name ("extract to
+  reusable components"), and the mechanism is right; but a requirement that names components
+  is a design in the requirements document, and it would still be satisfiable by three
+  components that look different. What a user can observe is that the controls are the same
+  control. The extraction is in `plan.md`, where it can be judged on whether it delivers req
+  13 rather than on whether it happened.
 
 - 2026-08-10 — **What happens to per-harness sub-agent defaults people have already set?**
   **Chosen: drop them outright.** The human: "Let's drop the existing defaults. The user will
@@ -302,6 +393,17 @@ What he actually said:
 - "We need to think how we auto-configure the best reviewer if the user adds a second service
   or a different model. Probably need notion, visible in the UI *auto-configured* for a
   reviewer." → req 8's re-derivation and its visible auto-configured state.
+- "Service is important - I need to know if it is subscription or not, for example. Also, the
+  list of models can grow too big for a single picker." → reqs 11 and 12. Both are his, and
+  the second is a requirement about a catalogue that has not grown yet.
+- "'no service' shouldn't open an empty dropdown on click. So in general, whenever the dropdown
+  would be empty, the picker would be empty, it should not be shown at all." → req 14. The
+  generalization from the one control he met to every picker is his.
+- "In the settings there should be exactly the same UI for the pickers of the model and
+  thinking level, extract to reusable components. The service selector needs to be in the same
+  style." → req 13, with a screenshot of the composer's own model and reasoning controls
+  attached as the reference. The reference is therefore his too: the composer is what the
+  other surfaces match, rather than a new style being invented for Settings.
 
 Reqs 8 and 9 are the agent's recommendations, taken as offered; req 9 states an existing
 obligation rather than a new one — it is here so that attribution is not quietly lost, and

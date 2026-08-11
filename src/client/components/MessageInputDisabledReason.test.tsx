@@ -129,8 +129,14 @@ describe("MessageInput disabledReason (docs/257 req 3)", () => {
     // Non-vacuous: the same render with a runnable chat leaves them live.
     rerender(<MessageInput {...props} />);
     expect(screen.getByTestId("harness-trigger")).not.toBeDisabled();
-    expect(screen.getByTestId("model-trigger")).not.toBeDisabled();
     expect(screen.getByTestId("reasoning-trigger")).not.toBeDisabled();
+    // The model trigger is the exception, and it is the defect this test's own
+    // comment names above — "the model menu onto nothing at all". docs/261 req
+    // 14 answers it: a picker with no options never opens, so with no runnable
+    // model this is an inert readout naming what it would run ("No model")
+    // rather than a live control onto an empty menu. The two live triggers
+    // above keep this check non-vacuous.
+    expect(screen.getByTestId("model-trigger")).toBeDisabled();
   });
 
   it("does not auto-start recording when Quick Capture was opened by the voice hotkey", () => {

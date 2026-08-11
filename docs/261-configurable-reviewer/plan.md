@@ -586,6 +586,138 @@ loses a review over a level nobody chose deliberately, and substituting is the s
 req 5 and phase 2's `--effort` decision both rule out. It belongs with whoever makes a model
 dual-harness, which is the commit that makes the case reachable and the one that can test it.
 
+## One set of controls, and a service you can choose (reqs 11, 12, 13)
+
+Phase 3 shipped a Reviewer tab that **reports** the service and **selects** a model. Reqs 11
+and 12 invert half of that, and req 13 says the result has to be the control the composer
+already has. Three surfaces are involved and each was different from the other two:
+
+| Surface | Before | After |
+|---|---|---|
+| Composer | `ModelSelector` + `ReasoningSelector` — borderless trigger, caret, dropdown | unchanged to look at; its trigger and rows become the shared ones |
+| Reviewer tab | its own bordered `triggerClass`, its own `ModelMenu` and `ReasoningMenu` | service → model → level, all three shared |
+| Background work | a native `<select>` with `<optgroup>` | service → model, shared |
+
+**What is shared is the control, not the state.** This is the decision the whole phase turns
+on. The composer's pickers carry a session's worth of machinery — an optimistic pending pick,
+the echo counter that clears it, a localStorage seed, the pinned-harness rule — and phase 3
+established that the Reviewer tab is deliberately **not** optimistic, because slot 2 is ranked
+against slot 1 and a local guess would have to reimplement the ranking. Sharing
+`useModelPickerState` would drag session state into Settings and re-open exactly that. So
+`components/pickers/` holds presentation: `PickerTrigger` (the button in the reference
+screenshot — label, optional leading icon, caret, disabled and locked variants), `Picker` (a
+trigger plus its menu) and `PickerOption` (a row: label, optional second line, checkmark). Each
+surface keeps its own state and renders the same control. There is deliberately **no shared
+grouped-model-list component**: the Settings menus are scoped to one service and so have no
+groups, and the composer's grouping is the only one left.
+
+That split is also what makes req 13 **checkable**. A guard renders the composer's model
+trigger and the Reviewer tab's, and asserts the two `className` strings are identical — a test
+that fails the moment one surface starts styling its own button, which is how the three drifted
+apart in the first place. Asserting that a shared component is *imported* would not: an import
+can be present and the class overridden at the call site.
+
+**The reasoning control shares the trigger and the rows, not the option set.** The composer's
+list opens with "Default" — meaning "pass no flag, let the CLI decide" — and req 5 makes that
+exact state the one a reviewer may not be in. Same control, different options, which is a
+difference in the data rather than in the UI, and is why `useReasoningPickerState` (composer
+precedence, `saveReasoning`) stays where it is.
+
+**The service control picks a `(service, billing mode)` pair, never a service alone.** Two
+modes of one service are two different things to a user who is asking who pays (docs/252 req
+5), so the pair is the unit — the same unit the model menu already groups on, which is what
+makes the two controls compose rather than overlap. Each row carries `BillingModePill`, so
+req 11's subscription question is answered on the control that acts on it and not only on a
+line of prose above it.
+
+**Changing the service keeps the model when the new service offers the same model.** The
+receipt records why; the design consequence is that the client cannot do this by comparing
+model ids. The motivating pair — `anthropic/claude-opus-5` on a gateway and `claude-opus-5`
+direct — differs as a string and is one model, which is the exact case phase 0 authored
+`canonicalModelKey` for. So **`canonicalModelKey` joins `EligibleModel` on the wire**. The
+alternative, re-deriving identity in the browser, is the same mistake phase 3 refused for the
+harness and the level: a second implementation of a rule, in the surface least able to be
+right about it.
+
+## A picker with nothing to pick (req 14)
+
+`Picker` renders **nothing** when its options are empty. The rule lives there rather than at
+each call site, so a surface nobody has thought about the empty state of gets it anyway, and
+`Children.toArray` is what makes it exact — it flattens the `.map()` callers pass and drops the
+`null`s and booleans an `&&` guard leaves, so what is counted is what the menu would show.
+
+**`disabled` was the first attempt and it does not work.** The empty service control already
+carried `disabled` and its menu opened anyway: Radix binds the trigger on `pointerdown`, which a
+disabled button does not reliably suppress. That is why req 14 says "not a disabled one" — the
+control has to be *absent*, and a test asserting a disabled attribute would have passed against
+the reported bug.
+
+Two consequences worth stating, because both look like the rule and are not:
+
+- **The composer keeps its trigger** (`whenEmpty="readout"`): an inert label, still no menu.
+  Its row is a status line as much as a control, and `main` had *just* shipped the empty-install
+  answer for it — "No model", and "Loading" only for the frame before the agent list arrives.
+  Deleting that to satisfy a rule aimed at Settings would undo a considered decision on a
+  surface the user meets every turn. The half both agree on — no empty menu, ever — holds on
+  both surfaces.
+- **A stale background-work pin is named in the warning, not on a control.** Its service offers
+  nothing, so the model picker is gone; the pin the server still holds has to stay visible
+  somewhere, and prose is the honest place once the control is not.
+
+**Nothing about pinning changes.** Every one of the three controls writes the whole resolved
+tuple, so pinning stays atomic (above) and *Reset to auto* stays the only way back. A service
+change is a pin like any other.
+
+**Background work gets the service control and no level control**, which is not an omission:
+non-turn work has no reasoning knob to set, and inventing one here would be this document
+becoming a second source of requirements for docs/252's setting.
+
+**Phase 6 has landed.** `client/components/pickers/` holds `Picker` / `PickerTrigger` /
+`PickerOption` (presentation), `ServiceSelector` (req 11) and `model-choice.ts` (the list rules).
+The composer's three selectors, the Reviewer tab's three controls and Background work's two all
+render them; `EligibleModel.canonicalModelKey` reaches the client.
+
+Six things worth recording, three of which are decisions the design left open:
+
+- **The caret rule was a genuine behavioural disagreement, not just styling.** The model trigger
+  hid its caret when disabled, the reasoning trigger kept it, and the harness trigger swapped in
+  a lock — three answers to one question, which is what "the same control" cannot mean. One rule
+  now: no caret on a control that cannot be opened, and the lock still wins where a lock is the
+  actual reason.
+- **A service change carries the pinned level when the model survives by canonical key.** The
+  first cut compared model *ids* and therefore dropped the level on exactly the move this feature
+  added — Opus 5 from Anthropic to a gateway, where the id changes and nothing else does. Sending
+  it can be *refused* by the server if the derived harness does not declare that level; that is
+  the better failure, because the alternative is silently resolving to the harness's default and
+  downgrading a level the user chose (req 5's one prohibition, and phase 2's `--effort` decision
+  restated one surface over).
+- **Background work's stale pin no longer gets a fabricated row.** The `<select>` needed one, or
+  the control read as the default while the server held a pin. The triggers name the pin's own
+  service and model ids instead — a worse label than a name, and a far better one than a control
+  that looks unset.
+- **The req 13 guard was verified by making it fail.** A divergent class was injected into one
+  surface's trigger and the test went red naming that surface; the injection was then reverted.
+  An assertion nobody has seen fail is a claim, not a check — the same judgement phases 1 and 5
+  reached about checks that could not fail.
+- **Group headers left the Settings model menus.** With the service chosen on its own control,
+  every row belongs to it, so a header on each group restates the answer to a question already
+  asked. The composer keeps its headers, because it has no service control (req 11's scope).
+- **One requirement conflict is left open, named rather than papered over.** Cross-backend
+  review put the sharpest form of it: `canonicalModelKey` proves *same model*, not *same
+  harness*, so a service change that keeps the model can carry a level the newly-derived harness
+  does not declare. The server refuses that (`reviewer-settings.ts`), which means the service
+  change fails until the user lowers the level first — req 11 meeting req 5, with no third
+  option that is not a silent replacement. It is unreachable in today's catalogue, where no
+  model is dual-harness and both spellings of a model derive the same harness. The review also
+  restated phase 3's already-recorded latent bug from this angle — a pin validated against the
+  settings-time harness can be carried onto a different harness by `selectReviewer`. Both belong
+  to the commit that makes a model dual-harness: that is the change that makes them reachable,
+  and the only one that can test them.
+- **Driven in the dogfood instance** across three seeded services: the two Settings surfaces
+  render the reference control, the service menu carries a billing-mode pill per row, switching
+  Reviewer 1 from Anthropic to OpenRouter kept **Opus 5 and High** and flipped the slot to
+  *Pinned*, and the model menu then listed OpenRouter's five models rather than all eleven.
+
 **Making Services the first and default tab is deliberately NOT here.** It is the audit's D1
 and belongs to docs/252, which is where the human asked for it; no numbered requirement in
 this document asks for it, and importing it would make this design a second source of
@@ -607,6 +739,7 @@ same `(anthropic, key)` / `(openai, key)` credential route the Services add-flow
 | 3 | Settings: the Reviewer tab, and the emptied vendor tabs deleted | 1, 5, 8 | Both slots configurable, each labelled Auto-configured or Pinned with what it resolves to, refreshed when a credential changes |
 | 4 | Attribution: the resolved reviewer persisted on the consult card and rendered | 9 | The card says model, service/mode, harness and effort — not just "Consulted Claude" |
 | 5 | Every product-owned caller migrated; `CLAUDE.md` and `shipit-docs` updated | 2, 6 | No authored or generated command names a backend for a review |
+| 6 | Shared picker components; a service control on the Reviewer tab and Background work | 11, 12, 13 | The service is selectable with its billing mode on it; the model list is scoped to it; the composer's and Settings' triggers are the same control |
 
 **Phase 5 was load-bearing rather than tidy-up.** Between phase 2 and phase 5, every command
 ShipIt itself authored or generated for a review (`compose-review-body.ts`, the two harness
