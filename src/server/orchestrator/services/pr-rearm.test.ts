@@ -142,6 +142,19 @@ describe("detectAndReArmMergedSession (docs/202)", () => {
     expect(h.sseBroadcast).toHaveBeenCalledWith("session_list", expect.objectContaining({ sessions: expect.any(Array) }));
   });
 
+  it("carries the merged-tip anchor into the breadcrumb it stores", async () => {
+    // Same reason as the docs/216 path: `clearMerged` nulls `merged_head_sha`,
+    // and the explicit reset-to-base gate reads it. Without the durable copy a
+    // re-armed session can never satisfy the gate again.
+    const h = harness({
+      session: makeSession({ mergedAt: "2026-02-01", mergedHeadSha: "a1f3c9d0" }),
+      priorStatus: makePrStatus(),
+      advanced: true,
+    });
+    expect(await h.run()).toBe(true);
+    expect(h.clearMerged).toHaveBeenCalledWith("s1", expect.objectContaining({ mergedHeadSha: "a1f3c9d0" }));
+  });
+
   it("uses the prior PR's base branch for detection (not hardcoded main)", async () => {
     const h = harness({
       session: makeSession({ mergedAt: "2026-02-01" }),
@@ -309,6 +322,23 @@ describe("detectAndReArmResetSession (docs/216)", () => {
     expect(h.clearMerged).not.toHaveBeenCalled();
     expect(h.reArm).not.toHaveBeenCalled();
     expect(h.emit).not.toHaveBeenCalled();
+  });
+
+  it("carries the merged-tip anchor into the breadcrumb it stores, but not into the card", async () => {
+    // `clearMerged` nulls `merged_head_sha`; the explicit reset-to-base gate
+    // reads it, so without the durable copy a re-armed session can never satisfy
+    // the gate again and is force-only forever. The CARD is client-facing state
+    // and deliberately does not carry it.
+    const h = resetHarness({
+      session: makeSession({ mergedAt: "2026-02-01", mergedHeadSha: "a1f3c9d0" }),
+      priorStatus: makePrStatus(),
+      atBase: true,
+    });
+    expect(await h.run()).toBe(true);
+    expect(h.clearMerged).toHaveBeenCalledWith("s1", expect.objectContaining({ mergedHeadSha: "a1f3c9d0" }));
+    expect(h.emit).toHaveBeenCalledWith(expect.objectContaining({
+      previousMergedPr: expect.not.objectContaining({ mergedHeadSha: expect.anything() }),
+    }));
   });
 
   it("re-arms + emits a clean ready card when merged + branch reset to the base", async () => {

@@ -232,3 +232,58 @@ destroyed the uncommitted edit.
       the 10-path cap, graceful degradation, no second `git status` on the healthy
       path, and the `emitResetEligible` log matrix incl. the git-failure line).
 - [x] `npm run typecheck` + `npm run lint:dev` + `npm run test:dev` green
+
+## Phase 9 — the refusal names the real clause, and the gate survives a re-arm ✅
+
+From an Ops investigation into a forced reset that should never have needed force
+(session `fb882586`, PR #2145, branch `shipit/a0ukul`). The branch was provably safe
+to reset — HEAD a strict ancestor of `origin/main`, `origin/main..HEAD` empty, tree
+clean — and the non-forced `shipit branch reset-to-base` refused anyway, naming a
+reason that was false. The operator then pushed a lossless operation through the
+trust-based `--force` break-glass, which exists for cases that cannot be proven safe.
+
+- [x] **The explicit refusal is built from the clause that refused**, via
+      `computeResetBlocker` rather than `computeResetEligible`'s bare boolean.
+      `resetBranchToBaseExplicit` printed ONE hard-coded sentence — "this branch
+      carries work that is not on the merged pull request" — for all nine clauses;
+      it is true of exactly `head-moved`. planning#297 added the per-clause `detail`
+      for precisely this and this path never used it. The way-forward half of the
+      copy is retained verbatim (`RESET_REFUSAL_GUIDANCE`'s reason: a refusal that
+      reads as a dead end is what makes a refused agent reach for `git reset --hard`)
+      — but split by KIND: `--force` for the gate clauses it bypasses, "resolve the
+      condition and retry" for the `checkResetPreconditions` ones it does not.
+- [x] **A provable-safety clause: HEAD contained in `origin/<base>` → permitted
+      without `--force`.** Every commit reachable from the branch is already in the
+      base, so the reset discards nothing by construction — it needs no stored anchor
+      and trust from nobody. The general case of the `head === baseTip` idempotence
+      short-circuit, which only caught exact equality and so refused a branch merely
+      sitting *behind* an advanced base. Not the data-loss shortcut plan.md rejects:
+      a commit made without rebasing leaves HEAD outside the base, so the clause does
+      not fire (pinned by a test, and by a real-git test that commits unshipped work).
+      `checkResetPreconditions` still applies in full.
+- [x] **The gate is durable across a docs/202 / docs/216 re-arm.** `clearMerged` nulls
+      `merged_at` AND `merged_head_sha` while `reArm` nulls the live PR snapshot, so a
+      re-armed session could never pass the non-forced gate again — force-only forever,
+      and refusing on `not-merged` while blaming unshipped work. `PreviousMergedPr`
+      now carries `mergedHeadSha` (both re-arm paths copy it before the clear), and
+      `computeResetBlocker` falls back to the breadcrumb for the merged fact, the base
+      and the anchor. It stays the SHA GitHub merged, never local HEAD. Commit
+      `84f866b8` made the *base* lookup durable for this population and left the gate
+      reading the cleared columns; this finishes it. `resolveResetBase` uses the
+      breadcrumb only while the session is NOT merged — a breadcrumb from an earlier
+      merge can name a different base than the current one.
+- [x] **Every refusal writes an orchestrator log line naming the clause**
+      (`[branch-reset] refused for <id> (<clause>)`). Only a FORCED reset logged
+      anything before: the refusing clause in the incident was recoverable only
+      because the agent went on to force the reset and that line happened to print
+      the state which explained it.
+- [x] **Test debt fixed, not added to.** `pre-turn-reset.test.ts`'s "refuses on the
+      real reason — unshipped work" passed for the wrong reason: its fixture deleted
+      `mergedAt`, so `not-merged` fired and the branch being ahead was never reached —
+      the identical assertion passed when the branch was BEHIND the base, which is the
+      incident case. Rewritten to assert the clause, plus: the incident state resets
+      without `--force`, a re-armed branch with genuine unshipped work still refuses
+      as `head-moved`, each clause's refusal carries its own detail, and the anchor
+      survives the re-arm through the REAL `SessionManager` (JSON round-trip in
+      SQLite). Real-git coverage in `reset-to-base-force.test.ts`.
+- [x] `npm run typecheck` + `npm run lint:dev` + full `npm test` green

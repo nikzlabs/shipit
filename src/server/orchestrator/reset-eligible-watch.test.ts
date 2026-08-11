@@ -59,6 +59,9 @@ function makeGit(over: Partial<Record<keyof GitManager, unknown>> = {}): GitMana
     isRebaseInProgress: vi.fn().mockResolvedValue(false),
     isMergeOrSequencerInProgress: vi.fn().mockResolvedValue(false),
     getHeadHash: vi.fn().mockResolvedValue(MERGED_SHA),
+    // The gate's provable-safety clause — false for a branch that still holds
+    // its merged commits, so the anchor clause is what answers.
+    isAncestor: vi.fn().mockResolvedValue(false),
     ...over,
   } as unknown as GitManager;
 }

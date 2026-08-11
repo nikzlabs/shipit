@@ -149,6 +149,11 @@ export async function detectAndReArmMergedSession(args: {
     url: prior.prUrl,
     title: prior.prTitle,
     baseBranch,
+    // Carry the merged-tip anchor across the clear (see `PreviousMergedPr
+    // .mergedHeadSha`): the column is nulled here, and the explicit
+    // reset-to-base gate reads it, so without this a re-armed session is
+    // force-only forever.
+    ...(session.mergedHeadSha ? { mergedHeadSha: session.mergedHeadSha } : {}),
   });
   deps.prStatusPoller.reArm(sessionId, prior.prNumber);
   deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
@@ -226,7 +231,13 @@ export async function detectAndReArmResetSession(args: {
     title: prior.prTitle,
     baseBranch,
   };
-  deps.sessionManager.clearMerged(sessionId, previousMergedPr);
+  // The stored breadcrumb also carries the merged-tip anchor — see the sibling
+  // call in `detectAndReArmMergedSession`. The card below deliberately does not:
+  // the anchor is gate state, not something the client renders.
+  deps.sessionManager.clearMerged(sessionId, {
+    ...previousMergedPr,
+    ...(session.mergedHeadSha ? { mergedHeadSha: session.mergedHeadSha } : {}),
+  });
   deps.prStatusPoller.reArm(sessionId, prior.prNumber);
   deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
 

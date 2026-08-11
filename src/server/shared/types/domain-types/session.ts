@@ -361,6 +361,26 @@ export interface PreviousMergedPr {
   title: string;
   /** The prior PR's base branch — the new PR targets the same base. */
   baseBranch: string;
+  /**
+   * The durable copy of {@link SessionInfo.mergedHeadSha} — the SHA GitHub
+   * merged (the PR's `head.sha`) — carried across the re-arm that clears the
+   * column.
+   *
+   * `clearMerged` nulls `merged_head_sha` because a re-armed session is no
+   * longer *in* the merged state, and a stale anchor must never let the
+   * automatic docs/218 reset fire. But the explicit `shipit branch
+   * reset-to-base` gate reads the same field to prove a branch carries only
+   * already-shipped work, so clearing it made every re-armed session
+   * permanently force-only — it could never satisfy the gate again no matter
+   * what state its branch was in. Keeping the SHA here separates the two: the
+   * merged *state* is gone, the merged *fact* is not.
+   *
+   * It must stay the PR's `head.sha` and never be refreshed from local HEAD —
+   * the whole reason the anchor is meaningful (see `mergedHeadSha` above and
+   * `pr-status-poller.ts`'s capture site). Optional because rows written before
+   * this field existed have none; the gate then falls back to the other clauses.
+   */
+  mergedHeadSha?: string;
 }
 
 /**

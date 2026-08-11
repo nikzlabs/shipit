@@ -61,6 +61,10 @@ function makeGit(over: Partial<Record<keyof GitManager, unknown>> = {}): GitMana
     isRebaseInProgress: vi.fn().mockResolvedValue(false),
     isMergeOrSequencerInProgress: vi.fn().mockResolvedValue(false),
     getHeadHash: vi.fn().mockResolvedValue(MERGED_SHA),
+    getRefHash: vi.fn().mockResolvedValue(BASE_TIP),
+    // The gate's provable-safety clause. False here: this branch still holds the
+    // merged commits, so it is not contained in the base and the anchor decides.
+    isAncestor: vi.fn().mockResolvedValue(false),
     fetch: vi.fn().mockResolvedValue(undefined),
     resetHardToRemoteBase: vi.fn().mockResolvedValue({ from: MERGED_SHA, to: BASE_TIP }),
     forcePush: vi.fn().mockResolvedValue("ok"),

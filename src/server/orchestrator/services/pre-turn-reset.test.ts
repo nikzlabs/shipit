@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { computeResetEligible, autoResetMergedBranchOnContinue, isResetEligible, emitResetEligible, emitResetEligibleSignal, resetBranchToBaseExplicit, RESET_REFUSAL_GUIDANCE, type PreTurnResetDeps } from "./pre-turn-reset.js";
+import { computeResetEligible, computeResetBlocker, autoResetMergedBranchOnContinue, isResetEligible, emitResetEligible, emitResetEligibleSignal, resetBranchToBaseExplicit, RESET_REFUSAL_GUIDANCE, type PreTurnResetDeps } from "./pre-turn-reset.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 
 vi.mock("../session-worker-uid.js", () => ({ handWorkspaceBackToWorker: vi.fn() }));
@@ -58,6 +58,11 @@ function makeGit(over: Partial<Record<keyof GitManager, unknown>> = {}): GitMana
     isRebaseInProgress: vi.fn().mockResolvedValue(false),
     isMergeOrSequencerInProgress: vi.fn().mockResolvedValue(false),
     getHeadHash: vi.fn().mockResolvedValue(MERGED_SHA),
+    getRefHash: vi.fn().mockResolvedValue(BASE_TIP),
+    // The provable-safety clause: false by default (the branch is NOT contained
+    // in the base — the ordinary just-merged state), so the anchor clause is
+    // what decides. Tests that exercise the clause override it.
+    isAncestor: vi.fn().mockResolvedValue(false),
     fetch: vi.fn().mockResolvedValue(undefined),
     resetHardToRemoteBase: vi.fn().mockResolvedValue({ from: MERGED_SHA, to: BASE_TIP }),
     forcePush: vi.fn().mockResolvedValue("Force pushed to origin/shipit/fix-login"),
@@ -114,6 +119,99 @@ describe("computeResetEligible (safety-only gate)", () => {
   it("is false when HEAD has moved off the merged tip (new un-rebased work)", async () => {
     const git = makeGit({ getHeadHash: vi.fn().mockResolvedValue("deadbeef0000000000000000000000000000beef") });
     expect(await computeResetEligible(makeSession(), makePrStatus(), git)).toBe(false);
+  });
+
+  /**
+   * The provable-safety clause: a branch fully contained in `origin/<base>`
+   * carries nothing a reset could discard, so it needs neither the stored anchor
+   * nor an operator's `--force`. This is NOT the shortcut docs/218's plan
+   * rejected — a commit made without rebasing leaves HEAD outside the base, so
+   * the clause simply does not fire (asserted below).
+   */
+  describe("HEAD contained in origin/<base> (provable safety)", () => {
+    it("is true when HEAD is a strict ancestor of the base tip, even off the anchor", async () => {
+      const git = makeGit({
+        getHeadHash: vi.fn().mockResolvedValue("484318fd4d36582291b86e56a88528e93faf7827"),
+        isAncestor: vi.fn().mockResolvedValue(true),
+      });
+      expect(await computeResetEligible(makeSession(), makePrStatus(), git)).toBe(true);
+      expect(git.isAncestor).toHaveBeenCalledWith(
+        "484318fd4d36582291b86e56a88528e93faf7827",
+        "origin/main",
+      );
+    });
+
+    it("is true with NO anchor recorded at all — the proof needs nothing stored", async () => {
+      const s = makeSession();
+      delete s.mergedHeadSha;
+      const git = makeGit({
+        getHeadHash: vi.fn().mockResolvedValue("484318fd4d36582291b86e56a88528e93faf7827"),
+        isAncestor: vi.fn().mockResolvedValue(true),
+      });
+      expect(await computeResetEligible(s, makePrStatus(), git)).toBe(true);
+    });
+
+    it("does NOT fire for a commit made without rebasing (the data-loss shortcut)", async () => {
+      // New work on top of the merged tip: not contained in the base, so
+      // ancestry is false and the anchor clause refuses as it always did.
+      const git = makeGit({
+        getHeadHash: vi.fn().mockResolvedValue("deadbeef0000000000000000000000000000beef"),
+        isAncestor: vi.fn().mockResolvedValue(false),
+      });
+      expect(await computeResetEligible(makeSession(), makePrStatus(), git)).toBe(false);
+    });
+
+    it("never overrides the clean-tree check", async () => {
+      const git = makeGit({
+        isClean: vi.fn().mockResolvedValue(false),
+        isAncestor: vi.fn().mockResolvedValue(true),
+      });
+      expect(await computeResetEligible(makeSession(), makePrStatus(), git)).toBe(false);
+    });
+  });
+
+  /**
+   * Change 3 — the gate reads the merged record DURABLY. `clearMerged` nulls
+   * `merged_at` AND `merged_head_sha` in one statement while `reArm` nulls the
+   * live PR snapshot, so every one of those clauses used to refuse for a session
+   * that had plainly merged. The breadcrumb carries all three facts.
+   */
+  describe("survives a docs/202 re-arm", () => {
+    function reArmed(over: Partial<SessionInfo> = {}): SessionInfo {
+      const s = makeSession(over);
+      delete s.mergedAt;
+      delete s.mergedHeadSha;
+      s.previousMergedPr = {
+        number: 482,
+        url: "https://github.com/o/r/pull/482",
+        title: "Fix login redirect",
+        baseBranch: "main",
+        mergedHeadSha: MERGED_SHA,
+      };
+      return s;
+    }
+
+    it("is true for a re-armed session still sitting on the merged tip", async () => {
+      expect(await computeResetEligible(reArmed(), null, makeGit())).toBe(true);
+    });
+
+    it("is false — as head-moved, not not-merged — when the re-armed branch gained work", async () => {
+      const git = makeGit({ getHeadHash: vi.fn().mockResolvedValue("deadbeef0000000000000000000000000000beef") });
+      expect(await computeResetBlocker(reArmed(), null, git)).toMatchObject({ clause: "head-moved" });
+    });
+
+    it("is false — as no-merged-head-sha — for a breadcrumb written before the anchor was carried", async () => {
+      const s = reArmed();
+      delete s.previousMergedPr!.mergedHeadSha;
+      const git = makeGit({ getHeadHash: vi.fn().mockResolvedValue("deadbeef0000000000000000000000000000beef") });
+      expect(await computeResetBlocker(s, null, git)).toMatchObject({ clause: "no-merged-head-sha" });
+    });
+
+    it("still reports not-merged for a session that never shipped anything", async () => {
+      const s = makeSession();
+      delete s.mergedAt;
+      expect(await computeResetBlocker(s, null, makeGit())).toMatchObject({ clause: "not-merged" });
+    });
   });
 });
 
@@ -352,6 +450,23 @@ describe("autoResetMergedBranchOnContinue", () => {
       expect(out.skip?.clause).toBe(clause);
       expect(out.skip?.level).toBe("warn");
       expect(out.skip?.notice).toContain("not updated to the latest base");
+    });
+
+    it("moves nothing, and says nothing, when the branch is already at the base tip", async () => {
+      // The containment clause's degenerate case. Without the short-circuit the
+      // turn runs a no-op `reset --hard` and emits a "Branch updated" card whose
+      // from === to — and a branch that is already current is not a skip either.
+      const git = makeGit({
+        getHeadHash: vi.fn().mockResolvedValue(BASE_TIP),
+        getRefHash: vi.fn().mockResolvedValue(BASE_TIP),
+        isAncestor: vi.fn().mockResolvedValue(true),
+      });
+      const out = await autoResetMergedBranchOnContinue(
+        makeDeps({ createGitManager: () => git }), "s1", "/ws",
+      );
+      expect(out.moved).toBe(false);
+      expect(out.skip).toBeUndefined();
+      expect(git.resetHardToRemoteBase).not.toHaveBeenCalled();
     });
 
     it("falls back to the previousMergedPr breadcrumb when the live snapshot was re-armed away", async () => {
@@ -700,6 +815,65 @@ describe("resetBranchToBaseExplicit (docs/239)", () => {
     expect(git.resetHardToRemoteBase).not.toHaveBeenCalled();
   });
 
+  /**
+   * Change 1 — the refusal names the clause that actually refused.
+   *
+   * It used to print ONE hard-coded sentence ("carries work that is not on the
+   * merged pull request") for all nine clauses. That sentence is true of exactly
+   * one of them; for the incident's `not-merged` refusal it sent the agent after
+   * a root cause that was wrong in every particular, and on to `--force` for an
+   * operation that was provably lossless.
+   */
+  describe("the refusal names the clause that refused", () => {
+    const CASES: { clause: string; git: Partial<Record<keyof GitManager, unknown>>; matches: RegExp }[] = [
+      { clause: "dirty-tree", git: { isClean: vi.fn().mockResolvedValue(false) }, matches: /uncommitted changes/i },
+      { clause: "detached-head", git: { currentBranchOrNull: vi.fn().mockResolvedValue(null) }, matches: /HEAD is detached/i },
+      { clause: "wrong-branch", git: { currentBranchOrNull: vi.fn().mockResolvedValue("shipit/other") }, matches: /not the session branch/i },
+      { clause: "rebase-in-progress", git: { isRebaseInProgress: vi.fn().mockResolvedValue(true) }, matches: /rebase is in progress/i },
+      { clause: "sequencer-in-progress", git: { isMergeOrSequencerInProgress: vi.fn().mockResolvedValue(true) }, matches: /cherry-pick/i },
+      {
+        clause: "head-moved",
+        git: { getHeadHash: vi.fn().mockResolvedValue("cafe0000000000000000000000000000000000cc") },
+        matches: /moved since the merge/i,
+      },
+    ];
+
+    for (const { clause, git: over, matches } of CASES) {
+      it(`${clause}: the reason carries its own detail, and the log names the clause`, async () => {
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        const result = await resetBranchToBaseExplicit(
+          makeDeps({ createGitManager: () => gitWith(over) }), "s1", "/ws",
+        );
+        expect(result.outcome).toBe("refused");
+        expect(result.reason).toMatch(matches);
+        // Change 4 — a refusal used to write nothing at all to the orchestrator
+        // log; only a FORCED reset did. The stuck case is the interesting one.
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining(`[branch-reset] refused for s1 (${clause})`));
+        warn.mockRestore();
+      });
+    }
+
+    it("offers --force only for the clauses --force actually bypasses", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const gate = await resetBranchToBaseExplicit(
+        makeDeps({
+          createGitManager: () => gitWith({ getHeadHash: vi.fn().mockResolvedValue("cafe0000000000000000000000000000000000cc") }),
+        }),
+        "s1",
+        "/ws",
+      );
+      expect(gate.reason).toMatch(/--force/);
+
+      // A dirty tree is not a trust question — pointing the agent at a bypass
+      // that refuses again is how a refusal turns into a hand-rolled reset.
+      const dirty = await resetBranchToBaseExplicit(
+        makeDeps({ createGitManager: () => gitWith({ isClean: vi.fn().mockResolvedValue(false) }) }), "s1", "/ws",
+      );
+      expect(dirty.reason).toMatch(/`--force` does not bypass/);
+      warn.mockRestore();
+    });
+  });
+
   it("refuses on a detached HEAD", async () => {
     const git = gitWith({ currentBranchOrNull: vi.fn().mockResolvedValue(null) });
     const result = await resetBranchToBaseExplicit(
@@ -763,8 +937,10 @@ describe("resetBranchToBaseExplicit (docs/239)", () => {
    * `clearMerged` in the same beat and is DB-backed.
    */
   describe("base derivation survives a docs/202 re-arm", () => {
-    /** What a session looks like AFTER `clearMerged` + `reArm`: no live snapshot,
-     * no `mergedAt`/`mergedHeadSha`, but a durable breadcrumb naming the base. */
+    /** What a session looks like AFTER `clearMerged` + `reArm`: no live snapshot
+     * and no `mergedAt`/`mergedHeadSha` columns, but a durable breadcrumb
+     * carrying the base AND the merged-tip anchor (the anchor is what makes the
+     * gate reachable at all for this population — see change 3). */
     function reArmedSession(over: Partial<SessionInfo> = {}): SessionInfo {
       const s = makeSession(over);
       delete s.mergedAt;
@@ -774,6 +950,7 @@ describe("resetBranchToBaseExplicit (docs/239)", () => {
         url: "https://github.com/o/r/pull/482",
         title: "Fix login redirect",
         baseBranch: "main",
+        mergedHeadSha: MERGED_SHA,
       };
       return s;
     }
@@ -792,19 +969,74 @@ describe("resetBranchToBaseExplicit (docs/239)", () => {
       expect(git.fetch).toHaveBeenCalledWith("origin");
     });
 
-    it("refuses on the real reason — unshipped work — not on a missing base", async () => {
-      // Re-armed AND ahead of the base: a reset would discard commits that were
-      // never shipped, so it must still refuse. Only the reason changes.
-      const git = gitWith({ getHeadHash: vi.fn().mockResolvedValue("cafe0000000000000000000000000000000000cc") });
+    /**
+     * The rewrite of a test that passed for the WRONG reason. It built exactly
+     * this fixture, put HEAD ahead of the base, and asserted the refusal said
+     * "not on the merged pull request" — but the clause that fired was
+     * `not-merged` (the fixture deletes `mergedAt`), so the branch being ahead
+     * was never reached and the identical assertion passed when the branch was
+     * BEHIND the base, which is the incident case. Both states are asserted
+     * here, and they must produce different clauses.
+     */
+    it("refuses a re-armed branch that genuinely carries unshipped work, naming head-moved", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      // Ahead of the base and not contained in it: a reset would discard commits
+      // that were never shipped, so it must still refuse — and the durable
+      // breadcrumb anchor is what lets the gate reach that conclusion at all.
+      const git = gitWith({
+        getHeadHash: vi.fn().mockResolvedValue("cafe0000000000000000000000000000000000cc"),
+        isAncestor: vi.fn().mockResolvedValue(false),
+      });
       const result = await resetBranchToBaseExplicit(
         makeDeps({ getSession: () => reArmedSession(), getPrStatus: () => null, createGitManager: () => git }),
         "s1",
         "/ws",
       );
       expect(result.outcome).toBe("refused");
-      expect(result.reason).toMatch(/not on the merged pull request/i);
+      expect(result.reason).toMatch(/moved since the merge/i);
       expect(result.reason).not.toMatch(/no pull-request base/i);
+      // The clause, not just the prose — this is what tells the two states apart.
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("(head-moved)"));
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("(not-merged)"));
       expect(git.resetHardToRemoteBase).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it("resets a re-armed branch that is BEHIND the base — the state the old test could not tell apart", async () => {
+      // The production incident: HEAD a strict ancestor of origin/main, tree
+      // clean, base tip ahead. Provably lossless, so no `--force` and no refusal.
+      const git = gitWith({
+        getHeadHash: vi.fn().mockResolvedValue("484318fd4d36582291b86e56a88528e93faf7827"),
+        isAncestor: vi.fn().mockResolvedValue(true),
+      });
+      const result = await resetBranchToBaseExplicit(
+        makeDeps({ getSession: () => reArmedSession(), getPrStatus: () => null, createGitManager: () => git }),
+        "s1",
+        "/ws",
+      );
+      expect(result.outcome).toBe("reset");
+      expect(result.base).toBe("main");
+      expect(result.forced).toBeUndefined();
+      expect(git.isAncestor).toHaveBeenCalledWith(
+        "484318fd4d36582291b86e56a88528e93faf7827",
+        "origin/main",
+      );
+      expect(git.resetHardToRemoteBase).toHaveBeenCalledWith("main");
+    });
+
+    it("passes the gate on the breadcrumb's merged-head anchor after a re-arm cleared the column", async () => {
+      // Change 3: `clearMerged` nulls both `merged_at` and `merged_head_sha`, so
+      // before the durable copy this session was force-only forever — even
+      // sitting untouched on exactly the commit GitHub merged.
+      const session = reArmedSession();
+      const git = gitWith({ getHeadHash: vi.fn().mockResolvedValue(MERGED_SHA) });
+      const result = await resetBranchToBaseExplicit(
+        makeDeps({ getSession: () => session, getPrStatus: () => null, createGitManager: () => git }),
+        "s1",
+        "/ws",
+      );
+      expect(result.outcome).toBe("reset");
+      expect(result.forced).toBeUndefined();
     });
 
     it("still refuses for a session that never had a PR, naming the gate as the reason", async () => {
@@ -935,6 +1167,11 @@ describe("merge → reset → re-arm → reset-to-base (docs/202 × docs/239 sea
     //    the live snapshot is gone, the durable breadcrumb carries the base.
     expect(sessionManager.getPrStatus("s1")).toBeNull();
     expect(sessionManager.get("s1")?.previousMergedPr?.baseBranch).toBe("main");
+    //    …and the merged-tip anchor, which `clearMerged` nulls on the column.
+    //    Asserted through the REAL SessionManager because the breadcrumb round-
+    //    trips through JSON in SQLite: this is the whole durability claim.
+    expect(sessionManager.get("s1")?.mergedHeadSha).toBeUndefined();
+    expect(sessionManager.get("s1")?.previousMergedPr?.mergedHeadSha).toBe(MERGED_SHA);
 
     // 4. A duplicate / later wake must still find the base and exit cleanly.
     //    Before the fix this refused with "no merged pull request recorded".
