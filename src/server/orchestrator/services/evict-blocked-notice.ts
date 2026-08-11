@@ -1,14 +1,18 @@
 import type { SecretFinding } from "../../shared/secret-scan.js";
 
 /**
- * planning#296 — why the pre-eviction auto-commit refused, as far as the disk ladder
- * needs to care. Mirrors the refusal branches of `GitManager.autoCommit`
- * (`shared/git.ts`), collapsing anything it can't attribute into `"unknown"` so
- * a future refusal path still produces a message instead of a blank one.
+ * planning#296 — why the disk ladder refused to reclaim a session, as far as the
+ * user needs to care. Three of the four mirror the refusal branches of
+ * `GitManager.autoCommit` (`shared/git.ts`), collapsing anything they can't
+ * attribute into `"unknown"` so a future refusal path still produces a message
+ * instead of a blank one; `no-repository` is the ladder's own refusal, for a
+ * workspace that is no longer a git repository at all and so has no commit for
+ * an auto-commit to refuse.
  */
 export type EvictBlockReason =
   | { kind: "secret"; findings: SecretFinding[] }
   | { kind: "conflict"; conflictedFiles: string[]; rebaseInProgress: boolean }
+  | { kind: "no-repository" }
   | { kind: "unknown" };
 
 /**
@@ -48,6 +52,23 @@ export function formatEvictBlockedNotice(reason: EvictBlockReason): string {
       + `Remove the secret (use an environment variable or a ShipIt secret instead) — or add a `
       + `\`gitleaks:allow\` comment to the line if it's a false positive — and the next turn will `
       + `commit and push normally.`
+    );
+  }
+
+  // Not an auto-commit refusal, so it does NOT use the shared `preserved`
+  // paragraph: that one promises the work will be committed and pushed on the
+  // next turn, and here nothing ever will be. The files are safe and they are
+  // also permanently un-pushable, and the only way out is a person.
+  if (reason.kind === "no-repository") {
+    return (
+      "⚠️ Disk cleanup paused for this session — its workspace is no longer a git repository "
+      + "(the `.git` directory is missing), so ShipIt cannot commit, push, or restore it.\n\n"
+      + "The files in the workspace are still on disk and were not touched. They exist only "
+      + "here, though: with no repository there is no branch or commit to push them to, so "
+      + "automatic cleanup will keep skipping this session and its checkout will keep using "
+      + "disk. Cached dependencies are not held back, so opening the session may reinstall them."
+      + "\n\nOpen the session to copy out anything you still need, then archive it to free the "
+      + "space."
     );
   }
 
