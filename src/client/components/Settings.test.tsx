@@ -194,10 +194,12 @@ describe("Settings - Services → Anthropic subscription", () => {
   // than letting the user click into the refusal.
   it("blocks a second concurrent sign-in while one account is authenticating", () => {
     const now = Date.now();
+    // `externalId` is what says a row has connected before — without it these
+    // read as sign-in attempts, which the panel does not list (req 17).
     const base = { serviceId: "anthropic" as const, billingMode: "sub" as const, via: "account" as const, isPrimary: false, createdAt: now, updatedAt: now };
     useSettingsStore.getState().setProviderAccounts([
-      { ...base, id: "acct-a", label: "Account A", isPrimary: true, status: "authenticating" as const },
-      { ...base, id: "acct-b", label: "Account B", status: "unavailable" as const },
+      { ...base, id: "acct-a", label: "Account A", isPrimary: true, status: "authenticating" as const, externalId: "ext-a" },
+      { ...base, id: "acct-b", label: "Account B", status: "unavailable" as const, externalId: "ext-b" },
     ]);
 
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
@@ -312,6 +314,7 @@ describe("Settings - Services → Anthropic subscription", () => {
         label: "Backup Anthropic",
         isPrimary: false,
         status: "unavailable",
+        externalId: "ext-backup",
         createdAt: now,
         updatedAt: now,
       },
@@ -332,6 +335,11 @@ describe("Settings - Services → Anthropic subscription", () => {
       label: "Claude account 2",
       isPrimary: false,
       status: "authenticating",
+      // Authenticated before — the row is re-connecting, not being created. A
+      // row with no identity and no successful login is an attempt, and the
+      // panel does not list attempts (req 17); the add-service dialog owns
+      // those, and `ServicesPanel.test.tsx` covers them there.
+      externalId: "ext-secondary",
       createdAt: now,
       updatedAt: now,
     }]);
@@ -606,6 +614,7 @@ describe("Settings - Services → OpenAI subscription", () => {
       label: "Codex account 2",
       isPrimary: false,
       status: "authenticating",
+      externalId: "ext-codex-2",
       createdAt: now,
       updatedAt: now,
     }]);
@@ -632,8 +641,8 @@ describe("Settings - Services → OpenAI subscription", () => {
     const now = Date.now();
     const base = { serviceId: "openai" as const, billingMode: "sub" as const, via: "account" as const, isPrimary: false, createdAt: now, updatedAt: now };
     useSettingsStore.getState().setProviderAccounts([
-      { ...base, id: "acct-a", label: "Codex A", status: "authenticating" },
-      { ...base, id: "acct-b", label: "Codex B", status: "authenticating" },
+      { ...base, id: "acct-a", label: "Codex A", status: "authenticating", externalId: "ext-a" },
+      { ...base, id: "acct-b", label: "Codex B", status: "authenticating", externalId: "ext-b" },
     ]);
     useSettingsStore.getState().setProviderAccountAuth("codex", "acct-a", {
       provider: "codex", accountId: "acct-a", verificationUri: "https://auth.openai.com/device", userCode: "AAAA-1111",

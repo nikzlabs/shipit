@@ -103,33 +103,64 @@ function NoticeLine({
 }
 
 /**
- * This harness's accounts, in fallback order.
+ * **A row that has never been anything but an attempt is not a credential.**
+ *
+ * A sign-in needs a row to hang on, so `POST /api/provider-accounts` creates one
+ * the instant the user presses *Sign in* — long before anything is connected,
+ * and it is deleted again if they leave the flow. Anything that lists
+ * credentials must therefore ask whether this row is one yet, or the Services
+ * panel gains a card the moment a sign-in starts and loses it the moment the
+ * user backs out: two flickers around a card that was never real.
+ *
+ * **Both clauses are load-bearing, and each covers the other's hole.**
+ *
+ * - `externalId` is the server's own test for "created by the click, nothing in
+ *   it" (`refuseDuplicateConnect`, `provider-account-manager.ts:681`) — it is
+ *   written when a completed sign-in reports an identity. On its own it would
+ *   over-hide: an unreadable identity **proceeds** by design
+ *   (`provider-account-identity.ts:118`), so a genuinely connected account can
+ *   lack one.
+ * - The two pre-connect statuses cover that: whatever the identity did,
+ *   `ready` and `auth_failed` are states only a real login attempt reaches, and
+ *   a card must show them. On its own the status would over-hide too, because
+ *   `signOutAccount` puts a *connected* row back to `unavailable`.
+ *
+ * **And hiding can never strand a row**, which is what makes the residual case
+ * (connected, no identity reported, then signed out) safe rather than
+ * merely unlikely: `AddServiceDialog` **adopts** an existing attempt instead of
+ * creating a second, so anything hidden here is picked up by the next sign-in
+ * and ends as either a credential or a deletion. Nothing hidden is unreachable.
+ */
+export function isUnconnectedAttempt(account: CredentialRoute): boolean {
+  return account.via === "account"
+    && account.externalId === undefined
+    && (account.status === "unavailable" || account.status === "authenticating");
+}
+
+/**
+ * This harness's accounts, in fallback order — **the connected ones**.
  *
  * Exported so the card that hosts these rows counts exactly what they render.
  * Deriving the count from a second, similar filter is how a header saying
- * "2 accounts" ends up over three rows — which is also why `hiddenAccountId`
- * is applied *here* rather than at each call site.
- *
- * **`hiddenAccountId` — an account that exists but is not the panel's yet.**
- * A sign-in needs a row to hang on, so `POST /api/provider-accounts` creates
- * one the instant the user presses *Sign in*, long before anything is
- * connected. Everything that lists accounts would otherwise show it: a card
- * appearing behind the open dialog, with a phantom `authenticating` row, for a
- * service the user is still in the middle of adding — and if they then close
- * the dialog it is deleted again, so the panel gains and loses a card while
- * they watch. While the add-service dialog is hosting that sign-in, it owns it
- * outright; the panel sees the account when the flow ends, which is also when
- * it becomes true that the user has one.
+ * "2 accounts" ends up over three rows, which is also why the attempt filter
+ * lives here rather than at each call site: rows, count and routing controls
+ * are all read from this one list.
  */
-export function useProviderAccounts(provider: AgentId, hiddenAccountId?: string): CredentialRoute[] {
+export function useProviderAccounts(provider: AgentId): CredentialRoute[] {
+  return useAllProviderAccounts(provider).filter((account) => !isUnconnectedAttempt(account));
+}
+
+/**
+ * Every row this harness has, attempts included — for the one caller that is
+ * *conducting* an attempt and needs to see it: `AddServiceDialog`.
+ */
+export function useAllProviderAccounts(provider: AgentId): CredentialRoute[] {
   const allAccounts = useSettingsStore((s) => s.providerAccounts);
   // planning#342 — the store holds `CredentialRoute`s, keyed by service. The
   // login flow is still the CLI's, so this narrows by the harness's own vendor
   // rather than by the harness.
   const serviceId = serviceIdForProvider(provider);
-  return allAccounts.filter(
-    (account) => account.serviceId === serviceId && account.id !== hiddenAccountId,
-  );
+  return allAccounts.filter((account) => account.serviceId === serviceId);
 }
 
 /**
@@ -222,12 +253,16 @@ export async function createAccount(
  * the caller is closing a dialog, and the row it could not delete is visible
  * and deletable on the card.
  */
-export async function abandonAccount(provider: AgentId, accountId: string): Promise<void> {
+export async function cancelAccountLogin(provider: AgentId, accountId: string): Promise<void> {
   try {
     await request(`/api/provider-accounts/${provider}/${accountId}/login/cancel`, { method: "POST" });
   } catch {
     // Already finished, already cancelled, or never started.
   }
+}
+
+export async function abandonAccount(provider: AgentId, accountId: string): Promise<void> {
+  await cancelAccountLogin(provider, accountId);
   try {
     const result = await request<{ accounts: CredentialRoute[] }>(
       `/api/provider-accounts/${provider}/${accountId}`,
@@ -363,14 +398,11 @@ export function AccountChallenge({
 export function ProviderAccountRows({
   provider,
   agent,
-  hiddenAccountId,
 }: {
   provider: AgentId;
   agent: AgentOption | undefined;
-  /** See {@link useProviderAccounts} — an in-flight sign-in the dialog owns. */
-  hiddenAccountId?: string;
 }) {
-  const accounts = useProviderAccounts(provider, hiddenAccountId);
+  const accounts = useProviderAccounts(provider);
   const setProviderAccounts = useSettingsStore((s) => s.setProviderAccounts);
   const accountAuthErrors = useSettingsStore((s) => s.providerAccountAuthErrors);
   const setProviderAccountAuth = useSettingsStore((s) => s.setProviderAccountAuth);

@@ -2788,22 +2788,38 @@ Three consequences, each a decision:
   account is not an unfinished attempt, so Done and Esc are the same harmless exit there.
 - **One sign-in per provider** is the server's rule (409). The dialog states it before the
   click — `signInBlockedReason`, shared with the row's own `blockedBy` — rather than after.
-- **An in-flight sign-in belongs to the dialog, and the panel behind it does not move.** The
-  account exists the moment the sign-in starts — the login needs a row to hang on — so
-  everything that lists accounts saw it immediately: a card materialising *behind* the open
-  modal with a phantom `authenticating` row, and (since the row hosts the same shared
-  `AccountChallenge`) the provider's code on screen **twice**, with two paste-code inputs on
-  Anthropic of which only one submits. Worse, closing the dialog deletes that account, so the
-  panel gained and lost a card while the user watched.
+- **An attempt is not a credential, and the panel lists credentials.** The account exists
+  the moment the sign-in starts — the login needs a row to hang on — and it is deleted again
+  if the user leaves. So everything that lists accounts was showing it: a card appearing
+  behind the open modal with a phantom `authenticating` row, the provider's code on screen
+  **twice** (the row hosts the same shared `AccountChallenge`; on Anthropic that is two
+  paste-code inputs of which one submits), and then the card vanishing when the user backed
+  out. Two flickers around a service that was never added.
 
-  So the panel owns `signInAccountId` — lifted out of the dialog for exactly this — and hides
-  that one account from itself: from the `configured` filter, and from
-  `useProviderAccounts`, which every card reads for its rows, its count and its routing
-  controls, so all four agree by construction. The panel gets the account **when the flow
-  ends**, which is also when it becomes true that the user has one. Hidden, never deleted:
-  the row is the host for a challenge nothing else is hosting, after a reload or in another
-  tab, which is the one case where an unfinished attempt survives (see the unmount note
-  above).
+  The first fix tracked which account the dialog owned and hid that one. It was wrong in
+  kind: two sources of truth — the store's account list and the panel's idea of ownership —
+  updated at different moments, so the seams flickered exactly where the timings differed
+  (the account landed in the store before the panel learned whose it was; the panel forgot
+  whose it was before the DELETE landed). **`isUnconnectedAttempt` derives the answer from
+  the account itself**, so there is no second thing to lag: `useProviderAccounts` filters
+  attempts out, every card reads its rows, its count and its routing from that one list, and
+  the panel's `configured` uses the same predicate. A MutationObserver over the whole flow
+  records zero appearances.
+
+  **Both of its clauses are load-bearing**, and each covers the other's hole — `externalId`
+  is the server's own "created by the click, nothing in it"
+  (`provider-account-manager.ts:681`) but an unreadable identity **proceeds** by design
+  (`provider-account-identity.ts:118`), so a connected account may have none; and the two
+  pre-connect statuses would over-hide on their own, because `signOutAccount` puts a
+  *connected* row back to `unavailable`. Full reasoning in the predicate's docstring.
+
+  **Hiding can never strand a row**, which is what makes the residual case safe rather than
+  merely unlikely. The dialog **adopts** an existing attempt instead of creating a second, so
+  anything hidden is picked up by the next sign-in and ends as a credential or a deletion.
+  That also fixed a trap the hiding created: a stranded attempt is `authenticating`, so the
+  one-login-per-provider guard read it as somebody else's sign-in and disabled the only
+  button that could recover it — citing a row the user could not see. The guard is measured
+  against the attempt this flow would adopt, not against any in-flight login.
 
 **What cross-backend review found, all of it on the paths where the sign-in does *not* simply
 work:**

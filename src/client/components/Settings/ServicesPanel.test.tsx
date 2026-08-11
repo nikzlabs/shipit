@@ -398,6 +398,7 @@ describe("ServicesPanel", () => {
       label: "OpenAI account 1",
       isPrimary: true,
       status: "ready",
+      externalId: "ext-openai-1",
       createdAt: 1,
       updatedAt: 1,
     };
@@ -412,9 +413,11 @@ describe("ServicesPanel", () => {
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
     await userEvent.click(screen.getByTestId("add-service-sign-in"));
     await waitFor(() => expect(screen.getByTestId("add-service-signed-in")).toBeInTheDocument());
-    // Still the dialog's while the dialog is up, even connected — the panel
-    // gets it in one move when the flow ends, rather than twitching mid-flow.
-    expect(screen.queryByTestId("service-card-openai:sub")).not.toBeInTheDocument();
+    // The card appears the moment the account connects, and that is not a
+    // flicker: it is a credential now, so it appears once and stays. What must
+    // never appear is a card for an attempt, which is a different question
+    // about the same row (`isUnconnectedAttempt`).
+    expect(screen.getByTestId("service-card-openai:sub")).toBeInTheDocument();
 
     await userEvent.keyboard("{Escape}");
 
@@ -824,6 +827,86 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
     expect(screen.getByTestId("provider-account-row-acct_1")).toBeInTheDocument();
     expect(screen.getByTestId("provider-account-rows-claude")).toBeInTheDocument();
     expect(useUiStore.getState().toast).toBeNull();
+  });
+
+  describe("attempts are not credentials (req 17)", () => {
+    // The flicker this removed: the account row exists from the instant a
+    // sign-in starts and is deleted again if the user backs out, so anything
+    // listing credentials gained a card and lost it around a service that was
+    // never added. The rule is derived from the account, not tracked beside it,
+    // which is why there is no window where the two disagree.
+    const account = (over: Partial<CredentialRoute>): CredentialRoute => ({
+      id: "acct-1",
+      serviceId: "openai",
+      billingMode: "sub",
+      via: "account",
+      label: "OpenAI account",
+      isPrimary: true,
+      status: "ready",
+      createdAt: 1,
+      updatedAt: 1,
+      ...over,
+    });
+
+    it("does not list a row that has never been anything but an attempt", () => {
+      for (const status of ["unavailable", "authenticating"] as const) {
+        useSettingsStore.getState().setProviderAccounts([account({ status })]);
+        const view = render(<ServicesPanel agentList={[codexAgent]} />);
+        expect(screen.queryByTestId("service-card-openai:sub")).not.toBeInTheDocument();
+        view.unmount();
+      }
+    });
+
+    it("lists a connected row that reported no identity", () => {
+      // `externalId` alone would over-hide: an unreadable identity PROCEEDS by
+      // design (`provider-account-identity.ts:118`), so a working account can
+      // have none. Hiding a credential the user is using would be far worse
+      // than showing an attempt.
+      useSettingsStore.getState().setProviderAccounts([account({ status: "ready" })]);
+      render(<ServicesPanel agentList={[codexAgent]} />);
+      expect(screen.getByTestId("service-card-openai:sub")).toBeInTheDocument();
+    });
+
+    it("lists a row that was signed out after connecting", () => {
+      // And the status alone would over-hide too: `signOutAccount` puts a
+      // connected row back to `unavailable`, and that row must stay reachable
+      // to reconnect or remove.
+      useSettingsStore.getState().setProviderAccounts([
+        account({ status: "unavailable", externalId: "ext-1" }),
+      ]);
+      render(<ServicesPanel agentList={[codexAgent]} />);
+      expect(screen.getByTestId("service-card-openai:sub")).toBeInTheDocument();
+    });
+
+    it("adopts a stranded attempt instead of creating a second one", async () => {
+      // What makes hiding safe: an attempt nobody is conducting — stranded by a
+      // reload — is invisible AND holds the provider's single login slot. The
+      // next sign-in picks it up, so it ends as a credential or a deletion
+      // rather than blocking every future attempt from behind the scenes.
+      useSettingsStore.getState().setProviderAccounts([
+        account({ id: "acct-stranded", status: "authenticating" }),
+      ]);
+      vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ accounts: [] }) });
+      });
+
+      render(<ServicesPanel agentList={[codexAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-openai"));
+      await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+      await userEvent.click(screen.getByTestId("add-service-sign-in"));
+
+      // No second account, and the stale login is cleared before the new one
+      // starts so the challenge shown is the live one rather than a 409.
+      await waitFor(() => expect(fetchCalls.some(
+        (c) => c.url === "/api/provider-accounts/codex/acct-stranded/login" && c.method === "POST",
+      )).toBe(true));
+      expect(fetchCalls.some((c) => c.url === "/api/provider-accounts" && c.method === "POST")).toBe(false);
+      expect(fetchCalls.some(
+        (c) => c.url === "/api/provider-accounts/codex/acct-stranded/login/cancel",
+      )).toBe(true);
+    });
   });
 
   describe("installed harnesses", () => {

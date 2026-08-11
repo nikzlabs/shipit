@@ -233,3 +233,9 @@ landed ahead of this checklist's per-phase sections.
       "Add account" and "Add another" buttons, `ServiceCard`'s header-action slot and the
       `revealedServiceModes` store slice are all deleted — which is also the fix for a service
       the user chose, never connected, and could not remove.
+- [x] **The panel lists credentials, not attempts** (req 17). `isUnconnectedAttempt` — never
+      identified *and* still in a pre-connect status — is derived from the account itself
+      rather than tracked beside it, so the Services list no longer flickers a card in and out
+      around a sign-in that is starting or being abandoned. The add-service dialog adopts an
+      existing attempt instead of creating a second, so nothing hidden can be stranded, and
+      the one-login-per-provider guard is measured against the attempt the flow would adopt.

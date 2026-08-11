@@ -76,9 +76,12 @@ import {
   AccountChallenge,
   ProviderAccountRows,
   abandonAccount,
+  cancelAccountLogin,
   createAccount,
+  isUnconnectedAttempt,
   signInBlockedReason,
   startAccountLogin,
+  useAllProviderAccounts,
   useProviderAccounts,
 } from "./ProviderAccountRows.js";
 import { MODE_LABEL, NothingToRouteYet, ServiceCard } from "./ServiceCard.js";
@@ -116,6 +119,13 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
   const routes = useSettingsStore((s) => s.credentialRoutes);
   const accounts = useSettingsStore((s) => s.providerAccounts);
   const notices = useSettingsStore((s) => s.providerAccountNotices);
+  /**
+   * The accounts the user *has*, which is not every row the store holds: a
+   * sign-in in flight has a row and is not a credential yet. See
+   * {@link isUnconnectedAttempt} — deriving it from the account is what stops
+   * the panel flickering a card in and out around one.
+   */
+  const connectedAccounts = accounts.filter((a) => !isUnconnectedAttempt(a));
   const [addOpen, setAddOpen] = useState(false);
   /**
    * The account whose sign-in the dialog is currently hosting, if any.
@@ -125,12 +135,6 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
    * with the dialog, so a card is only ever asked to stand down while there is
    * something on top of it doing the job.
    */
-  const [signInAccountId, setSignInAccountId] = useState<string | undefined>(undefined);
-  /**
-   * The panel lists the accounts the user *has*, which is not the same set the
-   * store holds while a sign-in is in flight — see `useProviderAccounts`.
-   */
-  const visibleAccounts = accounts.filter((a) => a.id !== signInAccountId);
 
   /**
    * **A service appears once it has a credential — never before** (req 17).
@@ -157,7 +161,7 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
     const provider = accountProviderFor(service, billingMode);
     return routes.some((r) => r.serviceId === service.id && r.billingMode === billingMode && r.via === "string")
       || (provider !== undefined
-        && visibleAccounts.some((a) => a.serviceId === service.id && a.billingMode === billingMode))
+        && connectedAccounts.some((a) => a.serviceId === service.id && a.billingMode === billingMode))
       || (provider !== undefined && notices[provider] !== undefined);
   });
 
@@ -168,18 +172,10 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
       billingMode={billingMode}
       routes={routes.filter((r) => r.serviceId === service.id && r.billingMode === billingMode)}
       agentList={agentList}
-      hiddenAccountId={signInAccountId}
     />
   ));
 
-  const dialog = addOpen && (
-    <AddServiceDialog
-      agentList={agentList}
-      signInAccountId={signInAccountId}
-      onSignInAccount={setSignInAccountId}
-      onClose={() => { setAddOpen(false); setSignInAccountId(undefined); }}
-    />
-  );
+  const dialog = addOpen && <AddServiceDialog agentList={agentList} onClose={() => setAddOpen(false)} />;
 
   // "Nothing configured" is the caption under the heading rather than a box of
   // its own: empty, the whole panel is two lines and a button.
@@ -304,14 +300,11 @@ function ServiceModeCard({
   billingMode,
   routes,
   agentList,
-  hiddenAccountId,
 }: {
   service: ServiceDef;
   billingMode: BillingMode;
   routes: CredentialRoute[];
   agentList: AgentOption[];
-  /** See {@link useProviderAccounts} — an in-flight sign-in the dialog owns. */
-  hiddenAccountId?: string;
 }) {
   // A mode can hold BOTH shapes at once — Anthropic's subscription takes an
   // OAuth account and an env-supplied token — so this renders whichever are
@@ -321,7 +314,7 @@ function ServiceModeCard({
   // The rows' own narrowing, not a second one that looks like it — see the
   // hook. A card with `provider === undefined` has no account body, so the
   // placeholder harness it is called with contributes nothing.
-  const providerAccounts = useProviderAccounts(provider ?? "claude", hiddenAccountId);
+  const providerAccounts = useProviderAccounts(provider ?? "claude");
   const accounts = provider ? providerAccounts : [];
   const stringRoutes = routes.filter((r) => r.via === "string");
   const multiple = modeAllowsMultipleCredentials(billingMode);
@@ -417,7 +410,6 @@ function ServiceModeCard({
         <ProviderAccountRows
           provider={provider}
           agent={agentList.find((a) => a.id === provider)}
-          hiddenAccountId={hiddenAccountId}
         />
       )}
       {stringRoutes.length > 0 && (
@@ -657,44 +649,23 @@ function CredentialRow({ route, order }: { route: CredentialRoute; order?: RowOr
  * provider's challenge renders in this dialog: the same `AccountChallenge` the
  * account row renders, never a second copy of it (docs/150 req 16).
  *
- * **The dialog hosts the sign-in; it does not own it.** `POST
+ * **An attempt is the dialog's, and only the dialog's.** `POST
  * /api/provider-accounts` creates the account row before the login completes,
- * and the login is a live process on the provider's side. So closing the dialog
- * mid-challenge leaves both in place and the card carries on — while *Cancel*
- * means what it says and abandons the account, so a sign-in the user called off
- * leaves nothing behind.
+ * because the login needs something to hang on — but a row that has never
+ * authenticated is not a credential, so nothing else lists it
+ * ({@link isUnconnectedAttempt}). Every way out of this dialog abandons it, and
+ * the panel behind never gains or loses a card while the user is still in here.
  */
 function AddServiceDialog({
   initialService,
   initialMode,
   agentList = [],
-  signInAccountId,
-  onSignInAccount,
   onClose,
 }: {
   initialService?: ServiceDef;
   initialMode?: BillingMode;
   /** Only to tell whether the harness that runs a sign-in is installed. */
   agentList?: AgentOption[];
-  /**
-   * The account this dialog created, if it created one — **state of the panel,
-   * not of the dialog**.
-   *
-   * Held by id and re-read from the store on every render rather than kept as a
-   * snapshot: the row's `status` is what says the sign-in finished, and it
-   * arrives on the `provider_accounts` broadcast, not from the call that
-   * started it.
-   *
-   * It is lifted because the panel behind this modal needs the same fact. The
-   * account exists the moment the sign-in starts, so its card renders — and the
-   * card's rows render the same shared `AccountChallenge` this dialog does,
-   * putting the provider's code on screen **twice**, with two paste-code inputs
-   * on Anthropic where only one can submit. The card is the right host for a
-   * challenge nothing else is hosting (a reload, another tab); it is the wrong
-   * one for the sign-in happening in the dialog on top of it.
-   */
-  signInAccountId?: string;
-  onSignInAccount: (accountId: string | undefined) => void;
   onClose: () => void;
 }) {
   const [service, setService] = useState<ServiceDef | undefined>(initialService);
@@ -703,6 +674,17 @@ function AddServiceDialog({
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [startingSignIn, setStartingSignIn] = useState(false);
+  /**
+   * The attempt this dialog is conducting.
+   *
+   * Held by id and re-read from the store on every render rather than kept as a
+   * snapshot: the row's `status` is what says the sign-in finished, and it
+   * arrives on the `provider_accounts` broadcast, not from the call that
+   * started it. Nothing outside this dialog needs it — the panel decides what
+   * to list from the accounts themselves ({@link isUnconnectedAttempt}), which
+   * is what keeps the two from disagreeing for a frame.
+   */
+  const [signInAccountId, setSignInAccountId] = useState<string | undefined>(undefined);
 
   const pickService = (next: ServiceDef): void => {
     setService(next);
@@ -723,7 +705,8 @@ function AddServiceDialog({
   const signInProvider = service && billingMode ? accountProviderFor(service, billingMode) : undefined;
   // Called unconditionally, narrowed after — a hook cannot hide behind the
   // step the user has reached.
-  const providerAccounts = useProviderAccounts(signInProvider ?? "claude");
+  // Attempts included: this is the one caller that is conducting one.
+  const providerAccounts = useAllProviderAccounts(signInProvider ?? "claude");
   const accounts = signInProvider ? providerAccounts : [];
   const signInAccount = signInAccountId
     ? accounts.find((a) => a.id === signInAccountId)
@@ -739,9 +722,25 @@ function AddServiceDialog({
   const harnessInstalled = signInProvider
     ? (agentList.find((a) => a.id === signInProvider)?.installed ?? true)
     : true;
-  // docs/150 — the provider runs ONE login process, so a second one is a 409.
-  // Said here rather than after the click.
-  const blockedBySignIn = signInProvider ? signInBlockedReason(accounts, signInAccountId) : undefined;
+  /**
+   * An attempt this flow would adopt rather than compete with — this dialog's
+   * own, or one stranded by a reload. Derived once, and used twice: to start
+   * the sign-in, and to decide whether anything is in the way of starting it.
+   */
+  const adoptable = signInAccount ?? accounts.find(isUnconnectedAttempt);
+  /**
+   * docs/150 — the provider runs ONE login process, so a second one is a 409.
+   * Said here rather than after the click.
+   *
+   * Measured against the attempt we would **adopt**, not against
+   * `signInAccountId` alone. A stranded attempt is `authenticating` and
+   * invisible in the panel, so reading it as somebody else's sign-in disabled
+   * the one button that could recover it: the flow refused to start, citing a
+   * row the user could not see, and there was no other way to reach it. A
+   * *connected* row re-authenticating still blocks, which is the case the guard
+   * is actually for.
+   */
+  const blockedBySignIn = signInProvider ? signInBlockedReason(accounts, adoptable?.id) : undefined;
   /**
    * **An attempt that stopped without connecting** — no live challenge, not
    * ready, but this dialog's account still there.
@@ -768,18 +767,29 @@ function AddServiceDialog({
     setStartingSignIn(true);
     setError("");
     try {
-      // Two calls, and the id is taken between them **on purpose**: the account
-      // exists from the moment the first returns, so learning its id only after
-      // the login had also started left a failed start un-abandonable —
-      // `signInAccountId` unset, Cancel with nothing to delete, and a retry
-      // creating a second orphan each time.
-      const created = signInAccount ?? await createAccount(signInProvider, accounts.map((a) => a.id));
-      if (!created) {
+      /**
+       * **Adopt an attempt rather than starting a second one.** Three cases,
+       * one line: this dialog's own attempt (*Try again* after a failure), an
+       * attempt stranded by a reload — invisible in the panel now, and holding
+       * the provider's single login slot with nothing on screen to release it —
+       * and, otherwise, no attempt yet, so make one.
+       */
+      const existing = adoptable;
+      const account = existing ?? await createAccount(signInProvider, accounts.map((a) => a.id));
+      if (!account) {
         setError("Could not start the sign-in — no account was created.");
         return;
       }
-      onSignInAccount(created.id);
-      await startAccountLogin(signInProvider, created.id);
+      // Taken BEFORE the login starts, on purpose: the account exists from the
+      // moment it is created, so learning its id only after the login had also
+      // started left a failed start un-abandonable — Cancel with nothing to
+      // delete, and a retry creating a second orphan each time.
+      setSignInAccountId(account.id);
+      // An adopted attempt may still have a login running against it (the CLI
+      // outlives the browser). Cancelling first is what makes the challenge
+      // this dialog then shows the live one, rather than a 409.
+      if (existing) await cancelAccountLogin(signInProvider, account.id);
+      await startAccountLogin(signInProvider, account.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start the sign-in");
     } finally {
