@@ -190,7 +190,9 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
         </div>
         <Button
           variant={empty ? "primary" : "secondary"}
-          size="sm"
+          // The standard height, not `sm`: this is the panel's one action, and
+          // the row it sits in is compact enough without shrinking the target.
+          size="md"
           className="rounded-md shrink-0"
           onClick={() => setAddOpen(true)}
           data-testid={empty ? "services-add-empty" : "services-add"}
@@ -200,7 +202,73 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
       </div>
 
       {cards}
+      <InstalledHarnesses agentList={agentList} />
       {dialog}
+    </div>
+  );
+}
+
+/**
+ * What can actually *drive* the credentials above — read-only, and the other
+ * half of "can this install run a turn".
+ *
+ * docs/252 separates the service that bills a model from the harness that runs
+ * it, so a stored credential is not by itself runnable: req 8's eligibility is
+ * a join, and a model only becomes selectable when an installed harness can
+ * carry it. That makes "which harnesses are installed" a fact this screen
+ * cannot leave unsaid — without it, a user who has pasted a working key and
+ * still cannot chat has nothing on screen explaining the gap, and the same
+ * blank is what docs/257 req 8 warns about when it says storing a credential
+ * has not finished onboarding.
+ *
+ * It is a **statement, not a control**: harnesses are installed in the image,
+ * not from the browser, so there is nothing to press here. Per-harness the row
+ * says whether that harness has a model this install can run
+ * (`hasRunnableModels`), because that is the join above rendered — a harness
+ * with none is exactly the case a credential above is about to fix.
+ */
+function InstalledHarnesses({ agentList }: { agentList: AgentOption[] }) {
+  const installed = agentList.filter((a) => a.installed);
+  // Nothing known yet (the agent list arrives with the bootstrap) reads the
+  // same as "none installed" if we render the empty case, so say nothing until
+  // there is something to say.
+  if (agentList.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-1.5" data-testid="installed-harnesses">
+      <h3 className="text-sm font-medium text-(--color-text-primary)">Installed harnesses</h3>
+      {installed.length === 0 ? (
+        <p className="text-xs text-(--color-text-tertiary)">
+          None. A service credential cannot run a turn on its own — this install has no harness
+          to drive it.
+        </p>
+      ) : (
+        // One per line: they are facts to read down, not chips to scan across,
+        // and a wrapped row put two harnesses on one line in the onboarding
+        // panel and one per line in Settings for no reason but the width
+        // available. `items-start` keeps each row the width of its own content
+        // rather than stretching the fill across the panel.
+        <ul className="flex flex-col items-start gap-1">
+          {installed.map((agent) => (
+            <li
+              key={agent.id}
+              className="flex items-center gap-1.5 rounded-md bg-(--color-bg-secondary) px-2 py-1 text-xs text-(--color-text-secondary)"
+              data-testid={`installed-harness-${agent.id}`}
+            >
+              <span
+                aria-hidden
+                className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                  agent.hasRunnableModels ? "bg-(--color-success)" : "bg-(--color-text-tertiary)"
+                }`}
+              />
+              {agent.name}
+              {!agent.hasRunnableModels && (
+                <span className="text-(--color-text-tertiary)">· no model it can run yet</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

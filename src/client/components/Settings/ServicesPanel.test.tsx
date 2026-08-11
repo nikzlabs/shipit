@@ -555,6 +555,35 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
     expect(useUiStore.getState().toast).toBeNull();
   });
 
+  describe("installed harnesses", () => {
+    // The other half of "can this install run a turn": docs/252 req 8's
+    // eligibility is a join, so a stored credential is only runnable when an
+    // installed harness can carry it. A user with a working key and a disabled
+    // composer has to be able to see which half is missing.
+    it("names what can drive the credentials, and says which cannot run yet", () => {
+      render(
+        <ServicesPanel agentList={[{ ...claudeAgent, hasRunnableModels: true }, codexAgent]} />,
+      );
+      const block = within(screen.getByTestId("installed-harnesses"));
+      expect(block.getByTestId("installed-harness-claude")).toHaveTextContent("Claude");
+      expect(block.getByTestId("installed-harness-claude")).not.toHaveTextContent("no model");
+      expect(block.getByTestId("installed-harness-codex")).toHaveTextContent("no model it can run yet");
+    });
+
+    it("lists only installed harnesses, and says so when none is", () => {
+      render(<ServicesPanel agentList={[{ ...codexAgent, installed: false }]} />);
+      expect(screen.queryByTestId("installed-harness-codex")).toBeNull();
+      expect(screen.getByTestId("installed-harnesses")).toHaveTextContent(/None\./);
+    });
+
+    it("says nothing at all before the agent list has arrived", () => {
+      // "Not known yet" and "none installed" are different facts, and the
+      // bootstrap delivers the list after the first render.
+      render(<ServicesPanel />);
+      expect(screen.queryByTestId("installed-harnesses")).toBeNull();
+    });
+  });
+
   it("drops the card again once the notice is dismissed", async () => {
     useSettingsStore.getState().setProviderAccounts([]);
     useSettingsStore.getState().setProviderAccountNotice("claude", { kind: "info", message: "Disconnected." });

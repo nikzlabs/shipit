@@ -316,8 +316,12 @@ bottom edge, so the surface the panel exists for read as an afterthought under a
 marketing. Three changes, all layout and copy, none of them behavioural:
 
 - The wordmark and the heading share one baseline row; the paragraph loses the sentence
-  enumerating files/preview/terminal, which the chips below already carry.
-- The feature rows become **chips** — icon plus claim, no gloss.
+  enumerating files/preview/terminal, which the feature list below already carries.
+- The feature rows keep one line each and lose the **gloss**: an icon and the claim, nothing
+  bolded, no explanation. Cutting the prose is what bought the height, so the rows stay a
+  list — a wrapped row of bordered chips was tried and reverted, because three claims flowing
+  2 + 1 read as one claim left over, and the borders made a paragraph's worth of content look
+  like controls.
 - The Services surface itself is the compact one described below.
 
 The lede still says what ShipIt is and still ends on "the chat is the one thing waiting on

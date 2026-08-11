@@ -2175,6 +2175,18 @@ cards, the tab is a second editor for one fact — its "Use an API key instead" 
 through to the very credential the Services add-flow writes. Both tabs are deleted, Services
 leads the (now flat) list, and Services is the tab Settings opens on (D1).
 
+**Installed harnesses are named at the foot of the panel (2026-08-11).** A read-only list —
+each installed harness, with a dot and, when it has none, "no model it can run yet". It exists
+because eligibility (req 8) is a *join*: a stored credential is not runnable until an installed
+harness can carry it, so a screen that collects credentials and says nothing about harnesses
+leaves a user with a working key and a disabled composer nothing to read. The list is a
+statement, not a control — harnesses are installed in the image, not from the browser.
+
+This is **not** D5's status dot coming back. That dot was on a *service* card and read
+`hasRunnableModels`, a harness-wide flag, so it went green above "No Claude subscription
+connected yet" as soon as an unrelated DeepSeek key existed. Here the same flag is on the
+harness row it actually describes, which is the axis it was always measuring.
+
 The **API-key disclosure** (`onApiKey` / `onSetAgentEnv`) went with them, reachable instead as
 *Add a service → Anthropic → API key*, which is the same credential route. One asymmetry
 survives that move and is worth stating rather than discovering: `setApiKey` rejected anything

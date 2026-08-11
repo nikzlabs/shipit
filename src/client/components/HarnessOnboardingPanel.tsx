@@ -1,4 +1,3 @@
-import { Fragment } from "react";
 import { RobotIcon, KeyIcon, ColumnsIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { AgentOption } from "../agent-types.js";
@@ -6,13 +5,14 @@ import { Logo } from "./Logo.js";
 import { ServicesPanel } from "./Settings/ServicesPanel.js";
 
 /**
- * The hero's three claims, as chips rather than as sentences.
+ * The hero's three claims: one line each, an icon and the claim, no gloss.
  *
- * They were three stacked rows of lead-plus-explanation, and between them and
- * the paragraph above they pushed the Services surface — the one thing this
- * panel is for — off the bottom of the chat pane. A chip keeps the claim and
- * drops the gloss; what each one elaborated is either self-evident from the
- * words that remain or is said again inside the add-service dialog.
+ * They were three rows of lead-plus-explanation, which cost the panel more
+ * height than the Services surface below it. Cutting the explanation is what
+ * bought the space — what each one elaborated is either evident from the words
+ * that remain or is said again inside the add-service dialog — so the rows
+ * themselves stay a list rather than becoming wrapped chips: three claims
+ * flowing 2 + 1 across two rows read as one claim left over.
  */
 const FEATURES = [
   {
@@ -24,15 +24,6 @@ const FEATURES = [
     Icon: KeyIcon,
     tint: "bg-(--color-success-subtle) text-(--color-success)",
     label: "A subscription you pay for, or an API key",
-    /**
-     * Starts the second row, at every width.
-     *
-     * Left to wrap on its own the three chips broke 2 + 1, which reads as one
-     * claim left over rather than as two rows. The break is declared here
-     * rather than emerging from the text lengths, so editing a label cannot
-     * silently re-flow the group.
-     */
-    startsRow: true,
   },
   {
     Icon: ColumnsIcon,
@@ -77,7 +68,10 @@ export function HarnessOnboardingPanel({ agentList }: { agentList: AgentOption[]
     >
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 px-4 py-6">
         <div className="flex flex-col gap-2.5 px-1">
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          {/* Centred, not baseline-aligned: the lockup is an icon plus a
+              wordmark, so matching its text baseline to the heading's hangs the
+              icon above the line. */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <Logo size="md" textClassName="text-(--color-text-primary)" />
             <h1 className="text-lg font-semibold leading-snug text-(--color-text-primary)">
               Add a service, and the chat starts working.
@@ -87,21 +81,21 @@ export function HarnessOnboardingPanel({ agentList }: { agentList: AgentOption[]
             ShipIt is agent-agnostic. Files, previews and the terminal already work — the chat is
             the one thing waiting on this.
           </p>
-          <div className="flex flex-wrap gap-1.5">
+          <ul className="flex flex-col gap-1.5">
             {FEATURES.map((f, i) => (
-              <Fragment key={i}>
-                {f.startsRow && <span aria-hidden className="basis-full" />}
-                <span className="flex items-center gap-1.5 rounded-full border border-(--color-border-secondary) py-1 pl-1 pr-2.5 text-[12px] text-(--color-text-secondary)">
-                  <span
-                    className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${f.tint}`}
-                  >
-                    <f.Icon size={ICON_SIZE.XS} />
-                  </span>
-                  {f.label}
+              <li
+                key={i}
+                className="flex items-center gap-2 text-[13px] leading-snug text-(--color-text-secondary)"
+              >
+                <span
+                  className={`w-[22px] h-[22px] rounded-md flex items-center justify-center shrink-0 ${f.tint}`}
+                >
+                  <f.Icon size={ICON_SIZE.XS} />
                 </span>
-              </Fragment>
+                {f.label}
+              </li>
             ))}
-          </div>
+          </ul>
         </div>
 
         {/* The Settings surface, hosted whole. It brings no padding and no
