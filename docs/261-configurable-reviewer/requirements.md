@@ -4,7 +4,7 @@ title: Configurable reviewer — requirements
 description: A reviewer the user configures once in ShipIt, that works whichever model is implementing.
 ---
 
-# 260 — Configurable reviewer: requirements
+# 261 — Configurable reviewer: requirements
 
 **These are the things this feature changes. Everything ShipIt already does is a requirement
 too, and is not restated here** — existing behaviour must keep working at least as well as it
@@ -66,15 +66,24 @@ No open questions remain.
    service, no model and no harness. Asking for a review and choosing who performs it become
    two different things, and only the first belongs to the agent.
 
-7. **Everything else a spawned agent runs on is explicit at the call.** Outside a role,
-   `shipit agent run` carries the harness, the model and the reasoning level on the
-   invocation itself, and ShipIt keeps **no** stored per-harness defaults for it. The
-   implicit paths are the roles, and they are the only implicit paths.
+7. **A one-shot agent run names everything it runs on.** Outside a role, the caller states
+   the harness, the model — which means the service and the billing mode too, since that is
+   what identifies a model (req 3) — and the reasoning level. **No stored setting fills in an
+   omission**, and an incomplete call is refused rather than completed from somewhere the
+   caller cannot see.
 
-8. **Review works on a fresh install**, before anyone has configured a reviewer, and it
-   never points at a service the user has no credential for. Both reviewers therefore have a
-   **derived** default rather than a named model — the same argument docs/252 req 9 made for
-   background work.
+   This governs the **one-shot spawn**, not every way ShipIt starts an agent. A child session
+   is a different thing with its own rule (req 10), and saying otherwise would break it.
+
+8. **Review works without anyone having configured a reviewer**, on any install that can run
+   an agent at all, and it never points at a service the user has no credential for. Both
+   reviewers therefore have a **derived** default rather than a named model — the same
+   argument docs/252 req 9 made for background work.
+
+   An auto-configured reviewer is **complete**: it resolves to everything req 1 says a
+   reviewer is, reasoning level included. A reviewer that derived a model but left the
+   reasoning level to whatever the harness does by default would not satisfy req 5, and would
+   make "configured in one place" false for the case nobody has touched.
 
    A reviewer the user has not pinned is **auto-configured**, and stays auto-configured: it
    **re-derives as the install changes**, so adding a second service, or a model from a family
@@ -93,18 +102,79 @@ No open questions remain.
    This restates existing behaviour because this feature must not lose it, not because it
    changes.
 
+10. **A child session inherits what it runs on from its parent, and the parent may override
+    part of it.** An omitted parameter is taken from the parent session; naming one replaces
+    just that one, leaving the rest inherited.
+
+    This is existing behaviour and this feature does not change it. It is stated because req 7
+    would otherwise appear to govern it, and the two rules are deliberately opposite: a
+    one-shot run refuses an omission, a child session fills it from the parent. That is not an
+    inconsistency — a child session *has* a parent to inherit from, and a one-shot run has
+    nothing but the call.
+
 ## Scope
 
-**The child-session case is not part of this feature.** It came up as evidence that removing
-the stored defaults costs nothing — the paths that need to be implicit have, or will have,
-their own support — and a child session already inherits its parent's selection. No
-child-session role is designed or built here. Strike this paragraph if that reading is wrong.
+Child sessions keep the behaviour req 10 states, and this feature builds nothing for them.
 
 ## Open questions
 
 _None._
 
 ## Resolved questions
+
+- 2026-08-10 — **What happens to per-harness sub-agent defaults people have already set?**
+  **Chosen: drop them outright.** The human: "Let's drop the existing defaults. The user will
+  have to reconfigure the reviewer again. It is fine because currently only I am using
+  ShipIt." So no migration, no compatibility read — and, going beyond the recommendation,
+  **no notice either**: the agent had proposed discarding *with a visible notice*, and the
+  justification given retires the notice along with the migration, because the only person
+  whose configuration is cleared is the one taking the decision. Nothing in the requirements
+  changes; the deletion is design, and `plan.md` records that reconfiguration is expected
+  rather than migrated.
+
+  **This is the decision to revisit if ShipIt has other users before this ships**, since its
+  entire justification is the size of the install population and not anything about the
+  feature.
+
+- 2026-08-10 — **Is the child-session case in scope?** **Chosen: out of scope, and req 7 had
+  to be narrowed to keep it working.** The human: "child sessions … should inherit parameters
+  from the parent session, and the parent agent can partially override one or more
+  parameters." That is existing behaviour, so by this document's preamble it needs no
+  requirement — except that req 7 as written ("no stored setting fills in an omission, and an
+  incomplete call is refused") would have swallowed it and made inheritance illegal. Req 7 is
+  now scoped to the **one-shot** spawn, and req 10 states the child-session rule so the
+  boundary is explicit rather than implied by silence.
+
+  A factual correction found while checking rather than assuming: `shipit session create`
+  today accepts `--agent` and `--model` (`shipit-session.ts:99-100`) and **no reasoning
+  flag**, so "partially override one or more parameters" holds for two of the three. Recorded
+  rather than fixed — child sessions are out of scope here, and this is the gap to close if
+  the override set is meant to be complete.
+
+- 2026-08-10 — **Cross-backend review of this document and its design** (Codex, under
+  CLAUDE.md's rule that the other backend reviews substantive work). Fifteen findings; all
+  fifteen were checked against the code and the material ones held. Three changed
+  *requirements* and are recorded here — the rest were design defects and are fixed in
+  `plan.md`, and two became the open questions above.
+
+  - **Req 7 was mechanism.** "ShipIt keeps **no** stored per-harness defaults" is an internal
+    storage decision, not an observable property. Rewritten to state what a caller
+    experiences — nothing fills an omission, and an incomplete call is refused — with the
+    deletion of the store moved to the design where it belongs. The reviewer also caught that
+    req 7 said "the model" while req 3 defines a model as `(service, billing mode, model)`, so
+    "explicit" was under-specified in the requirement itself.
+  - **An auto-configured reviewer was incomplete.** Req 5 makes the reasoning level part of
+    the reviewer; req 8 requires both reviewers to work before anyone pins them; and the
+    design derived service, mode, model and harness but *not* reasoning — so an untouched
+    reviewer fell back to the harness default, which is the one thing req 5 forbids. Req 8 now
+    says an auto-configured reviewer resolves to a complete reviewer.
+  - **"Fresh install" claimed more than the product does.** `shipit agent run` is gated by a
+    Multi-agent setting that is **off by default** (`credential-store.ts:1150`,
+    `enableSubAgents ?? false`, rejected at `sub-agent.ts:209`), and an install with no
+    credential at all can run nothing. Req 8 now says "without anyone having configured a
+    reviewer, on any install that can run an agent at all", which is what was actually meant.
+    Whether reviewing should bypass that gate is a separate product question and is not
+    assumed here.
 
 - 2026-08-10 — **Is the derived default a one-time value, or does it keep following the
   install?** **Chosen: it keeps following, and the state is visible.** Raised by the human
@@ -216,8 +286,13 @@ What he actually said:
 - "Unify on model-first" → req 3, chosen from three options; see the receipt.
 - "Remove them and make all the agent parameters explicit in the agent run … everything in
   the call would be explicit, because for implicit calls … we will have custom support, which
-  is the review case and the child session case." → req 7, and the *Scope* note. The
-  generalization from "remove the defaults" to "roles are the only implicit path" is his.
+  is the review case and the child session case." → req 7. The generalization from "remove the
+  defaults" to "a one-shot run names everything" is his.
+- "Let's drop the existing defaults. The user will have to reconfigure the reviewer again." →
+  no migration and no notice; see the receipt.
+- "child sessions … should inherit parameters from the parent session, and the parent agent
+  can partially override one or more parameters." → req 10, and the narrowing of req 7 that
+  keeps the two from contradicting each other.
 - "let's allow the repo to override the settings in the UI (in fact, we can't prevent it). In
   this case the agent needs to specify all parameters explicitly." → the rewrite of req 2,
   which the agent had drafted as a prohibition.
