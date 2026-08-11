@@ -166,34 +166,46 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
     />
   );
 
-  // The heading and the button share one row, and "nothing configured" is the
-  // caption under that heading rather than a box of its own: empty, the whole
-  // panel is two lines and a button.
+  // "Nothing configured" is the caption under the heading rather than a box of
+  // its own: empty, the whole panel is two lines and a button.
   const empty = configured.length === 0;
 
   return (
     <div className="flex flex-col gap-3" data-testid="services-panel">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="text-sm font-medium text-(--color-text-primary)">Services</h3>
-          <p
-            className="mt-0.5 text-xs text-(--color-text-tertiary)"
-            // The empty state keeps its own test id, because "nothing
-            // configured" is still a distinct state — it is just said in a line
-            // now instead of a dashed box.
-            {...(empty ? { "data-testid": "services-empty" } : {})}
-          >
-            {empty
-              ? "Connect one to start — a subscription you already pay for, or an API key."
-              : "ShipIt defines the services; you supply the credential."}
-          </p>
-        </div>
+      <div className="min-w-0">
+        <h3 className="text-sm font-medium text-(--color-text-primary)">Services</h3>
+        <p
+          className="mt-0.5 text-xs text-(--color-text-tertiary)"
+          // The empty state keeps its own test id, because "nothing configured"
+          // is still a distinct state — it is just said in a line now instead of
+          // a dashed box.
+          {...(empty ? { "data-testid": "services-empty" } : {})}
+        >
+          {empty
+            ? "Connect one to start — a subscription you already pay for, or an API key."
+            : "ShipIt defines the services; you supply the credential."}
+        </p>
+      </div>
+
+      {cards}
+
+      {/*
+        **The add control follows the list**, which is one rule covering both
+        states: empty it lands directly under the ask, and with cards it lands
+        under them — the same left edge as everything above it either way. It sat
+        opposite the heading first, which is where a section action usually goes
+        and is exactly the problem: the eye finishes the caption on the left and
+        the only control is in the far corner, across a gap of nothing. That is
+        worse here than in an ordinary settings section, because for a first-run
+        user this button is not *an* action on the panel, it is the whole panel.
+      */}
+      <div>
         <Button
           variant={empty ? "primary" : "secondary"}
-          // The standard height, not `sm`: this is the panel's one action, and
-          // the row it sits in is compact enough without shrinking the target.
+          // Standard height, not `sm`: the row is compact enough without
+          // shrinking the target.
           size="md"
-          className="rounded-md shrink-0"
+          className="rounded-md"
           onClick={() => setAddOpen(true)}
           data-testid={empty ? "services-add-empty" : "services-add"}
         >
@@ -201,7 +213,6 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
         </Button>
       </div>
 
-      {cards}
       <InstalledHarnesses agentList={agentList} />
       {dialog}
     </div>

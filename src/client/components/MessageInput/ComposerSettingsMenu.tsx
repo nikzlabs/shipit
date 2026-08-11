@@ -270,7 +270,9 @@ export function ComposerSettingsMenu({
   const modeIsDefault = displayMode === "auto";
   const canPickMode = !!onPermissionModeChange && availableModes.length > 1;
 
-  const modelName = model.displayName || "Loading…";
+  // `displayName` is never empty — it answers "loading" and "nothing to pick"
+  // itself, so this layout cannot label the second one as the first.
+  const modelName = model.displayName;
 
   return (
     <DropdownMenu

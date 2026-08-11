@@ -96,6 +96,43 @@ describe("MessageInput disabledReason (docs/257 req 3)", () => {
     expect(screen.getByTestId("mic-button")).toBeInTheDocument();
   });
 
+  it("locks the harness, model and reasoning pickers", () => {
+    // The affordances a `disabled`-only fix left live, and the ones the user
+    // saw: with no runnable service the harness menu opens onto rows that are
+    // all unselectable and the model menu onto nothing at all. The compact row's
+    // anchor already read `inert`, so the two layouts disagreed about one fact.
+    const agents = [
+      {
+        id: "claude",
+        name: "Claude Code",
+        installed: true,
+        hasRunnableModels: false,
+        models: [],
+        supportsReview: true,
+        reasoning: { label: "Effort", options: [{ value: "low", label: "Low" }] },
+      },
+    ];
+    const props = {
+      onSend: vi.fn(),
+      disabled: false,
+      agents,
+      activeAgentId: "claude" as const,
+      onAgentChange: vi.fn(),
+      onModelChange: vi.fn(),
+      onReasoningChange: vi.fn(),
+    };
+    const { rerender } = render(<MessageInput {...props} disabledReason={REASON} />);
+    expect(screen.getByTestId("harness-trigger")).toBeDisabled();
+    expect(screen.getByTestId("model-trigger")).toBeDisabled();
+    expect(screen.getByTestId("reasoning-trigger")).toBeDisabled();
+
+    // Non-vacuous: the same render with a runnable chat leaves them live.
+    rerender(<MessageInput {...props} />);
+    expect(screen.getByTestId("harness-trigger")).not.toBeDisabled();
+    expect(screen.getByTestId("model-trigger")).not.toBeDisabled();
+    expect(screen.getByTestId("reasoning-trigger")).not.toBeDisabled();
+  });
+
   it("does not auto-start recording when Quick Capture was opened by the voice hotkey", () => {
     // Mode B arms the mic on open. Without this guard the overlay would record a
     // message with nowhere to send it — Send being dead is not enough.

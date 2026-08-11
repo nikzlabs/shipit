@@ -252,6 +252,32 @@ describe("HarnessSelector", () => {
 });
 
 describe("ModelSelector", () => {
+  it("says 'No model' when the install has none, and 'Loading' only while loading", () => {
+    // Two unrelated states used to read alike, because the trigger printed
+    // `displayName || "Loading..."`: one frame before the agent list arrives,
+    // and the whole first-run state where nothing is configured — which is
+    // permanent until the user adds a service, so the composer sat saying
+    // "Loading…" for ever beside an input telling them to add one.
+    const bare: AgentOption = {
+      id: "claude",
+      name: "Claude Code",
+      installed: true,
+      hasRunnableModels: false,
+      models: [],
+      eligibleModels: [],
+      supportsReview: true,
+    };
+    const { rerender } = render(
+      <ModelSelector agents={[bare]} activeAgentId="claude" modelInfo={null} onModelChange={vi.fn()} />,
+    );
+    expect(screen.getByTestId("model-trigger")).toHaveTextContent("No model");
+
+    rerender(
+      <ModelSelector agents={[]} activeAgentId="claude" modelInfo={null} onModelChange={vi.fn()} />,
+    );
+    expect(screen.getByTestId("model-trigger")).toHaveTextContent("Loading");
+  });
+
   it("groups rows by service and billing mode (req 5)", async () => {
     const user = userEvent.setup();
     render(

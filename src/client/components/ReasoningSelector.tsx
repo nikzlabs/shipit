@@ -120,14 +120,19 @@ export function ReasoningSelector({
         <DropdownMenuTrigger asChild>
           <button
             disabled={disabled}
-            className="flex items-center justify-center gap-1.5 text-xs rounded-lg transition-colors font-medium text-(--color-text-secondary) hover:bg-(--color-bg-hover) cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed px-2.5 py-1.5"
+            className={`flex items-center justify-center gap-1.5 text-xs rounded-lg transition-colors font-medium text-(--color-text-secondary) disabled:opacity-50 disabled:cursor-not-allowed px-2.5 py-1.5 ${
+              disabled ? "cursor-default" : "hover:bg-(--color-bg-hover) cursor-pointer"
+            }`}
             aria-label={`${label} selector`}
             title={`${label}: ${currentLabel}`}
             data-testid="reasoning-trigger"
           >
             <BrainIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary)" />
             <span>{currentLabel}</span>
-            <CaretDownIcon size={ICON_SIZE.XS} />
+            {/* The caret is the affordance, so it goes when the control cannot
+                open — the same rule `ModelSelector` follows, and what stopped a
+                dead composer's row from reading as three live menus. */}
+            {!disabled && <CaretDownIcon size={ICON_SIZE.XS} />}
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent side="top" align="end" className="w-44" data-testid="reasoning-dropdown">
