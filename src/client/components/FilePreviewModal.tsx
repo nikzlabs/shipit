@@ -1,9 +1,9 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: reset view mode on file change
 import { useEffect, useCallback, useState } from "react";
-import { RobotIcon } from "@phosphor-icons/react";
+import { RobotIcon, DownloadSimpleIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
-import { Button } from "./ui/button.js";
+import { Button, buttonVariants } from "./ui/button.js";
 import { FileContentView } from "./FileContentView/FileContentView.js";
 import { FileReviewFooter } from "./FileContentView/FileReviewFooter.js";
 import { FileReviewSendDialog } from "./SendReviewDialog.js";
@@ -52,6 +52,15 @@ export interface FilePreviewModalProps {
   line?: number | null;
   actions?: FilePreviewAction[];
   /**
+   * Whether the previewed file exists on disk in the session workspace. When
+   * true the modal renders its own Download control — download belongs to the
+   * preview itself, not to whichever surface opened it, so a doc opened from
+   * the PR card is as downloadable as one opened from the file tree. False for
+   * an in-memory preview (a pasted image) whose path the download route cannot
+   * resolve.
+   */
+  downloadable?: boolean;
+  /**
    * Optional sibling docs in the same directory. When more than one is
    * provided, the modal renders a tab strip in the header. The active tab is
    * the entry whose `path` equals `filePath`.
@@ -79,6 +88,20 @@ export interface FilePreviewModalProps {
   onAskAgentReview?: (filePath: string) => void;
 }
 
+/**
+ * URL of the raw-file download route for a previewed path. Each path segment is
+ * encoded separately so a name carrying `#`, `?`, or a space survives the trip
+ * while the `/` separators stay real separators for the route's wildcard param.
+ * A leading slash is dropped the same way `openPreview` drops it, so an upload
+ * path (`/uploads/x.png`) resolves against the session directory rather than
+ * producing an empty first segment.
+ */
+function fileDownloadHref(sessionId: string, filePath: string): string {
+  const relative = filePath.startsWith("/") ? filePath.slice(1) : filePath;
+  const encoded = relative.split("/").map(encodeURIComponent).join("/");
+  return `/api/sessions/${sessionId}/files/download/${encoded}`;
+}
+
 export function FilePreviewModal({
   filePath,
   content,
@@ -87,6 +110,7 @@ export function FilePreviewModal({
   actions,
   siblings,
   onSwitchSibling,
+  downloadable,
   onClose,
   onSendComments,
   onAskAgentReview,
@@ -149,6 +173,18 @@ export function FilePreviewModal({
                     <RobotIcon size={ICON_SIZE.SM} className="mr-1" />
                     Ask agent to review
                   </Button>
+                </WithTooltip>
+              )}
+              {downloadable && sessionId && (
+                <WithTooltip label="Download file">
+                  <a
+                    href={fileDownloadHref(sessionId, filePath)}
+                    download
+                    aria-label={`Download ${filePath}`}
+                    className={buttonVariants({ variant: "secondary", size: "md" })}
+                  >
+                    <DownloadSimpleIcon size={ICON_SIZE.SM} />
+                  </a>
                 </WithTooltip>
               )}
               {actions?.map((action) => (

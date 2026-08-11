@@ -216,6 +216,7 @@ export default function App() {
   const previewContent = useFileStore((s) => s.previewContent);
   const previewType = useFileStore((s) => s.previewType);
   const previewActions = useFileStore((s) => s.previewActions);
+  const previewOnDisk = useFileStore((s) => s.previewOnDisk);
   const previewLine = useFileStore((s) => s.previewLine);
   const editFile = useFileStore((s) => s.editFile);
   const editContent = useFileStore((s) => s.editContent);
@@ -1307,17 +1308,9 @@ export default function App() {
       // Mirror the FileTree gate: only a graduated session (present in the
       // warm-excluding list) may edit; the server rejects warm-session writes.
       const graduated = sessions.some((s) => s.id === sid);
-      const downloadAction = {
-        label: "Download",
-        onClick: () => {
-          const a = document.createElement("a");
-          a.href = `/api/sessions/${sid}/files/download/${filePath}`;
-          a.download = "";
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-        },
-      };
+      // Download is no longer passed in here — the preview modal renders its
+      // own, so every surface that opens a file (PR card, docs panel, diff
+      // block) gets it, not just this one.
       const actions =
         isEditableFilePath(filePath) && graduated
           ? [
@@ -1327,9 +1320,8 @@ export default function App() {
                   void useFileStore.getState().openEditor(sid, filePath);
                 },
               },
-              downloadAction,
             ]
-          : [downloadAction];
+          : undefined;
       void useFileStore.getState().openPreview(sid, filePath, { actions });
     }
   }, []);
@@ -2202,6 +2194,7 @@ export default function App() {
             fileType={previewType}
             line={previewLine}
             actions={previewActions}
+            downloadable={previewOnDisk}
             siblings={previewSiblings}
             onSwitchSibling={handleSwitchSibling}
             onClose={() => useFileStore.getState().closePreview()}

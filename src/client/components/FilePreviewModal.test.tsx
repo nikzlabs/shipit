@@ -141,6 +141,60 @@ describe("FilePreviewModal", () => {
     expect(onAction).toHaveBeenCalledOnce();
   });
 
+  // The download control belongs to the preview, not to the surface that
+  // opened it — a doc opened from the PR card used to arrive without one
+  // because only the file tree passed a Download action in.
+  describe("download control", () => {
+    it("renders a download link for a file on disk, whatever opened the preview", () => {
+      useSessionStore.getState().setSessionId("session-1");
+      render(
+        <FilePreviewModal
+          filePath="docs/246-thing/plan.md"
+          content="# Plan"
+          fileType="markdown"
+          downloadable
+          onClose={() => {}}
+        />
+      );
+      const link = screen.getByLabelText("Download docs/246-thing/plan.md");
+      expect(link).toHaveAttribute(
+        "href",
+        "/api/sessions/session-1/files/download/docs/246-thing/plan.md",
+      );
+      expect(link).toHaveAttribute("download");
+    });
+
+    it("encodes each path segment but keeps the separators", () => {
+      useSessionStore.getState().setSessionId("session-1");
+      render(
+        <FilePreviewModal
+          filePath="/uploads/my report #2.pdf"
+          content="binary"
+          fileType="binary"
+          downloadable
+          onClose={() => {}}
+        />
+      );
+      expect(screen.getByLabelText("Download /uploads/my report #2.pdf")).toHaveAttribute(
+        "href",
+        "/api/sessions/session-1/files/download/uploads/my%20report%20%232.pdf",
+      );
+    });
+
+    it("omits the control for an in-memory preview with no file behind it", () => {
+      useSessionStore.getState().setSessionId("session-1");
+      render(
+        <FilePreviewModal
+          filePath="pasted.png"
+          content="blob:local"
+          fileType="image"
+          onClose={() => {}}
+        />
+      );
+      expect(screen.queryByLabelText("Download pasted.png")).not.toBeInTheDocument();
+    });
+  });
+
   it("closes on Escape key", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
