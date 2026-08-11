@@ -112,6 +112,28 @@ describe("createIdleEnforcer", () => {
     expect(registry.get("reserved")).toBeDefined();
   });
 
+  it("docs/241: does not exempt an archived session carrying a stale reservation", () => {
+    // Admission stopped counting archived rows, so protecting a surviving
+    // container here would hold the RAM for a slot the books already handed to
+    // someone else — two reservations' worth of host, one on the books.
+    const containers = [{ sessionId: "stale" }];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+    registry.getOrCreate("stale", "/tmp/stale", "claude" as AgentId);
+
+    createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(0),
+      runnerRegistry: registry,
+      sessionManager: {
+        get: () => ({ keepPreviewRunning: true, userArchived: true, archived: true }),
+      } as any,
+      getMemoryStats: () => ({ usedBytes: 95, totalBytes: 100 }),
+    })();
+
+    expect(destroy).toHaveBeenCalledWith("stale");
+  });
+
   it("never disposes a runner whose agent is running, even when over the limit", () => {
     const containers = [
       { sessionId: "a" }, { sessionId: "b" }, { sessionId: "c" },

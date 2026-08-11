@@ -123,15 +123,22 @@ reservations. An operator can still stop ShipIt or its containers explicitly.
   (`SessionItem.tsx`); `buildReservationFullMessage` composes the refusal, which
   names one holder, lists several when an operator raised the cap, and explains
   a cap of `0` rather than naming nobody.
-- **A reservation is released when its session is archived**, and admission
-  counts only non-archived rows. The two are separate on purpose: `archive()`
-  clearing the flag is the durable fix, while `listActiveReservations` heals
-  rows already archived with the flag set in deployed databases, without a
-  migration. Both are needed because the release toggle is rendered only on a
-  non-archived sidebar row, so a counted-but-archived reservation held the
-  deployment's only slot with no way to release it. Startup restore was already
-  safe — `activateReservedPreview` refuses an archived session — and a test now
-  pins that.
+- **A reservation is released when its session is archived**, and `archive()`
+  clearing the flag is the durable fix. But a row archived *before* that fix
+  still carries it, so every consumer reads one predicate,
+  `holdsActiveReservation` (`sessions.ts`), rather than the raw flag: admission,
+  the idle enforcer (both the candidate scan and the TOCTOU guard), the
+  disk-tier ladder, and the sidebar marker. Splitting them is what let a stale
+  row be ignored by the cap while its surviving container stayed exempt from
+  eviction — two reservations' worth of host, one on the books. `unarchive()`
+  clears the flag for the same reason: restore runs no admission check, so a
+  legacy row could otherwise come back as a second reservation behind the cap.
+  Startup restore was already safe — `activateReservedPreview` refuses an
+  archived session — and a test now pins that.
+- A reserved session is **exempt from the merged-view cap**, like a pin. It
+  holds the deployment's capped slot, and its row is where the user is told so;
+  a reservation that pays for the slot while dropping out of the sidebar
+  recreates the problem this work fixed.
 - `keep-preview-running.ts` restores missing reserved runtimes after Docker
   rediscovery and supervises unexpected exits with three bounded attempts. A
   successful `container_started` cancels the remaining timers; exhaustion keeps

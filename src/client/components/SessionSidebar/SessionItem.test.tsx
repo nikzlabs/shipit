@@ -44,4 +44,19 @@ describe("SessionItem keep-preview action", () => {
     );
     expect(screen.getByTitle("Always-on preview")).toBeInTheDocument();
   });
+
+  it("does not mark an archived row, whose reservation the server released", () => {
+    // An archived row can still carry the flag (a legacy row, or a cached All
+    // Sessions entry mid-archive). Marking it claims a reservation that no
+    // longer exists and that this row cannot toggle off.
+    render(
+      <SessionItem
+        session={{ ...session(true), archived: true, userArchived: true }}
+        isCurrent={false}
+        onResume={vi.fn()}
+        overflowMenuPortaled={false}
+      />,
+    );
+    expect(screen.queryByTitle("Always-on preview")).toBeNull();
+  });
 });

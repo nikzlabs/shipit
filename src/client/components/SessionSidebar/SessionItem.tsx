@@ -241,7 +241,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
                 slot is identifiable at a glance. The overflow-menu checkmark
                 confirms state on a row you already opened; it cannot answer
                 "which session?". Sized and placed like the pin beside it. */}
-            {session.keepPreviewRunning && (
+            {session.keepPreviewRunning && !isArchived && (
               <BroadcastIcon
                 size={ICON_SIZE.XS}
                 className="text-(--color-success) shrink-0"

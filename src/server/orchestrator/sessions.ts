@@ -262,6 +262,23 @@ export function reopenedAfterResolve(s: SessionInfo): boolean {
  * would otherwise drop; user-archived sessions are still excluded, so the manual
  * cascade is unaffected.
  */
+/**
+ * docs/241 — does this session hold a live always-on preview reservation?
+ *
+ * The flag alone is not the answer, and every consumer needs the same one. An
+ * archived row can still carry it (rows archived before `archive()` learned to
+ * clear it), and such a row must not consume the deployment's capped slot, must
+ * not exempt a surviving container from idle eviction or disk reclaim, and must
+ * not paint an "always-on" marker on a session whose workspace is gone. Reading
+ * the raw flag in one place and this predicate in another is what lets the two
+ * disagree: admission ignoring a stale row while the idle enforcer protects its
+ * container is how a deployment ends up holding two reservations' worth of RAM
+ * with one slot on the books.
+ */
+export function holdsActiveReservation(session: SessionInfo | undefined | null): boolean {
+  return !!session?.keepPreviewRunning && !session.userArchived && !session.archived && !session.warm;
+}
+
 export function filterVisibleInSidebar(
   sessions: SessionInfo[],
   maxMerged = MAX_MERGED_SESSIONS_PER_REPO,
@@ -312,7 +329,18 @@ export function filterVisibleInSidebar(
       // docs/110 — a pinned (persistent) session is always visible: like the
       // parent/child exemption, a pin overrides the merged top-N view cap so a
       // pinned session never silently drops out of the sidebar.
-      (!!s.pinnedAt || !resolvedAt(s) || reopenedAfterResolve(s) || topResolvedIds.has(s.id) || exemptFromCap(s)),
+      //
+      // docs/241 — an always-on reservation earns the same exemption, and for a
+      // stronger reason than a pin: it consumes the deployment's capped runtime
+      // slot, and the sidebar row is where the user is told which session holds
+      // it. A reserved session demoted by the merged cap would keep the slot
+      // while vanishing from the surface that explains where the slot went.
+      (!!s.pinnedAt
+        || holdsActiveReservation(s)
+        || !resolvedAt(s)
+        || reopenedAfterResolve(s)
+        || topResolvedIds.has(s.id)
+        || exemptFromCap(s)),
   );
 }
 
@@ -616,8 +644,15 @@ export class SessionManager {
       "SELECT user_archived, disk_tier FROM sessions WHERE id = ?",
     ).get(id) as { user_archived: number; disk_tier: string } | undefined;
     if (!row || (!row.user_archived && row.disk_tier !== "evicted")) return false;
+    // docs/241 — restore never restores a reservation. For a row archived after
+    // `archive()` learned to clear the flag this is a no-op; for a legacy row
+    // that still carries it, clearing here is what stops the restore from
+    // silently creating a SECOND active reservation. Admission ignores the row
+    // while it is archived, so another session may have taken the slot in the
+    // meantime, and unarchive runs no admission check of its own. The user
+    // re-enables it from the menu if they still want it.
     this.db.prepare(
-      "UPDATE sessions SET user_archived = 0, disk_tier = 'hot' WHERE id = ?",
+      "UPDATE sessions SET user_archived = 0, disk_tier = 'hot', keep_preview_running = 0 WHERE id = ?",
     ).run(id);
     return true;
   }

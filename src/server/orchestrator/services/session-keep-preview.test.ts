@@ -66,6 +66,16 @@ describe("docs/241 reservation admission", () => {
     it("explains a cap of zero instead of naming nobody", () => {
       expect(buildReservationFullMessage([], 0)).toContain("MAX_KEEP_PREVIEW_RUNNING");
     });
+
+    it("explains a cap lowered to zero under an existing reservation", () => {
+      // Lowering the cap does not revoke reservations already granted, so the
+      // holder-shaped sentence would promise a slot that turning it off never
+      // frees — and report "1 of 0 in use".
+      const message = buildReservationFullMessage([info("a", "Held")], 0);
+      expect(message).toContain("capacity 0");
+      expect(message).not.toContain("of 0 in use");
+      expect(message).not.toContain("Held");
+    });
   });
 
   it("does not count an archived session's stale reservation", () => {

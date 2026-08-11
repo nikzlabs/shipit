@@ -12,6 +12,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import simpleGit from "simple-git";
 import type { SessionManager } from "../sessions.js";
+import { holdsActiveReservation } from "../sessions.js";
 import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
 import { projectMessagesForWire } from "../transcript-projection.js";
 import type { UsageManager } from "../usage.js";
@@ -512,8 +513,7 @@ export function resolveMaxKeepPreviewRunning(env: NodeJS.ProcessEnv = process.en
  * a migration — the same predicate answers "who holds the slot".
  */
 export function listActiveReservations(sessionManager: SessionManager): SessionInfo[] {
-  // `listAll()` already drops warm rows; archived is the remaining exclusion.
-  return sessionManager.listAll().filter((s) => s.keepPreviewRunning && !s.userArchived && !s.archived);
+  return sessionManager.listAll().filter(holdsActiveReservation);
 }
 
 /**
@@ -524,13 +524,20 @@ export function listActiveReservations(sessionManager: SessionManager): SessionI
  * from the same rows the cap counted, so the message cannot name a session the
  * user has no way to reach.
  *
- * A cap of 0 (the operator disabling the feature) has no holder to name, and a
- * raised cap can have several, so the sentence is built rather than templated.
+ * A cap of 0 (the operator disabling the feature) is about the cap rather than
+ * any holder, and a raised cap can have several holders, so the sentence is
+ * built rather than templated. The cap is checked FIRST: lowering the cap to 0
+ * does not release reservations already granted, so `reserved` can be non-empty
+ * there — and the holder-shaped sentence would then promise that turning one
+ * off frees a slot, which at capacity 0 it never does.
  */
 export function buildReservationFullMessage(reserved: SessionInfo[], maxReservations: number): string {
-  if (reserved.length === 0) {
+  if (maxReservations === 0) {
     return "Always-on previews are disabled on this deployment (capacity 0). Raise MAX_KEEP_PREVIEW_RUNNING to enable one.";
   }
+  // Unreachable from the admission check (0 >= a positive cap is false), but
+  // the function stays total for any other caller.
+  if (reserved.length === 0) return "Always-on preview capacity is full.";
   const inUse = `${reserved.length} of ${maxReservations} in use`;
   if (reserved.length === 1) {
     return `Always-on preview is reserved by "${reserved[0].title}". Turn it off there to free the only slot (${inUse}).`;
