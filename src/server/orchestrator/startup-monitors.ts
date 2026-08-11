@@ -259,6 +259,11 @@ export async function startStartupMonitors(
   // uncommittable work. Process-scoped so the hourly pass appends the notice
   // once per stuck session instead of once per hour.
   const notifiedEvictBlocked = new Set<string>();
+  // Sessions whose eviction is stuck on something that can't change between
+  // passes (a workspace that is no longer a git repository, a corrupt checkout).
+  // Process-scoped so the hourly + per-activation passes report each cause once
+  // instead of re-logging it on every sweep for as long as the session exists.
+  const evictStuckLog = new Map<string, string>();
   const kickDiskEscalation = (excludeSessionId?: string): void => {
     if (isTestMode || !containerManager) return;
     if (escalationInFlight) return;
@@ -278,6 +283,7 @@ export async function startStartupMonitors(
             // durable, so a session pinned at `light` is visible to its user.
             chatHistory: chatHistoryManager,
             notifiedEvictBlocked,
+            evictStuckLog,
             paceMs: escalationPaceMs,
             diskFreeLow,
             diskFreeHigh,

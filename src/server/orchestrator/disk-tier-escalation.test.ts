@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -975,6 +975,108 @@ describe("escalateDiskTiers", () => {
 
     expect(result.toEvicted).toBe(1);
     expect(sm.get("vanished-light")?.diskTier).toBe("evicted");
+  });
+
+  // The same stuck-forever shape as the vanished workspace above, but with the
+  // DIRECTORY still present and only `.git` gone. `workspaceGone` was false, so
+  // every pass reached the durability block, threw "fatal: not a git
+  // repository", and returned "skipped" — no state change, no backoff. One
+  // production session repeated that pair 117 times in an hour for eight days.
+  it("evicts a workspace that exists but is no longer a git repository", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-derepoed");
+    await initRepo(wsDir);
+    fs.rmSync(path.join(wsDir, ".git"), { recursive: true, force: true });
+    insertSession({
+      id: "derepoed-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+    });
+
+    expect(result.toEvicted).toBe(1);
+    expect(sm.get("derepoed-light")?.diskTier).toBe("evicted");
+    expect(fs.existsSync(wsDir)).toBe(false);
+  });
+
+  // Same shape, no remote: nothing could restore it, so recording "evicted"
+  // would assert a lie. The refusal is unchanged — only the log is throttled.
+  it("refuses to evict a non-repo workspace when there is no remote to restore from", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-derepoed-noremote");
+    await initRepo(wsDir, { noRemote: true });
+    fs.rmSync(path.join(wsDir, ".git"), { recursive: true, force: true });
+    insertSession({
+      id: "derepoed-noremote",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+      remoteUrl: "", // the session row has no remote either
+    });
+
+    const { registry } = fakeRegistry();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+    });
+
+    expect(result.toEvicted).toBe(0);
+    expect(sm.get("derepoed-noremote")?.diskTier).toBe("light");
+    expect(fs.existsSync(path.join(wsDir, "a.txt"))).toBe(true);
+  });
+
+  // A corrupt-but-present `.git` still takes the careful path (never wiped) —
+  // but it must not narrate its unchanging failure on every hourly pass.
+  it("reports a repeating git failure once, not once per pass", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-corrupt");
+    await initRepo(wsDir);
+    fs.rmSync(path.join(wsDir, ".git"), { recursive: true, force: true });
+    // A `.git` FILE with an invalid gitfile format: present (so the "no
+    // repository at all" fast path doesn't apply) and broken on every git call.
+    fs.writeFileSync(path.join(wsDir, ".git"), "not a gitfile\n");
+    insertSession({
+      id: "corrupt-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const deps = {
+      ...baseDeps(sm, registry),
+      createGitManager: (dir: string) => new GitManager(dir),
+      evictStuckLog: new Map<string, string>(),
+    };
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let warnings: string[];
+    try {
+      await escalateDiskTiers(deps);
+      await escalateDiskTiers(deps);
+      await escalateDiskTiers(deps);
+      // Read BEFORE the restore — `mockRestore` also clears `mock.calls`.
+      warnings = warn.mock.calls.map((c) => String(c[0]));
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(warnings.filter((w) => w.includes("git check failed"))).toHaveLength(1);
+    // Still refused: the checkout survives every pass.
+    expect(sm.get("corrupt-light")?.diskTier).toBe("light");
+    expect(fs.existsSync(path.join(wsDir, "a.txt"))).toBe(true);
   });
 
   it("planning#296: warns once per session, not once per escalation pass", async () => {

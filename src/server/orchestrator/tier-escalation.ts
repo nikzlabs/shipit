@@ -13,6 +13,7 @@
  */
 
 import { stat } from "node:fs/promises";
+import { join } from "node:path";
 import type { SessionManager } from "./sessions.js";
 import type { SessionInfo } from "../shared/types.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
@@ -73,6 +74,23 @@ export interface TierEscalationDeps {
    * condition is still true.
    */
   notifiedEvictBlocked?: Set<string>;
+  /**
+   * Sessions whose eviction is stuck for a reason that CANNOT change between
+   * passes, mapped to the signature of what was last reported for them. Owned by
+   * the caller (one Map per orchestrator process), same shape and lifetime as
+   * `notifiedEvictBlocked`.
+   *
+   * The pass runs hourly and on every session start, and these outcomes repeat
+   * identically forever — one production session logged the same "git check
+   * failed" pair 117 times in an hour, for eight days, drowning real events in
+   * the orchestrator log. The entry is cleared whenever the outcome changes, so
+   * a session that gets stuck for a NEW reason is reported again; a stuck
+   * session stays visible, just not once per pass.
+   *
+   * Omit in tests that don't assert the throttle: without it every occurrence
+   * logs, which is the old behavior and harmless in a single-pass test.
+   */
+  evictStuckLog?: Map<string, string>;
   /**
    * Disk-pressure water marks (bytes free). When `getFreeDiskBytes` reports
    * below `diskFreeLow`, the pass escalates LRU-eligible sessions — ignoring the
@@ -279,6 +297,10 @@ async function blockedEvict<T extends "blocked-by-push" | "blocked-by-dirty">(
   outcome: T,
   reason?: EvictBlockReason,
 ): Promise<T> {
+  // A block is a different outcome than "stuck on an unchanging failure", and it
+  // has its own once-per-session notice. Drop any throttled signature so a
+  // later failure is reported again.
+  clearStuck(session, deps);
   if (reason) {
     console.warn(
       `[disk-janitor] evict blocked for ${session.id} — auto-commit refused (${reason.kind}), `
@@ -355,6 +377,35 @@ async function tipIsOnOrigin(git: GitManager, branch: string): Promise<boolean> 
 }
 
 /**
+ * Report a repeating eviction failure ONCE per session per distinct cause,
+ * instead of once per pass. `signature` identifies the cause (kind + the
+ * underlying message, when there is one): a DIFFERENT signature is a different
+ * outcome and logs again, so the throttle can never hide a new problem behind an
+ * old one. See {@link TierEscalationDeps.evictStuckLog}.
+ */
+function warnStuck(
+  session: SessionInfo,
+  deps: TierEscalationDeps,
+  signature: string,
+  message: string,
+): void {
+  const log = deps.evictStuckLog;
+  if (log?.get(session.id) === signature) return;
+  log?.set(session.id, signature);
+  console.warn(message);
+}
+
+/**
+ * Forget a session's last reported stuck-signature, so the next occurrence of
+ * anything — including the same cause — is logged again. Called from every path
+ * that reaches a DIFFERENT outcome than "stuck": the throttle is scoped to an
+ * unchanging outcome, not to the session.
+ */
+function clearStuck(session: SessionInfo, deps: TierEscalationDeps): void {
+  deps.evictStuckLog?.delete(session.id);
+}
+
+/**
  * `light → evicted`: the destructive rung. Everything it wipes must be
  * recoverable from `origin` first, so it remediates the checkout and refuses to
  * proceed unless three things hold: the tree is clean, no merge/rebase is
@@ -376,10 +427,35 @@ async function reclaimToEvicted(
   // the truth — it IS evicted — routes the next activation through restore.
   // Only when a remote can supply the re-clone; without one it is unrecoverable
   // either way, so leave the row alone rather than assert a lie.
-  const workspaceGone = session.workspaceDir !== undefined
+  //
+  // "Already gone" is not only a MISSING DIRECTORY. A directory that survives
+  // WITHOUT a git repository inside it is the same case and was not covered: a
+  // production session sat at `light` for eight days logging "git check failed:
+  // fatal: not a git repository" on every pass, because `workspaceGone` was
+  // false (the dir exists), the durability block below threw on its first git
+  // call, and the catch returned "skipped" — no state change, no backoff, so the
+  // next pass repeated the identical work and failed identically, forever.
+  //
+  // A path with no repository holds no commits and no branch, so the durability
+  // gate (tree clean + tip on origin) can never be satisfied for it and no
+  // number of retries can change that. The trade this makes explicit: loose
+  // files left in such a directory are wiped, because there is no mechanism that
+  // could ever make them durable — unlike a corrupt-but-real `.git`, which the
+  // catch below still protects. `.git` present in ANY form (dir or worktree
+  // file) keeps the old, careful path.
+  const workspaceMissing = session.workspaceDir !== undefined
     && !(await stat(session.workspaceDir).catch(() => null));
-  if (workspaceGone && !session.remoteUrl) {
-    console.warn(`[disk-janitor] evict skipped for ${session.id} — workspace missing and no remote to restore from`);
+  const workspaceNotARepo = session.workspaceDir !== undefined && !workspaceMissing
+    && !(await stat(join(session.workspaceDir, ".git")).catch(() => null));
+  const nothingToProtect = workspaceMissing || workspaceNotARepo;
+  if (nothingToProtect && !session.remoteUrl) {
+    warnStuck(
+      session, deps,
+      `no-remote:${workspaceMissing ? "missing" : "not-a-repo"}`,
+      `[disk-janitor] evict skipped for ${session.id} — workspace `
+      + `${workspaceMissing ? "missing" : "is not a git repository"} and no remote to restore from`
+      + " (this cannot change on its own; further passes stay quiet)",
+    );
     return "skipped";
   }
 
@@ -417,7 +493,7 @@ async function reclaimToEvicted(
 
   // Durability guard: a `light` session keeps its checkout on disk, and the
   // container is stopped — so we operate git directly on the host checkout.
-  if (createGitManager && session.workspaceDir && !workspaceGone) {
+  if (createGitManager && session.workspaceDir && !nothingToProtect) {
     try {
       const git = createGitManager(session.workspaceDir);
 
@@ -500,10 +576,22 @@ async function reclaimToEvicted(
       }
     } catch (err) {
       // A git failure here (corrupt checkout, etc.) must not wipe unrecoverable
-      // work — bail out and leave the session at light.
-      console.warn(`[disk-janitor] evict skipped for ${session.id} — git check failed:`, getMessage(err));
+      // work — bail out and leave the session at light. Reported once per
+      // distinct failure: nothing here changes the session's state, so an
+      // unchanged failure means the next pass will fail identically. A session
+      // stuck this way is still visible in the log; it just doesn't repeat
+      // hourly (and, above, one whole class of it no longer reaches here).
+      const message = getMessage(err);
+      warnStuck(
+        session, deps, `git-check:${message}`,
+        `[disk-janitor] evict skipped for ${session.id} — git check failed`
+        + ` (repeats of this same failure stay quiet): ${message}`,
+      );
       return "skipped";
     }
+    // The git block completed, so whatever was stuck before isn't now. Forget
+    // it, so a later failure — even the same one — is reported again.
+    clearStuck(session, deps);
   }
 
   // planning#296 — the guards were evaluated before the pacing delay and the git /
@@ -547,6 +635,7 @@ async function reclaimToEvicted(
     }
   }
 
+  clearStuck(session, deps);
   sessionManager.setDiskTier(session.id, "evicted");
   console.log(`[disk-janitor] ${session.id}: light → evicted (workspace + overlay wiped)`);
   return "evicted";
