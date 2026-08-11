@@ -706,8 +706,18 @@ function AddServiceDialog({
 
         {service && billingMode && (
           <div className="mt-3 space-y-2" data-testid="add-service-step-credential">
+            {/*
+              The step is titled for the PRIMARY path, not for whichever shape
+              happens to exist. A mode that takes an account is connected by
+              signing in — that is what almost everyone does with it — so a mode
+              accepting BOTH read as "3 · Paste the key" above prose explaining
+              you sign in, with the key field first and *Save* as the primary
+              button. Signing in leads; the string stays reachable underneath,
+              since Anthropic's subscription genuinely accepts an env-supplied
+              token and hiding it is what made signing in unreachable before.
+            */}
             <p className="text-[10px] uppercase tracking-wider text-(--color-text-tertiary)">
-              3 · {acceptsString ? "Paste the key" : "Sign in"}
+              3 · {acceptsAccount ? "Sign in" : "Paste the key"}
             </p>
             {acceptsAccount && (
               <p className="text-xs text-(--color-text-secondary)" data-testid="add-service-account-only">
@@ -718,6 +728,14 @@ function AddServiceDialog({
             )}
             {acceptsString && (
               <>
+                {acceptsAccount && (
+                  <p
+                    className="pt-1 text-[10px] uppercase tracking-wider text-(--color-text-tertiary)"
+                    data-testid="add-service-string-alternative"
+                  >
+                    Or paste a key
+                  </p>
+                )}
                 <input
                   type="password"
                   value={secret}
@@ -755,20 +773,15 @@ function AddServiceDialog({
           <Button variant="ghost" size="md" className="rounded-md" onClick={onClose}>
             Cancel
           </Button>
-          {acceptsAccount && (
-            <Button
-              variant={acceptsString ? "secondary" : "primary"}
-              size="md"
-              className="rounded-md"
-              onClick={revealAccountCard}
-              data-testid="add-service-continue"
-            >
-              Continue to sign in
-            </Button>
-          )}
+          {/*
+            Button order follows the same rule as the heading: the account path
+            is primary wherever it exists, and *Save* steps down to secondary
+            rather than disappearing — the key is still a working way to connect
+            Anthropic's subscription, just not the one being recommended.
+          */}
           {(acceptsString || !billingMode || !service) && (
             <Button
-              variant="primary"
+              variant={acceptsAccount ? "secondary" : "primary"}
               size="md"
               className="rounded-md"
               disabled={!service || !billingMode || !secret.trim() || saving}
@@ -776,6 +789,17 @@ function AddServiceDialog({
               data-testid="add-service-save"
             >
               {saving ? "Saving..." : "Save"}
+            </Button>
+          )}
+          {acceptsAccount && (
+            <Button
+              variant="primary"
+              size="md"
+              className="rounded-md"
+              onClick={revealAccountCard}
+              data-testid="add-service-continue"
+            >
+              Continue to sign in
             </Button>
           )}
         </div>

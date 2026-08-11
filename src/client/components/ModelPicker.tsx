@@ -12,6 +12,8 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
 } from "./ui/dropdown-menu.js";
+import { BillingModePill } from "./BillingModePill.js";
+import type { BillingMode } from "../../server/shared/catalogue/index.js";
 import type { AgentId, SessionInfo } from "../../server/shared/types.js";
 import type { AgentOption, EligibleModelOption } from "../agent-types.js";
 import type { ModelInfo } from "../utils/model-info.js";
@@ -56,6 +58,35 @@ interface ModelGroup {
   serviceName: string;
   billingMode: "sub" | "key";
   rows: ModelRow[];
+}
+
+/**
+ * A group header: the service at the left edge, its billing mode as a coloured
+ * pill at the right.
+ *
+ * The pill is the same component Settings → Services puts on a card header, and
+ * the right edge is where it goes because the header is a two-column statement —
+ * *which service*, and *who is paying* — not a sentence. Rendered as plain
+ * tertiary text run on after the name (what shipped first), the mode read as a
+ * qualifier of the service rather than as the other half of the pair a model is
+ * selected by (req 5).
+ *
+ * Shared with the composer's settings menu, which renders the same groups: two
+ * copies of this markup is exactly how the two menus would drift apart.
+ */
+export function ModelGroupHeader({
+  serviceName,
+  billingMode,
+}: {
+  serviceName: string;
+  billingMode: BillingMode;
+}) {
+  return (
+    <DropdownMenuLabel className="flex items-center gap-2">
+      <span className="min-w-0 flex-1 truncate">{serviceName}</span>
+      <BillingModePill billingMode={billingMode} data-testid={`model-group-mode-${billingMode}`} />
+    </DropdownMenuLabel>
+  );
 }
 
 /**
@@ -272,18 +303,27 @@ export function HarnessSelector({
                 }`}
                 data-testid={`harness-option-${agent.id}`}
               >
-                <span className="flex-1">{agent.name}</span>
                 {/*
+                  Two lines, name over count: the count is a property OF the
+                  harness, and right-aligning it on the same line made it read as
+                  a second column the eye compares across rows — which is
+                  precisely the "how many models am I giving up" comparison the
+                  control is not for. The composer's settings menu says the same
+                  thing through `ChoiceRow`'s description slot.
+
                   The model count lands on the control that would act on it,
                   which is why there is no "N more models on Codex" footer in the
                   MODEL menu: that footer grows with every installed harness and
                   is useless the moment the harness is pinned, which is most of a
                   session's life.
                 */}
-                <span className="text-xs text-(--color-text-tertiary)">
-                  {agent.hasRunnableModels
-                    ? `${rows.length} model${rows.length === 1 ? "" : "s"}`
-                    : "needs a credential"}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{agent.name}</span>
+                  <span className="block text-[11px] text-(--color-text-tertiary)">
+                    {agent.hasRunnableModels
+                      ? `${rows.length} model${rows.length === 1 ? "" : "s"} available`
+                      : "needs a credential"}
+                  </span>
                 </span>
                 <span className="flex w-4 shrink-0 justify-end">
                   {isCurrent && <CheckIcon size={ICON_SIZE.SM} className="text-(--color-accent)" />}
@@ -590,12 +630,10 @@ export function ModelSelector({
           {groups.map((group) => (
             <div key={group.key || "__ungrouped__"}>
               {group.serviceName && (
-                <DropdownMenuLabel className="flex items-center gap-2">
-                  <span>{group.serviceName}</span>
-                  <span className="text-(--color-text-tertiary) normal-case tracking-normal font-normal">
-                    {group.billingMode === "sub" ? "Subscription" : "API key"}
-                  </span>
-                </DropdownMenuLabel>
+                <ModelGroupHeader
+                  serviceName={group.serviceName}
+                  billingMode={group.billingMode}
+                />
               )}
               {group.rows.map((row) => {
                 const isCurrentModel =
