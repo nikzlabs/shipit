@@ -34,6 +34,7 @@ import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
 import {
   SERVICES,
   type ConfiguredCredential,
+  eligibleEntriesForHarness,
   getMode,
   getService,
   harnessCanCarry,
@@ -160,6 +161,42 @@ export function listConfiguredCredentials(
   return out;
 }
 
+/**
+ * planning#353 — **what a session with no stored selection will actually run.**
+ *
+ * A session row's triple is written when someone picks a model, and plenty of
+ * sessions never have one: a headless create, a warm session opened and typed
+ * into, a row whose model id the catalogue has since dropped (`setModel` nulls
+ * the service and mode in that case, deliberately). Until now that state routed
+ * to the **harness's own vendor** — Anthropic for Claude Code — whatever the
+ * install actually held. On a DeepSeek-only, GLM-only or OpenRouter-only
+ * install that is precisely the service with no credential, so the turn died
+ * with `auth_required` while the composer displayed a perfectly runnable model.
+ *
+ * The rule here is the one `firstEligibleNonTurnSelection` already applies to
+ * background work, and for the same stated reason: a default naming a fixed
+ * vendor "would point at a vendor the install may have no credential for, which
+ * is exactly the install this feature exists to create (a user whose only
+ * credential is a DeepSeek key)". Turn routing simply kept the older answer.
+ *
+ * Expressed over `eligibleEntriesForHarness` rather than as a second walk. That
+ * list IS the picker's ordering — the catalogue join for this harness, narrowed
+ * to the modes holding a credential it can carry — so "the first model this
+ * install can run" and "the first model the picker would offer" cannot drift
+ * apart into two rules.
+ *
+ * Returns `undefined` when the install has nothing this harness can run, which
+ * keeps the caller on the pre-existing `auth_required` answer rather than
+ * inventing one.
+ */
+export function firstEligibleSelectionForHarness(
+  harnessId: AgentId,
+  deps: Pick<SelectRouteDeps, "credentialStore" | "env">,
+): ModelSelection | undefined {
+  const credentials = listConfiguredCredentials(deps.credentialStore, deps.env ?? process.env);
+  return eligibleEntriesForHarness(harnessId, credentials)[0]?.selection;
+}
+
 /** Every `(service, mode)` that accepts a string credential, with its variable name. */
 function servicesWithStringCredentials(): {
   serviceId: string;
@@ -221,10 +258,22 @@ export function selectRouteForSelection(
 ): AccountSelection {
   const mode = selection ? getMode(selection.serviceId, selection.billingMode) : undefined;
   if (!selection || !mode) {
-    // No selection to scope by. Keep the pre-feature question so a session that
-    // has never had a model picked still routes exactly as it did — which means
-    // asking about the harness's OWN vendor, the only service a session with no
-    // selection could ever have meant.
+    // No selection to scope by: ask about the harness's OWN vendor.
+    //
+    // planning#353 — this used to be justified as "the only service a session
+    // with no selection could ever have meant", which stopped being true the
+    // moment a harness could run another vendor's models. It is no longer the
+    // turn path's default: `prepareSessionAgentEnvironment` settles a
+    // selection-less session onto {@link firstEligibleSelectionForHarness}
+    // BEFORE calling this, so a DeepSeek-only install no longer arrives here
+    // and gets asked about Anthropic.
+    //
+    // What is left is the genuinely empty case — nothing this harness can run —
+    // where both answers are `auth_required`, plus callers that always supply a
+    // selection (`non-turn-model.ts`, `reviewer-model.ts`, `sub-agent.ts`,
+    // whose target "can no longer be unset"). Kept rather than rewritten
+    // because it is the honest answer to a question with no other information
+    // in it; do not restore it as a default for a session.
     return (
       deps.providerAccountManager?.selectAccountForTurn(accountServiceForHarness(harnessId), opts)
       ?? { ok: false, reason: "auth_required" }

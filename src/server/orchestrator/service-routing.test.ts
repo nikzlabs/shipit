@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   desiredSpawnIdentity,
   envRouteIdFor,
+  firstEligibleSelectionForHarness,
   listConfiguredCredentials,
   selectRouteForSelection,
   serviceRoutingForSelection,
@@ -96,6 +97,95 @@ describe("listConfiguredCredentials", () => {
   });
 });
 
+/**
+ * planning#353 — the default for a session that has never had a model picked.
+ *
+ * The bug these pin: turn routing asked the harness's OWN vendor, so an install
+ * whose only credential is a DeepSeek key sent every selection-less turn to
+ * Anthropic and failed `auth_required` while the composer displayed a runnable
+ * model.
+ */
+describe("firstEligibleSelectionForHarness", () => {
+  it("picks a credentialed service over the harness's own vendor", () => {
+    const selection = firstEligibleSelectionForHarness("claude", {
+      credentialStore: store([route({ id: "cred_1", serviceId: "deepseek" })], { cred_1: "sk-ds" }),
+      env: {} as NodeJS.ProcessEnv,
+    });
+    expect(selection).toEqual({
+      serviceId: "deepseek",
+      billingMode: "key",
+      modelId: "deepseek-v4-flash",
+    });
+  });
+
+  it("still prefers the harness's own vendor when the install has a credential for it", () => {
+    // The first-party path must not move: Anthropic leads the catalogue, so a
+    // connected account is what a Claude session with no selection still gets.
+    const selection = firstEligibleSelectionForHarness("claude", {
+      credentialStore: store([
+        route({ id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account" }),
+        route({ id: "cred_1", serviceId: "deepseek" }),
+      ], { cred_1: "sk-ds" }),
+      env: {} as NodeJS.ProcessEnv,
+    });
+    expect(selection).toEqual({
+      serviceId: "anthropic",
+      billingMode: "sub",
+      modelId: "claude-opus-5",
+    });
+  });
+
+  it("reads a deployment-supplied key from the environment, like eligibility does", () => {
+    const selection = firstEligibleSelectionForHarness("claude", {
+      credentialStore: store([]),
+      env: { ZAI_CODING_PLAN_KEY: "glm" } as unknown as NodeJS.ProcessEnv,
+    });
+    expect(selection?.serviceId).toBe("zai");
+    expect(selection?.billingMode).toBe("sub");
+  });
+
+  it("walks past a mode with no credential to the next one that has one", () => {
+    // Anthropic's `sub` leads the catalogue but holds nothing here, so the
+    // answer is its `key` mode rather than the first row in catalogue order.
+    // (Named accurately after a cross-agent review pointed out an earlier
+    // comment here described an account-only install, which this is not — that
+    // case is the `sub` assertion above.)
+    const selection = firstEligibleSelectionForHarness("claude", {
+      credentialStore: store([route({ id: "cred_1", serviceId: "anthropic", billingMode: "key" })], {
+        cred_1: "sk-ant",
+      }),
+      env: {} as NodeJS.ProcessEnv,
+    });
+    expect(selection).toEqual({
+      serviceId: "anthropic",
+      billingMode: "key",
+      modelId: "claude-opus-5",
+    });
+  });
+
+  it("is undefined when the install has nothing at all", () => {
+    expect(
+      firstEligibleSelectionForHarness("claude", {
+        credentialStore: store([]),
+        env: {} as NodeJS.ProcessEnv,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("is undefined when nothing eligible speaks a style this harness has", () => {
+    // Codex speaks only `openai-responses`; DeepSeek's models declare
+    // `openai-chat-completions` and `anthropic-messages`. So a Codex session on
+    // a DeepSeek-only install genuinely has nothing to run, and `auth_required`
+    // is the honest answer rather than a reroute to a model it cannot drive.
+    expect(
+      firstEligibleSelectionForHarness("codex", {
+        credentialStore: store([route({ id: "cred_1", serviceId: "deepseek" })], { cred_1: "sk-ds" }),
+        env: {} as NodeJS.ProcessEnv,
+      }),
+    ).toBeUndefined();
+  });
+});
+
 describe("selectRouteForSelection — scoped to the SELECTED billing mode", () => {
   const anthropicAccount: AccountSelection = { ok: true, route: { kind: "account", id: "acct_1" } };
   const noAccount: AccountSelection = { ok: false, reason: "auth_required" };
@@ -151,10 +241,13 @@ describe("selectRouteForSelection — scoped to the SELECTED billing mode", () =
   });
 
   /**
-   * The no-selection path keeps the pre-feature question, which IS the
-   * harness's own vendor — a session that has never had a model picked could
-   * have meant nothing else. Separate from the case above so putting the two
-   * paths on one axis fails one of them.
+   * The no-selection path asks the harness's own vendor. Separate from the case
+   * above so putting the two paths on one axis fails one of them.
+   *
+   * planning#353 — this is no longer the *session* default. A selection-less
+   * turn is settled onto `firstEligibleSelectionForHarness` by
+   * `prepareSessionAgentEnvironment` before it reaches here, so what this pins
+   * is the residual answer for a caller with genuinely no other information.
    */
   it("falls back to the harness's own vendor when there is no selection", () => {
     const asked: string[] = [];
