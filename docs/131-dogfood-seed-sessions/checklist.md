@@ -1,7 +1,72 @@
 # 131 — Dogfood seed sessions: checklist
 
 Implemented and smoke-tested end to end on a real dogfood stack (2026-08-04),
-with a real agent turn. Nothing outstanding.
+with a real agent turn. Credential seeding (reqs 11–12) added and smoke-tested
+the same way 2026-08-11. Nothing outstanding.
+
+## Credential seeding (reqs 11–12)
+
+- [x] Established from the code, before building, that a declared env key does
+      **not** already materialise as a credential route: `listConfiguredCredentials`
+      (`service-routing.ts`) reads raw env so models are *eligible*, but
+      `listCredentialRoutes` (`services/credential-routes.ts`) reads the store
+      only, `stringSelectionFor` reaches an env credential only as a last resort
+      with no row to bench or order, and `LimitsRegistry` has no route id to
+      attach a reader to. So the missing half had to be built — case B.
+- [x] `scripts/seed-inner-credentials.ts` — catalogue-driven
+      (`credentialStorageEnvNames` + `credentialModeForStorageEnv`), no
+      per-service branch. POSTs `/api/credential-routes` so the store, the SSE
+      and any open inner UI all update.
+- [x] Same contract as the repo seeder: fail-open, always exits 0, skips a mode
+      that already holds a string credential, `DOGFOOD_SEED=0` plus
+      `DOGFOOD_SEED_CREDENTIALS=0`, `[seed]`-prefixed output.
+- [x] `docker-compose.yml` — all eight catalogue credential names declared;
+      both seeders share one backgrounded subshell, credentials first.
+- [x] Guard test: `x-shipit-secrets` is asserted against
+      `credentialStorageEnvNames()` in both directions, so a new service fails
+      the build naming the missing key.
+- [x] Cross-agent review (Codex, 2026-08-11). Four findings folded in: the
+      failed-discovery duplication path (a lost GET now aborts the run instead
+      of POSTing blind), the over-strict reverse compose assertion (dropped),
+      the wrong non-turn billing mechanism, and the overstated quota claim. One
+      finding — "a seeded route is unusable until restart" — was **refuted**;
+      see below.
+- [x] Billing hazards established from the code and surfaced rather than hidden.
+      Two of them: background work follows `firstEligibleNonTurnSelection`, so
+      any metered key can become what it spends on (observed live: with only
+      DeepSeek set, Background work reads "DeepSeek · V4 Flash"); and the three
+      vendor-native names bypass a connected account on an *unshaped* spawn with
+      no account route. The first draft's mechanism — "`spawnSubAgent` passes no
+      `resolveHome`" — was wrong: `systemTurnDeps.agentFactory` prefers
+      `runner.createAgent`, which local mode binds with `resolveLocalAgentHome`.
+      Corrected in `plan.md`, the seed warning, and the skill.
+
+## Manual smoke (2026-08-11, `dev` service in production ShipIt)
+
+- [x] **req 11** — first boot with `DEEPSEEK_API_KEY` set as an outer secret:
+      `[seed] credentials: DEEPSEEK_API_KEY — added as deepseek:key`. Nothing
+      was configured in the inner UI.
+- [x] **req 12** — inner Settings → Services renders a full DeepSeek card:
+      "DeepSeek key (dogfood secret)" with Replace/Remove and its two models,
+      identical to a hand-added credential. `GET /api/credential-routes`
+      returns a real `cred_…` row, `via: "string"`, `status: "ready"`.
+- [x] **req 12, `sub` mode** — seeded a throwaway `ZAI_CODING_PLAN_KEY` against
+      the live inner orch: `zai:sub` renders as a Subscription card with the
+      failover copy. This is the shape `planning#339`'s quota reader attaches
+      to. Removed afterwards.
+- [x] **req 4** — restarting the dev service logged
+      `deepseek:key already has a credential, leaving it alone`, and
+      `/api/credential-routes` still had exactly one row.
+- [x] **A seeded credential authenticates a real turn — no restart needed.**
+      The check the first smoke run missed, and the one the review predicted
+      would fail. A headless inner session pinned to
+      `deepseek:key / deepseek-v4-flash` logged
+      `route=reserved:cred_eccfbb97-…` and
+      `[claude] service routing: deepseek/key -> https://api.deepseek.com/anthropic`,
+      and answered. The delivery path is `applyLocalMcp` → `localMcpSpawnEnv` →
+      `selectAgentEnvForPush`, which applies `SHIPIT_CREDENTIAL_*` to
+      `process.env` around each spawn, read live from the store — so the boot-only
+      `app-di` seeding (which filters that prefix out anyway) is not the path.
 
 ## Manual smoke (2026-08-04, `dev` service in production ShipIt)
 
