@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { FilePreviewModal } from "./FilePreviewModal.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useFileStore } from "../stores/file-store.js";
 import type { AgentOption } from "../agent-types.js";
 
 // Monaco editor uses dynamic import("monaco-editor") and won't work in jsdom.
@@ -20,8 +21,12 @@ vi.mock("monaco-editor", () => ({
   },
 }));
 
+const realOpenEditor = useFileStore.getState().openEditor;
+
 afterEach(() => {
   cleanup();
+  useFileStore.setState({ openEditor: realOpenEditor });
+  useSessionStore.setState({ sessions: [] });
   // Reset stores so per-test state doesn't bleed across cases.
   useSessionStore.getState().setSessionId(undefined);
   useUiStore.getState().setAgentList([]);
@@ -152,7 +157,7 @@ describe("FilePreviewModal", () => {
           filePath="docs/246-thing/plan.md"
           content="# Plan"
           fileType="markdown"
-          downloadable
+          fileOnDisk
           onClose={() => {}}
         />
       );
@@ -171,7 +176,7 @@ describe("FilePreviewModal", () => {
           filePath="/uploads/my report #2.pdf"
           content="binary"
           fileType="binary"
-          downloadable
+          fileOnDisk
           onClose={() => {}}
         />
       );
@@ -192,6 +197,84 @@ describe("FilePreviewModal", () => {
         />
       );
       expect(screen.queryByLabelText("Download pasted.png")).not.toBeInTheDocument();
+    });
+  });
+
+  // Edit had the same defect as Download: only the file tree passed it in, so
+  // the same file was editable from one surface and read-only from the others.
+  describe("edit control", () => {
+    function graduatedSession() {
+      useSessionStore.getState().setSessionId("session-1");
+      useSessionStore.setState({
+        sessions: [
+          {
+            id: "session-1",
+            title: "s",
+            createdAt: "2026-01-01T00:00:00.000Z",
+            lastUsedAt: "2026-01-01T00:00:00.000Z",
+            remoteUrl: "https://github.com/o/r.git",
+          },
+        ],
+      });
+    }
+
+    it("opens the editor for an editable file in a graduated session", () => {
+      graduatedSession();
+      const openEditor = vi.fn();
+      useFileStore.setState({ openEditor } as never);
+      render(
+        <FilePreviewModal
+          filePath="docs/246-thing/plan.md"
+          content="# Plan"
+          fileType="markdown"
+          fileOnDisk
+          onClose={() => {}}
+        />
+      );
+      fireEvent.click(screen.getByLabelText("Edit docs/246-thing/plan.md"));
+      expect(openEditor).toHaveBeenCalledWith("session-1", "docs/246-thing/plan.md");
+    });
+
+    it("omits the control in a warm session, which the server would reject", () => {
+      useSessionStore.getState().setSessionId("session-1");
+      useSessionStore.setState({ sessions: [] });
+      render(
+        <FilePreviewModal
+          filePath="plan.md"
+          content="# Plan"
+          fileType="markdown"
+          fileOnDisk
+          onClose={() => {}}
+        />
+      );
+      expect(screen.queryByLabelText("Edit plan.md")).not.toBeInTheDocument();
+    });
+
+    it("omits the control for a non-editable file", () => {
+      graduatedSession();
+      render(
+        <FilePreviewModal
+          filePath="photo.png"
+          content="data:image/png;base64,abc123"
+          fileType="image"
+          fileOnDisk
+          onClose={() => {}}
+        />
+      );
+      expect(screen.queryByLabelText("Edit photo.png")).not.toBeInTheDocument();
+    });
+
+    it("omits the control for an in-memory preview", () => {
+      graduatedSession();
+      render(
+        <FilePreviewModal
+          filePath="pasted.md"
+          content="# Pasted"
+          fileType="markdown"
+          onClose={() => {}}
+        />
+      );
+      expect(screen.queryByLabelText("Edit pasted.md")).not.toBeInTheDocument();
     });
   });
 

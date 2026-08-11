@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: reset view mode on file change
 import { useEffect, useCallback, useState } from "react";
-import { RobotIcon, DownloadSimpleIcon } from "@phosphor-icons/react";
+import { RobotIcon, DownloadSimpleIcon, PencilSimpleIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Button, buttonVariants } from "./ui/button.js";
@@ -9,9 +9,10 @@ import { FileReviewFooter } from "./FileContentView/FileReviewFooter.js";
 import { FileReviewSendDialog } from "./SendReviewDialog.js";
 import { SourceToggle, type ViewMode } from "./FileContentView/SourceToggle.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useFileStore } from "../stores/file-store.js";
 import { useFileReviewControls } from "../hooks/use-file-review-controls.js";
 import { kindFromPreviewType, supportsSourceToggle } from "../utils/file-content-kind.js";
-import type { FilePreviewType } from "../utils/file-preview-type.js";
+import { isEditableFilePath, type FilePreviewType } from "../utils/file-preview-type.js";
 import { WithTooltip } from "./ui/tooltip.js";
 
 /**
@@ -53,13 +54,13 @@ export interface FilePreviewModalProps {
   actions?: FilePreviewAction[];
   /**
    * Whether the previewed file exists on disk in the session workspace. When
-   * true the modal renders its own Download control — download belongs to the
-   * preview itself, not to whichever surface opened it, so a doc opened from
-   * the PR card is as downloadable as one opened from the file tree. False for
-   * an in-memory preview (a pasted image) whose path the download route cannot
-   * resolve.
+   * true the modal renders its own Download and Edit controls — both belong to
+   * the preview itself, not to whichever surface opened it, so a doc opened
+   * from the PR card behaves like one opened from the file tree. False for an
+   * in-memory preview (a pasted image), which has no path either the download
+   * route or the editor could resolve.
    */
-  downloadable?: boolean;
+  fileOnDisk?: boolean;
   /**
    * Optional sibling docs in the same directory. When more than one is
    * provided, the modal renders a tab strip in the header. The active tab is
@@ -110,13 +111,24 @@ export function FilePreviewModal({
   actions,
   siblings,
   onSwitchSibling,
-  downloadable,
+  fileOnDisk,
   onClose,
   onSendComments,
   onAskAgentReview,
 }: FilePreviewModalProps) {
   const sessionId = useSessionStore((s) => s.sessionId) ?? "";
   const kind = kindFromPreviewType(fileType, filePath);
+
+  // Direct editing needs a graduated session (one that has left the warm pool
+  // and so is present in the sessions list) — the server rejects a write to a
+  // warm session either way. Gated here rather than at the call sites so every
+  // surface that opens a preview offers the same controls; `isEditableFilePath`
+  // rules out binaries, images and uploads.
+  const sessionGraduated = useSessionStore((s) =>
+    s.sessions.some((x) => x.id === s.sessionId),
+  );
+  const showEdit =
+    !!fileOnDisk && !!sessionId && sessionGraduated && isEditableFilePath(filePath);
 
   // HTML/SVG default to rendered; a small toggle in the header flips to source.
   const [viewMode, setViewMode] = useState<ViewMode>("rendered");
@@ -175,7 +187,21 @@ export function FilePreviewModal({
                   </Button>
                 </WithTooltip>
               )}
-              {downloadable && sessionId && (
+              {showEdit && (
+                <WithTooltip label="Edit file">
+                  <Button
+                    variant="secondary"
+                    size="md"
+                    aria-label={`Edit ${filePath}`}
+                    onClick={() => {
+                      void useFileStore.getState().openEditor(sessionId, filePath);
+                    }}
+                  >
+                    <PencilSimpleIcon size={ICON_SIZE.SM} />
+                  </Button>
+                </WithTooltip>
+              )}
+              {fileOnDisk && sessionId && (
                 <WithTooltip label="Download file">
                   <a
                     href={fileDownloadHref(sessionId, filePath)}
