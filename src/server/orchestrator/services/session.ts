@@ -12,6 +12,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import simpleGit from "simple-git";
 import type { SessionManager } from "../sessions.js";
+import { holdsActiveReservation } from "../sessions.js";
 import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
 import { projectMessagesForWire } from "../transcript-projection.js";
 import type { UsageManager } from "../usage.js";
@@ -500,6 +501,52 @@ export function resolveMaxKeepPreviewRunning(env: NodeJS.ProcessEnv = process.en
 }
 
 /**
+ * docs/241 — the sessions that actually hold a reservation, and so the ones the
+ * cap admits against.
+ *
+ * An archived session is excluded even when its row still carries the flag.
+ * `SessionManager.archive` clears it now, but rows archived before that fix
+ * exist in deployed databases, and such a row is unreachable: `listAll()`
+ * returns archived sessions, while the toggle that would release one is only
+ * rendered on a non-archived sidebar row. Counting it made the deployment's
+ * only slot permanently unavailable. Excluding it here heals those rows without
+ * a migration — the same predicate answers "who holds the slot".
+ */
+export function listActiveReservations(sessionManager: SessionManager): SessionInfo[] {
+  return sessionManager.listAll().filter(holdsActiveReservation);
+}
+
+/**
+ * docs/241 — the refusal message, which names the session(s) holding the slots.
+ *
+ * A bare "capacity is full (1/1)" states the count the user already inferred
+ * from the refusal and withholds the one fact they need to act. Titles come
+ * from the same rows the cap counted, so the message cannot name a session the
+ * user has no way to reach.
+ *
+ * A cap of 0 (the operator disabling the feature) is about the cap rather than
+ * any holder, and a raised cap can have several holders, so the sentence is
+ * built rather than templated. The cap is checked FIRST: lowering the cap to 0
+ * does not release reservations already granted, so `reserved` can be non-empty
+ * there — and the holder-shaped sentence would then promise that turning one
+ * off frees a slot, which at capacity 0 it never does.
+ */
+export function buildReservationFullMessage(reserved: SessionInfo[], maxReservations: number): string {
+  if (maxReservations === 0) {
+    return "Always-on previews are disabled on this deployment (capacity 0). Raise MAX_KEEP_PREVIEW_RUNNING to enable one.";
+  }
+  // Unreachable from the admission check (0 >= a positive cap is false), but
+  // the function stays total for any other caller.
+  if (reserved.length === 0) return "Always-on preview capacity is full.";
+  const inUse = `${reserved.length} of ${maxReservations} in use`;
+  if (reserved.length === 1) {
+    return `Always-on preview is reserved by "${reserved[0].title}". Turn it off there to free the only slot (${inUse}).`;
+  }
+  const titles = reserved.map((s) => `"${s.title}"`).join(", ");
+  return `Always-on preview capacity is full (${inUse}). Reserved by ${titles} — turn one off first.`;
+}
+
+/**
  * docs/241 — reserve/release a live preview slot. Admission is checked before
  * mutation. Enabling activates through the ordinary runner factory, whose
  * onRunnerCreated hook owns install + Compose auto-preview reconciliation.
@@ -524,12 +571,9 @@ export function setKeepPreviewRunning(
   }
 
   if (enabled && !current.keepPreviewRunning) {
-    const reserved = sessionManager.listAll().filter((s) => s.keepPreviewRunning).length;
-    if (reserved >= maxReservations) {
-      throw new ServiceError(
-        409,
-        `Always-on preview capacity is full (${reserved}/${maxReservations}). Disable another reservation first.`,
-      );
+    const reserved = listActiveReservations(sessionManager);
+    if (reserved.length >= maxReservations) {
+      throw new ServiceError(409, buildReservationFullMessage(reserved, maxReservations));
     }
   }
 

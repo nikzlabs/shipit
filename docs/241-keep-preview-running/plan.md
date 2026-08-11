@@ -23,7 +23,13 @@ scheduler, or turning every Compose service into a deployment target.
 ## User experience
 
 - A session overflow action toggles **Keep preview running**. The item shows a
-  checkmark when enabled; there is no additional persistent-runtime status UI.
+  checkmark when enabled.
+- The reserved session's sidebar row carries a small broadcast marker, and the
+  refusal message names the session holding the slot. This reverses the original
+  "no additional persistent-runtime status UI" decision, on user instruction
+  (2026-08-11): with a cap of one, a user who is refused needs to find the
+  holder, and a checkmark inside one row's overflow menu cannot be found without
+  opening every menu. The marker states which row; it reports no runtime health.
 - Enabling starts the session and its auto-preview services immediately. Disabling
   returns it to ordinary idle cleanup; it does not stop it immediately.
 - The preview remains behind ShipIt's existing access boundary. This feature does
@@ -112,6 +118,27 @@ reservations. An operator can still stop ShipIt or its containers explicitly.
   Disabling changes only persisted admission state.
 - `idle-enforcer.ts` checks the durable flag both while selecting candidates and
   at the TOCTOU disposal guard, covering ordinary idle and pressure eviction.
+- The sidebar marker is a Phosphor `BroadcastIcon` at `ICON_SIZE.XS` in
+  `--color-success`, rendered on the metadata row beside the pin
+  (`SessionItem.tsx`); `buildReservationFullMessage` composes the refusal, which
+  names one holder, lists several when an operator raised the cap, and explains
+  a cap of `0` rather than naming nobody.
+- **A reservation is released when its session is archived**, and `archive()`
+  clearing the flag is the durable fix. But a row archived *before* that fix
+  still carries it, so every consumer reads one predicate,
+  `holdsActiveReservation` (`sessions.ts`), rather than the raw flag: admission,
+  the idle enforcer (both the candidate scan and the TOCTOU guard), the
+  disk-tier ladder, and the sidebar marker. Splitting them is what let a stale
+  row be ignored by the cap while its surviving container stayed exempt from
+  eviction — two reservations' worth of host, one on the books. `unarchive()`
+  clears the flag for the same reason: restore runs no admission check, so a
+  legacy row could otherwise come back as a second reservation behind the cap.
+  Startup restore was already safe — `activateReservedPreview` refuses an
+  archived session — and a test now pins that.
+- A reserved session is **exempt from the merged-view cap**, like a pin. It
+  holds the deployment's capped slot, and its row is where the user is told so;
+  a reservation that pays for the slot while dropping out of the sidebar
+  recreates the problem this work fixed.
 - `keep-preview-running.ts` restores missing reserved runtimes after Docker
   rediscovery and supervises unexpected exits with three bounded attempts. A
   successful `container_started` cancels the remaining timers; exhaustion keeps

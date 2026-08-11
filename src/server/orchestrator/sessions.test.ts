@@ -3,6 +3,7 @@ import { DatabaseManager } from "../shared/database.js";
 import {
   SessionManager,
   filterVisibleInSidebar,
+  holdsActiveReservation,
   reopenedAfterResolve,
   MAX_MERGED_SESSIONS_PER_REPO,
 } from "./sessions.js";
@@ -551,6 +552,52 @@ describe("SessionManager", () => {
       expect(s?.userArchived).toBe(true);
       expect(s?.diskTier).toBe("evicted");
     });
+
+    it("docs/241: releases the always-on preview reservation on archive", () => {
+      // A reservation surviving archive held the capped slot (default 1) from a
+      // row whose release toggle is never rendered — an unreachable, permanent
+      // "capacity is full".
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.setKeepPreviewRunning("sess-1", true);
+      expect(mgr.get("sess-1")?.keepPreviewRunning).toBe(true);
+
+      expect(mgr.archive("sess-1")).toBe(true);
+      expect(mgr.get("sess-1")?.keepPreviewRunning).toBeUndefined();
+      // Restoring does not silently re-reserve: the slot was genuinely released.
+      expect(mgr.unarchive("sess-1")).toBe(true);
+      expect(mgr.get("sess-1")?.keepPreviewRunning).toBeUndefined();
+    });
+
+    it("docs/241: restoring a legacy archived row does not resurrect its reservation", () => {
+      // A row archived BEFORE archive() cleared the flag still carries it.
+      // Admission ignores it while archived, so another session may hold the
+      // slot by now; restoring it must not create a second reservation behind
+      // the cap's back.
+      const mgr = new SessionManager(dbManager);
+      mgr.track("legacy", "Legacy");
+      mgr.archive("legacy");
+      mgr.setKeepPreviewRunning("legacy", true); // simulate the pre-fix row
+      expect(mgr.get("legacy")?.keepPreviewRunning).toBe(true);
+
+      expect(mgr.unarchive("legacy")).toBe(true);
+      const restored = mgr.get("legacy");
+      expect(restored?.keepPreviewRunning).toBeUndefined();
+      expect(restored?.userArchived).toBeUndefined();
+    });
+  });
+
+  describe("docs/241: holdsActiveReservation", () => {
+    it("is true only for a live reserved session", () => {
+      const base = { id: "s", title: "s", createdAt: "", lastUsedAt: "", remoteUrl: "" };
+      expect(holdsActiveReservation({ ...base, keepPreviewRunning: true })).toBe(true);
+      expect(holdsActiveReservation({ ...base })).toBe(false);
+      expect(holdsActiveReservation(undefined)).toBe(false);
+      // The cases that let admission and the runtime guards disagree.
+      expect(holdsActiveReservation({ ...base, keepPreviewRunning: true, userArchived: true })).toBe(false);
+      expect(holdsActiveReservation({ ...base, keepPreviewRunning: true, archived: true })).toBe(false);
+      expect(holdsActiveReservation({ ...base, keepPreviewRunning: true, warm: true })).toBe(false);
+    });
   });
 
   describe("docs/110 Phase 2: reorderPins", () => {
@@ -767,6 +814,18 @@ describe("SessionManager", () => {
     it("always keeps active (never-merged) sessions", () => {
       const sessions = [active("a"), active("b")];
       expect(filterVisibleInSidebar(sessions).map((s) => s.id)).toEqual(["a", "b"]);
+    });
+
+    it("docs/241: keeps a reserved session visible through the merged cap", () => {
+      // The reserved session holds the deployment's capped slot, and its row is
+      // the only place the user is told so. The cap must not hide it.
+      const sessions = [
+        merged("m1", "2024-01-01 09:00:00"),
+        merged("m2", "2024-01-02 09:00:00"),
+        { ...merged("reserved", "2024-01-01 08:00:00"), keepPreviewRunning: true },
+      ];
+      const visible = filterVisibleInSidebar(sessions, 1).map((s) => s.id).sort();
+      expect(visible).toEqual(["m2", "reserved"]);
     });
 
     it("keeps only the top-N most-recently-merged per repo", () => {

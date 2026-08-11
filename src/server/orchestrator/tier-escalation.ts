@@ -20,7 +20,7 @@ import type { ServiceManager } from "./service-manager.js";
 import type { GitManager } from "../shared/git.js";
 import type { PersistedMessage } from "./chat-history.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
-import { DEFAULT_DISK_LADDER, type DiskLadderThresholds } from "./sessions.js";
+import { DEFAULT_DISK_LADDER, holdsActiveReservation, type DiskLadderThresholds } from "./sessions.js";
 import {
   getMessage,
   sleep,
@@ -147,7 +147,9 @@ function canAutoDescend(s: SessionInfo, runnerRegistry: SessionRunnerRegistry): 
   // (`startup-monitors.ts`), which recreates what this pass just tore down.
   // The reservation is capacity-capped on admission (default 1), so honoring it
   // here cannot strand more than the deployment already agreed to hold.
-  if (s.keepPreviewRunning) return false;
+  // The predicate, not the raw flag: a stale flag on an archived row must not
+  // shield that row's disk from reclaim (see `holdsActiveReservation`).
+  if (holdsActiveReservation(s)) return false;
   const runner = runnerRegistry.get(s.id);
   // docs/235 — `agentBusy` covers both an orchestrator-started turn and a
   // self-woken one (background task finished → the CLI started its own turn),

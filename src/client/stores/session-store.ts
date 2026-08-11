@@ -476,13 +476,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   setKeepPreviewRunning: async (sessionId, enabled) => {
+    // Patch both lists: the sidebar renders `sessions`, while the All Sessions
+    // dialog renders `allSessions` and is where a session demoted from the
+    // sidebar is toggled from. Patching one left the other showing the opposite
+    // state until the next fetch.
     const patch = (value: boolean) =>
       set((state) => ({
         sessions: state.sessions.map((s) =>
           s.id === sessionId ? { ...s, keepPreviewRunning: value || undefined } : s,
         ),
+        allSessions: state.allSessions.map((s) =>
+          s.id === sessionId ? { ...s, keepPreviewRunning: value || undefined } : s,
+        ),
       }));
-    const prev = get().sessions.find((s) => s.id === sessionId)?.keepPreviewRunning ?? false;
+    // Same reason as the patch above: a session toggled from the All Sessions
+    // dialog may not be in `sessions` at all, and a revert must restore its
+    // real previous value rather than a default of false.
+    const prev = (get().sessions.find((s) => s.id === sessionId)
+      ?? get().allSessions.find((s) => s.id === sessionId))?.keepPreviewRunning ?? false;
     patch(enabled);
     try {
       const res = await fetch(`/api/sessions/${sessionId}/keep-preview-running`, {
@@ -676,7 +687,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         sessions: result.sessions,
         allSessions: state.allSessions.map((s) =>
           s.id === sessionId
-            ? { ...s, archived: true, userArchived: true, diskTier: "evicted" as const }
+            // docs/241 — mirror the server's release of the reservation
+            // (`SessionManager.archive`), or this cached row keeps claiming an
+            // always-on preview the deployment has already handed back.
+            ? { ...s, archived: true, userArchived: true, diskTier: "evicted" as const, keepPreviewRunning: undefined }
             : s,
         ),
         turnUsage: rest,

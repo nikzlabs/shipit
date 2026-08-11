@@ -6,6 +6,7 @@ import type { LogSource } from "../shared/types.js";
 import { isUnderEvictionPressure } from "./memory-pressure.js";
 import { getErrorMessage } from "./validation.js";
 import type { SessionManager } from "./sessions.js";
+import { holdsActiveReservation } from "./sessions.js";
 
 // ---- Idle container enforcement ----
 
@@ -110,7 +111,11 @@ export function createIdleEnforcer(
       if (containerManager.isStandby(sc.sessionId)) continue;
       // docs/241 — the reservation is a user-facing always-on guarantee, so it
       // wins over both ordinary idle trimming and pressure-mode eviction.
-      if (sessionManager?.get(sc.sessionId)?.keepPreviewRunning) continue;
+      // `holdsActiveReservation`, not the raw flag: an archived row that still
+      // carries the flag is ignored by admission, so protecting its surviving
+      // container here would hold RAM for a reservation the books no longer
+      // count — while a new session is admitted to the slot it freed.
+      if (holdsActiveReservation(sessionManager?.get(sc.sessionId))) continue;
       const runner = runnerRegistry.get(sc.sessionId);
       if (!runner) {
         // Container exists without a runner — orphaned. Eligible for cleanup.
@@ -150,7 +155,7 @@ export function createIdleEnforcer(
         // if it is still safe to do so. `runner.dispose()` also enforces
         // this at the runner level (defense in depth).
         const runner = runnerRegistry.get(sid);
-        if (sessionManager?.get(sid)?.keepPreviewRunning) continue;
+        if (holdsActiveReservation(sessionManager?.get(sid))) continue;
         if (runner && (runner.agentBusy || runner.viewerCount > 0)) {
           continue;
         }

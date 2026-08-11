@@ -331,7 +331,9 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
         method: "PUT", url: "/api/sessions/keep-b/keep-preview-running", payload: { enabled: true },
       });
       expect(overflow.statusCode).toBe(409);
-      expect(overflow.json()).toMatchObject({ error: expect.stringContaining("capacity") });
+      // The refusal names the session holding the slot — the count alone left
+      // the user with nothing to act on (docs/241).
+      expect(overflow.json()).toMatchObject({ error: expect.stringContaining('"A"') });
       expect(sessionManager.get("keep-b")?.keepPreviewRunning).toBeUndefined();
     });
   });
