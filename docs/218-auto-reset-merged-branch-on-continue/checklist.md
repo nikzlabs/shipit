@@ -287,3 +287,18 @@ trust-based `--force` break-glass, which exists for cases that cannot be proven 
       survives the re-arm through the REAL `SessionManager` (JSON round-trip in
       SQLite). Real-git coverage in `reset-to-base-force.test.ts`.
 - [x] `npm run typecheck` + `npm run lint:dev` + full `npm test` green
+- [x] **Cross-agent review (Codex) — one wrong refusal fixed, three properties stated
+      rather than left implicit.** Fixed: a session that is CURRENTLY merged but has
+      only an older breadcrumb was told "neither a live pull request nor a previously
+      merged one is recorded" — false, and the same wrong-diagnosis class this change
+      exists to remove; it now names the older PR, its base, and why a reset will not
+      use it. Documented instead of built: the heal's force-push proves nothing about
+      the REMOTE tip (a property of the heal as designed, now reachable for off-anchor
+      branches — plan.md "Known limitation of the heal"); the containment clause is
+      only as fresh as the caller's last fetch, so the pre-fetch gate and the client
+      signal read it stale (both fail-safe — the post-fetch re-gate is what the reset
+      acts on, and send-time revalidation is what the signal promises against); and
+      the already-at-base short-circuit skips the heal, exactly as the state it
+      replaces did. Verified at source by the reviewer: both automatic surfaces still
+      cheap-exit on `session.mergedAt`, so the durable breadcrumb activates neither
+      the docs/218 automation nor `reset_eligible` for re-armed sessions.

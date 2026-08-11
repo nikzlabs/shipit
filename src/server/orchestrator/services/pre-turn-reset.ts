@@ -219,8 +219,19 @@ export async function computeResetEligible(
  * instant. This is NOT the data-loss shortcut docs/218's plan rejected
  * (`!advancedBeyondMergedBase && !headIsAtBase`): a user who commits without
  * rebasing puts a commit on HEAD that is not in the base, so HEAD stops being an
- * ancestor and the clause simply does not fire. It reads a remote-tracking ref,
- * so callers evaluate it after their fetch (both do; the auto path re-gates).
+ * ancestor and the clause simply does not fire.
+ *
+ * Unlike every other clause it reads a REMOTE-TRACKING ref, so it is only as
+ * fresh as the caller's last fetch — and two callers evaluate it stale. Neither
+ * can lose data by it, and the failure directions are worth stating:
+ *   - the automatic path's PRE-fetch gate can refuse against an outdated
+ *     `origin/<base>` (conservative), and can pass against one that was since
+ *     rewound — but it re-evaluates the whole gate after the fetch, and that is
+ *     the evaluation the reset acts on;
+ *   - the client `reset_eligible` signal never fetches, so it can advertise a
+ *     reset that send-time revalidation then refuses. That is the planning#341
+ *     stale-signal class, in its fail-safe direction: the server re-validates,
+ *     so the promise is over-eager, never the destruction.
  */
 export async function computeResetBlocker(
   session: SessionInfo | undefined,
@@ -494,6 +505,11 @@ export async function autoResetMergedBranchOnContinue(
     // "Branch updated to latest <base>" card whose from === to. Silent, not a
     // skip notice: a branch that is already current is not a failure to report.
     // The explicit mode has the same short-circuit, one line further out.
+    //
+    // Like that one, this skips the remote heal too. A remote branch left
+    // diverged by an earlier failed heal therefore stays diverged here — but the
+    // alternative is a force-push on every turn of a session that needs nothing,
+    // and the state this replaces (a `head-moved` skip) healed nothing either.
     const headNow = await git.getHeadHash();
     const baseTipNow = await git.getRefHash(`origin/${base}`);
     if (headNow && baseTipNow && headNow === baseTipNow) return NOT_MOVED;
@@ -1051,13 +1067,25 @@ export async function resetBranchToBaseExplicit(
 
     const base = resolveResetBase(session, prStatus);
     if (!base) {
+      // Two different states end here, and saying the wrong one is the bug this
+      // whole change is about. A merged session with no live snapshot HAS a
+      // breadcrumb — `resolveResetBase` declines to use it precisely because an
+      // earlier merge's base may not be this merge's — so telling that caller
+      // "no previously merged pull request is recorded" is false.
+      const staleBreadcrumb = Boolean(session.mergedAt && session.previousMergedPr);
       return refuse(
         sessionId,
         "no-base-branch",
-        "No pull-request base is recorded for this session — neither a live pull request nor a "
-        + "previously merged one. A reset needs one: without a merged pull request there is no "
-        + "proof this branch's commits have already shipped, so resetting it onto the repo's "
-        + "default branch would discard them.",
+        staleBreadcrumb
+          ? "The base branch of the pull request this session merged is not recorded, so there "
+            + `is no reset target. An earlier merged pull request (#${session.previousMergedPr!.number}) `
+            + `left a note of its base ('${session.previousMergedPr!.baseBranch}'), but a reset will `
+            + "not use it: that was a different pull request, which may have merged into a different "
+            + "branch, and resetting onto the wrong base would discard commits that shipped."
+          : "No pull-request base is recorded for this session — neither a live pull request nor a "
+            + "previously merged one. A reset needs one: without a merged pull request there is no "
+            + "proof this branch's commits have already shipped, so resetting it onto the repo's "
+            + "default branch would discard them.",
       );
     }
 

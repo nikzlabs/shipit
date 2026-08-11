@@ -228,6 +228,22 @@ unrecoverable case: uncommitted edits.)
 > that moved unexpectedly (false-merge guard preserved). See the heal block in
 > `pre-turn-reset.ts`.
 
+**Known limitation of the heal — it is local-side proof only.** Every clause of the
+gate reasons about the LOCAL branch; the heal then force-pushes. `forcePush` leases
+against the tip it reads from the remote at that moment, so a commit that exists
+only on the remote is treated as the expected tip and overwritten rather than
+refused. This is a property of the heal as designed (the whole point is to clobber
+a remote still holding the merged commits), and it predates the containment clause —
+but that clause makes it reachable for off-anchor branches too, so state it rather
+than leave it implicit. It is bounded by how a session branch is written: only this
+clone's auto-push and the PR-create force-push write it, so "remote-only work" means
+the local clone was rewound while the remote kept a commit — which is recoverable
+from the local reflog. Cross-agent review (Codex) raised it; the fix considered and
+rejected for now was gating the heal on the remote tip being absent / equal to the
+merged anchor / itself contained in the base, because a refusal at that point is too
+late (the local reset has already happened) and moving the check earlier costs a
+network round-trip on every reset to cover a state nothing in ShipIt produces.
+
 ## The two messaging surfaces
 
 The reset speaks to two audiences over two channels.

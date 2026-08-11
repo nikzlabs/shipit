@@ -1062,6 +1062,38 @@ describe("resetBranchToBaseExplicit (docs/239)", () => {
       expect(git.resetHardToRemoteBase).not.toHaveBeenCalled();
     });
 
+    it("says which base is missing when a CURRENTLY merged session has only an older breadcrumb", async () => {
+      // `resolveResetBase` declines the breadcrumb while the session is merged —
+      // an earlier pull request may have merged into a different branch, and
+      // resetting onto the wrong base discards commits that shipped. The refusal
+      // must say that, not "no previously merged pull request is recorded",
+      // which is the same false-diagnosis class this whole change fixes.
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const session = makeSession({
+        previousMergedPr: {
+          number: 100,
+          url: "https://github.com/o/r/pull/100",
+          title: "Older PR",
+          baseBranch: "release/v1",
+        },
+      });
+      const git = gitWith();
+      const result = await resetBranchToBaseExplicit(
+        makeDeps({ getSession: () => session, getPrStatus: () => null, createGitManager: () => git }),
+        "s1",
+        "/ws",
+      );
+      expect(result.outcome).toBe("refused");
+      expect(result.reason).toMatch(/#100/);
+      expect(result.reason).toMatch(/release\/v1/);
+      expect(result.reason).toMatch(/different pull request/i);
+      expect(result.reason).not.toMatch(/neither a live pull request nor a previously merged one/);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("(no-base-branch)"));
+      expect(git.fetch).not.toHaveBeenCalled();
+      expect(git.resetHardToRemoteBase).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
     it("prefers the LIVE snapshot over the breadcrumb when both exist", async () => {
       // Unchanged behaviour for the normal path: the breadcrumb is a fallback, and
       // a stale one must never override a live PR's base.
