@@ -56,6 +56,9 @@ receives data when someone clicks buttons in the previewed pages.
    instances, like its own compose services today.
 10. The feature works under both credential modes: host-wide PAT and per-repo
     GitHub App tokens. Private tools repositories stay reachable either way.
+11. The declaration lives **per project repository, in `shipit.yaml`** (like
+    `issues.trackers`). A repo is self-describing: it works the same for every
+    ShipIt install that opens it.
 
 ## Out of scope (v1)
 
@@ -69,15 +72,13 @@ Requirements 1–4 restate what the user said directly (voice messages,
 projects at the user's request. Requirement 5 generalizes the user's stated
 friction ("ShipIt doesn't provide a convenient way") to the many-projects case;
 the "one declaration" bar is the agent's proposal. Requirement 6 is inferred
-from the repositories being private today. Requirements 7–10 and the v1 scope
+from the repositories being private today. Requirements 7–11 and the v1 scope
 are the user's answers to the structured questions of 2026-08-11 (see Resolved
 questions).
 
 ## Open questions
 
-- **Where does the declaration live?** Per project repo in `shipit.yaml` (like
-  `issues.trackers`), or once at account/project-group level so all repos get
-  it?
+(None.)
 
 ## Resolved questions
 
@@ -92,3 +93,5 @@ questions).
   for v1**, alongside PAT. → req 10.
 - **2026-08-11 — MCP scope.** Answer: **out of scope for v1** (not selected in
   the v1-scope question). → Out of scope section.
+- **2026-08-11 — Where does the declaration live?** Answer: **per project
+  repository, in `shipit.yaml`** (agent recommendation accepted). → req 11.
