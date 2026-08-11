@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HarnessSelector, ModelSelector } from "./ModelPicker.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -98,8 +98,39 @@ describe("HarnessSelector", () => {
       <HarnessSelector agents={agents} activeAgentId="claude" onAgentChange={vi.fn()} />,
     );
     await user.click(screen.getByTestId("harness-trigger"));
-    expect(screen.getByTestId("harness-option-claude")).toHaveTextContent("3 models");
-    expect(screen.getByTestId("harness-option-codex")).toHaveTextContent("1 model");
+    expect(screen.getByTestId("harness-option-claude")).toHaveTextContent("3 models available");
+    expect(screen.getByTestId("harness-option-codex")).toHaveTextContent("1 model available");
+  });
+
+  it("puts the model count on its own line beneath the harness name (D10/D11)", async () => {
+    // The count is a property OF the harness, not a second column to compare
+    // across rows — right-aligning it on the same line invited exactly the
+    // "how many models am I giving up" reading the control is not for.
+    const user = userEvent.setup();
+    render(<HarnessSelector agents={agents} activeAgentId="claude" onAgentChange={vi.fn()} />);
+    await user.click(screen.getByTestId("harness-trigger"));
+
+    const row = screen.getByTestId("harness-option-claude");
+    const count = within(row).getByText("3 models available");
+    expect(count.className).toContain("block");
+    expect(within(row).getByText("Claude Code").className).toContain("block");
+  });
+
+  it("still says what an uncredentialed harness needs, and disables it", async () => {
+    // An improvement over the mock, which never depicted the state: kept
+    // deliberately when the row went to two lines.
+    const user = userEvent.setup();
+    render(
+      <HarnessSelector
+        agents={[agents[0], { ...agents[1], hasRunnableModels: false }]}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByTestId("harness-trigger"));
+    const row = screen.getByTestId("harness-option-codex");
+    expect(row).toHaveTextContent("needs a credential");
+    expect(row).toHaveAttribute("data-disabled");
   });
 
   it("omits a harness this deployment did not install (req 14)", async () => {
@@ -232,6 +263,23 @@ describe("ModelSelector", () => {
     expect(menu).toHaveTextContent("DeepSeek");
     expect(menu).toHaveTextContent("Subscription");
     expect(menu).toHaveTextContent("API key");
+  });
+
+  it("states each group's billing mode as a pill, not as text after the name (D10)", async () => {
+    // Plain tertiary text run on after the service name read as a qualifier of
+    // the service. The mode is the other half of the pair a model is selected
+    // by (req 5), so it gets its own pill — the same component Settings puts on
+    // a service card. What the pill LOOKS like is `BillingModePill`'s own
+    // contract and is pinned in its co-located test; what belongs here is that
+    // each group gets one, carrying that group's mode.
+    const user = userEvent.setup();
+    render(
+      <ModelSelector agents={agents} activeAgentId="claude" modelInfo={null} onModelChange={vi.fn()} />,
+    );
+    await user.click(screen.getByTestId("model-trigger"));
+
+    expect(screen.getByTestId("model-group-mode-sub")).toHaveTextContent("Subscription");
+    expect(screen.getAllByTestId("model-group-mode-key")[0]).toHaveTextContent("API key");
   });
 
   it("hands the caller the whole triple, not a bare model id", async () => {

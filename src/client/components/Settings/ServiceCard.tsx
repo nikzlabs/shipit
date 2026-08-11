@@ -22,9 +22,13 @@
 
 import type { ReactNode } from "react";
 import { Badge } from "../ui/badge.js";
+import { BillingModePill, MODE_LABEL } from "../BillingModePill.js";
 import type { BillingMode, ServiceDef } from "../../../server/shared/catalogue/index.js";
 
-export const MODE_LABEL: Record<BillingMode, string> = { sub: "Subscription", key: "API key" };
+// The label and the pill are shared with the composer's model menu, which makes
+// the same statement about the same pair. Re-exported because this module was
+// where both used to live.
+export { MODE_LABEL };
 
 /**
  * The avatar. An initial rather than a vendor logo: the catalogue carries no
@@ -97,17 +101,10 @@ export function ServiceCard({
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-sm font-medium text-(--color-text-primary)">{service.name}</h3>
-              <Badge
-                className={
-                  billingMode === "sub"
-                    ? "px-1.5 text-[10px] bg-(--color-accent-subtle) text-(--color-accent)"
-                    : "px-1.5 text-[10px]"
-                }
-                variant={billingMode === "sub" ? "default" : "success"}
+              <BillingModePill
+                billingMode={billingMode}
                 data-testid={`service-mode-pill-${testId}`}
-              >
-                {MODE_LABEL[billingMode]}
-              </Badge>
+              />
               {credentialCount > 1 && (
                 <Badge className="px-1.5 text-[10px]" data-testid={`service-count-pill-${testId}`}>
                   {credentialCount} {countNoun}s

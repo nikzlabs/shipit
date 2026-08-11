@@ -18,10 +18,14 @@ import {
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "../ui/dropdown-menu.js";
-import { useHarnessPickerState, useModelPickerState, modelRowsFor } from "../ModelPicker.js";
+import {
+  ModelGroupHeader,
+  useHarnessPickerState,
+  useModelPickerState,
+  modelRowsFor,
+} from "../ModelPicker.js";
 import { useReasoningPickerState } from "../ReasoningSelector.js";
 import { formatModelName } from "../../utils/format-model.js";
 import type { AgentId, PermissionMode } from "../../../server/shared/types.js";
@@ -415,7 +419,7 @@ export function ComposerSettingsMenu({
                   label={agent.name}
                   description={
                     agent.hasRunnableModels
-                      ? `${count} model${count === 1 ? "" : "s"}`
+                      ? `${count} model${count === 1 ? "" : "s"} available`
                       : "needs a credential"
                   }
                   isCurrent={agent.id === harness.currentAgentId}
@@ -434,12 +438,10 @@ export function ComposerSettingsMenu({
             {model.groups.map((group) => (
               <div key={group.key || "__ungrouped__"}>
                 {group.serviceName && (
-                  <DropdownMenuLabel className="flex items-center gap-2">
-                    <span>{group.serviceName}</span>
-                    <span className="font-normal normal-case tracking-normal text-(--color-text-tertiary)">
-                      {group.billingMode === "sub" ? "Subscription" : "API key"}
-                    </span>
-                  </DropdownMenuLabel>
+                  <ModelGroupHeader
+                    serviceName={group.serviceName}
+                    billingMode={group.billingMode}
+                  />
                 )}
                 {group.rows.map((row) => (
                   <ChoiceRow

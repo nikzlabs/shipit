@@ -218,3 +218,11 @@ landed ahead of this checklist's per-phase sections.
       writes. The status dot went rather than moved — it reported the *harness* having runnable
       models, so it read green above "No Claude subscription connected yet". Details in
       [`plan.md`](./plan.md) → *One card component — and no per-vendor tabs at all*.
+- [x] **Name the primary path, and state the billing mode the same way everywhere**
+      (`ui-audit.md` D4, D10, D11). The add-flow's step 3 is titled by the path being
+      recommended rather than by whichever credential shape exists, so a mode accepting both
+      an account and a string reads `3 · Sign in` with the key under its own `Or paste a key`
+      sub-heading. The model menu's group header states the billing mode as the *same pill*
+      the service card carries — a new `BillingModePill`, and a `ModelGroupHeader` shared by
+      the composer's model menu and its settings menu, which held two copies of that markup.
+      The harness row went to two lines, name over `N models available`.

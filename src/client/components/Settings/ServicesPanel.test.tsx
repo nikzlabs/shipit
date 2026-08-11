@@ -168,6 +168,44 @@ describe("ServicesPanel", () => {
     expect(screen.getByTestId("add-service-continue")).toBeInTheDocument();
   });
 
+  it("titles step 3 for the account path and makes signing in the primary button (D4)", async () => {
+    // The step used to be titled by whichever shape existed rather than by the
+    // one being recommended: "3 · Paste the key" sat above prose saying the
+    // service is connected by signing in, with *Save* primary. The key stays
+    // reachable — it genuinely works — but under its own sub-heading.
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+
+    const step = screen.getByTestId("add-service-step-credential");
+    expect(step).toHaveTextContent("3 · Sign in");
+    expect(step).not.toHaveTextContent("3 · Paste the key");
+    expect(screen.getByTestId("add-service-string-alternative")).toHaveTextContent("Or paste a key");
+
+    // The DOM order of the two buttons is the visual ranking, and the variants
+    // say which one is being recommended.
+    const dialog = screen.getByTestId("add-service-dialog");
+    const buttons = within(dialog).getAllByRole("button");
+    const save = screen.getByTestId("add-service-save");
+    const signIn = screen.getByTestId("add-service-continue");
+    expect(buttons.indexOf(signIn)).toBeGreaterThan(buttons.indexOf(save));
+    expect(signIn.className).toContain("bg-(--color-accent)");
+    expect(save.className).not.toContain("bg-(--color-accent)");
+  });
+
+  it("keeps step 3 titled for the key when the mode takes nothing else", async () => {
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    await userEvent.click(screen.getByTestId("add-service-option-deepseek"));
+
+    const step = screen.getByTestId("add-service-step-credential");
+    expect(step).toHaveTextContent("3 · Paste the key");
+    // No competing path, so no "Or …" sub-heading and no demoted Save.
+    expect(screen.queryByTestId("add-service-string-alternative")).not.toBeInTheDocument();
+    expect(screen.getByTestId("add-service-save").className).toContain("bg-(--color-accent)");
+  });
+
   it("reorders a subscription's credentials, which changes which one is delivered", async () => {
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "cred_1", serviceId: "zai", billingMode: "sub", via: "string", priority: 0, isPrimary: true }),
