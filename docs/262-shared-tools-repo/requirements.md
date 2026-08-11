@@ -63,9 +63,11 @@ receives data when someone clicks buttons in the previewed pages.
 8. By default, a project session's tools checkout tracks a named branch of the
    tools repository. A project repository can pin a tag or SHA instead when it
    needs stability; a pinned project stays at that exact revision until its
-   declaration changes. A tool that holds the integrity of project data
-   (e.g. one that validates records it wrote earlier) is the case pinning
-   exists for.
+   declaration changes. Two kinds of tool are the case pinning exists for: a
+   tool that holds the integrity of project data (e.g. one that validates
+   records it wrote earlier), and a tool whose version participates in a
+   cache key that gates expensive regeneration (a tracked-branch commit would
+   silently invalidate every consumer's cache).
 9. Tool services run **per-session**: each project session gets its own
    instances, like its own compose services today.
 10. The feature works under both credential modes: host-wide PAT and per-repo
@@ -99,7 +101,9 @@ receives data when someone clicks buttons in the previewed pages.
     in use. The files the agent sees, the companion CLIs, and the running
     tool services of that repository all correspond to that same commit: an
     update either completes coherently or leaves the prior complete version
-    active with a visible failure.
+    active with a visible failure. The running commit is also readable by the
+    tool itself, so a tool can decide whether a version change invalidates
+    caches it keeps, instead of assuming it does.
 16. Tool services follow the same start, health, preview, stop, and
     session-disposal behavior as equivalent same-repo services. Only services
     the tools repository marks for automatic startup run automatically; the
@@ -124,7 +128,9 @@ receives data when someone clicks buttons in the previewed pages.
     the selected revision — including each new commit on a tracked branch,
     which runs without a further approval. ShipIt visibly identifies the
     repository, ref, and exact commit being executed (req 15). Credentials
-    used to fetch repositories are never exposed to tool code.
+    used to fetch repositories are never exposed to tool code; credentials a
+    tool declares for its own job (req 23) are delivered to it. Both halves
+    hold at once.
 20. Every surfaced tool service and companion CLI command has an unambiguous
     identity across the project and all declared tools repositories. When two
     would collide — with each other or with the project's own services —
@@ -141,6 +147,14 @@ receives data when someone clicks buttons in the previewed pages.
     project session picks up, under the same standing grant as req 19. The
     instructions travel with the tool; projects never keep copies that must
     be kept in sync.
+23. A tools repository declares the **credential names** its services and
+    CLIs require for their own job (e.g. a third-party API key). Values
+    resolve from a store associated with the tools repository, so one key
+    serves every consuming project and rotation happens in one place; a
+    project may override a value for itself. A project session shows which
+    declared credentials a tool requires and whether they are satisfied.
+    Onboarding a project therefore stays one declaration (req 5) — never
+    declaration plus copying keys into each project.
 
 ## Out of scope (v1)
 
@@ -149,6 +163,10 @@ receives data when someone clicks buttons in the previewed pages.
 - A declared **data-format version** (a tools repository stating which version
   of its on-disk project data it reads and writes, with a pre-run mismatch
   report). Deferred; pinning (req 8) is the v1 mitigation.
+- **Metered-spend handling** (a tools repository declaring that a tool
+  consumes metered external resources, per-session spend visibility, and
+  project-set caps). Deferred entirely; pinning (req 8) and the owner
+  controlling both repositories are the v1 mitigation.
 
 ## Requirement provenance
 
@@ -171,7 +189,12 @@ boundary), whose findings the user resolved the same day — see Resolved
 questions. Requirements 21–22 and the amendments to reqs 7, 8, and 18 come
 from a fit review by a candidate consumer — the user's requirements tool,
 reviewed by the agent in that tool's own repository and forwarded by the user
-(2026-08-11); the user resolved its findings the same day.
+(2026-08-11); the user resolved its findings the same day. Requirement 23,
+the second half of req 19, the second pinning case in req 8, the
+tool-readable commit in req 15, and the deferred metered-spend item come from
+a second candidate-consumer fit review — the user's image asset pipeline
+(`nicolasalt/design-docs`), posted as a PR comment (2026-08-11) and resolved
+by the user the same day.
 
 ## Open questions
 
@@ -233,3 +256,15 @@ reviewed by the agent in that tool's own repository and forwarded by the user
   (→ req 7); stable preview origin per session, verified in the ShipIt code
   (subdomain routing `{sessionId}--{port}`), so origin-keyed browser storage
   is session-scoped (→ req 18).
+- **2026-08-11 — Tool credentials** (image-pipeline fit review, finding 1).
+  Answer: **tools-repo store with per-project override** — the tools repo
+  declares credential names; one key serves every consumer and rotates in one
+  place; sessions show satisfaction. → req 23; req 19 gains its second half.
+- **2026-08-11 — Metered spend** (image-pipeline fit review, finding 2).
+  Answer: **defer entirely to v2** (the agent recommended per-session spend
+  visibility in v1; the user chose full deferral — pinning and single-owner
+  repos are the v1 mitigation). → Out of scope.
+- **2026-08-11 — Cache-driven pinning and tool-readable commit**
+  (image-pipeline fit review, finding 3). Answer: **apply both** — second
+  pinning case named (→ req 8); the running commit readable by the tool
+  itself (→ req 15).
