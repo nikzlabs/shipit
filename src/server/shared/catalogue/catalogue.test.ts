@@ -24,9 +24,11 @@ import {
   isContextSentinel,
   isPriceSentinel,
   MODEL_FAMILY_IDS,
+  MODEL_ID_ALIASES,
   MODEL_IDENTITIES,
   MODEL_IDENTITY_BY_KEY,
   modelIdentityFor,
+  normalizeModelIdForIdentity,
   modesOfferingModel,
   catalogueModelIdsForHarness,
   eligibleEntriesForHarness,
@@ -153,6 +155,57 @@ describe("model identity and lineage (docs/261 req 4)", () => {
       const where = `${service.id}/${mode.kind}/${model.id}`;
       expect(declared, `${where} names an undeclared canonical model`).toBeTruthy();
       expect(declared?.family, `${where} disagrees with the declared family`).toBe(model.family);
+    }
+  });
+
+  /**
+   * The invariant with teeth, and the one the first cut was missing. Every check
+   * above passes when a row spreads the **wrong existing** declaration —
+   * `MODEL_IDENTITIES.gpt56terra` on the GPT-5.6 Sol row is a valid,
+   * self-consistent pair — so ShipIt would silently treat Sol and Terra as one
+   * model and refuse to let either review the other's work. Tying the row's id
+   * to its key is what catches it, with `MODEL_ID_ALIASES` as the one escape and
+   * therefore the one place a human confirms "these really are the same model".
+   */
+  it("every row's id reduces to its own canonical key, or is a declared alias", () => {
+    for (const { service, mode, model } of everyRow()) {
+      const where = `${service.id}/${mode.kind}/${model.id}`;
+      const alias = MODEL_ID_ALIASES[model.id];
+      if (alias !== undefined) {
+        expect(alias, `${where} is declared an alias of a different model`).toBe(
+          model.canonicalModelKey,
+        );
+        continue;
+      }
+      expect(
+        normalizeModelIdForIdentity(model.id),
+        `${where} names an identity its id does not match — either the wrong `
+          + `MODEL_IDENTITIES entry was spread, or it needs a MODEL_ID_ALIASES entry`,
+      ).toBe(model.canonicalModelKey);
+    }
+  });
+
+  /**
+   * The same mistake caught from the other side, and on its own merits: one mode
+   * offering the same model twice is incoherent for the picker (two rows the
+   * user must choose between that are one model) as well as for the ranking.
+   */
+  it("no billing mode offers the same canonical model twice", () => {
+    for (const service of CATALOGUE) {
+      for (const mode of service.modes) {
+        const keys = mode.models.map((m) => m.canonicalModelKey);
+        expect(
+          new Set(keys).size,
+          `${service.id}/${mode.kind} offers one canonical model under two rows`,
+        ).toBe(keys.length);
+      }
+    }
+  });
+
+  it("declares no alias for a row that does not exist", () => {
+    const ids = new Set(everyRow().map((r) => r.model.id));
+    for (const id of Object.keys(MODEL_ID_ALIASES)) {
+      expect(ids, `${id} is aliased and offered nowhere`).toContain(id);
     }
   });
 

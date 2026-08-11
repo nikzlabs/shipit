@@ -518,6 +518,12 @@ export function credentialSecretForRoute(
   sourceEnv: string,
   route: ProviderRoute | null | undefined,
 ): string | undefined {
+  // An account-delivered credential IS the CLI's own login: there is no secret
+  // to place, and the mode's environment variable — which may well be set for
+  // this same service's *other* credential — is not it. Stated in the contract
+  // above and enforced here rather than left to every caller having checked
+  // first, which is what the extraction of this helper made a real risk.
+  if (route?.kind === "account") return undefined;
   if (route?.kind === "reserved") {
     const stored = deps.credentialStore.getCredentialSecret(route.id);
     if (stored) return stored;

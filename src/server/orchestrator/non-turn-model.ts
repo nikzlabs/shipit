@@ -47,6 +47,7 @@ import {
   isSelectionEligible,
   retirementSuccessor,
   type ConfiguredCredential,
+  type HarnessDef,
   type ModelSelection,
 } from "../shared/catalogue/index.js";
 import { isHarnessInstalled } from "../shared/installed-harnesses.js";
@@ -173,6 +174,27 @@ export function harnessForSelection(
 }
 
 /**
+ * Every harness in catalogue order, with `avoidHarnessId` moved to the **back**
+ * rather than removed.
+ *
+ * Exported for its own test. It cannot be exercised through
+ * {@link harnessesForSelection} against today's rows — no shipped model runs on
+ * both harnesses, so every selection has exactly one eligible harness and there
+ * is nothing to order — which means a test at that level would pass just as
+ * happily against an implementation that ignored the option entirely. Reviewing
+ * this branch is what found that; the preference is load-bearing for docs/261's
+ * ranking, so it gets a test that fails when it is removed.
+ */
+export function harnessesPreferring(avoidHarnessId?: AgentId): readonly HarnessDef[] {
+  const harnesses = allHarnesses();
+  if (!avoidHarnessId) return harnesses;
+  return [
+    ...harnesses.filter((h) => h.id !== avoidHarnessId),
+    ...harnesses.filter((h) => h.id === avoidHarnessId),
+  ];
+}
+
+/**
  * Every installed harness that can run `selection`, in preference order — the
  * list {@link harnessForSelection} takes the head of.
  *
@@ -188,15 +210,8 @@ export function harnessesForSelection(
   credentials: readonly ConfiguredCredential[],
   opts: { avoidHarnessId?: AgentId } = {},
 ): { harnessId: AgentId; selection: ModelSelection }[] {
-  const harnesses = allHarnesses();
-  const ordered = opts.avoidHarnessId
-    ? [
-        ...harnesses.filter((h) => h.id !== opts.avoidHarnessId),
-        ...harnesses.filter((h) => h.id === opts.avoidHarnessId),
-      ]
-    : harnesses;
   const out: { harnessId: AgentId; selection: ModelSelection }[] = [];
-  for (const harness of ordered) {
+  for (const harness of harnessesPreferring(opts.avoidHarnessId)) {
     if (!isHarnessInstalled(harness.id)) continue;
     if (isSelectionEligible(harness.id, selection, credentials)) {
       out.push({ harnessId: harness.id, selection });

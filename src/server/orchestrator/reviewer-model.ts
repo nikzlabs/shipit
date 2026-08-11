@@ -101,23 +101,34 @@ export type ReviewerSource = "pinned" | "auto";
 /** A rung of the ranking above; lower is further from the implementer. */
 export type ReviewerTier = 1 | 2 | 3 | 4 | 5 | 6;
 
-/** Everything a review spawn needs, once a slot has been resolved and routed. */
+/**
+ * Everything a review spawn needs, once a slot has been resolved and routed.
+ *
+ * **Deeply immutable, in the type and at runtime.** "Read time" needs a boundary
+ * or the reviewer can change under a running invocation, so the resolved target
+ * is what retries, attribution and the transcript card all read — recomputing
+ * during a retry is how a review ends up attributed to a model that did not run
+ * it. `readonly` throughout so a caller cannot reassign a field, and every
+ * nested object is a frozen copy rather than a reference into the resolver's own
+ * inputs (a shallow freeze left `selection` and `route` writable, which
+ * cross-backend review found).
+ */
 export interface ReviewerTarget {
-  slot: ReviewerSlot;
-  source: ReviewerSource;
+  readonly slot: ReviewerSlot;
+  readonly source: ReviewerSource;
   /** Derived (req 3), never stored — and preferring a harness that is not the implementer's. */
-  harnessId: AgentId;
-  selection: ModelSelection;
+  readonly harnessId: AgentId;
+  readonly selection: Readonly<ModelSelection>;
   /** Complete (req 5): the pin's level, or this harness's ShipIt-authored default. */
-  reasoningEffort: string;
+  readonly reasoningEffort: string;
   /** The service's display name, for the Settings row and the consult card. */
-  serviceName: string;
+  readonly serviceName: string;
   /** The credential this review authenticates with. Never absent — an unroutable target is not a target. */
-  route: ProviderRoute;
+  readonly route: Readonly<ProviderRoute>;
   /** Endpoint + credential shaping, or absent when there is nothing to shape. */
-  serviceRouting?: ServiceRouting;
+  readonly serviceRouting?: Readonly<ServiceRouting>;
   /** The secret behind `serviceRouting.credentialSourceEnv`, for a caller that builds the environment. */
-  credentialSecret?: string;
+  readonly credentialSecret?: string;
 }
 
 /** One slot as it currently stands — req 8's "auto-configured or pinned, and what it resolves to". */
@@ -146,7 +157,24 @@ export interface ImplementerContext {
 }
 
 export type ReviewerSelection =
-  | { ok: true; target: ReviewerTarget; tier: ReviewerTier }
+  | {
+      ok: true;
+      target: ReviewerTarget;
+      tier: ReviewerTier;
+      /**
+       * What the `tier` was actually decided on.
+       *
+       * `harness-only` means the implementer's model could not be identified —
+       * a session with no selection, or a triple naming no catalogue row — so
+       * the model axes were undecidable and only the harness distinguished the
+       * candidates. The ordering is unaffected (every candidate is compared
+       * against the same unknown), but a `tier` of 1 must NOT be read as "a
+       * different family was established" in that case. Cross-backend review
+       * found the earlier shape reporting the ideal tier for a comparison
+       * ShipIt had never made.
+       */
+      tierBasis: "model-and-harness" | "harness-only";
+    }
   /**
    * No configured reviewer has a usable route. The review stops and says so —
    * the same shape as docs/252 req 9's notice, never a silent no-op.
@@ -169,9 +197,16 @@ export interface ReviewerModelDeps {
  * When either side's identity is unknown — a session with no selection, or a
  * triple naming no catalogue row — the model axes are undecidable, so
  * {@link sameCanonicalModel} and {@link sameModelFamily} both report `false` and
- * the answer collapses onto the harness axis (tier 1 or 2). That fails toward
- * *using* a reviewer rather than refusing one, and the ranking never claims a
- * sameness it cannot prove.
+ * the answer collapses onto the harness axis. That fails toward *using* a
+ * reviewer rather than refusing one, and the ranking never claims a sameness it
+ * cannot prove.
+ *
+ * **The resulting tier is then a harness-axis answer wearing a model-axis
+ * label**, and a caller must not read a 1 as "a different family was
+ * established". Every candidate in one call is compared against the same
+ * implementer, so the *ordering* is unaffected; what is affected is what the
+ * number means. {@link ReviewerSelection}'s `tierBasis` is where that is said
+ * out loud, because this function is given one pair and cannot say it.
  */
 export function reviewerDistanceTier(
   implementer: { harnessId: AgentId; identity?: ModelIdentity | undefined },
@@ -244,7 +279,13 @@ export function selectReviewer(
     // at every rung rather than only the last.
     if (!best || tier < best.tier) best = { target: resolved.target, tier };
   }
-  return best ? { ok: true, target: best.target, tier: best.tier } : { ok: false, reason: "no_reviewer_available" };
+  if (!best) return { ok: false, reason: "no_reviewer_available" };
+  return {
+    ok: true,
+    target: best.target,
+    tier: best.tier,
+    tierBasis: implementerIdentity ? "model-and-harness" : "harness-only",
+  };
 }
 
 // ---- Internals -------------------------------------------------------------
@@ -478,14 +519,21 @@ function buildTarget(
     slot: plan.slot,
     source: plan.source,
     harnessId: candidate.harnessId,
-    selection: candidate.selection,
+    // Frozen COPIES, not the resolver's own objects: `selection` may be the
+    // caller's pin or a catalogue-derived successor, and `route` comes from the
+    // account walk — freezing either in place would reach outside this target,
+    // and freezing neither would leave the "immutable through retries"
+    // guarantee true of the wrapper only.
+    selection: Object.freeze({ ...candidate.selection }),
     // Req 5 — a derived reviewer is COMPLETE. The level follows the harness that
     // was actually derived, so a slot that bent away from the implementer runs
     // at that harness's default rather than at the other one's.
     reasoningEffort: plan.pin?.reasoningEffort ?? defaultEffortFor(candidate.harnessId),
     serviceName: getService(candidate.selection.serviceId)?.name ?? candidate.selection.serviceId,
-    route: candidate.route,
-    ...(serviceRouting ? { serviceRouting } : {}),
+    route: Object.freeze({ ...candidate.route }),
+    // `serviceRouting` is built fresh by `serviceRoutingForSelection` and is
+    // reachable from nowhere else, so it is frozen in place.
+    ...(serviceRouting ? { serviceRouting: Object.freeze(serviceRouting) } : {}),
     ...(credentialSecret ? { credentialSecret } : {}),
   });
 }

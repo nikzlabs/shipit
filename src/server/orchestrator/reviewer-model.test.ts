@@ -421,6 +421,23 @@ describe("reviewer harness derivation", () => {
     vi.doUnmock("../shared/installed-harnesses.js");
   });
 
+  /**
+   * The preference itself, tested where it can actually fail. Asserting it
+   * through `harnessesForSelection` cannot: every shipped selection has exactly
+   * one eligible harness, so an implementation that ignored `avoidHarnessId`
+   * entirely would pass. Cross-backend review found that hole in the first cut.
+   */
+  it("moves the avoided harness to the back — and keeps it", async () => {
+    const { harnessesPreferring } = await import("./non-turn-model.js");
+    const all = harnessesPreferring().map((h) => h.id);
+
+    expect(harnessesPreferring("claude").map((h) => h.id)).toEqual(["codex", "claude"]);
+    expect(harnessesPreferring("codex").map((h) => h.id)).toEqual(["claude", "codex"]);
+    // A preference, never a filter: nothing is dropped, so a model only the
+    // avoided harness can run is still reachable.
+    expect(harnessesPreferring("claude").map((h) => h.id).sort()).toEqual([...all].sort());
+  });
+
   it("still resolves a model only the implementer's own harness can run", async () => {
     vi.doMock("../shared/installed-harnesses.js", () => ({
       isHarnessInstalled: () => true,
@@ -592,6 +609,43 @@ describe("selecting the reviewer furthest from the implementer (req 4)", () => {
     expect(result.tier).toBe(1);
   });
 
+  /**
+   * An implementer whose model ShipIt cannot identify still gets a reviewer —
+   * the ordering falls back to the harness axis — but the reported tier must not
+   * be read as a family difference nobody established. `tierBasis` is what says
+   * so; without it a consumer would render "different family" from a comparison
+   * that never happened.
+   */
+  it("marks the ranking as harness-only when the implementer's model is unknown", async () => {
+    installAll();
+    const { selectReviewer } = await import("./reviewer-model.js");
+    const result = selectReviewer(
+      { harnessId: "claude" },
+      { credentialStore: storeWith([ANTHROPIC_KEY, OPENAI_KEY]), env: {} },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.tierBasis).toBe("harness-only");
+    expect(result.target.harnessId).toBe("codex");
+  });
+
+  it("marks the ranking as model-and-harness when the implementer's model is known", async () => {
+    installAll();
+    const { selectReviewer } = await import("./reviewer-model.js");
+    const result = selectReviewer(
+      {
+        harnessId: "claude",
+        selection: { serviceId: "anthropic", billingMode: "key", modelId: "claude-opus-5" },
+      },
+      { credentialStore: storeWith([ANTHROPIC_KEY, DEEPSEEK_KEY]), env: {} },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.tierBasis).toBe("model-and-harness");
+  });
+
   it("stops and says so when no configured reviewer can run", async () => {
     installAll();
     const { selectReviewer } = await import("./reviewer-model.js");
@@ -621,7 +675,15 @@ describe("selecting the reviewer furthest from the implementer (req 4)", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+    // Deeply, not just at the top level: a shallow freeze leaves `selection` and
+    // `route` writable, so "immutable through retries" would have been true of
+    // the wrapper alone. Cross-backend review found exactly that.
     expect(Object.isFrozen(result.target)).toBe(true);
+    expect(Object.isFrozen(result.target.selection)).toBe(true);
+    expect(Object.isFrozen(result.target.route)).toBe(true);
+    if (result.target.serviceRouting) {
+      expect(Object.isFrozen(result.target.serviceRouting)).toBe(true);
+    }
     // Everything req 1 says a reviewer is: service, billing mode, model, the
     // derived harness, and the reasoning level.
     expect(result.target.selection.serviceId).toBeTruthy();

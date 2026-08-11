@@ -118,6 +118,45 @@ export const MODEL_IDENTITIES = {
   glm52: identity("glm-5.2", "glm"),
 } as const;
 
+/**
+ * Row ids whose spelling does NOT reduce to their canonical key, and the key
+ * each one really is.
+ *
+ * {@link normalizeModelIdForIdentity} handles the two mechanical differences a
+ * catalogue row can carry — a gateway's `provider/` prefix and Claude Code's
+ * `[1m]` suffix — which covers almost every alias here. What it cannot do is
+ * recognise a vendor's own short name for a model. Anthropic's `haiku` is the
+ * only such row today.
+ *
+ * **This table is the human confirmation that two differently-named things are
+ * one model**, and it exists because the alternative was an invariant that
+ * caught nothing: a row can spread the *wrong existing* declaration —
+ * `MODEL_IDENTITIES.gpt56terra` on the GPT-5.6 Sol row — and every generic
+ * consistency check still passes, because the pair is valid and agrees with
+ * itself. Cross-backend review found exactly that hole. `catalogue.test.ts`
+ * closes it by tying each row's id to its key, with this as the only escape.
+ *
+ * So: an entry here is a claim a reviewer should check, not boilerplate.
+ */
+export const MODEL_ID_ALIASES: Record<string, string> = {
+  // Anthropic's own short id for Haiku 4.5, which the picker has always used.
+  haiku: "claude-haiku-4.5",
+};
+
+/**
+ * A row id reduced to the spelling its canonical key would use: gateway
+ * namespace dropped, Claude Code's long-context suffix dropped.
+ *
+ * Both are mechanical restatements of one model rather than different models —
+ * `anthropic/claude-opus-5` is Anthropic's Opus through a gateway, and
+ * `glm-5.2[1m]` is GLM-5.2 with the CLI told to use its full window (the CLI
+ * consumes the suffix, so the service never sees it).
+ */
+export function normalizeModelIdForIdentity(id: string): string {
+  const withoutNamespace = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
+  return withoutNamespace.replace(/\[[^\]]*\]$/, "");
+}
+
 /** Every canonical key the catalogue declares — a literal union, so a typo cannot compile. */
 export type CanonicalModelKey =
   (typeof MODEL_IDENTITIES)[keyof typeof MODEL_IDENTITIES]["canonicalModelKey"];

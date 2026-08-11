@@ -257,6 +257,41 @@ Five things worth recording, three of which sharpen the design rather than merel
   admission" that phase 1 can deliver. The call site that captures it when a spawn is admitted is
   phase 2's; what phase 1 guarantees is that the value cannot be mutated once resolved.
 
+**What the cross-backend review changed.** Codex reviewed phases 0 and 1 under CLAUDE.md's rule
+and returned five findings; all five held on checking and all five are fixed. Two are worth
+reading as a group, because both are the same mistake: **a check that could not fail.**
+
+- **The catalogue invariants caught nothing that mattered.** A row can spread the *wrong existing*
+  declaration — `MODEL_IDENTITIES.gpt56terra` on the GPT-5.6 Sol row — and every generic
+  consistency check still passes, because the pair is valid and agrees with itself. ShipIt would
+  then treat Sol and Terra as one model and refuse to let either review the other's work. Fixed by
+  tying each row's **id** to its key: `normalizeModelIdForIdentity` drops a gateway's `provider/`
+  prefix and Claude Code's `[1m]` suffix (both mechanical restatements of one model), and
+  `MODEL_ID_ALIASES` is the single escape — today just Anthropic's `haiku`. An alias entry is
+  therefore the one place a human confirms "these really are the same model". A second invariant
+  catches the same error from the other side: no billing mode may offer one canonical model twice.
+- **The harness preference had no test that could fail.** The only coverage asserted that
+  `avoidHarnessId` produced the same list for a model one harness can run — which an
+  implementation ignoring the option entirely would also pass. The ordering is now
+  `harnessesPreferring`, exported and tested directly, because it cannot be reached through the
+  shipped rows.
+
+Three more, each real:
+
+- **The "immutable" target was shallow-frozen and its type was mutable**, so `selection` and
+  `route` could still be changed and TypeScript permitted top-level assignment. `ReviewerTarget`
+  is `readonly` throughout and the nested objects are frozen **copies**, not references into the
+  resolver's own inputs.
+- **The tier claimed a family difference ShipIt had not established.** An implementer whose model
+  cannot be identified makes the model axes undecidable, and the ranking correctly collapses onto
+  the harness axis — but it reported that as tier 1 ("different family"), which a consumer could
+  render as an independence nobody checked. `ReviewerSelection` now carries `tierBasis`, so the
+  ordering is unchanged and the number can no longer be over-read.
+- **`credentialSecretForRoute` did not honour its own contract** for an account-delivered route.
+  Unreachable today, because `serviceRoutingForSelection` returns nothing for one — but an
+  extracted helper that relies on every caller having checked first is how the next caller gets it
+  wrong.
+
 **One property is deliberately untested end to end, and it should not be mistaken for covered.**
 No shipped model runs on both harnesses — Claude's family speaks only Anthropic-Messages and
 GPT's only Responses — so tiers 3 and 5 are unreachable through the real catalogue, and the
