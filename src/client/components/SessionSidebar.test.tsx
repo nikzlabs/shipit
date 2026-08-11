@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SessionSidebar } from "./SessionSidebar.js";
-import { GROUP_GAP_CLASS, BAND_CLEARANCE_CLASS, groupBandFill } from "./SessionSidebar/SessionGroup.js";
+import { GROUP_GAP_CLASS, BAND_CLEARANCE_CLASS, ROW_GAP_CLASS, groupBandFill } from "./SessionSidebar/SessionGroup.js";
 import { AUTO_MERGE_ICON_CLASS } from "../design-tokens.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore, type PrCardState } from "../stores/pr-store.js";
@@ -764,6 +764,25 @@ describe("SessionSidebar", () => {
       // Pinned row → divider → New session row.
       expect(pinned.compareDocumentPosition(divider) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(divider.compareDocumentPosition(newSession) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("keeps the list's row gap inside a pin's drag shell, so a pinned session and its children are not flush", () => {
+      const sessions = [
+        baseSession({ id: "p1", title: "Pinned root", remoteUrl: repoA.url, pinnedAt: "2024-06-01T00:00:00.000Z" }),
+        baseSession({ id: "c1", title: "Spawned child", remoteUrl: repoA.url, parentSessionId: "p1", rootSessionId: "p1" }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      const shell = screen.getByTestId("pinned-tree");
+      // Both rows live inside the shell, so the shell — not the list — is what
+      // spaces them. `gap` is inherited by nothing: a plain block wrapper here
+      // renders the rows flush (the docs/110 Phase 2 regression).
+      expect(within(shell).getByText("Pinned root")).toBeTruthy();
+      expect(within(shell).getByText("Spawned child")).toBeTruthy();
+      for (const cls of ["flex", "flex-col", ROW_GAP_CLASS]) {
+        expect(shell.className.split(/\s+/)).toContain(cls);
+      }
+      // …and it is the SAME rhythm the surrounding list uses.
+      expect(screen.getByTestId("group-session-list").className.split(/\s+/)).toContain(ROW_GAP_CLASS);
     });
 
     it("makes pinned rows draggable only when there is more than one pin", () => {
