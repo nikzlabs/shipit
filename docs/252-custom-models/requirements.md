@@ -274,11 +274,29 @@ No open questions remain.
     service listed with no credential and no way to remove it, which is the direct cost of
     the hand-off this requirement removes.
 
+    **Leaving before it finishes is leaving, however the user leaves.** Cancelling and
+    closing do the same thing: the attempt is called off and nothing is listed. A sign-in
+    that is still in progress is not preserved for later, so there is no state in which a
+    service appears because the user stepped away from connecting it.
+
 ## Open questions
 
 _None._
 
 ## Resolved questions
+
+- 2026-08-11 — A sign-in is in progress, the provider's code is on screen, and the user
+  dismisses the dialog with Esc / the backdrop / the close button rather than pressing
+  Cancel. Is the attempt kept or discarded? **Chosen: discarded — closing means cancelling.**
+  Raised by the independent review, which found the implementation deliberately keeping a
+  dismissed attempt (visible on the service card as an unfinished account, finishable and
+  removable there) while req 17 said no unconnected service appears at all — a distinction
+  that existed in the design and the code but never in the requirement. The rejected reading
+  was to narrow the requirement around it, on the grounds that the provider may already have
+  authorised the code and losing it costs a restart. The answer keeps the requirement whole
+  instead: "unless you pressed Escape" is not a clause anybody would predict, and one press
+  to start again is cheaper than a service listed that nobody asked for. Req 17 amended to
+  say so.
 
 - 2026-08-11 — Once the sign-in moves inside the add-service flow, does a configured service
   keep a shortcut for adding another credential? **Chosen: no — the panel's "Add a service" is

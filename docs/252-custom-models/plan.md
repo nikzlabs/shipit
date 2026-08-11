@@ -2777,11 +2777,15 @@ Three consequences, each a decision:
   `provider_accounts` broadcast. So the last step becomes a *Connected* line with **Done**,
   which is the confirmation, and needs no effect and no polling. It also survives a reload
   mid-challenge, because the row does.
-- **Cancel abandons; closing does not.** *Cancel* cancels the login and deletes the account
-  (`abandonAccount`, cancel-then-delete, both best-effort), so an abandoned attempt leaves
-  nothing listed — the very state req 17 exists to prevent. Dismissing the dialog leaves the
-  challenge alone, because the provider may already have authorised it, and the row on the
-  card carries it to the end.
+- **Leaving abandons, however you leave.** *Cancel*, Esc, the backdrop and the close button
+  all route through one handler: the login is cancelled and the account deleted
+  (`abandonAccount`, cancel-then-delete, both best-effort), so nothing unfinished is ever
+  listed. The first cut split them — Cancel abandoned, a dismissal kept the attempt for the
+  card to finish, on the grounds that the provider may already have authorised the code —
+  and the human rejected that against the requirement it quietly contradicted: "unless you
+  pressed Escape" is not a clause anybody would predict, and one press to start again is
+  cheaper than a listed service nobody asked for (receipt, 2026-08-11). A *connected*
+  account is not an unfinished attempt, so Done and Esc are the same harmless exit there.
 - **One sign-in per provider** is the server's rule (409). The dialog states it before the
   click — `signInBlockedReason`, shared with the row's own `blockedBy` — rather than after.
 

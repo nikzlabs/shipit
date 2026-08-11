@@ -750,14 +750,26 @@ function AddServiceDialog({
   };
 
   /**
-   * Cancel abandons what this dialog created; closing does not.
+   * **Leaving the flow before it finishes abandons it** — by *Cancel*, by Esc,
+   * by the backdrop, by the close button. All four land here, so the account
+   * this dialog created and the login it started both go, and nothing
+   * unfinished is ever left listed (req 17).
    *
-   * The distinction is the whole reason the dialog can host a sign-in it does
-   * not own: pressing *Cancel* says the user called it off, so the account and
-   * its login go away and nothing is left listed. Dismissing the dialog (Esc,
-   * the backdrop, the close button) leaves a live challenge alone — the
-   * provider may already have authorised it, and the account row on the card
-   * carries it to the end.
+   * An earlier cut made *Cancel* abandon and a dismissal keep, reasoning that
+   * the provider may already have authorised the code on screen so the card
+   * should carry it to the end. Rejected by the human on the requirement it
+   * contradicts: req 17 says a service the user has not finished connecting
+   * does not appear, and "unless you pressed Escape" is not a clause anybody
+   * would predict. Losing a live challenge is recoverable in one press; a
+   * listed service nobody asked for is the bug this feature exists to remove.
+   *
+   * Not guarded: the component unmounting with a challenge live. It is
+   * unreachable in practice — this is a modal, so the tab behind it cannot be
+   * switched, and the one unmount that does happen (onboarding yielding the
+   * pane) is *caused* by the account connecting, which this no-ops on. A page
+   * reload is the honest exception, and no client cleanup covers that anyway:
+   * the row is server-side, so it shows up on the card, where Disconnect
+   * reaches it.
    */
   const cancel = (): void => {
     if (signInProvider && signInAccountId && !signedIn) {
@@ -788,7 +800,7 @@ function AddServiceDialog({
   };
 
   return (
-    <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
+    <Dialog open onOpenChange={(isOpen) => { if (!isOpen) cancel(); }}>
       <DialogContent className="max-w-md rounded-lg border-(--color-border-secondary) p-4" data-testid="add-service-dialog">
         <DialogTitle className="text-sm font-semibold">
           Add a service{service ? ` — ${service.name}` : ""}
@@ -865,7 +877,7 @@ function AddServiceDialog({
                 ) : signInStalled ? (
                   <p className="text-xs text-(--color-text-error)" data-testid="add-service-signin-stalled">
                     {authError ?? "The sign-in stopped before the account connected."} Try again
-                    below, or <b>Cancel</b> to add nothing.
+                    below, or close this to add nothing.
                   </p>
                 ) : signInAccount ? (
                   <>
@@ -878,9 +890,8 @@ function AddServiceDialog({
                       onError={setError}
                     />
                     <p className="text-[11px] text-(--color-text-tertiary)">
-                      When the account connects, this step says so. Closing this first is safe —
-                      the sign-in carries on, and you finish it on the service&rsquo;s card.
-                      <b> Cancel</b> calls it off and adds nothing.
+                      Keep this open until the account connects — this step will say so.
+                      Closing it, however you close it, calls the sign-in off and adds nothing.
                     </p>
                   </>
                 ) : (

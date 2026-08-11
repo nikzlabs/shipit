@@ -336,10 +336,12 @@ describe("ServicesPanel", () => {
     await waitFor(() => expect(screen.queryByTestId("service-card-openai:sub")).not.toBeInTheDocument());
   });
 
-  it("closing the dialog mid-challenge keeps the sign-in alive on the card (req 17)", async () => {
-    // The other half of the Cancel rule. The provider's login is a live process
-    // that may already have been authorised, so dismissing the dialog is not a
-    // decision to abandon it — the account row carries it to the end.
+  it("closing the dialog mid-challenge abandons the attempt too (req 17)", async () => {
+    // Every way out is the same way out. An earlier cut kept a dismissed
+    // attempt alive on the card, reasoning that the provider may already have
+    // authorised the code — rejected against req 17: "unless you pressed
+    // Escape" is not a clause anybody would predict, and one press to start
+    // again is cheaper than a service listed that nobody asked for.
     const created = {
       id: "acct-openai-1",
       serviceId: "openai", billingMode: "sub", via: "account",
@@ -351,7 +353,8 @@ describe("ServicesPanel", () => {
     };
     vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
       fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
-      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ accounts: [created] }) });
+      const accounts = init?.method === "DELETE" ? [] : [created];
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account: created, accounts }) });
     });
 
     render(<ServicesPanel agentList={[codexAgent]} />);
@@ -364,8 +367,45 @@ describe("ServicesPanel", () => {
     await userEvent.keyboard("{Escape}");
 
     await waitFor(() => expect(screen.queryByTestId("add-service-dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(fetchCalls.some(
+      (c) => c.url === "/api/provider-accounts/codex/acct-openai-1/login/cancel",
+    )).toBe(true));
+    await waitFor(() => expect(fetchCalls.some(
+      (c) => c.url === "/api/provider-accounts/codex/acct-openai-1" && c.method === "DELETE",
+    )).toBe(true));
+    await waitFor(() => expect(screen.queryByTestId("service-card-openai:sub")).not.toBeInTheDocument());
+  });
+
+  it("closing after the account connected keeps it (req 17)", async () => {
+    // The guard that makes "closing means cancelling" safe: it abandons an
+    // UNFINISHED attempt. A connected account is the thing the flow set out to
+    // create, so Done and Esc are the same harmless exit.
+    const connected = {
+      id: "acct-openai-1",
+      serviceId: "openai", billingMode: "sub", via: "account",
+      label: "OpenAI account 1",
+      isPrimary: true,
+      status: "ready",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account: connected, accounts: [connected] }) });
+    });
+
+    render(<ServicesPanel agentList={[codexAgent]} />);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    await userEvent.click(screen.getByTestId("add-service-option-openai"));
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+    await userEvent.click(screen.getByTestId("add-service-sign-in"));
+    await waitFor(() => expect(screen.getByTestId("add-service-signed-in")).toBeInTheDocument());
+
+    await userEvent.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByTestId("add-service-dialog")).not.toBeInTheDocument());
     expect(fetchCalls.some((c) => c.method === "DELETE")).toBe(false);
-    expect(screen.getByTestId("provider-account-row-acct-openai-1")).toBeInTheDocument();
+    expect(screen.getByTestId("service-card-openai:sub")).toBeInTheDocument();
   });
 
   it("offers BOTH a sign-in and a token for a mode that accepts both", async () => {
