@@ -22,24 +22,41 @@ That makes several things degrade, by design — do not treat them as bugs:
 
 Full design: `docs/118-shipit-ui-local`.
 
-## Credentials — set almost nothing
+## Credentials — set them once, outside
 
 The `dev` service's credentials are **user-supplied secrets**, set once in the outer **Settings → Secrets** (`docs/184-remove-platform-secret-forwarding`). Platform secret forwarding was deliberately removed, so nothing is inherited.
 
-**Only `GITHUB_TOKEN` should normally be set.** Sign the inner ShipIt in to a Claude or Codex account instead of supplying keys.
+`GITHUB_TOKEN` plus **any service credential you want to exercise** is the set. The `x-shipit-secrets` block in `docker-compose.yml` declares every `storageEnv` name the model catalogue knows — `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `ZAI_CODING_PLAN_KEY`, `ZAI_API_KEY`, `OPENROUTER_API_KEY`, `AI_GATEWAY_API_KEY` — so a key set once out there appears in every dogfood session without a visit to inner Settings (docs/131 req 11).
 
-**Leave `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` unset.** They are not broken — a local turn spawns its CLI with `HOME` at the routed account's root (`local-agent-home.ts`), and `scrubEnvAuthForScopedHome` drops them from that spawn's env so the account's own login is what the CLI sees. The reason to leave them unset is billing, not breakage:
+**Declaring a name costs nothing; supplying a value is the opt-in.** An unset secret resolves to nothing and seeds nothing. That per-name choice is the only granularity there is — there is no second switch.
 
-- They rank as a **metered fallback below** connected subscription accounts.
-- A spawn with **no session route** — `generateText`, used for PR descriptions — is **not** scrubbed. So a key set "just in case" would silently bill for those calls while every real turn ran on the subscription.
+### A supplied key becomes a credential ROUTE, not just a variable
 
-`local-agent-credentials.ts` maintains that unscoped fallback home (planning#284) and is not on the per-turn path.
+This matters and is not what the environment alone gives you. A bare variable is read by `listConfiguredCredentials` (`service-routing.ts`), so its models are already *eligible* — but it has no row, so inner Settings → Services shows nothing, it can be neither benched nor ordered nor failed over to, and the quota system has nothing to attach a reader to. `scripts/seed-inner-credentials.ts` closes that: at boot it POSTs each supplied variable to `/api/credential-routes`, so the inner instance holds a real credential.
+
+### ⚠ Three names bypass a connected subscription
+
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `OPENAI_API_KEY` are read by the vendor CLIs **directly**, so their mere presence in the inner orchestrator's environment can decide a spawn.
+
+A *turn* is safe: it spawns with `HOME` at the routed account's root (`local-agent-home.ts`) and `scrubEnvAuthForScopedHome` drops them. **Non-turn work is not** — session naming and PR descriptions go through `spawnSubAgent`, which in local mode calls the agent factory with no `resolveHome` (`session-runner.ts`), so the scrub is a no-op and Codex's `hasFileAuth` check misses the account root too. Consequence:
+
+- `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` are **metered**, so background work quietly bills per token while every real turn runs on the subscription. Set them only when you are deliberately testing metered billing.
+- `ANTHROPIC_AUTH_TOKEN` is a subscription token, not metered — but it still takes precedence over a connected account, so attribution points at the wrong credential.
+
+The other five names are ShipIt's own; no CLI reads them, so they are inert until the router selects their service. The seed logs a `⚠` line naming whichever of the three it finds.
+
+`local-agent-credentials.ts` maintains the unscoped fallback home (planning#284) and is not on the per-turn path.
 
 ## Seeding
 
-At `dev`-service boot, a background step adds and trusts the repos listed in `scripts/dogfood-seed.json`, so the inner UI comes up with a repo ready to work in instead of an empty slate (`docs/131-dogfood-seed-sessions`).
+At `dev`-service boot, two background steps run in order, both prefixed `[seed]` in the service logs (`docs/131-dogfood-seed-sessions`):
 
-Behavior: skips repos already present, exits 0 on any failure (never blocks boot), honors `DOGFOOD_SEED=0`, and prefixes its output with `[seed]` in the service logs.
+1. **Credentials** (`scripts/seed-inner-credentials.ts`) — every supplied service key becomes a credential route, labelled `… (dogfood secret)` in inner Settings → Services.
+2. **Repos** (`scripts/seed-inner-sessions.js`) — adds and trusts the repos in `scripts/dogfood-seed.json`, so the inner UI comes up with a repo ready to work in instead of an empty slate.
+
+Behavior for both: skips what is already present, exits 0 on any failure (never blocks boot), honors `DOGFOOD_SEED=0`. `DOGFOOD_SEED_CREDENTIALS=0` disables the credential half alone.
+
+Already-present means *left completely alone*: a credential you edited in the inner UI survives a restart, and rotating the outer secret does **not** propagate — delete the inner credential to re-seed it.
 
 ## Driving the inner instance over HTTP
 

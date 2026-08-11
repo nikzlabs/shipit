@@ -253,13 +253,110 @@ calls above are `curl` one-liners against a documented API, and a wrapper would
 be a second surface to keep in sync with the routes. A short section in
 `CLAUDE.md`'s dogfooding paragraph, listing them, is the deliverable.
 
+## Seeding credentials, not just repos (reqs 11–12)
+
+The same idea one layer down: a developer sets a service key **once** in the
+outer ShipIt's Settings → Secrets, and every dogfood session comes up holding it
+(req 11).
+
+### The env var was already forwarded — and was not a credential
+
+`x-shipit-secrets` has forwarded `ANTHROPIC_API_KEY` into the `dev` service's
+environment since docs/118. That is genuinely enough to *run* a turn, which is
+why it looked done. It does not satisfy req 12, and the gap is exact:
+
+| Asked of an env-supplied key | Answer | Where |
+|---|---|---|
+| Are its models eligible in the picker? | **Yes** | `listConfiguredCredentials` reads `env[storageEnv]` directly (`service-routing.ts`) |
+| Does it have a route id? | **Yes**, synthetic | `envRouteIdFor` → `env:<NAME>`, or a legacy `claude-api-key`-style id |
+| Does inner Settings → Services show it? | **No** | `listCredentialRoutes` reads the credential STORE only (`services/credential-routes.ts`); `ServicesPanel.tsx` renders that plus provider accounts |
+| Can it be ordered, benched, failed over to? | **No** | `stringSelectionFor` reaches it only when *nothing* is stored, and says so: "it carries no row, so ShipIt tracks no quota for it" |
+| Can a quota reader attach to it? | **No** | `LimitsRegistry` is keyed `modeKey → routeId`; a provider's `routeIds()` names accounts and cached routes, and there is no row to attach to |
+
+So an env key is an *eligibility* fact, not a credential. `app-di.ts` seeds
+`process.env` **from** the stored routes at boot; nothing does the inverse, and
+`syncProcessEnvForMode` is explicit that ShipIt only ever touches a value it put
+there. That deliberate restraint is right for a real deployment and is exactly
+what leaves the dogfood instance credential-less.
+
+### The missing half
+
+`scripts/seed-inner-credentials.ts`, run from the same boot hook as the repo
+seeder, POSTs each supplied variable to `/api/credential-routes`. Over HTTP
+rather than at the store, because the orchestrator owns that store, is already
+up, and the POST also fires `propagateCredentialChange()` and the
+`credential_routes` SSE — an inner UI already open updates live.
+
+Generalisation is the catalogue's, not the script's: it walks
+`credentialStorageEnvNames()` and places each name with
+`credentialModeForStorageEnv()`, so a new service is covered by the catalogue
+edit alone (req 11's "not a hand-maintained list"). There is no GLM branch.
+
+The one list that *cannot* be derived is `docker-compose.yml`'s
+`x-shipit-secrets` block — static YAML, read by the outer orchestrator's secret
+resolver long before any of this code runs. `seed-inner-credentials.test.ts`
+guards it against the catalogue in both directions, so adding a service fails
+the build with the missing name rather than quietly making that service
+untestable in dogfood.
+
+Idempotency mirrors req 4's: a `(service, billing mode)` that already holds a
+`via: "string"` route is left completely alone. Not a PATCH — re-writing the
+secret on every boot would silently clobber a credential edited in the inner UI.
+A connected **account** is not a reason to skip, since an account and a supplied
+token are different credentials of the same mode.
+
+### The billing hazard, stated rather than fixed
+
+Three of the eight names — `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+`OPENAI_API_KEY` — are read by the vendor CLIs **directly**, so their presence
+in the inner orchestrator's environment can decide a spawn regardless of what
+ShipIt selected. A *turn* is protected: local mode spawns with `HOME` at the
+routed account root (`local-agent-home.ts`) and `scrubEnvAuthForScopedHome`
+drops them. **Non-turn work is not.** `SessionRunner.spawnSubAgent` calls the
+agent factory with no `resolveHome`, so `scopedHome` is `undefined`, the scrub
+is a no-op, and Codex's `hasFileAuth` probe looks at `AGENT_HOME` rather than
+the account root. Session naming and PR descriptions therefore run on the
+ambient variable while ShipIt believes they ran on the connected subscription —
+metered, for the two API keys.
+
+This predates the change and this feature cannot fix it from here (the fix is to
+thread the resolved account into the local sub-agent spawn, which is docs/150 /
+docs/252 territory and touches the container path too). What the feature does
+owe is that it never becomes silent:
+
+- Declaring a name seeds nothing; **supplying a value is the per-key opt-in**,
+  and it already has the right granularity — the outer Settings → Secrets is
+  per-name.
+- The seed prints a `⚠` line naming whichever of the three it finds, and marks
+  the metered ones.
+- The `dogfooding-shipit` skill says all of this, replacing the narrower
+  "leave `ANTHROPIC_API_KEY` unset" advice it carried for one key.
+
+The other five names are ShipIt's own; no CLI reads them, so they are inert in
+the environment until the router selects their service. `ZAI_CODING_PLAN_KEY` is
+not an exception — its `targetOverride` renames it to `ANTHROPIC_AUTH_TOKEN`
+only at spawn shaping, when `zai:sub` was actually selected.
+
+### What becomes reachable
+
+Seeded from a single outer secret each: `anthropic:sub` (via the env token),
+`anthropic:key`, `openai:key`, `deepseek:key`, `zai:sub`, `zai:key`,
+`openrouter:key`, `vercel:key`. **`openai:sub` stays unreachable** — the
+catalogue gives ChatGPT's plan an `account` credential and no `storageEnv`, so
+it needs a real `codex login` device flow rather than a string, and no amount of
+seeding substitutes for it. `anthropic:sub` is reachable *as a string
+credential*; its OAuth-account form is likewise a login flow.
+
 ## Key files
 
 | File | Change |
 |---|---|
+| `scripts/seed-inner-credentials.ts` | New (reqs 11–12). Catalogue-driven: every supplied `storageEnv` becomes a credential route via `POST /api/credential-routes`. Same fail-open/idempotent/`[seed]`-prefixed contract as the repo seeder; `DOGFOOD_SEED_CREDENTIALS=0` disables it alone. TypeScript, so it runs under `npx tsx` — it imports the catalogue. |
+| `scripts/seed-inner-credentials.test.ts` | New. Unit tests plus the guard that `docker-compose.yml`'s `x-shipit-secrets` covers every catalogue credential name. |
 | `scripts/seed-inner-sessions.js` | New. Add repo → poll `ready` → trust, per fixture entry, keyed for idempotency on `GET /api/repos`. Non-fatal on error, honors `DOGFOOD_SEED`. Plain Node (no deps) so it runs before/independent of the build. |
 | `scripts/dogfood-seed.json` | New. Default fixture — one repo. |
-| `docker-compose.yml` | Background seed step in the `dev` service's `command:`, detached so Vite is not held up. |
+| `docker-compose.yml` | Background seed step in the `dev` service's `command:`, detached so Vite is not held up — now two scripts in one subshell, credentials first (fast) then repos (a cold clone takes minutes). `x-shipit-secrets` declares every catalogue credential name. |
+| `.claude/skills/dogfooding-shipit/SKILL.md` | Credentials section rewritten: set them once outside, what a seeded credential *is*, and the three names that bypass a connected subscription. |
 | `docs/118-shipit-ui-local/plan.md` | Cross-link this doc from the dogfooding section. **Done.** |
 | `CLAUDE.md` | The "Dogfooding ShipIt in ShipIt" paragraph: the seed, plus the four calls the outer agent uses to drive the inner ShipIt. |
 | `services/materialize-runner.ts` | New. The runner-materialization core lifted out of `activateSession` — archived guard, agent reconciliation, workspace restore, `getOrCreate` — so WS connect and HTTP dispatch bring a session up the same way. |

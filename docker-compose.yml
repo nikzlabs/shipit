@@ -69,12 +69,22 @@ services:
     # `preview-proxy.ts`) — client edits hot-reload instead of
     # requiring a `vite build` round-trip.
     #
-    # The seed step (docs/131) adds and trusts the repos in
-    # `scripts/dogfood-seed.json` so the inner ShipIt comes up with something
-    # to work in instead of an empty slate. It is backgrounded and detached
-    # (`( … &)`) so Vite starts immediately and the inner UI is usable while
-    # the clones land; it waits for the orch itself, exits 0 on any failure,
-    # skips repos that are already present, and no-ops on DOGFOOD_SEED=0.
+    # The seed step (docs/131) is two scripts sharing one backgrounded,
+    # detached subshell (`( … &)`) so Vite starts immediately and the inner UI
+    # is usable while they run. Both wait for the orch themselves, exit 0 on
+    # any failure, skip what is already present, and no-op on DOGFOOD_SEED=0.
+    #
+    #   1. `seed-inner-credentials.ts` (req 11) turns each supplied
+    #      `x-shipit-secrets` service key into a real credential ROUTE in the
+    #      inner instance. First because it is fast — a few HTTP calls — and
+    #      the developer wants credentials before they want repos.
+    #   2. `seed-inner-sessions.js` adds and trusts the repos in
+    #      `scripts/dogfood-seed.json`, so the inner ShipIt comes up with
+    #      something to work in instead of an empty slate. Second because a
+    #      cold clone can take minutes.
+    #
+    # `npx tsx` for the first, plain `node` for the second: the credential
+    # seeder imports the model catalogue, which is TypeScript.
     command: >
       sh -c "
       mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit} $${AGENT_HOME:-/root} &&
@@ -82,7 +92,7 @@ services:
         echo '[dev] waiting for agent.install to populate node_modules…'; sleep 1;
       done &&
       PORT=4000 npm run dev &
-      (node scripts/seed-inner-sessions.js 2>&1 | sed 's/^/[seed] /' &) &&
+      ( { npx tsx scripts/seed-inner-credentials.ts; node scripts/seed-inner-sessions.js; } 2>&1 | sed 's/^/[seed] /' &) &&
       API_PORT=4000 exec npx vite --host 0.0.0.0 --port 3000
       "
     working_dir: /workspace
@@ -185,12 +195,42 @@ services:
     # The inner orch's AuthManager / GitHubAuthManager init from process.env,
     # so the inner UI is logged in from the start. These are user-supplied
     # secrets: the dogfooding developer sets them once in the outer ShipIt's
-    # Settings → Secrets panel, keyed by these names. Use a long-lived
-    # ANTHROPIC_API_KEY (it does not rotate) + a dedicated testing GITHUB_TOKEN.
+    # Settings → Secrets panel, keyed by these names. Declaring a name here
+    # costs nothing — an unset secret resolves to nothing and the whole block
+    # is a silent no-op. SUPPLYING a value is the deliberate, per-key act.
+    #
+    # docs/131 req 11 — every credential name below the GITHUB_TOKEN line is a
+    # catalogue `storageEnv`, and `scripts/seed-inner-credentials.ts` turns each
+    # one that has a value into a real credential ROUTE in the inner instance
+    # (visible in inner Settings → Services, routable, quota-attachable) rather
+    # than a bare environment variable. Set once outside, present in every
+    # dogfood session.
+    #
+    # This list is static YAML and cannot enumerate the catalogue, so
+    # `scripts/seed-inner-credentials.test.ts` asserts it covers every
+    # `credentialStorageEnvNames()` entry — adding a service to the catalogue
+    # fails the build here with the missing name rather than quietly making
+    # that service untestable in dogfood. Keep it in catalogue order.
+    #
+    # ⚠ BILLING, for the three names the vendor CLIs read directly
+    # (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY): a local-mode
+    # NON-TURN spawn — session naming, PR descriptions — is not account-scoped
+    # (`session-runner.ts` `spawnSubAgent` calls the factory with no
+    # `resolveHome`), so `scrubEnvAuthForScopedHome` is a no-op there and the
+    # CLI prefers the ambient variable over a connected subscription account.
+    # The two API keys are metered. The other five names are ShipIt's own and
+    # no CLI reads them, so they are inert until the router selects their
+    # service. See the `dogfooding-shipit` skill.
     x-shipit-secrets:
-      - { name: ANTHROPIC_API_KEY }
-      - { name: ANTHROPIC_AUTH_TOKEN }
       - { name: GITHUB_TOKEN }
+      - { name: ANTHROPIC_AUTH_TOKEN }
+      - { name: ANTHROPIC_API_KEY }
+      - { name: OPENAI_API_KEY }
+      - { name: DEEPSEEK_API_KEY }
+      - { name: ZAI_CODING_PLAN_KEY }
+      - { name: ZAI_API_KEY }
+      - { name: OPENROUTER_API_KEY }
+      - { name: AI_GATEWAY_API_KEY }
 
   # Agent Interface SDK test preview (docs/242).
   #

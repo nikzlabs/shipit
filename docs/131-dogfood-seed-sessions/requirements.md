@@ -45,6 +45,19 @@ able to do with it.
 10. The outer agent can tell whether an inner session is still working or has
     finished, so it knows when there is something to read.
 
+11. A service API key is set **once**, outside, and is then present in the inner
+    ShipIt in every session — nobody visits the inner Settings to re-add it.
+    This applies to **every** service ShipIt supports, in both billing modes
+    where a service has both, so an agent can exercise any model/credential
+    combination in the dogfood loop without a human configuring it first. It is
+    not a per-service feature: adding a service to the catalogue must make its
+    key seedable without anyone remembering to extend a list.
+
+12. What arrives in the inner ShipIt is a credential the product can *see* — it
+    shows up in inner Settings → Services the way a credential added by hand
+    does, the router can select it, and the quota system can report on it. A
+    value that merely exists in the environment does not satisfy this.
+
 Not required in this version: the outer agent replying to an inner agent
 mid-task — follow-up messages, answering a question the inner agent asks,
 interrupting it. Starting it and reading the result is enough (see the resolved
@@ -55,6 +68,28 @@ question below).
 _(none — implementation is unblocked.)_
 
 ## Resolved questions
+
+- 2026-08-11 — Requirements 11–12 added from two statements. First: *"I don't
+  want to go to settings in every session"*, with GLM as the motivating case.
+  Then, when the scope was put back as "GLM plus a generic mechanism": *"we need
+  to propagate all keys that we support, so the agent could test all
+  combinations in the dogfood."* Requirement 11 is the second statement, so it
+  says every service and both billing modes, and says the coverage must not be a
+  hand-maintained list. Requirement 12 is the *first* statement read strictly —
+  "present in the inner ShipIt" was checked against the code and turned out not
+  to follow from the environment variable alone, so it is stated as its own
+  requirement rather than assumed. Neither says how; see `plan.md`.
+
+- 2026-08-11 — Does propagating every key silently create metered spend?
+  Answered from the code, and **not** treated as a new requirement, because the
+  opt-in requirement 11 needs already exists: declaring a name in
+  `x-shipit-secrets` seeds nothing, and supplying its value is a deliberate
+  per-key act in the outer Settings → Secrets. Three of the eight names
+  (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`) are read by
+  the vendor CLIs directly and do take precedence over a connected subscription
+  for non-turn work; that is a pre-existing local-mode gap, recorded in
+  `plan.md` under "The billing hazard" and surfaced at seed time, not something
+  this feature introduces or can fix from here.
 
 - 2026-08-04 — Does requirement 1 need a repo-backed *session* to exist when the
   dogfood ShipIt boots? Chosen: **no — a repo added and ready is the whole
