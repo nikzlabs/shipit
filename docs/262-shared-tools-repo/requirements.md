@@ -56,11 +56,16 @@ receives data when someone clicks buttons in the previewed pages.
    pushes to the tools repository. Tools files are visible to the agent but
    never appear as project-repository changes and never enter the project's
    commits. Tool services may write disposable runtime and build data; the
-   tool source itself stays unmodified.
+   tool source itself stays unmodified. Read-only means the tool source is
+   never modified and never pushed — dependency installation and build output
+   always have a writable location, which is neither tool source nor project
+   data.
 8. By default, a project session's tools checkout tracks a named branch of the
    tools repository. A project repository can pin a tag or SHA instead when it
    needs stability; a pinned project stays at that exact revision until its
-   declaration changes.
+   declaration changes. A tool that holds the integrity of project data
+   (e.g. one that validates records it wrote earlier) is the case pinning
+   exists for.
 9. Tool services run **per-session**: each project session gets its own
    instances, like its own compose services today.
 10. The feature works under both credential modes: host-wide PAT and per-repo
@@ -112,6 +117,8 @@ receives data when someone clicks buttons in the previewed pages.
     restarts, tools refreshes (req 12), and routine container restarts, and
     is discarded only when the session itself is reset or deleted. Neither
     kind of data is ever stored by modifying the read-only tools checkout.
+    The preview origin is stable for the session's whole life, so
+    origin-keyed browser storage counts as session-scoped state.
 19. A checked-in tools declaration is a **standing grant** to fetch and
     execute that repository's declared setup, services, and companion CLIs at
     the selected revision — including each new commit on a tracked branch,
@@ -124,11 +131,24 @@ receives data when someone clicks buttons in the previewed pages.
     ShipIt reports the collision before running the ambiguous one, and the
     collision is resolvable in the declaration without copying service,
     command, port, or compose definitions.
+21. A tool service and a companion CLI can address the **consuming project's
+    workspace** through a stable, ShipIt-supplied handle that is the same in
+    every project, and that a tools repository can name in its own service
+    definition without knowing the project. (A tool that operates on the
+    project — reading its docs, writing its assets — cannot satisfy req 18
+    without this.)
+22. A tools repository may ship **agent instructions** (e.g. skills) that a
+    project session picks up, under the same standing grant as req 19. The
+    instructions travel with the tool; projects never keep copies that must
+    be kept in sync.
 
 ## Out of scope (v1)
 
 - MCP-style tool declarations (the tools repository shipping an MCP server the
   agent gets automatically in project sessions). Deferred; revisit for v2.
+- A declared **data-format version** (a tools repository stating which version
+  of its on-disk project data it reads and writes, with a pre-run mismatch
+  report). Deferred; pinning (req 8) is the v1 mitigation.
 
 ## Requirement provenance
 
@@ -148,7 +168,10 @@ acting through the UI. Requirements 18–20 and the amendments to reqs 5, 12,
 14, and 15 come from the second independent review of 2026-08-11 (same
 brokered-reviewer setup; CLI coverage, multi-repo semantics, and trust
 boundary), whose findings the user resolved the same day — see Resolved
-questions.
+questions. Requirements 21–22 and the amendments to reqs 7, 8, and 18 come
+from a fit review by a candidate consumer — the user's requirements tool,
+reviewed by the agent in that tool's own repository and forwarded by the user
+(2026-08-11); the user resolved its findings the same day.
 
 ## Open questions
 
@@ -196,3 +219,17 @@ questions.
   4, 5). Answer: **apply all three** — CLI parity in onboarding, refresh, and
   coherence (→ reqs 5, 12, 15), per-repository independence (→ req 14),
   collision reporting and resolution (→ req 20).
+- **2026-08-11 — Workspace handle** (fit review, finding 1 — blocking).
+  Answer: **add it** — tools can address the consuming project's workspace
+  through a stable, ShipIt-supplied handle. → req 21.
+- **2026-08-11 — Agent instructions** (fit review, finding 2). Answer:
+  **carry them** — a tools repo may ship skills that project sessions pick
+  up, under the req 19 standing grant; no per-project copies. → req 22.
+- **2026-08-11 — Data-format compatibility** (fit review, finding 3).
+  Answer: **pin note now, defer versioning to v2** — req 8 amended with the
+  pinning guidance; the version declaration is recorded under Out of scope.
+- **2026-08-11 — Fit-review wording amendments** (fit review, findings 4, 5).
+  Answer: **apply both** — writable location for installs and build output
+  (→ req 7); stable preview origin per session, verified in the ShipIt code
+  (subdomain routing `{sessionId}--{port}`), so origin-keyed browser storage
+  is session-scoped (→ req 18).
