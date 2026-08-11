@@ -126,6 +126,11 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
    * something on top of it doing the job.
    */
   const [signInAccountId, setSignInAccountId] = useState<string | undefined>(undefined);
+  /**
+   * The panel lists the accounts the user *has*, which is not the same set the
+   * store holds while a sign-in is in flight — see `useProviderAccounts`.
+   */
+  const visibleAccounts = accounts.filter((a) => a.id !== signInAccountId);
 
   /**
    * **A service appears once it has a credential — never before** (req 17).
@@ -152,7 +157,7 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
     const provider = accountProviderFor(service, billingMode);
     return routes.some((r) => r.serviceId === service.id && r.billingMode === billingMode && r.via === "string")
       || (provider !== undefined
-        && accounts.some((a) => a.serviceId === service.id && a.billingMode === billingMode))
+        && visibleAccounts.some((a) => a.serviceId === service.id && a.billingMode === billingMode))
       || (provider !== undefined && notices[provider] !== undefined);
   });
 
@@ -163,7 +168,7 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
       billingMode={billingMode}
       routes={routes.filter((r) => r.serviceId === service.id && r.billingMode === billingMode)}
       agentList={agentList}
-      hostedSignInAccountId={signInAccountId}
+      hiddenAccountId={signInAccountId}
     />
   ));
 
@@ -299,14 +304,14 @@ function ServiceModeCard({
   billingMode,
   routes,
   agentList,
-  hostedSignInAccountId,
+  hiddenAccountId,
 }: {
   service: ServiceDef;
   billingMode: BillingMode;
   routes: CredentialRoute[];
   agentList: AgentOption[];
-  /** An account whose challenge the add-service dialog is showing — see there. */
-  hostedSignInAccountId?: string;
+  /** See {@link useProviderAccounts} — an in-flight sign-in the dialog owns. */
+  hiddenAccountId?: string;
 }) {
   // A mode can hold BOTH shapes at once — Anthropic's subscription takes an
   // OAuth account and an env-supplied token — so this renders whichever are
@@ -316,7 +321,7 @@ function ServiceModeCard({
   // The rows' own narrowing, not a second one that looks like it — see the
   // hook. A card with `provider === undefined` has no account body, so the
   // placeholder harness it is called with contributes nothing.
-  const providerAccounts = useProviderAccounts(provider ?? "claude");
+  const providerAccounts = useProviderAccounts(provider ?? "claude", hiddenAccountId);
   const accounts = provider ? providerAccounts : [];
   const stringRoutes = routes.filter((r) => r.via === "string");
   const multiple = modeAllowsMultipleCredentials(billingMode);
@@ -412,7 +417,7 @@ function ServiceModeCard({
         <ProviderAccountRows
           provider={provider}
           agent={agentList.find((a) => a.id === provider)}
-          challengeHostedElsewhere={hostedSignInAccountId}
+          hiddenAccountId={hiddenAccountId}
         />
       )}
       {stringRoutes.length > 0 && (

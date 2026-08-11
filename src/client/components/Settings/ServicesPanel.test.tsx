@@ -368,7 +368,13 @@ describe("ServicesPanel", () => {
     await userEvent.click(screen.getByTestId("add-service-option-openai"));
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
     await userEvent.click(screen.getByTestId("add-service-sign-in"));
-    await waitFor(() => expect(screen.getByTestId("service-card-openai:sub")).toBeInTheDocument());
+    await waitFor(() => expect(fetchCalls.some(
+      (c) => c.url === "/api/provider-accounts" && c.method === "POST",
+    )).toBe(true));
+    // The panel behind the dialog does not move: the account exists server-side
+    // from this moment, but it is the dialog's until the flow ends. A card that
+    // appears here is one the user then watches disappear on Escape.
+    expect(screen.queryByTestId("service-card-openai:sub")).not.toBeInTheDocument();
 
     await userEvent.keyboard("{Escape}");
 
@@ -406,6 +412,9 @@ describe("ServicesPanel", () => {
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
     await userEvent.click(screen.getByTestId("add-service-sign-in"));
     await waitFor(() => expect(screen.getByTestId("add-service-signed-in")).toBeInTheDocument());
+    // Still the dialog's while the dialog is up, even connected — the panel
+    // gets it in one move when the flow ends, rather than twitching mid-flow.
+    expect(screen.queryByTestId("service-card-openai:sub")).not.toBeInTheDocument();
 
     await userEvent.keyboard("{Escape}");
 

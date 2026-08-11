@@ -107,15 +107,29 @@ function NoticeLine({
  *
  * Exported so the card that hosts these rows counts exactly what they render.
  * Deriving the count from a second, similar filter is how a header saying
- * "2 accounts" ends up over three rows.
+ * "2 accounts" ends up over three rows — which is also why `hiddenAccountId`
+ * is applied *here* rather than at each call site.
+ *
+ * **`hiddenAccountId` — an account that exists but is not the panel's yet.**
+ * A sign-in needs a row to hang on, so `POST /api/provider-accounts` creates
+ * one the instant the user presses *Sign in*, long before anything is
+ * connected. Everything that lists accounts would otherwise show it: a card
+ * appearing behind the open dialog, with a phantom `authenticating` row, for a
+ * service the user is still in the middle of adding — and if they then close
+ * the dialog it is deleted again, so the panel gains and loses a card while
+ * they watch. While the add-service dialog is hosting that sign-in, it owns it
+ * outright; the panel sees the account when the flow ends, which is also when
+ * it becomes true that the user has one.
  */
-export function useProviderAccounts(provider: AgentId): CredentialRoute[] {
+export function useProviderAccounts(provider: AgentId, hiddenAccountId?: string): CredentialRoute[] {
   const allAccounts = useSettingsStore((s) => s.providerAccounts);
   // planning#342 — the store holds `CredentialRoute`s, keyed by service. The
   // login flow is still the CLI's, so this narrows by the harness's own vendor
   // rather than by the harness.
   const serviceId = serviceIdForProvider(provider);
-  return allAccounts.filter((account) => account.serviceId === serviceId);
+  return allAccounts.filter(
+    (account) => account.serviceId === serviceId && account.id !== hiddenAccountId,
+  );
 }
 
 /**
@@ -349,24 +363,14 @@ export function AccountChallenge({
 export function ProviderAccountRows({
   provider,
   agent,
-  challengeHostedElsewhere,
+  hiddenAccountId,
 }: {
   provider: AgentId;
   agent: AgentOption | undefined;
-  /**
-   * An account whose login challenge something in front of this card is already
-   * showing — today, the add-service dialog that started it.
-   *
-   * The rows stand down for exactly that account, and for no other reason. The
-   * challenge is one shared component with two hosts, so while the dialog is
-   * open both were rendering it: the provider's code on screen twice, and on
-   * Anthropic two paste-code inputs of which only one submits. The row's copy
-   * is what finishes a sign-in nothing else is hosting — after a reload, or one
-   * started in another tab — so it is suppressed rather than removed.
-   */
-  challengeHostedElsewhere?: string;
+  /** See {@link useProviderAccounts} — an in-flight sign-in the dialog owns. */
+  hiddenAccountId?: string;
 }) {
-  const accounts = useProviderAccounts(provider);
+  const accounts = useProviderAccounts(provider, hiddenAccountId);
   const setProviderAccounts = useSettingsStore((s) => s.setProviderAccounts);
   const accountAuthErrors = useSettingsStore((s) => s.providerAccountAuthErrors);
   const setProviderAccountAuth = useSettingsStore((s) => s.setProviderAccountAuth);
@@ -630,7 +634,6 @@ export function ProviderAccountRows({
                 {/* The shared challenge — the same component the add-service
                     dialog renders, so the first sign-in and the fifth are one
                     implementation (docs/150 req 16). */}
-                {challengeHostedElsewhere !== account.id && (
                 <AccountChallenge
                   provider={provider}
                   account={account}
@@ -640,7 +643,6 @@ export function ProviderAccountRows({
                     [account.id]: { kind: "error", message },
                   }))}
                 />
-                )}
 
                 {authError && (
                   <p className="text-xs text-(--color-error)" data-testid={`provider-account-error-${account.id}`}>

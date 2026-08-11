@@ -2788,14 +2788,22 @@ Three consequences, each a decision:
   account is not an unfinished attempt, so Done and Esc are the same harmless exit there.
 - **One sign-in per provider** is the server's rule (409). The dialog states it before the
   click — `signInBlockedReason`, shared with the row's own `blockedBy` — rather than after.
-- **Only one host shows the challenge at a time.** The account exists the moment the sign-in
-  starts, so its card renders *behind* the modal — and the card's rows host the same shared
-  `AccountChallenge`, which put the provider's code on screen twice (and on Anthropic, two
-  paste-code inputs of which only one submits). The panel therefore owns
-  `signInAccountId` — lifted out of the dialog for exactly this — and passes it down so the
-  rows stand down for that one account. Suppressed, not removed: the row's copy is what
-  finishes a challenge nothing else is hosting, after a reload or in another tab, which is
-  also the one case where an unfinished attempt survives (see the unmount note above).
+- **An in-flight sign-in belongs to the dialog, and the panel behind it does not move.** The
+  account exists the moment the sign-in starts — the login needs a row to hang on — so
+  everything that lists accounts saw it immediately: a card materialising *behind* the open
+  modal with a phantom `authenticating` row, and (since the row hosts the same shared
+  `AccountChallenge`) the provider's code on screen **twice**, with two paste-code inputs on
+  Anthropic of which only one submits. Worse, closing the dialog deletes that account, so the
+  panel gained and lost a card while the user watched.
+
+  So the panel owns `signInAccountId` — lifted out of the dialog for exactly this — and hides
+  that one account from itself: from the `configured` filter, and from
+  `useProviderAccounts`, which every card reads for its rows, its count and its routing
+  controls, so all four agree by construction. The panel gets the account **when the flow
+  ends**, which is also when it becomes true that the user has one. Hidden, never deleted:
+  the row is the host for a challenge nothing else is hosting, after a reload or in another
+  tab, which is the one case where an unfinished attempt survives (see the unmount note
+  above).
 
 **What cross-backend review found, all of it on the paths where the sign-in does *not* simply
 work:**
