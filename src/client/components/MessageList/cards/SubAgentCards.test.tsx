@@ -82,6 +82,91 @@ describe("SubAgentConsultCardRow (docs/220)", () => {
 });
 
 /**
+ * docs/261 phase 4 (req 9) — the card reports what the consult ACTUALLY ran on.
+ *
+ * The bug this closes: `subAgentId` is a HARNESS, and Claude Code can drive a
+ * non-Anthropic model, so "Consulted Claude" can be true while telling the
+ * reader nothing about which weights reviewed their work. The model becomes the
+ * subject of the summary and the rest — service, billing mode, harness,
+ * reasoning level — lands on a second line.
+ */
+describe("SubAgentConsultCardRow run-on attribution (docs/261 req 9)", () => {
+  const runOn = {
+    serviceId: "anthropic",
+    billingMode: "sub" as const,
+    modelId: "claude-opus-5",
+    reasoningEffort: "high",
+  };
+
+  it("names the MODEL in the summary, not the harness", () => {
+    render(<SubAgentConsultCardRow card={card({ subAgentId: "claude", runOn })} />);
+    const row = screen.getByTestId("sub-agent-consult-card");
+    expect(row.textContent).toContain("Consulted Opus 5");
+    expect(row.textContent).not.toContain("Consulted Claude");
+  });
+
+  it("puts the service, billing mode, harness and reasoning level on the second line", () => {
+    render(<SubAgentConsultCardRow card={card({ subAgentId: "claude", runOn })} />);
+    expect(screen.getByTestId("sub-agent-consult-run-on").textContent)
+      .toBe("Anthropic · Subscription · Claude · High reasoning");
+  });
+
+  // The whole point of the phase: a harness driving another vendor's model. The
+  // card has to say Claude Code ran it AND that DeepSeek did the reviewing —
+  // "Consulted Claude" would have been true and useless.
+  it("distinguishes the harness from the model when they disagree", () => {
+    render(<SubAgentConsultCardRow card={card({
+      subAgentId: "claude",
+      runOn: { serviceId: "openrouter", billingMode: "key", modelId: "deepseek/deepseek-v4-pro", reasoningEffort: "high" },
+    })} />);
+    const row = screen.getByTestId("sub-agent-consult-card");
+    expect(row.textContent).toContain("Consulted DeepSeek V4 Pro");
+    expect(screen.getByTestId("sub-agent-consult-run-on").textContent)
+      .toBe("OpenRouter · API key · Claude · High reasoning");
+  });
+
+  it("shows the attribution while the consult is still in flight", () => {
+    render(<SubAgentConsultCardRow card={card({
+      status: "pending", durationMs: undefined, costUsd: undefined, subAgentId: "claude", runOn,
+    })} />);
+    expect(screen.getByTestId("sub-agent-consult-card").textContent).toContain("Asking Opus 5");
+    expect(screen.getByTestId("sub-agent-consult-run-on").textContent).toContain("Anthropic");
+  });
+
+  it("shows it on a terminal card with no output too", () => {
+    render(<SubAgentConsultCardRow card={card({ status: "error", costUsd: 0, subAgentId: "claude", runOn })} />);
+    expect(screen.queryByTestId("sub-agent-consult-preview")).toBeNull();
+    expect(screen.getByTestId("sub-agent-consult-run-on").textContent).toContain("Anthropic");
+  });
+
+  it("titles the output viewer with the model as well", () => {
+    render(<SubAgentConsultCardRow card={card({
+      subAgentId: "claude", runOn, outputMarkdown: "Two findings.",
+    })} />);
+    fireEvent.click(screen.getByTestId("sub-agent-consult-card"));
+    expect(screen.getByRole("dialog").textContent).toContain("Consulted Opus 5");
+  });
+
+  // A card written before this phase, and one naming a model the catalogue has
+  // since dropped. Provenance degrades to a worse label, never to a wrong one.
+  it("falls back to the harness when the card carries no run target", () => {
+    render(<SubAgentConsultCardRow card={card()} />);
+    expect(screen.getByTestId("sub-agent-consult-card").textContent).toContain("Consulted Codex");
+    expect(screen.queryByTestId("sub-agent-consult-run-on")).toBeNull();
+  });
+
+  it("falls back to raw ids for a model or service the catalogue no longer carries", () => {
+    render(<SubAgentConsultCardRow card={card({
+      subAgentId: "codex",
+      runOn: { serviceId: "retired-gw", billingMode: "key", modelId: "some-old-model", reasoningEffort: "turbo" },
+    })} />);
+    expect(screen.getByTestId("sub-agent-consult-card").textContent).toContain("Consulted some-old-model");
+    expect(screen.getByTestId("sub-agent-consult-run-on").textContent)
+      .toBe("retired-gw · API key · Codex · turbo reasoning");
+  });
+});
+
+/**
  * docs/244 / planning#299 — the lazy consult output. The transcript payload carries
  * only the preview line the card face draws; the viewer is the click that
  * fetches the rest. Server tests prove the payload is stripped — these prove the

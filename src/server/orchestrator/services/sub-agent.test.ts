@@ -386,6 +386,45 @@ describe("runSubAgent — --role reviewer", () => {
     expect(arg.serviceRouting).toBeDefined();
   });
 
+  /**
+   * docs/261 phase 4 (req 9) — the consult card reports what the review ACTUALLY
+   * ran on, and "actually" is the load-bearing word: the card, the spawn and the
+   * usage row all read the one target captured at admission, so they cannot
+   * disagree about which model reviewed the work or which credential paid.
+   *
+   * A role is the case that needs this most. Nothing in the call names a model,
+   * so without the card the only record of who reviewed is a host log line.
+   */
+  it("persists the resolved reviewer on the consult card, matching the spawn and the bill", async () => {
+    const { deps, runner, emitMessage, record } = makeDeps({
+      session: { id: "s1", agentId: "claude", agentPinned: true },
+      credentialRoutes: [keyRoute("openai"), keyRoute("anthropic")],
+    });
+    await runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer" }, prompt: "review", depth: 0 });
+
+    const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
+      .mock.calls[0][0];
+    const cards = emitMessage.mock.calls
+      .map((c) => c[0] as { type: string; card?: Record<string, unknown> })
+      .filter((m) => m.type === "sub_agent_consult_card")
+      .map((m) => m.card!);
+
+    // Both deliveries — the pending card and the terminal one.
+    expect(cards).toHaveLength(2);
+    for (const card of cards) {
+      expect(card.subAgentId).toBe(arg.agentId);
+      expect(card.runOn).toEqual({
+        serviceId: "openai",
+        billingMode: "key",
+        modelId: arg.model,
+        reasoningEffort: arg.reasoningEffort,
+      });
+    }
+    // The same model the consult's usage row is attributed to. Two derivations
+    // of "what ran" is how a card ends up naming a model the bill never saw.
+    expect(record.mock.calls[0][5]).toMatchObject({ model: arg.model });
+  });
+
   // req 4 — "reviewing works whichever model is implementing", with nothing to
   // keep in sync. The same install, a different implementer, a different answer.
   it("sends a Codex session's work the other way, with nothing reconfigured", async () => {
@@ -500,9 +539,22 @@ describe("runSubAgent — happy path", () => {
     // The spinner carries the OWNING session id so the client can drop it when
     // it arrives for a session other than the one being viewed.
     expect(msgs[0]).toMatchObject({ type: "sub_agent_spawn", sessionId: "s1", subAgentId: "codex" });
+    // docs/261 phase 4 (req 9) — the card says what the consult RUNS ON from the
+    // moment it is created, not only once it finishes: a backgrounded consult is
+    // in flight for minutes, and a row that cannot name the model until then is
+    // useless for exactly as long as anyone is looking at it.
     expect(msgs[1]).toMatchObject({
       type: "sub_agent_consult_card",
-      card: expect.objectContaining({ subAgentId: "codex", status: "pending" }),
+      card: expect.objectContaining({
+        subAgentId: "codex",
+        status: "pending",
+        runOn: {
+          serviceId: "openai",
+          billingMode: "sub",
+          modelId: "gpt-5.6-sol",
+          reasoningEffort: "high",
+        },
+      }),
     });
     // the bill update is flagged subAgent so it doesn't move the context dial
     expect(msgs[2]).toMatchObject({
@@ -522,6 +574,10 @@ describe("runSubAgent — happy path", () => {
         durationMs: 4200,
         costUsd: 0.03,
         outputMarkdown: "2 bugs found",
+        // Carried through the pending → terminal patch. The patch spreads the
+        // pending card, so a field added to one and not the other would vanish
+        // exactly when the card becomes the permanent record.
+        runOn: expect.objectContaining({ modelId: "gpt-5.6-sol" }),
       }),
     });
     // the spinner and the card share a spawnId (the card clears the spinner)

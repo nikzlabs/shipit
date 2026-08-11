@@ -88,12 +88,19 @@ Services-first (audit D1) is **docs/252's**, not this feature's — no requireme
 it.
 ## Phase 4 — Attribution
 
-- [ ] The captured resolved reviewer persisted on the consult card — today it carries only
-      `subAgentId`, duration and cost (`chat.ts:51`), so it cannot say what ran
-- [ ] Rendered as model, service/mode, harness and effort; "Consulted Claude" is misleading
-      once Claude Code can drive a non-Anthropic model
-- [ ] Transcript-persistence rules followed: typed field, column + migration,
-      `CARD_MESSAGE_FIELDS`, rehydration, history round-trip test
+- [x] The captured resolved reviewer persisted on the consult card — `SubAgentConsultCard.runOn`,
+      copied from the target captured at spawn admission, written onto the PENDING card so a
+      backgrounded consult can name its model for the minutes anyone is watching it
+- [x] Rendered as model, service/mode, harness and effort; the **model** is the summary's
+      subject and the harness moves to the second line, because "Consulted Claude" names a CLI
+      and says nothing about which weights reviewed the work
+- [x] Transcript-persistence rules followed: typed field, `CARD_MESSAGE_FIELDS` (already
+      registered — this is a nested field on an existing card), rehydration, history round-trip
+      test. **No column and no migration**: the card serializes to one json column, the same
+      exemption `BranchAutoResetCard.forced` records
+- [x] It survives every hop, each with a test: the pending → terminal patch in-turn AND on a
+      finalized row (`updateSubAgentConsultCard` merges, and the terminal patch carries no
+      `runOn` of its own), and the serve-path wire projection that strips the output
 
 ## Phase 5 — Product-owned callers
 

@@ -1,4 +1,5 @@
 import type { AgentId } from "../agent-types.js";
+import type { BillingMode } from "../../catalogue/types.js";
 
 /** Provenance for a prompt delivered by another ShipIt session's agent. */
 export interface SessionMessageOrigin {
@@ -30,7 +31,31 @@ export interface CompactionCard {
 }
 
 /**
- * docs/144 — the persisted "Consulted Codex · 47s · $0.03" transcript card for a
+ * docs/261 phase 4 (req 9) — the resolved parameters a sub-agent consult ran on,
+ * minus the harness (which is the card's own `subAgentId`).
+ *
+ * Ids, never rendered labels. A label is a catalogue fact that can be corrected;
+ * an id is what the run was billed and attributed against. Storing the label too
+ * would freeze a name at spawn time and give the same card two sources for one
+ * fact — the client resolves both through the catalogue at render and falls back
+ * to the id, which is a worse label but never a wrong one (the rule
+ * `client/utils/service-label.ts` already follows).
+ *
+ * All four are required, because req 3 makes `(service, billing mode, model)`
+ * what identifies a model at all — the same id is reachable through a vendor and
+ * through a gateway at different prices — and req 5 makes the reasoning level
+ * part of the reviewer rather than a separate decision.
+ */
+export interface SubAgentRunTarget {
+  serviceId: string;
+  billingMode: BillingMode;
+  modelId: string;
+  /** The harness-specific level (e.g. `"high"`), never absent since docs/261. */
+  reasoningEffort: string;
+}
+
+/**
+ * docs/144 — the persisted "Consulted Opus 5 · 47s · $0.03" transcript card for a
  * completed sub-agent spawn. Unlike the transient in-flight spinner (the
  * `sub_agent_spawn` WS message + `subAgentSpawns` store), this terminal record
  * IS transcript content — the user expects it to stay where the consultation
@@ -53,8 +78,32 @@ export interface SubAgentConsultCard {
   cardId: string;
   /** The in-flight spawn this card finalizes; clears the matching running chip. */
   spawnId: string;
-  /** The agent that was consulted (display: "Consulted Codex"). */
+  /**
+   * The **harness** that was consulted — a CLI, not a model (docs/252 phase 1).
+   * On its own it is no longer an answer to "what reviewed this": Claude Code
+   * can drive a non-Anthropic model, so "Consulted Claude" says which process
+   * ran and nothing about which weights did. {@link runOn} carries the rest.
+   */
   subAgentId: AgentId;
+  /**
+   * docs/261 phase 4 (req 9) — **what this consult actually ran on**, so its
+   * usage and cost are attributable to the service and billing mode that served
+   * it and the card can say which model reviewed the work.
+   *
+   * Copied from the target `runSubAgent` captures ONCE at spawn admission
+   * (`services/sub-agent-target.ts`), which is the same value the spawn, the
+   * retries and the usage row use — so the card cannot name a model that did not
+   * run. Written onto the `pending` card at creation rather than at completion,
+   * because a consult is in flight for minutes and "who is being asked" is the
+   * first thing the row has to answer; the pending → terminal patch carries it
+   * through unchanged.
+   *
+   * Optional only for rows written before this phase. The whole card serializes
+   * to one json column (`messages.sub_agent_consult`), so this needs no
+   * migration and no `CARD_MESSAGE_FIELDS` change — an older row simply parses
+   * without it and the card falls back to naming the harness alone.
+   */
+  runOn?: SubAgentRunTarget;
   /**
    * `pending` while the spawn is in flight; otherwise the terminal status,
    * which drives the verb ("Consulted" / "Cancelled" / …).

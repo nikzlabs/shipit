@@ -474,10 +474,28 @@ export async function runSubAgent(
   // left no trace anywhere. It also anchors the card at the CALL SITE instead of
   // wherever the transcript happened to be when the consult finished (the
   // positional drift docs/144 §7 noted for backgrounded runs).
+  //
+  // docs/261 phase 4 (req 9) — the card carries WHAT RAN, not just which CLI
+  // ran it. `subAgentId` is a harness, and a harness stopped being an answer the
+  // moment Claude Code could drive a non-Anthropic model: "Consulted Claude"
+  // then names the process and says nothing about the weights. `runOn` is copied
+  // from the target captured at admission — the same `subSelection` the spawn
+  // runs and `turnAttributionFor` bills — so the card and the usage row cannot
+  // disagree. (Account failover below re-routes WITHIN that selection: it can
+  // change which subscription account pays, never which service, mode or model
+  // ran, so it leaves this untouched by construction.) Set HERE, on the pending
+  // card, rather than at completion: a consult is in flight for minutes, and
+  // "who is being asked" is the first thing the row has to answer.
   const pendingCard: SubAgentConsultCard = {
     cardId,
     spawnId,
     subAgentId,
+    runOn: {
+      serviceId: subSelection.serviceId,
+      billingMode: subSelection.billingMode,
+      modelId: subSelection.modelId,
+      reasoningEffort,
+    },
     status: "pending",
     createdAt: new Date().toISOString(),
   };
