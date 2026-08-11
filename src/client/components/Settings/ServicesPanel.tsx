@@ -33,9 +33,26 @@
  *
  * **Deliberately not welded to Settings' page chrome.** docs/257's onboarding
  * panel hosts this component as-is — same card list, same dialog, same steps —
- * so it takes no props from the Settings route and renders no dialog shell of
- * its own. Since the per-vendor Claude/Codex tabs were removed, it is also the
+ * so it takes no props from the Settings route, renders no dialog shell of its
+ * own, and brings **no padding and no scroll container**: each host frames it
+ * (Settings with the tab padding every other tab uses, onboarding inside its
+ * card). Since the per-vendor Claude/Codex tabs were removed, it is also the
  * *only* place a credential of any kind is added, seen or revoked.
+ *
+ * **One dense layout, both hosts.** The heading, the caption and the "Add a
+ * service" button share one row, and "no services yet" is that caption rather
+ * than a dashed box with two paragraphs and a third copy of the button. It was
+ * written at Settings-page density and then hosted in the chat pane, where a
+ * three-line header and a six-unit empty state pushed the one control the panel
+ * exists for below the fold — but the compact form is no worse on the Settings
+ * page, so there is one layout rather than a variant per host.
+ *
+ * **The background-work model is NOT here.** It is a setting about services
+ * rather than a service, it has a working default that follows whatever the
+ * install can run (`BackgroundWorkSection`, "ShipIt's default"), and a first-run
+ * user has nothing to decide about it — so onboarding must not spend its screen
+ * asking. Since the panel is shared, the section moved out to the Settings tab
+ * that hosts it, which is also where someone who wants to pin it goes looking.
  */
 
 import { useState } from "react";
@@ -59,7 +76,6 @@ import { useUiStore } from "../../stores/ui-store.js";
 import { AddAccountButton, ProviderAccountRows, useProviderAccounts } from "./ProviderAccountRows.js";
 import { MODE_LABEL, NothingToRouteYet, ServiceCard } from "./ServiceCard.js";
 import { CredentialSelectionModeControl, FailoverCutoffControls } from "./CredentialRouting.js";
-import { BackgroundWorkSection } from "./BackgroundWorkSection.js";
 
 /** Every `(service, mode)` the catalogue declares, flattened in catalogue order. */
 function catalogueModes(): { service: ServiceDef; billingMode: BillingMode }[] {
@@ -133,78 +149,136 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
       || revealed.includes(credentialModeKey(service.id, billingMode));
   });
 
+  const cards = configured.map(({ service, billingMode }) => (
+    <ServiceModeCard
+      key={credentialModeKey(service.id, billingMode)}
+      service={service}
+      billingMode={billingMode}
+      routes={routes.filter((r) => r.serviceId === service.id && r.billingMode === billingMode)}
+      agentList={agentList}
+    />
+  ));
+
+  const dialog = addOpen && (
+    <AddServiceDialog
+      onClose={() => setAddOpen(false)}
+      onReveal={(modeKey) => useUiStore.getState().revealServiceMode(modeKey)}
+    />
+  );
+
+  // "Nothing configured" is the caption under the heading rather than a box of
+  // its own: empty, the whole panel is two lines and a button.
+  const empty = configured.length === 0;
+
   return (
-    <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full" data-testid="services-panel">
-      <div>
+    <div className="flex flex-col gap-3" data-testid="services-panel">
+      <div className="min-w-0">
         <h3 className="text-sm font-medium text-(--color-text-primary)">Services</h3>
-        <p className="mt-0.5 text-xs text-(--color-text-tertiary)">
-          ShipIt defines the services; you supply the credential. A model is offered once the
-          billing mode that carries it has one.
+        <p
+          className="mt-0.5 text-xs text-(--color-text-tertiary)"
+          // The empty state keeps its own test id, because "nothing configured"
+          // is still a distinct state — it is just said in a line now instead of
+          // a dashed box.
+          {...(empty ? { "data-testid": "services-empty" } : {})}
+        >
+          {empty
+            ? "Connect one to start — a subscription you already pay for, or an API key."
+            : "ShipIt defines the services; you supply the credential."}
         </p>
       </div>
 
-      {configured.length === 0 ? (
-        <div
-          className="rounded-md border border-dashed border-(--color-border-secondary) p-6 text-center"
-          data-testid="services-empty"
-        >
-          <p className="text-sm text-(--color-text-secondary)">No services yet</p>
-          <p className="mx-auto mt-1 max-w-sm text-xs text-(--color-text-tertiary)">
-            Add one to start. ShipIt ships with first-party providers, direct providers and
-            gateways.
-          </p>
-          <Button
-            variant="primary"
-            size="md"
-            className="mt-3 rounded-md"
-            onClick={() => setAddOpen(true)}
-            data-testid="services-add-empty"
-          >
-            Add a service
-          </Button>
-        </div>
-      ) : (
-        <>
-          {configured.map(({ service, billingMode }) => (
-            <ServiceModeCard
-              key={credentialModeKey(service.id, billingMode)}
-              service={service}
-              billingMode={billingMode}
-              routes={routes.filter(
-                (r) => r.serviceId === service.id && r.billingMode === billingMode,
-              )}
-              agentList={agentList}
-            />
-          ))}
-          <div>
-            <Button
-              variant="secondary"
-              size="md"
-              className="rounded-md"
-              onClick={() => setAddOpen(true)}
-              data-testid="services-add"
-            >
-              <PlusIcon size={ICON_SIZE.XS} /> Add a service
-            </Button>
-          </div>
-        </>
-      )}
+      {cards}
 
       {/*
-        docs/252 phase 7 (req 9) — the background-work model sits here, under the
-        services it draws from: it is a `(service, billing mode, model)` choice
-        like any other, and the list it offers is exactly what the cards above
-        made eligible.
+        **The add control follows the list**, which is one rule covering both
+        states: empty it lands directly under the ask, and with cards it lands
+        under them — the same left edge as everything above it either way. It sat
+        opposite the heading first, which is where a section action usually goes
+        and is exactly the problem: the eye finishes the caption on the left and
+        the only control is in the far corner, across a gap of nothing. That is
+        worse here than in an ordinary settings section, because for a first-run
+        user this button is not *an* action on the panel, it is the whole panel.
       */}
-      <div className="border-t border-(--color-border-secondary) pt-4">
-        <BackgroundWorkSection agentList={agentList} />
+      <div>
+        <Button
+          variant={empty ? "primary" : "secondary"}
+          // Standard height, not `sm`: the row is compact enough without
+          // shrinking the target.
+          size="md"
+          className="rounded-md"
+          onClick={() => setAddOpen(true)}
+          data-testid={empty ? "services-add-empty" : "services-add"}
+        >
+          <PlusIcon size={ICON_SIZE.XS} /> Add a service
+        </Button>
       </div>
 
-      {addOpen && (
-        <AddServiceDialog
-          onClose={() => setAddOpen(false)}
-          onReveal={(modeKey) => useUiStore.getState().revealServiceMode(modeKey)}
-        />
+      <InstalledHarnesses agentList={agentList} />
+      {dialog}
+    </div>
+  );
+}
+
+/**
+ * What can actually *drive* the credentials above — read-only, and the other
+ * half of "can this install run a turn".
+ *
+ * docs/252 separates the service that bills a model from the harness that runs
+ * it, so a stored credential is not by itself runnable: req 8's eligibility is
+ * a join, and a model only becomes selectable when an installed harness can
+ * carry it. That makes "which harnesses are installed" a fact this screen
+ * cannot leave unsaid — without it, a user who has pasted a working key and
+ * still cannot chat has nothing on screen explaining the gap, and the same
+ * blank is what docs/257 req 8 warns about when it says storing a credential
+ * has not finished onboarding.
+ *
+ * It is a **statement, not a control**: harnesses are installed in the image,
+ * not from the browser, so there is nothing to press here. Per-harness the row
+ * says whether that harness has a model this install can run
+ * (`hasRunnableModels`), because that is the join above rendered — a harness
+ * with none is exactly the case a credential above is about to fix.
+ */
+function InstalledHarnesses({ agentList }: { agentList: AgentOption[] }) {
+  const installed = agentList.filter((a) => a.installed);
+  // Nothing known yet (the agent list arrives with the bootstrap) reads the
+  // same as "none installed" if we render the empty case, so say nothing until
+  // there is something to say.
+  if (agentList.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-1.5" data-testid="installed-harnesses">
+      <h3 className="text-sm font-medium text-(--color-text-primary)">Installed harnesses</h3>
+      {installed.length === 0 ? (
+        <p className="text-xs text-(--color-text-tertiary)">
+          None. A service credential cannot run a turn on its own — this install has no harness
+          to drive it.
+        </p>
+      ) : (
+        // One per line: they are facts to read down, not chips to scan across,
+        // and a wrapped row put two harnesses on one line in the onboarding
+        // panel and one per line in Settings for no reason but the width
+        // available. `items-start` keeps each row the width of its own content
+        // rather than stretching the fill across the panel.
+        <ul className="flex flex-col items-start gap-1">
+          {installed.map((agent) => (
+            <li
+              key={agent.id}
+              className="flex items-center gap-1.5 rounded-md bg-(--color-bg-secondary) px-2 py-1 text-xs text-(--color-text-secondary)"
+              data-testid={`installed-harness-${agent.id}`}
+            >
+              <span
+                aria-hidden
+                className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                  agent.hasRunnableModels ? "bg-(--color-success)" : "bg-(--color-text-tertiary)"
+                }`}
+              />
+              {agent.name}
+              {!agent.hasRunnableModels && (
+                <span className="text-(--color-text-tertiary)">· no model it can run yet</span>
+              )}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

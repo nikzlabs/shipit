@@ -308,6 +308,25 @@ kept — a first-time user still needs to be told what ShipIt is (that is the dr
 names) — but as a compact lede, not a facing panel. This is also what makes the mobile case
 fall out for free rather than needing the `hidden md:flex` the hero uses today.
 
+**Density pass (2026-08-11).** As first shipped the lede was still a wizard hero with the
+`max-w-3xl` habits removed rather than the budget re-thought: a logo lockup on its own line, a
+three-line paragraph, and three stacked feature rows each with a bolded lead and a gloss. At
+1280×720 that pushed the "Add a service" button — the only control the panel has — to the
+bottom edge, so the surface the panel exists for read as an afterthought under a page of
+marketing. Three changes, all layout and copy, none of them behavioural:
+
+- The wordmark and the heading share one baseline row; the paragraph loses the sentence
+  enumerating files/preview/terminal, which the feature list below already carries.
+- The feature rows keep one line each and lose the **gloss**: an icon and the claim, nothing
+  bolded, no explanation. Cutting the prose is what bought the height, so the rows stay a
+  list — a wrapped row of bordered chips was tried and reverted, because three claims flowing
+  2 + 1 read as one claim left over, and the borders made a paragraph's worth of content look
+  like controls.
+- The Services surface itself is the compact one described below.
+
+The lede still says what ShipIt is and still ends on "the chat is the one thing waiting on
+this", which is the drop-off req 3 names; what came out was the second telling of it.
+
 ### The steps (req 4)
 
 **There is no step rail.** The panel's own step is one — **Add a service**, the docs/252
@@ -370,6 +389,31 @@ Density may differ and that is already the established pattern: `ProviderAccount
 `compact` prop for exactly this reason and its docstring is explicit that it changes "how much
 prose sits above" the rows and nothing else (`ProviderAccountsCard.tsx:60–73`). The Services
 surface gets the same treatment if it needs it.
+
+**And in the event it needed none (2026-08-11).** The density pass above began as an
+onboarding-only `variant` on `ServicesPanel` and ended with no variant at all: the compact
+form — a heading, a one-line caption and the "Add a service" button, instead of a header
+paragraph above a dashed box holding two paragraphs and a third copy of the button — is no
+worse on the Settings page than in the chat pane, so both hosts get it. Three consequences
+worth recording, because they are what a variant would have hidden:
+
+- **The panel now brings no padding and no scroll container.** Each host frames it: Settings
+  with the `px-5 py-4 … overflow-y-auto h-full` wrapper every other tab already uses,
+  onboarding with its card. A component that renders `h-full` inside somebody else's card was
+  always the wrong ownership; the shared use made it visible.
+- **The background-work model moved out of the panel** and into the Settings tab that hosts it
+  — see docs/252 phase 7's note. It is a setting *about* services rather than a service, and
+  it is the one thing in that column onboarding must not ask a first-run user for.
+- **The add control follows the list, on the same left edge as everything above it.** It first
+  sat opposite the heading, which is where a section action usually goes and is exactly what
+  made it easy to miss here: the eye finishes the caption on the left and the only control is
+  in the far corner across a gap of nothing. That costs more in this panel than in a settings
+  section, because for a first-run user the button is not *an* action on the surface, it is the
+  surface. One rule now covers both states — empty it lands under the ask, with cards it lands
+  under them. Considered and rejected: a dashed add-tile in the card position (brings back the
+  box this pass removed, and reads quieter than a filled button) and a full-width primary
+  button (right for a pane with one job, but the same panel is a Settings tab, where a
+  full-bleed primary over configured cards reads as a form's submit rather than "add another").
 
 **One dialog, never two — scoped to what the flow itself opens.** The panel is not a modal, so
 the add dialog is the only thing *this flow* puts on top, which is what req 5 asks for and what
@@ -487,8 +531,19 @@ places where a narrower reading leaks.
   (idle / recording / transcribing / error popover) with no inert state worth rendering, and a
   visible mic that does nothing is the dead control req 10 declines to show elsewhere. The
   permission selector *is* disabled, via a new `disabled` prop matching the one the model and
-  reasoning selectors already take. The model and reasoning selectors themselves are
-  deliberately left alone: picking what a future turn will run on is not dead input;
+  reasoning selectors already take. **The harness, model and reasoning selectors are disabled
+  too — reversing this plan's earlier decision (2026-08-11).** It read "picking what a future
+  turn will run on is not dead input", which is true when there is something to pick and false
+  in exactly the state this feature is about: with no runnable service the model menu opens
+  onto nothing and every harness row is unselectable, so all three were live-looking controls
+  over empty menus. Two things confirmed it rather than argued it. The compact layout already
+  disabled its whole anchor on `inert` (`ComposerSettingsMenu`, `disabled` vs `pickersLocked`),
+  so the two rows disagreed about one fact. And the model trigger printed
+  `displayName || "Loading..."`, which made the permanent first-run state — no credential, or
+  none an installed harness can carry — read as a spinner that never resolves; `displayName`
+  now answers "nothing to pick" as **"No model"** and keeps "Loading…" for the frame before the
+  agent list arrives. The carets go with the menus, in all three: a caret is a promise the
+  control opens, and a *locked* harness keeps its lock icon because that one says why;
 - **renders the textarea empty**, so the reason is always visible. The textarea is controlled
   by `value={text}`, so a retained per-session draft or a `setPrefillText` seed would hide the
   placeholder behind text the user cannot send — the exact state req 10 refuses to create with
@@ -603,7 +658,9 @@ the split is about reviewability, not about shipping order.
 | `client/components/GitHubGate.test.tsx` | Step-1 cases kept as the gate's tests; step-2 cases replaced by `HarnessOnboardingPanel.test.tsx`. |
 | `client/components/HarnessOnboardingPanel.tsx` | **New.** The panel: lede + the Services surface. No step rail. |
 | `client/App.tsx` | Drop `noAgentReady` (`:354`); `needsOnboarding` becomes `githubNeeded` (`:363`) alone; **keep the latch**, with dismissal firing on GitHub connect rather than "Get Started" (`:2084`). Render the panel in the chat-pane slot (`:1892`), suppressed while the gate is up; widen the composer render gate (`:1982`); pass `disabledReason` (`:1985`). |
-| `client/components/MessageInput/MessageInput.tsx` | `disabledReason` prop: disables the textarea (`:766`), attach (`:780`), paste/drop (`:681`), permission selector (`:820`); hides the mic (`:799`) and skips Quick Capture's hotkey mic auto-arm; renders the textarea empty so a draft cannot hide the placeholder. |
+| `client/components/MessageInput/MessageInput.tsx` | `disabledReason` prop: disables the textarea (`:766`), attach (`:780`), paste/drop (`:681`), permission selector (`:820`) and the harness / model / reasoning triggers; hides the mic (`:799`) and skips Quick Capture's hotkey mic auto-arm; renders the textarea empty so a draft cannot hide the placeholder. |
+| `client/components/ModelPicker.tsx` | `displayName` answers "nothing to pick" (**"No model"**) separately from "loading", for both the wide row and `ComposerSettingsMenu`; the harness caret drops when disabled, the lock stays when locked. |
+| `client/components/ReasoningSelector.tsx` | Same caret rule, and no hover affordance while disabled. |
 | `client/components/PermissionModeSelector.tsx` | New `disabled` prop, matching the model and reasoning selectors' existing one. |
 | `client/components/QuickCaptureOverlay.tsx` | Passes `disabledReason` (`:254`) — `disabled` (`:147`) guards submission only, so it alone would leave the input typeable. |
 | `client/utils/chat-runnable.ts` | `canRunTurns` reader + `starterPromptsAllowed` (phase 1), plus `harnessOnboardingPanelVisible` — the panel's three-clause predicate, beside the composer's own. |

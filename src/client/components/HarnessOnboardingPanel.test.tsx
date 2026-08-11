@@ -85,6 +85,16 @@ describe("HarnessOnboardingPanel (docs/257 reqs 1, 2, 5, 7)", () => {
     }
   });
 
+  it("does not ask a first-run user for a background-work model", () => {
+    // The setting defaults to whatever the install can run (docs/252 req 9), so
+    // there is nothing to decide here and the row would spend the space the
+    // credential needs. It lives in the Settings tab that hosts this panel's
+    // component, which is why the guard is on the panel rather than on
+    // `ServicesPanel` — putting it back inside the panel is the regression.
+    render(<HarnessOnboardingPanel agentList={agentList} />);
+    expect(screen.queryByTestId("background-work-section")).not.toBeInTheDocument();
+  });
+
   it("tells a first-time user what ShipIt is, and that everything else works", () => {
     // The drop-off req 3 names: a user asked to connect an account before they
     // have seen anything has been given no reason to. The gate's hero content

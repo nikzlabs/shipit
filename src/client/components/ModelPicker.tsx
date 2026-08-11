@@ -282,9 +282,13 @@ export function HarnessSelector({
             data-testid="harness-trigger"
           >
             <span>{harnessName}</span>
+            {/* Locked says *why* it cannot open, so it keeps an icon. Merely
+                disabled — a running turn, or a composer with nothing to run —
+                drops the caret, because a caret is a promise the control will
+                open. */}
             {locked ? (
               <LockIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary)" />
-            ) : (
+            ) : disabled ? null : (
               <CaretDownIcon size={ICON_SIZE.XS} />
             )}
           </button>
@@ -518,7 +522,22 @@ export function useModelPickerState({
   const selectedGroupKey =
     chosenGroupKey ?? rows.find((r) => r.modelId === selectedModel)?.groupKey;
 
-  const displayName = formatModelName(displayedModel ?? "");
+  /**
+   * The trigger's label — **never empty, and never "Loading…" for a state that
+   * is not loading.**
+   *
+   * There is no model to name in two unrelated situations and they used to read
+   * alike, because the trigger printed `displayName || "Loading..."`: before the
+   * agent list has arrived (genuinely loading, one frame), and when the install
+   * has **no runnable model at all** — no credential yet, or none an installed
+   * harness can carry (docs/252 req 8). The second is the whole first-run state,
+   * and it is permanent until the user adds a service, so the composer sat there
+   * saying "Loading…" for ever next to a disabled input telling them to add a
+   * service. Answering it here rather than at the trigger keeps the wide row and
+   * `ComposerSettingsMenu` on one answer.
+   */
+  const displayName =
+    formatModelName(displayedModel ?? "") || (agents.length > 0 ? "No model" : "Loading...");
 
   const handleModelSelect = useCallback(
     (row: ModelRow) => {
@@ -569,7 +588,7 @@ export function useModelPickerState({
 
   return {
     groups,
-    /** The name on the trigger / anchor. Empty only before the catalogue arrives. */
+    /** The name on the trigger / anchor. Never empty — see its definition above. */
     displayName,
     /** The row the checkmark belongs on, as a `(model, group)` pair. */
     selectedModel,
@@ -622,7 +641,7 @@ export function ModelSelector({
             aria-label="Model selector"
             data-testid="model-trigger"
           >
-            <span>{displayName || "Loading..."}</span>
+            <span>{displayName}</span>
             {!disabled && <CaretDownIcon size={ICON_SIZE.XS} />}
           </button>
         </DropdownMenuTrigger>

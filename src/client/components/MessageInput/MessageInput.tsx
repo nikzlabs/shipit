@@ -1101,7 +1101,13 @@ export function MessageInput({
                   // so the picker previews what the next session inherits rather
                   // than describing whichever session is active behind it.
                   seedFromHistory={!sessionId}
-                  disabled={disabled || isLoading}
+                  // `inert` too — req 3 disables the composer "as a whole", and
+                  // these three were the affordances left live: with no runnable
+                  // service the harness menu opened onto rows that are all
+                  // unselectable and the model menu onto nothing at all. The
+                  // compact row already read `inert` on its anchor, so the two
+                  // layouts disagreed about the same fact.
+                  disabled={disabled || isLoading || inert}
                 />
               </div>
             )}
@@ -1114,7 +1120,7 @@ export function MessageInput({
                   modelInfo={modelInfo ?? null}
                   hasActiveSession={hasActiveSession}
                   seedFromHistory={!sessionId}
-                  disabled={disabled || isLoading}
+                  disabled={disabled || isLoading || inert}
                 />
               </div>
             )}
@@ -1129,7 +1135,7 @@ export function MessageInput({
                   agent={agents.find((a) => a.id === activeAgentId)}
                   sessionReasoning={sessionReasoning}
                   onChange={onReasoningChange}
-                  disabled={disabled || isLoading}
+                  disabled={disabled || isLoading || inert}
                   seedFromHistory={!hasActiveSession}
                 />
               </div>
