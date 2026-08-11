@@ -432,11 +432,20 @@ _None — see "Re-armed card presentation"._
   `origin/<base>` → false (fail-safe). Matrix coverage in
   `git-rearm-detect.test.ts` (squash/regular × rebased/not × work/clean).
 - **Breadcrumb** is `SessionInfo.previousMergedPr` (`{ number, url, title,
-  baseBranch }`), persisted in the new `sessions.previous_merged_pr` column
-  (migration appended to `database.ts`). `SessionManager.clearMerged(id,
+  baseBranch, mergedHeadSha? }`), persisted in the new `sessions.previous_merged_pr`
+  column (migration appended to `database.ts`). `SessionManager.clearMerged(id,
   breadcrumb)` sets `merged_at = NULL` and stashes it. Display-only + the
   poller's suppression key + the new-PR base; it does NOT feed `resolvedAt()`,
   grouping, status color, or eviction.
+  - `mergedHeadSha` is the **durable copy of the docs/218 safety anchor**, added
+    because `clearMerged` nulls the `merged_head_sha` column in the same statement.
+    Dropping the column is correct for the *automatic* reset (the session is no longer
+    in the merged state), but the explicit `shipit branch reset-to-base` gate reads the
+    same field, so the clear left every re-armed session permanently unable to pass it —
+    force-only forever, refusing with a clause about unshipped work when the real one was
+    `not-merged`. Both re-arm paths copy the SHA into the breadcrumb before the clear.
+    It stays the SHA GitHub merged and is never refreshed from local HEAD. It is gate
+    state, so it is deliberately **not** threaded onto the `pr_lifecycle_update` card.
 - **Shared helper** `services/pr-rearm.ts#detectAndReArmMergedSession` is the
   single re-arm entry point, called by BOTH `postTurnPrFlow` sites
   (`ws-handlers/agent-execution.ts` and `runner-registry-factory.ts`) before

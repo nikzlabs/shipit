@@ -266,15 +266,43 @@ Six things the mode must change or add:
   otherwise. The agent behaves identically for "unsafe" and "errored", so they are one
   outcome.
 
-The safety gate is retained exactly: `HEAD === mergedHeadSha`, clean tree, on
-`session.branch`, no in-progress sequencer, re-checked after the fetch. It is what makes a
-duplicate wake, a late wake, or a wake behind planning#264's uncommitted work refuse rather
-than destroy.
+The safety gate is retained exactly: `HEAD === mergedHeadSha` **or** HEAD contained in
+`origin/<base>`, clean tree, on `session.branch`, no in-progress sequencer, re-checked
+after the fetch (see docs/218's "Safety gate" for the containment clause). It is what
+makes a duplicate wake, a late wake, or a wake behind planning#264's uncommitted work
+refuse rather than destroy.
 
 **The gate is prompt-mediated.** A refused agent could still hand-roll `git reset --hard`.
 The refusal message is therefore load-bearing copy — it must say why and forbid working
 around it — and extending the existing PreToolUse hook to bare destructive git is worth
 considering.
+
+### The refusal names the clause that refused
+
+The gate has nine clauses; the refusal used to print **one hard-coded sentence** for all
+of them — "this branch carries work that is not on the merged pull request" — which is
+true of exactly one (`head-moved`). `computeResetBlocker` has returned the refusing clause
+with its own `detail` since planning#297; this path collapsed it back to a boolean via
+`computeResetEligible` and then guessed.
+
+The cost was not cosmetic. In the incident that prompted the fix the real clause was
+`not-merged` (a docs/202 re-arm had cleared `merged_at`), while the branch was a strict
+ancestor of `origin/main` with a clean tree — provably lossless to reset. The agent read
+the sentence, constructed a root cause that was wrong in every particular, and pushed the
+lossless operation through the `--force` break-glass, which exists for cases that *cannot*
+be proven safe.
+
+So: build the refusal from the clause's own `detail` (`buildExplicitRefusal`), and keep
+the way-forward half verbatim per KIND of clause — `--force` for the gate clauses it
+bypasses, "resolve the condition and retry" for the {@link checkResetPreconditions} ones it
+does not. Pointing an agent at a bypass that correctly refuses again is how a refusal turns
+into a hand-rolled reset.
+
+**Every refusal writes an orchestrator log line** naming the clause (`[branch-reset]
+refused for <id> (<clause>)`). Before that, only a *forced* reset logged anything: the
+refusing clause in the incident was recoverable only because the agent went on to force
+the reset and *that* line happened to print the state which explained it. The refusal is
+the more interesting of the two events — it is the one where a session gets stuck.
 
 ## Chaining
 

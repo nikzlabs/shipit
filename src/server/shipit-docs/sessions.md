@@ -378,11 +378,17 @@ shipit branch reset-to-base
 which moves this branch to the base your merged PR shipped into and force-updates
 the remote branch to match. **Exit 0** (`reset` or `already at base`) means the
 branch is ready — build the next step on it, and do not re-apply anything the
-merged PR already shipped. **Nonzero means STOP**: it refused because a reset
-would have destroyed something (uncommitted edits, commits that were never
-merged, a rebase in progress). Report what it said and let the user decide. Do
-**not** hand-roll `git reset --hard` / `git checkout -f` / `git push --force`
-instead — that is precisely the data loss the check exists to prevent.
+merged PR already shipped. **Nonzero means STOP.** The refusal names the exact
+clause that refused — uncommitted edits, commits that were never merged, a
+rebase in progress, no recorded merged pull request — so **read it and take it
+literally** rather than assuming which one fired. Report what it said and let
+the user decide. Do **not** hand-roll `git reset --hard` / `git checkout -f` /
+`git push --force` instead — that is precisely the data loss the check exists to
+prevent.
+
+A branch that is *behind* the base and carries nothing of its own resets without
+any override: when its HEAD is already contained in `origin/<base>`, the reset
+discards nothing by construction, so the command just does it.
 
 One shape of refusal is permanent: once this branch's work has shipped under a
 *different* commit — a cherry-pick recovery, or the squash merge you then built

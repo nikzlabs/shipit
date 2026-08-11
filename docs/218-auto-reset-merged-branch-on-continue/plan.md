@@ -127,12 +127,23 @@ A hard reset is destructive, so it fires **only** when the branch carries nothin
 that isn't already merged AND the repo is in a plain, resettable state. The full
 gate (all clauses; any failure → skip the reset, run the turn on the un-moved branch):
 
-> session merged **AND** `mergedHeadSha` recorded **AND** `HEAD === mergedHeadSha`
-> **AND** working tree clean **AND** HEAD is on `session.branch` (not detached)
+> session merged **AND** a base branch is known **AND** working tree clean
+> **AND** HEAD is on `session.branch` (not detached)
 > **AND** no rebase/merge/cherry-pick/revert in progress
+> **AND** ( HEAD is contained in `origin/<base>` **OR**
+> `mergedHeadSha` recorded **AND** `HEAD === mergedHeadSha` )
 > **AND** the user did not untick the control.
 
-- **`HEAD === mergedHeadSha`** is the load-bearing clause. The tempting "derive it
+- **HEAD contained in `origin/<base>`** is a *proof*, not a heuristic: every commit
+  reachable from the branch is already reachable from the base, so the reset discards
+  nothing by construction — no stored anchor and no operator trust required. It is the
+  general case of the `HEAD === origin/<base>` idempotence short-circuit in
+  `resetBranchToBaseExplicit`, which only ever caught the exact-equality instant and so
+  refused a branch merely sitting *behind* an advanced base. This is **not** the rejected
+  shortcut below: a commit made without rebasing puts a commit on HEAD that is not in the
+  base, so containment is false and the anchor clause decides as it always did. It reads
+  `origin/<base>`, so it is evaluated after the caller's fetch.
+- **`HEAD === mergedHeadSha`** is the load-bearing *stored* clause. The tempting "derive it
   from existing git state" shortcut (`!advancedBeyondMergedBase && !headIsAtBase` →
   resettable) has a **data-loss hole**: a user who commits new work *without
   rebasing first* leaves merge-base ≠ base tip (not "progressed") and HEAD ≠ base tip
@@ -178,6 +189,22 @@ migration, `SessionRow` + `fromRow` parse + `SessionInfo.mergedHeadSha`, a sette
 auto-reset — the user falls back to today's manual flow (still picked up by
 docs/202/216).
 
+**…but the anchor must survive a re-arm.** `clearMerged` nulls `merged_at` and
+`merged_head_sha` in one statement, and `PrStatusPoller.reArm` nulls the live PR snapshot
+in the same beat, so a re-armed session (docs/202 / docs/216 — the ordinary
+keep-working-after-a-merge path) lost every input the gate reads. The automatic reset is
+right to stop firing — the session is no longer *in* the merged state — but the explicit
+`shipit branch reset-to-base` reads the same clauses, so the same clear made every
+re-armed session **force-only forever**: it could never satisfy the gate again no matter
+what its branch looked like, and it refused naming a clause about unshipped work when the
+real one was `not-merged`. So `PreviousMergedPr` now carries `mergedHeadSha` alongside
+`baseBranch` (both re-arm paths copy it before the clear, `pr-rearm.ts`), and
+`computeResetBlocker` falls back to the breadcrumb for the merged fact, the base, and the
+anchor. The merged **state** is gone after a re-arm; the merged **fact** is not. The
+breadcrumb copy is still the SHA GitHub merged — never refreshed from local HEAD, for the
+reason above. Commit `84f866b8` made the base lookup durable for exactly this population
+and left the gate reading the cleared columns; this finishes it.
+
 ### Recovery / data-loss posture
 
 No explicit recovery ref. A merged change *is* the permanent record; the branch's
@@ -200,6 +227,22 @@ unrecoverable case: uncommitted edits.)
 > (`HEAD@{1}`) remains the recovery source; the lease refuses to clobber a remote
 > that moved unexpectedly (false-merge guard preserved). See the heal block in
 > `pre-turn-reset.ts`.
+
+**Known limitation of the heal — it is local-side proof only.** Every clause of the
+gate reasons about the LOCAL branch; the heal then force-pushes. `forcePush` leases
+against the tip it reads from the remote at that moment, so a commit that exists
+only on the remote is treated as the expected tip and overwritten rather than
+refused. This is a property of the heal as designed (the whole point is to clobber
+a remote still holding the merged commits), and it predates the containment clause —
+but that clause makes it reachable for off-anchor branches too, so state it rather
+than leave it implicit. It is bounded by how a session branch is written: only this
+clone's auto-push and the PR-create force-push write it, so "remote-only work" means
+the local clone was rewound while the remote kept a commit — which is recoverable
+from the local reflog. Cross-agent review (Codex) raised it; the fix considered and
+rejected for now was gating the heal on the remote tip being absent / equal to the
+merged anchor / itself contained in the base, because a refusal at that point is too
+late (the local reset has already happened) and moving the check earlier costs a
+network round-trip on every reset to cover a state nothing in ShipIt produces.
 
 ## The two messaging surfaces
 
