@@ -258,11 +258,38 @@ No open questions remain.
     So the group is **not** purely historical and does not empty by itself. It is the honest
     home for volume whose attribution is unknown, whatever the reason.
 
+17. **There is one way to add a credential, and signing in is part of it.** Every credential
+    is added the same way — a key, a second key, a first subscription account, a second one —
+    and where a billing mode is connected by **signing in**, the sign-in happens inside that
+    one flow. The user is not handed off to a control somewhere else to finish what they
+    started. A configured service shows what is there and lets the user manage it — the
+    credentials, their order, disconnecting one — and offers no second way to add.
+
+    This is a change of the surface, not of what a credential is: it takes a few more clicks
+    to add a second account, which is rare, and in exchange there is one door rather than two
+    permanently on screen.
+
+    **A service the user has not finished connecting does not appear.** Choosing a
+    subscription and then abandoning the sign-in leaves nothing behind. Today it leaves a
+    service listed with no credential and no way to remove it, which is the direct cost of
+    the hand-off this requirement removes.
+
 ## Open questions
 
 _None._
 
 ## Resolved questions
+
+- 2026-08-11 — Once the sign-in moves inside the add-service flow, does a configured service
+  keep a shortcut for adding another credential? **Chosen: no — the panel's "Add a service" is
+  the only way in**, and the existing "Add another" on key cards goes with it, so the rule is
+  uniform rather than per-card-type. The human's reasoning, recorded because it is the whole
+  trade: adding a second account is a rare occurrence, so a couple of extra clicks is fine,
+  whereas the alternative is supporting two ways to do the same thing and having them in the
+  user's face every time. The question arose from the state that prompted this requirement: an
+  OpenAI subscription chosen in the dialog appears in Services with no credential and cannot be
+  removed. Req 17 added, including that last consequence, because "does not appear until it is
+  connected" is observable and was being treated as an implementation detail.
 
 - 2026-08-09 — Where does non-turn work that resolves **no** model belong — session naming's
   `nothing_eligible` fallback, whose tokens are real but whose attribution does not exist?

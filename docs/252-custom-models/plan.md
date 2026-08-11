@@ -505,10 +505,11 @@ the others*, and each one is individually plausible.
   delivers nothing. One `save()` removes the window.
 - **The add-flow was a dead end for an account-backed subscription**: it told the
   user to press "Add account on its card" while no card existed, because a card
-  only appeared once an account did. Choosing such a mode now reveals the card
-  and hands off to it. The same fix exposed a second error — a mode's two
-  delivery shapes are *independent*, and Anthropic's subscription accepts both,
-  so the dialog offers a token input and a sign-in rather than choosing one.
+  only appeared once an account did. It was first fixed by *revealing* the card
+  and handing off to it — see req 17 below, which removed both the hand-off and
+  the reveal. The same fix exposed a second error — a mode's two delivery shapes
+  are *independent*, and Anthropic's subscription accepts both, so the dialog
+  offers a token input and a sign-in rather than choosing one.
 
 **Two findings are deferred rather than fixed, and both should be said out loud:**
 
@@ -2148,12 +2149,13 @@ Nik saw as "elements from the old system and from the new system".
 The fix is structural rather than cosmetic, and it deletes more than it adds:
 
 - **`ServiceCard`** owns the chrome for every card alike — border, avatar, service name,
-  billing-mode pill, credential-count pill, one header action, the model chips, and a shaded
-  routing band with its own heading (D7, D9). It owns no credential logic; which rows go
-  inside is the caller's.
+  billing-mode pill, credential-count pill, the model chips, and a shaded routing band with
+  its own heading (D7, D9). It owns no credential logic; which rows go inside is the caller's.
+  It had a header-action slot too, until req 17 (below) left nothing to put in it.
 - **`ProviderAccountsCard` became `ProviderAccountRows`** — a *body*, not a card. Its header,
   its status dot, its routing controls and its API-key disclosure all left with the card
-  chrome. Its "Add account" is now `AddAccountButton`, in the card's header slot.
+  chrome. Its "Add account" became `AddAccountButton` in the card's header slot, and then —
+  req 17 — stopped being a button at all.
 - **`CredentialRouting`** holds the selection-mode radios and the failover cutoffs, keyed by
   `(service, billing mode)`. There had been **two** selection-mode controls writing the same
   stored setting — a per-harness one on the accounts card and a per-`(service, mode)` one on
@@ -2748,6 +2750,45 @@ is key-authenticated.
   `agent_result` the quota retry watches. Per-harness coverage has to be established,
   not assumed.
 
+## One way in — the sign-in is a step of the add-flow (req 17)
+
+**The card has no way to add anything, and the dialog signs the user in.** Both halves of
+that landed together, because they are one change: pressing *Sign in* in step 3 calls
+`createAccountAndStartLogin`, and the provider's challenge renders in the dialog through
+`AccountChallenge` — the **same component** the account row renders, never a copy of it,
+which is docs/150 req 16 the requirement rather than the aspiration.
+
+**What it deleted is the interesting part.** The hand-off ("Continue to sign in" → close →
+reveal the card → press *Add account*) needed somewhere for the button to live before any
+credential existed, which is what `revealedServiceModes` was: a UI-store list of
+`(service, mode)` keys with a card each. Every other reason a card is on screen has a way
+out — remove the key, disconnect the account, dismiss the notice — and a reveal had none, so
+choosing OpenAI → Subscription and stopping left a service listed with nothing in it that the
+user could not remove. Deleting the hand-off deletes the reveal, the store slice, the
+`AddAccountButton`, the `AddCredentialButton` ("Add another"), and `ServiceCard`'s
+header-action slot. The card's list of what a card can be is back to three clauses, all
+reversible.
+
+**The dialog hosts the sign-in; it does not own it.** `POST /api/provider-accounts` creates
+the row *before* the login finishes, and the login is a live process on the provider's side.
+Three consequences, each a decision:
+
+- **Success is read off the row**, not awaited: `status === "ready"`, which arrives on the
+  `provider_accounts` broadcast. So the last step becomes a *Connected* line with **Done**,
+  which is the confirmation, and needs no effect and no polling. It also survives a reload
+  mid-challenge, because the row does.
+- **Cancel abandons; closing does not.** *Cancel* cancels the login and deletes the account
+  (`abandonAccount`, cancel-then-delete, both best-effort), so an abandoned attempt leaves
+  nothing listed — the very state req 17 exists to prevent. Dismissing the dialog leaves the
+  challenge alone, because the provider may already have authorised it, and the row on the
+  card carries it to the end.
+- **One sign-in per provider** is the server's rule (409). The dialog states it before the
+  click — `signInBlockedReason`, shared with the row's own `blockedBy` — rather than after.
+
+**The cost, accepted knowingly:** adding a second account is a few clicks longer, since it
+walks the whole flow. That is the trade recorded in req 17's receipt — rare action, permanent
+surface.
+
 ## Key files
 
 | File | Why it matters |
@@ -2771,6 +2812,8 @@ is key-authenticated.
 | `session/agents/codex/spawn-shaping.ts` | Codex's `model_providers` block — the only way to redirect that CLI. Re-exports `shared/spawn-routing.ts` |
 | `orchestrator/non-turn-model.ts` | Req 9's resolver: the pinned or derived selection, the derived harness, its route and shaping |
 | `orchestrator/services/non-turn-work.ts` | Runs it: the brokered generation, the usage row, and the durable failure notice |
+| `client/components/Settings/ServicesPanel.tsx` | The card list and `AddServiceDialog` — the one way in (req 17), sign-in included |
+| `client/components/Settings/ProviderAccountRows.tsx` | The rows, plus what the dialog shares with them: `AccountChallenge`, `createAccountAndStartLogin`, `abandonAccount`, `signInBlockedReason` |
 | `orchestrator/session-namer.ts` | Naming's CLI shell-out, now pointed at the resolved selection and reporting its telemetry (req 9) |
 | `client/components/Settings/ServiceCard.tsx` | The **one** card the Services list is built from: chrome only — avatar, service name, billing-mode and count pills, one action, model chips, the shaded routing band. No credential logic |
 | `client/components/Settings/ServicesPanel.tsx` | The list and the add-flow. Decides which bodies go in a card, what the routing band holds, and what a credential of that mode is called |

@@ -43,7 +43,6 @@ beforeEach(() => {
   useSettingsStore.getState().setCredentialRoutes([]);
   useSettingsStore.getState().setProviderAccounts([]);
   useUiStore.getState().setToast(null);
-  useUiStore.setState({ revealedServiceModes: [] });
   useSettingsStore.setState({ providerAccountNotices: {} });
   vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
     fetchCalls.push({
@@ -82,15 +81,19 @@ describe("ServicesPanel", () => {
     expect(screen.getByTestId("credential-row-cred_2")).toBeInTheDocument();
   });
 
-  it("offers 'Add another' only where a mode can hold several credentials (req 12)", () => {
+  it("gives no card a way of its own to add a credential (req 17)", () => {
+    // This asserted the opposite until req 17: "Add another" on a multi-
+    // credential card, "Add account" on an account-backed one. Both are gone,
+    // and the rule is now uniform across card types rather than per-type — one
+    // door, on the panel.
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "cred_1", serviceId: "zai", billingMode: "sub", via: "string" }),
       route({ id: "cred_2", serviceId: "zai", billingMode: "key", via: "string" }),
     ]);
     render(<ServicesPanel />);
-    expect(screen.getByTestId("service-add-credential-zai:sub")).toBeInTheDocument();
-    // Keys never fail over, so a second one could never be reached.
+    expect(screen.queryByTestId("service-add-credential-zai:sub")).not.toBeInTheDocument();
     expect(screen.queryByTestId("service-add-credential-zai:key")).not.toBeInTheDocument();
+    expect(screen.getByTestId("services-add")).toBeInTheDocument();
   });
 
   it("walks service → billing mode → credential, and posts the triple", async () => {
@@ -120,10 +123,24 @@ describe("ServicesPanel", () => {
     expect(screen.getByTestId("add-service-step-credential")).toBeInTheDocument();
   });
 
-  it("hands off to the accounts card for a mode connected only by signing in", async () => {
-    // Not a dead end: an earlier cut told the user to press "Add account on its
-    // card" while no card existed, because a card only appeared once an account
-    // already did.
+  it("signs in inside the dialog for a mode connected only by signing in (req 17)", async () => {
+    // The hand-off is gone. It sent the user out of a flow they had started —
+    // "press Add account on its card" — and paid for it with a revealed empty
+    // card the user could not then remove.
+    const created = {
+      id: "acct-openai-1",
+      serviceId: "openai", billingMode: "sub", via: "account",
+      label: "OpenAI account 1",
+      isPrimary: true,
+      status: "authenticating",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ accounts: [created] }) });
+    });
+
     render(<ServicesPanel agentList={[codexAgent]} />);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-openai"));
@@ -132,28 +149,98 @@ describe("ServicesPanel", () => {
     // OpenAI's subscription takes no supplied secret, so there is no input.
     expect(screen.queryByTestId("add-service-secret")).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByTestId("add-service-continue"));
-    // The card the message points at now exists, with its "Add account" button.
-    expect(screen.getByTestId("provider-account-rows-codex")).toBeInTheDocument();
-    expect(screen.getByTestId("provider-account-add-codex")).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("add-service-sign-in"));
+
+    // One act: the account is created and its login started.
+    await waitFor(() => expect(fetchCalls.some(
+      (c) => c.url === "/api/provider-accounts" && c.method === "POST",
+    )).toBe(true));
+    await waitFor(() => expect(fetchCalls.some(
+      (c) => c.url === "/api/provider-accounts/codex/acct-openai-1/login" && c.method === "POST",
+    )).toBe(true));
+
+    // And the challenge renders HERE — the same component the row renders,
+    // inside the dialog the user is already in.
+    useSettingsStore.getState().setProviderAccountAuth("codex", "acct-openai-1", {
+      provider: "codex",
+      accountId: "acct-openai-1",
+      verificationUri: "https://auth.openai.com/device",
+      userCode: "WXYZ-1234",
+    });
+    await waitFor(() => {
+      const dialog = within(screen.getByTestId("add-service-dialog"));
+      expect(dialog.getByTestId("provider-account-challenge-acct-openai-1")).toBeInTheDocument();
+      expect(dialog.getByTestId("provider-account-user-code-acct-openai-1")).toHaveTextContent("WXYZ-1234");
+    });
   });
 
-  it("keeps the revealed card across a remount, so 'Add account' stays reachable", async () => {
-    // Settings renders its tabs through Radix `TabsContent`, which UNMOUNTS the
-    // inactive one. With the reveal held in this component's own state,
-    // switching to another Settings tab and back dropped the card and left no
-    // route to "Add account" but walking the whole add-flow again. Unmounting
-    // and remounting is that tab switch, reduced to what actually breaks it.
-    const { unmount } = render(<ServicesPanel agentList={[codexAgent]} />);
+  it("abandons the account when the sign-in is cancelled, leaving nothing listed (req 17)", async () => {
+    const created = {
+      id: "acct-openai-1",
+      serviceId: "openai", billingMode: "sub", via: "account",
+      label: "OpenAI account 1",
+      isPrimary: true,
+      status: "authenticating",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+      const accounts = init?.method === "DELETE" ? [] : [created];
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ accounts }) });
+    });
+
+    render(<ServicesPanel agentList={[codexAgent]} />);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-openai"));
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
-    await userEvent.click(screen.getByTestId("add-service-continue"));
-    expect(screen.getByTestId("provider-account-add-codex")).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("add-service-sign-in"));
+    await waitFor(() => expect(fetchCalls.some((c) => c.url === "/api/provider-accounts")).toBe(true));
 
-    unmount();
+    await userEvent.click(within(screen.getByTestId("add-service-dialog")).getByRole("button", { name: "Cancel" }));
+
+    // Cancel means what it says: the login is called off AND the account it
+    // created goes, so an abandoned attempt leaves no service listed. This is
+    // the exact state the old reveal left behind and could not undo.
+    await waitFor(() => expect(fetchCalls.some(
+      (c) => c.url === "/api/provider-accounts/codex/acct-openai-1/login/cancel",
+    )).toBe(true));
+    await waitFor(() => expect(fetchCalls.some(
+      (c) => c.url === "/api/provider-accounts/codex/acct-openai-1" && c.method === "DELETE",
+    )).toBe(true));
+    await waitFor(() => expect(screen.queryByTestId("service-card-openai:sub")).not.toBeInTheDocument());
+  });
+
+  it("closing the dialog mid-challenge keeps the sign-in alive on the card (req 17)", async () => {
+    // The other half of the Cancel rule. The provider's login is a live process
+    // that may already have been authorised, so dismissing the dialog is not a
+    // decision to abandon it — the account row carries it to the end.
+    const created = {
+      id: "acct-openai-1",
+      serviceId: "openai", billingMode: "sub", via: "account",
+      label: "OpenAI account 1",
+      isPrimary: true,
+      status: "authenticating",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ accounts: [created] }) });
+    });
+
     render(<ServicesPanel agentList={[codexAgent]} />);
-    expect(screen.getByTestId("provider-account-add-codex")).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    await userEvent.click(screen.getByTestId("add-service-option-openai"));
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+    await userEvent.click(screen.getByTestId("add-service-sign-in"));
+    await waitFor(() => expect(screen.getByTestId("service-card-openai:sub")).toBeInTheDocument());
+
+    await userEvent.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByTestId("add-service-dialog")).not.toBeInTheDocument());
+    expect(fetchCalls.some((c) => c.method === "DELETE")).toBe(false);
+    expect(screen.getByTestId("provider-account-row-acct-openai-1")).toBeInTheDocument();
   });
 
   it("offers BOTH a sign-in and a token for a mode that accepts both", async () => {
@@ -165,7 +252,7 @@ describe("ServicesPanel", () => {
     await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
     expect(screen.getByTestId("add-service-secret")).toBeInTheDocument();
-    expect(screen.getByTestId("add-service-continue")).toBeInTheDocument();
+    expect(screen.getByTestId("add-service-sign-in")).toBeInTheDocument();
   });
 
   it("titles step 3 for the account path and makes signing in the primary button (D4)", async () => {
@@ -188,7 +275,7 @@ describe("ServicesPanel", () => {
     const dialog = screen.getByTestId("add-service-dialog");
     const buttons = within(dialog).getAllByRole("button");
     const save = screen.getByTestId("add-service-save");
-    const signIn = screen.getByTestId("add-service-continue");
+    const signIn = screen.getByTestId("add-service-sign-in");
     expect(buttons.indexOf(signIn)).toBeGreaterThan(buttons.indexOf(save));
     expect(signIn.className).toContain("bg-(--color-accent)");
     expect(save.className).not.toContain("bg-(--color-accent)");
@@ -426,7 +513,11 @@ describe("ServicesPanel — one card component (docs/252 D2, D7, D8, D9)", () =>
   });
 
   it("says nothing about routing on a subscription with no credential yet", () => {
-    useUiStore.getState().revealServiceMode("anthropic:sub");
+    // req 17 leaves exactly one way for a card to be on screen with no
+    // credential: a notice holding it open after the last account went.
+    useSettingsStore.getState().setProviderAccountNotice("claude", {
+      kind: "info", message: "Disconnected.",
+    });
     render(<ServicesPanel agentList={[claudeAgent]} />);
 
     expect(screen.getByTestId("service-card-anthropic:sub")).toBeInTheDocument();

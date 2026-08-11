@@ -6,7 +6,7 @@ import type { AgentId, CredentialRoute } from "../../../server/shared/types.js";
 import { getService, nativeServiceForHarness } from "../../../server/shared/catalogue/index.js";
 import { Button } from "../ui/button.js";
 import { useUiStore } from "../../stores/ui-store.js";
-import type { ClaudeAuthDiagnostics, ProviderAccountNotice } from "../../stores/settings-store.js";
+import type { ProviderAccountNotice } from "../../stores/settings-store.js";
 import {
   useSettingsStore,
   providerAccountAuthKey,
@@ -15,7 +15,15 @@ import {
 
 /**
  * docs/150 req 16 / docs/252 — the account rows of an account-backed
- * subscription, and the button that adds one.
+ * subscription, and the sign-in they share with the add-service dialog.
+ *
+ * **Nothing here adds an account any more** (docs/252 req 17). The card's "Add
+ * account" button is gone; what is left in its place is
+ * {@link createAccountAndStartLogin} and {@link AccountChallenge}, called and
+ * rendered by `AddServiceDialog`, which is the one way in. The challenge is a
+ * shared component rather than a copy per host for the reason docs/150 req 16
+ * exists: a user's first account was once connected by different code than
+ * their second.
  *
  * This **was** `ProviderAccountsCard`: a card of its own, with its own header,
  * its own status dot, its own routing controls and its own collapsed API-key
@@ -144,63 +152,181 @@ const startLogin = (provider: AgentId, accountId: string): Promise<unknown> =>
   request(`/api/provider-accounts/${provider}/${accountId}/login`, { method: "POST" });
 
 /**
- * req 16 — the one connect path, lifted into the card header.
+ * req 17 — create the account row and start its sign-in, as one act.
  *
- * Creating the row and starting its sign-in is a single user action, so this
- * behaves identically whether it is the first account or the fifth. If the
+ * **The row exists before the login finishes, and that is deliberate.** If the
  * login fails to start, the row still exists and its own Connect button
- * retries; we surface the error rather than rolling the row back, because a
- * half-created account the user can see and delete beats one that vanishes.
+ * retries; a half-created account the user can see and delete beats one that
+ * vanishes. It also means the sign-in outlives whatever started it — which is
+ * what lets the add-service dialog host the challenge without owning it.
+ *
+ * Was `AddAccountButton`, a control on the service card. req 17 removed the
+ * card's own way in, so what is left is this function, called from the one
+ * flow: `AddServiceDialog`'s last step.
  */
-export function AddAccountButton({
+export async function createAccountAndStartLogin(
+  provider: AgentId,
+  knownAccountIds: Iterable<string>,
+): Promise<CredentialRoute | undefined> {
+  const known = new Set(knownAccountIds);
+  const result = await request<{ accounts: CredentialRoute[] }>("/api/provider-accounts", {
+    method: "POST",
+    body: JSON.stringify({ provider }),
+  });
+  useSettingsStore.getState().setProviderAccounts(result.accounts);
+  const serviceId = serviceIdForProvider(provider);
+  const created = result.accounts.find(
+    (account) => account.serviceId === serviceId && !known.has(account.id),
+  );
+  if (created) await startLogin(provider, created.id);
+  return created;
+}
+
+/**
+ * Abandon an account that was created for a sign-in the user then called off.
+ *
+ * Cancel-then-delete, in that order and both best-effort: the login is a live
+ * process on the provider's side, and leaving it running against a row that no
+ * longer exists is how a provider ends up refusing the *next* sign-in with a
+ * 409 nobody can clear from the UI. A failure on either step is swallowed —
+ * the caller is closing a dialog, and the row it could not delete is visible
+ * and deletable on the card.
+ */
+export async function abandonAccount(provider: AgentId, accountId: string): Promise<void> {
+  try {
+    await request(`/api/provider-accounts/${provider}/${accountId}/login/cancel`, { method: "POST" });
+  } catch {
+    // Already finished, already cancelled, or never started.
+  }
+  try {
+    const result = await request<{ accounts: CredentialRoute[] }>(
+      `/api/provider-accounts/${provider}/${accountId}`,
+      { method: "DELETE" },
+    );
+    useSettingsStore.getState().setProviderAccounts(result.accounts);
+  } catch {
+    // Left on the card, where Disconnect reaches it.
+  }
+  useSettingsStore.getState().setProviderAccountAuth(provider, accountId, null);
+}
+
+/** Human-readable "somebody else is signing in" refusal, or `undefined`. */
+export function signInBlockedReason(accounts: CredentialRoute[], accountId?: string): string | undefined {
+  const signingIn = signingInAccount(accounts);
+  if (!signingIn || signingIn.id === accountId) return undefined;
+  return `Finish or cancel the sign-in on "${signingIn.label}" first.`;
+}
+
+/**
+ * The provider's login challenge — **one implementation, two hosts.**
+ *
+ * It renders on the account row and inside the add-service dialog, and it is a
+ * component rather than a copy in each because docs/150 req 16 already paid for
+ * the alternative once: a user's first account connected by different code than
+ * their second. The two providers genuinely differ inside it — Anthropic hands
+ * back an authorization code the user pastes into ShipIt, OpenAI shows a user
+ * code the user types on OpenAI's page — and that difference is the only branch.
+ *
+ * It owns the code input and the submit, and reports a failure through
+ * `onError` so each host can put it where that host puts failures.
+ */
+export function AccountChallenge({
   provider,
-  agent,
+  account,
+  serviceName,
+  onError,
 }: {
   provider: AgentId;
-  agent: AgentOption | undefined;
+  account: CredentialRoute;
+  serviceName: string;
+  onError: (message: string) => void;
 }) {
-  const accounts = useProviderAccounts(provider);
-  const setProviderAccounts = useSettingsStore((s) => s.setProviderAccounts);
-  const setCardNotice = useSettingsStore((s) => s.setProviderAccountNotice);
-  const [adding, setAdding] = useState(false);
-  const installed = agent?.installed ?? true;
-  const signingIn = signingInAccount(accounts);
+  const auths = useSettingsStore((s) => s.providerAccountAuths);
+  const allDiagnostics = useSettingsStore((s) => s.claudeAuthDiagnostics);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const pendingAuth = auths[providerAccountAuthKey(provider, account.id)] ?? null;
+  if (!pendingAuth) return null;
 
-  const addAccount = async () => {
-    setAdding(true);
-    setCardNotice(provider, null);
+  const diagnostics = allDiagnostics[account.id] ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
+
+  const submit = async () => {
+    const trimmed = code.trim();
+    if (!trimmed) return;
+    setBusy(true);
     try {
-      const known = new Set(accounts.map((account) => account.id));
-      const result = await request<{ accounts: CredentialRoute[] }>("/api/provider-accounts", {
+      await request(`/api/provider-accounts/${provider}/${account.id}/login/code`, {
         method: "POST",
-        body: JSON.stringify({ provider }),
+        body: JSON.stringify({ code: trimmed }),
       });
-      setProviderAccounts(result.accounts);
-      const serviceId = serviceIdForProvider(provider);
-      const created = result.accounts.find(
-        (account) => account.serviceId === serviceId && !known.has(account.id),
-      );
-      if (created) await startLogin(provider, created.id);
     } catch (err) {
-      // Card-scoped: this fails before a row exists to hang it on.
-      setCardNotice(provider, { kind: "error", message: messageOf(err, "Failed to add account") });
+      onError(messageOf(err, "Failed to submit authorization code"));
     } finally {
-      setAdding(false);
+      setBusy(false);
     }
   };
 
   return (
-    <Button
-      variant="secondary"
-      size="sm"
-      onClick={() => void addAccount()}
-      disabled={adding || !installed || !!signingIn}
-      {...(signingIn ? { title: `Finish or cancel the sign-in on "${signingIn.label}" first.` } : {})}
-      className="shrink-0 rounded-md"
-      data-testid={`provider-account-add-${provider}`}
-    >
-      {adding ? "Adding..." : "Add account"}
-    </Button>
+    <>
+      <div
+        className="space-y-2 rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) p-3"
+        data-testid={`provider-account-challenge-${account.id}`}
+      >
+        <a
+          href={pendingAuth.verificationUri}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-sm font-medium text-(--color-text-link) hover:underline"
+        >
+          Open {serviceName} authentication page
+        </a>
+        {pendingAuth.userCode ? (
+          <div>
+            <p className="text-xs text-(--color-text-secondary)">Enter this code on that page:</p>
+            <p
+              className="mt-1 font-mono text-lg tracking-widest text-(--color-text-primary)"
+              data-testid={`provider-account-user-code-${account.id}`}
+            >
+              {pendingAuth.userCode}
+            </p>
+          </div>
+        ) : (
+          <div className="flex gap-2">
+            <input
+              value={code}
+              onChange={(event) => setCode(event.target.value)}
+              placeholder="Paste authorization code"
+              aria-label={`Authorization code for ${account.label}`}
+              className="min-w-0 flex-1 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1.5 text-sm text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
+            />
+            <Button
+              variant="primary"
+              size="md"
+              disabled={busy || !code.trim()}
+              onClick={() => void submit()}
+            >
+              Submit code
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {/* Claude's CLI-driven sign-in is the one that strands users, so its
+          diagnostics stay reachable. docs/150 — read this account's own buffer:
+          the output belongs to the attempt that produced it. */}
+      {provider === "claude" && diagnostics.entries.length > 0 && (
+        <details className="group" data-testid={`provider-account-diagnostics-${account.id}`}>
+          <summary className="cursor-pointer select-none text-xs text-(--color-text-link) transition-colors hover:text-(--color-accent)">
+            Claude CLI output ({diagnostics.entries.length})
+          </summary>
+          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) p-2 font-mono text-[var(--font-size-code)] text-(--color-text-secondary)">
+            {diagnostics.entries.map((entry) =>
+              `${entry.timestamp} ${entry.level.toUpperCase()} ${entry.source}: ${entry.message}`,
+            ).join("\n")}
+          </pre>
+        </details>
+      )}
+    </>
   );
 }
 
@@ -213,13 +339,10 @@ export function ProviderAccountRows({
 }) {
   const accounts = useProviderAccounts(provider);
   const setProviderAccounts = useSettingsStore((s) => s.setProviderAccounts);
-  const accountAuths = useSettingsStore((s) => s.providerAccountAuths);
   const accountAuthErrors = useSettingsStore((s) => s.providerAccountAuthErrors);
   const setProviderAccountAuth = useSettingsStore((s) => s.setProviderAccountAuth);
-  const allDiagnostics = useSettingsStore((s) => s.claudeAuthDiagnostics);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [draftLabels, setDraftLabels] = useState<Record<string, string>>({});
-  const [authCodes, setAuthCodes] = useState<Record<string, string>>({});
   /**
    * docs/257 req 5 — where a result or a failure lands.
    *
@@ -229,9 +352,9 @@ export function ProviderAccountRows({
    * else on screen and then disappears defeats the point of a setup panel whose
    * whole job is to keep the ask in front of the user.
    *
-   * Row-scoped where a row exists, card-scoped where it does not: "Add account"
-   * fails before there is a row, and a *successful* disconnect deletes the row
-   * its result describes.
+   * Row-scoped where a row exists, card-scoped where it does not: a *successful*
+   * disconnect deletes the row its result describes, and the store's card notice
+   * outlives it.
    */
   const [rowNotices, setRowNotices] = useState<Record<string, ProviderAccountNotice>>({});
   /**
@@ -243,10 +366,6 @@ export function ProviderAccountRows({
 
   const serviceName = serviceNameForProvider(provider);
   const installed = agent?.installed ?? true;
-
-  /** This row's own Claude sign-in diagnostics (docs/150), empty if it has none. */
-  const diagnosticsFor = (accountId: string): ClaudeAuthDiagnostics =>
-    allDiagnostics[accountId] ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
 
   /** Post a failure on one account's row, replacing whatever was there. */
   const failRow = (accountId: string, err: unknown, fallback: string): void => {
@@ -383,28 +502,10 @@ export function ProviderAccountRows({
     }
   };
 
-  const submitAuthCode = async (account: CredentialRoute) => {
-    const code = authCodes[account.id]?.trim();
-    if (!code) return;
-    setSavingId(account.id);
-    clearRow(account.id);
-    try {
-      await request(`/api/provider-accounts/${provider}/${account.id}/login/code`, {
-        method: "POST",
-        body: JSON.stringify({ code }),
-      });
-    } catch (err) {
-      failRow(account.id, err, "Failed to submit authorization code");
-    } finally {
-      setSavingId(null);
-    }
-  };
-
-  const signingIn = signingInAccount(accounts);
+  // Submitting the authorization code belongs to `AccountChallenge`, which is
+  // shared with the add-service dialog — the row only hosts it.
   const blockedBy = (accountId: string): string | undefined =>
-    signingIn && signingIn.id !== accountId
-      ? `Finish or cancel the sign-in on "${signingIn.label}" first.`
-      : undefined;
+    signInBlockedReason(accounts, accountId);
 
   return (
     <div className="space-y-2" data-testid={`provider-account-rows-${provider}`}>
@@ -428,17 +529,19 @@ export function ProviderAccountRows({
           className="rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3 text-xs text-(--color-text-secondary)"
           data-testid={`provider-accounts-empty-${provider}`}
         >
-          No {serviceName} subscription connected yet. Use{" "}
-          <span className="text-(--color-text-primary)">Add account</span> to sign in.
+          {/* req 17 — this card has no way in of its own, so the sentence names
+              the one that exists rather than a button beside it. Reachable only
+              when a notice is holding the card open after the last account was
+              disconnected: with no account and nothing to say, the card is gone. */}
+          No {serviceName} subscription connected. Add one with{" "}
+          <span className="text-(--color-text-primary)">Add a service</span>.
         </div>
       ) : (
         <div className="space-y-2">
           {accounts.map((account, accountIndex) => {
             const draft = draftLabels[account.id] ?? account.label;
             const busy = savingId === account.id;
-            const key = providerAccountAuthKey(provider, account.id);
-            const pendingAuth = accountAuths[key] ?? null;
-            const authError = accountAuthErrors[key] ?? null;
+            const authError = accountAuthErrors[providerAccountAuthKey(provider, account.id)] ?? null;
             return (
               <div
                 key={account.id}
@@ -495,51 +598,18 @@ export function ProviderAccountRows({
                   </div>
                 </div>
 
-                {/* Shared challenge slot — one shell, two provider variants. */}
-                {pendingAuth && (
-                  <div
-                    className="space-y-2 rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) p-3"
-                    data-testid={`provider-account-challenge-${account.id}`}
-                  >
-                    <a
-                      href={pendingAuth.verificationUri}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-sm font-medium text-(--color-text-link) hover:underline"
-                    >
-                      Open {serviceName} authentication page
-                    </a>
-                    {pendingAuth.userCode ? (
-                      <div>
-                        <p className="text-xs text-(--color-text-secondary)">Enter this code on that page:</p>
-                        <p
-                          className="mt-1 font-mono text-lg tracking-widest text-(--color-text-primary)"
-                          data-testid={`provider-account-user-code-${account.id}`}
-                        >
-                          {pendingAuth.userCode}
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="flex gap-2">
-                        <input
-                          value={authCodes[account.id] ?? ""}
-                          onChange={(event) => setAuthCodes((current) => ({ ...current, [account.id]: event.target.value }))}
-                          placeholder="Paste authorization code"
-                          aria-label={`Authorization code for ${account.label}`}
-                          className="min-w-0 flex-1 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1.5 text-sm text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
-                        />
-                        <Button
-                          variant="primary"
-                          size="md"
-                          disabled={busy || !authCodes[account.id]?.trim()}
-                          onClick={() => void submitAuthCode(account)}
-                        >
-                          Submit code
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                )}
+                {/* The shared challenge — the same component the add-service
+                    dialog renders, so the first sign-in and the fifth are one
+                    implementation (docs/150 req 16). */}
+                <AccountChallenge
+                  provider={provider}
+                  account={account}
+                  serviceName={serviceName}
+                  onError={(message) => setRowNotices((current) => ({
+                    ...current,
+                    [account.id]: { kind: "error", message },
+                  }))}
+                />
 
                 {authError && (
                   <p className="text-xs text-(--color-error)" data-testid={`provider-account-error-${account.id}`}>
@@ -552,23 +622,6 @@ export function ProviderAccountRows({
                     notice={rowNotices[account.id]}
                     testId={`provider-account-notice-${account.id}`}
                   />
-                )}
-
-                {/* Claude's CLI-driven sign-in is the one that strands users, so
-                    its diagnostics stay reachable. docs/150 — read this row's
-                    own buffer: the output belongs to the account whose attempt
-                    produced it, not to the provider. */}
-                {provider === "claude" && pendingAuth && diagnosticsFor(account.id).entries.length > 0 && (
-                  <details className="group" data-testid={`provider-account-diagnostics-${account.id}`}>
-                    <summary className="cursor-pointer select-none text-xs text-(--color-text-link) transition-colors hover:text-(--color-accent)">
-                      Claude CLI output ({diagnosticsFor(account.id).entries.length})
-                    </summary>
-                    <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) p-2 font-mono text-[var(--font-size-code)] text-(--color-text-secondary)">
-                      {diagnosticsFor(account.id).entries.map((entry) =>
-                        `${entry.timestamp} ${entry.level.toUpperCase()} ${entry.source}: ${entry.message}`,
-                      ).join("\n")}
-                    </pre>
-                  </details>
                 )}
 
                 <div className="flex flex-wrap gap-2">

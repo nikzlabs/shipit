@@ -96,23 +96,6 @@ interface UiState {
   quickCaptureAutoMic: boolean;
   settingsTab: SettingsTab;
   /**
-   * docs/252 — `(service, billing mode)` keys the user asked to see in
-   * Settings → Services although no credential exists for them yet.
-   *
-   * An account-backed subscription cannot be connected by pasting anything, so
-   * the add-flow hands off by revealing that mode's card and letting its own
-   * "Add account" start the login. That reveal lived in `ServicesPanel`'s own
-   * `useState`, and `TabsContent` unmounts an inactive tab — so revealing the
-   * card, switching to another Settings tab and coming back lost it, with no
-   * route back to "Add account" except walking the whole add-flow again. It
-   * belongs beside `settingsTab` for the same reason `settingsTab` is here: it
-   * has to outlive the tab that renders it.
-   *
-   * Deliberately NOT persisted. A reveal is an in-flight intention, and once
-   * the user acts on it an account row exists and the card stands on its own.
-   */
-  revealedServiceModes: string[];
-  /**
    * URL of the repo whose Project Settings dialog is open, or `null` when
    * closed. Project settings (deployments, secrets) are per-repo and live in
    * their own dialog, invoked from the per-repo menu in the sidebar — not the
@@ -189,8 +172,6 @@ interface UiState {
   setQuickCaptureOpen: (open: boolean, autoMic?: boolean) => void;
   setQuickCaptureAutoMic: (active: boolean) => void;
   setSettingsTab: (tab: SettingsTab) => void;
-  /** Show a `(service, billing mode)` card that has no credential yet. */
-  revealServiceMode: (modeKey: string) => void;
   /**
    * Open (or close, with `null`) the per-repo Project Settings dialog. Pass a
    * tab to deep-link; defaults to `"secrets"` — the actionable tab, since
@@ -236,7 +217,6 @@ const initialState = {
   quickCaptureOpen: false,
   quickCaptureAutoMic: false,
   settingsTab: undefined as SettingsTab,
-  revealedServiceModes: [] as string[],
   projectSettingsRepoUrl: null as string | null,
   projectSettingsTab: "secrets" as ProjectSettingsTab,
   sidebarCollapsed: getSavedSidebarCollapsed(),
@@ -300,13 +280,6 @@ export const useUiStore = create<UiState>((set) => ({
   setQuickCaptureAutoMic: (quickCaptureAutoMic) => set({ quickCaptureAutoMic }),
 
   setSettingsTab: (settingsTab) => set({ settingsTab }),
-
-  revealServiceMode: (modeKey) =>
-    set((state) =>
-      state.revealedServiceModes.includes(modeKey)
-        ? state
-        : { revealedServiceModes: [...state.revealedServiceModes, modeKey] },
-    ),
 
   setProjectSettingsRepoUrl: (projectSettingsRepoUrl, tab = "secrets") =>
     set({ projectSettingsRepoUrl, projectSettingsTab: tab }),

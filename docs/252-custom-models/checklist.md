@@ -226,3 +226,10 @@ landed ahead of this checklist's per-phase sections.
       the service card carries — a new `BillingModePill`, and a `ModelGroupHeader` shared by
       the composer's model menu and its settings menu, which held two copies of that markup.
       The harness row went to two lines, name over `N models available`.
+- [x] **One way in: the sign-in is the add-flow's last step** (req 17). `AddServiceDialog`
+      creates the account and starts its login itself, and renders the provider's challenge
+      through the same `AccountChallenge` the account row renders. *Cancel* abandons what it
+      created; dismissing the dialog leaves a live challenge to finish on the card. The card's
+      "Add account" and "Add another" buttons, `ServiceCard`'s header-action slot and the
+      `revealedServiceModes` store slice are all deleted — which is also the fix for a service
+      the user chose, never connected, and could not remove.

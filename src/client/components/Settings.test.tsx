@@ -24,17 +24,25 @@ afterEach(() => {
     claudeAuthDiagnostics: {},
     providerAccountNotices: {},
   });
-  useUiStore.setState({ revealedServiceModes: [] });
 });
 
 /**
- * docs/252 — Settings → Services lists only what the user configured, so a
- * `(service, mode)` with no credential yet has no card. The add-flow's handoff
- * to a sign-in reveals one; these tests take that same route rather than
- * inventing a second way for a card to exist.
+ * docs/252 req 17 — a card exists because a credential does, and there is no
+ * longer any way to summon an empty one: the reveal these tests used to call
+ * went with the hand-off that needed it. So a test that wants Anthropic's
+ * subscription card connects an account, which is what a user does.
  */
-function revealAnthropicSubscription() {
-  useUiStore.getState().revealServiceMode("anthropic:sub");
+function connectAnthropicSubscription(status: "ready" | "authenticating" = "ready") {
+  const now = Date.now();
+  useSettingsStore.getState().setProviderAccounts([{
+    id: "acct-seed",
+    serviceId: "anthropic", billingMode: "sub", via: "account",
+    label: "Anthropic account",
+    isPrimary: true,
+    status,
+    createdAt: now,
+    updatedAt: now,
+  }]);
 }
 
 const claudeAuthed = { id: "claude", name: "Claude Code", installed: true, hasRunnableModels: true, models: ["claude-sonnet"], supportsReview: true };
@@ -115,7 +123,7 @@ describe("Settings - Services → Anthropic subscription", () => {
    * regression back to two components; asserting the rows exist would not.
    */
   it("renders the account rows inside the service's own card, titled by service", () => {
-    revealAnthropicSubscription();
+    connectAnthropicSubscription();
     render(<Settings {...defaultProps} />);
     const card = screen.getByTestId("service-card-anthropic:sub");
     expect(within(card).getByTestId("provider-account-rows-claude")).toBeInTheDocument();
@@ -127,14 +135,28 @@ describe("Settings - Services → Anthropic subscription", () => {
     expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
   });
 
-  it("offers the same Add account affordance when no accounts exist yet", () => {
-    revealAnthropicSubscription();
+  it("lists no card at all for a subscription with no credential (req 17)", () => {
+    // The state the reveal used to create, and could not undo: a service listed
+    // with nothing in it and no way to remove it. It is now unreachable — a
+    // card exists because a credential does.
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
-    expect(screen.getByTestId("provider-accounts-empty-claude")).toBeInTheDocument();
-    expect(screen.getByTestId("provider-account-add-claude")).toBeInTheDocument();
+    expect(screen.queryByTestId("service-card-anthropic:sub")).not.toBeInTheDocument();
   });
 
-  it("creates the account and immediately starts its sign-in, first account included", async () => {
+  it("gives a connected card no way of its own to add another (req 17)", () => {
+    connectAnthropicSubscription();
+    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+    const card = screen.getByTestId("service-card-anthropic:sub");
+    expect(within(card).queryByTestId("provider-account-add-claude")).not.toBeInTheDocument();
+    expect(within(card).queryByRole("button", { name: /add/i })).not.toBeInTheDocument();
+    // The one door, on the panel rather than the card.
+    expect(screen.getByTestId("services-add")).toBeInTheDocument();
+  });
+
+  it("creates the account and starts its sign-in from inside the add-service dialog (req 17)", async () => {
+    // req 17 — the sign-in is the last step of the one flow, not a hand-off to
+    // a button on a card. The card does not exist yet at this point, and that
+    // is the change: the account is what brings it into being.
     const now = Date.now();
     const created = {
       id: "acct-1",
@@ -148,9 +170,11 @@ describe("Settings - Services → Anthropic subscription", () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ accounts: [created] }) });
     vi.stubGlobal("fetch", fetchMock);
 
-    revealAnthropicSubscription();
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
-    await userEvent.click(screen.getByTestId("provider-account-add-claude"));
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+    await userEvent.click(screen.getByTestId("add-service-sign-in"));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       "/api/provider-accounts",
@@ -178,7 +202,6 @@ describe("Settings - Services → Anthropic subscription", () => {
 
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
 
-    expect(screen.getByTestId("provider-account-add-claude")).toBeDisabled();
     // The row that is NOT signing in can't start a competing flow...
     expect(screen.getByTestId("provider-account-connect-acct-b")).toBeDisabled();
     // ...and the one that is keeps its own way out.
@@ -237,9 +260,6 @@ describe("Settings - Services → Anthropic subscription", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    // Revealed so the card outlives its last account and the empty state is
-    // observable; without it the card is simply dropped from the list.
-    revealAnthropicSubscription();
     render(<Settings {...defaultProps} />);
     await userEvent.click(within(screen.getByTestId("provider-account-row-acct-a")).getByRole("button", { name: "Disconnect" }));
 
@@ -247,10 +267,13 @@ describe("Settings - Services → Anthropic subscription", () => {
       "/api/provider-accounts/claude/acct-a",
       expect.objectContaining({ method: "DELETE" }),
     ));
-    // The row is gone and the empty state renders — the one-click disconnect
-    // is the whole flow.
+    // The row is gone, and with the last credential gone so is the card —
+    // req 17's "a service the user has not connected does not appear", arrived
+    // at from the other direction. There is nothing left to keep it on screen:
+    // a *reported* disconnect keeps its card through the notice clause, and
+    // this one has nothing to report.
     await waitFor(() => expect(screen.queryByTestId("provider-account-row-acct-a")).not.toBeInTheDocument());
-    expect(screen.getByTestId("provider-accounts-empty-claude")).toBeInTheDocument();
+    expect(screen.queryByTestId("service-card-anthropic:sub")).not.toBeInTheDocument();
     // No replacement picker, no moved/stranded notice, no toast (req 3).
     expect(screen.queryByTestId("provider-account-replacement-acct-a")).not.toBeInTheDocument();
     expect(screen.queryByTestId("provider-accounts-notice-claude")).not.toBeInTheDocument();
@@ -265,7 +288,7 @@ describe("Settings - Services → Anthropic subscription", () => {
    * produced is one row down in the same list.
    */
   it("offers no second API-key editor on the subscription card", () => {
-    revealAnthropicSubscription();
+    connectAnthropicSubscription();
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
     expect(screen.queryByTestId("provider-toggle-api-key-claude")).not.toBeInTheDocument();
     expect(screen.queryByTestId("provider-api-key-input-claude")).not.toBeInTheDocument();
@@ -545,8 +568,22 @@ describe("Settings - Services → OpenAI subscription", () => {
     supportsReview: false,
   };
 
+  /** As above: the card is summoned by connecting an account, not by a reveal. */
+  function connectOpenAiSubscription() {
+    const now = Date.now();
+    useSettingsStore.getState().setProviderAccounts([{
+      id: "acct-openai",
+      serviceId: "openai", billingMode: "sub", via: "account",
+      label: "OpenAI account",
+      isPrimary: true,
+      status: "ready",
+      createdAt: now,
+      updatedAt: now,
+    }]);
+  }
+
   it("renders OpenAI's account rows in the same card component, not a Codex tab", () => {
-    useUiStore.getState().revealServiceMode("openai:sub");
+    connectOpenAiSubscription();
     render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
     const card = screen.getByTestId("service-card-openai:sub");
     expect(within(card).getByTestId("provider-account-rows-codex")).toBeInTheDocument();
@@ -556,7 +593,7 @@ describe("Settings - Services → OpenAI subscription", () => {
   });
 
   it("offers no second API-key editor for OpenAI either", () => {
-    useUiStore.getState().revealServiceMode("openai:sub");
+    connectOpenAiSubscription();
     render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
     expect(screen.queryByTestId("provider-toggle-api-key-codex")).not.toBeInTheDocument();
   });
