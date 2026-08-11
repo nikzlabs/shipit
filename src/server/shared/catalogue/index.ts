@@ -27,8 +27,10 @@ import type {
   ModelSelection,
   ServiceDef,
 } from "./types.js";
+import type { ModelIdentity } from "./model-identity.js";
 
 export * from "./types.js";
+export * from "./model-identity.js";
 export { HARNESSES } from "./harnesses.js";
 export { SERVICES, type ServiceId } from "./services.js";
 
@@ -100,6 +102,19 @@ export function getModel(selection: ModelSelection): ModelDef | undefined {
 /** True when the catalogue contains the row this triple names. */
 export function selectionExists(selection: ModelSelection): boolean {
   return getModel(selection) !== undefined;
+}
+
+/**
+ * docs/261 req 4 — **who** a selection resolves to: its canonical model and its
+ * training lineage. `undefined` for a triple naming no row.
+ *
+ * The one entry point for both fields, so no caller reads one without the other
+ * and re-derives the distinction the two exist to keep apart (`model-identity.ts`).
+ */
+export function modelIdentityFor(selection: ModelSelection): ModelIdentity | undefined {
+  const model = getModel(selection);
+  if (!model) return undefined;
+  return { canonicalModelKey: model.canonicalModelKey, family: model.family };
 }
 
 /**

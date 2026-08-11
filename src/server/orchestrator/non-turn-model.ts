@@ -46,12 +46,13 @@ import {
   getService,
   isSelectionEligible,
   retirementSuccessor,
-  storageEnvFor,
   type ConfiguredCredential,
+  type HarnessDef,
   type ModelSelection,
 } from "../shared/catalogue/index.js";
 import { isHarnessInstalled } from "../shared/installed-harnesses.js";
 import {
+  credentialSecretForRoute,
   listConfiguredCredentials,
   selectRouteForSelection,
   serviceRoutingForSelection,
@@ -145,17 +146,83 @@ export function harnessForNonTurnSelection(
   selection: ModelSelection,
   credentials: readonly ConfiguredCredential[],
 ): { harnessId: AgentId; selection: ModelSelection } | undefined {
-  for (const harness of allHarnesses()) {
+  return harnessForSelection(selection, credentials);
+}
+
+/**
+ * The generic behind {@link harnessForNonTurnSelection}: the first **installed**
+ * harness that can run `selection` with these credentials, resolving a retired
+ * model through its successor (req 13).
+ *
+ * `opts.avoidHarnessId` moves one harness to the back of the search without
+ * removing it — docs/261's reviewer derivation, where the harness is a ranking
+ * axis rather than an arbitrary choice: if a reviewer's model runs on both
+ * installed harnesses, catalogue order could hand it the implementer's own and
+ * drop the reviewer a tier for no reason. It stays a *preference*, so a model
+ * only the implementer's harness can run is still resolved rather than refused.
+ *
+ * Extracted rather than copied: eligibility plus retirement-successor handling
+ * is the part a second implementation would get subtly wrong, and there is now a
+ * second caller.
+ */
+export function harnessForSelection(
+  selection: ModelSelection,
+  credentials: readonly ConfiguredCredential[],
+  opts: { avoidHarnessId?: AgentId } = {},
+): { harnessId: AgentId; selection: ModelSelection } | undefined {
+  return harnessesForSelection(selection, credentials, opts)[0];
+}
+
+/**
+ * Every harness in catalogue order, with `avoidHarnessId` moved to the **back**
+ * rather than removed.
+ *
+ * Exported for its own test. It cannot be exercised through
+ * {@link harnessesForSelection} against today's rows — no shipped model runs on
+ * both harnesses, so every selection has exactly one eligible harness and there
+ * is nothing to order — which means a test at that level would pass just as
+ * happily against an implementation that ignored the option entirely. Reviewing
+ * this branch is what found that; the preference is load-bearing for docs/261's
+ * ranking, so it gets a test that fails when it is removed.
+ */
+export function harnessesPreferring(avoidHarnessId?: AgentId): readonly HarnessDef[] {
+  const harnesses = allHarnesses();
+  if (!avoidHarnessId) return harnesses;
+  return [
+    ...harnesses.filter((h) => h.id !== avoidHarnessId),
+    ...harnesses.filter((h) => h.id === avoidHarnessId),
+  ];
+}
+
+/**
+ * Every installed harness that can run `selection`, in preference order — the
+ * list {@link harnessForSelection} takes the head of.
+ *
+ * The list form exists for docs/261: a reviewer is ranked only if it has a
+ * usable **route**, and "eligible" is not "runnable" (a subscription whose
+ * accounts are all spent is eligible and returns `all_exhausted`). So the
+ * reviewer resolver has to try the next harness rather than give up on the
+ * first, and doing that by re-asking a single-answer function would mean
+ * reproducing the eligibility and retirement-successor rules at the call site.
+ */
+export function harnessesForSelection(
+  selection: ModelSelection,
+  credentials: readonly ConfiguredCredential[],
+  opts: { avoidHarnessId?: AgentId } = {},
+): { harnessId: AgentId; selection: ModelSelection }[] {
+  const out: { harnessId: AgentId; selection: ModelSelection }[] = [];
+  for (const harness of harnessesPreferring(opts.avoidHarnessId)) {
     if (!isHarnessInstalled(harness.id)) continue;
     if (isSelectionEligible(harness.id, selection, credentials)) {
-      return { harnessId: harness.id, selection };
+      out.push({ harnessId: harness.id, selection });
+      continue;
     }
     const successor = retirementSuccessor(harness.id, selection);
     if (successor && isSelectionEligible(harness.id, successor, credentials)) {
-      return { harnessId: harness.id, selection: successor };
+      out.push({ harnessId: harness.id, selection: successor });
     }
   }
-  return undefined;
+  return out;
 }
 
 /**
@@ -218,7 +285,7 @@ export function resolveNonTurnModel(deps: NonTurnModelDeps): NonTurnResolution {
   const route = account.ok ? account.route : null;
   const serviceRouting = serviceRoutingForSelection(harnessId, selection, route);
   const secret = serviceRouting
-    ? secretFor(deps, selection, serviceRouting.credentialSourceEnv, route)
+    ? credentialSecretForRoute(deps, selection, serviceRouting.credentialSourceEnv, route)
     : undefined;
 
   return {
@@ -233,33 +300,4 @@ export function resolveNonTurnModel(deps: NonTurnModelDeps): NonTurnResolution {
       ...(secret ? { credentialSecret: secret } : {}),
     },
   };
-}
-
-/**
- * The secret behind the credential this run **authenticates with**.
- *
- * Keyed off the resolved `route`, not off the mode's credential list. A mode can
- * hold several string credentials and `service-routing.ts` picks among them in
- * the user's own priority order (`orderCredentialRoutes`); re-deriving the
- * secret by walking storage order here could hand the CLI a *different*
- * credential from the one the usage row attributes the run to. Cross-backend
- * review found exactly that. The route is the answer; this only fetches it.
- *
- * Falls back to the deployment's environment for an env-delivered route, which
- * is the other source `service-routing.ts` resolves from.
- */
-function secretFor(
-  deps: NonTurnModelDeps,
-  selection: ModelSelection,
-  sourceEnv: string,
-  route: ProviderRoute | null,
-): string | undefined {
-  if (route?.kind === "reserved") {
-    const stored = deps.credentialStore.getCredentialSecret(route.id);
-    if (stored) return stored;
-  }
-  const storageEnv = storageEnvFor(selection.serviceId, selection.billingMode);
-  if (storageEnv !== sourceEnv) return undefined;
-  const fromEnv = (deps.env ?? process.env)[sourceEnv];
-  return typeof fromEnv === "string" && fromEnv.trim().length > 0 ? fromEnv : undefined;
 }

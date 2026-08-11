@@ -491,6 +491,49 @@ export function serviceRoutingForSelection(
   };
 }
 
+/**
+ * The secret behind the credential a run **authenticates with**.
+ *
+ * Keyed off the resolved `route`, not off the mode's credential list. A mode can
+ * hold several string credentials and the walks above pick among them in the
+ * user's own priority order, so re-deriving the secret by walking storage order
+ * could hand the CLI a *different* credential from the one the usage row
+ * attributes the run to. Cross-backend review found exactly that on the non-turn
+ * path (docs/252 phase 7); it lives here rather than there because docs/261's
+ * reviewer resolution is its second caller, and two derivations of "which secret"
+ * is how the two would come to disagree.
+ *
+ * Falls back to the deployment's environment for an env-delivered route, which
+ * is the other source {@link selectRouteForSelection} resolves from.
+ *
+ * `undefined` for an account-delivered credential — that is the CLI's own login
+ * and carries no secret to place.
+ */
+export function credentialSecretForRoute(
+  deps: {
+    credentialStore: Pick<CredentialStore, "getCredentialSecret">;
+    env?: NodeJS.ProcessEnv | undefined;
+  },
+  selection: ModelSelection,
+  sourceEnv: string,
+  route: ProviderRoute | null | undefined,
+): string | undefined {
+  // An account-delivered credential IS the CLI's own login: there is no secret
+  // to place, and the mode's environment variable — which may well be set for
+  // this same service's *other* credential — is not it. Stated in the contract
+  // above and enforced here rather than left to every caller having checked
+  // first, which is what the extraction of this helper made a real risk.
+  if (route?.kind === "account") return undefined;
+  if (route?.kind === "reserved") {
+    const stored = deps.credentialStore.getCredentialSecret(route.id);
+    if (stored) return stored;
+  }
+  const storageEnv = storageEnvFor(selection.serviceId, selection.billingMode);
+  if (storageEnv !== sourceEnv) return undefined;
+  const fromEnv = (deps.env ?? process.env)[sourceEnv];
+  return typeof fromEnv === "string" && fromEnv.trim().length > 0 ? fromEnv : undefined;
+}
+
 // ---- Spawn identity (the resident-process boundary) ------------------------
 
 /**

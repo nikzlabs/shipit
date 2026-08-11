@@ -779,3 +779,115 @@ describe("CredentialStore — non-turn model (docs/252 phase 7)", () => {
     expect(new CredentialStore(dir).getNonTurnModel()).toBeUndefined();
   });
 });
+
+describe("CredentialStore — the two reviewers (docs/261 phase 1)", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-reviewer-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const pin = {
+    serviceId: "anthropic",
+    billingMode: "sub" as const,
+    modelId: "haiku",
+    reasoningEffort: "high",
+  };
+
+  it("round-trips a pin per slot and clears it with null", () => {
+    const store = new CredentialStore(dir);
+    // Unset is the auto-configured STATE (req 8), not a missing value — the
+    // store never resolves it, so the two stay distinguishable up to the UI.
+    expect(store.getReviewerPin("first")).toBeUndefined();
+    expect(store.getReviewerPin("second")).toBeUndefined();
+
+    store.setReviewerPin("first", pin);
+    expect(store.getReviewerPin("first")).toEqual(pin);
+    expect(store.getReviewerPin("second")).toBeUndefined();
+
+    store.setReviewerPin("first", null);
+    expect(store.getReviewerPin("first")).toBeUndefined();
+  });
+
+  it("keeps the two slots independent, and reports both", () => {
+    const store = new CredentialStore(dir);
+    store.setReviewerPin("first", pin);
+    store.setReviewerPin("second", { ...pin, modelId: "claude-opus-5", reasoningEffort: "max" });
+    expect(store.getReviewerPins()).toEqual({
+      first: pin,
+      second: { ...pin, modelId: "claude-opus-5", reasoningEffort: "max" },
+    });
+  });
+
+  it("survives a reload", () => {
+    new CredentialStore(dir).setReviewerPin("second", pin);
+    expect(new CredentialStore(dir).getReviewerPin("second")).toEqual(pin);
+  });
+
+  it("refuses a triple the catalogue does not carry", () => {
+    const store = new CredentialStore(dir);
+    expect(() => store.setReviewerPin("first", { ...pin, modelId: "not-a-model" })).toThrow();
+  });
+
+  // req 5 — the reasoning level is PART of the reviewer, so a pin without one is
+  // not a reviewer. Pinning is atomic: the whole tuple lands or none of it does.
+  it("refuses a pin with no reasoning level", () => {
+    const store = new CredentialStore(dir);
+    expect(() => store.setReviewerPin("first", { ...pin, reasoningEffort: "  " })).toThrow();
+  });
+
+  // Same rule as the non-turn pin: a retirement must be FOLLOWED (docs/252
+  // req 13), not silently replaced by the derived default.
+  it("still reports a pin whose model has been retired", () => {
+    const store = new CredentialStore(dir);
+    store.setReviewerPin("first", {
+      serviceId: "openai",
+      billingMode: "key",
+      modelId: "gpt-5.4-mini",
+      reasoningEffort: "high",
+    });
+    const file = path.join(dir, "shipit-credentials.json");
+    const data = JSON.parse(fs.readFileSync(file, "utf-8")) as Record<string, unknown>;
+    data.reviewers = {
+      first: {
+        serviceId: "openai",
+        billingMode: "key",
+        modelId: "gpt-5.6",
+        reasoningEffort: "high",
+      },
+    };
+    fs.writeFileSync(file, JSON.stringify(data));
+
+    expect(new CredentialStore(dir).getReviewerPin("first")?.modelId).toBe("gpt-5.6");
+  });
+
+  it("reads a pin naming nothing at all as unset", () => {
+    const store = new CredentialStore(dir);
+    store.setReviewerPin("first", pin);
+    const file = path.join(dir, "shipit-credentials.json");
+    const data = JSON.parse(fs.readFileSync(file, "utf-8")) as Record<string, unknown>;
+    data.reviewers = {
+      first: {
+        serviceId: "no-such-service",
+        billingMode: "key",
+        modelId: "nope",
+        reasoningEffort: "high",
+      },
+    };
+    fs.writeFileSync(file, JSON.stringify(data));
+
+    expect(new CredentialStore(dir).getReviewerPin("first")).toBeUndefined();
+  });
+
+  // The stored sub-agent defaults are DROPPED, not migrated (requirements.md's
+  // 2026-08-10 receipt). Nothing seeds a reviewer slot from them, so an install
+  // that had configured one starts auto-configured and reconfigures.
+  it("does not seed a slot from the sub-agent defaults it replaces", () => {
+    const store = new CredentialStore(dir);
+    store.setAgentSubAgentDefaults("codex", { model: "gpt-5.4-mini", reasoningEffort: "high" });
+    expect(new CredentialStore(dir).getReviewerPins()).toEqual({});
+  });
+});
