@@ -37,6 +37,10 @@ interface FakeSession {
   id: string;
   agentId?: string;
   agentPinned?: boolean;
+  /** docs/261 — the row's model selection, which the reviewer ranking must NOT trust blindly. */
+  serviceId?: string;
+  billingMode?: "sub" | "key";
+  model?: string;
 }
 
 /**
@@ -113,6 +117,8 @@ function makeDeps(opts: {
   // then persists via chatHistoryManager.replaceInProgress — stub all four.
   const runner = {
     subAgentSpawnsThisTurn: opts.subAgentSpawnsThisTurn ?? 0,
+    /** docs/261 — the resident CLI's spawn stamp; a test sets it to say what is really running. */
+    appliedSpawnIdentity: undefined as string | undefined,
     // A FOREGROUND consult: the invoking agent is blocked waiting, so its turn
     // is still in flight and the card rides the in-progress turn. The
     // backgrounded (post-turn) case has its own describe block below.
@@ -191,6 +197,15 @@ function makeDeps(opts: {
                 modelId: "gpt-5.6-terra",
                 label: "GPT-5.6 Terra",
               },
+              // A second SERVICE and a second billing MODE, so a test can vary
+              // the axes a hard-coded `openai/sub` would otherwise satisfy.
+              {
+                serviceId: "anthropic",
+                serviceName: "Anthropic",
+                billingMode: "key",
+                modelId: "claude-opus-5",
+                label: "Opus 5",
+              },
             ],
           })),
     } as never,
@@ -267,6 +282,70 @@ describe("runSubAgent — authorization gates", () => {
     const { deps } = makeDeps({});
     await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "   ", depth: 0 }), 400);
   });
+
+  // docs/261 — a harness pointed at a model no credential of its own offers is
+  // refused rather than rerouted: an explicit call is taken literally.
+  it("rejects an explicit selection the named harness cannot run (400)", async () => {
+    const { deps, runner } = makeDeps({});
+    const err = await expectServiceError(
+      runSubAgent(deps, "s1", {
+        target: explicit("claude", { modelId: "gpt-5.6-luna" }),
+        prompt: "review",
+        depth: 0,
+      }),
+      400,
+    );
+    expect(err.message).toContain("cannot run");
+    expect(runner.spawnSubAgent).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The per-turn budget is spent by spawns, not by attempts. The cap is CHECKED
+   * before anything is resolved and INCREMENTED only once every refusal is
+   * behind us — otherwise three typo'd calls exhaust a turn's reviews without a
+   * single sub-agent having run.
+   */
+  it("does not spend a cap slot on a refused call", async () => {
+    const { deps, runner } = makeDeps({});
+    for (let i = 0; i < SUB_AGENT_PER_TURN_CAP; i++) {
+      await expectServiceError(
+        runSubAgent(deps, "s1", {
+          target: explicit("claude", { modelId: "gpt-5.6-luna" }),
+          prompt: "review",
+          depth: 0,
+        }),
+        400,
+      );
+    }
+    expect(runner.subAgentSpawnsThisTurn).toBe(0);
+    // …and the turn's reviews still work.
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Every gate about the CALLER — its session, its depth, its budget — runs
+   * before the target is resolved, so the status a caller gets says what is
+   * actually wrong with the call. A sub-agent trying to spawn a sub-agent is
+   * refused for recursion even on an install where no reviewer could have been
+   * resolved anyway; the reverse order would report "no reviewer available" and
+   * send the caller looking at its Settings.
+   */
+  it("refuses a recursive role call for recursion, not for an unresolvable reviewer", async () => {
+    const { deps } = makeDeps({ credentialRoutes: [] });
+    await expectServiceError(
+      runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer" }, prompt: "review", depth: 1 }),
+      403,
+    );
+  });
+
+  it("refuses a capped role call for the cap, not for an unresolvable reviewer", async () => {
+    const { deps } = makeDeps({ credentialRoutes: [], subAgentSpawnsThisTurn: SUB_AGENT_PER_TURN_CAP });
+    await expectServiceError(
+      runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer" }, prompt: "review", depth: 0 }),
+      429,
+    );
+  });
 });
 
 /**
@@ -318,6 +397,41 @@ describe("runSubAgent — --role reviewer", () => {
     const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
       .mock.calls[0][0];
     expect(arg.agentId).toBe("claude");
+  });
+
+  /**
+   * req 4 — the ranking compares against what the session is RUNNING, not what
+   * its row says, and the difference is not cosmetic. The row is mutable under a
+   * running turn (`set_model`), so the failure this pins is: a Claude harness
+   * produces work with DeepSeek, the user switches the picker to Opus, the agent
+   * then asks for a review — and a row-based ranking calls DeepSeek the distant
+   * one and hands the work straight back to the model that wrote it.
+   *
+   * Reading the resident process's spawn stamp instead gives the opposite, and
+   * correct, answer. A test that used the row would pass either way, which is
+   * why the two are deliberately set to DIFFERENT models here.
+   */
+  it("ranks against the resident process's stamp, not a row changed mid-turn", async () => {
+    const { deps, runner } = makeDeps({
+      // The row: the user has just switched the picker to Opus.
+      session: {
+        id: "s1",
+        agentId: "claude",
+        agentPinned: true,
+        serviceId: "anthropic",
+        billingMode: "key",
+        model: "claude-opus-5",
+      },
+      credentialRoutes: [keyRoute("anthropic"), keyRoute("deepseek")],
+    });
+    // What is actually producing the work: DeepSeek, on the Claude harness.
+    runner.appliedSpawnIdentity = "claude|deepseek|key|deepseek-v4-flash|anthropic-messages|https://x";
+    await runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer" }, prompt: "review", depth: 0 });
+    const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
+      .mock.calls[0][0];
+    // Anthropic: a different family from what ran. Ranking against the ROW would
+    // have picked DeepSeek here — the thing that produced the work.
+    expect(arg.model).toBe("claude-opus-5");
   });
 
   // The review STOPS and says so rather than spawning something unrunnable —
@@ -508,6 +622,40 @@ describe("runSubAgent — happy path", () => {
     const arg = calls[0][0];
     expect(arg.reasoningEffort).toBe("high");
     expect(arg.model).toBe("gpt-5.6-sol");
+  });
+
+  /**
+   * docs/261 req 3 — a model is `(service, billing mode, id)`, and all three
+   * come from the call. Every other test here happens to name `openai/sub`,
+   * which a hop that hard-coded or defaulted those two would satisfy; this one
+   * names a different service AND a different mode, and follows them all the way
+   * into the usage row's attribution — which is where getting them wrong bills
+   * the wrong credential.
+   */
+  it("carries the named service and billing mode into the spawn and the attribution", async () => {
+    const { deps, runner, record } = makeDeps({
+      credentialRoutes: [{
+        id: "anthropic-key", serviceId: "anthropic", billingMode: "key", via: "string",
+        status: "ready", priority: 0, isPrimary: true, label: "test", createdAt: 0, updatedAt: 0,
+      }],
+    });
+    await runSubAgent(deps, "s1", {
+      target: explicit("claude", {
+        serviceId: "anthropic",
+        billingMode: "key",
+        modelId: "claude-opus-5",
+      }),
+      prompt: "review",
+      depth: 0,
+    });
+    const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
+      .mock.calls[0][0];
+    expect(arg.model).toBe("claude-opus-5");
+    expect(record).toHaveBeenCalledWith("s1", expect.anything(), 4200, 1000, 200,
+      expect.objectContaining({
+        model: "claude-opus-5",
+        attribution: expect.objectContaining({ serviceId: "anthropic", billingMode: "key" }),
+      }));
   });
 
   it("forwards a carried-back rate-limit snapshot into the sub-agent's limits provider", async () => {

@@ -28,6 +28,7 @@ import { AuthManager } from "../agents/claude/auth-manager.js";
 import { DatabaseManager } from "../../shared/database.js";
 
 import {
+  TestClient,
   StubAuthManager,
   FakeClaudeProcess,
   createTestCredentialStore,
@@ -46,23 +47,30 @@ const COMPLETE = {
 
 describe("Integration: POST /api/sessions/:id/agent/spawn — the spawn target (docs/261)", () => {
   let app: FastifyInstance;
+  let port: number;
   let tmpDir: string;
   let dbManager: DatabaseManager;
+  let sessionManager: SessionManager;
+  let credentialStore: ReturnType<typeof createTestCredentialStore>;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-spawn-route-"));
+    sessionManager = new SessionManager(dbManager);
+    credentialStore = createTestCredentialStore(tmpDir);
     app = await buildApp({
-      credentialStore: createTestCredentialStore(tmpDir),
+      credentialStore,
       credentialsDir: path.join(tmpDir, "credentials"),
       createGitManager: (dir: string) => new GitManager(dir),
-      sessionManager: new SessionManager(dbManager),
+      sessionManager,
       chatHistoryManager: new ChatHistoryManager(dbManager),
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentFactory: () => new FakeClaudeProcess() as never,
       workspaceDir: tmpDir,
       serveStatic: false,
     });
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    port = Number(/:(\d+)$/.exec(address)?.[1] ?? 0);
   });
 
   afterEach(async () => {
@@ -115,5 +123,49 @@ describe("Integration: POST /api/sessions/:id/agent/spawn — the spawn target (
     const res = await post({ role: "reviewer", prompt: "review this", depth: 0 });
     expect(res.statusCode).toBe(404);
     expect(res.json().error as string).toMatch(/session not found/i);
+  });
+
+  /**
+   * The two targets are not interchangeable once they reach the service, and
+   * these are the assertions that would fail if the route parsed a target and
+   * then ignored it: a **role** goes to the reviewer resolver, which on an
+   * install with no credential answers "no reviewer available"; an **explicit**
+   * call goes to the named harness's own gates, which answer "not signed in"
+   * about that harness. Neither message is reachable from the other path.
+   */
+  describe("against a live, pinned session", () => {
+    let client: TestClient;
+
+    beforeEach(async () => {
+      credentialStore.setEnableSubAgents(true);
+      client = await TestClient.connect(port);
+      await client.receive(); // preview_status
+      // A spawn runs on behalf of a PINNED session's agent; pinning normally
+      // happens on the first turn, which these tests do not need to run.
+      sessionManager.setAgentPinned(client.sessionId);
+    });
+
+    afterEach(() => client.close());
+
+    const live = (payload: Record<string, unknown>) =>
+      app.inject({
+        method: "POST",
+        url: `/api/sessions/${client.sessionId}/agent/spawn`,
+        payload,
+      });
+
+    it("routes a role to the reviewer resolver", async () => {
+      const res = await live({ role: "reviewer", prompt: "review this", depth: 0 });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error as string).toMatch(/No reviewer is available/);
+    });
+
+    it("routes an explicit call to the named harness's own gates", async () => {
+      const res = await live(COMPLETE);
+      expect(res.statusCode).toBe(400);
+      // The named harness's own gate answers, about the harness the CALL named
+      // — not about a reviewer, and not about the session's own agent.
+      expect(res.json().error as string).toMatch(/Codex is not signed in/);
+    });
   });
 });

@@ -342,15 +342,32 @@ Five things worth recording:
   caller that skips the shim, or a stale shim, must not get an incomplete call quietly completed.
   The shim's copy buys the *message* — the agent learns which flag it forgot without a round
   trip — which is why the two checks are deliberately not shared code.
-- **The target is resolved BEFORE the registry gates, and that ordering is forced.** Those gates
-  need a harness id, and a role's harness is *derived* rather than given. It is safe because the
-  ranking only ever returns an installed, credentialed, routable harness, so nothing is smuggled
-  past a check — but it does mean an unresolvable role is refused before "unknown agent" or "not
-  signed in" can fire, which is the honest order: there is no agent to name yet.
+- **The target is resolved BEFORE the callee's registry gates and AFTER every caller gate.**
+  Those registry gates need a harness id and a role's harness is *derived*, so resolution has to
+  precede them; it is safe because the ranking only ever returns an installed, credentialed,
+  routable harness. Everything about the caller — session, pin, depth, runner, budget — precedes
+  resolution instead, because none of it needs a harness and all of it should be reported as
+  itself: a recursive call is refused for recursion, not for an unresolvable reviewer.
+- **The implementer is the resident process's spawn stamp, not the session row.** The row is
+  mutable under a running turn (`set_model`), and ranking against it produces exactly the outcome
+  req 4 forbids: a Claude harness producing work with DeepSeek, the user switching the picker to
+  Opus, and the review handed back to DeepSeek as though it were the distant one.
+  `parseSpawnIdentity` reads `runner.appliedSpawnIdentity`, which moves only when a process is
+  spawned — that is, only when what is running changes. The row remains the fallback where there
+  is no resident process to ask.
 - **A role arrives already routed, and the spawn must not re-ask.** `selectReviewer` ranks only
   reviewers with a usable route, so re-running `selectRouteForSelection` would answer a settled
   question and could answer it differently. The explicit path still resolves its own route where
   it always did, after the cap gate and inside the account-failover loop.
+- **The refusal is repeated at the execution boundary.** `SubAgentSpawnRequest.model` is
+  required and the worker's `/agent/spawn` refuses a spawn that names none. The orchestrator's
+  edge is where an incomplete *call* is refused, but the worker is where a missing model would
+  actually be *filled* — the CLI picks its own — so a propagation slip between the two now fails
+  loudly instead of quietly reinstating the default this phase deleted.
+- **The cap is checked before the target is resolved and spent after it is validated.** Every
+  gate about the caller — session, depth, budget — precedes resolution, so a capped or recursive
+  call says so rather than first ranking a reviewer it will never spawn; and a refused call does
+  not consume one of the turn's three slots.
 - **`--effort` is validated against the named harness's own levels rather than passed through.**
   docs/217's rule was that an unrecognized level means "pass no flag", which under req 7 would be
   a value silently *replaced* — the same failure as a value silently supplied. It is refused
@@ -362,8 +379,12 @@ Five things worth recording:
   which is now an incomplete explicit call and is refused. That is the phase boundary the table
   below draws, not an oversight — and it is why phase 5 is not optional cleanup.
 
-**The stored defaults are dropped, not migrated, and there is no notice.** Existing values are
-deleted with the store; anyone who had configured one reconfigures the reviewer instead. That
+**The stored defaults are dropped, not migrated, and there is no notice.** Precisely: the
+`agentSubAgentDefaults` key is left where it is in the credentials file and is never read again
+— every getter, the load-time migration and the only consumer are gone, so nothing can fill a
+blank from it — and no pass rewrites the file to remove it, exactly as the store treats any
+other key it does not recognize. What the user experiences is the decision: their configured
+sub-agent default no longer does anything, and they reconfigure the reviewer instead. That
 is a deliberate decision recorded in `requirements.md`, and its whole justification is that the
 install population is currently one person — so it is the decision to revisit if that changes
 before this ships, not a general principle about how ShipIt treats settings.

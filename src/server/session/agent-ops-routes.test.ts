@@ -700,9 +700,15 @@ describe("agent-ops routes", () => {
 
   /**
    * docs/261 req 7 — every explicit parameter survives the worker→orchestrator
-   * hop. This is the hop `--model` died on: the shim parsed it, and the route
-   * declared `{agentId, prompt, depth}`, so it was silently dropped before the
-   * spawn. A per-hop assertion is what would have caught that.
+   * hop.
+   *
+   * Honest about what this can and cannot catch: the relay forwards
+   * `request.body` verbatim, so it would pass today against a route that named
+   * none of these fields — the drop that actually happened was one hop further
+   * on, at the orchestrator's own route schema (covered in
+   * `integration_tests/agent-spawn-route.test.ts`). What it does catch is the
+   * plausible future edit: someone "tightening" this relay to pick named fields,
+   * and forgetting one.
    */
   it("POST /agent-ops/agent/spawn forwards the whole explicit target", async () => {
     client.setResponse("POST", "/agent/spawn", { ok: true, status: 200, body: { status: "success", text: "ok" } });

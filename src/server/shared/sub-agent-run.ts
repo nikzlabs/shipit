@@ -85,7 +85,15 @@ export interface SubAgentRunOptions {
    * against the harness's own vendor.
    */
   serviceRouting?: ServiceRouting;
-  /** docs/217 — reasoning effort for the sub-agent (the invoked agent's global default). */
+  /**
+   * Reasoning effort for the sub-agent.
+   *
+   * docs/261 — no longer "the invoked agent's global default": there is no such
+   * default any more. The level comes from the spawn's own target — the
+   * reviewer's, for a role; the caller's `--effort`, for an explicit call — so
+   * `runSubAgent` always sets it. Still optional on the type because the other
+   * caller of this shape (non-turn work) has its own answer.
+   */
   reasoningEffort?: string;
   /** Wall-clock cap in ms. Defaults to {@link DEFAULT_SUB_AGENT_TIMEOUT_MS}. */
   timeoutMs?: number;
@@ -153,10 +161,26 @@ export interface SubAgentSpawnRequest {
   spawnId: string;
   /** The caller's recursion depth (0 for a primary). The worker stamps depth+1. */
   depth: number;
-  model?: string;
+  /**
+   * docs/261 req 7 — REQUIRED. Both callers resolve a model before they get
+   * here (a one-shot spawn from its target, non-turn work from its own
+   * resolution), and an absent one means "let the CLI pick", which is the
+   * blank-filling this feature removes. Optional here was the type-level version
+   * of the same hole: a propagation slip would have re-created it silently
+   * instead of failing.
+   */
+  model: string;
   /** docs/252 phase 3 — base URL + credential for the sub-agent model's service. */
   serviceRouting?: ServiceRouting;
-  /** docs/217 — reasoning effort for the sub-agent (the invoked agent's global default). */
+  /**
+   * Reasoning effort for the sub-agent.
+   *
+   * docs/261 — no longer "the invoked agent's global default": there is no such
+   * default any more. The level comes from the spawn's own target — the
+   * reviewer's, for a role; the caller's `--effort`, for an explicit call — so
+   * `runSubAgent` always sets it. Still optional on the type because the other
+   * caller of this shape (non-turn work) has its own answer.
+   */
   reasoningEffort?: string;
   timeoutMs?: number;
   maxOutputChars?: number;

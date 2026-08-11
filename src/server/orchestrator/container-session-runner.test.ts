@@ -122,6 +122,8 @@ describe("ContainerSessionRunner — sub-agent spawn cancellation (planning#280)
       prompt: "review the PR",
       spawnId: "spawn-1",
       depth: 0,
+      // docs/261 req 7 — a spawn names the model it runs; the type requires it.
+      model: "gpt-5.6-sol",
     });
     // Let the request reach the socket before tearing down.
     await new Promise((r) => setTimeout(r, 20));
@@ -148,7 +150,7 @@ describe("ContainerSessionRunner — sub-agent spawn cancellation (planning#280)
     runner.setWorkerUrl(`http://127.0.0.1:${addr.port}`);
 
     const spawn = runner.spawnSubAgent({
-      agentId: "codex", prompt: "review", spawnId: "spawn-1", depth: 0,
+      agentId: "codex", prompt: "review", spawnId: "spawn-1", depth: 0, model: "gpt-5.6-sol",
     });
     await new Promise((r) => setTimeout(r, 20));
 
@@ -194,7 +196,7 @@ describe("ContainerSessionRunner — background-work marker", () => {
     expect(runner.backgroundWorkDescriptions).toEqual([]);
 
     const spawn = runner.spawnSubAgent({
-      agentId: "codex", prompt: "review", spawnId: "spawn-1", depth: 0,
+      agentId: "codex", prompt: "review", spawnId: "spawn-1", depth: 0, model: "gpt-5.6-sol",
     });
     // Read WITHOUT awaiting: `runSubAgent` announces the marker the moment
     // `spawnSubAgent` returns its promise, so the registration has to happen
@@ -300,7 +302,7 @@ describe("ContainerSessionRunner — dispose({ preserveAgent }) (docs/113)", () 
     const runner = makeRunner();
     runner.setWorkerUrl(`http://127.0.0.1:${addr.port}`);
     const spawn = runner.spawnSubAgent({
-      agentId: "codex", prompt: "review", spawnId: "spawn-1", depth: 0,
+      agentId: "codex", prompt: "review", spawnId: "spawn-1", depth: 0, model: "gpt-5.6-sol",
     });
     await new Promise((r) => setTimeout(r, 20));
 

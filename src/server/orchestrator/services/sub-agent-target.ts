@@ -38,16 +38,16 @@ import type {
   SubAgentSpawnTarget,
 } from "../../shared/types.js";
 import { SUB_AGENT_ROLES } from "../../shared/types.js";
-import type { BillingMode, ModelSelection } from "../../shared/catalogue/types.js";
+import type { ModelSelection } from "../../shared/catalogue/types.js";
 import { getHarness, getModel, selectionExists } from "../../shared/catalogue/index.js";
 import type { ProviderRoute } from "../provider-account-manager.js";
 import {
   selectReviewer,
+  type ImplementerContext,
   type ReviewerModelDeps,
   type ReviewerSource,
   type ReviewerTier,
 } from "../reviewer-model.js";
-import { selectionOf } from "../turn-attribution.js";
 import { ServiceError } from "./types.js";
 
 /** The wire shape of a spawn request's target half, before anything is checked. */
@@ -153,35 +153,19 @@ export interface ResolvedSpawnTarget {
   };
 }
 
-/**
- * The session whose agent is asking — the *implementer* the reviewer is ranked
- * against (req 4).
- *
- * `agentId` is REQUIRED, and that is deliberate: a reviewer's distance is
- * measured from what the caller is running, so a default here would rank against
- * a harness nobody is using. `runSubAgent` proves it by refusing an unpinned
- * session before it gets this far. The model half stays optional — a session
- * with no selection makes the model axes undecidable, which the ranking handles
- * by collapsing onto the harness axis and saying so through `tierBasis`.
- */
-export interface ImplementerSession {
-  agentId: AgentId;
-  model?: string;
-  serviceId?: string;
-  billingMode?: BillingMode;
-}
-
 export type ResolveSpawnTargetDeps = ReviewerModelDeps;
 
 /**
  * Turn a parsed target into the harness, model and effort a spawn runs with.
  *
  * For a **role**, the reviewer is ranked against what the *implementer* is
- * running (req 4) and the winner is frozen here. The implementer's selection is
- * read from the session row, which is the best capture available at this point:
- * a retirement migrates the row and an account failover changes the credential
- * rather than the model, so the row and what is running agree on the axes the
- * ranking uses (family and canonical model).
+ * running (req 4) and the winner is frozen here. `implementer` is the CALLER's
+ * responsibility to capture, and `runSubAgent` takes it from the resident
+ * process's spawn stamp rather than the mutable session row — see the comment at
+ * that call site for why the difference is not cosmetic. `harnessId` is required
+ * because a default would rank against a harness nobody is using; the selection
+ * is optional, and its absence makes the model axes undecidable, which the
+ * ranking reports through `tierBasis` rather than guessing.
  *
  * For an **explicit** call, the triple must name a real catalogue row and the
  * effort must be a level the named harness declares. Both are refusals rather
@@ -190,7 +174,7 @@ export type ResolveSpawnTargetDeps = ReviewerModelDeps;
  */
 export function resolveSubAgentSpawnTarget(
   target: SubAgentSpawnTarget,
-  session: ImplementerSession,
+  implementer: ImplementerContext,
   deps: ResolveSpawnTargetDeps,
 ): ResolvedSpawnTarget {
   if (target.kind === "explicit") {
@@ -221,10 +205,7 @@ export function resolveSubAgentSpawnTarget(
     };
   }
 
-  const chosen = selectReviewer(
-    { harnessId: session.agentId, selection: selectionOf(session) },
-    deps,
-  );
+  const chosen = selectReviewer(implementer, deps);
   if (!chosen.ok) {
     throw new ServiceError(
       400,

@@ -14,9 +14,15 @@
  * chip, usage attribution to the sub-agent, and the token-sync-back + wipe in a
  * `finally`. The run itself is delegated to `runner.spawnSubAgent`.
  *
- * Review is the first *consumer* of this primitive, not the primitive itself:
- * "get a second opinion from Codex on this diff" is just a review-shaped prompt
- * handed to `subAgentId: "codex"`.
+ * Review is the first *consumer* of this primitive, not the primitive itself —
+ * but since docs/261 it is a consumer with a name. A spawn carries a
+ * {@link RunSubAgentInput.target}: either a **role**, which ShipIt resolves from
+ * the user's reviewer settings (`services/sub-agent-target.ts` →
+ * `reviewer-model.ts`), or an **explicit** call naming the harness, service,
+ * billing mode, model and reasoning level. There is no third shape. In
+ * particular there is no longer a bare `subAgentId` with a stored per-harness
+ * default filling in the rest, which is what "get a second opinion from Codex"
+ * used to mean.
  *
  * ## Observability (planning#280)
  *
@@ -32,8 +38,12 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { resolveTurnCost, turnAttributionFor } from "../turn-attribution.js";
-import { selectRouteForSelection, serviceRoutingForSelection } from "../service-routing.js";
+import { resolveTurnCost, selectionOf, turnAttributionFor } from "../turn-attribution.js";
+import {
+  parseSpawnIdentity,
+  selectRouteForSelection,
+  serviceRoutingForSelection,
+} from "../service-routing.js";
 import type {
   AgentId,
   SubAgentConsultCard,
@@ -250,6 +260,37 @@ export async function runSubAgent(
   }
   const implementerHarness = session.agentId;
 
+  // §3 — best-effort recursion guard. A non-zero forwarded depth means the
+  // caller is a spawned sub-agent. NOT forgery-resistant (a shell-capable
+  // sub-agent can spoof depth: 0); the per-turn cap below is the real bound.
+  if (depth !== 0) {
+    throw rejectSpawn(sessionId, requested, 403, "recursion_depth",
+      "Sub-agents cannot spawn further sub-agents.");
+  }
+
+  const runner = deps.runnerRegistry.get(sessionId);
+  if (!runner) {
+    throw rejectSpawn(sessionId, requested, 409, "session_inactive", "Session is not active.");
+  }
+
+  // §5 — the forgery-resistant per-turn cap. Keyed by the worker-injected
+  // SESSION_ID (this runner), so every spawn in the turn — including any a
+  // sub-agent forges past the depth guard — decrements the same budget.
+  // `resetSubAgentSpawnBudget` refills it on each new human instruction —
+  // including a message STEERED into a running turn, which starts no
+  // orchestrator turn and so used to leave the cap latched shut.
+  //
+  // docs/261 splits the CHECK from the increment. Everything above this line is
+  // about the CALLER — its session, its depth, its budget — and none of it needs
+  // a resolved harness, so it all runs before the target is resolved: a capped
+  // or recursive call must say so rather than first ranking a reviewer it will
+  // never spawn. The increment then waits until the target has been validated
+  // too, so a REFUSED call cannot spend a slot it never used.
+  if (runner.subAgentSpawnsThisTurn >= SUB_AGENT_PER_TURN_CAP) {
+    throw rejectSpawn(sessionId, requested, 429, "per_turn_cap",
+      `Sub-agent spawn cap reached for this turn (max ${SUB_AGENT_PER_TURN_CAP}).`);
+  }
+
   // docs/261 reqs 6 + 7 — **the target is captured here, once, and never
   // recomputed.** A role resolves through the reviewer ranking (and is routed by
   // it); an explicit call is taken literally, with an omission already refused
@@ -261,9 +302,28 @@ export async function runSubAgent(
   // a role the harness is *derived* rather than given. That is safe: the
   // reviewer ranking only ever returns an installed, credentialed, routable
   // harness, so it cannot smuggle one past the checks below.
+  //
+  // The implementer it is ranked against is what the session is RUNNING, not
+  // what its row says. `runner.appliedSpawnIdentity` is the stamp taken when the
+  // resident CLI was spawned, and it moves only on a respawn; the row is mutable
+  // under a running turn (`set_model`). Ranking against the row lets this
+  // happen: a Claude harness is producing work with DeepSeek, the user switches
+  // the picker to Opus, the agent then asks for a review — and the ranking,
+  // comparing against Opus, hands the work to DeepSeek, the exact thing that
+  // wrote it, which req 4 forbids whenever an alternative is configured. The row
+  // stays the fallback for a session with no resident process (a fresh runner, a
+  // local runtime, a test), where there is no capture to prefer.
+  const captured = parseSpawnIdentity(runner.appliedSpawnIdentity);
+  const implementer = {
+    harnessId: implementerHarness,
+    selection:
+      captured?.harnessId === implementerHarness && captured.selection
+        ? captured.selection
+        : selectionOf(session),
+  };
   let resolvedTarget: ResolvedSpawnTarget;
   try {
-    resolvedTarget = resolveSubAgentSpawnTarget(target, { ...session, agentId: implementerHarness }, {
+    resolvedTarget = resolveSubAgentSpawnTarget(target, implementer, {
       credentialStore: deps.credentialStore,
       ...(deps.providerAccountManager ? { providerAccountManager: deps.providerAccountManager } : {}),
     });
@@ -307,31 +367,6 @@ export async function runSubAgent(
       `${info.name} is not signed in. Connect it in Settings before spawning it.`);
   }
 
-  // §3 — best-effort recursion guard. A non-zero forwarded depth means the
-  // caller is a spawned sub-agent. NOT forgery-resistant (a shell-capable
-  // sub-agent can spoof depth: 0); the per-turn cap below is the real bound.
-  if (depth !== 0) {
-    throw rejectSpawn(sessionId, subAgentId, 403, "recursion_depth",
-      "Sub-agents cannot spawn further sub-agents.");
-  }
-
-  const runner = deps.runnerRegistry.get(sessionId);
-  if (!runner) {
-    throw rejectSpawn(sessionId, subAgentId, 409, "session_inactive", "Session is not active.");
-  }
-
-  // §5 — the forgery-resistant per-turn cap. Keyed by the worker-injected
-  // SESSION_ID (this runner), so every spawn in the turn — including any a
-  // sub-agent forges past the depth guard — decrements the same budget.
-  // `resetSubAgentSpawnBudget` refills it on each new human instruction —
-  // including a message STEERED into a running turn, which starts no
-  // orchestrator turn and so used to leave the cap latched shut.
-  if (runner.subAgentSpawnsThisTurn >= SUB_AGENT_PER_TURN_CAP) {
-    throw rejectSpawn(sessionId, subAgentId, 429, "per_turn_cap",
-      `Sub-agent spawn cap reached for this turn (max ${SUB_AGENT_PER_TURN_CAP}).`);
-  }
-  runner.subAgentSpawnsThisTurn += 1;
-
   // docs/261 req 7 — what the spawn runs on is the CAPTURED target and nothing
   // else. There is no stored per-harness default left to read and no fallback to
   // the adapter's own `models[0]`: an explicit call named the triple, and a role
@@ -357,6 +392,12 @@ export async function runSubAgent(
       throw err;
     }
   }
+
+  // The last refusal is behind us, so this call is going to spawn — spend the
+  // slot now. Incrementing at the cap CHECK instead would let three refused
+  // calls (a harness pointed at a model it cannot run, say) exhaust the turn's
+  // budget without a single sub-agent having run.
+  runner.subAgentSpawnsThisTurn += 1;
 
   // §4 — resolve the sub-agent's credential route exactly as the primary turn
   // path does, so a multi-account user provisions from the freshest account

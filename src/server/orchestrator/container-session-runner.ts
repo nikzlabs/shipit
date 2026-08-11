@@ -520,7 +520,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           prompt: req.prompt,
           spawnId: req.spawnId,
           depth: req.depth,
-          ...(req.model !== undefined ? { model: req.model } : {}),
+          model: req.model,
           ...(req.serviceRouting !== undefined ? { serviceRouting: req.serviceRouting } : {}),
           ...(req.reasoningEffort !== undefined ? { reasoningEffort: req.reasoningEffort } : {}),
           ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),

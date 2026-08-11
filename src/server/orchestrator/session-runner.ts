@@ -1847,7 +1847,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     const runOpts = {
       prompt: req.prompt,
       cwd: this.sessionDir,
-      ...(req.model !== undefined ? { model: req.model } : {}),
+      model: req.model,
       ...(req.serviceRouting !== undefined ? { serviceRouting: req.serviceRouting } : {}),
       ...(req.reasoningEffort !== undefined ? { reasoningEffort: req.reasoningEffort } : {}),
       ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),

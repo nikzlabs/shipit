@@ -247,6 +247,16 @@ export class AgentController {
           console.warn("[sub-agent] worker rejected spawn: agentId, prompt, and spawnId are required");
           return reply.code(400).send({ error: "agentId, prompt, and spawnId are required" });
         }
+        // docs/261 req 7 — a spawn that names no model is REFUSED, not run on
+        // whatever the CLI would pick. The orchestrator already refuses an
+        // incomplete call at its own edge; this is the same rule at the boundary
+        // where the blank would actually be filled, so a propagation slip
+        // between the two fails loudly instead of quietly reinstating the
+        // per-harness default this feature deleted.
+        if (!model) {
+          console.warn(`[sub-agent] worker rejected spawn=${spawnId}: no model named`);
+          return reply.code(400).send({ error: "model is required — a spawn names the model it runs" });
+        }
         let agent: AgentProcess;
         try {
           agent = this.deps.agentFactory(agentId);

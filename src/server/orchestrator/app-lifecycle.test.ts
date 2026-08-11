@@ -272,6 +272,7 @@ describe("createIdleEnforcer", () => {
       prompt: "review this branch",
       spawnId: "spawn-1",
       depth: 0,
+      model: "gpt-5.6-sol",
       timeoutMs: 10 * 60_000,
     });
 

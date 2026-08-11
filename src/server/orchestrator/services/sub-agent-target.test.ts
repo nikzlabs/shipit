@@ -180,7 +180,7 @@ describe("resolveSubAgentSpawnTarget", () => {
         modelId: "gpt-5.6-sol",
         reasoningEffort: "high",
       },
-      { agentId: "claude" },
+      { harnessId: "claude" },
       { credentialStore: storeWith([]) },
     );
     expect(resolved.selection).toEqual({
@@ -205,7 +205,7 @@ describe("resolveSubAgentSpawnTarget", () => {
           modelId: "gpt-9-imaginary",
           reasoningEffort: "high",
         },
-        { agentId: "claude" },
+        { harnessId: "claude" },
         { credentialStore: storeWith([]) },
       ),
     ).toThrow(/gpt-9-imaginary/);
@@ -227,7 +227,7 @@ describe("resolveSubAgentSpawnTarget", () => {
           modelId: "gpt-5.6-sol",
           reasoningEffort: "ludicrous",
         },
-        { agentId: "claude" },
+        { harnessId: "claude" },
         { credentialStore: storeWith([]) },
       ),
     ).toThrow(/ludicrous/);
@@ -242,10 +242,8 @@ describe("resolveSubAgentSpawnTarget", () => {
     const resolved = resolveSubAgentSpawnTarget(
       { kind: "role", role: "reviewer" },
       {
-        agentId: "claude",
-        serviceId: "anthropic",
-        billingMode: "key",
-        model: "claude-opus-5",
+        harnessId: "claude",
+        selection: { serviceId: "anthropic", billingMode: "key", modelId: "claude-opus-5" },
       },
       { credentialStore: storeWith([OPENAI_KEY, ANTHROPIC_KEY]), env: {} },
     );
@@ -269,12 +267,12 @@ describe("resolveSubAgentSpawnTarget", () => {
     const deps = { credentialStore: storeWith([OPENAI_KEY, DEEPSEEK_KEY]), env: {} };
     const forClaude = resolveSubAgentSpawnTarget(
       { kind: "role", role: "reviewer" },
-      { agentId: "claude", serviceId: "deepseek", billingMode: "key", model: "deepseek-v4" },
+      { harnessId: "claude", selection: { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4" } },
       deps,
     );
     const forCodex = resolveSubAgentSpawnTarget(
       { kind: "role", role: "reviewer" },
-      { agentId: "codex", serviceId: "openai", billingMode: "key", model: "gpt-5.6-sol" },
+      { harnessId: "codex", selection: { serviceId: "openai", billingMode: "key", modelId: "gpt-5.6-sol" } },
       deps,
     );
     expect(forClaude.harnessId).toBe("codex");
@@ -289,7 +287,7 @@ describe("resolveSubAgentSpawnTarget", () => {
     expect(() =>
       resolveSubAgentSpawnTarget(
         { kind: "role", role: "reviewer" },
-        { agentId: "claude" },
+        { harnessId: "claude" },
         { credentialStore: storeWith([]), env: {} },
       ),
     ).toThrow(/No reviewer is available/);

@@ -62,6 +62,15 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
 - [x] `SubAgentDefaults` deleted: store, load-time migration, wire shape, settings route,
       bootstrap — and `SubAgentDefaultsSection`, orphaned when the vendor tabs went (its phase 3
       entry moved here, since phase 3 has no reason to touch it now)
+- [x] The refusal repeated at the EXECUTION boundary: `SubAgentSpawnRequest.model` is required
+      and the worker's `/agent/spawn` refuses a spawn naming none — the orchestrator's edge is
+      where an incomplete call is refused, but the worker is where a missing model would be
+      filled in by the CLI (added after cross-backend review)
+- [x] The reviewer ranks against the resident process's spawn stamp, not the mutable session
+      row: `set_model` mid-turn otherwise hands the work back to the model that wrote it
+      (added after cross-backend review)
+- [x] Caller gates (session, pin, depth, runner, budget) precede target resolution, and the cap
+      slot is spent only once every refusal is behind us
 
 ## Phase 3 — Settings
 
