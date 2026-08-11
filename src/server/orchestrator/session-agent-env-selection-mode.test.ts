@@ -38,6 +38,16 @@ function makeCredentialStore(): CredentialStore {
     listProviderAccounts: () => [],
     getAgentEnv: () => undefined,
     getAllAgentEnv: () => ({}),
+    // planning#353 — env-prep now asks what this install can run before it
+    // routes, so the store has to answer the credential-row questions too. An
+    // empty list is right for these tests: they drive the ACCOUNT walk through
+    // the injected `providerAccountManager`, so a session with no stored
+    // credential and no selection derives nothing and the walk is unchanged.
+    listCredentialRoutes: () => [],
+    getCredentialSecret: () => undefined,
+    getCredentialRoute: () => undefined,
+    markCredentialRouteUsed: () => {},
+    getSelectionMode: () => "strict" as const,
   } as unknown as CredentialStore;
 }
 

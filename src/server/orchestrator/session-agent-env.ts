@@ -59,6 +59,7 @@ import { accountServiceForHarness, providerAccountCredentialRoot } from "./provi
 import { routeFromSelection } from "./provider-route-preflight.js";
 import {
   markCredentialRouteUsed,
+  firstEligibleSelectionForHarness,
   selectRouteForSelection,
 } from "./service-routing.js";
 import type { ModelSelection } from "../shared/catalogue/index.js";
@@ -571,7 +572,7 @@ export async function prepareSessionAgentEnvironment(
   },
 ): Promise<PrepareSessionAgentEnvironmentResult> {
   const { sessionId, agentId, deps } = args;
-  const session = deps.sessionManager.get(sessionId);
+  let session = deps.sessionManager.get(sessionId);
   if (!session) return {};
   // docs/260 §1 — every routed turn selects its account HERE, from the
   // strategy and the quota picture; no pinned route is consulted and none is
@@ -580,6 +581,68 @@ export async function prepareSessionAgentEnvironment(
   // selects nothing, provisions nothing, and stamps nothing, so it cannot
   // double-select against the real turn that follows moments later.
   const isTurn = args.enforceAccountRouting === true;
+  // planning#353 — settle the turn's model onto the row when the session has
+  // none, rather than letting route selection fall through to the harness's own
+  // vendor on an install that has no credential for it.
+  //
+  // **Written to the row, not derived per reader.** The turn has two
+  // independent readers of the selection: the route walk below, and
+  // `buildRunParams`, which rebuilds the triple from the row to produce the
+  // spawn's endpoint, credential and `--model`. Deriving in the first alone
+  // pins a DeepSeek route onto a spawn still shaped for Anthropic — worse than
+  // the bug, because it also mis-attributes. Deriving in both is one rule
+  // written twice. The row is already "the authoritative answer to what this
+  // session will run next" (`session-agent-run-params.ts`), so writing it keeps
+  // that single source rather than adding a second beside it.
+  //
+  // **Only when the derived service is NOT the harness's own vendor**, which
+  // makes this a strict no-op wherever the old fallback already worked. If the
+  // first eligible model belongs to the native vendor, the old question —
+  // `selectAccountForTurn(nativeService)` — reaches the same credential, so
+  // writing would change nothing about routing and plenty about the spawn:
+  // shaping a previously-unshaped first-party turn also starts sending
+  // `--model`, and for `anthropic:sub` it would move the secret from
+  // `ANTHROPIC_AUTH_TOKEN` into `ANTHROPIC_API_KEY` — a bearer token delivered
+  // as an `x-api-key` header (planning#354). Cross-agent review caught that.
+  // So the write is confined to the case the old answer got wrong: a harness
+  // whose own vendor this install cannot authenticate.
+  //
+  // Turns only. A warm-up is account-neutral by design, and pinning a model
+  // there would make an untouched session silently acquire one.
+  //
+  // One ordering note, since it looks like a hole: the resident-reuse decision
+  // (`releaseResidentOnSpawnChange`, `agent-execution.ts`) reads the row BEFORE
+  // this runs, so a resident spawned under the selection-less identity would be
+  // kept and handed a turn whose row now says otherwise. Unreachable in
+  // practice under the guard above — on an install this writes for, a
+  // selection-less resident could only have been spawned against the native
+  // vendor it cannot authenticate, so there is no live process to reuse; and a
+  // credential disappearing mid-session releases residents anyway
+  // (`releaseResidentForCredentialChange`). From the next turn on the row and
+  // the resident identity agree.
+  if (isTurn && !modelSelectionOf(session)) {
+    const derived = firstEligibleSelectionForHarness(agentId, { credentialStore: deps.credentialStore });
+    if (derived && derived.serviceId !== nativeServiceForHarness(agentId)) {
+      deps.sessionManager.setModelSelection(sessionId, derived);
+      session = deps.sessionManager.get(sessionId) ?? session;
+      // req 4's convergence, for a selection the SERVER moved rather than the
+      // user: `set_model` sends this after persisting precisely because the
+      // composer otherwise keeps deriving its own display from live state and
+      // never reads the row back. A write with no message leaves every viewer
+      // showing a model the turn is not using.
+      runner?.emitMessage({
+        type: "model_selection_changed",
+        sessionId,
+        agentId,
+        selection: derived,
+        modelId: derived.modelId,
+        reasoningEffort: session.reasoningEffort ?? null,
+        notice: `No model was selected, so this session is running ${
+          getService(derived.serviceId)?.name ?? derived.serviceId
+        }.`,
+      });
+    }
+  }
   const selectedRoute = isTurn
     ? selectTurnRoute(agentId, session, deps, {
         excludeRouteIds: args.excludeRouteIds,

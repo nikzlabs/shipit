@@ -18,6 +18,8 @@ import type { SessionRunnerInterface } from "./session-runner.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SessionManager } from "./sessions.js";
 import type { CredentialRoute } from "../shared/types.js";
+import type { ModelSelection } from "../shared/catalogue/index.js";
+import { credentialStorageEnvNames } from "../shared/catalogue/index.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import {
   prepareSessionAgentEnvironment,
@@ -49,8 +51,13 @@ class FakeContainerRunner extends EventEmitter {
   pushed: Record<string, string>[] = [];
   /** docs/260 §5 — env-prep stamps the turn's selection here before the spawn. */
   residentRoute?: { kind: "account" | "reserved"; id: string };
+  /** planning#353 — the viewer-facing messages env-prep sends. */
+  emitted: { type: string; [k: string]: unknown }[] = [];
   async tryPushAgentSecrets(values: Record<string, string>): Promise<void> {
     this.pushed.push(values);
+  }
+  emitMessage(msg: { type: string; [k: string]: unknown }): void {
+    this.emitted.push(msg);
   }
 }
 // Reparent the fake so `runner instanceof ContainerSessionRunner` is true —
@@ -133,6 +140,8 @@ function makeFakeSessionManager(opts: {
     clearAgentSessionIdCalls: string[];
     conversationReplay: string | undefined;
     setProviderRouteCalls: { id: string; kind: string; routeId: string }[];
+    modelSelection: ModelSelection | undefined;
+    setModelSelectionCalls: ModelSelection[];
   };
 } {
   const state = {
@@ -144,6 +153,9 @@ function makeFakeSessionManager(opts: {
     clearAgentSessionIdCalls: [] as string[],
     conversationReplay: undefined as string | undefined,
     setProviderRouteCalls: [] as { id: string; kind: string; routeId: string }[],
+    /** planning#353 — the derived selection env-prep settles onto the row. */
+    modelSelection: undefined as ModelSelection | undefined,
+    setModelSelectionCalls: [] as ModelSelection[],
   };
   const sm = {
     get: () => ({
@@ -155,7 +167,20 @@ function makeFakeSessionManager(opts: {
       remoteUrl: opts.remoteUrl ?? "",
       model: opts.model,
       ...(opts.extra ?? {}),
+      // Written last so a settled selection is what the re-read returns, which
+      // is the behaviour the production row has.
+      ...(state.modelSelection
+        ? {
+            serviceId: state.modelSelection.serviceId,
+            billingMode: state.modelSelection.billingMode,
+            model: state.modelSelection.modelId,
+          }
+        : {}),
     }),
+    setModelSelection: (_id: string, selection: ModelSelection) => {
+      state.setModelSelectionCalls.push(selection);
+      state.modelSelection = selection;
+    },
     setAgentId: () => { state.setAgentIdCalls += 1; },
     setAgentPinned: () => {
       state.setAgentPinnedCalls += 1;
@@ -505,6 +530,182 @@ describe("prepareSessionAgentEnvironment", () => {
 
     expect(state.setAgentPinnedCalls).toBe(1);
     expect(state.setProviderRouteCalls).toEqual([]);
+  });
+
+  /**
+   * planning#353 — a session that has never had a model picked.
+   *
+   * The bug: turn routing asked the harness's OWN vendor whatever the install
+   * held, so on a DeepSeek-only install every selection-less turn was sent to
+   * Anthropic and died `auth_required`, while the composer displayed a runnable
+   * model. These pin the fix at the level that matters — the row is settled
+   * BEFORE anything reads it, so route selection and `buildRunParams` (which
+   * shapes the endpoint, the credential and `--model` from that same row)
+   * cannot disagree about what the turn runs.
+   */
+  describe("a selection-less session is settled onto the install's first eligible model", () => {
+    const deepseekRoute: CredentialRoute = {
+      id: "cred_ds", serviceId: "deepseek", billingMode: "key", via: "string", label: "DeepSeek",
+      isPrimary: true, priority: 0, status: "ready", createdAt: 0, updatedAt: 0,
+    };
+    const deepseekSelection = {
+      serviceId: "deepseek",
+      billingMode: "key",
+      modelId: "deepseek-v4-flash",
+    };
+
+    beforeEach(() => {
+      // Hermetic: the derived default reads `process.env` in production (that is
+      // where a deployment-supplied credential lives), so a machine exporting
+      // ANY catalogue credential name would otherwise outrank the store and
+      // change the answer. Clear the whole set, not the three that happen to
+      // sort first — cross-agent review caught the narrower version, under
+      // which "the install has nothing" failed on a developer box with a
+      // DeepSeek key exported.
+      for (const name of credentialStorageEnvNames()) vi.stubEnv(name, "");
+    });
+    afterEach(() => { vi.unstubAllEnvs(); });
+
+    async function prep(opts: {
+      routes?: CredentialRoute[];
+      secrets?: Record<string, string>;
+      extra?: Record<string, unknown>;
+      model?: string;
+      turn?: boolean;
+    }) {
+      const runner = new FakeContainerRunner();
+      const credentialStore = makeFakeCredentialStore({
+        ...(opts.routes ? { credentialRoutes: opts.routes } : {}),
+        ...(opts.secrets ? { credentialSecrets: opts.secrets } : {}),
+      });
+      const { sm, state } = makeFakeSessionManager({
+        agentPinned: true,
+        ...(opts.model ? { model: opts.model } : {}),
+        ...(opts.extra ? { extra: opts.extra } : {}),
+      });
+      const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+        sessionId: "s1",
+        agentId: "claude",
+        ...(opts.turn === false ? {} : { enforceAccountRouting: true }),
+        deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+      });
+      return { result, state };
+    }
+
+    it("writes the derived selection to the row and routes the turn onto it", async () => {
+      const { result, state } = await prep({
+        routes: [deepseekRoute],
+        secrets: { cred_ds: "sk-ds" },
+      });
+      expect(state.setModelSelectionCalls).toEqual([deepseekSelection]);
+      // Not `auth_required` against Anthropic, which is what the bug produced.
+      expect(result.turnRoute).toEqual({ kind: "reserved", id: "cred_ds" });
+    });
+
+    it("tells the viewers, so the composer stops showing a model the turn is not using", async () => {
+      const runner = new FakeContainerRunner();
+      const credentialStore = makeFakeCredentialStore({
+        credentialRoutes: [deepseekRoute],
+        credentialSecrets: { cred_ds: "sk-ds" },
+      });
+      const { sm } = makeFakeSessionManager({ agentPinned: true });
+      await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+        sessionId: "s1",
+        agentId: "claude",
+        enforceAccountRouting: true,
+        deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+      });
+      const sent = runner.emitted.find((m) => m.type === "model_selection_changed");
+      expect(sent).toMatchObject({ sessionId: "s1", agentId: "claude", selection: deepseekSelection });
+    });
+
+    it("leaves a row that already names a real catalogue mode completely alone", async () => {
+      // A user's own choice must never be overwritten — the write only ever
+      // fills a gap.
+      const { state } = await prep({
+        routes: [
+          deepseekRoute,
+          {
+            id: "cred_glm", serviceId: "zai", billingMode: "sub", via: "string", label: "GLM",
+            isPrimary: true, priority: 0, status: "ready", createdAt: 0, updatedAt: 0,
+          },
+        ],
+        secrets: { cred_ds: "sk-ds", cred_glm: "glm" },
+        model: "glm-5.2[1m]",
+        extra: { serviceId: "zai", billingMode: "sub" },
+      });
+      expect(state.setModelSelectionCalls).toEqual([]);
+    });
+
+    it("settles a row whose model id the catalogue no longer knows", async () => {
+      // `setModel` nulls the service and mode for an unknown id on purpose, so
+      // this row holds a model and no triple — indistinguishable, for routing,
+      // from never having picked one.
+      const { state } = await prep({
+        routes: [deepseekRoute],
+        secrets: { cred_ds: "sk-ds" },
+        model: "claude-sonnet-4-20250514",
+      });
+      expect(state.setModelSelectionCalls).toEqual([deepseekSelection]);
+    });
+
+    /**
+     * The guard that keeps this a strict no-op wherever the old fallback
+     * already worked — and the case a cross-agent review found regressed
+     * before it existed.
+     *
+     * `ANTHROPIC_AUTH_TOKEN` is a *subscription* delivered as a bearer token.
+     * Deriving `(anthropic, sub)` for it would shape the spawn, and shaping
+     * moves the secret into `ANTHROPIC_API_KEY` — Claude's declared string
+     * target, since Anthropic's own subscription has no `targetOverride` — so
+     * the CLI would send an OAuth bearer as an `x-api-key` header
+     * (planning#354). Unshaped, the token works. Nothing may be written here.
+     */
+    it("writes nothing when the first eligible model is the harness's own vendor", async () => {
+      for (const [name, value] of [
+        ["ANTHROPIC_AUTH_TOKEN", "tok"],
+        ["ANTHROPIC_API_KEY", "sk-ant"],
+      ] as const) {
+        vi.stubEnv(name, value);
+        const { state } = await prep({});
+        expect(state.setModelSelectionCalls, `${name} must stay unshaped`).toEqual([]);
+        vi.stubEnv(name, "");
+      }
+    });
+
+    it("writes nothing when the native vendor has an account, even with another service configured", async () => {
+      // Anthropic leads the catalogue, so the derived answer here IS the native
+      // vendor and the old question reaches the same account. No write, no
+      // newly-shaped spawn, no `--model` where there was none.
+      const { state } = await prep({
+        routes: [
+          {
+            id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Acct",
+            isPrimary: true, priority: 0, status: "ready", createdAt: 0, updatedAt: 0,
+          },
+          deepseekRoute,
+        ],
+        secrets: { cred_ds: "sk-ds" },
+      });
+      expect(state.setModelSelectionCalls).toEqual([]);
+    });
+
+    it("writes nothing on a warm-up", async () => {
+      // A warm-up is account-neutral by design; pinning a model there would make
+      // an untouched session silently acquire one.
+      const { state } = await prep({
+        routes: [deepseekRoute],
+        secrets: { cred_ds: "sk-ds" },
+        turn: false,
+      });
+      expect(state.setModelSelectionCalls).toEqual([]);
+    });
+
+    it("writes nothing, and does not throw, when the install has no credentials", async () => {
+      const { result, state } = await prep({});
+      expect(state.setModelSelectionCalls).toEqual([]);
+      expect(result.turnRoute).toBeUndefined();
+    });
   });
 
   // docs/260 req 11 — the string-delivered twin of the account walk. A

@@ -1711,6 +1711,91 @@ walks now speak `CredentialRoute` and share `orderForSelectionMode`, so the
 unification is a small change rather than a translation — but it is a behaviour
 change, and this one was not.
 
+## The default for a session that never picked a model (planning#353)
+
+A late instance of the same pattern as planning#342 above: each phase re-keyed
+what it *read*, and one branch kept an older answer whose premise this feature
+had already removed.
+
+`selectRouteForSelection`'s `!selection || !mode` branch asked
+`selectAccountForTurn(accountServiceForHarness(harnessId))` — the harness's own
+vendor — and justified it as "the only service a session with no selection could
+ever have meant". True before this feature; false the moment a harness could run
+another vendor's models. On an install whose only credential is a DeepSeek key,
+a GLM plan or an OpenRouter key, the harness's own vendor is precisely the
+service with no credential, so every selection-less turn died `auth_required`
+while the composer displayed a runnable model. Sessions reach that state
+routinely: a headless create, a warm session opened and typed into, and a row
+whose model id the catalogue has since dropped (`setModel` nulls the service and
+mode for an unknown id, deliberately).
+
+Phase 7 had already solved the identical problem for background work, and its
+docstring names this exact install: a fixed default "would point at a vendor the
+install may have no credential for, which is exactly the install this feature
+exists to create (a user whose only credential is a DeepSeek key)".
+
+**Where the fix lives is the interesting part.** The obvious move — derive the
+default inside the `!selection` branch — is half a fix. A turn has *two*
+independent readers of the session's selection: `selectTurnRoute`
+(`session-agent-env.ts`) and `buildAgentRunParams`, which rebuilds the triple
+from the row to produce `serviceRouting` (endpoint + credential) and `--model`.
+Deriving in the first alone pins a DeepSeek route onto a spawn still shaped for
+Anthropic — a worse failure than the one being fixed, because it also
+mis-attributes. Deriving in both is one rule written twice.
+
+So `prepareSessionAgentEnvironment` **settles the row** instead: when a turn
+starts and the row names no real catalogue mode, it writes
+`firstEligibleSelectionForHarness(agentId, …)` via `setModelSelection` before
+anything reads it. That restores the invariant `session-agent-run-params.ts`
+already states — "the row is the authoritative answer to what this session will
+run next" — rather than adding a second source beside it, and everything
+downstream (shaping, `--model`, attribution, the picker) reads the field it
+already read. It only ever fills a gap, and only on a turn: a row naming a real
+mode is untouched, and a warm-up stays account-neutral.
+
+`firstEligibleSelectionForHarness` is `eligibleEntriesForHarness(...)[0]`. That
+list *is* the picker's ordering — the catalogue join for the harness, narrowed
+to modes holding a credential it can carry — so "the first model this install
+can run" and "the first model the picker would offer" cannot become two rules.
+It returns `undefined` when the harness can run nothing (a Codex session on a
+DeepSeek-only install: Codex speaks only `openai-responses`), which correctly
+leaves `auth_required` as the honest answer.
+
+**And it writes only when the derived service is not the harness's own vendor**
+— the guard that keeps the change a strict no-op wherever the old fallback
+already worked. Cross-agent review found why it is needed, and the reason is
+sharper than "be conservative": if the first eligible model belongs to the
+native vendor, the old question reaches the same credential, so writing changes
+nothing about *routing* and plenty about the *spawn*. A previously-unshaped
+first-party turn would start being shaped — gaining an explicit `--model` it did
+not send before, and, for `anthropic:sub`, moving the secret out of
+`ANTHROPIC_AUTH_TOKEN` into `ANTHROPIC_API_KEY`, which delivers an OAuth bearer
+token as an `x-api-key` header. That last one is a real catalogue defect
+(planning#354: Anthropic's subscription has no `targetOverride` where GLM's
+coding plan does), and this fix deliberately routes around it rather than
+depending on it. The write is confined to the case the old answer got wrong: a
+harness whose own vendor this install cannot authenticate.
+
+A write is also announced. `model_selection_changed` carries it to the viewers
+with a `notice`, for the same reason `set_model` sends one after persisting: the
+composer derives its display from live state and never re-reads the row, so a
+silent server-side write leaves every viewer showing a model the turn is not
+using.
+
+The `!selection` branch itself is left in place, now reachable only from the
+genuinely empty case, from a first-party install (where it remains correct), and
+from callers that always supply a selection. Its comment records that it must
+not be restored as a *general* session default.
+
+Two limits worth stating rather than discovering later. Turn-start attribution
+(`wireAgentListeners`) captures the selection before env-prep runs, so a derived
+turn has none at capture time and relies on the result-time re-read of the row;
+and the resident-reuse decision also reads the row first, so it cannot see a
+write that has not happened yet. Neither is reachable under the guard — a
+selection-less resident on such an install could never have authenticated in the
+first place — but both would need attention if the write were ever widened to
+the first-party path.
+
 ## The composer's harness display, and which session a composer is bound to
 
 The composer is rendered on three surfaces, and only two of them have a session of their own:
@@ -2855,7 +2940,7 @@ surface.
 | `shared/types/agent-types.ts` | `AgentId` — the conflation lives here |
 | `session/agents/claude/process.ts` | Both spawn sites, the scrub, `AUTH_ERROR_PATTERNS` |
 | `orchestrator/provider-account-manager.ts` | `reservedRouteFor`, `hasAnyAuthForProvider` — route eligibility |
-| `orchestrator/session-agent-env.ts` | `selectAgentEnvForPush` — credential delivery to a container |
+| `orchestrator/session-agent-env.ts` | `selectAgentEnvForPush` — credential delivery to a container; settles a selection-less session onto the derived default before the turn's readers run (planning#353) |
 | `orchestrator/local-agent-home.ts` | `resolveLocalAgentHome` — why reserved routes are unscoped |
 | `shared/model-windows.ts` | First-frame context window |
 | `client/components/ModelPicker.tsx` | The split picker: `HarnessSelector` + `ModelSelector`, model rows grouped by `(service, billing mode)`. Replaced `ModelAgentSelector`, whose hand-kept `METERED_MODELS` set went with it. `boundSession` / `displayedHarness` decide whether it describes a session or previews the next one |
@@ -2863,7 +2948,7 @@ surface.
 | `shared/types/usage-limits-types.ts` | `SubscriptionLimits` — already keyed by `routeId` |
 | `orchestrator/agents/*/limits-provider.ts` | Per-`AgentId` today; becomes per service (req 10) |
 | `orchestrator/usage.ts` | `RecordedTurn` — token/cost accounting, distinct from quota |
-| `orchestrator/service-routing.ts` | The resolver: configured credentials, per-mode turn routing (including which of a subscription's string credentials), the spawn identity. Phase 7's second caller |
+| `orchestrator/service-routing.ts` | The resolver: configured credentials, per-mode turn routing (including which of a subscription's string credentials), the spawn identity, and `firstEligibleSelectionForHarness` — the default for a session that never picked a model (planning#353). Phase 7's second caller |
 | `orchestrator/credential-failure-policy.ts` | req 12's branch — `sub` fails over, `key` stops — asked by every gate so it cannot be drawn twice |
 | `orchestrator/turn-attribution.ts` | The `cost_usd` rule, shared by both usage writers |
 | `shared/spawn-routing.ts` | The two shaping rules — `applyServiceRouting`, `codexProviderArgs` — on the shared side of the container boundary, so the orchestrator's own CLI shell-out uses the same source a turn does |
