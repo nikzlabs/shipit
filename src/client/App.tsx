@@ -526,7 +526,6 @@ export default function App() {
           targetFile,
           resolveReviewer({
             enableSubAgents: useSettingsStore.getState().enableSubAgents,
-            agentList: useUiStore.getState().agentList,
             activeAgentId: useUiStore.getState().activeAgentId,
           }),
         );
@@ -1441,10 +1440,11 @@ export default function App() {
 
   // docs/203 — "Ask agent to review": start a chat-native review turn. Distinct
   // from send_message so the orchestrator authorizes the review tool for this
-  // file. The reviewer (cross-agent vs fresh subagent) is resolved here at click
-  // time from the settings store + agent registry, then baked into the prompt.
+  // file. The review MODE (brokered role vs fresh subagent) is resolved here at
+  // click time from the settings store, then baked into the prompt; WHO reviews
+  // is ShipIt's own setting, resolved server-side at spawn admission (docs/261).
   // Closing the modal shifts focus to the chat; the review lands in chat
-  // (a consult card for cross-agent, prose for same-model — docs/220).
+  // (a consult card for the role, prose for same-model — docs/220).
   const handleAskAgentReview = useCallback(
     (reviewFilePath: string) => {
       const sid = useSessionStore.getState().sessionId;
@@ -1452,7 +1452,6 @@ export default function App() {
         reviewFilePath,
         resolveReviewer({
           enableSubAgents: useSettingsStore.getState().enableSubAgents,
-          agentList: useUiStore.getState().agentList,
           activeAgentId: useUiStore.getState().activeAgentId,
         }),
       );

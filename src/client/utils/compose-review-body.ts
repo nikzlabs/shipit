@@ -1,45 +1,43 @@
 /**
  * compose-review-body — builds the chat message that kicks off an AI review
- * (docs/203, docs/220).
+ * (docs/203, docs/220, docs/261).
  *
- * The reviewer is resolved **on the client at button-press time** from the
- * settings store + agent registry, so the prompt is concrete (not
- * self-correcting):
- *   - Multi-agent sessions on AND a *different* agent is signed in → **cross-agent**:
- *     the parent runs `shipit agent run --agent <other> --prompt-file -` for a
- *     genuine second-model opinion. ShipIt surfaces that reviewer's verbatim
- *     output inline, in the consult card (docs/220) — so the parent records
- *     nothing and calls no tool; it reads the markdown from stdout only to apply
- *     fixes.
- *   - otherwise → **subagent**: the parent spawns one fresh same-model `Task` and
- *     **presents its findings to the user as prose**. A same-model review is the
- *     agent's own internal work — ShipIt only renders what it *brokers*, so there
- *     is no card here (docs/220).
+ * **This file used to choose the reviewer, and no longer does** (docs/261 req 6).
+ * It picked the first *other* installed backend and wrote `--agent <other>` into
+ * the prompt — ShipIt naming a reviewer by harness, in the product's own words,
+ * which is the exact thing the role replaces. What survives here is the one
+ * question the client can still answer: whether the brokered path is available
+ * at all.
+ *
+ *   - Multi-agent sessions on → **role**: the parent runs
+ *     `shipit agent run --role reviewer --prompt-file -`, and ShipIt resolves who
+ *     reviews from its own settings — ranked to be as far from the implementer as
+ *     the install allows (docs/261 req 4). ShipIt surfaces that reviewer's
+ *     verbatim output inline, in the consult card (docs/220) — so the parent
+ *     records nothing and calls no tool; it reads the markdown from stdout only
+ *     to apply fixes.
+ *   - off → **subagent**: `shipit agent run` is refused outright, so the parent
+ *     spawns one fresh same-model `Task` and **presents its findings to the user
+ *     as prose**. A same-model review is the agent's own internal work — ShipIt
+ *     only renders what it *brokers*, so there is no card here (docs/220).
+ *
+ * The mode is resolved **on the client at button-press time**, so the prompt is
+ * concrete rather than self-correcting; the *reviewer* is resolved on the server
+ * at spawn admission, which is why nothing here names one.
  *
  * In both modes the reviewer READS the file with its own read-only tools (it runs
  * in the same workspace) and returns **markdown only** — it calls no MCP tool.
- * There is no `submit_review` tool: cross-agent output is shown by the consult
+ * There is no `submit_review` tool: the role's output is shown by the consult
  * card, same-model output is narrated by the parent.
  *
  * No draft-comment embedding — that belongs to the user-comment system, which is
  * fully decoupled from AI review.
  */
 
-interface RegistryAgent {
-  id: string;
-  name: string;
-  installed: boolean;
-  hasRunnableModels: boolean;
-}
-
-export type ReviewerMode = "cross-agent" | "subagent";
+export type ReviewerMode = "role" | "subagent";
 
 export interface ReviewComposition {
   mode: ReviewerMode;
-  /** The other agent's id (cross-agent only). */
-  reviewerAgentId?: string;
-  /** Display name for the reviewer, e.g. "Codex" (cross-agent only). */
-  reviewerName?: string;
   /** Display name for the current/parent agent, e.g. "Claude". */
   selfName: string;
 }
@@ -51,31 +49,23 @@ export function displayAgentName(agentId: string): string {
 }
 
 /**
- * Resolve the reviewer from a settings/registry snapshot taken at click time.
- * Pure so the resolution matrix (enableSubAgents × other-agent-authed) is
- * directly testable. Cross-agent only when Multi-agent is on AND a *different*
- * agent is installed + auth-configured; otherwise a fresh same-model subagent.
+ * Resolve the review MODE from a settings snapshot taken at click time. Pure, so
+ * the one remaining branch is directly testable.
+ *
+ * The registry is deliberately no longer consulted (docs/261 req 6). "Is a
+ * *different* backend installed and authed?" was the client deciding who
+ * reviews; ShipIt now decides that on the server, from the reviewer settings,
+ * and it can pick a distant *model* on the same harness — an answer this check
+ * would have thrown away. What is left is the availability gate that genuinely
+ * belongs to the caller: `shipit agent run` is refused outright when Multi-agent
+ * sessions is off, so that case still composes a same-model `Task` review.
  */
 export function resolveReviewer(args: {
   enableSubAgents: boolean;
-  agentList: RegistryAgent[];
   activeAgentId: string;
 }): ReviewComposition {
   const selfName = displayAgentName(args.activeAgentId);
-  if (args.enableSubAgents) {
-    const other = args.agentList.find(
-      (a) => a.id !== args.activeAgentId && a.installed && a.hasRunnableModels,
-    );
-    if (other) {
-      return {
-        mode: "cross-agent",
-        reviewerAgentId: other.id,
-        reviewerName: displayAgentName(other.id),
-        selfName,
-      };
-    }
-  }
-  return { mode: "subagent", selfName };
+  return { mode: args.enableSubAgents ? "role" : "subagent", selfName };
 }
 
 function reviewBrief(filePath: string): string[] {
@@ -110,27 +100,31 @@ function parentFollowUp(): string[] {
 export function composeReviewMessage(filePath: string, opts: ReviewComposition): string {
   const lines: string[] = [`Review ${filePath}.`, ""];
 
-  if (opts.mode === "cross-agent" && opts.reviewerAgentId) {
-    const reviewerName = opts.reviewerName ?? displayAgentName(opts.reviewerAgentId);
+  if (opts.mode === "role") {
     lines.push(
-      `Delegate this review to ${reviewerName} — a different model, for a genuine`,
-      `second opinion. Run \`shipit agent run --agent ${opts.reviewerAgentId} --prompt-file -\``,
-      "and feed it the review brief below on stdin (write the brief to a file or use",
-      "a heredoc — your choice; don't indent the heredoc terminator).",
+      "Delegate this review to ShipIt's configured reviewer, for a genuine second",
+      "opinion. Run `shipit agent run --role reviewer --prompt-file -` and feed it",
+      "the review brief below on stdin (write the brief to a file or use a heredoc —",
+      "your choice; don't indent the heredoc terminator).",
+      "",
+      "Name the ROLE and nothing else: no --agent, no --model, no reasoning level.",
+      "ShipIt picks the reviewer from its own settings — the one furthest from you",
+      "that this install can run — so do not reason about which backend is far from",
+      "you, and do not substitute a backend you happen to know is installed.",
       "",
       "--- review brief (pass to the reviewer on stdin) ---",
       ...reviewBrief(filePath),
       "--- end brief ---",
       "",
-      `ShipIt renders ${reviewerName}'s output for the user automatically — inline, in`,
+      "ShipIt renders the reviewer's output for the user automatically — inline, in",
       "the consult card. You do NOT record it and you call NO tool. Read the markdown",
       "from stdout and use it only to apply fixes and (optionally) re-review.",
       "",
-      `If \`shipit agent run\` exits non-zero for ANY reason (Multi-agent disabled,`,
-      `${reviewerName} not signed in, the session not pinned/active, or the per-turn`,
-      "spawn cap hit), do NOT abort the turn. Instead spawn one fresh same-model Task",
-      `subagent with the same brief and present its findings to the user as prose,`,
-      `noting that ${reviewerName} was unavailable.`,
+      "If `shipit agent run` exits non-zero for ANY reason (Multi-agent disabled, no",
+      "configured reviewer can run right now, the session not pinned/active, or the",
+      "per-turn spawn cap hit), do NOT abort the turn. Instead spawn one fresh",
+      "same-model Task subagent with the same brief and present its findings to the",
+      "user as prose, noting that the configured reviewer was unavailable.",
     );
   } else {
     lines.push(

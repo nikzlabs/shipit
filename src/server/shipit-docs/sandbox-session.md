@@ -91,8 +91,10 @@ What still works, because neither needs a repo:
 
 - **In-turn subagents**, for parallel research or codegen you synthesize in the
   current reply (the `Task` tool, on backends that have one).
-- **`shipit agent run --agent <id> --prompt-file -`**, to consult a different
-  agent backend one-shot. See [agent.md](agent.md).
+- **`shipit agent run --role reviewer --prompt-file -`**, to have ShipIt's
+  configured reviewer look at something one-shot. A run whose target you were
+  handed in full names all five of `--agent`, `--service`, `--billing-mode`,
+  `--model`, `--effort` instead. See [agent.md](agent.md).
 
 ## Persistence
 

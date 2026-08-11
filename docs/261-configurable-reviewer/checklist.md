@@ -108,11 +108,20 @@ it.
 
 ## Phase 5 — Product-owned callers
 
-- [ ] `client/utils/compose-review-body.ts:117` — the UI generates `--agent <reviewerAgentId>`;
-      this is ShipIt choosing the reviewer in the product's own words
-- [ ] `agents/claude/system-prompt.md:17`, `agents/codex/system-prompt.md:18`
-- [ ] `prompts/spec-discipline.md:8` — "prefer a backend other than your own" becomes the role's job
-- [ ] `CLAUDE.md`'s review rule names the role, not the backend
-- [ ] `src/server/shipit-docs/` updated for the new `agent run` surface
-- [ ] A test per product-owned command
+- [x] `client/utils/compose-review-body.ts` — the UI generated `--agent <reviewerAgentId>`;
+      this was ShipIt choosing the reviewer in the product's own words. It now emits
+      `--role reviewer`, and the *registry* check went with it: "is a different backend
+      installed?" was the same choice one step earlier
+- [x] `agents/claude/system-prompt.md`, `agents/codex/system-prompt.md` — both now teach the
+      two shapes (role for a review, all five flags otherwise) and the child-session
+      contrast, so the three paths are not collapsed into one rule
+- [x] `prompts/spec-discipline.md` — "prefer a backend other than your own" becomes the role's job
+- [x] `CLAUDE.md`'s review rule names the role, not the backend
+- [x] `src/server/shipit-docs/` updated for the new `agent run` surface — `agent.md`
+      (both shapes, and the three-path table), `spec-discipline.md`, `sandbox-session.md`
+- [x] A test per product-owned command: `review-command-callers.test.ts` for the prompts and
+      the agent-facing pages, `compose-review-body.test.ts` for the generated message. The
+      check is "no `shipit agent run --agent VALUE` that does not also name the other four",
+      which catches a regression to the old shape without forbidding the documented
+      explicit path
 

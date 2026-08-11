@@ -412,9 +412,80 @@ spawn* (given the full argument set), with a test per product-owned command.
 `CLAUDE.md`'s "review with the other backend" line loses its harness instruction: it keeps
 saying *when* to ask for a review, and stops naming the backend (req 2).
 
+**Phase 5 has landed.** Every caller above emits `--role reviewer`; `CLAUDE.md` and the
+agent-facing pages (`shipit-docs/agent.md`, `spec-discipline.md`, `sandbox-session.md`) document
+the two shapes. All five callers turned out to be *role-based review* — none needed the explicit
+argument set, which is the expected outcome: the explicit path exists for a caller that was
+**handed** the five values, and ShipIt's own callers never are.
+
+Four things worth recording:
+
+- **The client stopped choosing the reviewer twice, not once.** Rewriting the generated command
+  was the obvious half. `resolveReviewer` also asked the agent registry "is a *different*
+  backend installed and auth-configured?", and that is the same choice one step earlier — it
+  would have sent a review to a same-model `Task` on an install whose reviewer setting names a
+  perfectly distant *model on the same harness*, which is a case the ranking exists to find. The
+  registry is no longer consulted; what remains is the availability gate that genuinely belongs
+  to the caller (Multi-agent sessions off ⇒ `shipit agent run` is refused outright ⇒ compose the
+  `Task` fallback).
+- **A user naming a backend is now answered with the role, deliberately.** "Review this with
+  Codex" cannot become an explicit call: the agent inside a container has no way to discover a
+  service, a billing mode or a valid effort level, so filling the five in would mean *guessing*
+  — and req 7 makes a guessed value indistinguishable from a supplied one. The prompts say to
+  use the role and tell the user which reviewer ran and where to change it, which is also the
+  only answer that keeps §1 true (the setting is in ShipIt, not in the turn).
+- **The test asserts a command shape, not prose.** Anchoring on "no `shipit agent run --agent
+  VALUE` that does not also name the other four" catches the regression this phase exists to
+  prevent, while leaving `agent.md` free to document the explicit path in full — which req 2
+  needs it to, since the repository override is that path. Anchoring on the *absence* of
+  `--agent` would have made the override undocumentable.
+- **One doc sentence had to be reworded rather than exempted.** `agent.md` illustrated the
+  child-session contrast by writing the refused command out (`shipit agent run --agent codex`
+  "is not"), which the check flagged — correctly, since a scanner cannot tell a counter-example
+  from a regression. It is phrased without the literal command instead, because a test that
+  special-cases counter-examples is one a real regression can defeat by looking like one.
+
+**What the cross-backend review changed.** Codex reviewed phase 5 under CLAUDE.md's rule and
+returned eight findings; all eight held and all eight are fixed. The two that mattered were both
+the same mistake — **prose that quietly re-decided a requirement**:
+
+- **"This is the path for every review" deleted req 2's override.** The draft split the two
+  shapes on *what the run is* (a review ⇒ role; anything else ⇒ explicit), which reads as
+  forbidding the thing req 2 explicitly permits: a repository that names all five is choosing
+  its own reviewer, and that review *is* an explicit call. The split is now on *what the caller
+  was given* — no complete target ⇒ role, a complete target ⇒ explicit — which is the honest
+  statement and keeps the override describable. It also puts the real prohibition where it
+  belongs: not "don't use explicit for reviews" but **"don't guess values to fill the shape
+  out"**, since a guessed parameter and a stored one are indistinguishable to the caller.
+- **Two live instructions still sent reviews to a `Task` subagent.** Claude's prompt listed
+  "have a separate agent review/check this" among the `Task` cases and used a *review* as its
+  worked delegation example — so the same prompt that says every review goes to the role also
+  demonstrated one that does not. Both fixed; the example is now a non-review search task. This
+  is the finding a command-shape scanner cannot produce, because the regression is an
+  instruction that names no command at all.
+
+Four smaller ones, each real: the ranking shorthand said "family first, harness after that" and
+skipped the canonical-model tier that sits between them (`reviewerDistanceTier`'s tiers 3–4),
+repeated in four files; `plan.md` described the repository override with three of the five
+mandatory flags, which is a *refused* call; the guard did not scan `CLAUDE.md`, so this repo's
+own review rule could revert silently; and the explicit-shape assertion checked that each flag
+appeared *somewhere on the page* rather than together in one command, which a page that never
+shows a complete example would still pass. The guard now fails on all five scanned surfaces
+when a caller reverts — verified by reverting them and watching it go red, because an
+assertion nobody has seen fail is a claim, not a check.
+
+One claim also had to be **withdrawn rather than reworded**: the drafted prose said the consult
+card names the reviewer ShipIt picked. It does not yet — the persisted card carries only
+`subAgentId` (`chat.ts:51`) and renders the harness name. That is phase 4's work, so the pages
+now say only that the card carries the output, attributed to the agent that ran it. Documenting
+a sibling phase's not-yet-shipped behaviour is the same error as inheriting an unverified
+guarantee, one phase boundary over.
+
 **A repository may still override the reviewer, and nothing here tries to stop it** (req 2).
-The explicit path is the override: a repository instruction that names `--agent`, `--model`
-and the effort is an ordinary explicit call and is indistinguishable from any other. This is
+The explicit path is the override: a repository instruction that names all five — `--agent`,
+`--service`, `--billing-mode`, `--model` and `--effort` — is an ordinary explicit call and is
+indistinguishable from any other. Naming fewer is not a lesser override but a **refused** call,
+which is why the agent-facing prose says to fall back to the role rather than guess the rest. This is
 why req 2 is written as a default rather than a rule — ShipIt cannot detect the difference
 between an agent following repository policy and an agent making its own choice, so claiming
 to forbid it would be asserting a guarantee the product does not have.
@@ -458,11 +529,12 @@ same `(anthropic, key)` / `(openai, key)` credential route the Services add-flow
 | 4 | Attribution: the resolved reviewer persisted on the consult card and rendered | 9 | The card says model, service/mode, harness and effort — not just "Consulted Claude" |
 | 5 | Every product-owned caller migrated; `CLAUDE.md` and `shipit-docs` updated | 2, 6 | No authored or generated command names a backend for a review |
 
-**Phase 5 is now load-bearing rather than tidy-up.** Until it lands, every command ShipIt
-itself authors or generates for a review (`compose-review-body.ts`, the two harness system
-prompts, `prompts/spec-discipline.md`) names `--agent` and nothing else, which req 7 refuses.
-That is the cost of the phase boundary and it was taken deliberately; it is not a reason to
-widen phase 2.
+**Phase 5 was load-bearing rather than tidy-up.** Between phase 2 and phase 5, every command
+ShipIt itself authored or generated for a review (`compose-review-body.ts`, the two harness
+system prompts, `prompts/spec-discipline.md`) named `--agent` and nothing else, which req 7
+refuses. That was the cost of the phase boundary and it was taken deliberately; it was not a
+reason to widen phase 2. It is closed now, and `review-command-callers.test.ts` is what keeps it
+closed.
 
 **Phase 4 is not "confirm nothing changed".** The draft said attribution was unchanged, and
 the review found that the persisted consult card carries only `subAgentId`, duration and cost
