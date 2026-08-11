@@ -469,8 +469,48 @@ the review found that the persisted consult card carries only `subAgentId`, dura
 (`shared/types/domain-types/chat.ts:51`) — it cannot say which service, model or effort ran.
 "Consulted Claude" is actively misleading once Claude Code can drive a non-Anthropic model, so
 req 9 needs the captured target persisted on the card, under the transcript-persistence rules
-in CLAUDE.md (a typed field, a column and migration, `CARD_MESSAGE_FIELDS`, rehydration, and a
-history round-trip test).
+in CLAUDE.md.
+
+**Phase 4 has landed.** `SubAgentConsultCard.runOn` (a `SubAgentRunTarget`: service, billing
+mode, model, effort) is copied from the target `runSubAgent` captured at admission, and
+`SubAgentConsultCardRow` renders the **model** as the summary's subject with a second line
+carrying service · billing mode · harness · reasoning level.
+
+Four things worth recording:
+
+- **The subject of the sentence changes, and that is the fix.** The card said "Consulted Codex",
+  which names a *harness*. `subAgentId` stays on the card and stays visible — it is a true fact
+  about which process ran — but it moves to the quiet second line, because a sentence whose
+  subject is the CLI can be entirely true while saying nothing about which weights reviewed the
+  work. `runOn` supplies the subject; the harness supplies the context.
+- **No column, no migration, and that is not a shortcut.** The whole card serializes to one json
+  column (`messages.sub_agent_consult`), so a nested field needs neither — the same reasoning
+  `BranchAutoResetCard.forced` already records. What the recipe *does* still demand is the
+  round-trip proof, so `EVERY_OPTIONAL_FIELD_MESSAGE`'s card carries `runOn`, and the
+  finalized-row patch test asserts it survives the terminal patch: `updateSubAgentConsultCard`
+  merges rather than replaces, and the terminal patch carries no `runOn` of its own.
+- **Written on the PENDING card, not at completion.** docs/236 tells agents to background long
+  consults, so the in-flight state is what a user looks at for minutes. A card that could not
+  name its model until the run ended would be blank for the whole time anyone was reading it.
+- **The ranking's own reasoning is deliberately NOT on the card.** `ResolvedSpawnTarget.reviewer`
+  carries the slot, source and tier, and it stays a log line: which slot won and by which rung is
+  ShipIt explaining itself, and the place for that is the Reviewer tab (phase 3), not a
+  transcript row that would ask the user to hold a six-rung ranking in their head to read it.
+
+Ids are stored and labels resolved at render (`getModel`, `serviceLabel`, the harness's own
+reasoning option), each falling back to the raw id — so a model the catalogue later drops renders
+as a worse label rather than disappearing, which is the rule `client/utils/service-label.ts`
+already follows for service names.
+
+**What the cross-backend review changed.** Codex confirmed the no-migration decision and found no
+requirement weakened, with one finding: the checklist **overstated its own coverage**, claiming
+every hop was guarded when the boot reconcile and the result read-back were not. Half of that is a
+missing test and half is a false claim, and the two need opposite fixes. The boot reconcile
+genuinely can drop the field — it patches a stranded card, so a regression from merge to replace
+would lose it — and now has a fixture and an assertion. `getSubAgentResult` and its route pass the
+stored card through verbatim, so a test there could not fail; the claim was corrected instead of
+padded, which is the same judgement the phase-1 record reaches twice about checks that cannot
+fail.
 
 The audit's Services work — one card component (D2) and Services-first (D1) — is docs/252's
 and is deliberately **not** in this table. It touches `ServicesPanel.tsx` /

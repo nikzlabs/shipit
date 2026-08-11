@@ -35,7 +35,11 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
   permissionPrompt: { requestId: "p1", phase: "approved", toolName: "Write", path: ".npmrc", summary: "Write .npmrc", details: "{\n  \"file_path\": \".npmrc\"\n}", agentId: "claude", createdAt: "2026-06-05T00:00:00.000Z", remembered: true },
   egressPrompt: { cardId: "eg1", host: "evil.example.com", phase: "denied", createdAt: "2026-06-05T00:00:00.000Z" },
   compaction: { id: "c1", trigger: "manual", preTokens: 100, postTokens: 20, durationMs: 9, createdAt: "t" },
-  subAgentConsult: { cardId: "sac1", spawnId: "spawn-1", subAgentId: "codex", status: "success", durationMs: 47000, costUsd: 0.03, truncated: false, outputMarkdown: "## Findings\n\n- `foo.ts:42` — bug\n", createdAt: "2026-06-05T00:00:00.000Z" },
+  // docs/261 phase 4 — `runOn` rides the same json column as the rest of the
+  // card, so it needs no migration; what it DOES need is to be here, or the
+  // round-trip below cannot tell "attribution survives a reload" from
+  // "attribution was never stored", which is the exact bug class docs/188 names.
+  subAgentConsult: { cardId: "sac1", spawnId: "spawn-1", subAgentId: "codex", runOn: { serviceId: "openai", billingMode: "sub", modelId: "gpt-5.6-sol", reasoningEffort: "high" }, status: "success", durationMs: 47000, costUsd: 0.03, truncated: false, outputMarkdown: "## Findings\n\n- `foo.ts:42` — bug\n", createdAt: "2026-06-05T00:00:00.000Z" },
   nonTurnFailure: {
     cardId: "ntf1",
     purpose: "session-naming",
@@ -453,6 +457,9 @@ describe("ChatHistoryManager", () => {
         cardId: `card-${spawnId}`,
         spawnId,
         subAgentId: "codex",
+        // docs/261 phase 4 — written at SPAWN time, so it has to survive the
+        // terminal patch that lands minutes later on an already-finalized row.
+        runOn: { serviceId: "openai", billingMode: "sub", modelId: "gpt-5.6-sol", reasoningEffort: "high" },
         status: "pending",
         createdAt: "2026-08-03T00:00:00.000Z",
       },
@@ -484,6 +491,10 @@ describe("ChatHistoryManager", () => {
         outputMarkdown: "## Findings",
         // untouched fields survive the merge
         createdAt: "2026-08-03T00:00:00.000Z",
+        // docs/261 req 9 — including the attribution. The patch that finalizes a
+        // card carries no `runOn`, so a merge that replaced rather than merged
+        // would leave the permanent record unable to say what reviewed the work.
+        runOn: { serviceId: "openai", billingMode: "sub", modelId: "gpt-5.6-sol", reasoningEffort: "high" },
       });
       // patched in place — one card, not a second row appended
       const all = new ChatHistoryManager(dbManager).load("sess-1");

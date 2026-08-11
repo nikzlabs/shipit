@@ -25,6 +25,9 @@ const consult = (
     cardId: `card-${spawnId}`,
     spawnId,
     subAgentId: "codex",
+    // docs/261 phase 4 — written at spawn time, so a stranded card carries it
+    // and the reconcile's patch must merge rather than replace.
+    runOn: { serviceId: "openai", billingMode: "sub", modelId: "gpt-5.6-sol", reasoningEffort: "high" },
     status: "pending",
     createdAt: "2026-08-04T09:00:00.000Z",
     ...over,
@@ -56,11 +59,14 @@ describe("reconcileOrphanedConsultCards (planning#309)", () => {
     expect(card.status).toBe("cancelled");
     expect(card.statusDetail).toBe(ORPHANED_CONSULT_DETAIL);
     // The identity of the run survives, so the user can still see WHICH consult
-    // was lost and the agent can still name it.
+    // was lost and the agent can still name it. docs/261 req 9 — including WHAT
+    // it was going to run on: a review the orchestrator lost is exactly the one
+    // whose provenance nothing else can reconstruct.
     expect(card).toMatchObject({
       spawnId: "spawn-a",
       subAgentId: "codex",
       createdAt: "2026-08-04T09:00:00.000Z",
+      runOn: { serviceId: "openai", billingMode: "sub", modelId: "gpt-5.6-sol", reasoningEffort: "high" },
     });
   });
 

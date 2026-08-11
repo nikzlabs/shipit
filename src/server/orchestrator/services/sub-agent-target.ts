@@ -144,7 +144,16 @@ export interface ResolvedSpawnTarget {
   /** Never absent (req 5): a role carries the reviewer's level, an explicit call its own. */
   reasoningEffort: string;
   route?: ProviderRoute;
-  /** Set for a role, for the log line and (phase 4) the consult card's attribution. */
+  /**
+   * Set for a role — the ranking's own account of itself, for the log line.
+   *
+   * Deliberately NOT on the consult card. Phase 4 persists what the consult RAN
+   * ON (`SubAgentConsultCard.runOn`: service, mode, model, effort, beside the
+   * harness), which is req 9's attribution; which slot won and by which rung is
+   * ShipIt's internal reasoning about that choice, and rendering "reviewer 2 ·
+   * tier 3" in the transcript would ask the user to hold a ranking in their head
+   * to read a card. Settings is where the reviewers explain themselves (phase 3).
+   */
   reviewer?: {
     slot: ReviewerSlot;
     source: ReviewerSource;

@@ -523,6 +523,24 @@ describe("projectConsultCardForWire (planning#299)", () => {
     expect(projected.spawnId).toBe("sp-1");
   });
 
+  // docs/261 phase 4 (req 9) — the attribution is card FACE, not modal content:
+  // it is drawn without a click and there is no endpoint to fetch it back from,
+  // so a projection that dropped it would leave the served card unable to say
+  // what reviewed the work while the stored one still could.
+  it("keeps the run-on attribution on a card whose output it strips", () => {
+    const runOn = {
+      serviceId: "openai",
+      billingMode: "sub" as const,
+      modelId: "gpt-5.6-sol",
+      reasoningEffort: "high",
+    };
+    const review = Array.from({ length: 200 }, (_, i) => `finding ${i}`).join("\n");
+    const projected = projectConsultCardForWire(consultCard({ outputMarkdown: review, runOn }));
+
+    expect(projected.outputTruncated).toBe(true);
+    expect(projected.runOn).toEqual(runOn);
+  });
+
   it("re-previewing the server's own preview is a no-op", () => {
     // The client still calls `previewLine` on whatever it holds, so the shared
     // function has to be idempotent or the card face would lose a character on
