@@ -23,7 +23,13 @@ scheduler, or turning every Compose service into a deployment target.
 ## User experience
 
 - A session overflow action toggles **Keep preview running**. The item shows a
-  checkmark when enabled; there is no additional persistent-runtime status UI.
+  checkmark when enabled.
+- The reserved session's sidebar row carries a small broadcast marker, and the
+  refusal message names the session holding the slot. This reverses the original
+  "no additional persistent-runtime status UI" decision, on user instruction
+  (2026-08-11): with a cap of one, a user who is refused needs to find the
+  holder, and a checkmark inside one row's overflow menu cannot be found without
+  opening every menu. The marker states which row; it reports no runtime health.
 - Enabling starts the session and its auto-preview services immediately. Disabling
   returns it to ordinary idle cleanup; it does not stop it immediately.
 - The preview remains behind ShipIt's existing access boundary. This feature does
@@ -112,6 +118,11 @@ reservations. An operator can still stop ShipIt or its containers explicitly.
   Disabling changes only persisted admission state.
 - `idle-enforcer.ts` checks the durable flag both while selecting candidates and
   at the TOCTOU disposal guard, covering ordinary idle and pressure eviction.
+- The sidebar marker is a Phosphor `BroadcastIcon` at `ICON_SIZE.XS` in
+  `--color-success`, rendered on the metadata row beside the pin
+  (`SessionItem.tsx`); `buildReservationFullMessage` composes the refusal, which
+  names one holder, lists several when an operator raised the cap, and explains
+  a cap of `0` rather than naming nobody.
 - **A reservation is released when its session is archived**, and admission
   counts only non-archived rows. The two are separate on purpose: `archive()`
   clearing the flag is the durable fix, while `listActiveReservations` heals

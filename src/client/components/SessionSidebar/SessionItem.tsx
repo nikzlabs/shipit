@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react";
-import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, CheckIcon, DownloadSimpleIcon, PencilSimpleIcon, PushPinIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, BroadcastIcon, CheckIcon, DownloadSimpleIcon, PencilSimpleIcon, PushPinIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { formatRelativeDate } from "../../utils/dates.js";
 import { DropdownMenuItem, DropdownMenuSeparator } from "../ui/dropdown-menu.js";
@@ -235,6 +235,18 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
             <SessionStatusDot sessionId={session.id} />
             {isPinned && (
               <PushPinIcon size={ICON_SIZE.XS} weight="fill" className="text-(--color-accent) shrink-0" />
+            )}
+            {/* docs/241 — the reservation is capped (default 1 per deployment),
+                so "capacity is full" is only actionable if the row holding the
+                slot is identifiable at a glance. The overflow-menu checkmark
+                confirms state on a row you already opened; it cannot answer
+                "which session?". Sized and placed like the pin beside it. */}
+            {session.keepPreviewRunning && (
+              <BroadcastIcon
+                size={ICON_SIZE.XS}
+                className="text-(--color-success) shrink-0"
+                alt="Always-on preview"
+              />
             )}
             {session.kind === "ops" && (
               <span className="text-[9px] font-semibold uppercase tracking-wide text-(--color-text-tertiary) border border-(--color-border-secondary) rounded px-1 leading-tight shrink-0">

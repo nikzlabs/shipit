@@ -30,4 +30,18 @@ describe("SessionItem keep-preview action", () => {
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     expect(screen.getByText("Keep preview running").closest("div")?.querySelector("svg")).not.toBeNull();
   });
+
+  it("marks the reserved row in the sidebar, so the holder is findable", () => {
+    // Without this the only sign lives inside one row's overflow menu, and
+    // "capacity is full" sends the user opening every menu in turn (docs/241).
+    const { rerender } = render(
+      <SessionItem session={session()} isCurrent={false} onResume={vi.fn()} overflowMenuPortaled={false} />,
+    );
+    expect(screen.queryByTitle("Always-on preview")).toBeNull();
+
+    rerender(
+      <SessionItem session={session(true)} isCurrent={false} onResume={vi.fn()} overflowMenuPortaled={false} />,
+    );
+    expect(screen.getByTitle("Always-on preview")).toBeInTheDocument();
+  });
 });

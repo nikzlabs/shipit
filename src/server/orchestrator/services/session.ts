@@ -517,6 +517,29 @@ export function listActiveReservations(sessionManager: SessionManager): SessionI
 }
 
 /**
+ * docs/241 — the refusal message, which names the session(s) holding the slots.
+ *
+ * A bare "capacity is full (1/1)" states the count the user already inferred
+ * from the refusal and withholds the one fact they need to act. Titles come
+ * from the same rows the cap counted, so the message cannot name a session the
+ * user has no way to reach.
+ *
+ * A cap of 0 (the operator disabling the feature) has no holder to name, and a
+ * raised cap can have several, so the sentence is built rather than templated.
+ */
+export function buildReservationFullMessage(reserved: SessionInfo[], maxReservations: number): string {
+  if (reserved.length === 0) {
+    return "Always-on previews are disabled on this deployment (capacity 0). Raise MAX_KEEP_PREVIEW_RUNNING to enable one.";
+  }
+  const inUse = `${reserved.length} of ${maxReservations} in use`;
+  if (reserved.length === 1) {
+    return `Always-on preview is reserved by "${reserved[0].title}". Turn it off there to free the only slot (${inUse}).`;
+  }
+  const titles = reserved.map((s) => `"${s.title}"`).join(", ");
+  return `Always-on preview capacity is full (${inUse}). Reserved by ${titles} — turn one off first.`;
+}
+
+/**
  * docs/241 — reserve/release a live preview slot. Admission is checked before
  * mutation. Enabling activates through the ordinary runner factory, whose
  * onRunnerCreated hook owns install + Compose auto-preview reconciliation.
@@ -541,12 +564,9 @@ export function setKeepPreviewRunning(
   }
 
   if (enabled && !current.keepPreviewRunning) {
-    const reserved = listActiveReservations(sessionManager).length;
-    if (reserved >= maxReservations) {
-      throw new ServiceError(
-        409,
-        `Always-on preview capacity is full (${reserved}/${maxReservations}). Disable another reservation first.`,
-      );
+    const reserved = listActiveReservations(sessionManager);
+    if (reserved.length >= maxReservations) {
+      throw new ServiceError(409, buildReservationFullMessage(reserved, maxReservations));
     }
   }
 

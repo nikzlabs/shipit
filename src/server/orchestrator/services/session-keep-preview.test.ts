@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
-import { listActiveReservations, setKeepPreviewRunning } from "./session.js";
+import { buildReservationFullMessage, listActiveReservations, setKeepPreviewRunning } from "./session.js";
 import { SessionManager } from "../sessions.js";
 import type { DatabaseManager } from "../../shared/database.js";
 import type { SessionInfo } from "../../shared/types.js";
@@ -43,9 +43,29 @@ describe("docs/241 reservation admission", () => {
     expect(activate).toHaveBeenCalledTimes(1);
 
     expect(() => setKeepPreviewRunning(sessionManager, "b", true, activate, 1)).toThrow(
-      /capacity is full \(1\/1\)/,
+      /reserved by "a"/,
     );
     expect(sessionManager.get("b")?.keepPreviewRunning).toBeUndefined();
+  });
+
+  describe("refusal message", () => {
+    const info = (id: string, title: string) => ({ id, title } as SessionInfo);
+
+    it("names the single holder and the slot count", () => {
+      expect(buildReservationFullMessage([info("a", "Landing page prototype")], 1)).toBe(
+        'Always-on preview is reserved by "Landing page prototype". Turn it off there to free the only slot (1 of 1 in use).',
+      );
+    });
+
+    it("names every holder when the operator raised the cap", () => {
+      const message = buildReservationFullMessage([info("a", "One"), info("b", "Two")], 2);
+      expect(message).toContain('"One", "Two"');
+      expect(message).toContain("2 of 2 in use");
+    });
+
+    it("explains a cap of zero instead of naming nobody", () => {
+      expect(buildReservationFullMessage([], 0)).toContain("MAX_KEEP_PREVIEW_RUNNING");
+    });
   });
 
   it("does not count an archived session's stale reservation", () => {
