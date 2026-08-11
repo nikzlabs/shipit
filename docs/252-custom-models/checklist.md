@@ -252,3 +252,10 @@ landed ahead of this checklist's per-phase sections.
       98px, on screen from the step's first frame) with **no button beside it** — while the
       flow runs itself there is one control and it says Cancel, so a stray click cannot
       restart a live login.
+- [x] **The Anthropic wait shows the Claude CLI's own output** (req 18 follow-up). Its sign-in
+      is a wizard, not a code hand-over, so the wait runs ~6s and a pulse alone read as stuck.
+      `ClaudeAuthOutput` shows the phase message and the last three readable lines — in the
+      wait, the challenge and the failure — and `authLogTail` makes a terminal stream readable
+      (redraw lines, spinner frames, repeats and `claude_control` dropped, one row per line).
+      `ChallengePlaceholder` takes the `shape` of the box it stands in for. The whole flow
+      holds one height, measured live.

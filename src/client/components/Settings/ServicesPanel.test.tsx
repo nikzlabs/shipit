@@ -284,6 +284,60 @@ describe("ServicesPanel", () => {
       expect(placeholder.className).toContain("rounded-md border");
     });
 
+    it("shows what the Claude CLI is saying while the wizard runs", async () => {
+      // Anthropic's sign-in is a wizard ShipIt drives, not a code handed over,
+      // so the wait before the paste field can run for a while — and a pulse
+      // alone reads as stuck rather than as working. The CLI is talking the
+      // whole time, so the last lines of it are on screen, uncollapsed.
+      const account = {
+        id: "acct-anthropic-1",
+        serviceId: "anthropic", billingMode: "sub", via: "account",
+        label: "Anthropic account 1", isPrimary: true, status: "authenticating",
+        createdAt: 1, updatedAt: 1,
+      };
+      vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account, accounts: [account] }) });
+      });
+
+      render(<ServicesPanel agentList={[claudeAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+      await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+      await userEvent.click(screen.getByTestId("add-service-sign-in"));
+      await waitFor(() => expect(logins()).toBe(1));
+
+      // The placeholder is shaped for the box Anthropic actually shows — a
+      // field to paste into, not a code to read.
+      const placeholder = await screen.findByTestId("add-service-signin-starting");
+      expect(placeholder.textContent).toBe("");
+
+      for (const message of ["Launching the Claude CLI.", "Opening the browser.", "Waiting for you to approve.", "Still waiting."]) {
+        useSettingsStore.getState().appendClaudeAuthLog("acct-anthropic-1", {
+          attemptId: "attempt-1", timestamp: "2026-08-11T00:00:00.000Z",
+          level: "info", source: "claude_stdout", message,
+        });
+      }
+
+      // The last three lines, in the panel, with the first one behind the
+      // disclosure rather than gone.
+      const tail = await screen.findByTestId("provider-account-output-tail-acct-anthropic-1");
+      expect(tail).toHaveTextContent("Still waiting.");
+      expect(tail).not.toHaveTextContent("Launching the Claude CLI.");
+      expect(screen.getByTestId("provider-account-diagnostics-acct-anthropic-1")).toHaveTextContent("Claude CLI output (4)");
+
+      // And it stays when the paste field arrives — one continuous stream
+      // across that boundary, not something that appears with the challenge.
+      useSettingsStore.getState().setProviderAccountAuth("claude", "acct-anthropic-1", {
+        provider: "claude", accountId: "acct-anthropic-1",
+        verificationUri: "https://claude.ai/oauth/authorize",
+      });
+      await waitFor(() => expect(
+        screen.getByTestId("provider-account-challenge-acct-anthropic-1"),
+      ).toBeInTheDocument());
+      expect(screen.getByTestId("provider-account-output-tail-acct-anthropic-1")).toHaveTextContent("Still waiting.");
+    });
+
     it("leaves a mode that also takes a key alone — there the sign-in is a choice", async () => {
       // Anthropic's subscription accepts an env-supplied token too, so step 3
       // has a field. Starting a login nobody asked for would pre-empt it.

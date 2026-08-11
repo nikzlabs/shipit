@@ -297,24 +297,154 @@ export function signInBlockedReason(accounts: CredentialRoute[], accountId?: str
 const CHALLENGE_BOX =
   "space-y-2 rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) p-3";
 
+const PULSE = "animate-pulse rounded bg-(--color-bg-secondary)";
+
 /**
  * The challenge box before the provider's code has arrived: **the same box, at
  * the same size**, with the lines it is about to hold drawn as a pulse.
  *
  * It shares `CHALLENGE_BOX` with the real thing rather than approximating it,
  * because the whole job here is that nothing moves when the code lands — a
- * placeholder of a different height is the jump it exists to remove.
+ * placeholder of a different height is the jump it exists to remove. For the
+ * same reason it takes the `shape`: the two providers put different things in
+ * that box (OpenAI a code to read, Anthropic a field to paste into), so one
+ * placeholder can only be right for one of them.
  */
-export function ChallengePlaceholder({ testId }: { testId?: string }) {
+export function ChallengePlaceholder({
+  shape,
+  testId,
+}: {
+  shape: "code" | "paste";
+  testId?: string;
+}) {
   return (
     <div className={CHALLENGE_BOX} data-testid={testId} aria-busy="true">
-      {/* `h-4`, not `h-5`: the link above is inline, so its line box is 16px.
-          Measured — the two boxes are 98px each. */}
-      <div className="h-4 w-52 animate-pulse rounded bg-(--color-bg-secondary)" />
-      <div>
-        <div className="h-4 w-40 animate-pulse rounded bg-(--color-bg-secondary)" />
-        <div className="mt-1 h-7 w-44 animate-pulse rounded bg-(--color-bg-secondary)" />
+      {/* `h-4`, not `h-5`: the link above is inline, so its line box is 16px. */}
+      <div className={`h-4 w-52 ${PULSE}`} />
+      {shape === "code" ? (
+        <div>
+          <div className={`h-4 w-40 ${PULSE}`} />
+          <div className={`mt-1 h-7 w-44 ${PULSE}`} />
+        </div>
+      ) : (
+        // The paste row: a field and its Submit, both at their real heights.
+        <div className="flex gap-2">
+          <div className={`h-[34px] min-w-0 flex-1 ${PULSE}`} />
+          <div className={`h-[34px] w-28 ${PULSE}`} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+const AUTH_TAIL_LINES = 3;
+
+/** Terminal escape sequences: colours, cursor moves, OSC titles, charset picks. */
+const ANSI = new RegExp(
+  "\\u001b\\[[0-9;?]*[a-zA-Z]"        // CSI: colours, cursor moves, erases
+  + "|\\u001b\\][^\\u0007]*\\u0007"  // OSC: window titles
+  + "|\\u001b[()][A-Za-z0-9]"           // charset selection
+  + "|[\\u0000-\\u0008\\u000b-\\u001f\\u007f]", // stray control bytes
+  "g",
+);
+/** A line that is only box-drawing or a spinner frame — a redraw, not news. */
+const REDRAW_ONLY = /^[\s─│┌┐└┘├┤┬┴┼╭╮╰╯═║▪▫•·*✢✶✻✽⏸⏵◐◓◑◒]+$/u;
+
+/**
+ * The last few **readable** lines of a sign-in's output.
+ *
+ * The Claude CLI is a full-screen terminal program, so its stream is not a log:
+ * one entry can be a whole screen redraw, wrapped in escape sequences, and the
+ * spinner alone emits a line per frame. Shown raw it is unreadable and it
+ * resizes whatever holds it. So each entry is split into lines, stripped of
+ * escapes, and dropped when it carries nothing — empty, or only the characters
+ * a redraw is made of — and a line identical to the one before it is a repaint
+ * rather than a new event.
+ */
+export function authLogTail(
+  entries: readonly { message: string; source?: string }[],
+  count: number,
+): string[] {
+  const lines: string[] = [];
+  for (const entry of entries) {
+    // `claude_control` is the byte counter for the terminal traffic itself
+    // (`auth-manager.ts:650`) — it says the CLI is talking, not what it said,
+    // and three of those crowd out the line that carries the news.
+    if (entry.source === "claude_control") continue;
+    // Replaced with a space, not with nothing: the CLI positions each word with
+    // a cursor move, so deleting the escapes ran the words together —
+    // "Esctocancel". Collapsing the runs afterwards puts them back.
+    for (const raw of entry.message.replace(ANSI, " ").split(/\r\n|\r|\n/)) {
+      const line = raw.replace(/\s+/g, " ").trim();
+      if (!line || REDRAW_ONLY.test(line)) continue;
+      if (line !== lines[lines.length - 1]) lines.push(line);
+    }
+  }
+  return lines.slice(-count);
+}
+
+/**
+ * **What the Claude CLI is saying, while it says it.**
+ *
+ * Anthropic's sign-in is a wizard ShipIt drives rather than a code the provider
+ * hands over, so between pressing *Sign in* and the paste field appearing there
+ * is a stretch with nothing to look at — and a pulse alone reads as *stuck*
+ * rather than as *working*. The CLI is talking the whole time, so this shows
+ * it: the last few lines in the panel, uncollapsed, with the full buffer behind
+ * a disclosure for when something has actually gone wrong.
+ *
+ * Claude only. Codex's device flow produces no such stream, and has a code on
+ * screen within a moment anyway.
+ */
+export function ClaudeAuthOutput({ accountId }: { accountId: string }) {
+  const diagnostics = useSettingsStore((s) => s.claudeAuthDiagnostics)[accountId]
+    ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
+  const { entries } = diagnostics;
+  if (entries.length === 0 && !diagnostics.message) return null;
+
+  const tail = authLogTail(entries, AUTH_TAIL_LINES);
+  return (
+    <div className="space-y-1" data-testid={`provider-account-output-${accountId}`}>
+      {diagnostics.message && (
+        <p className="truncate text-[11px] text-(--color-text-secondary)">{diagnostics.message}</p>
+      )}
+      {/*
+        **A fixed three rows, whatever arrives.** The CLI is driving a terminal,
+        so one log entry can be a screen redraw: measured live, letting it wrap
+        moved the dialog between 466 and 648px while the user was reading it.
+        Each line gets one row and is clipped; the block is the height of three
+        rows whether it holds three or one.
+      */}
+      <div
+        className="h-[42px] overflow-hidden"
+        data-testid={`provider-account-output-tail-${accountId}`}
+      >
+        {tail.map((line, index) => (
+          <div
+            key={`${index}:${line}`}
+            className="truncate font-mono text-[10px] leading-[14px] text-(--color-text-tertiary)"
+          >
+            {line}
+          </div>
+        ))}
       </div>
+      {/* docs/150 — the whole buffer stays reachable for the sign-in that goes
+          wrong; it is the tail above that is new, and always on. Rendered from
+          the first entry rather than once there are more than fit above,
+          because a disclosure that appears part-way through moves everything
+          under it at the moment the user is reading. */}
+      {entries.length > 0 && (
+        <details className="group" data-testid={`provider-account-diagnostics-${accountId}`}>
+          <summary className="cursor-pointer select-none text-xs text-(--color-text-link) transition-colors hover:text-(--color-accent)">
+            Claude CLI output ({entries.length})
+          </summary>
+          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) p-2 font-mono text-[var(--font-size-code)] text-(--color-text-secondary)">
+            {entries.map((entry) =>
+              `${entry.timestamp} ${entry.level.toUpperCase()} ${entry.source}: ${entry.message}`,
+            ).join("\n")}
+          </pre>
+        </details>
+      )}
     </div>
   );
 }
@@ -344,13 +474,10 @@ export function AccountChallenge({
   onError: (message: string) => void;
 }) {
   const auths = useSettingsStore((s) => s.providerAccountAuths);
-  const allDiagnostics = useSettingsStore((s) => s.claudeAuthDiagnostics);
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const pendingAuth = auths[providerAccountAuthKey(provider, account.id)] ?? null;
   if (!pendingAuth) return null;
-
-  const diagnostics = allDiagnostics[account.id] ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
 
   const submit = async () => {
     const trimmed = code.trim();
@@ -414,20 +541,9 @@ export function AccountChallenge({
       </div>
 
       {/* Claude's CLI-driven sign-in is the one that strands users, so its
-          diagnostics stay reachable. docs/150 — read this account's own buffer:
-          the output belongs to the attempt that produced it. */}
-      {provider === "claude" && diagnostics.entries.length > 0 && (
-        <details className="group" data-testid={`provider-account-diagnostics-${account.id}`}>
-          <summary className="cursor-pointer select-none text-xs text-(--color-text-link) transition-colors hover:text-(--color-accent)">
-            Claude CLI output ({diagnostics.entries.length})
-          </summary>
-          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) p-2 font-mono text-[var(--font-size-code)] text-(--color-text-secondary)">
-            {diagnostics.entries.map((entry) =>
-              `${entry.timestamp} ${entry.level.toUpperCase()} ${entry.source}: ${entry.message}`,
-            ).join("\n")}
-          </pre>
-        </details>
-      )}
+          output stays on screen — docs/150 — and it belongs to the attempt that
+          produced it, so it is read by account id. */}
+      {provider === "claude" && <ClaudeAuthOutput accountId={account.id} />}
     </>
   );
 }

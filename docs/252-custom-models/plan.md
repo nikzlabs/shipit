@@ -2991,6 +2991,34 @@ at is the one carrying the provider's code.
   close it and start again. A mode that also takes a key keeps its primary *Sign in*, because
   nothing auto-starts there.
 
+**Waiting looks like what it is waiting for, and on Anthropic it says what the CLI is
+saying.** Two providers, two waits. OpenAI's is a device flow that produces a code in about a
+third of a second; Anthropic's is a wizard ShipIt drives through the Claude CLI, and measured
+live it runs about six seconds — long enough that a pulse alone reads as *stuck* rather than
+as *working*.
+
+- `ChallengePlaceholder` takes a `shape`, because the box it stands in for differs: a code to
+  read (98px) or a field to paste into (84px). One placeholder could only be right for one of
+  them.
+- `ClaudeAuthOutput` puts the CLI's last three lines under it, uncollapsed, plus the phase
+  message the server already emits ("Waiting for Claude CLI to print an authentication link").
+  It renders in the wait, in the challenge and in the *stalled* state — the failure copy says
+  "copy the diagnostic details", and these are them — so the stream is continuous rather than
+  appearing and disappearing with each state.
+- **The output is a terminal, not a log**, which is what `authLogTail` is for. One entry can
+  be a whole screen redraw; the spinner emits a line per frame; `claude_control` entries are a
+  byte counter rather than words. Unfiltered and wrapped, that moved the dialog between 466
+  and 648px while the user was reading it. Now: entries split into lines, redraw-only lines
+  and repeats dropped, each line clipped to one row, and the block a fixed three rows whether
+  it holds three or none. Measured live, the whole Anthropic flow — start, wait, challenge —
+  holds one height, 486px.
+- A known artifact, left alone deliberately: some lines read `Esctocancel`. The CLI positions
+  each word with a cursor move and the **server** strips those before the client sees them
+  (`auth-diagnostics.ts:64`), so the spacing is already gone on arrival. Restoring it means
+  spacing the escapes out server-side instead — and the redaction that runs right after works
+  on the joined text, so a URL the CLI wrapped across a redraw would stop matching
+  `URL_PATTERN` and could show a fragment of an auth code. Ugly beats leaky.
+
 **Waiting looks like what it is waiting for.** The step renders `ChallengePlaceholder` — the
 same `CHALLENGE_BOX` shell as the real challenge, its lines drawn as a pulse — and the two
 measure **98px** each, which is why the first bar is `h-4` rather than the `h-5` the link's

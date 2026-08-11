@@ -75,6 +75,7 @@ import { providerAccountAuthKey, useSettingsStore } from "../../stores/settings-
 import {
   AccountChallenge,
   ChallengePlaceholder,
+  ClaudeAuthOutput,
   ProviderAccountRows,
   abandonAccount,
   cancelAccountLogin,
@@ -1045,10 +1046,18 @@ function AddServiceDialog({
                     its models are selectable now.
                   </p>
                 ) : signInStalled ? (
-                  <p className="text-xs text-(--color-text-error)" data-testid="add-service-signin-stalled">
-                    {authError ?? "The sign-in stopped before the account connected."} Try again
-                    below, or close this to add nothing.
-                  </p>
+                  <>
+                    <p className="text-xs text-(--color-text-error)" data-testid="add-service-signin-stalled">
+                      {authError ?? "The sign-in stopped before the account connected."} Try again
+                      below, or close this to add nothing.
+                    </p>
+                    {/* A failed Claude sign-in is exactly when the CLI's own
+                        words matter — the error above says "copy the diagnostic
+                        details", and this is them. */}
+                    {signInProvider === "claude" && signInAccountId && (
+                      <ClaudeAuthOutput accountId={signInAccountId} />
+                    )}
+                  </>
                 ) : signInAccount || startingSignIn ? (
                   <>
                     {pendingAuth && signInAccount ? (
@@ -1070,7 +1079,24 @@ function AddServiceDialog({
                         a line of prose and then grew by the height of a panel,
                         which is the jump this placeholder exists to remove.
                       */
-                      <ChallengePlaceholder testId="add-service-signin-starting" />
+                      <ChallengePlaceholder
+                        shape={signInProvider === "claude" ? "paste" : "code"}
+                        testId="add-service-signin-starting"
+                      />
+                    )}
+                    {/*
+                      **What the CLI is saying, while it says it.** Anthropic's
+                      sign-in is a wizard ShipIt drives, so the wait before the
+                      paste field can run for a while — and a pulse alone reads
+                      as stuck rather than as working. Outside the challenge
+                      too, deliberately: the wait is exactly when the user has
+                      nothing else to look at. `AccountChallenge` renders the
+                      same component once the field is up, so the output is
+                      continuous across that boundary rather than appearing with
+                      it.
+                    */}
+                    {signInProvider === "claude" && signInAccountId && !pendingAuth && (
+                      <ClaudeAuthOutput accountId={signInAccountId} />
                     )}
                     <p className="text-[11px] text-(--color-text-tertiary)">
                       Keep this open until the account connects — this step will say so.

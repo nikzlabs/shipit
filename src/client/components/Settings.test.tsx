@@ -240,9 +240,12 @@ describe("Settings - Services → Anthropic subscription", () => {
 
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
 
-    expect(screen.getByTestId("provider-account-diagnostics-acct-a")).toBeInTheDocument();
-    expect(screen.queryByTestId("provider-account-diagnostics-acct-b")).not.toBeInTheDocument();
-    expect(screen.getByText(/A's CLI output\./)).toBeInTheDocument();
+    expect(screen.getByTestId("provider-account-output-acct-a")).toBeInTheDocument();
+    expect(screen.queryByTestId("provider-account-output-acct-b")).not.toBeInTheDocument();
+    // The tail is the always-on part; the full buffer repeats it behind the
+    // disclosure, so the assertion names which one it means.
+    expect(screen.getByTestId("provider-account-output-tail-acct-a"))
+      .toHaveTextContent("A's CLI output.");
   });
 
   // docs/260 req 3 — disconnecting is one click, even for the last account.

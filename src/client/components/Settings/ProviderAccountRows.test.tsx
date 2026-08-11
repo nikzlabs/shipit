@@ -11,7 +11,7 @@
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor, within, act } from "@testing-library/react";
-import { ProviderAccountRows } from "./ProviderAccountRows.js";
+import { ProviderAccountRows, authLogTail } from "./ProviderAccountRows.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import type { AgentOption } from "../../agent-types.js";
@@ -206,5 +206,39 @@ describe("ProviderAccountRows stale-credential escape hatch", () => {
     useSettingsStore.getState().setProviderAccounts([]);
     renderRows();
     expect(screen.queryByTestId("provider-stale-credentials-claude")).toBeNull();
+  });
+});
+
+describe("authLogTail — the Claude CLI is a terminal, not a log", () => {
+  const line = (message: string) => ({ message });
+
+  it("keeps the last readable lines and drops the redraw", () => {
+    // Captured from a real sign-in in the dogfood instance: the CLI repaints
+    // its whole screen, so the raw stream is box-drawing, spinner frames and
+    // carriage returns around the two lines that actually say anything.
+    const entries = [
+      line("Prepared Claude CLI config before spawning login."),
+      line("Spawned claude /login process with pid 387."),
+      line("\u001b[2K\u001b[1G────────────────────────────\r\r\n  Not logged in · Run /login\r\r\n"),
+      line("✻"),
+      line("✶"),
+      line("*"),
+      line("Detected Claude authentication URL."),
+    ];
+
+    expect(authLogTail(entries, 3)).toEqual([
+      "Spawned claude /login process with pid 387.",
+      "Not logged in · Run /login",
+      "Detected Claude authentication URL.",
+    ]);
+  });
+
+  it("treats a repeated line as a repaint, not as news", () => {
+    const entries = [line("Waiting."), line("Waiting."), line("Waiting."), line("Done.")];
+    expect(authLogTail(entries, 3)).toEqual(["Waiting.", "Done."]);
+  });
+
+  it("has nothing to show for output that is only a redraw", () => {
+    expect(authLogTail([line("\u001b[2K"), line("╭──────╮"), line("   ")], 3)).toEqual([]);
   });
 });
