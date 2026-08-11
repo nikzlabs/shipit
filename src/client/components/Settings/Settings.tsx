@@ -7,9 +7,7 @@ import { SettingsEgress } from "../SettingsEgress.js";
 import { SkillsTab } from "../SkillsTab.js";
 import { KeybindingSettings } from "../KeybindingSettings.js";
 import { useUiStore } from "../../stores/ui-store.js";
-import { ClaudeTab } from "./tabs/ClaudeTab.js";
 import { ServicesPanel } from "./ServicesPanel.js";
-import { CodexTab } from "./tabs/CodexTab.js";
 import { InstructionsTab } from "./tabs/InstructionsTab.js";
 import { GitTab } from "./tabs/GitTab.js";
 import { VoiceTab } from "./tabs/VoiceTab.js";
@@ -20,7 +18,20 @@ import { AdvancedTab } from "./tabs/AdvancedTab.js";
 // so it reads as a tab bar rather than a stretched menu row.
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
-type Tab = "agent-claude" | "agent-codex" | "services" | "integrations" | "git" | "instructions" | "skills" | "keyboard" | "voice" | "network" | "advanced";
+/**
+ * docs/252 — there is no per-vendor tab, and Services leads.
+ *
+ * Settings used to open on an **Agent** group whose two tabs (`Claude`,
+ * `Codex`) each held a copy of the accounts card plus the sub-agent defaults.
+ * Both halves were wrong for this feature: a credential belongs to a *service*,
+ * not to the harness that happens to drive it, so listing them per harness is
+ * the conflation docs/252 exists to remove — and the accounts card is now one
+ * of the Services cards, so the tab was a second editor for one fact. The tabs
+ * are gone, Services is first, and Services is where Settings opens.
+ */
+type Tab = "services" | "integrations" | "git" | "instructions" | "skills" | "keyboard" | "voice" | "network" | "advanced";
+
+const TABS = ["services", "integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
 
 export interface SettingsProps {
   initialContent: string;
@@ -28,10 +39,7 @@ export interface SettingsProps {
   githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
   onGitHubTokenSubmit: (token: string) => Promise<void> | void;
   onGitHubLogout: () => void;
-  onApiKey: (key: string) => void;
-  onClearApiKey: () => void;
   agentList?: AgentOption[];
-  onSetAgentEnv?: (agentId: string, key: string, value: string) => void;
   onFullReset?: () => void;
   gitIdentity: { name: string; email: string };
   onGitIdentitySave: (name: string, email: string) => void;
@@ -50,10 +58,7 @@ export function Settings({
   githubStatus,
   onGitHubTokenSubmit,
   onGitHubLogout,
-  onApiKey,
-  onClearApiKey,
   agentList = [],
-  onSetAgentEnv,
   onFullReset,
   gitIdentity,
   onGitIdentitySave,
@@ -65,7 +70,7 @@ export function Settings({
   hasActiveSession,
   onClose,
 }: SettingsProps) {
-  const activeTab = useUiStore((s) => s.settingsTab) ?? "agent-claude";
+  const activeTab = useUiStore((s) => s.settingsTab) ?? "services";
   const setActiveTab = useUiStore((s) => s.setSettingsTab);
   const [content, setContent] = useState(initialContent);
   const savedRef = useRef(false);
@@ -93,14 +98,8 @@ export function Settings({
     }
   };
 
-  const claudeAgent = agentList.find((a) => a.id === "claude");
-  const codexAgent = agentList.find((a) => a.id === "codex");
-
-  const generalTabs = ["services", "integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
   const tabLabel = (tab: Tab) => {
     switch (tab) {
-      case "agent-claude": return "Claude";
-      case "agent-codex": return "Codex";
       case "services": return "Services";
       case "integrations": return "Integrations";
       case "git": return "Git";
@@ -142,41 +141,14 @@ export function Settings({
         }} className="flex max-md:flex-col flex-1 min-h-0" orientation="vertical">
           {/* Tab list — vertical sidebar on desktop, horizontal scroll on mobile */}
           <TabsList className="md:w-40 md:shrink-0 md:min-h-0 md:overflow-y-auto md:border-r md:py-2 max-md:flex-row max-md:overflow-x-auto max-md:border-b max-md:px-2 max-md:py-1.5 max-md:gap-1 max-md:shrink-0 border-(--color-border-secondary)">
-            <div className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-(--color-text-tertiary) max-md:hidden">
-              Agent
-            </div>
-            <TabsTrigger value="agent-claude" data-testid="settings-tab-agent-claude" className={mobileTabClass}>
-              {tabLabel("agent-claude")}
-            </TabsTrigger>
-            {codexAgent && (
-              <TabsTrigger value="agent-codex" data-testid="settings-tab-agent-codex" className={mobileTabClass}>
-                {tabLabel("agent-codex")}
-              </TabsTrigger>
-            )}
-
-            <div className="px-4 py-1.5 mt-3 text-[10px] font-semibold uppercase tracking-wider text-(--color-text-tertiary) max-md:hidden">
-              General
-            </div>
-            {generalTabs.map((tab) => (
-              <TabsTrigger key={tab} value={tab} className={mobileTabClass}>
+            {TABS.map((tab) => (
+              <TabsTrigger key={tab} value={tab} data-testid={`settings-tab-${tab}`} className={mobileTabClass}>
                 {tabLabel(tab)}
               </TabsTrigger>
             ))}
           </TabsList>
 
           {/* Right content area */}
-          <TabsContent value="agent-claude">
-            <ClaudeTab
-              agent={claudeAgent}
-              onApiKey={onApiKey}
-              onClearApiKey={onClearApiKey}
-            />
-          </TabsContent>
-
-          <TabsContent value="agent-codex">
-            <CodexTab agent={codexAgent} onSetAgentEnv={onSetAgentEnv} />
-          </TabsContent>
-
           <TabsContent value="instructions">
             <InstructionsTab
               content={content}

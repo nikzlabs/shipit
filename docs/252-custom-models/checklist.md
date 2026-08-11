@@ -204,3 +204,17 @@ table — a phase is checked off when its PR has merged.
 
 Both have landed; their notes are in [`plan.md`](./plan.md) rather than here, since each
 landed ahead of this checklist's per-phase sections.
+
+## UI audit follow-up
+
+- [x] **One card component in Settings → Services, and no per-vendor tabs** (`ui-audit.md`
+      D1, D2, D5, D7, D8, D9, and D16 by consequence). `ServiceCard` now owns the chrome for
+      every `(service, billing mode)` alike; `ProviderAccountsCard` became `ProviderAccountRows`,
+      a body rather than a card, with its "Add account" lifted into the card header. The
+      Settings → Claude / Codex tabs are deleted, Services leads a flat sidebar and is the tab
+      Settings opens on. Two duplicates went with them: a second selection-mode control that
+      wrote the same `accountSelectionMode` key as the string-delivered one, and the "Use an API
+      key instead" disclosure, which wrote through to the credential the Services add-flow
+      writes. The status dot went rather than moved — it reported the *harness* having runnable
+      models, so it read green above "No Claude subscription connected yet". Details in
+      [`plan.md`](./plan.md) → *One card component — and no per-vendor tabs at all*.

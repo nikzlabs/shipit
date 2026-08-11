@@ -31,8 +31,9 @@ export type RightTab =
 type MobilePanel = "chat" | "preview";
 
 type SettingsTab =
-  | "agent-claude"
-  | "agent-codex"
+  // docs/252 — the per-vendor `agent-claude` / `agent-codex` tabs are gone.
+  // Credentials are listed by service, not by the harness that drives them,
+  // so Settings → Services is the one credential surface and the default tab.
   | "services"
   | "integrations"
   | "git"

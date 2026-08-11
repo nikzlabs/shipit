@@ -366,7 +366,7 @@ export function useServerEvents(): void {
             action: {
               label: "Sign in",
               onClick: () => {
-                useUiStore.getState().setSettingsTab("agent-claude");
+                useUiStore.getState().setSettingsTab("services");
                 useUiStore.getState().setSettingsOpen(true);
               },
             },

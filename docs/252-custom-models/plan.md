@@ -2126,6 +2126,76 @@ empty section, and no sentence explaining the absence. Keys do not fail over (re
 there is nothing to order and nothing to spread. The asymmetry between the two card types is
 req 12 rendered.
 
+### One card *component* — and no per-vendor tabs at all
+
+The paragraphs above say "one card per `(service, billing mode)`", and phase 2 shipped that
+grouping — but not with one card *component*. A string-delivered credential got a bordered
+card inside this list; an account-backed subscription got `ProviderAccountsCard`, rendered
+**outside** it: no border, its own header, its own routing controls, and titled after the
+*harness* vendor ("Claude subscriptions") rather than the service. Two components, two visual
+languages, one list. That is what the [UI audit](./ui-audit.md) records as **D2**, and what
+Nik saw as "elements from the old system and from the new system".
+
+The fix is structural rather than cosmetic, and it deletes more than it adds:
+
+- **`ServiceCard`** owns the chrome for every card alike — border, avatar, service name,
+  billing-mode pill, credential-count pill, one header action, the model chips, and a shaded
+  routing band with its own heading (D7, D9). It owns no credential logic; which rows go
+  inside is the caller's.
+- **`ProviderAccountsCard` became `ProviderAccountRows`** — a *body*, not a card. Its header,
+  its status dot, its routing controls and its API-key disclosure all left with the card
+  chrome. Its "Add account" is now `AddAccountButton`, in the card's header slot.
+- **`CredentialRouting`** holds the selection-mode radios and the failover cutoffs, keyed by
+  `(service, billing mode)`. There had been **two** selection-mode controls writing the same
+  stored setting — a per-harness one on the accounts card and a per-`(service, mode)` one on
+  the string card, which for Anthropic's subscription is the identical key. Only one could
+  ever be on screen, so the duplication was invisible until the two cards became one.
+- **A mode that takes both shapes at once** — Anthropic's subscription accepts an OAuth
+  account *and* an env-supplied token — is now ONE card with both bodies stacked, where it
+  used to be two cards for one `(service, mode)`.
+
+**The status dot went rather than moved** (D5). It was green whenever the *harness* had any
+runnable model, so it read green above the words "No Claude subscription connected yet" as
+soon as an unrelated DeepSeek key existed. The mock has no per-card dot and the card's own
+rows already state each credential's status, so there was nothing for a corrected dot to add.
+
+**And there are no per-vendor Settings tabs.** The `Agent` group led the sidebar with `Claude`
+and `Codex`, Settings opened on `agent-claude`, and each tab held exactly
+`ProviderAccountsCard` + `SubAgentDefaultsSection`. Once the first is one of the Services
+cards, the tab is a second editor for one fact — its "Use an API key instead" disclosure wrote
+through to the very credential the Services add-flow writes. Both tabs are deleted, Services
+leads the (now flat) list, and Services is the tab Settings opens on (D1).
+
+The **API-key disclosure** (`onApiKey` / `onSetAgentEnv`) went with them, reachable instead as
+*Add a service → Anthropic → API key*, which is the same credential route. One asymmetry
+survives that move and is worth stating rather than discovering: `setApiKey` rejected anything
+not starting with `sk-ant-`, and the generic route endpoint the add-flow posts to does not, so
+a mistyped or wrong-vendor key is now stored as `ready` and fails at the first turn instead of
+at the paste. The audit already recorded that gap for every *other* service in the catalogue;
+removing the disclosure widens it to Anthropic rather than creating it. Closing it properly
+means a per-mode credential shape in the catalogue, which is not this pass.
+
+**The "Clear saved credentials" escape hatch stayed, moved onto the account rows** — a first
+draft dropped it on the reasoning that a row's **Disconnect** does the same job, and
+cross-backend review showed that is false. Disconnect deletes ONE account;
+`DELETE /api/auth/api-key` is deliberately provider-wide (docs/150 req 19), clearing every
+account's credentials *and* the singleton pre-account path where a legacy install's unscoped
+OAuth tokens sit with no row to reach them from. Its gate did change: it hung off
+`agent.hasRunnableModels`, the same harness-wide flag that made the status dot lie, and now
+reads "rows exist and none of them can authenticate".
+
+**A mode holding both delivery shapes is one card but not one routing pool.** Anthropic's
+subscription can carry OAuth accounts *and* an env-supplied token, and phase 5 decided an
+exhausted account walk is returned unchanged rather than falling through to that token
+(`service-routing.ts`). So the routing band counts and names only the accounts, and the token
+gets no order controls — `reorderCredentialRoutes` requires every route of the
+`(service, mode)` exactly once, so a list of just the string ids is a 400, and there is
+nothing to order anyway. The token's row says what it is instead. Also cross-backend review.
+
+`SubAgentDefaultsSection` is left unrendered rather than deleted: it is docs/217 work, the
+design has no per-harness surface left to host it (D16), and docs/261 phase 2 removes the
+feature outright. Deleting it here would collide with that work.
+
 **Credential failure branches on the billing mode, not on the error — and not on how the
 credential is shaped either** (req 12). The second half is easy to get wrong, because the two
 look alike and this repo already holds a counter-example: `claude-env-oauth` is a
@@ -2681,6 +2751,10 @@ is key-authenticated.
 | `orchestrator/non-turn-model.ts` | Req 9's resolver: the pinned or derived selection, the derived harness, its route and shaping |
 | `orchestrator/services/non-turn-work.ts` | Runs it: the brokered generation, the usage row, and the durable failure notice |
 | `orchestrator/session-namer.ts` | Naming's CLI shell-out, now pointed at the resolved selection and reporting its telemetry (req 9) |
+| `client/components/Settings/ServiceCard.tsx` | The **one** card the Services list is built from: chrome only — avatar, service name, billing-mode and count pills, one action, model chips, the shaded routing band. No credential logic |
+| `client/components/Settings/ServicesPanel.tsx` | The list and the add-flow. Decides which bodies go in a card, what the routing band holds, and what a credential of that mode is called |
+| `client/components/Settings/ProviderAccountRows.tsx` | Was `ProviderAccountsCard`. The account rows, the login challenge and their notices — a body, not a card. `AddAccountButton` is its header half |
+| `client/components/Settings/CredentialRouting.tsx` | `CredentialSelectionModeControl` + `FailoverCutoffControls`, keyed by `(service, billing mode)`. Replaced the two copies of the selection mode that wrote the same key |
 | `client/components/Settings/BackgroundWorkSection.tsx` | The visible setting (req 9), with the derived default labelled and the harness shown as a fact |
 | `client/components/NonTurnFailureCard.tsx` | The dismissible notice; dismissal is state on the persisted row, never its removal |
 

@@ -134,7 +134,7 @@ describe("ServicesPanel", () => {
 
     await userEvent.click(screen.getByTestId("add-service-continue"));
     // The card the message points at now exists, with its "Add account" button.
-    expect(screen.getByTestId("provider-accounts-card-codex")).toBeInTheDocument();
+    expect(screen.getByTestId("provider-account-rows-codex")).toBeInTheDocument();
     expect(screen.getByTestId("provider-account-add-codex")).toBeInTheDocument();
   });
 
@@ -256,10 +256,143 @@ describe("ServicesPanel", () => {
       { id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
     render(<ServicesPanel agentList={[claudeAgent]} />);
-    expect(screen.getByTestId("provider-accounts-card-claude")).toBeInTheDocument();
+    expect(screen.getByTestId("provider-account-rows-claude")).toBeInTheDocument();
     // The Anthropic key is its own `(anthropic, key)` card here, so the
     // accounts card must not offer a second editor for it.
     expect(screen.queryByTestId("provider-toggle-api-key-claude")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * docs/252 — **one** card component, whatever way the credential arrives.
+ *
+ * The account-backed body used to be a card of its own rendered OUTSIDE this
+ * list: borderless, titled after the harness vendor, with its own header and
+ * its own routing controls. These pin the properties that make the two bodies
+ * one card rather than two that merely sit near each other.
+ */
+describe("ServicesPanel — one card component (docs/252 D2, D7, D8, D9)", () => {
+  const now = Date.now();
+  const anthropicAccount = (id: string, isPrimary = false): CredentialRoute => ({
+    id, serviceId: "anthropic", billingMode: "sub", via: "account",
+    label: id, isPrimary, status: "ready", createdAt: now, updatedAt: now,
+  });
+
+  it("puts the account rows inside the service's card, not beside the list", () => {
+    useSettingsStore.getState().setProviderAccounts([anthropicAccount("acct_1", true)]);
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    const card = screen.getByTestId("service-card-anthropic:sub");
+    expect(within(card).getByTestId("provider-account-rows-claude")).toBeInTheDocument();
+    expect(within(card).getByRole("heading", { name: "Anthropic" })).toBeInTheDocument();
+    expect(within(card).getByTestId("service-avatar-anthropic")).toHaveTextContent("A");
+    // The harness vendor never titles a credential card.
+    expect(screen.queryByText(/Claude subscriptions/i)).not.toBeInTheDocument();
+  });
+
+  it("counts the credentials of a mode across both delivery shapes", () => {
+    useSettingsStore.getState().setProviderAccounts([
+      anthropicAccount("acct_1", true),
+      anthropicAccount("acct_2"),
+    ]);
+    // The same mode also holds an env-supplied token — one card, one count.
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_env", serviceId: "anthropic", billingMode: "sub", via: "string" }),
+    ]);
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    const card = screen.getByTestId("service-card-anthropic:sub");
+    // "credentials", not "accounts": the env token is on this card and is not
+    // an account. Three rows, three counted.
+    expect(within(card).getByTestId("service-count-pill-service-card-anthropic:sub"))
+      .toHaveTextContent("3 credentials");
+    expect(screen.getAllByTestId(/^service-card-anthropic:sub$/)).toHaveLength(1);
+  });
+
+  /**
+   * The two delivery shapes of ONE mode are not one routing pool, and the card
+   * must not imply they are.
+   *
+   * `selectAccountForTurn` answers for the accounts, and phase 5 decided an
+   * `all_exhausted` account walk is returned unchanged rather than falling
+   * through to the mode's env-delivered token (`service-routing.ts`). Two
+   * consequences, both pinned here: the routing band counts and names only the
+   * accounts, and the env token gets no order controls — the reorder endpoint
+   * demands every route of the `(service, mode)` exactly once, so a list of
+   * just the string ids is a 400. Found by cross-backend review.
+   */
+  it("does not present an env token and the accounts as one routing pool", () => {
+    useSettingsStore.getState().setProviderAccounts([anthropicAccount("acct_1", true)]);
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_env_a", serviceId: "anthropic", billingMode: "sub", via: "string" }),
+      route({ id: "cred_env_b", serviceId: "anthropic", billingMode: "sub", via: "string", priority: 1 }),
+    ]);
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    // One account in the pool, so there is nothing to route between — even
+    // though the card holds three credentials.
+    expect(screen.getByTestId("service-routing-service-card-anthropic:sub"))
+      .toHaveTextContent(/One account — nothing to route between yet/);
+    expect(screen.queryByTestId("credential-selection-mode-anthropic:sub")).not.toBeInTheDocument();
+    // No ordering on the tokens: the endpoint would reject a list that omits
+    // the account, and they are not in the accounts' failover chain anyway.
+    expect(screen.queryByTestId("credential-order-cred_env_a")).not.toBeInTheDocument();
+    // And the card says what the token actually is.
+    expect(screen.getByTestId("service-string-fallback-anthropic:sub"))
+      .toHaveTextContent(/does not move onto it when the accounts run out/);
+  });
+
+  it("gives the routing controls their own titled band, not an inline block", () => {
+    useSettingsStore.getState().setProviderAccounts([
+      anthropicAccount("acct_1", true),
+      anthropicAccount("acct_2"),
+    ]);
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    const band = screen.getByTestId("service-routing-service-card-anthropic:sub");
+    expect(band).toHaveTextContent(/How ShipIt picks between these accounts/i);
+    expect(within(band).getByTestId("credential-selection-mode-anthropic:sub")).toBeInTheDocument();
+    expect(within(band).getByTestId("failover-cutoffs-anthropic:sub")).toBeInTheDocument();
+  });
+
+  /**
+   * D14 / planning#339 — a cutoff is a percentage of a *reported* quota, and
+   * nothing reports one for a string-delivered plan yet, so the control would
+   * set a number that can never fire.
+   */
+  it("offers the order but not the cutoffs on a string-delivered subscription", () => {
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_1", serviceId: "zai", billingMode: "sub", via: "string", isPrimary: true }),
+      route({ id: "cred_2", serviceId: "zai", billingMode: "sub", via: "string", priority: 1 }),
+    ]);
+    render(<ServicesPanel />);
+
+    const band = screen.getByTestId("service-routing-service-card-zai:sub");
+    expect(band).toHaveTextContent(/How ShipIt picks between these credentials/i);
+    expect(within(band).getByTestId("credential-selection-mode-zai:sub")).toBeInTheDocument();
+    expect(screen.queryByTestId("failover-cutoffs-zai:sub")).not.toBeInTheDocument();
+  });
+
+  it("names a lone subscription's next step, and says nothing on a key card", () => {
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_1", serviceId: "zai", billingMode: "sub", via: "string", isPrimary: true }),
+      route({ id: "cred_k", serviceId: "deepseek", billingMode: "key", via: "string" }),
+    ]);
+    render(<ServicesPanel />);
+
+    expect(screen.getByTestId("service-routing-service-card-zai:sub"))
+      .toHaveTextContent(/One credential — nothing to route between yet/);
+    // req 12: a key card gets no band at all — not a disabled group, not an
+    // empty section, and no sentence explaining the absence.
+    expect(screen.queryByTestId("service-routing-service-card-deepseek:key")).not.toBeInTheDocument();
+  });
+
+  it("says nothing about routing on a subscription with no credential yet", () => {
+    useUiStore.getState().revealServiceMode("anthropic:sub");
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    expect(screen.getByTestId("service-card-anthropic:sub")).toBeInTheDocument();
+    expect(screen.queryByTestId("service-routing-service-card-anthropic:sub")).not.toBeInTheDocument();
   });
 });
 
@@ -350,7 +483,7 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
     // Back to "only what you configured": no notice keeps the card mounted,
     // because there is no moved/stranded story to tell (req 3).
     await waitFor(() => {
-      expect(screen.queryByTestId("provider-accounts-card-claude")).toBeNull();
+      expect(screen.queryByTestId("provider-account-rows-claude")).toBeNull();
     });
     expect(screen.getByTestId("services-empty")).toBeInTheDocument();
     expect(screen.queryByTestId("provider-accounts-notice-claude")).toBeNull();
@@ -380,7 +513,7 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
         .toHaveTextContent("Wait for it to finish");
     });
     expect(screen.getByTestId("provider-account-row-acct_1")).toBeInTheDocument();
-    expect(screen.getByTestId("provider-accounts-card-claude")).toBeInTheDocument();
+    expect(screen.getByTestId("provider-account-rows-claude")).toBeInTheDocument();
     expect(useUiStore.getState().toast).toBeNull();
   });
 
@@ -388,12 +521,12 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
     useSettingsStore.getState().setProviderAccounts([]);
     useSettingsStore.getState().setProviderAccountNotice("claude", { kind: "info", message: "Disconnected." });
     render(<ServicesPanel agentList={[claudeAgent]} />);
-    expect(screen.getByTestId("provider-accounts-card-claude")).toBeInTheDocument();
+    expect(screen.getByTestId("provider-account-rows-claude")).toBeInTheDocument();
 
     await userEvent.click(screen.getByTestId("provider-accounts-notice-claude-dismiss"));
     // Back to "only what you configured" — the card was on screen to deliver a
     // message, not because anything is configured.
-    expect(screen.queryByTestId("provider-accounts-card-claude")).toBeNull();
+    expect(screen.queryByTestId("provider-account-rows-claude")).toBeNull();
     expect(screen.getByTestId("services-empty")).toBeInTheDocument();
   });
 });
