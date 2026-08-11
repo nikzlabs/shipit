@@ -39,12 +39,28 @@ receives data when someone clicks buttons in the previewed pages.
    them), and interactions in their pages (e.g. a click in the previewed UI)
    reach the agent — the same integration same-repo services have today.
 4. A change to a tool is testable against the real project, in the project
-   session, immediately — with no publish step, no deploy step, and no
-   separate authentication setup.
+   session, with no publish step, no deploy step, and no separate
+   authentication setup. (Per req 7, the change itself is made in a session on
+   the tools repository; the project session receives it through req 8.)
 5. Wiring the tools into a new project costs one declaration. No per-project
    copies of service definitions or install boilerplate that must be kept in
    sync across project repos.
 6. This works when the repositories are private.
+7. The tools checkout in a project session is **read-only**. Tool changes are
+   made in sessions on the tools repository itself; a project session never
+   pushes to the tools repository.
+8. By default, a project session's tools checkout tracks a named branch of the
+   tools repository. A project repository can pin a tag or SHA instead when it
+   needs stability.
+9. Tool services run **per-session**: each project session gets its own
+   instances, like its own compose services today.
+10. The feature works under both credential modes: host-wide PAT and per-repo
+    GitHub App tokens. Private tools repositories stay reachable either way.
+
+## Out of scope (v1)
+
+- MCP-style tool declarations (the tools repository shipping an MCP server the
+  agent gets automatically in project sessions). Deferred; revisit for v2.
 
 ## Requirement provenance
 
@@ -53,28 +69,26 @@ Requirements 1–4 restate what the user said directly (voice messages,
 projects at the user's request. Requirement 5 generalizes the user's stated
 friction ("ShipIt doesn't provide a convenient way") to the many-projects case;
 the "one declaration" bar is the agent's proposal. Requirement 6 is inferred
-from the repositories being private today; the credential-mode question it
-raises is open below.
+from the repositories being private today. Requirements 7–10 and the v1 scope
+are the user's answers to the structured questions of 2026-08-11 (see Resolved
+questions).
 
 ## Open questions
 
-- **Writable or read-only tools checkout?** May a project session edit the
-  tools checkout and push the change back to the common repository, or is the
-  tools repo edited only in its own sessions? The user's no-deploy loop
-  (req 4) suggests fixing a tool right where the real project data is.
-- **Freshness.** When does a project session's tools checkout update — does it
-  track a branch of the tools repo automatically, or is it pinned per project
-  repo and bumped explicitly?
-- **Service instances.** Do tool services run per-session (each project
-  session gets its own instance) or shared (one instance serves all sessions)?
 - **Where does the declaration live?** Per project repo in `shipit.yaml` (like
   `issues.trackers`), or once at account/project-group level so all repos get
   it?
-- **Credential modes.** Must this work under GitHub App credentials, whose
-  tokens are minted per-repo, or is PAT-mode support enough for now?
-- **MCP scope.** Are MCP-style tool declarations (the tools repo shipping an
-  MCP server the agent gets automatically) in scope, or out of scope for v1?
 
 ## Resolved questions
 
-(None yet.)
+- **2026-08-11 — Writable or read-only tools checkout?** Answer: **read-only**
+  (the agent recommended writable; the user chose read-only). Tool changes are
+  made in tools-repo sessions and reach project sessions via the tracked
+  branch. → req 7; req 4 rephrased to match.
+- **2026-08-11 — Freshness.** Answer: **track a named branch by default, pin a
+  tag/SHA optionally per project repo.** → req 8.
+- **2026-08-11 — Service instances.** Answer: **per-session.** → req 9.
+- **2026-08-11 — Credential modes.** Answer: **GitHub App support is in scope
+  for v1**, alongside PAT. → req 10.
+- **2026-08-11 — MCP scope.** Answer: **out of scope for v1** (not selected in
+  the v1-scope question). → Out of scope section.
