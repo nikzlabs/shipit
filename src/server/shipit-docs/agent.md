@@ -7,13 +7,15 @@ migration" — without you leaving the session or surrendering the session's
 pinned agent.
 
 This is a generic delegation primitive with a review path built into it. Which
-one you use decides **who you are allowed to name**:
+shape you use depends on whether you were handed a complete target:
 
-- **A review → name the ROLE.** `--role reviewer` asks for a review and lets
-  ShipIt pick the reviewer, from settings the user owns.
-- **Anything else → name EVERYTHING.** An explicit run states the harness, the
+- **You were not → name the ROLE.** `--role reviewer` asks for a review and lets
+  ShipIt pick the reviewer, from settings the user owns. This is the normal case.
+- **You were → name EVERYTHING.** An explicit run states the harness, the
   service, the billing mode, the model and the reasoning level. Nothing is filled
-  in from a stored default, so an incomplete call is refused.
+  in from a stored default, so an incomplete call is refused. A repository that
+  names all five is overriding ShipIt's reviewer, which is allowed; that review
+  is an ordinary explicit call.
 
 The two do not mix, and a call in between is rejected with an error naming what
 is missing (docs/261).
@@ -29,12 +31,13 @@ The user says something like:
 Recognize the intent and run the command yourself. There is no slash command and
 no button — the natural-language request is the trigger.
 
-**Do not choose the reviewer yourself.** If the user names a backend ("review
-this with Codex"), still use `--role reviewer`: which model reviews is a ShipIt
-setting, not a judgement call you make per turn, and it is what keeps the
-reviewer distant from the implementer when the implementer changes. Tell the
-user which reviewer actually ran (the consult card names it) and that ShipIt's own
-reviewer settings are where they change it.
+**Do not choose the reviewer yourself, and do not guess to fill the explicit
+shape out.** If the user names a backend ("review this with Codex") without
+naming a service, a billing mode, a model and an effort, use `--role reviewer`:
+which model reviews is a ShipIt setting, not a judgement call you make per turn,
+and it is what keeps the reviewer distant from the implementer when the
+implementer changes. Tell the user which reviewer actually ran and that ShipIt's
+own reviewer settings are where they change it.
 
 **Never reach for the raw `codex` / `claude` CLI to do this.** Per-agent
 credential isolation mounts only *your* pinned agent's credentials in this
@@ -73,10 +76,10 @@ shipit agent result [RUN-ID] [--wait [--timeout SECONDS]] [--json]
 
 Names **what you want done**, not who does it. ShipIt resolves the reviewer from
 its own settings and ranks the two configured reviewers by distance from what
-*you* are running: a different model family first, then a different harness,
-degrading to the best difference the install actually offers. The reviewer is
-resolved and routed once, when the spawn is admitted, so retries and the consult
-card all report the same model.
+*you* are running: a different model family first, then a different model, then a
+different harness, degrading to the best difference the install actually offers.
+The reviewer is resolved and routed once, when the spawn is admitted, so a retry
+cannot quietly move the review onto a different model.
 
 `--role` may not be combined with any of the five explicit flags — a call
 carrying both is asking two different questions ("who should review this?" and
@@ -146,9 +149,9 @@ and act on the rest.
 
 You also do **not** need to paste the output back for the user to see it: ShipIt
 surfaces the sub-agent's verbatim output inline, in the persisted consult card,
-with attribution (docs/220) — which is also where the user sees which reviewer
-ShipIt picked. So treat stdout as input for *acting*, not as something to re-type
-into chat — re-pasting it just duplicates what the card already shows.
+attributed to the agent that ran it (docs/220). So treat stdout as input for
+*acting*, not as something to re-type into chat — re-pasting it just duplicates
+what the card already shows.
 
 **Your copy and the user's copy are the same document.** stdout and the card are
 written from one string, so there is no "the UI has more" — if you and the user

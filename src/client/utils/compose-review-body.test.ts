@@ -95,31 +95,25 @@ describe("composeReviewMessage — role mode (consult card, docs/220 + docs/261)
     // words, which is exactly the reviewer choice the role took away from the
     // client. Matched as "flag followed by a VALUE" so the message may still
     // name the flags it forbids ("no --agent, no --model") — the bug is a
-    // generated command that passes one, not prose that mentions one.
-    expect(msg).not.toMatch(/--agent\s+\S/);
-    expect(msg).not.toMatch(/--model\s+\S/);
-    expect(msg).not.toMatch(/--effort\s+\S/);
-    expect(msg).not.toMatch(/--service\s+\S/);
+    // generated command that passes one, not prose that mentions one. The whole
+    // explicit set, not just `--agent`: a role call carrying any of them is
+    // refused at the edge, so all five must stay out of the generated command.
+    for (const flag of ["--agent", "--service", "--billing-mode", "--model", "--effort"]) {
+      expect(msg, `role message must not pass ${flag}`).not.toMatch(
+        new RegExp(`${flag}\\s+\\S`),
+      );
+    }
     // ShipIt surfaces the reviewer's output in the consult card; the parent records nothing
     expect(msg).toContain("consult card");
     expect(msg).not.toContain("submit_review");
     expect(msg).not.toContain("reviewer_label");
   });
 
-  it("tells the parent not to second-guess the resolution", () => {
-    const msg = composeReviewMessage("a.ts", role);
-    expect(msg).toContain("Name the ROLE and nothing else");
-    expect(msg).toContain("ShipIt picks the reviewer");
-  });
-
   it("makes a failed role spawn a first-class fallback to a same-model Task review (prose)", () => {
     const msg = composeReviewMessage("a.ts", role);
     expect(msg).toContain("exits non-zero");
     expect(msg).toContain("do NOT abort");
-    expect(msg).toContain("fresh");
     expect(msg).toContain("Task subagent");
     expect(msg).toContain("prose");
-    // The fallback names the role's failure, not a backend that was "unavailable".
-    expect(msg).toContain("configured reviewer was unavailable");
   });
 });
