@@ -17,10 +17,24 @@ reasoning level, and the **agent** supplies the harness by writing `--agent code
 lives in ShipIt rather than in a repository (req 2), and reduces the agent's part to naming a
 role (req 6).
 
-The load-bearing simplification: **roles are the only implicit path.** Everything else a
-spawned agent runs on is explicit at the call (req 7). That is what lets `SubAgentDefaults`
-be deleted rather than re-keyed, and it is why there is no third place that answers "what
-does a spawned agent run on".
+The load-bearing simplification: **nothing stored fills in a one-shot spawn's blanks.** A
+`shipit agent run` either names a role, and is resolved from the reviewer settings, or names
+everything itself (req 7). That is what lets `SubAgentDefaults` be deleted rather than
+re-keyed.
+
+There are exactly three ways an agent is started, and each answers "what does it run on"
+differently. Writing them down together is what stopped an earlier draft of req 7 from
+accidentally outlawing the third:
+
+| Path | What it runs on |
+|---|---|
+| A **role** (`--role reviewer`) | Resolved from ShipIt's reviewer settings — reqs 1–6, 8 |
+| A **one-shot run** (`shipit agent run`) | Named in full at the call; an omission is refused — req 7 |
+| A **child session** (`shipit session create`) | Inherited from the parent, with partial override — req 10, unchanged by this feature |
+
+The child-session rule is deliberately the opposite of the one-shot rule, and that is
+coherent rather than inconsistent: a child session has a parent to inherit from, and a
+one-shot run has nothing but its own arguments.
 
 ## A reviewer is a model, not a harness
 
@@ -219,6 +233,17 @@ restated, and is why `fallbackModel` cannot survive on this path.
   is asking two different questions, and req 6 separates them.
 - The spawn's read of `getAgentSubAgentDefaults` (`sub-agent.ts:285`) is replaced by the role
   resolution or by the explicit arguments, and the store is deleted.
+
+**The stored defaults are dropped, not migrated, and there is no notice.** Existing values are
+deleted with the store; anyone who had configured one reconfigures the reviewer instead. That
+is a deliberate decision recorded in `requirements.md`, and its whole justification is that the
+install population is currently one person — so it is the decision to revisit if that changes
+before this ships, not a general principle about how ShipIt treats settings.
+
+`shipit session create` is untouched. It keeps `--agent` and `--model` (`shipit-session.ts:99`)
+and keeps inheriting the rest from the parent (req 10). Worth noting for whoever reads this
+next: it has **no reasoning flag**, so the "partial override" it offers covers two of the three
+parameters. Out of scope here; recorded so it is not mistaken for complete.
 
 **Every product-owned caller has to move with it.** The draft named only `CLAUDE.md`, which
 was wrong — ShipIt itself authors and generates these commands in at least four more places,
