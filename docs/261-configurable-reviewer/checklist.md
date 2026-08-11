@@ -74,15 +74,29 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
 
 ## Phase 3 — Settings
 
-- [ ] The Reviewer tab: two model pickers grouped by `(service, billing mode)` + reasoning
-- [ ] Each slot labelled **Auto-configured** or **Pinned**, with what it currently resolves to
-- [ ] The derived default rendered as a labelled option, not a blank
-- [ ] The server sends the resolution; the client does not re-derive it
-- [ ] The resolution is re-broadcast when a credential, the catalogue or harness availability
-      changes, so an open tab does not show a stale answer
+- [x] The Reviewer tab: two model pickers grouped by `(service, billing mode)` + reasoning —
+      the composer's own grouping, reusing `ModelGroupHeader` and its billing-mode pill rather
+      than a second treatment of the same pair
+- [x] Each slot labelled **Auto-configured** or **Pinned**, with what it currently resolves to —
+      service, mode, model, the derived harness AND the reasoning level, because a reviewer
+      missing either of the last two is the half-configured thing this feature replaces
+- [x] The derived default rendered as a labelled option, not a blank. Two lines (name over
+      resolved value): on one line the resolved value is what truncates, which turns the
+      labelled option back into a bare "Auto-configured"
+- [x] The server sends the resolution; the client does not re-derive it. Nothing is optimistic —
+      one edit legitimately changes BOTH slots (slot 2 ranks against slot 1), so a local guess
+      would have to reimplement the ranking to stay honest
+- [x] The resolution is re-broadcast when a credential, the catalogue or harness availability
+      changes, so an open tab does not show a stale answer — it rides the `agent_list` SSE,
+      which is already the funnel every credential change goes through. **Route usability moves
+      on transitions that event does not fire for** (a quota-exhaustion stamp, an exhaustion
+      deadline expiring, the `authenticating` window); `plan.md` records why those are left —
+      the ranking already falls through, and an expiring deadline cannot be pushed at all
 - [x] `ClaudeTab`, `CodexTab` and the Agent nav group removed (the Services-card session);
       `SubAgentDefaultsSection` removed with the store, in phase 2
-- [ ] Driven in the dogfood instance, screenshots against the audit
+- [x] Driven in the dogfood instance, screenshots against the audit — one-service and
+      two-service installs, the pin/reset round trip, and a credential added and removed with
+      the tab open
 
 Services-first (audit D1) is **docs/252's**, not this feature's — no requirement here asks for
 it.

@@ -119,6 +119,76 @@ export interface ReviewerPin {
   reasoningEffort: string;
 }
 
+/**
+ * docs/261 phase 3 (req 8) — the complete reviewer a slot currently resolves to.
+ *
+ * Lives beside {@link ReviewerPin} rather than in the orchestrator's service
+ * types because the browser renders it verbatim: it is a wire shape, and the
+ * client re-typing it inline is how the two come to disagree about a field.
+ */
+export interface ReviewerResolved {
+  serviceId: string;
+  billingMode: BillingMode;
+  modelId: string;
+  serviceName: string;
+  /** Model label, not the raw id — the same string the picker shows. */
+  label: string;
+  /** Derived (req 3), never stored. */
+  harnessId: AgentId;
+  harnessName: string;
+  /** Req 5 — the pin's level, or the harness's ShipIt-authored review default. */
+  reasoningEffort: string;
+  /** That level's display label on this harness, when the harness declares one. */
+  reasoningLabel?: string;
+}
+
+/**
+ * docs/261 phase 3 (req 8) — one reviewer slot as the Settings screen sees it.
+ *
+ * Both halves ride together and neither is derivable from the other: `pin` is
+ * what the user chose (absent when the slot is auto-configured), and `resolved`
+ * is what the slot runs on **right now**. The server computes `resolved`,
+ * because the derivation is reqs 4/8's rule and a second implementation in the
+ * browser is how the setting starts disagreeing with what actually reviews.
+ */
+export interface ReviewerSlotView {
+  slot: ReviewerSlot;
+  /** Req 8's visible state: `pinned` is a choice the user made, `auto` re-derives. */
+  source: "pinned" | "auto";
+  /** The stored pin, present exactly when `source === "pinned"`. */
+  pin?: ReviewerPin;
+  /**
+   * What this slot resolves to today, harness and reasoning level included
+   * (req 5 — a derived reviewer is complete). Absent when nothing runnable
+   * answers it, which {@link ReviewerSlotView.unavailableReason} explains.
+   */
+  resolved?: ReviewerResolved;
+  /**
+   * Why there is no `resolved`. `pin_unavailable` means the user's choice lost
+   * its credential or its harness; `nothing_eligible` means the install has
+   * nothing to run a review on at all. They read very differently to the user,
+   * so they are not collapsed into one absence.
+   */
+  unavailableReason?: "pin_unavailable" | "nothing_eligible";
+}
+
+/**
+ * docs/261 phase 3 — a pin edit arriving on `PUT /api/settings`.
+ *
+ * `reasoningEffort` is optional **here and nowhere else**: the stored pin is
+ * always complete (req 5), and omitting the level on the wire means "the model
+ * changed, give me this harness's default" — which the server answers, because
+ * the harness is its derivation and the client must not re-derive it. The
+ * response carries the resulting complete pin, so nothing is filled in
+ * somewhere the caller cannot see.
+ */
+export interface ReviewerPinPatch {
+  serviceId: string;
+  billingMode: BillingMode;
+  modelId: string;
+  reasoningEffort?: string;
+}
+
 export interface AgentCapabilities {
   /** Whether the agent can resume a previous conversation (e.g. --resume). */
   supportsResume: boolean;

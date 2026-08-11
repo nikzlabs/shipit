@@ -12,6 +12,7 @@ import { InstructionsTab } from "./tabs/InstructionsTab.js";
 import { GitTab } from "./tabs/GitTab.js";
 import { VoiceTab } from "./tabs/VoiceTab.js";
 import { AdvancedTab } from "./tabs/AdvancedTab.js";
+import { ReviewerTab } from "./tabs/ReviewerTab.js";
 
 // On mobile the tab list collapses from a vertical sidebar into a horizontal
 // scrollable strip — each trigger sizes to its label and gets pill-like styling
@@ -29,9 +30,13 @@ const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md
  * of the Services cards, so the tab was a second editor for one fact. The tabs
  * are gone, Services is first, and Services is where Settings opens.
  */
-type Tab = "services" | "integrations" | "git" | "instructions" | "skills" | "keyboard" | "voice" | "network" | "advanced";
+type Tab = "services" | "reviewer" | "integrations" | "git" | "instructions" | "skills" | "keyboard" | "voice" | "network" | "advanced";
 
-const TABS = ["services", "integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
+// docs/261 phase 3 — `reviewer` sits directly after `services`, because it is
+// the one setting that reads entirely off the credentials that tab configures:
+// an auto-configured reviewer changes the moment a service is added. Services
+// stays first and stays the default (docs/252 D1); nothing here reorders it.
+const TABS = ["services", "reviewer", "integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
 
 export interface SettingsProps {
   initialContent: string;
@@ -101,6 +106,7 @@ export function Settings({
   const tabLabel = (tab: Tab) => {
     switch (tab) {
       case "services": return "Services";
+      case "reviewer": return "Reviewer";
       case "integrations": return "Integrations";
       case "git": return "Git";
       case "instructions": return "Instructions";
@@ -179,6 +185,12 @@ export function Settings({
               onboarding hosts the same component. */}
           <TabsContent value="services">
             <ServicesPanel agentList={agentList} />
+          </TabsContent>
+
+          {/* docs/261 phase 3 (reqs 1, 5, 8) — the two configured reviewers,
+              each labelled auto-configured or pinned with what it resolves to. */}
+          <TabsContent value="reviewer">
+            <ReviewerTab agentList={agentList} />
           </TabsContent>
 
           <TabsContent value="integrations">

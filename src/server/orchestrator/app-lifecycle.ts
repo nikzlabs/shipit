@@ -1445,7 +1445,7 @@ export function markProviderAccountUnauthenticated(opts: {
   }
   agentRegistry.refreshAuth(agentId);
   sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
-  sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore));
+  sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
 }
 
 /**
@@ -1486,7 +1486,7 @@ export function markProviderAccountReauthenticated(opts: {
   }
   agentRegistry.refreshAuth(agentId);
   sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
-  sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore));
+  sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
 }
 
 /** Wire auth event handlers. */
@@ -1603,7 +1603,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
             reason: "duplicate",
             message: refusal,
           });
-          sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore));
+          sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
           sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
           return;
         }
@@ -1625,7 +1625,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
       agentRegistry.refreshAuth(agentId);
       repushTokenToPinnedSessions(agentId, accountId);
       sseBroadcast("agent_auth_complete", { agentId, ...(accountId ? { accountId } : {}) });
-      sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore));
+      sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
       sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
     });
 
@@ -1649,7 +1649,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
         ...(payload?.message ? { message: payload.message } : {}),
       });
       agentRegistry.refreshAuth(agentId);
-      sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore));
+      sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
     });
   }
 

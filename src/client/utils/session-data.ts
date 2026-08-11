@@ -3,6 +3,7 @@ import type { GitCommit } from "../components/GitHistory.js";
 import type { SessionInfo, RepoInfo, FileTreeNode, TurnUsage, SessionUsage, RuntimeMode, CredentialRoute } from "../../server/shared/types.js";
 import { turnContextTokens } from "../../server/shared/types.js";
 import { getContextWindowForModel } from "../../server/shared/model-windows.js";
+import type { ReviewerSlotView } from "../../server/shared/types/agent-types.js";
 import type { AgentOption } from "../agent-types.js";
 import type { TemplateInfo } from "./template-info.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -116,6 +117,8 @@ interface BootstrapResponse {
       harnessId: string;
       source: "pinned" | "default";
     };
+    /** docs/261 phase 3 (req 8) — both reviewer slots, pinned or auto-configured. */
+    reviewers?: ReviewerSlotView[];
     /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent id. */
     failoverCutoffs?: Record<string, { session: number; weekly: number }>;
     accountSelectionMode?: Record<string, "strict" | "balanced">;
@@ -421,6 +424,11 @@ export async function loadBootstrapData(): Promise<void> {
     data.settings.nonTurnModel ?? null,
     data.settings.nonTurnModelResolved ?? null,
   );
+  // docs/261 phase 3 (req 8) — guarded on presence, unlike the non-turn pair
+  // above, because the two cases differ: an absent `nonTurnModel` is the real
+  // state "no pin", while an absent `reviewers` only ever means an older server.
+  // Clearing the array would empty the Reviewer tab rather than say anything.
+  if (data.settings.reviewers) useSettingsStore.getState().setReviewers(data.settings.reviewers);
   useUiStore.getState().setRuntimeMode(data.runtimeMode ?? "containerized");
   useUiStore.getState().setTailnetPreviewHost(data.tailnetPreviewHost ?? null);
   useUiStore.getState().setBootstrapLoaded(true);

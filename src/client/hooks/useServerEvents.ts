@@ -9,6 +9,7 @@ import { useEgressStore } from "../stores/egress-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
 import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, AgentId, EgressSettings } from "../../server/shared/types.js";
+import type { ReviewerSlotView } from "../../server/shared/types/agent-types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
 import { getSavedModelId, saveAgentId, saveModelId } from "../utils/local-storage.js";
 import { resolveAuthedSelection } from "../utils/resolve-authed-selection.js";
@@ -501,7 +502,16 @@ export function useServerEvents(): void {
         // server never clears it, so ignoring an absent field cannot strand a
         // stale value.
         harnessOnboardingCompletedAt?: string;
+        // docs/261 phase 3 (req 8) — both reviewer slots, re-resolved. This is
+        // the whole reason the reviewer resolution rides `agent_list`: the event
+        // fires on every credential and harness-availability change, which is
+        // exactly when an auto-configured reviewer re-derives. Absent means an
+        // older server, so the store keeps what bootstrap gave it.
+        reviewers?: ReviewerSlotView[];
       };
+      if (data.reviewers) {
+        useSettingsStore.getState().setReviewers(data.reviewers);
+      }
       if (typeof data.canRunTurns === "boolean") {
         useSettingsStore.getState().setCanRunTurns(data.canRunTurns);
       }

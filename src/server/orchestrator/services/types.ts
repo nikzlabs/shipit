@@ -3,7 +3,7 @@
  */
 
 import type { AgentId, PermissionMode } from "../../shared/types.js";
-import type { AgentReasoningCapability } from "../../shared/types/agent-types.js";
+import type { AgentReasoningCapability, ReviewerSlotView } from "../../shared/types/agent-types.js";
 import type { EligibleModel } from "../../shared/agent-registry.js";
 import type { AccountSelectionMode, CredentialRoute, FailoverCutoffs, SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
@@ -158,7 +158,30 @@ export interface GlobalSettings {
    * Carries **no secret** — see `CredentialRoute`.
    */
   credentialRoutes: CredentialRoute[];
+  /**
+   * docs/261 phase 3 (reqs 1, 5, 8) — both reviewer slots, in the user's order,
+   * each with its pin (if any) and what it resolves to right now.
+   *
+   * Always two entries, always present: a reviewer nobody has configured is
+   * *auto-configured*, which is a state with an answer rather than a missing
+   * value, and rendering a blank there is exactly what req 8 exists to stop.
+   *
+   * Also carried on the `agent_list` SSE payload — see `buildAgentListPayload`
+   * — so an open Reviewer tab re-renders when a credential is added or removed
+   * instead of showing the answer from before.
+   */
+  reviewers: ReviewerSlotView[];
 }
+
+/**
+ * docs/261 phase 3 — the reviewer wire shapes.
+ *
+ * Declared in `shared/types/agent-types.ts` beside `ReviewerPin`, not here: the
+ * browser renders them verbatim, so they are shared wire types rather than
+ * orchestrator-internal ones. Re-exported so this module stays the one import
+ * the settings layer needs.
+ */
+export type { ReviewerPinPatch, ReviewerResolved, ReviewerSlotView } from "../../shared/types/agent-types.js";
 
 /** docs/252 phase 7 — the pinned non-turn selection, as it crosses the wire. */
 export interface NonTurnModelSelection {

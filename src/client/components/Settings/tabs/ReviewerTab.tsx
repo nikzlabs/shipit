@@ -1,0 +1,543 @@
+/**
+ * docs/261 phase 3 (reqs 1, 5, 8) — where the user configures **who reviews the
+ * work**.
+ *
+ * Until this tab existed the reviewer was half a setting: a per-harness stored
+ * default supplied the model and the level, and the agent supplied the harness
+ * itself by writing `--agent codex`, because a line in `CLAUDE.md` told it to.
+ * Here the whole reviewer is one thing the user configures once (req 1), and
+ * there are two of them so reviewing works whichever model is implementing
+ * (req 4).
+ *
+ * Four decisions you can read straight off the markup:
+ *
+ *  - **Each slot says whether it is `Auto-configured` or `Pinned`, and what it
+ *    currently resolves to** (req 8). That is a requirement, not a badge: a
+ *    reviewer that changed because a service was added has to be legible rather
+ *    than surprising, and the state is what tells the user their untouched slot
+ *    is still following the install.
+ *  - **The derived default is a labelled option, not a blank.** The first row
+ *    of the model menu names what auto-configuration resolves to today. An
+ *    empty picker that silently works is exactly what this replaces.
+ *  - **The server sends the resolution; this file never re-derives it.** Which
+ *    harness runs a model (req 3), which level it reviews at (req 5) and which
+ *    slot is furthest from the implementer (req 4) are all the server's rules.
+ *    A second implementation here is how the tab starts promising something
+ *    other than what reviews.
+ *  - **Pinning is atomic** (req 8). Editing *either* control pins the whole
+ *    resolved tuple, and *Reset to auto* is the only way back. A half-pinned
+ *    slot — a pinned level over a still-derived model — is not expressible, on
+ *    the wire or here.
+ *
+ * The model menu is the composer's own grouping, down to `ModelGroupHeader` and
+ * its billing-mode pill: a model is selected by `(service, billing mode, model)`
+ * everywhere in ShipIt, and a reviewer is a model like any other (req 3).
+ */
+
+import { useRef, useState } from "react";
+import { ArrowCounterClockwiseIcon, CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
+import { ICON_SIZE } from "../../../design-tokens.js";
+import { Badge } from "../../ui/badge.js";
+import { Button } from "../../ui/button.js";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "../../ui/dropdown-menu.js";
+import { ModelGroupHeader } from "../../ModelPicker.js";
+import { BillingModePill } from "../../BillingModePill.js";
+import { useSettingsStore } from "../../../stores/settings-store.js";
+import { useUiStore } from "../../../stores/ui-store.js";
+import type { AgentOption, EligibleModelOption } from "../../../agent-types.js";
+import type {
+  ReviewerPinPatch,
+  ReviewerSlotView,
+} from "../../../../server/shared/types/agent-types.js";
+
+/**
+ * Re-read the reviewer slots from the server.
+ *
+ * Used only after an ambiguous write failure: a dropped connection cannot say
+ * whether the server committed, so the tab asks rather than keeping a value
+ * that may already be wrong. Failing quietly is right here — this runs behind a
+ * toast that already reported the real problem, and a second toast about the
+ * reconciliation would name a symptom rather than a cause.
+ */
+async function refetchReviewers(): Promise<void> {
+  try {
+    const res = await fetch("/api/bootstrap");
+    if (!res.ok) return;
+    const data = (await res.json()) as { settings?: { reviewers?: ReviewerSlotView[] } };
+    if (data.settings?.reviewers) useSettingsStore.getState().setReviewers(data.settings.reviewers);
+  } catch {
+    // Still offline. The next `agent_list` push or reload reconciles.
+  }
+}
+
+const SLOT_TITLE: Record<string, string> = {
+  first: "Reviewer 1",
+  second: "Reviewer 2",
+};
+
+/**
+ * Every eligible triple across INSTALLED harnesses, de-duplicated and grouped
+ * by `(service, billing mode)`.
+ *
+ * De-duplicated because the harness is derived (req 3): one model offered on
+ * both installed harnesses is one choice here, not two. Which harness ends up
+ * running it is the server's derivation — and for a reviewer it can even differ
+ * per review, since the ranking prefers a harness that is not the implementer's
+ * — so offering the same model twice would imply a decision the user does not
+ * make.
+ */
+function modelGroups(agents: AgentOption[]) {
+  const seen = new Set<string>();
+  const groups: { key: string; serviceName: string; billingMode: "sub" | "key"; models: EligibleModelOption[] }[] = [];
+  for (const agent of agents) {
+    if (!agent.installed) continue;
+    for (const model of agent.eligibleModels ?? []) {
+      const id = `${model.serviceId}|${model.billingMode}|${model.modelId}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const key = `${model.serviceId}:${model.billingMode}`;
+      let group = groups.find((g) => g.key === key);
+      if (!group) {
+        group = {
+          key,
+          serviceName: model.serviceName,
+          billingMode: model.billingMode,
+          models: [],
+        };
+        groups.push(group);
+      }
+      group.models.push(model);
+    }
+  }
+  return groups;
+}
+
+/** The reasoning levels the slot's *derived* harness offers, or none. */
+function reasoningFor(agents: AgentOption[], harnessId: string | undefined) {
+  if (!harnessId) return undefined;
+  return agents.find((a) => a.id === harnessId)?.reasoning;
+}
+
+export function ReviewerTab({ agentList = [] }: { agentList?: AgentOption[] }) {
+  const reviewers = useSettingsStore((s) => s.reviewers);
+  /**
+   * The slots with a write in flight — a SET, not one slot id.
+   *
+   * A single slot id looked sufficient because a user edits one control at a
+   * time, and it is not: starting a second write overwrites the first slot's id,
+   * so the first control re-enables mid-flight, and whichever request finishes
+   * first clears the flag for the one still running. Cross-backend review found
+   * it. The two slots are independently editable, so busy is per slot.
+   */
+  const [saving, setSaving] = useState<ReadonlySet<string>>(() => new Set());
+  /**
+   * Which write is the newest. Every response replaces BOTH slots (slot 2 ranks
+   * against slot 1), so an older response landing last would overwrite a newer
+   * snapshot with a stale one — the classic last-response-wins, and here it
+   * silently un-does an edit the user watched succeed. A response is applied
+   * only if no later write has started since it was issued.
+   */
+  const latestWrite = useRef(0);
+  const groups = modelGroups(agentList);
+
+  /**
+   * Write one slot and adopt the server's answer for BOTH.
+   *
+   * Nothing is optimistic here, unlike `BackgroundWorkSection`'s pin. Two
+   * reasons, and the second is the requirement: the resolution carries a
+   * derived harness and a derived level this file must not guess (req 8's "the
+   * server sends the resolution"), and slot 2 is ranked *against* slot 1, so
+   * editing one slot legitimately changes what the other reports. A local guess
+   * would have to reimplement the ranking to stay honest.
+   */
+  const save = async (slot: string, value: ReviewerPinPatch | null) => {
+    const write = ++latestWrite.current;
+    setSaving((prev) => new Set(prev).add(slot));
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reviewers: { [slot]: value } }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      const result = (await res.json()) as { reviewers?: ReviewerSlotView[] };
+      if (result.reviewers && write === latestWrite.current) {
+        useSettingsStore.getState().setReviewers(result.reviewers);
+      }
+    } catch (err) {
+      useUiStore.getState().setToast({
+        message: err instanceof Error ? err.message : "Failed to update the reviewer",
+      });
+      console.error("[settings] set reviewer failed:", err);
+      // A failure is AMBIGUOUS — the connection can drop after the server
+      // committed — so the store is not left holding a guess. Re-read what the
+      // server actually has rather than assuming the write did or did not land.
+      if (write === latestWrite.current) void refetchReviewers();
+    } finally {
+      setSaving((prev) => {
+        const next = new Set(prev);
+        next.delete(slot);
+        return next;
+      });
+    }
+  };
+
+  return (
+    <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full" data-testid="reviewer-tab">
+      <div>
+        <h3 className="text-sm font-medium text-(--color-text-primary)">Reviewer</h3>
+        <p className="mt-0.5 text-xs text-(--color-text-tertiary)">
+          Who ShipIt asks for a second opinion when an agent requests a review. Two of them, so
+          reviewing works whichever model is implementing — ShipIt uses whichever is furthest
+          from the model that wrote the work, preferring a different model family above
+          everything else. Left alone, a reviewer follows this install: add a service and it
+          improves on its own.
+        </p>
+      </div>
+
+      {reviewers.length === 0 ? (
+        <div
+          className="rounded-md border border-dashed border-(--color-border-secondary) p-6 text-center"
+          data-testid="reviewer-loading"
+        >
+          <p className="text-sm text-(--color-text-secondary)">Loading reviewers…</p>
+        </div>
+      ) : (
+        reviewers.map((view) => (
+          <ReviewerSlotCard
+            key={view.slot}
+            view={view}
+            groups={groups}
+            reasoning={reasoningFor(agentList, view.resolved?.harnessId)}
+            busy={saving.has(view.slot)}
+            onSave={(value) => void save(view.slot, value)}
+          />
+        ))
+      )}
+    </div>
+  );
+}
+
+function ReviewerSlotCard({
+  view,
+  groups,
+  reasoning,
+  busy,
+  onSave,
+}: {
+  view: ReviewerSlotView;
+  groups: ReturnType<typeof modelGroups>;
+  reasoning: AgentOption["reasoning"];
+  busy: boolean;
+  onSave: (value: ReviewerPinPatch | null) => void;
+}) {
+  const { resolved } = view;
+  const pinned = view.source === "pinned";
+
+  // The derived answer, named. Rendered even on a pinned slot — as the *Reset
+  // to auto* affordance's subject — because "what would happen if I un-pinned
+  // this" is not otherwise visible, and req 8's promise is that the state is
+  // legible.
+  const autoDetail = pinned
+    ? "follow this install again"
+    : resolved
+      ? `${resolved.serviceName} · ${resolved.label}`
+      : "nothing runnable yet";
+
+  return (
+    <div
+      className="shrink-0 overflow-hidden rounded-md border border-(--color-border-secondary)"
+      data-testid={`reviewer-slot-${view.slot}`}
+    >
+      <div className="space-y-3 p-3">
+        <div className="flex items-start gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-sm font-medium text-(--color-text-primary)">
+                {SLOT_TITLE[view.slot] ?? view.slot}
+              </h3>
+              {/*
+                Req 8's visible state. `info` for pinned and the neutral grey
+                for auto-configured, because auto is the resting state and a
+                coloured badge on it would read as a warning about the case
+                nobody has touched.
+              */}
+              <Badge
+                variant={pinned ? "info" : "default"}
+                className="px-1.5 text-[10px]"
+                data-testid={`reviewer-state-${view.slot}`}
+              >
+                {pinned ? "Pinned" : "Auto-configured"}
+              </Badge>
+            </div>
+            {/*
+              Req 8's other half — what the slot currently resolves to, in one
+              line: service, billing mode, model, the DERIVED harness (req 3)
+              and the reasoning level (req 5). All four, because a reviewer that
+              named a model and left the harness or the level unsaid is exactly
+              the half-configured thing this feature replaces.
+
+              The billing pill sits beside the service name, the way a service
+              card states the same pair — a model is selected by `(service,
+              billing mode, model)`, so the mode qualifies the service rather
+              than the row.
+            */}
+            <div
+              className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-(--color-text-tertiary)"
+              data-testid={`reviewer-resolution-${view.slot}`}
+            >
+              {resolved ? (
+                <>
+                  <span>Currently {resolved.serviceName}</span>
+                  <BillingModePill
+                    billingMode={resolved.billingMode}
+                    data-testid={`reviewer-mode-pill-${view.slot}`}
+                  />
+                  <span>
+                    · {resolved.label}, running on {resolved.harnessName} at{" "}
+                    {resolved.reasoningLabel ?? resolved.reasoningEffort}
+                  </span>
+                </>
+              ) : view.unavailableReason === "pin_unavailable" ? (
+                <span className="text-(--color-warning)">
+                  {view.pin?.modelId} is no longer available — its credential or its harness is
+                  gone. Reviews fall through to the other reviewer until you pick another.
+                </span>
+              ) : (
+                <span>Nothing to review with yet — add a service credential under Services.</span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <ModelMenu
+            slot={view.slot}
+            groups={groups}
+            autoDetail={autoDetail}
+            pinned={pinned}
+            triggerLabel={resolved ? resolved.label : (view.pin?.modelId ?? "Unavailable")}
+            disabled={busy}
+            selected={
+              pinned && view.pin
+                ? `${view.pin.serviceId}:${view.pin.billingMode}:${view.pin.modelId}`
+                : undefined
+            }
+            onPick={(model) =>
+              onSave({
+                serviceId: model.serviceId,
+                billingMode: model.billingMode,
+                modelId: model.modelId,
+                // The level is deliberately OMITTED. The model may resolve on a
+                // different harness with a different level set, and which
+                // harness that is (req 3) is the server's derivation — guessing
+                // it here is the re-derivation req 8 rules out. The server
+                // completes the tuple from the harness it derives, so the pin
+                // stays atomic either way.
+              })
+            }
+            onReset={() => onSave(null)}
+          />
+
+          {reasoning && reasoning.options.length > 0 && (
+            <ReasoningMenu
+              slot={view.slot}
+              label={reasoning.label}
+              options={reasoning.options}
+              current={resolved?.reasoningEffort}
+              disabled={busy || !resolved}
+              onPick={(effort) => {
+                if (!resolved) return;
+                // Editing the level pins the WHOLE tuple (req 8), which is why
+                // the model triple rides along rather than being left to a
+                // partial patch.
+                onSave({
+                  serviceId: resolved.serviceId,
+                  billingMode: resolved.billingMode,
+                  modelId: resolved.modelId,
+                  reasoningEffort: effort,
+                });
+              }}
+            />
+          )}
+
+          {pinned && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={busy}
+              onClick={() => onSave(null)}
+              data-testid={`reviewer-reset-${view.slot}`}
+            >
+              <ArrowCounterClockwiseIcon size={ICON_SIZE.XS} />
+              Reset to auto
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const triggerClass =
+  "flex items-center gap-1.5 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2.5 py-1.5 text-xs font-medium text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) disabled:cursor-not-allowed disabled:opacity-50";
+
+function ModelMenu({
+  slot,
+  groups,
+  autoDetail,
+  pinned,
+  triggerLabel,
+  selected,
+  disabled,
+  onPick,
+  onReset,
+}: {
+  slot: string;
+  groups: ReturnType<typeof modelGroups>;
+  autoDetail: string;
+  pinned: boolean;
+  triggerLabel: string;
+  selected: string | undefined;
+  disabled: boolean;
+  onPick: (model: EligibleModelOption) => void;
+  onReset: () => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          disabled={disabled}
+          className={triggerClass}
+          aria-label={`Model for ${SLOT_TITLE[slot] ?? slot}`}
+          data-testid={`reviewer-model-trigger-${slot}`}
+        >
+          <span className="truncate">{triggerLabel}</span>
+          <CaretDownIcon size={ICON_SIZE.XS} />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-72" data-testid={`reviewer-model-menu-${slot}`}>
+        {/*
+          The derived default as a LABELLED option (req 8), always first and
+          never a blank. On an auto slot it names what auto currently resolves
+          to; on a pinned slot it is the way back.
+
+          Two lines, name over detail — the same shape the harness rows use, and
+          for the same reason: on one line the resolved value is what gets
+          truncated, which turns the labelled option back into the bare
+          "Auto-configured" the requirement exists to replace.
+        */}
+        <DropdownMenuItem
+          onSelect={onReset}
+          className={`px-3 py-1.5 text-sm ${
+            pinned ? "" : "bg-(--color-accent-subtle) text-(--color-text-link)"
+          }`}
+          data-testid={`reviewer-model-auto-${slot}`}
+        >
+          <span className="min-w-0 flex-1">
+            <span className="block truncate">Auto-configured</span>
+            <span className="block truncate text-xs text-(--color-text-tertiary)">
+              {autoDetail}
+            </span>
+          </span>
+          <span className="flex w-4 shrink-0 justify-end">
+            {!pinned && <CheckIcon size={ICON_SIZE.SM} className="text-(--color-accent)" />}
+          </span>
+        </DropdownMenuItem>
+        {groups.map((group) => (
+          <div key={group.key}>
+            <ModelGroupHeader serviceName={group.serviceName} billingMode={group.billingMode} />
+            {group.models.map((model) => {
+              const key = `${model.serviceId}:${model.billingMode}:${model.modelId}`;
+              const isCurrent = selected === key;
+              return (
+                <DropdownMenuItem
+                  key={key}
+                  onSelect={() => onPick(model)}
+                  className={`pl-5 pr-3 py-1.5 text-sm ${
+                    isCurrent ? "bg-(--color-accent-subtle) text-(--color-text-link)" : ""
+                  }`}
+                  data-testid={`reviewer-model-option-${slot}-${model.modelId}`}
+                >
+                  <span className="min-w-0 flex-1 truncate">{model.label}</span>
+                  <span className="flex w-4 shrink-0 justify-end">
+                    {isCurrent && <CheckIcon size={ICON_SIZE.SM} className="text-(--color-accent)" />}
+                  </span>
+                </DropdownMenuItem>
+              );
+            })}
+          </div>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * The reviewer's reasoning level (req 5).
+ *
+ * **No "Default" entry**, unlike the composer's `ReasoningSelector`. There the
+ * absence of a level means "pass no flag and let the CLI decide"; here req 5
+ * makes the level part of the reviewer, so a reviewer with no level is exactly
+ * the state the requirement rules out. Every option is a real level, and an
+ * auto-configured slot already carries the one ShipIt authored for its harness.
+ */
+function ReasoningMenu({
+  slot,
+  label,
+  options,
+  current,
+  disabled,
+  onPick,
+}: {
+  slot: string;
+  label: string;
+  options: { value: string; label: string }[];
+  current: string | undefined;
+  disabled: boolean;
+  onPick: (value: string) => void;
+}) {
+  const currentLabel = options.find((o) => o.value === current)?.label ?? current ?? label;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          disabled={disabled}
+          className={triggerClass}
+          aria-label={`${label} for ${SLOT_TITLE[slot] ?? slot}`}
+          data-testid={`reviewer-reasoning-trigger-${slot}`}
+        >
+          <span>{currentLabel}</span>
+          <CaretDownIcon size={ICON_SIZE.XS} />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-48" data-testid={`reviewer-reasoning-menu-${slot}`}>
+        {options.map((option) => (
+          <DropdownMenuItem
+            key={option.value}
+            onSelect={() => onPick(option.value)}
+            className={`px-3 py-1.5 text-sm ${
+              option.value === current ? "bg-(--color-accent-subtle) text-(--color-text-link)" : ""
+            }`}
+            data-testid={`reviewer-reasoning-option-${slot}-${option.value}`}
+          >
+            <span className="min-w-0 flex-1 truncate">{option.label}</span>
+            <span className="flex w-4 shrink-0 justify-end">
+              {option.value === current && (
+                <CheckIcon size={ICON_SIZE.SM} className="text-(--color-accent)" />
+              )}
+            </span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}

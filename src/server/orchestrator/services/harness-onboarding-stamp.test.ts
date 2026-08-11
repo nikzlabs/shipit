@@ -131,7 +131,7 @@ describe("resolveHarnessOnboarding (docs/257 req 9)", () => {
 describe("buildAgentListPayload carries the stamp (docs/257 req 9)", () => {
   it("emits the stamp alongside the agent list and the runnable signal", () => {
     const store = new CredentialStore(tmpDir());
-    const payload = buildAgentListPayload(registry(true), store);
+    const payload = buildAgentListPayload(registry(true), store, undefined);
     expect(payload.canRunTurns).toBe(true);
     expect(payload.harnessOnboardingCompletedAt).toEqual(expect.any(String));
     expect(payload.agents).toHaveLength(1);
@@ -141,7 +141,7 @@ describe("buildAgentListPayload carries the stamp (docs/257 req 9)", () => {
     // Absent means "no news" on the wire, which is safe precisely because the
     // stamp is never cleared: a client can only ever be told it exists.
     const store = new CredentialStore(tmpDir());
-    const payload = buildAgentListPayload(registry(false), store);
+    const payload = buildAgentListPayload(registry(false), store, undefined);
     expect(payload.harnessOnboardingCompletedAt).toBeUndefined();
   });
 
@@ -150,7 +150,7 @@ describe("buildAgentListPayload carries the stamp (docs/257 req 9)", () => {
     // producer of this event, and it must not report the install as
     // never-configured just because it can no longer run anything.
     const store = new CredentialStore(tmpDir());
-    const stamped = buildAgentListPayload(registry(true), store).harnessOnboardingCompletedAt;
-    expect(buildAgentListPayload(registry(false), store).harnessOnboardingCompletedAt).toBe(stamped);
+    const stamped = buildAgentListPayload(registry(true), store, undefined).harnessOnboardingCompletedAt;
+    expect(buildAgentListPayload(registry(false), store, undefined).harnessOnboardingCompletedAt).toBe(stamped);
   });
 });
