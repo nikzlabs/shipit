@@ -55,7 +55,7 @@
  * that hosts it, which is also where someone who wants to pin it goes looking.
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { CaretDownIcon, CaretUpIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
@@ -79,6 +79,7 @@ import {
   cancelAccountLogin,
   createAccount,
   isUnconnectedAttempt,
+  providerAccountsOf,
   signInBlockedReason,
   startAccountLogin,
   useAllProviderAccounts,
@@ -113,6 +114,39 @@ function modelIds(service: ServiceDef, billingMode: BillingMode): string[] {
 function accountProviderFor(service: ServiceDef, billingMode: BillingMode): AgentId | undefined {
   if (!modeCredentialFor(service.id, billingMode, "account")) return undefined;
   return harnessForNativeService(service.id);
+}
+
+/**
+ * An attempt the add-flow would **adopt** rather than compete with: the one it
+ * is already conducting, or one stranded by a reload — invisible in the panel
+ * ({@link isUnconnectedAttempt}) and holding the provider's single login slot
+ * with nothing on screen to release it.
+ *
+ * One function because the answer is read in three places — the render, the
+ * click that starts a sign-in, and the check for whether one can start — and a
+ * second copy of the rule is how they come to disagree.
+ */
+function adoptableAttempt(
+  accounts: CredentialRoute[],
+  signInAccountId?: string,
+): CredentialRoute | undefined {
+  return (signInAccountId ? accounts.find((a) => a.id === signInAccountId) : undefined)
+    ?? accounts.find(isUnconnectedAttempt);
+}
+
+/**
+ * **Signing in is the whole of step 3 for this mode** — it accepts an account
+ * and nothing else, so the step has no field to fill in and no choice to make.
+ *
+ * Read from the catalogue, and the reason it is a question at all: OpenAI's
+ * subscription is account-only, so its step 3 was one button over one sentence
+ * — a click that asked nothing and could only be answered one way. Anthropic's
+ * subscription is not, because it also takes an env-supplied token, so its step
+ * really does have something to look at and the sign-in stays a decision.
+ */
+function signInIsTheWholeStep(service: ServiceDef, billingMode: BillingMode): boolean {
+  return !!modeCredentialFor(service.id, billingMode, "account")
+    && !modeCredentialFor(service.id, billingMode, "string");
 }
 
 export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] }) {
@@ -685,11 +719,44 @@ function AddServiceDialog({
    * is what keeps the two from disagreeing for a frame.
    */
   const [signInAccountId, setSignInAccountId] = useState<string | undefined>(undefined);
+  /** The user has left. Read by `startSignIn` after every await — see `cancel`. */
+  const left = useRef(false);
+
+  /**
+   * **Choosing the mode starts its sign-in, when signing in is all the step
+   * would offer** (req 18).
+   *
+   * Picking OpenAI → Subscription used to land on a sentence and one button
+   * reading "Sign in to OpenAI": nothing to read, nothing to decide, and no
+   * other way forward — the user's click had already said everything the button
+   * asked. So the same click starts the login, and the step the user arrives at
+   * is the one carrying the code.
+   *
+   * It does **not** apply to a mode that also takes a key (Anthropic's
+   * subscription): there the step has a field, so starting a login the user did
+   * not ask for would pre-empt a real choice.
+   *
+   * Nothing auto-starts that would fail on arrival — a missing harness or
+   * another sign-in in flight leaves the step as it was, saying so, with the
+   * button to retry once the way is clear.
+   */
+  const pickMode = (forService: ServiceDef, mode: BillingMode): void => {
+    setBillingMode(mode);
+    const provider = accountProviderFor(forService, mode);
+    if (!provider || !signInIsTheWholeStep(forService, mode)) return;
+    if (!(agentList.find((a) => a.id === provider)?.installed ?? true)) return;
+    const known = providerAccountsOf(useSettingsStore.getState().providerAccounts, provider);
+    if (signInBlockedReason(known, adoptableAttempt(known, signInAccountId)?.id)) return;
+    void startSignIn(forService, mode);
+  };
 
   const pickService = (next: ServiceDef): void => {
     setService(next);
-    setBillingMode(next.modes.length === 1 ? next.modes[0].kind : undefined);
     setError("");
+    // A one-option choice is not a choice, so a single-mode service goes
+    // straight to step 3 — and if that step is only a sign-in, straight into it.
+    if (next.modes.length === 1) pickMode(next, next.modes[0].kind);
+    else setBillingMode(undefined);
   };
 
   // A mode's two delivery shapes are independent, and Anthropic's subscription
@@ -722,12 +789,7 @@ function AddServiceDialog({
   const harnessInstalled = signInProvider
     ? (agentList.find((a) => a.id === signInProvider)?.installed ?? true)
     : true;
-  /**
-   * An attempt this flow would adopt rather than compete with — this dialog's
-   * own, or one stranded by a reload. Derived once, and used twice: to start
-   * the sign-in, and to decide whether anything is in the way of starting it.
-   */
-  const adoptable = signInAccount ?? accounts.find(isUnconnectedAttempt);
+  const adoptable = adoptableAttempt(accounts, signInAccountId);
   /**
    * docs/150 — the provider runs ONE login process, so a second one is a 409.
    * Said here rather than after the click.
@@ -754,16 +816,48 @@ function AddServiceDialog({
    * only retry left was the Connect button on the card behind the modal. That
    * is precisely the hand-off req 17 deletes, rebuilt by accident on the error
    * path. Found by cross-backend review.
+   *
+   * **"No challenge yet" is not one of them.** The provider's code arrives on a
+   * broadcast a moment after the login starts, so between the two this dialog
+   * holds an `authenticating` row and nothing else — which read as stalled and
+   * said "the sign-in stopped" about a sign-in that was starting normally. It
+   * was a flash behind a button press before; with the sign-in starting on the
+   * mode click (req 18) it would be the screen the user lands on. So a stopped
+   * attempt has to have *stopped*: the requests done, and then either a reason
+   * filed against it or a status that is no longer `authenticating`.
+   *
+   * `startingSignIn` is in the test because the row is created **before** the
+   * login is asked for, and it is created `unavailable` — so between the two
+   * requests the account is neither authenticating nor failed. Measured live,
+   * that was a 35 ms flash of "the sign-in stopped" on the way to the code.
+   *
+   * The status clause is kept, rather than trusting `authError` alone, for the
+   * login that dies without filing a reason: the row falls back out of
+   * `authenticating`, and a stalled state with a *Try again* is the only thing
+   * standing between that and a dialog waiting for a code that will never come.
    */
   const authKey = signInProvider && signInAccountId
     ? providerAccountAuthKey(signInProvider, signInAccountId)
     : undefined;
   const pendingAuth = useSettingsStore((s) => (authKey ? s.providerAccountAuths[authKey] : undefined));
   const authError = useSettingsStore((s) => (authKey ? s.providerAccountAuthErrors[authKey] : undefined));
-  const signInStalled = !!signInAccount && !signedIn && !pendingAuth;
+  const signInStalled = !!signInAccount && !signedIn && !pendingAuth && !startingSignIn
+    && (!!authError || signInAccount.status !== "authenticating");
 
-  const startSignIn = async (): Promise<void> => {
-    if (!signInProvider) return;
+  /**
+   * The `(service, mode)` are arguments rather than closure reads because
+   * {@link pickMode} calls this from the very click that chose them: `service`
+   * and `billingMode` are still the previous render's values there. Both
+   * default to state for the ordinary caller — the button.
+   */
+  const startSignIn = async (
+    forService = service,
+    forMode = billingMode,
+  ): Promise<void> => {
+    const provider = forService && forMode ? accountProviderFor(forService, forMode) : undefined;
+    if (!provider) return;
+    // Read now, not at the last render, for the same reason.
+    const known = providerAccountsOf(useSettingsStore.getState().providerAccounts, provider);
     setStartingSignIn(true);
     setError("");
     try {
@@ -774,8 +868,8 @@ function AddServiceDialog({
        * the provider's single login slot with nothing on screen to release it —
        * and, otherwise, no attempt yet, so make one.
        */
-      const existing = adoptable;
-      const account = existing ?? await createAccount(signInProvider, accounts.map((a) => a.id));
+      const existing = adoptableAttempt(known, signInAccountId);
+      const account = existing ?? await createAccount(provider, known.map((a) => a.id));
       if (!account) {
         setError("Could not start the sign-in — no account was created.");
         return;
@@ -785,11 +879,32 @@ function AddServiceDialog({
       // started left a failed start un-abandonable — Cancel with nothing to
       // delete, and a retry creating a second orphan each time.
       setSignInAccountId(account.id);
+      /**
+       * **Whoever leaves last cleans up.** `cancel` can only abandon an id it
+       * has, and until the line above runs it has none — so a user who chose
+       * the mode and pressed Esc while the create was still in flight closed
+       * the dialog over an account that then appeared behind them: hidden by
+       * `isUnconnectedAttempt`, holding the provider's login slot, with nothing
+       * on screen to release it. Since the sign-in now starts on the mode click
+       * (req 18), that window is no longer one the user has to be quick to hit.
+       *
+       * A ref rather than state, because what is being asked is "has this
+       * component been left?" and the answer must not be a render behind the
+       * question. Found by the independent review.
+       */
+      if (left.current) {
+        void abandonAccount(provider, account.id);
+        return;
+      }
       // An adopted attempt may still have a login running against it (the CLI
       // outlives the browser). Cancelling first is what makes the challenge
       // this dialog then shows the live one, rather than a 409.
-      if (existing) await cancelAccountLogin(signInProvider, account.id);
-      await startAccountLogin(signInProvider, account.id);
+      if (existing) await cancelAccountLogin(provider, account.id);
+      if (left.current) {
+        void abandonAccount(provider, account.id);
+        return;
+      }
+      await startAccountLogin(provider, account.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start the sign-in");
     } finally {
@@ -820,6 +935,10 @@ function AddServiceDialog({
    * reaches it.
    */
   const cancel = (): void => {
+    // Said before the abandon, so a `startSignIn` still awaiting a response
+    // sees it and cleans up after itself: between the two of them, every
+    // account this dialog created is either connected or gone.
+    left.current = true;
     if (signInProvider && signInAccountId && !signedIn) {
       void abandonAccount(signInProvider, signInAccountId);
     }
@@ -883,7 +1002,7 @@ function AddServiceDialog({
             {service.modes.map((m) => (
               <button
                 key={m.kind}
-                onClick={() => setBillingMode(m.kind)}
+                onClick={() => pickMode(service, m.kind)}
                 className="flex w-full items-center justify-between gap-3 rounded-md border border-(--color-border-secondary) px-2.5 py-2 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-hover)"
                 data-testid={`add-service-mode-${m.kind}`}
               >
@@ -929,14 +1048,24 @@ function AddServiceDialog({
                   </p>
                 ) : signInAccount ? (
                   <>
-                    {/* The provider's challenge, in the flow that asked for it —
-                        the same component the account row renders. */}
-                    <AccountChallenge
-                      provider={signInProvider ?? "claude"}
-                      account={signInAccount}
-                      serviceName={service.name}
-                      onError={setError}
-                    />
+                    {pendingAuth ? (
+                      // The provider's challenge, in the flow that asked for it —
+                      // the same component the account row renders.
+                      <AccountChallenge
+                        provider={signInProvider ?? "claude"}
+                        account={signInAccount}
+                        serviceName={service.name}
+                        onError={setError}
+                      />
+                    ) : (
+                      <p
+                        className="text-xs text-(--color-text-secondary)"
+                        data-testid="add-service-signin-starting"
+                      >
+                        Starting the sign-in with {service.name} — its code appears here in a
+                        moment.
+                      </p>
+                    )}
                     <p className="text-[11px] text-(--color-text-tertiary)">
                       Keep this open until the account connects — this step will say so.
                       Closing it, however you close it, calls the sign-in off and adds nothing.
@@ -1042,12 +1171,22 @@ function AddServiceDialog({
               {saving ? "Saving..." : "Save"}
             </Button>
           )}
-          {/* Hidden only while a challenge is actually live: there is nothing to
-              press twice, and the provider would refuse a second login anyway.
-              An attempt that stalled keeps it, as **Try again** on the account
-              already created — which is why `startSignIn` reuses
-              `signInAccount` instead of creating a second one. */}
-          {acceptsAccount && (!signInAccount || signInStalled) && !signedIn && (
+          {/*
+            **Hidden only while a challenge is actually live**: there is nothing
+            to press twice, and the provider would refuse a second login anyway.
+            Every other state keeps it, on the account already created — which
+            is why `startSignIn` reuses that account rather than making a second.
+
+            "Waiting for the code" is one of those states, and deliberately so.
+            A login can reach `authenticating` and never produce a challenge —
+            a CLI that stays alive saying nothing — and nothing on the client
+            can tell that apart from a code still on its way. Only the button
+            standing there stops the wait becoming a dialog with one exit, so it
+            is disabled while the request is in flight and enabled after, as
+            **Start again**. It never appears mid-wait: it is there from the
+            first frame of the step and leaves when the code arrives.
+          */}
+          {acceptsAccount && !pendingAuth && !signedIn && (
             <Button
               variant="primary"
               size="md"
@@ -1060,7 +1199,9 @@ function AddServiceDialog({
                 ? "Starting..."
                 : signInStalled
                   ? "Try again"
-                  : `Sign in to ${service?.name ?? "the service"}`}
+                  : signInAccount
+                    ? "Start again"
+                    : `Sign in to ${service?.name ?? "the service"}`}
             </Button>
           )}
         </div>

@@ -155,7 +155,19 @@ export function useProviderAccounts(provider: AgentId): CredentialRoute[] {
  * *conducting* an attempt and needs to see it: `AddServiceDialog`.
  */
 export function useAllProviderAccounts(provider: AgentId): CredentialRoute[] {
-  const allAccounts = useSettingsStore((s) => s.providerAccounts);
+  return providerAccountsOf(useSettingsStore((s) => s.providerAccounts), provider);
+}
+
+/**
+ * The same narrowing as a plain function, for a caller that must read the list
+ * **inside an event handler** rather than at render: the click that chooses a
+ * billing mode also starts that mode's sign-in, and the hook above is keyed on
+ * the mode already in state — a render behind.
+ */
+export function providerAccountsOf(
+  allAccounts: CredentialRoute[],
+  provider: AgentId,
+): CredentialRoute[] {
   // planning#342 — the store holds `CredentialRoute`s, keyed by service. The
   // login flow is still the CLI's, so this narrows by the harness's own vendor
   // rather than by the harness.

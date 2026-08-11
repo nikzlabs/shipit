@@ -279,6 +279,12 @@ No open questions remain.
     that is still in progress is not preserved for later, so there is no state in which a
     service appears because the user stepped away from connecting it.
 
+18. **A step that can only be answered one way answers itself.** Where the chosen billing
+    mode is connected *only* by signing in, choosing that mode starts the sign-in: the user
+    arrives at the provider's code, not at a screen whose single control repeats the choice
+    they just made. A mode that offers something else as well — a key to paste — still asks,
+    because there the sign-in is one option among several.
+
 ## Open questions
 
 _None._
@@ -831,6 +837,13 @@ human, but most of the mechanism did not. What the human actually said, in order
   derived default, replacing the fixed model an earlier draft assumed. The mechanism is the
   human's sketch and is stated in `plan.md`; the requirement states only the property it
   has to have — a default the install can actually run.
+
+- "when I click on the subscription, there are no other controls other than continue signing
+  in … an extra click for the user that doesn't make sense. Make it so when I click to a
+  subscription, it already jumps to the page where the token is shown" → req 18. The carve-out
+  for a mode that also takes a key is the agent's, from the catalogue rather than from
+  anything said: Anthropic's subscription has a field on that step, so the click there is not
+  the empty one being described.
 
 Reqs 5 and 13 were changed again on 2026-08-08 from **Codex's** review, under CLAUDE.md's
 cross-backend rule. Same shape as the round below: the findings are the reviewer's, the

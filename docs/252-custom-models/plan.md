@@ -2847,6 +2847,59 @@ work:**
 walks the whole flow. That is the trade recorded in req 17's receipt — rare action, permanent
 surface.
 
+### The mode click starts the sign-in (req 18)
+
+With the hand-off gone, OpenAI → Subscription landed on a step that was **one sentence and
+one button**: account-only, so no field, no choice, and the button only repeated the click
+that had just been made. Choosing the mode now starts the login, so the step the user arrives
+at is the one carrying the provider's code.
+
+- **The condition is a catalogue fact, not a service name.** `signInIsTheWholeStep` asks
+  whether the mode accepts an account **and nothing else**. Anthropic's subscription also
+  takes an env-supplied token, so its step has a field to fill in and a sign-in that is one
+  option among two — auto-starting there would pre-empt a real choice. Nothing about OpenAI
+  is named anywhere.
+- **Nothing auto-starts that would fail on arrival.** A missing harness or another login in
+  flight leaves step 3 exactly as it was, saying so, with the button to retry once the way is
+  clear — the same two guards the button had, checked before the start rather than after it.
+- **Handlers read the store, not the last render.** The click that chooses the mode also
+  starts its sign-in, and `service` / `billingMode` / the accounts hook are all a render
+  behind at that moment. So `startSignIn` takes the pair as arguments (defaulting to state
+  for the button) and both it and the guard read accounts through `providerAccountsOf(...)`
+  on the store's current value. `adoptableAttempt` is one function for the same reason: the
+  rule is now read at the render, at the start, and at the guard.
+- **The gap before the code arrives had to be given a name.** The challenge is broadcast a
+  moment after the login starts, and "an account, no live challenge, not ready" was the
+  definition of *stalled* — so the interim said **"the sign-in stopped before the account
+  connected"** about a sign-in that was starting normally. That was a flash behind a button
+  press; as the landing screen it would be the first thing the user reads. A stopped attempt
+  now has to have actually stopped — the requests done, and then a reason filed against it or
+  a status that is no longer `authenticating` — and the interim says it is starting. The
+  `startingSignIn` clause is not belt-and-braces: the row is created **before** the login is
+  asked for and is created `unavailable`, so between the two requests it is neither
+  authenticating nor failed. Measured in the dogfood instance, that was a 35 ms flash of the
+  wrong sentence on the way to the code.
+
+**What the independent review found, both on paths req 18 made easy to reach:**
+
+- **Leaving while the account was still being created left it behind.** `cancel` can only
+  abandon an id it has, and `createAccount` had not returned one yet — so Esc in that window
+  closed the dialog over an account that appeared *after* the user had gone: hidden by
+  `isUnconnectedAttempt`, holding the provider's single login slot, with nothing on screen to
+  release it. That is req 17's "leaving is leaving" broken by a race, and it predates req 18
+  — but starting the sign-in on the mode click is what turns "be quick after pressing Sign
+  in" into a window anyone can hit. A `left` **ref** (not state — the answer must not be a
+  render behind the question) is set by `cancel` and read by `startSignIn` after each await,
+  so whichever of the two finishes last does the cleanup. Verified against the real API:
+  escaping 5 ms into the create leaves zero rows server-side.
+- **"Waiting for the code" cannot be told from "hung", so it keeps the button.** A login can
+  reach `authenticating` and never produce a challenge — a CLI that stays alive saying
+  nothing — and the tightened predicate correctly calls that *starting*, which had hidden the
+  retry until the provider's own timeout (15 minutes on OpenAI). The sign-in button is now
+  hidden only while a challenge is genuinely live; in the waiting state it stands there
+  disabled during the request and enabled after, as **Start again**. It never appears
+  mid-wait — it is on screen from the step's first frame and leaves when the code arrives.
+
 ## Key files
 
 | File | Why it matters |

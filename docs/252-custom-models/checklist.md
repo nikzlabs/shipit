@@ -239,3 +239,14 @@ landed ahead of this checklist's per-phase sections.
       around a sign-in that is starting or being abandoned. The add-service dialog adopts an
       existing attempt instead of creating a second, so nothing hidden can be stranded, and
       the one-login-per-provider guard is measured against the attempt the flow would adopt.
+- [x] **Choosing an account-only mode starts its sign-in** (req 18). OpenAI → Subscription
+      landed on one sentence and one button that only repeated the click just made, so the
+      mode click starts the login and the user arrives at the provider's code.
+      `signInIsTheWholeStep` reads the condition off the catalogue — accepts an account and
+      nothing else — so Anthropic's subscription, which also takes a token, still asks. The
+      harness-missing and one-login-per-provider guards are checked before the start, and the
+      window before the code arrives says the sign-in is starting instead of that it stopped.
+      Two review findings fixed with it: an account created after the user left is abandoned
+      by whichever of `cancel`/`startSignIn` finishes last (a `left` ref), and the waiting
+      state keeps a **Start again** button, since a login that hangs at `authenticating`
+      cannot be told from a code still on its way.
