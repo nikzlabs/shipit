@@ -78,24 +78,26 @@ export const PickerTrigger = forwardRef<HTMLButtonElement, PickerTriggerProps>(
         {icon}
         <span className="truncate">{label}</span>
         {/*
-          **A caret is a promise the control will open**, so a control that
-          cannot open does not show one. Locked is the exception and keeps an
-          icon, because a lock says *why* it cannot open — merely disabled (a
-          running turn, a composer with nothing to run) says nothing and should
-          stay quiet. Without this a dead composer's row read as three live
-          menus.
+          **The trailing icon is always there, and it is always the same size**,
+          because its absence is a layout change and `disabled` is a state the
+          composer enters and leaves constantly — every reconnect, every running
+          turn. Dropping the caret resized each trigger, so the whole composer row
+          shifted back and forth while a session reconnected; that jump is far
+          louder than the affordance the missing caret was withholding. The
+          `disabled:opacity-50` on the trigger already says the control cannot
+          open, without moving anything.
 
-          The rule arrives here from two directions, which is why it is worth
-          stating once: `main` had just applied it to the model and reasoning
-          triggers by hand while this phase was extracting them, and the three
-          implementations had disagreed about it — the model trigger dropped the
-          caret, the reasoning trigger kept it, the harness trigger swapped in a
-          lock. One answer now, in the one place that renders it.
+          Locked still swaps the caret for a lock, because a lock says *why* this
+          one can never open — and being the same `ICON_SIZE.XS` glyph, the swap
+          costs no movement either.
+
+          Stated once, here, because the three triggers this file replaced had
+          each answered it differently.
         */}
         {locked ? (
           <LockIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary)" />
         ) : (
-          !disabled && <CaretDownIcon size={ICON_SIZE.XS} />
+          <CaretDownIcon size={ICON_SIZE.XS} />
         )}
       </button>
     );
