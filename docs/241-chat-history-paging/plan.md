@@ -48,8 +48,9 @@ The two costs that are actually worth paging for:
    seconds. This is the dominant time-to-interactive cost, and fewer mounted
    messages is exactly what paging buys.
 2. **The refetch amplifier — the strongest practical argument in this doc.**
-   Every foreground reconnect (`visibilitychange` / `focus` / `pageshow` /
-   `online`) opens a fresh socket (`useWebSocket.ts:171-199`), which resets
+   Every foreground reconnect (`visibilitychange` / `pageshow` / `online`, and
+   a `focus` that `useForegroundSignal` accepts as a genuine resume rather than
+   an iframe handing focus back) opens a fresh socket, which resets
    `historyLoadedRef` and re-runs `loadSessionHistory`
    (`useConnectionSync.ts:60-100`) — a *full* `/history` fetch. On mobile that
    recurs on every app switch. Windowing turns a recurring O(transcript) cost

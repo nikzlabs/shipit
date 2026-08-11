@@ -106,6 +106,17 @@ docs/240 and is kept as the option analysis of record):
   full reload the only cure. The SSE now listens for the same four signals,
   coalesced within 1s so one resume opens one stream rather than three.
 
+  **Later correction — the four signals are not equal.** Window `focus` also
+  fires when focus returns from an iframe to the top-level document, which the
+  preview iframe does on every load, so wiring it straight to "reconnect" gave
+  both channels one forced reconnect per second beside a live preview (the
+  coalesce window set the rate). Both hooks now share `useForegroundSignal`,
+  which suppresses only the *provably* internal case — the preceding `blur` had
+  `document.hasFocus() === true` — and still reconnects on every other `focus`,
+  including the browser window regaining system focus. Sharing one hook is the
+  point: the asymmetry described above is exactly what two hand-rolled listener
+  sets drift back into.
+
   Still open, deliberately: an EventSource that stays `OPEN` over a socket the OS
   killed silently emits no `error`, and there is no SSE heartbeat to detect it —
   the foreground triggers are what recovers that case. A server-side keepalive +

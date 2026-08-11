@@ -569,17 +569,36 @@ describe("useServerEvents — foreground reconnect", () => {
   // tear down a live stream here either. Each teardown re-sends the whole
   // connect snapshot (sessions, repos, PR statuses), so the storm was visible
   // across the sidebar as well as in the chat.
-  it("does not tear down a live stream on a bare focus event", () => {
+  it("does not tear down a live stream on an iframe focus steal", () => {
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     renderHook(() => useServerEvents());
 
     for (let i = 0; i < 5; i++) {
       act(() => {
         vi.advanceTimersByTime(1000); // clear the coalesce window
+        window.dispatchEvent(new Event("blur"));
         window.dispatchEvent(new Event("focus"));
       });
     }
 
     expect(FakeEventSource.created).toBe(1);
+    hasFocus.mockRestore();
+  });
+
+  // The window itself losing and regaining system focus is a genuine resume —
+  // and the SSE has to agree with the WebSocket about that, or the sidebar's
+  // PR / CI indicators stay frozen while the chat looks healthy.
+  it("reopens when focus returns from another window", () => {
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      window.dispatchEvent(new Event("blur"));
+      window.dispatchEvent(new Event("focus"));
+    });
+
+    expect(FakeEventSource.created).toBe(2);
+    hasFocus.mockRestore();
   });
 
   it("still reopens on focus after the page was actually backgrounded", () => {

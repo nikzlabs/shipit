@@ -26,18 +26,26 @@
  *
  *  - `visibilitychange` → visible, `pageshow` (bfcache restore) and `online`
  *    are unambiguous resumes. They always reconnect.
- *  - `focus` proves nothing on its own. It reconnects only when there is an
- *    unconsumed background→foreground transition to justify it (the page went
- *    hidden / was frozen / was hidden away to bfcache since the last
- *    reconnect), or when the connection is already gone anyway — in which case
- *    there is no healthy socket to lose and returning to the window is a good
- *    moment to short-circuit the backoff. **A live connection is never torn
- *    down by a bare `focus`.**
+ *  - `visibilitychange` → hidden, `pagehide` and `freeze` cannot be fired by an
+ *    iframe focus change, so they are safe evidence that the page really went
+ *    away. They only *record* that; the resume itself reconnects.
+ *  - `focus` is classified against the `blur` that necessarily preceded it,
+ *    because that is where the two cases are actually distinguishable. At blur
+ *    time `document.hasFocus()` is **true** when focus merely moved to an
+ *    iframe inside this page (the browser window kept system focus) and
+ *    **false** when the whole window lost focus to another OS window. Only the
+ *    iframe case is suppressed. Verified in a real browser: an iframe click
+ *    fires the parent's `blur` with `hasFocus=true`, `activeElement=IFRAME`.
  *
- * `pagehide` and `freeze` never fire on an iframe focus change, so they are
- * safe evidence of a real background transition and are recorded as such —
- * they cover the standalone-PWA app-switch where the resume itself surfaces as
- * `focus` rather than `visibilitychange`.
+ * Suppressing only the *provably* internal case is deliberate — it is the one
+ * ordering that fails safe. Every unclassifiable focus still reconnects, which
+ * is the old behaviour, so a browser that reports this differently costs a
+ * redundant reconnect rather than a socket stranded dead. That matters because
+ * the desktop path this listener uniquely covers — the user works in another
+ * application (the browser window is still *visible*, so no
+ * `visibilitychange`), the machine sleeps or the network moves under a
+ * half-open socket, and the return surfaces as `focus` alone — has no other
+ * signal behind it.
  */
 
 import { useRef } from "react";
@@ -64,14 +72,21 @@ export interface ForegroundSignalOptions {
   onForeground: () => void;
   /**
    * Whether the connection currently exists and is OPEN or still CONNECTING.
-   * Consulted ONLY to let a bare `focus` recover a connection that is already
-   * dead; a `true` answer is what protects a healthy socket from the iframe
-   * focus storm. Note this is a `readyState` read, so it is exactly the answer
-   * that lies on a backgrounded mobile socket — which is why it can never be
-   * the sole trigger.
+   * Consulted only for a `focus` with no preceding `blur` to classify it —
+   * there it decides between "leave the healthy connection alone" and "nothing
+   * to lose, so retry now rather than sit out the backoff". Note this is a
+   * `readyState` read, so it is exactly the answer that lies on a backgrounded
+   * mobile socket — which is why it can never be the sole trigger.
    */
   isConnectionLive: () => boolean;
 }
+
+/**
+ * How the last `blur` classified: focus moved to an iframe inside this page
+ * (`internal`), the browser window lost system focus (`external`), or no blur
+ * has been seen since the last focus was classified (`none`).
+ */
+type BlurKind = "internal" | "external" | "none";
 
 export function useForegroundSignal({
   enabled = true,
@@ -85,6 +100,7 @@ export function useForegroundSignal({
    * the moment a reconnect fires, so one backgrounding buys one reconnect.
    */
   const pendingBackgroundRef = useRef(false);
+  const lastBlurRef = useRef<BlurKind>("none");
 
   // Touches refs and calls the latest props only — safe to re-create per
   // render and hand to `useEventListeners`, which reads handlers through a ref.
@@ -99,6 +115,13 @@ export function useForegroundSignal({
 
   function markBackgrounded(): void {
     pendingBackgroundRef.current = true;
+    // Open the coalesce window. Without this, a page that goes away again
+    // within a second of a resume has its NEXT resume swallowed as if it were
+    // part of the previous one's burst — and then nothing reconnects at all,
+    // leaving the pending marker stranded to be spent by some unrelated focus
+    // much later. The window exists to collapse one reactivation's several
+    // events, not to rate-limit genuinely separate reactivations.
+    lastForegroundRef.current = 0;
   }
 
   function handleVisibilityChange(): void {
@@ -109,11 +132,37 @@ export function useForegroundSignal({
     reconnect();
   }
 
+  function handleBlur(): void {
+    // See the module docstring: at blur time this is the one reliable read that
+    // separates "an iframe in our own page took focus" from "the browser window
+    // lost focus".
+    lastBlurRef.current = document.hasFocus() ? "internal" : "external";
+  }
+
   function handleFocus(): void {
-    // The iframe-focus-return case: nothing says the page was away, and the
+    // A resume the page-lifecycle events already proved.
+    if (pendingBackgroundRef.current) {
+      reconnect();
+      return;
+    }
+    // One blur classifies one focus.
+    const priorBlur = lastBlurRef.current;
+    lastBlurRef.current = "none";
+    // The storm: the preview iframe took focus and gave it back (or
+    // `MessageInput` took it back). The page never went anywhere and the
     // connection is fine. Reconnecting here is the bug, not the feature.
-    if (!pendingBackgroundRef.current && isConnectionLive()) return;
-    reconnect();
+    if (priorBlur === "internal") return;
+    // The window itself lost and regained system focus — a genuine return, and
+    // on desktop often the only signal that one happened.
+    if (priorBlur === "external") {
+      reconnect();
+      return;
+    }
+    // Focus with no blur behind it proves nothing either way, so it may not
+    // cost a live connection — but there is nothing to lose if the connection
+    // is already gone, and returning to the window is a good moment to stop
+    // waiting out the backoff.
+    if (!isConnectionLive()) reconnect();
   }
 
   const doc = enabled ? document : null;
@@ -124,6 +173,7 @@ export function useForegroundSignal({
     // reconnect on their own (the page is on its way out, not coming back).
     { target: win, type: "pagehide", handler: markBackgrounded },
     { target: doc, type: "freeze", handler: markBackgrounded },
+    { target: win, type: "blur", handler: handleBlur },
     // Unambiguous resumes.
     { target: win, type: "pageshow", handler: reconnect },
     { target: win, type: "online", handler: reconnect },

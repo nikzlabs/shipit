@@ -145,7 +145,7 @@ not actually guaranteed on a foreground reconnect**.
 
 ### 1. One reactivation opened several sockets
 
-`useWebSocket.handleForeground` is wired to `visibilitychange`, `focus`,
+`useWebSocket.handleForeground` was wired to `visibilitychange`, `focus`,
 `pageshow` and `online`. A single window reactivation fires two or three of
 them in separate event-loop turns, and each called `reconnectForForeground()`
 unconditionally — even on a socket that was already OPEN. React commits between
