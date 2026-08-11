@@ -145,6 +145,7 @@ import {
   isPlanPath,
 } from "./utils/doc-paths.js";
 import { dispatchAgentMessage } from "./utils/dispatch-agent-message.js";
+import type { ReviewerSlotView } from "../server/shared/types/agent-types.js";
 import type { AgentInterfaceProvenance } from "../server/shared/agent-interface-sdk/protocol.js";
 import { buildIssueSeedPrompt } from "../server/shared/issue-ref.js";
 import { sendUserMessage } from "./utils/send-user-message.js";
@@ -1152,6 +1153,8 @@ export default function App() {
               harnessId: string;
               source: "pinned" | "default";
             };
+            /** docs/261 phase 3 (req 8) — both reviewer slots, pinned or auto-configured. */
+            reviewers?: ReviewerSlotView[];
           };
         }>("/api/bootstrap");
         useGitStore.getState().setIdentity(data.settings.gitIdentity);
@@ -1236,6 +1239,11 @@ export default function App() {
           data.settings.nonTurnModel ?? null,
           data.settings.nonTurnModelResolved ?? null,
         );
+        // docs/261 phase 3 (req 8) — guarded on presence: an absent array only
+        // ever means an older server, and clearing it would empty the Reviewer
+        // tab rather than report anything.
+        if (data.settings.reviewers)
+          {useSettingsStore.getState().setReviewers(data.settings.reviewers);}
         if (data.settings.providerAccounts)
           {useSettingsStore
             .getState()

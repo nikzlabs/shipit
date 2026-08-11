@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { AgentId, CredentialRoute, PermissionMode, FileContextRef } from "../../server/shared/types.js";
+import type { ReviewerSlotView } from "../../server/shared/types/agent-types.js";
 import {
   getSavedNotifyOnFinish, saveNotifyOnFinish,
   getSavedSoundOnFinish, saveSoundOnFinish,
@@ -288,6 +289,21 @@ interface SettingsState {
       }
     | null;
   /**
+   * docs/261 phase 3 (reqs 1, 5, 8) — both reviewer slots, in the user's order,
+   * each labelled pinned or auto-configured and carrying what it resolves to.
+   *
+   * Computed server-side and never re-derived here. Which harness runs a model,
+   * which level it reviews at, and which of the two slots is furthest from the
+   * implementer are reqs 3/4/5's rules; a second implementation in the browser
+   * would let the Reviewer tab promise something other than what reviews.
+   *
+   * Hydrated from `GET /api/bootstrap` and pushed on every `agent_list` SSE —
+   * that second channel is req 8's re-derivation made visible: adding a service
+   * has to improve an auto-configured reviewer while the tab is open, not on
+   * the next reload. Empty only before bootstrap lands.
+   */
+  reviewers: ReviewerSlotView[];
+  /**
    * In-flight account-scoped sign-in challenges, keyed by
    * {@link providerAccountAuthKey} so concurrent row sign-ins stay independent.
    */
@@ -353,6 +369,15 @@ interface SettingsState {
     pinned: SettingsState["nonTurnModel"],
     resolved: SettingsState["nonTurnModelResolved"],
   ) => void;
+  /**
+   * docs/261 phase 3 — replace both reviewer slots with the server's answer.
+   *
+   * Whole-array replacement rather than a per-slot merge, and deliberately so:
+   * the two slots are resolved together (slot 2 is ranked against slot 1), so a
+   * partial update could leave the tab showing a pair the server never
+   * produced.
+   */
+  setReviewers: (reviewers: ReviewerSlotView[]) => void;
   /** Set (or clear, with `null`) one account's in-flight sign-in challenge. */
   setProviderAccountAuth: (provider: AgentId, accountId: string, auth: ProviderAccountAuth | null) => void;
   /** Set (or clear, with `null`) one account's last sign-in failure message. */
@@ -427,6 +452,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   credentialRoutes: [],
   nonTurnModel: null,
   nonTurnModelResolved: null,
+  reviewers: [],
   providerAccountAuths: {},
   providerAccountAuthErrors: {},
 
@@ -619,6 +645,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setProviderAccounts: (accounts) => set({ providerAccounts: accounts }),
   setCredentialRoutes: (routes) => set({ credentialRoutes: routes }),
   setNonTurnModel: (pinned, resolved) => set({ nonTurnModel: pinned, nonTurnModelResolved: resolved }),
+  setReviewers: (reviewers) => set({ reviewers }),
   setProviderAccountAuth: (provider, accountId, auth) =>
     set((state) => ({
       providerAccountAuths: withKey(

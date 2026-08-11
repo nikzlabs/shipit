@@ -121,6 +121,15 @@ export async function getBootstrapData(deps: {
         // be reported as "you have no credentials", so this stays empty rather
         // than being reconstructed from a store the read above already failed on.
         credentialRoutes: [],
+        // docs/261 — the two slots are still reported, as unresolved. An empty
+        // array would say "this build has no reviewers", which is a different
+        // and untrue statement; two `nothing_eligible` slots say what actually
+        // happened, which is that the settings read failed and nothing could be
+        // resolved from it.
+        reviewers: [
+          { slot: "first", source: "auto", unavailableReason: "nothing_eligible" },
+          { slot: "second", source: "auto", unavailableReason: "nothing_eligible" },
+        ],
       };
     }),
     readTailnetPreviewHost(),

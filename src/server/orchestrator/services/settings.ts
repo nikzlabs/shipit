@@ -17,7 +17,14 @@ import { getGitIdentity, setGitIdentity as writeGitIdentity } from "../git-confi
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
 import { readGlobalSystemPrompt, writeGlobalSystemPrompt } from "../global-system-prompt.js";
 import { ServiceError } from "./types.js";
-import type { AgentInfo, GlobalSettings, NonTurnModelResolved, NonTurnModelSelection } from "./types.js";
+import type { AgentInfo, GlobalSettings, NonTurnModelResolved, NonTurnModelSelection, ReviewerPinPatch, ReviewerSlotView } from "./types.js";
+import type { ReviewerPin, ReviewerSlot } from "../../shared/types/agent-types.js";
+import {
+  buildReviewerSettings,
+  parseReviewerPinPatch,
+  requireReviewerSlot,
+  resolveReviewerPinPatch,
+} from "./reviewer-settings.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
@@ -143,14 +150,33 @@ export function resolveHarnessOnboarding(
  * and it is why the guard test in `can-run-turns.test.ts` scans for the store
  * being *named* at each call site rather than trusting the type. The pair is
  * the guarantee; neither half is it alone.
+ *
+ * docs/261 phase 3 (req 8) — `providerAccountManager` is required for the same
+ * reason and with the same shape (`| undefined` rather than optional). This
+ * payload now carries the **reviewer resolution**, which is what makes an open
+ * Reviewer tab follow a credential change instead of showing the answer from
+ * before it — and a route the account manager owns is most of what "can this
+ * reviewer actually run" means. Omitting it does not produce a missing field:
+ * it produces a *confidently wrong* one, reporting every subscription-served
+ * reviewer as unavailable on the install where that is least true. Making it
+ * optional would let exactly the sites that add and remove credentials forget
+ * it, so it is a compile error instead, and the same guard scan checks it is
+ * named.
  */
 export function buildAgentListPayload(
   agentRegistry: AgentRegistry,
   credentialStore: CredentialStore | undefined,
-): { agents: AgentInfo[]; canRunTurns: boolean; harnessOnboardingCompletedAt?: string } {
+  providerAccountManager: ProviderAccountManager | undefined,
+): {
+  agents: AgentInfo[];
+  canRunTurns: boolean;
+  harnessOnboardingCompletedAt?: string;
+  reviewers: ReviewerSlotView[];
+} {
   return {
     agents: listAgents(agentRegistry),
     ...resolveHarnessOnboarding(agentRegistry, credentialStore),
+    reviewers: buildReviewerSettings({ credentialStore, providerAccountManager }),
   };
 }
 
@@ -271,7 +297,12 @@ export async function getGlobalSettings(
           source: nonTurnResolution.target.source,
         }
       : undefined;
-  return { canRunTurns, harnessOnboardingCompletedAt, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts, credentialRoutes,
+  // docs/261 phase 3 (req 8) — both reviewer slots, each labelled pinned or
+  // auto-configured and carrying what it resolves to. The same array rides the
+  // `agent_list` SSE (see `buildAgentListPayload`), which is what makes an open
+  // Reviewer tab follow a credential change instead of showing the stale answer.
+  const reviewers = buildReviewerSettings({ credentialStore, providerAccountManager });
+  return { canRunTurns, harnessOnboardingCompletedAt, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts, credentialRoutes, reviewers,
     ...(nonTurnModel ? { nonTurnModel } : {}),
     ...(nonTurnModelResolved ? { nonTurnModelResolved } : {}) };
 }
@@ -347,6 +378,22 @@ export interface SaveGlobalSettingsOptions {
    * two modes at different prices, so an id alone cannot say who is billed.
    */
   nonTurnModel?: NonTurnModelSelection | null;
+  /**
+   * docs/261 phase 3 (reqs 1, 5, 8) — pin one or both reviewer slots, or return
+   * a slot to auto-configuration with `null` (*Reset to auto*).
+   *
+   * A **whole tuple per slot**, because pinning is atomic (req 8): editing any
+   * field of an auto-configured slot pins everything it resolved to, so a
+   * half-pinned slot — a pinned level over a still-derived model — is not
+   * expressible. The one omission the wire allows is `reasoningEffort`, which
+   * means "the model changed, give me the derived harness's own review level";
+   * the stored pin is complete either way. See `resolveReviewerPinPatch`.
+   *
+   * Typed as `unknown` at this boundary rather than as the parsed shape: it
+   * arrives straight off an HTTP body, and `parseReviewerPinPatch` is where a
+   * malformed slot becomes a 400 naming the field instead of a coerced value.
+   */
+  reviewers?: Record<string, unknown>;
 }
 
 export async function saveGlobalSettings(
@@ -358,7 +405,7 @@ export async function saveGlobalSettings(
     gitIdentity, systemPrompt, maxIdleContainers,
     agentSystemInstructionsEnabled, autoCreatePr, liveSteering,
     autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, voiceDeliveryMode,
-    failoverCutoffs, accountSelectionMode, nonTurnModel,
+    failoverCutoffs, accountSelectionMode, nonTurnModel, reviewers,
   } = opts;
 
   // Save git identity if provided
@@ -463,6 +510,42 @@ export async function saveGlobalSettings(
       }
       credentialStore.setNonTurnModel(nonTurnModel);
     }
+  }
+
+  // docs/261 phase 3 (reqs 1, 5, 8) — pin or reset the reviewer slots.
+  //
+  // Validated rather than coerced, exactly as `nonTurnModel` above and for the
+  // same reason: the tab only ever offers a runnable triple and a level the
+  // derived harness declares, so anything else is API misuse. The one thing
+  // that is NOT an error is an omitted level — that is the model-changed case,
+  // and `resolveReviewerPinPatch` completes the tuple from the derived harness
+  // so the stored pin stays atomic (req 8).
+  //
+  // **Every slot is validated before ANY slot is written**, in two passes.
+  // Validating and writing in one loop makes `{ first: valid, second: invalid }`
+  // persist `first` and then answer 400 — a caller told the write failed while
+  // half of it landed, and a Settings tab that then re-renders from a response
+  // it never received. Cross-backend review found it. The two slots are one
+  // edit here for the same reason they are one resolution everywhere else in
+  // this feature: slot 2 is ranked against slot 1.
+  if (reviewers !== undefined) {
+    // The container itself, before its entries: `null` is an object to
+    // `typeof` and would reach `Object.entries` as a 500, and a scalar would
+    // iterate to nothing and be accepted as a silent no-op. Both are caller
+    // bugs and both should say so.
+    if (reviewers === null || typeof reviewers !== "object" || Array.isArray(reviewers)) {
+      throw new ServiceError(400, "reviewers must be an object keyed by reviewer slot");
+    }
+    const resolved: [ReviewerSlot, ReviewerPin | null][] = Object.entries(reviewers).map(
+      ([slot, raw]) => {
+        const patch: ReviewerPinPatch | null = parseReviewerPinPatch(raw, slot);
+        return [
+          requireReviewerSlot(slot),
+          patch === null ? null : resolveReviewerPinPatch(patch, credentialStore),
+        ];
+      },
+    );
+    for (const [slot, pin] of resolved) credentialStore.setReviewerPin(slot, pin);
   }
 
   // docs/163 — save voice-note delivery mode if provided

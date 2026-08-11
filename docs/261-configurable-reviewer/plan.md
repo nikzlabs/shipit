@@ -507,6 +507,85 @@ uniquely held exactly one thing: `SubAgentDefaultsSection`. Req 7 deletes it, so
   `BackgroundWorkSection`, which is the closest existing precedent and already renders a
   derived default as a labelled option rather than a blank.
 
+**Phase 3 has landed.** `services/reviewer-settings.ts` projects phase 1's resolver into the wire
+shape (`buildReviewerSettings`) and validates an edit back into a stored pin
+(`resolveReviewerPinPatch`); `client/components/Settings/tabs/ReviewerTab.tsx` renders the two
+slots. The wire types live in `shared/types/agent-types.ts` beside `ReviewerPin`, not in the
+orchestrator's service types, because the browser renders them verbatim.
+
+Five things worth recording, three of which are decisions the design left open:
+
+- **The re-broadcast rides `agent_list`, and that is the whole reason it works.** The design said
+  the payload "must be re-broadcast when a credential, the catalogue or harness availability
+  changes" without naming a carrier, and the obvious one — a new `reviewer_settings` event — has
+  the failure the requirement is about: it needs a call at every credential-mutation site, and the
+  site that forgets is the one that made the reviewer stale. `agent_list` is already that funnel,
+  built by docs/257 so no producer can hand-roll the payload, and it fires on the changes req 8
+  names. So `buildAgentListPayload` carries `reviewers`, and the resolution follows a credential
+  automatically. Verified live: removing a service moved slot 2 from DeepSeek back to Sonnet with
+  the tab open and untouched.
+
+  **What that does NOT cover, stated precisely, because "never stale" is a stronger claim than
+  the code makes.** The resolution also depends on a route being *usable*
+  (`reviewer-model.ts`'s route check), and route usability moves on transitions `agent_list` does
+  not fire for: a quota-exhaustion stamp (`bootstrap-managers.ts`, `sub-agent.ts`), an exhaustion
+  deadline **expiring** — which has no event at all, being a timestamp rather than a write — and
+  the `authenticating` window between a login starting and completing. So an open tab can name a
+  reviewer that a review would fall through. Cross-backend review found this and it is a real
+  limit, deliberately not closed here: exhaustion is transient and self-healing, the ranking
+  already falls through to the other reviewer rather than failing (*Eligible is not runnable*
+  above), a completed login does fire `agent_list`, and an expiring deadline cannot be pushed
+  without polling. The claim this phase makes is the one req 8 asks for — **an auto-configured
+  reviewer visibly re-derives as the install changes** — not that every transient routing state is
+  pushed within the frame.
+- **`buildAgentListPayload` therefore needs the provider account manager, as a REQUIRED
+  parameter.** Same `| undefined` shape docs/257 gave the credential store, and for a sharper
+  reason: without the manager the resolver cannot see an account-delivered route, so every
+  subscription-served reviewer reports as *unavailable*. That is not a missing field but a
+  confident wrong answer, pushed to every open tab, by the very broadcast that fires when a
+  subscription is connected. `can-run-turns.test.ts`'s existing scan gained a matching
+  `carriesAccountManager` check, since the compiler only forces *an* argument.
+- **A pin edit may omit the reasoning level, and that is not a hole in req 7.** Req 7 governs the
+  one-shot *spawn*; this is the settings API. Omitting the level means "the model changed" — the
+  new model may resolve on a different harness with a different level set, and deriving that in
+  the browser is precisely the client-side re-derivation req 8 rules out. The server completes the
+  tuple from the harness *it* derives and returns the complete pin, so the stored pin is atomic
+  either way and nothing is filled in where the caller cannot see it. A level the derived harness
+  does *not* declare is refused rather than replaced, which is the same call phase 2 made for
+  `--effort`.
+- **Slot derivation for the Settings screen is implementer-independent, so the tab needs no
+  session.** That is phase 1's decision and this is what it buys: the tab is reachable with no
+  session open and still says one true thing per slot.
+- **Nothing in the tab is optimistic.** `BackgroundWorkSection` pins optimistically and lets the
+  response correct the derived half; that cannot work here, because slot 2 is ranked *against*
+  slot 1 and pinning one slot legitimately re-derives the other. Verified live: pinning reviewer 1
+  to DeepSeek moved reviewer 2 from DeepSeek to Anthropic in the same response.
+
+  That every response replaces **both** slots is also what makes ordering matter, which the first
+  cut got wrong twice and cross-backend review caught: a slow response landing after a fast one
+  overwrote the newer snapshot (fixed with a write counter — only the newest response is applied),
+  and a single in-flight slot id re-enabled the other control mid-flight (fixed with a set). A
+  *failed* write is treated as **ambiguous** rather than as "nothing happened", since the
+  connection can drop after the server committed: the tab re-reads rather than keeping a guess.
+
+**One thing the dogfood pass could not exercise**, and it should not be read as covered: no
+shipped model runs on both harnesses, so every slot in the two-service install derived onto Claude
+Code and the "prefer a harness that is not the implementer's" preference had nothing to prefer
+between. That is phase 1's already-recorded gap, unchanged here — the tab renders whatever harness
+the server names, and the test fixture is where the two-harness case is pinned.
+
+**And one latent bug the same gap hides, found by cross-backend review and deliberately NOT fixed
+here.** A pin's effort is validated against the *implementer-independent* harness
+(`reviewer-settings.ts`, which is the only honest choice for a setting — see above), while
+`selectReviewer` may resolve the review onto a **different** harness and copies the pinned effort
+across without revalidating (`reviewer-model.ts`'s `buildTarget`). A future model carried by both
+harnesses could therefore take Claude-only `max` to Codex. It cannot happen today for the reason
+above, and it is left open on purpose: the fix is a choice between refusing the review and
+silently substituting the other harness's default, and both are worse than they look — refusing
+loses a review over a level nobody chose deliberately, and substituting is the silent replacement
+req 5 and phase 2's `--effort` decision both rule out. It belongs with whoever makes a model
+dual-harness, which is the commit that makes the case reachable and the one that can test it.
+
 **Making Services the first and default tab is deliberately NOT here.** It is the audit's D1
 and belongs to docs/252, which is where the human asked for it; no numbered requirement in
 this document asks for it, and importing it would make this design a second source of

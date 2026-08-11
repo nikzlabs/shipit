@@ -35,6 +35,9 @@ type SettingsTab =
   // Credentials are listed by service, not by the harness that drives them,
   // so Settings → Services is the one credential surface and the default tab.
   | "services"
+  // docs/261 — the two configured reviewers. Directly after Services because it
+  // reads entirely off the credentials that tab configures.
+  | "reviewer"
   | "integrations"
   | "git"
   | "instructions"

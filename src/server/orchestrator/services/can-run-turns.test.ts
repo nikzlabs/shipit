@@ -74,7 +74,7 @@ describe("buildAgentListPayload", () => {
   it("carries the agent list and the runnable signal together", () => {
     const payload = buildAgentListPayload(registry([
       { id: "claude", installed: true, hasRunnableModels: true },
-    ]), undefined);
+    ]), undefined, undefined);
     expect(payload.canRunTurns).toBe(true);
     expect(payload.agents).toEqual([
       expect.objectContaining({ id: "claude", installed: true, hasRunnableModels: true }),
@@ -86,7 +86,7 @@ describe("buildAgentListPayload", () => {
     // nothing is connected. The composer must be able to tell these apart.
     const payload = buildAgentListPayload(registry([
       { id: "claude", installed: true, hasRunnableModels: false },
-    ]), undefined);
+    ]), undefined, undefined);
     expect(payload.canRunTurns).toBe(false);
     expect(payload.agents).toHaveLength(1);
   });
@@ -136,6 +136,16 @@ interface Producer {
    * would linger over an install that just became runnable.
    */
   carriesStore: boolean;
+  /**
+   * docs/261 phase 3 (req 8) — the builder's third argument is the provider
+   * account manager, and the same "the compiler only forces *an* argument"
+   * hole applies. It is guarded separately because its failure is worse than
+   * an absent field: without it the reviewer resolution cannot see an
+   * account-delivered route, so every subscription-served reviewer is reported
+   * **unavailable** — a confident wrong answer, pushed to every open tab, on
+   * exactly the install where it is least true.
+   */
+  carriesAccountManager: boolean;
 }
 
 /**
@@ -175,6 +185,7 @@ function agentListProducersIn(rawSource: string, label: string): Producer[] {
         payload,
         usesBuilder: call.includes("buildAgentListPayload("),
         carriesStore: /buildAgentListPayload\([^)]*\bcredentialStore\b/.test(call),
+        carriesAccountManager: /buildAgentListPayload\([^)]*\bproviderAccountManager\b/.test(call),
       });
     }
   }
@@ -197,21 +208,38 @@ describe("the producer scanner itself", () => {
   const scan = (src: string) => agentListProducersIn(src, "fixture");
 
   it("accepts a compliant broadcast", () => {
-    const found = scan(`sseBroadcast("agent_list", buildAgentListPayload(reg, credentialStore));`);
-    expect(found).toEqual([expect.objectContaining({ usesBuilder: true, carriesStore: true })]);
+    const found = scan(
+      `sseBroadcast("agent_list", buildAgentListPayload(reg, credentialStore, providerAccountManager));`,
+    );
+    expect(found).toEqual([
+      expect.objectContaining({ usesBuilder: true, carriesStore: true, carriesAccountManager: true }),
+    ]);
   });
 
   it("accepts a payload assigned to a local first", () => {
     const found = scan([
-      `const payload = buildAgentListPayload(deps.agentRegistry, deps.credentialStore);`,
+      `const payload = buildAgentListPayload(deps.agentRegistry, deps.credentialStore, deps.providerAccountManager);`,
       `deps.sseBroadcast("agent_list", payload);`,
     ].join("\n"));
-    expect(found).toEqual([expect.objectContaining({ usesBuilder: true, carriesStore: true })]);
+    expect(found).toEqual([
+      expect.objectContaining({ usesBuilder: true, carriesStore: true, carriesAccountManager: true }),
+    ]);
   });
 
   it("rejects a builder call that hard-codes `undefined` for the store", () => {
     const found = scan(`sseBroadcast("agent_list", buildAgentListPayload(reg, undefined));`);
     expect(found).toEqual([expect.objectContaining({ usesBuilder: true, carriesStore: false })]);
+  });
+
+  it("rejects a builder call that omits the provider account manager", () => {
+    // docs/261 phase 3 — compiles only in a two-argument world, but the shape a
+    // careless edit reverts to. Caught here rather than left to the compiler,
+    // for the same reason the store is: a site can also pass a literal
+    // `undefined` and still compile.
+    const found = scan(`sseBroadcast("agent_list", buildAgentListPayload(reg, credentialStore));`);
+    expect(found).toEqual([
+      expect.objectContaining({ usesBuilder: true, carriesStore: true, carriesAccountManager: false }),
+    ]);
   });
 
   it("rejects a hand-rolled payload, even next to an unrelated builder call", () => {
@@ -269,6 +297,24 @@ describe("agent_list producers all carry canRunTurns", () => {
       "each of these builds the payload without a credential store, so it carries "
         + "no harnessOnboardingCompletedAt and the onboarding panel lingers over an "
         + "install that just became runnable",
+    ).toEqual([]);
+  });
+
+  it("hands every producer the provider account manager, not `undefined`", () => {
+    // docs/261 phase 3 (req 8). This payload carries the reviewer resolution,
+    // which is what makes an open Reviewer tab follow a credential change. Drop
+    // the manager and the resolver cannot see an account-delivered route, so a
+    // subscription-only install is told both its reviewers are unavailable —
+    // and it is told so by the very broadcast that fires when a subscription is
+    // connected.
+    const offenders = agentListProducers()
+      .filter((p) => !p.carriesAccountManager)
+      .map((p) => `${p.where} — ${p.payload}`);
+    expect(
+      offenders,
+      "each of these builds the payload without a provider account manager, so its "
+        + "reviewer resolution cannot see account-delivered routes and reports a "
+        + "subscription-served reviewer as unavailable",
     ).toEqual([]);
   });
 
