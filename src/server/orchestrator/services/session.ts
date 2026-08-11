@@ -500,6 +500,23 @@ export function resolveMaxKeepPreviewRunning(env: NodeJS.ProcessEnv = process.en
 }
 
 /**
+ * docs/241 — the sessions that actually hold a reservation, and so the ones the
+ * cap admits against.
+ *
+ * An archived session is excluded even when its row still carries the flag.
+ * `SessionManager.archive` clears it now, but rows archived before that fix
+ * exist in deployed databases, and such a row is unreachable: `listAll()`
+ * returns archived sessions, while the toggle that would release one is only
+ * rendered on a non-archived sidebar row. Counting it made the deployment's
+ * only slot permanently unavailable. Excluding it here heals those rows without
+ * a migration — the same predicate answers "who holds the slot".
+ */
+export function listActiveReservations(sessionManager: SessionManager): SessionInfo[] {
+  // `listAll()` already drops warm rows; archived is the remaining exclusion.
+  return sessionManager.listAll().filter((s) => s.keepPreviewRunning && !s.userArchived && !s.archived);
+}
+
+/**
  * docs/241 — reserve/release a live preview slot. Admission is checked before
  * mutation. Enabling activates through the ordinary runner factory, whose
  * onRunnerCreated hook owns install + Compose auto-preview reconciliation.
@@ -524,7 +541,7 @@ export function setKeepPreviewRunning(
   }
 
   if (enabled && !current.keepPreviewRunning) {
-    const reserved = sessionManager.listAll().filter((s) => s.keepPreviewRunning).length;
+    const reserved = listActiveReservations(sessionManager).length;
     if (reserved >= maxReservations) {
       throw new ServiceError(
         409,

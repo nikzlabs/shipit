@@ -591,8 +591,17 @@ export class SessionManager {
     // docs/110 — clear any pin on archive: a session can't be both hidden and
     // persistent. This also keeps the disk-janitor's pinned guards sound, since
     // an archived (evicted) session is never simultaneously pinned.
+    //
+    // docs/241 — and release the always-on preview reservation for the same
+    // reason, but with sharper consequences: reservations are capped (default 1
+    // per deployment) and the toggle that releases one is only rendered on a
+    // NON-archived row (`SessionItem.tsx`). A flag surviving archive therefore
+    // consumed the deployment's only slot from a session the user could no
+    // longer see or toggle, and "Always-on preview capacity is full (1/1)" had
+    // no reachable cause. Archiving evicts the workspace anyway, so there is
+    // nothing left to keep previewing.
     const result = this.db.prepare(
-      "UPDATE sessions SET user_archived = 1, disk_tier = 'evicted', pinned_at = NULL WHERE id = ?",
+      "UPDATE sessions SET user_archived = 1, disk_tier = 'evicted', pinned_at = NULL, keep_preview_running = 0 WHERE id = ?",
     ).run(id);
     return result.changes > 0;
   }

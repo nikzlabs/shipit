@@ -551,6 +551,22 @@ describe("SessionManager", () => {
       expect(s?.userArchived).toBe(true);
       expect(s?.diskTier).toBe("evicted");
     });
+
+    it("docs/241: releases the always-on preview reservation on archive", () => {
+      // A reservation surviving archive held the capped slot (default 1) from a
+      // row whose release toggle is never rendered — an unreachable, permanent
+      // "capacity is full".
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.setKeepPreviewRunning("sess-1", true);
+      expect(mgr.get("sess-1")?.keepPreviewRunning).toBe(true);
+
+      expect(mgr.archive("sess-1")).toBe(true);
+      expect(mgr.get("sess-1")?.keepPreviewRunning).toBeUndefined();
+      // Restoring does not silently re-reserve: the slot was genuinely released.
+      expect(mgr.unarchive("sess-1")).toBe(true);
+      expect(mgr.get("sess-1")?.keepPreviewRunning).toBeUndefined();
+    });
   });
 
   describe("docs/110 Phase 2: reorderPins", () => {
