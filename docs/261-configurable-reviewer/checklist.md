@@ -162,8 +162,11 @@ it.
       level only when the model survives by canonical key — a level the derived harness rejects
       is refused by the server rather than silently replaced (req 5)
 - [x] Req 13 is **guarded**, not asserted in prose: `picker-consistency.test.tsx` compares the
-      rendered `className` of all seven triggers against `PICKER_TRIGGER_CLASS`, and forbids a
+      rendered `className` of all eight triggers against `PICKER_TRIGGER_CLASS`, and forbids a
       native `<select>` on either Settings surface. Verified by injecting a divergent class and
-      watching it go red — an assertion nobody has seen fail is a claim, not a check
+      watching it go red — an assertion nobody has seen fail is a claim, not a check.
+      **Scope, stated precisely because the first draft of this line overstated it**: the guard
+      covers trigger styling and the absence of a native control. Menu rows, icons and wording
+      are not covered, so a `PickerOption.className` override could still diverge unseen
 - [x] Driven in the dogfood instance: the service switch on both surfaces, and the two controls
       side by side against the reference screenshot

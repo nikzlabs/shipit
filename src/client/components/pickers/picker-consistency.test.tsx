@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
-import { ModelSelector } from "../ModelPicker.js";
+import { HarnessSelector, ModelSelector } from "../ModelPicker.js";
 import { ReasoningSelector } from "../ReasoningSelector.js";
 import { ReviewerTab } from "../Settings/tabs/ReviewerTab.js";
 import { BackgroundWorkSection } from "../Settings/BackgroundWorkSection.js";
@@ -78,6 +78,13 @@ function triggersOnEverySurface(): Record<string, HTMLButtonElement> {
   found["composer model"] = screen.getByTestId("model-trigger") as HTMLButtonElement;
   cleanup();
 
+  // The harness trigger too. It is the one with a genuinely different STATE (it
+  // locks), which is exactly why it is the one most likely to grow its own
+  // styling for it — cross-backend review found it missing from this list.
+  render(<HarnessSelector agents={agents} activeAgentId="claude" onAgentChange={() => {}} />);
+  found["composer harness"] = screen.getByTestId("harness-trigger") as HTMLButtonElement;
+  cleanup();
+
   render(
     <ReasoningSelector agent={agents[0]} sessionReasoning="high" onChange={() => {}} />,
   );
@@ -118,7 +125,7 @@ describe("picker consistency (req 13)", () => {
     const triggers = triggersOnEverySurface();
     // Guards the guard: if a surface stops rendering its control, the loop
     // below would pass by asserting nothing.
-    expect(Object.keys(triggers)).toHaveLength(7);
+    expect(Object.keys(triggers)).toHaveLength(8);
 
     for (const [where, button] of Object.entries(triggers)) {
       expect(`${where}: ${button.className}`).toBe(

@@ -135,13 +135,29 @@ describe("modelAfterServiceChange", () => {
     expect(modelAfterServiceChange(undefined, [deepseek, opusGateway])).toBe(deepseek);
   });
 
-  it("does not match two different models that both lack a key", () => {
-    // An older wire payload or a fixture. Falling back to the first model is
-    // right; treating two unknowns as equal would pin a model the user never
-    // chose, which is worse than the fallback it is trying to avoid.
-    const { canonicalModelKey: _a, ...currentNoKey } = opusAnthropic;
-    const { canonicalModelKey: _b, ...candidateNoKey } = deepseek;
-    expect(modelAfterServiceChange(currentNoKey, [candidateNoKey])).toBe(candidateNoKey);
+  /**
+   * The identity does not have to come from the row. A pin whose credential
+   * went away has no eligible row at all — and that is exactly when a user
+   * re-points the slot at a service that survived. The catalogue still knows
+   * what the pinned model is, so the retention rule still applies.
+   */
+  it("recovers identity from the catalogue when the current model has no row", () => {
+    const pinWithNoRow = {
+      serviceId: "anthropic",
+      billingMode: "sub" as const,
+      modelId: "claude-opus-5",
+    };
+    const candidates: EligibleModelOption[] = [
+      { ...sonnetGateway },
+      { ...opusGateway },
+    ];
+    // Sonnet is first; Opus is the same model as the pin, so Opus wins.
+    expect(modelAfterServiceChange(pinWithNoRow, candidates)).toBe(candidates[1]);
+  });
+
+  it("falls back to the first model when the catalogue does not know the pin either", () => {
+    const unknown = { serviceId: "nope", billingMode: "key" as const, modelId: "made-up" };
+    expect(modelAfterServiceChange(unknown, [deepseek])).toBe(deepseek);
   });
 
   it("returns nothing when the service offers no models at all", () => {

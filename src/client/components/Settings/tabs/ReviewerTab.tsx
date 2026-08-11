@@ -51,6 +51,7 @@ import {
   modelAfterServiceChange,
   modelsOfService,
   servicesOf,
+  canonicalKeyOf,
   type ServiceChoice,
 } from "../../pickers/model-choice.js";
 import { BillingModePill } from "../../BillingModePill.js";
@@ -222,10 +223,14 @@ function ReviewerSlotCard({
   // — the service control is the one to use first, which is the order the
   // controls sit in.
   const serviceModels = modelsOfService(models, resolved);
-  // The resolution names a triple but carries no model identity, so the option
-  // it corresponds to is looked up here — that is what lets a service change
-  // keep the same model across two services that spell its id differently.
-  const currentModel = serviceModels.find((m) => m.modelId === resolved?.modelId);
+  // What the slot holds now, for the service switch to preserve. The eligible
+  // row when there is one; otherwise the resolution or the pin itself, whose
+  // identity `canonicalKeyOf` recovers from the catalogue. That fallback is the
+  // unavailable-pin case, which is precisely when a user re-points the slot at a
+  // service that survived — cross-backend review found it silently taking the
+  // new service's first model there.
+  const currentModel =
+    serviceModels.find((m) => m.modelId === resolved?.modelId) ?? resolved ?? view.pin;
 
   /**
    * Changing the service pins the whole tuple, like every other edit here.
@@ -246,11 +251,8 @@ function ReviewerSlotCard({
   const changeService = (service: ServiceChoice) => {
     const next = modelAfterServiceChange(currentModel, modelsOfService(models, service));
     if (!next) return;
-    const keptModel =
-      !!currentModel
-      && (currentModel.canonicalModelKey
-        ? next.canonicalModelKey === currentModel.canonicalModelKey
-        : next.modelId === currentModel.modelId);
+    const currentKey = canonicalKeyOf(currentModel);
+    const keptModel = !!currentKey && next.canonicalModelKey === currentKey;
     onSave({
       serviceId: next.serviceId,
       billingMode: next.billingMode,

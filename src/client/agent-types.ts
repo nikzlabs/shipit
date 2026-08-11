@@ -12,20 +12,39 @@ import type { PermissionMode } from "../server/shared/types.js";
  * modes of one service, at different prices — so a bare id cannot say who is
  * billing the turn (req 11), which is why the picker groups on this.
  */
-export interface EligibleModelOption {
+export interface ModelChoice {
   serviceId: string;
   serviceName: string;
   billingMode: "sub" | "key";
   modelId: string;
   label: string;
+}
+
+/**
+ * An eligible row as the SERVER sends it — a {@link ModelChoice} that also
+ * carries the catalogue's model identity.
+ *
+ * The two are deliberately separate. A row the server offers always knows which
+ * model it is; a choice the composer hands back does not have to, because the
+ * legacy `models` fallback (an older payload with no eligible set) can build one
+ * from a bare id. Collapsing them would either make identity optional on the
+ * wire — the branch cross-backend review objected to — or force the fallback to
+ * invent a key, which is worse: an invented key COMPARES EQUAL to another
+ * invented one, and this feature's whole point is that two rows sharing a key
+ * are the same model.
+ */
+export interface EligibleModelOption extends ModelChoice {
   /**
    * docs/261 phase 6 — the catalogue's authored model identity, mirroring
    * `EligibleModel.canonicalModelKey`. Two options carrying one key are one
-   * model, so changing the service can keep the model the user had. Optional
-   * here alone: an older wire payload or a test fixture may omit it, and the
-   * caller then falls back to the service's first model.
+   * model, so changing the service can keep the model the user had.
+   *
+   * REQUIRED, like its server counterpart. Cross-backend review found it
+   * declared optional "for an older payload", which ShipIt does not have — the
+   * client and the server ship together — and which bought nothing but a silent
+   * branch where the retention rule quietly stopped applying.
    */
-  canonicalModelKey?: string;
+  canonicalModelKey: string;
 }
 
 export interface AgentOption {

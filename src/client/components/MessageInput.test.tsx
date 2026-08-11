@@ -806,6 +806,7 @@ describe("MessageInput", () => {
             billingMode: "sub" as const,
             modelId: "claude-opus-5",
             label: "Opus 5",
+            canonicalModelKey: "claude-opus-5",
           },
         ],
         supportsReview: true,

@@ -22,6 +22,7 @@ const agents: AgentOption[] = [
         billingMode: "sub",
         modelId: "claude-sonnet-5",
         label: "Sonnet 5",
+        canonicalModelKey: "claude-sonnet-5",
       },
       {
         serviceId: "anthropic",
@@ -29,6 +30,7 @@ const agents: AgentOption[] = [
         billingMode: "key",
         modelId: "claude-sonnet-5",
         label: "Sonnet 5",
+        canonicalModelKey: "claude-sonnet-5",
       },
       {
         serviceId: "deepseek",
@@ -36,6 +38,7 @@ const agents: AgentOption[] = [
         billingMode: "key",
         modelId: "deepseek-v4-flash",
         label: "V4 Flash",
+        canonicalModelKey: "deepseek-v4-flash",
       },
     ],
     supportsReview: true,
@@ -54,6 +57,7 @@ const agents: AgentOption[] = [
         billingMode: "sub",
         modelId: "gpt-5.6-sol",
         label: "GPT-5.6 Sol",
+        canonicalModelKey: "gpt-5.6-sol",
       },
     ],
     supportsReview: false,

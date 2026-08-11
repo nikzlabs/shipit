@@ -107,7 +107,7 @@ import { SecretBlockBanner } from "./components/SecretBlockBanner.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentStatusBar } from "./components/AgentStatusBar.js";
 import { StaleContainerBanner } from "./components/StaleContainerBanner.js";
-import type { AgentOption, EligibleModelOption } from "./agent-types.js";
+import type { AgentOption, ModelChoice } from "./agent-types.js";
 import type {
   AgentId,
   CredentialRoute,
@@ -1534,7 +1534,7 @@ export default function App() {
   // sorts first, which is the silent mis-billing req 11 exists to prevent. The
   // browser's own seed slot stores the triple for the same reason.
   const handleModelChange = useCallback(
-    (selection: EligibleModelOption) => {
+    (selection: ModelChoice) => {
       if (selection.serviceId) {
         saveModelSelection({
           serviceId: selection.serviceId,

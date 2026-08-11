@@ -19,8 +19,8 @@ const claude: AgentOption = {
   hasRunnableModels: true,
   models: ["claude-opus-5", "claude-sonnet-5"],
   eligibleModels: [
-    { serviceId: "anthropic", serviceName: "Anthropic", billingMode: "sub", modelId: "claude-opus-5", label: "Opus 5" },
-    { serviceId: "anthropic", serviceName: "Anthropic", billingMode: "sub", modelId: "claude-sonnet-5", label: "Sonnet 5" },
+    { serviceId: "anthropic", serviceName: "Anthropic", billingMode: "sub", modelId: "claude-opus-5", label: "Opus 5", canonicalModelKey: "claude-opus-5" },
+    { serviceId: "anthropic", serviceName: "Anthropic", billingMode: "sub", modelId: "claude-sonnet-5", label: "Sonnet 5", canonicalModelKey: "claude-sonnet-5" },
   ],
   supportsReview: true,
   supportedPermissionModes: ["plan", "guarded", "auto"],
@@ -40,7 +40,7 @@ const codex: AgentOption = {
   hasRunnableModels: true,
   models: ["gpt-5-codex"],
   eligibleModels: [
-    { serviceId: "openai", serviceName: "OpenAI", billingMode: "sub", modelId: "gpt-5-codex", label: "GPT-5 Codex" },
+    { serviceId: "openai", serviceName: "OpenAI", billingMode: "sub", modelId: "gpt-5-codex", label: "GPT-5 Codex", canonicalModelKey: "gpt-5-codex" },
   ],
   supportsReview: true,
   supportedPermissionModes: [],

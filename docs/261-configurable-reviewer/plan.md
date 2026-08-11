@@ -605,9 +605,11 @@ established that the Reviewer tab is deliberately **not** optimistic, because sl
 against slot 1 and a local guess would have to reimplement the ranking. Sharing
 `useModelPickerState` would drag session state into Settings and re-open exactly that. So
 `components/pickers/` holds presentation: `PickerTrigger` (the button in the reference
-screenshot — label, optional leading icon, caret, disabled and locked variants),
-`PickerOption` (a row: label, optional second line, checkmark) and `ModelOptions` (the grouped
-model rows). Each surface keeps its own state and renders the same control.
+screenshot — label, optional leading icon, caret, disabled and locked variants), `Picker` (a
+trigger plus its menu) and `PickerOption` (a row: label, optional second line, checkmark). Each
+surface keeps its own state and renders the same control. There is deliberately **no shared
+grouped-model-list component**: the Settings menus are scoped to one service and so have no
+groups, and the composer's grouping is the only one left.
 
 That split is also what makes req 13 **checkable**. A guard renders the composer's model
 trigger and the Reviewer tab's, and asserts the two `className` strings are identical — a test
@@ -675,6 +677,17 @@ Six things worth recording, three of which are decisions the design left open:
 - **Group headers left the Settings model menus.** With the service chosen on its own control,
   every row belongs to it, so a header on each group restates the answer to a question already
   asked. The composer keeps its headers, because it has no service control (req 11's scope).
+- **One requirement conflict is left open, named rather than papered over.** Cross-backend
+  review put the sharpest form of it: `canonicalModelKey` proves *same model*, not *same
+  harness*, so a service change that keeps the model can carry a level the newly-derived harness
+  does not declare. The server refuses that (`reviewer-settings.ts`), which means the service
+  change fails until the user lowers the level first — req 11 meeting req 5, with no third
+  option that is not a silent replacement. It is unreachable in today's catalogue, where no
+  model is dual-harness and both spellings of a model derive the same harness. The review also
+  restated phase 3's already-recorded latent bug from this angle — a pin validated against the
+  settings-time harness can be carried onto a different harness by `selectReviewer`. Both belong
+  to the commit that makes a model dual-harness: that is the change that makes them reachable,
+  and the only one that can test them.
 - **Driven in the dogfood instance** across three seeded services: the two Settings surfaces
   render the reference control, the service menu carries a billing-mode pill per row, switching
   Reviewer 1 from Anthropic to OpenRouter kept **Opus 5 and High** and flipped the slot to

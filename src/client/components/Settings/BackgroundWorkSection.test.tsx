@@ -234,4 +234,42 @@ describe("BackgroundWorkSection", () => {
       .toContain("openai");
     expect(screen.getByText(/no longer available/)).toBeTruthy();
   });
+
+  /**
+   * Two dependent controls make overlapping writes ordinary — change the
+   * service, then click a model before the response lands. The `<select>` this
+   * replaced was one control and could not reach this state; cross-backend
+   * review found the replacement had inherited neither a busy gate nor a
+   * newest-write rule from the Reviewer tab, which learned both the same way.
+   */
+  it("ignores a stale response that lands after a newer write", async () => {
+    const user = userEvent.setup();
+    let release: (() => void) | undefined;
+    const slow = new Promise<void>((resolve) => { release = resolve; });
+    let call = 0;
+    const fetchMock = vi.fn(async () => {
+      call += 1;
+      if (call === 1) {
+        await slow;
+        return { ok: true, json: async () => ({ nonTurnModel: { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" } }) };
+      }
+      return { ok: true, json: async () => ({ nonTurnModel: { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4" } }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    useSettingsStore.getState().setNonTurnModel(null, RESOLVED_FLASH);
+
+    render(<BackgroundWorkSection agentList={agents} />);
+    // Write 1 — slow, and it will resolve LAST.
+    await user.click(screen.getByTestId("background-work-service-trigger"));
+    await user.click(screen.getByTestId("background-work-service-option-anthropic:sub"));
+    // Write 2 — resolves immediately and is the newest.
+    await user.click(screen.getByTestId("background-work-model"));
+    await user.click(screen.getByTestId("background-work-model-option-deepseek-v4"));
+    expect(useSettingsStore.getState().nonTurnModel?.modelId).toBe("deepseek-v4");
+
+    release?.();
+    await slow;
+    // The older answer must not win.
+    expect(useSettingsStore.getState().nonTurnModel?.modelId).toBe("deepseek-v4");
+  });
 });

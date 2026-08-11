@@ -30,7 +30,7 @@ import {
 import { useReasoningPickerState } from "../ReasoningSelector.js";
 import { formatModelName } from "../../utils/format-model.js";
 import type { AgentId, PermissionMode } from "../../../server/shared/types.js";
-import type { AgentOption, EligibleModelOption } from "../../agent-types.js";
+import type { AgentOption, ModelChoice } from "../../agent-types.js";
 import type { ModelInfo } from "../../utils/model-info.js";
 
 /**
@@ -205,7 +205,7 @@ export function ComposerSettingsMenu({
   agents: AgentOption[];
   activeAgentId: AgentId;
   onAgentChange?: (agentId: AgentId) => void;
-  onModelChange?: (selection: EligibleModelOption) => void;
+  onModelChange?: (selection: ModelChoice) => void;
   onReasoningChange?: (effort: string | null) => void;
   sessionReasoning?: string;
   modelInfo: ModelInfo | null;

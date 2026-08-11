@@ -8,7 +8,7 @@ import { Picker, PickerOption } from "./pickers/Picker.js";
 import { BillingModePill } from "./BillingModePill.js";
 import type { BillingMode } from "../../server/shared/catalogue/index.js";
 import type { AgentId, SessionInfo } from "../../server/shared/types.js";
-import type { AgentOption, EligibleModelOption } from "../agent-types.js";
+import type { AgentOption, ModelChoice } from "../agent-types.js";
 import type { ModelInfo } from "../utils/model-info.js";
 
 /**
@@ -40,7 +40,7 @@ import type { ModelInfo } from "../utils/model-info.js";
  */
 
 /** A model row, as the picker groups and renders it. */
-interface ModelRow extends EligibleModelOption {
+interface ModelRow extends ModelChoice {
   /** The group this row belongs to: one `(service, billing mode)`. */
   groupKey: string;
 }
@@ -318,7 +318,7 @@ interface ModelSelectorProps {
   agents: AgentOption[];
   activeAgentId: AgentId;
   /** Called with the whole selection — a bare id cannot say who is billing you. */
-  onModelChange?: (selection: EligibleModelOption) => void;
+  onModelChange?: (selection: ModelChoice) => void;
   modelInfo: ModelInfo | null;
   /**
    * Whether the picker is bound to an active session (the in-session composer)
@@ -361,7 +361,7 @@ export function useModelPickerState({
 }: {
   agents: AgentOption[];
   activeAgentId: AgentId;
-  onModelChange?: (selection: EligibleModelOption) => void;
+  onModelChange?: (selection: ModelChoice) => void;
   modelInfo: ModelInfo | null;
   hasActiveSession?: boolean;
   seedFromHistory?: boolean;
@@ -373,7 +373,7 @@ export function useModelPickerState({
   // the service the user had just moved away from, until an unrelated
   // session-list refresh happened to arrive. The server's
   // `model_selection_changed` confirmation is what clears it.
-  const [pendingSelection, setPendingSelection] = useState<EligibleModelOption | undefined>(
+  const [pendingSelection, setPendingSelection] = useState<ModelChoice | undefined>(
     undefined,
   );
 
@@ -514,7 +514,7 @@ export function useModelPickerState({
     (row: ModelRow) => {
       pendingSessionRef.current = sessionId;
       pendingEchoRef.current = selectionEcho;
-      const selection: EligibleModelOption = {
+      const selection: ModelChoice = {
         serviceId: row.serviceId,
         serviceName: row.serviceName,
         billingMode: row.billingMode,

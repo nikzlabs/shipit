@@ -31,6 +31,7 @@
  * for a setting docs/252 owns.
  */
 
+import { useRef, useState } from "react";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { Picker, PickerOption } from "../pickers/Picker.js";
@@ -57,8 +58,23 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
   const resolved = useSettingsStore((s) => s.nonTurnModelResolved);
   const models = eligibleModelsOf(agentList);
   const services = servicesOf(models);
+  /**
+   * Which write is the newest, and whether one is in flight.
+   *
+   * The `<select>` this replaced was ONE control, so overlapping writes were not
+   * reachable; two dependent controls make them ordinary — change the service,
+   * then click a model before the response lands. Without this an older
+   * response (or an older failure's rollback) overwrites the newer state, and
+   * the model menu is briefly still listing the PREVIOUS service's models. The
+   * Reviewer tab learned the same lesson from cross-backend review, and this is
+   * its counter and its busy gate; found by the same review one surface over.
+   */
+  const latestWrite = useRef(0);
+  const [busy, setBusy] = useState(false);
 
   const save = async (next: Pin | null) => {
+    const write = ++latestWrite.current;
+    setBusy(true);
     const prev = useSettingsStore.getState();
     const previousPin = prev.nonTurnModel;
     const previousResolved = prev.nonTurnModelResolved;
@@ -77,14 +93,22 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
         nonTurnModel?: Pin;
         nonTurnModelResolved?: NonNullable<ReturnType<typeof useSettingsStore.getState>["nonTurnModelResolved"]>;
       };
-      useSettingsStore.getState().setNonTurnModel(
-        result.nonTurnModel ?? null,
-        result.nonTurnModelResolved ?? null,
-      );
+      if (write === latestWrite.current) {
+        useSettingsStore.getState().setNonTurnModel(
+          result.nonTurnModel ?? null,
+          result.nonTurnModelResolved ?? null,
+        );
+      }
     } catch (err) {
-      useSettingsStore.getState().setNonTurnModel(previousPin, previousResolved);
+      // Roll back only if nothing newer has been sent — otherwise this restores
+      // a snapshot the user has already moved on from.
+      if (write === latestWrite.current) {
+        useSettingsStore.getState().setNonTurnModel(previousPin, previousResolved);
+      }
       useUiStore.getState().setToast({ message: "Failed to update the background-work model" });
       console.error("[settings] set nonTurnModel failed:", err);
+    } finally {
+      if (write === latestWrite.current) setBusy(false);
     }
   };
 
@@ -112,7 +136,15 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
   // healthy pin and the honest answer when a pin went stale.
   const current = resolved ?? (pinnedIsStale ? undefined : pinned ? { ...pinned } : undefined);
   const serviceModels = modelsOfService(models, current);
-  const currentModel = serviceModels.find((m) => m.modelId === current?.modelId);
+  // The eligible row when there is one; otherwise the resolution or the pin
+  // itself, whose identity `modelAfterServiceChange` recovers from the
+  // catalogue when no row carries it. A pin
+  // whose credential went away has no row at all, and that is exactly when the
+  // user re-points this at a service that survived.
+  const currentModel = serviceModels.find((m) => m.modelId === current?.modelId)
+    ?? current
+    ?? pinned
+    ?? undefined;
 
   const changeService = (service: ServiceChoice) => {
     const next = modelAfterServiceChange(currentModel, modelsOfService(models, service));
@@ -156,6 +188,7 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
             services={services}
             selected={current}
             onChange={changeService}
+            disabled={busy}
             idPrefix="background-work"
             fallbackLabel={pinnedIsStale && pinned ? pinned.serviceId : "No service"}
           />
@@ -168,6 +201,7 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
             menuTestId="background-work-model-menu"
             menuWidth="w-72"
             align="end"
+            disabled={busy}
           >
             {/*
               Unset as a labelled option rather than a blank (req 9), first in

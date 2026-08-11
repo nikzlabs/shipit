@@ -8,6 +8,7 @@
  * choose (req 11), and it is a list that grows with the catalogue (req 12).
  */
 
+import { getModel } from "../../../server/shared/catalogue/index.js";
 import type { AgentOption, EligibleModelOption } from "../../agent-types.js";
 
 /** One `(service, billing mode)` pair — the unit a model is selected under. */
@@ -79,6 +80,34 @@ export function modelsOfService(
   return models.filter((m) => serviceKeyOf(m) === key);
 }
 
+/** What a caller can hand to {@link modelAfterServiceChange} as "the model now". */
+export interface CurrentModel {
+  serviceId: string;
+  billingMode: "sub" | "key";
+  modelId: string;
+  canonicalModelKey?: string;
+}
+
+/**
+ * The identity of the model a slot holds — from the eligible row when there is
+ * one, and **from the catalogue when there is not**.
+ *
+ * The second half is not belt-and-braces. A pin whose credential went away has
+ * no eligible row at all, and that is precisely when a user re-points the slot
+ * at a service that survived: without the catalogue lookup, "keep the model"
+ * would silently become "take the new service's first model" in the one case
+ * where the user is least able to notice. The catalogue is static, so it still
+ * knows what the pinned row is; only the credential is gone.
+ *
+ * This is a LOOKUP of the authored answer, not a second derivation of it — the
+ * rule the design rules out is re-deriving identity from an id in the browser,
+ * and `getModel` is the catalogue's own function.
+ */
+export function canonicalKeyOf(current: CurrentModel | undefined): string | undefined {
+  if (!current) return undefined;
+  return current.canonicalModelKey ?? getModel(current)?.canonicalModelKey;
+}
+
 /**
  * The model a slot holds after the user changes its service: **the same model
  * when the new service offers it**, otherwise that service's first.
@@ -89,15 +118,12 @@ export function modelsOfService(
  * gateway and `claude-opus-5` direct are two strings and one set of weights, so
  * an id comparison would drop the user's model in exactly the situation this
  * rule exists for — changing only who pays for it.
- *
- * Falls back to the first model when either side carries no key, which is an
- * older wire payload or a test fixture rather than a real disagreement.
  */
 export function modelAfterServiceChange(
-  current: EligibleModelOption | undefined,
+  current: CurrentModel | undefined,
   candidates: EligibleModelOption[],
 ): EligibleModelOption | undefined {
-  const key = current?.canonicalModelKey;
+  const key = canonicalKeyOf(current);
   if (key) {
     const same = candidates.find((m) => m.canonicalModelKey === key);
     if (same) return same;
