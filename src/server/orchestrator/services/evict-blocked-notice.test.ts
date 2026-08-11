@@ -42,6 +42,16 @@ describe("formatEvictBlockedNotice", () => {
     expect(text).toContain("src/a.ts");
   });
 
+  // The ladder's own refusal, not an auto-commit one: there is no repository
+  // for a commit to have been refused in, and nothing will ever push these
+  // files — so the message must not promise that the next turn fixes it.
+  it("tells a repo-less workspace that only a person can unblock it", () => {
+    const text = formatEvictBlockedNotice({ kind: "no-repository" });
+    expect(text).toContain("no longer a git repository");
+    expect(text).toContain("archive");
+    expect(text).not.toContain("next turn");
+  });
+
   it("still produces a message for an unattributed refusal", () => {
     const text = formatEvictBlockedNotice({ kind: "unknown" });
     expect(text).toContain("Disk cleanup paused");
@@ -52,6 +62,7 @@ describe("formatEvictBlockedNotice", () => {
     const reasons: EvictBlockReason[] = [
       { kind: "secret", findings: [finding] },
       { kind: "conflict", conflictedFiles: [], rebaseInProgress: false },
+      { kind: "no-repository" },
       { kind: "unknown" },
     ];
     for (const reason of reasons) {

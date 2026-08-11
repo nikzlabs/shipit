@@ -982,14 +982,15 @@ describe("escalateDiskTiers", () => {
   // every pass reached the durability block, threw "fatal: not a git
   // repository", and returned "skipped" — no state change, no backoff. One
   // production session repeated that pair 117 times in an hour for eight days.
-  it("evicts a workspace that exists but is no longer a git repository", async () => {
+  // An EMPTY remnant is the missing-workspace case with a directory inode left
+  // over: nothing to protect, so it is recorded evicted and restore re-clones.
+  it("evicts an empty remnant directory that is no longer a git repository", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
-    const wsDir = path.join(tmpDir, "ws-derepoed");
-    await initRepo(wsDir);
-    fs.rmSync(path.join(wsDir, ".git"), { recursive: true, force: true });
+    const wsDir = path.join(tmpDir, "ws-remnant");
+    fs.mkdirSync(wsDir, { recursive: true }); // an interrupted rm -rf leaves this
     insertSession({
-      id: "derepoed-light",
+      id: "remnant-light",
       lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
       diskTier: "light",
       workspaceDir: wsDir,
@@ -1003,20 +1004,68 @@ describe("escalateDiskTiers", () => {
     });
 
     expect(result.toEvicted).toBe(1);
-    expect(sm.get("derepoed-light")?.diskTier).toBe("evicted");
-    expect(fs.existsSync(wsDir)).toBe(false);
+    expect(sm.get("remnant-light")?.diskTier).toBe("evicted");
   });
 
-  // Same shape, no remote: nothing could restore it, so recording "evicted"
-  // would assert a lie. The refusal is unchanged — only the log is throttled.
-  it("refuses to evict a non-repo workspace when there is no remote to restore from", async () => {
+  // The other half of the split, and the one that must NOT wipe. Files in a
+  // directory with no repository exist nowhere else — there is no branch or
+  // commit that could ever carry them to origin — so the rung that promises
+  // "everything it wipes is recoverable from origin" cannot delete them. It
+  // blocks instead: reclaim the regenerable overlay, notify, keep the files.
+  it("never wipes a non-repo workspace that still holds files — it blocks instead", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
-    const wsDir = path.join(tmpDir, "ws-derepoed-noremote");
-    await initRepo(wsDir, { noRemote: true });
+    const sessionRoot = path.join(tmpDir, "ws-derepoed");
+    const wsDir = path.join(sessionRoot, "workspace");
+    await initRepo(wsDir);
     fs.rmSync(path.join(wsDir, ".git"), { recursive: true, force: true });
+    fs.writeFileSync(path.join(wsDir, "only-copy.txt"), "never pushed anywhere");
+    // The regenerable dep overlay a block is allowed to reclaim (planning#194).
+    const overlayDir = path.join(sessionRoot, "overlay");
+    fs.mkdirSync(overlayDir, { recursive: true });
     insertSession({
-      id: "derepoed-noremote",
+      id: "derepoed-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const { appended, chatHistory } = fakeChatHistory();
+    const deps = {
+      ...baseDeps(sm, registry),
+      createGitManager: (dir: string) => new GitManager(dir),
+      chatHistory,
+      notifiedEvictBlocked: new Set<string>(),
+    };
+
+    const first = await escalateDiskTiers(deps);
+    const second = await escalateDiskTiers(deps);
+
+    expect(first.toEvicted).toBe(0);
+    expect(first.evictBlockedByPush).toBe(1);
+    // Blocked every pass — the condition is still true — but never wiped.
+    expect(second.evictBlockedByPush).toBe(1);
+    expect(sm.get("derepoed-light")?.diskTier).toBe("light");
+    expect(fs.existsSync(path.join(wsDir, "only-copy.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(wsDir, "a.txt"))).toBe(true);
+    // The expensive, regenerable half IS reclaimed, and the user is told once.
+    expect(fs.existsSync(overlayDir)).toBe(false);
+    expect(appended).toHaveLength(1);
+    expect(appended[0]!.text).toContain("no longer a git repository");
+  });
+
+  // Same empty-remnant shape, no remote: nothing could restore it, so recording
+  // "evicted" would assert a lie. The refusal is unchanged — only the log is
+  // throttled.
+  it("refuses to evict an empty remnant when there is no remote to restore from", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-remnant-noremote");
+    fs.mkdirSync(wsDir, { recursive: true });
+    insertSession({
+      id: "remnant-noremote",
       lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
       diskTier: "light",
       workspaceDir: wsDir,
@@ -1031,7 +1080,38 @@ describe("escalateDiskTiers", () => {
     });
 
     expect(result.toEvicted).toBe(0);
-    expect(sm.get("derepoed-noremote")?.diskTier).toBe("light");
+    expect(sm.get("remnant-noremote")?.diskTier).toBe("light");
+    expect(fs.existsSync(wsDir)).toBe(true);
+  });
+
+  // `.git` as a FILE is what a worktree or submodule checkout looks like, and
+  // as a symlink it is still a repository pointer. Neither is "no repository":
+  // both must take the careful path, never the new one.
+  it("treats a `.git` FILE as a repository — the careful path, never the wipe", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-gitfile");
+    await initRepo(wsDir);
+    fs.rmSync(path.join(wsDir, ".git"), { recursive: true, force: true });
+    fs.writeFileSync(path.join(wsDir, ".git"), "gitdir: /elsewhere/.git/worktrees/w\n");
+    insertSession({
+      id: "gitfile-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+    });
+
+    // The gitdir target doesn't exist, so git fails and the catch refuses —
+    // which is the point: a repository pointer is never the empty-remnant case.
+    expect(result.toEvicted).toBe(0);
+    expect(result.evictBlockedByPush).toBe(0); // not the no-repository block
     expect(fs.existsSync(path.join(wsDir, "a.txt"))).toBe(true);
   });
 
@@ -1077,6 +1157,55 @@ describe("escalateDiskTiers", () => {
     // Still refused: the checkout survives every pass.
     expect(sm.get("corrupt-light")?.diskTier).toBe("light");
     expect(fs.existsSync(path.join(wsDir, "a.txt"))).toBe(true);
+
+    // The suppression is scoped to a session that is still stuck the same way.
+    // Once the row leaves `light` — reopened, archived, deleted — the entry is
+    // pruned, so a later failure is reported again instead of being swallowed
+    // by a signature from a previous episode.
+    expect(deps.evictStuckLog.size).toBe(1);
+    sm.setDiskTier("corrupt-light", "evicted");
+    await escalateDiskTiers(deps);
+    expect(deps.evictStuckLog.size).toBe(0);
+  });
+
+  // The throttle keys on the CAUSE, not the session: a session that gets stuck
+  // for a new reason must never be silenced by the signature of the old one.
+  it("reports a DIFFERENT git failure even while an earlier one is throttled", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-changing");
+    await initRepo(wsDir);
+    fs.rmSync(path.join(wsDir, ".git"), { recursive: true, force: true });
+    fs.writeFileSync(path.join(wsDir, ".git"), "not a gitfile\n");
+    insertSession({
+      id: "changing-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const deps = {
+      ...baseDeps(sm, registry),
+      createGitManager: (dir: string) => new GitManager(dir),
+      evictStuckLog: new Map<string, string>(),
+    };
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let warnings: string[];
+    try {
+      await escalateDiskTiers(deps);
+      await escalateDiskTiers(deps);
+      // A different breakage in the same slot → a different message.
+      fs.writeFileSync(path.join(wsDir, ".git"), "gitdir: /nonexistent/git/dir\n");
+      await escalateDiskTiers(deps);
+      warnings = warn.mock.calls.map((c) => String(c[0]));
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(warnings.filter((w) => w.includes("git check failed"))).toHaveLength(2);
   });
 
   it("planning#296: warns once per session, not once per escalation pass", async () => {
