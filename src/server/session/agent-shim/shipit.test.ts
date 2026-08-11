@@ -2868,18 +2868,23 @@ describe("shipit issue", () => {
 // ---------------------------------------------------------------------------
 
 describe("runShim — agent run", () => {
-  it("requires --agent", async () => {
+  // docs/261 reqs 6 + 7 — a bare prompt names neither a role nor a target, so
+  // there is nothing left to infer from. It used to be "--agent is required";
+  // now the whole set is, because naming only the harness is exactly the shape
+  // a stored default used to complete.
+  it("requires either a role or the full explicit set", async () => {
     const { run } = makeRunner();
     const file = await promptFile("review this");
     const out = await run(["agent", "run", "--prompt-file", file]);
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("--agent is required");
+    expect(out.stderr).toContain("--agent");
+    expect(out.stderr).toContain("--role reviewer");
     expect(out.calls).toHaveLength(0);
   });
 
   it("requires --prompt-file", async () => {
     const { run } = makeRunner();
-    const out = await run(["agent", "run", "--agent", "codex"]);
+    const out = await run(["agent", "run", "--role", "reviewer"]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("--prompt-file is required");
   });
@@ -2892,10 +2897,21 @@ describe("runShim — agent run", () => {
     expect(out.calls).toHaveLength(0);
   });
 
-  it("posts {agentId, prompt, depth} and prints the sub-agent's text", async () => {
+  // docs/261 req 7 — every explicit parameter reaches the request body. This is
+  // the hop `--model` used to die on: it was parsed here and named by nothing
+  // downstream, so it was silently dropped before the spawn.
+  it("posts every explicit parameter and prints the sub-agent's text", async () => {
     const { run } = makeRunner();
     const file = await promptFile("Review this diff");
-    const out = await run(["agent", "run", "--agent", "codex", "--prompt-file", file], {
+    const out = await run([
+      "agent", "run",
+      "--agent", "codex",
+      "--service", "openai",
+      "--billing-mode", "sub",
+      "--model", "gpt-5.6-sol",
+      "--effort", "high",
+      "--prompt-file", file,
+    ], {
       "POST /agent-ops/agent/spawn": {
         status: 200,
         body: { status: "success", text: "Found 2 bugs at foo.ts:10", truncated: false, durationMs: 4200, costUsd: 0.03 },
@@ -2903,8 +2919,87 @@ describe("runShim — agent run", () => {
     });
     expect(out.exitCode).toBe(0);
     expect(out.calls[0].path).toBe("/agent-ops/agent/spawn");
-    expect(out.calls[0].body).toMatchObject({ agentId: "codex", prompt: "Review this diff", depth: 0 });
+    expect(out.calls[0].body).toMatchObject({
+      agentId: "codex",
+      serviceId: "openai",
+      billingMode: "sub",
+      modelId: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      prompt: "Review this diff",
+      depth: 0,
+    });
     expect(out.stdout).toContain("Found 2 bugs at foo.ts:10");
+  });
+
+  // docs/261 req 6 — the implicit path. The caller names the ROLE and nothing
+  // else; who reviews is resolved from the user's settings, server-side.
+  it("posts a role and none of the explicit parameters", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("Review this diff");
+    const out = await run(["agent", "run", "--role", "reviewer", "--prompt-file", file], {
+      "POST /agent-ops/agent/spawn": {
+        status: 200,
+        body: { status: "success", text: "looks fine", truncated: false, durationMs: 10, costUsd: 0 },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ role: "reviewer", prompt: "Review this diff", depth: 0 });
+    for (const key of ["agentId", "serviceId", "billingMode", "modelId", "reasoningEffort"]) {
+      expect(out.calls[0].body).not.toHaveProperty(key);
+    }
+  });
+
+  // The two ways of saying what a run happens on are answers to two different
+  // questions (req 6), so a call making both is refused rather than reconciled —
+  // and refused BEFORE the prompt is read, so nothing is spawned.
+  it("refuses --role combined with an explicit parameter", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review");
+    const out = await run(["agent", "run", "--role", "reviewer", "--agent", "codex", "--prompt-file", file]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--role cannot be combined with --agent");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("refuses an unknown role by name", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review");
+    const out = await run(["agent", "run", "--role", "critic", "--prompt-file", file]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain('unknown role "critic"');
+    expect(out.stderr).toContain("reviewer");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  // docs/261 req 7 — the refusal the whole design exists for. A half-specified
+  // call used to be completed from a stored per-harness default the caller could
+  // not see; now it names what is missing and runs nothing.
+  it("refuses an incomplete explicit call, naming every missing flag", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review");
+    const out = await run([
+      "agent", "run", "--agent", "codex", "--model", "gpt-5.6-sol", "--prompt-file", file,
+    ]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--service");
+    expect(out.stderr).toContain("--billing-mode");
+    expect(out.stderr).toContain("--effort");
+    // and it points at the path that needs no parameters at all
+    expect(out.stderr).toContain("--role reviewer");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("refuses a billing mode that is neither sub nor key", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review");
+    const out = await run([
+      "agent", "run",
+      "--agent", "codex", "--service", "openai", "--billing-mode", "free",
+      "--model", "gpt-5.6-sol", "--effort", "high", "--prompt-file", file,
+    ]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--billing-mode");
+    expect(out.calls).toHaveLength(0);
   });
 
   it("forwards the inherited SHIPIT_AGENT_DEPTH as depth", async () => {
@@ -2913,7 +3008,7 @@ describe("runShim — agent run", () => {
     try {
       const { run } = makeRunner();
       const file = await promptFile("nested");
-      const out = await run(["agent", "run", "--agent", "claude", "--prompt-file", file], {
+      const out = await run(["agent", "run", "--role", "reviewer", "--prompt-file", file], {
         "POST /agent-ops/agent/spawn": { status: 403, body: { error: "Sub-agents cannot spawn further sub-agents." } },
       });
       expect(out.calls[0].body).toMatchObject({ depth: 1 });
@@ -2927,7 +3022,7 @@ describe("runShim — agent run", () => {
   it("surfaces the disabled error with a non-zero exit", async () => {
     const { run } = makeRunner();
     const file = await promptFile("review");
-    const out = await run(["agent", "run", "--agent", "codex", "--prompt-file", file], {
+    const out = await run(["agent", "run", "--role", "reviewer", "--prompt-file", file], {
       "POST /agent-ops/agent/spawn": {
         status: 403,
         body: { error: "Sub-agents are disabled. Enable them in Settings → Multi-agent sessions." },
@@ -2940,7 +3035,7 @@ describe("runShim — agent run", () => {
   it("prints text but exits non-zero on a non-success terminal status", async () => {
     const { run } = makeRunner();
     const file = await promptFile("review");
-    const out = await run(["agent", "run", "--agent", "codex", "--prompt-file", file], {
+    const out = await run(["agent", "run", "--role", "reviewer", "--prompt-file", file], {
       "POST /agent-ops/agent/spawn": {
         status: 200,
         body: { status: "timeout", text: "partial...", truncated: true, durationMs: 300000, costUsd: 0.1 },
@@ -2954,7 +3049,7 @@ describe("runShim — agent run", () => {
   it("prints the raw result object with --json", async () => {
     const { run } = makeRunner();
     const file = await promptFile("review");
-    const out = await run(["agent", "run", "--agent", "codex", "--prompt-file", file, "--json"], {
+    const out = await run(["agent", "run", "--role", "reviewer", "--prompt-file", file, "--json"], {
       "POST /agent-ops/agent/spawn": {
         status: 200,
         body: { status: "success", text: "ok", truncated: false, durationMs: 100, costUsd: 0 },
@@ -2974,7 +3069,7 @@ describe("runShim — agent run", () => {
   it("names the run and points at `agent result` so a copy can be re-read (planning#247)", async () => {
     const { run } = makeRunner();
     const file = await promptFile("review");
-    const out = await run(["agent", "run", "--agent", "codex", "--prompt-file", file], {
+    const out = await run(["agent", "run", "--role", "reviewer", "--prompt-file", file], {
       "POST /agent-ops/agent/spawn": {
         status: 200,
         body: { status: "success", text: "findings", truncated: false, durationMs: 10, costUsd: 0, spawnId: "run-77" },

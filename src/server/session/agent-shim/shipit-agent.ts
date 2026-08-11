@@ -6,7 +6,13 @@
  * hints) is read from a file or stdin, so backticks and $(...) are never
  * shell-evaluated. The shim forwards its inherited SHIPIT_AGENT_DEPTH so the
  * orchestrator's recursion guard can reject a sub-agent spawning a sub-agent.
- * Review is just a review-shaped prompt.
+ *
+ * docs/261 — WHO runs is said one of two ways, and they do not mix. `--role
+ * reviewer` names the role and leaves the reviewer to ShipIt's own settings
+ * (req 6): a review is no longer "a review-shaped prompt handed to whichever
+ * backend the repository's markdown named". Anything else names every parameter
+ * — harness, service, billing mode, model, reasoning level — and an omission is
+ * refused rather than completed from a stored default (req 7).
  *
  * `result` re-reads a finished run's persisted consult card — the SAME artifact
  * the UI renders. Two reasons it exists (planning#247): the caller can confirm its
@@ -31,13 +37,16 @@ import {
   formatError,
   type RunDeps,
 } from "./shipit.js";
+// The module rather than the `types.js` barrel: the shim runs under tsx with no
+// bundler, so an import here is a module the container actually loads.
+import { SUB_AGENT_ROLES, type SubAgentRole } from "../../shared/types/agent-types.js";
 
 const AGENT_RUN_INLINE_REDIRECT = `shipit agent run: inline prompt flags (-p/--prompt/-m) are not supported.
 Pass the prompt via --prompt-file FILE, or --prompt-file - to read it from stdin,
 so backticks and $(...) in the prompt are not evaluated by the shell. Use a
 single-quoted heredoc, exactly like \`gh pr create --body-file -\`:
 
-  shipit agent run --agent codex --prompt-file - <<'EOF'
+  shipit agent run --role reviewer --prompt-file - <<'EOF'
   Review this diff and list any bugs as file:line — comment. Diff:
   $(git diff)
   EOF`;
@@ -47,6 +56,85 @@ function inheritedAgentDepth(): number {
   const raw = process.env.SHIPIT_AGENT_DEPTH;
   const n = raw ? Number.parseInt(raw, 10) : 0;
   return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * docs/261 req 7 — the five flags that, together, name what a one-shot run runs
+ * on. Listed once, in the order the error messages print them, so "every
+ * parameter" has a single definition here and cannot drift from the check.
+ */
+const EXPLICIT_FLAGS = [
+  { flag: "--agent", key: "agent", body: "agentId" },
+  { flag: "--service", key: "service", body: "serviceId" },
+  { flag: "--billing-mode", key: "billingMode", body: "billingMode" },
+  { flag: "--model", key: "model", body: "modelId" },
+  { flag: "--effort", key: "effort", body: "reasoningEffort" },
+] as const;
+
+const ROLE_HINT =
+  "To ask for a review without naming a reviewer, use: --role reviewer "
+  + "(ShipIt resolves who reviews, from its own settings).";
+
+/**
+ * docs/261 reqs 6 + 7 — turn the parsed flags into the spawn target's half of
+ * the request body, refusing anything in between.
+ *
+ * Two rules, and the asymmetry is the point. A **role** names nothing else: a
+ * call carrying both is asking two different questions (who should review this?
+ * and: run exactly this model), so it is refused rather than reconciled. An
+ * **explicit** call names all five: an omission is an error, never a silent
+ * completion from a stored default the caller cannot see. That refusal is the
+ * whole reason `SubAgentDefaults` could be deleted rather than re-keyed.
+ *
+ * The server enforces both again — this shim is not the only caller, and a
+ * client-side check is a message, not a guarantee. What it buys is the message:
+ * the agent learns which flag it forgot without a round trip.
+ */
+function spawnTargetPayload(
+  values: Record<string, string | undefined>,
+  io: RunDeps["io"],
+): Record<string, unknown> {
+  const role = values.role;
+  const named = EXPLICIT_FLAGS.filter((f) => values[f.key] !== undefined);
+
+  if (role !== undefined) {
+    if (named.length > 0) {
+      fail(
+        io,
+        `shipit agent run: --role cannot be combined with ${named.map((f) => f.flag).join(", ")}. `
+          + "--role asks ShipIt for the configured reviewer; the explicit flags name one yourself. "
+          + "Pass one or the other.",
+      );
+    }
+    if (!SUB_AGENT_ROLES.includes(role as SubAgentRole)) {
+      fail(
+        io,
+        `shipit agent run: unknown role "${role}". Known roles: ${SUB_AGENT_ROLES.join(", ")}.`,
+      );
+    }
+    return { role };
+  }
+
+  const missing = EXPLICIT_FLAGS.filter((f) => !values[f.key]?.trim());
+  if (missing.length > 0) {
+    fail(
+      io,
+      "shipit agent run: a run that does not name a role must name EVERY parameter it runs on — "
+        + `missing ${missing.map((f) => f.flag).join(", ")}.\n`
+        + `Nothing is filled in from a stored setting, so an incomplete call is refused rather than\n`
+        + `completed from somewhere you cannot see. ${ROLE_HINT}`,
+    );
+  }
+  const billingMode = values.billingMode;
+  if (billingMode !== "sub" && billingMode !== "key") {
+    fail(
+      io,
+      `shipit agent run: --billing-mode must be "sub" (a subscription) or "key" (a metered API key), not "${billingMode}".`,
+    );
+  }
+  const payload: Record<string, unknown> = {};
+  for (const f of EXPLICIT_FLAGS) payload[f.body] = values[f.key];
+  return payload;
 }
 
 export async function handleAgentRun(args: string[], deps: RunDeps): Promise<void> {
@@ -62,6 +150,15 @@ export async function handleAgentRun(args: string[], deps: RunDeps): Promise<voi
       "--agent": "agent", "-a": "agent",
       "--prompt-file": "promptFile", "-f": "promptFile", "-F": "promptFile",
       "--model": "model",
+      // docs/261 req 7 — the rest of what a model IS (req 3: a model is a
+      // service, a billing mode and an id) plus the reasoning level (req 5).
+      // `--model` alone cannot say which credential pays for a model two
+      // services offer, and no effort flag existed at all.
+      "--service": "service",
+      "--billing-mode": "billingMode",
+      "--effort": "effort",
+      // docs/261 req 6 — the implicit path: name the role, not the reviewer.
+      "--role": "role",
     },
     booleans: { "--json": "json" },
   });
@@ -69,10 +166,7 @@ export async function handleAgentRun(args: string[], deps: RunDeps): Promise<voi
     fail(deps.io, `Unsupported flag for shipit agent run: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
 
-  const agentId = parsed.values.agent;
-  if (!agentId) {
-    fail(deps.io, "shipit agent run: --agent is required (e.g. --agent codex).");
-  }
+  const target = spawnTargetPayload(parsed.values, deps.io);
   const promptFile = parsed.values.promptFile;
   if (!promptFile) {
     fail(deps.io, "shipit agent run: --prompt-file is required (a file, or `-` for stdin, holding the sub-agent's prompt).");
@@ -85,8 +179,7 @@ export async function handleAgentRun(args: string[], deps: RunDeps): Promise<voi
     fail(deps.io, "shipit agent run: the prompt exceeds 200,000 characters.");
   }
 
-  const payload: Record<string, unknown> = { agentId, prompt, depth: inheritedAgentDepth() };
-  if (parsed.values.model) payload.model = parsed.values.model;
+  const payload: Record<string, unknown> = { ...target, prompt, depth: inheritedAgentDepth() };
 
   // planning#247 — a long consult routinely outlives the *caller's* patience: an
   // agent's foreground shell tool caps commands (10 min in Claude Code) and

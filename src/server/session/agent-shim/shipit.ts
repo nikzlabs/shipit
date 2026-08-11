@@ -238,8 +238,19 @@ Compose services (docs/238 — start the services declared in docker-compose.yml
   compose file and ShipIt reconciles it.
 
 Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
-  shipit agent run --agent claude|codex --prompt-file FILE [--model M] [--json]
+  shipit agent run --role reviewer --prompt-file FILE [--json]
+  shipit agent run --agent claude|codex --service S --billing-mode sub|key
+                   --model M --effort E --prompt-file FILE [--json]
   shipit agent result [RUN-ID] [--wait [--timeout SECONDS]] [--json]
+
+  There are two ways to say what the run happens on, and they do not mix
+  (docs/261). '--role reviewer' asks ShipIt for the reviewer the USER
+  configured — you name the role, never the reviewer, and supply no service,
+  model or harness. Prefer it for a second opinion: which model reviews is a
+  ShipIt setting, not your call. Anything else names EVERY parameter — the
+  harness, the service, the billing mode, the model and the reasoning level.
+  Nothing is filled in from a stored default, so an incomplete call is refused
+  rather than quietly completed from somewhere you cannot see.
 
   'run' spawns ANOTHER registered agent with the prompt from --prompt-file (or
   --prompt-file - for stdin) and prints its final text on stdout. Use it for a
@@ -254,7 +265,7 @@ Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
   through tail/head/grep — the sub-agent's report IS the deliverable, and the
   finding you need is as likely to be at the top as the bottom. Example:
 
-    shipit agent run --agent codex --prompt-file - <<'EOF'
+    shipit agent run --role reviewer --prompt-file - <<'EOF'
     Review this diff for bugs. Report findings as file:line — comment.
     $(git diff)
     EOF

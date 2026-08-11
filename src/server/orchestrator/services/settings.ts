@@ -6,9 +6,8 @@
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
-import type { AccountSelectionMode, AgentId, CredentialRoute, FailoverCutoffs, SubAgentDefaultsPatch } from "../../shared/types.js";
+import type { AccountSelectionMode, AgentId, CredentialRoute, FailoverCutoffs } from "../../shared/types.js";
 import { credentialModeKey, DEFAULT_FAILOVER_CUTOFF, DEFAULT_SELECTION_MODE, parseCredentialModeKey } from "../../shared/types.js";
-import type { BillingMode } from "../../shared/catalogue/index.js";
 import { allServices, credentialModeForStorageEnv, getMode, getModel, getService, nativeServiceForHarness } from "../../shared/catalogue/index.js";
 import { harnessForNonTurnSelection, resolveNonTurnModel } from "../non-turn-model.js";
 import { listConfiguredCredentials } from "../service-routing.js";
@@ -202,7 +201,6 @@ export async function getGlobalSettings(
   const autoFixCi = credentialStore?.getAutoFixCi() ?? false;
   const autoResetMergedBranch = credentialStore?.getAutoResetMergedBranch() ?? true;
   const enableSubAgents = credentialStore?.getEnableSubAgents() ?? false;
-  const agentSubAgentDefaults = credentialStore?.getAllAgentSubAgentDefaults() ?? {};
   // Settings page renders the per-agent "Parallel sessions" guidance as a
   // preview. Pick the first installed-and-authed agent so a Codex-only host
   // shows Codex's variant, not Claude's. Fall back to the first registered
@@ -273,7 +271,7 @@ export async function getGlobalSettings(
           source: nonTurnResolution.target.source,
         }
       : undefined;
-  return { canRunTurns, harnessOnboardingCompletedAt, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts, credentialRoutes,
+  return { canRunTurns, harnessOnboardingCompletedAt, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts, credentialRoutes,
     ...(nonTurnModel ? { nonTurnModel } : {}),
     ...(nonTurnModelResolved ? { nonTurnModelResolved } : {}) };
 }
@@ -334,13 +332,6 @@ export interface SaveGlobalSettingsOptions {
   autoResetMergedBranch?: boolean;
   /** docs/144 — global gate for sub-agent spawning. */
   enableSubAgents?: boolean;
-  /**
-   * docs/217 — per-agent sub-agent defaults patch, keyed by agent id. Each entry
-   * is merged into the stored value; a `null` field clears it. `reasoningEffort`
-   * is validated against the agent's registered reasoning options and `model`
-   * against its registered models.
-   */
-  agentSubAgentDefaults?: Record<string, SubAgentDefaultsPatch>;
   /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs (1-100). */
   failoverCutoffs?: Record<string, Partial<FailoverCutoffs>>;
   /** docs/150 req 21 — per-provider account selection mode. */
@@ -366,7 +357,7 @@ export async function saveGlobalSettings(
     onAutoResolveConflictsEnabled,
     gitIdentity, systemPrompt, maxIdleContainers,
     agentSystemInstructionsEnabled, autoCreatePr, liveSteering,
-    autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode,
+    autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, voiceDeliveryMode,
     failoverCutoffs, accountSelectionMode, nonTurnModel,
   } = opts;
 
@@ -448,82 +439,6 @@ export async function saveGlobalSettings(
         throw new ServiceError(400, `Account selection mode must be "strict" or "balanced"`);
       }
       credentialStore.setSelectionMode(target.serviceId, target.billingMode, mode);
-    }
-  }
-
-  // docs/217 — merge per-agent sub-agent defaults. Validate each agent id and
-  // each field's value against the registry before persisting; a bad value is a
-  // 400 (the picker only ever sends in-set values, so this guards API misuse).
-  if (agentSubAgentDefaults !== undefined) {
-    for (const [agentId, patch] of Object.entries(agentSubAgentDefaults)) {
-      const info = agentRegistry.get(agentId as AgentId);
-      if (!info) throw new ServiceError(400, `Unknown agent: ${agentId}`);
-      if ("reasoningEffort" in patch) {
-        const value = patch.reasoningEffort;
-        if (value !== null && value !== undefined) {
-          const allowed = info.capabilities.reasoning?.options.some((o) => o.value === value);
-          if (!allowed) {
-            throw new ServiceError(400, `Invalid reasoning effort "${value}" for ${info.name}`);
-          }
-        }
-        credentialStore.setAgentSubAgentDefaults(agentId, { reasoningEffort: value ?? null });
-      }
-      if ("model" in patch) {
-        const value = patch.model;
-        // docs/252 phase 4 — validate the whole TRIPLE, not a bare id.
-        // `serviceId`/`billingMode` are what let the user express a deliberate
-        // choice BETWEEN two services offering the same id (req 5); phase 3 had
-        // the server guess from the id alone, which could only ever produce one
-        // of the two. Validated rather than trusted: an unmatched triple is
-        // refused, so a client still cannot invent a service or name one with
-        // no credential (req 8).
-        //
-        // An EMPTY eligible set means "no credential source is wired" (a test
-        // registry, a worker, a custom runtime), not "nothing is eligible" —
-        // `capabilities.models` falls back to the static definition in exactly
-        // that case, so the check follows it rather than refusing everything.
-        //
-        // The two fields are independently optional on the wire, so **exactly
-        // one** of them has to be refused rather than read as "no pair": reading
-        // it that way throws away the half that WAS sent and resolves the bare
-        // id, which is the mis-billing this rule exists to prevent arriving
-        // through a malformed request instead of a stale one. Only *neither*
-        // field is the legacy shape.
-        const eligible = info.eligibleModels ?? [];
-        let chosen: { serviceId: string; billingMode: BillingMode } | undefined;
-        if (value !== null && value !== undefined) {
-          if (!patch.serviceId !== !patch.billingMode) {
-            throw new ServiceError(
-              400,
-              "A sub-agent model must name both a service and a billing mode, or neither.",
-            );
-          }
-          if (eligible.length === 0) {
-            if (!info.capabilities.models.includes(value)) {
-              throw new ServiceError(400, `Invalid model "${value}" for ${info.name}`);
-            }
-          } else {
-            const match =
-              patch.serviceId && patch.billingMode
-                ? eligible.find(
-                    (m) =>
-                      m.serviceId === patch.serviceId
-                      && m.billingMode === patch.billingMode
-                      && m.modelId === value,
-                  )
-                : eligible.find((m) => m.modelId === value);
-            if (!match) {
-              const where = patch.serviceId ? ` on ${patch.serviceId}` : "";
-              throw new ServiceError(
-                400,
-                `${info.name} cannot run "${value}"${where} — no service offering it has a credential this harness can use.`,
-              );
-            }
-            chosen = { serviceId: match.serviceId, billingMode: match.billingMode };
-          }
-        }
-        credentialStore.setAgentSubAgentDefaults(agentId, { model: value ?? null }, chosen);
-      }
     }
   }
 

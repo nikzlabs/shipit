@@ -15,8 +15,6 @@ import type {
   FailoverCutoffs,
   ReviewerPin,
   ReviewerSlot,
-  SubAgentDefaults,
-  SubAgentDefaultsPatch,
 } from "../shared/types.js";
 import { credentialModeKey, DEFAULT_SELECTION_MODE, REVIEWER_SLOTS } from "../shared/types.js";
 import { DEFAULT_FAILOVER_CUTOFF } from "../shared/types.js";
@@ -25,11 +23,7 @@ import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js
 import {
   allServices,
   getMode,
-  modesOfferingModel,
   nativeServiceForHarness,
-  resolveModelSelection,
-  resolveRetiredModelId,
-  retirementSuccessor,
   selectionExists,
   storageEnvFor,
 } from "../shared/catalogue/index.js";
@@ -122,14 +116,6 @@ interface CredentialData {
    */
   enableSubAgents?: boolean;
   /**
-   * docs/217 — per-agent defaults applied when this agent is invoked as a
-   * SUB-agent (`shipit agent run --agent <id>` from inside another session).
-   * Keyed by agent id. A per-agent object (not a scalar) so the group can grow
-   * — `reasoningEffort` and a default `model` for the sub-agent invocation.
-   * A field unset ⇒ the backend's native default (no `--effort` flag; `models[0]`).
-   */
-  agentSubAgentDefaults?: Record<string, SubAgentDefaults>;
-  /**
    * docs/252 phase 7 (req 9) — the model the work ShipIt does OUTSIDE a turn
    * runs on: naming a session, writing a pull-request description.
    *
@@ -160,11 +146,12 @@ interface CredentialData {
    *
    * A pin always wins. Nothing re-derives over a choice the user made.
    *
-   * **Deliberately not seeded from {@link CredentialData.agentSubAgentDefaults}.**
-   * Those values are dropped rather than migrated — a decision recorded in
-   * `docs/261-configurable-reviewer/requirements.md`, whose whole justification
-   * is the size of the install population. Anyone who had configured one
-   * reconfigures the reviewer instead.
+   * **Deliberately not seeded from the per-harness sub-agent defaults this
+   * replaced.** Those values are dropped rather than migrated — a decision
+   * recorded in `docs/261-configurable-reviewer/requirements.md`, whose whole
+   * justification is the size of the install population. Anyone who had
+   * configured one reconfigures the reviewer instead. The stored key is simply
+   * never read again; nothing rewrites the file to remove it.
    */
   reviewers?: Partial<Record<ReviewerSlot, ReviewerPin>>;
   /**
@@ -286,7 +273,6 @@ export class CredentialStore {
     this.filePath = path.join(credentialsDir ?? DEFAULT_CREDENTIALS_DIR, FILENAME);
     this.cipher = cipher;
     this.load();
-    this.migrateSubAgentDefaults();
     this.migrateProviderAccountsToRoutes();
     this.migrateAgentEnvKeysToRoutes();
     this.migrateRoutingSettingsKeys();
@@ -429,83 +415,6 @@ export class CredentialStore {
     if (changed) this.save();
   }
 
-  /**
-   * docs/252 — bring a sub-agent default's model selection up to date: backfill
-   * the `(serviceId, billingMode)` half, then move it off a retired model.
-   *
-   * `SubAgentDefaults.model` is the third persisted model selection and the
-   * easiest to miss: the sub-agent spawn picks its credential route from
-   * `subAgentId` *before* reading it, so once the same model id is reachable
-   * through two services that bare string would silently resolve to the
-   * harness's own vendor — the exact conflation this feature removes, surviving
-   * in a corner.
-   *
-   * The bias is that same vendor, which is the frozen fact for any value written
-   * before this feature: a harness could reach nothing else. A model id the
-   * catalogue cannot place is left alone rather than given an invented service.
-   *
-   * **docs/252 phase 8** adds the second half. A sub-agent default is the third
-   * persisted model selection and it strands on a retired model exactly as a
-   * session does — the spawn would forward an id the CLI can no longer run
-   * (req 13). `agentId` IS the harness the sub-agent spawns, which is what makes
-   * the successor check well-defined here. It belongs in this pass rather than in
-   * the getter because a retirement only ever arrives with a new catalogue, i.e.
-   * with a new process: resolving at load covers every retirement exactly once,
-   * where a writing getter would put a synchronous save behind every read.
-   *
-   * Runs at load and persists once, so it is a migration rather than a read-time
-   * fill — a read-time fill would re-derive on every process and would not
-   * survive into the settings payload the UI round-trips.
-   */
-  private migrateSubAgentDefaults(): void {
-    const map = this.data.agentSubAgentDefaults;
-    if (!map) return;
-    let changed = false;
-    for (const [agentId, defaults] of Object.entries(map)) {
-      const modelId = defaults.model;
-      if (!modelId) continue;
-      let next = defaults;
-      // The bias is the agent's own vendor, which is the frozen fact for any
-      // value written before this feature: a harness could reach nothing else. A
-      // model id the catalogue cannot place is left alone rather than given an
-      // invented service — and a RETIRED id is one of those, which is why the
-      // retirement pass below still has a bare-id branch to fall into.
-      if (!next.serviceId) {
-        const selection = resolveModelSelection(
-          modelId,
-          nativeServiceForHarness(agentId as AgentId),
-        );
-        if (selection) {
-          next = { ...next, serviceId: selection.serviceId, billingMode: selection.billingMode };
-        }
-      }
-      const successor =
-        next.serviceId && next.billingMode
-          ? retirementSuccessor(agentId as AgentId, {
-              serviceId: next.serviceId,
-              billingMode: next.billingMode,
-              modelId,
-            })
-          : resolveRetiredModelId(
-              agentId as AgentId,
-              modelId,
-              nativeServiceForHarness(agentId as AgentId),
-            );
-      if (successor) {
-        next = {
-          ...next,
-          model: successor.modelId,
-          serviceId: successor.serviceId,
-          billingMode: successor.billingMode,
-        };
-      }
-      if (next !== defaults) {
-        map[agentId] = next;
-        changed = true;
-      }
-    }
-    if (changed) this.save();
-  }
 
   private load(): void {
     let raw: string;
@@ -1312,8 +1221,7 @@ export class CredentialStore {
    */
   setReviewerPin(slot: ReviewerSlot, pin: ReviewerPin | null): void {
     // Rebuild the map (rather than `delete current[slot]`) so clearing a slot
-    // drops it without a dynamic-delete, exactly as `setAgentSubAgentDefaults`
-    // rebuilds its own.
+    // drops it without a dynamic-delete.
     const current: Partial<Record<ReviewerSlot, ReviewerPin>> = {};
     for (const other of REVIEWER_SLOTS) {
       const existing = this.data.reviewers?.[other];
@@ -1336,82 +1244,6 @@ export class CredentialStore {
       };
     }
     this.data.reviewers = current;
-    this.save();
-  }
-
-  // ---- Sub-agent defaults (docs/217) ----
-
-  /** Read the per-agent sub-agent defaults (empty object when unset). */
-  getAgentSubAgentDefaults(agentId: string): SubAgentDefaults {
-    return this.data.agentSubAgentDefaults?.[agentId] ?? {};
-  }
-
-  /** Read the full per-agent sub-agent-defaults map (for the settings payload). */
-  getAllAgentSubAgentDefaults(): Record<string, SubAgentDefaults> {
-    return { ...(this.data.agentSubAgentDefaults ?? {}) };
-  }
-
-  /**
-   * Merge a partial sub-agent-defaults patch for one agent. An explicit `null`
-   * (or `undefined`) for a field clears it, falling back to the CLI's own
-   * default. A field absent from the patch is left unchanged.
-   */
-  setAgentSubAgentDefaults(
-    agentId: string,
-    patch: SubAgentDefaultsPatch,
-    /**
-     * docs/252 phase 3 — which `(service, mode)` the caller means, when it knows.
-     *
-     * `resolveModelSelection` picks the FIRST mode of the biased service, which
-     * for Anthropic is `sub` — so on an install whose only Anthropic credential
-     * is an API key, choosing Sonnet as a sub-agent default stored an
-     * unreachable subscription triple and every consult then failed. The service
-     * layer knows which modes are eligible; this lets it say so.
-     *
-     * A hint is a preference, not an override: it applies only when that mode
-     * actually declares the model, so the stored triple still names a real
-     * catalogue row and the invariant on {@link SubAgentDefaultsPatch} holds.
-     */
-    preferred?: { serviceId: string; billingMode: BillingMode },
-  ): void {
-    const current = { ...(this.data.agentSubAgentDefaults?.[agentId] ?? {}) };
-    if ("reasoningEffort" in patch) {
-      if (patch.reasoningEffort) current.reasoningEffort = patch.reasoningEffort;
-      else delete current.reasoningEffort;
-    }
-    if ("model" in patch) {
-      if (patch.model) current.model = patch.model;
-      else delete current.model;
-      // docs/252 — the service and mode belong to the model, so a model write
-      // re-resolves them and a model clear drops them. Writing them independently
-      // is what would let the stored triple name a row that does not exist.
-      const hinted =
-        patch.model && preferred
-          ? modesOfferingModel(patch.model).find(
-              (m) => m.serviceId === preferred.serviceId && m.billingMode === preferred.billingMode,
-            )
-          : undefined;
-      const selection = patch.model
-        ? (hinted
-            ? { ...hinted, modelId: patch.model }
-            : resolveModelSelection(patch.model, nativeServiceForHarness(agentId as AgentId)))
-        : undefined;
-      if (selection) {
-        current.serviceId = selection.serviceId;
-        current.billingMode = selection.billingMode;
-      } else {
-        delete current.serviceId;
-        delete current.billingMode;
-      }
-    }
-    // Rebuild the map (rather than `delete map[agentId]`) so a now-empty entry
-    // drops out without a dynamic-delete.
-    const next: Record<string, SubAgentDefaults> = {};
-    for (const [id, value] of Object.entries(this.data.agentSubAgentDefaults ?? {})) {
-      if (id !== agentId) next[id] = value;
-    }
-    if (Object.keys(current).length > 0) next[agentId] = current;
-    this.data.agentSubAgentDefaults = next;
     this.save();
   }
 

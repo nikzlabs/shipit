@@ -114,7 +114,6 @@ import type {
   DocEntry,
   TrackerIssue,
   ReleaseMechanism,
-  SubAgentDefaults,
 } from "../server/shared/types.js";
 
 import { useSessionStore } from "./stores/session-store.js";
@@ -1136,7 +1135,6 @@ export default function App() {
             autoFixCi?: boolean;
             autoResetMergedBranch?: boolean;
             enableSubAgents?: boolean;
-            agentSubAgentDefaults?: Record<string, SubAgentDefaults>;
             voiceDeliveryMode?: "native" | "external" | "both";
             voiceWebhookConfigured?: boolean;
             providerAccounts?: CredentialRoute[];
@@ -1224,10 +1222,6 @@ export default function App() {
           {useSettingsStore
             .getState()
             .setEnableSubAgents(data.settings.enableSubAgents);}
-        if (data.settings.agentSubAgentDefaults !== undefined)
-          {useSettingsStore
-            .getState()
-            .setAgentSubAgentDefaults(data.settings.agentSubAgentDefaults);}
         if (data.settings.voiceDeliveryMode !== undefined)
           {useSettingsStore
             .getState()

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { AgentId, CredentialRoute, PermissionMode, FileContextRef, SubAgentDefaults } from "../../server/shared/types.js";
+import type { AgentId, CredentialRoute, PermissionMode, FileContextRef } from "../../server/shared/types.js";
 import {
   getSavedNotifyOnFinish, saveNotifyOnFinish,
   getSavedSoundOnFinish, saveSoundOnFinish,
@@ -242,11 +242,6 @@ interface SettingsState {
    */
   accountSelectionMode: Record<string, "strict" | "balanced">;
   /**
-   * docs/217 — per-agent defaults applied when an agent runs as a sub-agent
-   * (Control A), keyed by agent id. Hydrated from bootstrap / settings broadcast.
-   */
-  agentSubAgentDefaults: Record<string, SubAgentDefaults>;
-  /**
    * Claude CLI sign-in diagnostics, keyed by provider account id (docs/150).
    *
    * One buffer per provider was correct only for as long as two things held at
@@ -339,8 +334,6 @@ interface SettingsState {
   setAccountSelectionMode: (modeKey: string, mode: "strict" | "balanced") => void;
   setAutoResetMergedBranch: (enabled: boolean) => void;
   setEnableSubAgents: (enabled: boolean) => void;
-  /** docs/217 — replace the per-agent sub-agent defaults map (Control A). */
-  setAgentSubAgentDefaults: (map: Record<string, SubAgentDefaults>) => void;
   setClaudeAuthProgress: (accountId: string, progress: {
     attemptId: string;
     phase: AgentAuthPhase;
@@ -429,7 +422,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   enableSubAgents: false,
   failoverCutoffs: {},
   accountSelectionMode: {},
-  agentSubAgentDefaults: {},
   claudeAuthDiagnostics: {},
   providerAccounts: [],
   credentialRoutes: [],
@@ -564,7 +556,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set((s) => ({ accountSelectionMode: { ...s.accountSelectionMode, [modeKey]: mode } })),
   setAutoResetMergedBranch: (enabled) => set({ autoResetMergedBranch: enabled }),
   setEnableSubAgents: (enabled) => set({ enableSubAgents: enabled }),
-  setAgentSubAgentDefaults: (map) => set({ agentSubAgentDefaults: map }),
 
   setClaudeAuthProgress: (accountId, progress) =>
     set((state) => {

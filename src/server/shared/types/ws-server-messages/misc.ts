@@ -1,4 +1,4 @@
-import type { AgentId, SubAgentDefaults } from "../agent-types.js";
+import type { AgentId } from "../agent-types.js";
 import type { EligibleModel } from "../../agent-registry.js";
 import type { PermissionMode } from "../attachment-types.js";
 import type { FileDiff } from "../domain-types.js";
@@ -73,8 +73,6 @@ export interface WsGlobalSettings {
   autoResetMergedBranch?: boolean;
   /** docs/144 — global gate for sub-agent spawning. */
   enableSubAgents?: boolean;
-  /** docs/217 — per-agent sub-agent defaults (Control A), keyed by agent id. */
-  agentSubAgentDefaults?: Record<string, SubAgentDefaults>;
 }
 
 // ---- Template messages ----

@@ -327,8 +327,64 @@ restated, and is why `fallbackModel` cannot survive on this path.
 - The spawn's read of `getAgentSubAgentDefaults` (`sub-agent.ts:285`) is replaced by the role
   resolution or by the explicit arguments, and the store is deleted.
 
-**The stored defaults are dropped, not migrated, and there is no notice.** Existing values are
-deleted with the store; anyone who had configured one reconfigures the reviewer instead. That
+**Phase 2 has landed.** `services/sub-agent-target.ts` is the whole of "what does this spawn run
+on": `parseSubAgentSpawnTarget` reads the request body into a two-shape union (`role` |
+`explicit`) and refuses everything in between, and `resolveSubAgentSpawnTarget` turns that into
+the harness, model and effort — resolving *and* routing a role through `selectReviewer`.
+`runSubAgent` captures it once, before the registry gates, and every step after it reads that one
+value. `SubAgentDefaults` is gone: the store, its load-time migration, the settings payload and
+patch, the bootstrap field, the WS shape, the client store members and
+`SubAgentDefaultsSection` (orphaned when the Services-card session deleted the vendor tabs).
+
+Five things worth recording:
+
+- **The refusal is the server's, not the shim's.** Both check, but only one can be trusted: a
+  caller that skips the shim, or a stale shim, must not get an incomplete call quietly completed.
+  The shim's copy buys the *message* — the agent learns which flag it forgot without a round
+  trip — which is why the two checks are deliberately not shared code.
+- **The target is resolved BEFORE the callee's registry gates and AFTER every caller gate.**
+  Those registry gates need a harness id and a role's harness is *derived*, so resolution has to
+  precede them; it is safe because the ranking only ever returns an installed, credentialed,
+  routable harness. Everything about the caller — session, pin, depth, runner, budget — precedes
+  resolution instead, because none of it needs a harness and all of it should be reported as
+  itself: a recursive call is refused for recursion, not for an unresolvable reviewer.
+- **The implementer is the resident process's spawn stamp, not the session row.** The row is
+  mutable under a running turn (`set_model`), and ranking against it produces exactly the outcome
+  req 4 forbids: a Claude harness producing work with DeepSeek, the user switching the picker to
+  Opus, and the review handed back to DeepSeek as though it were the distant one.
+  `parseSpawnIdentity` reads `runner.appliedSpawnIdentity`, which moves only when a process is
+  spawned — that is, only when what is running changes. The row remains the fallback where there
+  is no resident process to ask.
+- **A role arrives already routed, and the spawn must not re-ask.** `selectReviewer` ranks only
+  reviewers with a usable route, so re-running `selectRouteForSelection` would answer a settled
+  question and could answer it differently. The explicit path still resolves its own route where
+  it always did, after the cap gate and inside the account-failover loop.
+- **The refusal is repeated at the execution boundary.** `SubAgentSpawnRequest.model` is
+  required and the worker's `/agent/spawn` refuses a spawn that names none. The orchestrator's
+  edge is where an incomplete *call* is refused, but the worker is where a missing model would
+  actually be *filled* — the CLI picks its own — so a propagation slip between the two now fails
+  loudly instead of quietly reinstating the default this phase deleted.
+- **The cap is checked before the target is resolved and spent after it is validated.** Every
+  gate about the caller — session, depth, budget — precedes resolution, so a capped or recursive
+  call says so rather than first ranking a reviewer it will never spawn; and a refused call does
+  not consume one of the turn's three slots.
+- **`--effort` is validated against the named harness's own levels rather than passed through.**
+  docs/217's rule was that an unrecognized level means "pass no flag", which under req 7 would be
+  a value silently *replaced* — the same failure as a value silently supplied. It is refused
+  instead. Same for a triple the catalogue does not carry, and for a model the named harness has
+  no credential for (`assertHarnessCanRunSelection`, checked against the registry's eligible set,
+  skipped when that set is empty because empty means "no credential source wired").
+- **This leaves ShipIt's own callers broken until phase 5, on purpose.**
+  `compose-review-body.ts` and the two harness system prompts still generate `--agent codex`,
+  which is now an incomplete explicit call and is refused. That is the phase boundary the table
+  below draws, not an oversight — and it is why phase 5 is not optional cleanup.
+
+**The stored defaults are dropped, not migrated, and there is no notice.** Precisely: the
+`agentSubAgentDefaults` key is left where it is in the credentials file and is never read again
+— every getter, the load-time migration and the only consumer are gone, so nothing can fill a
+blank from it — and no pass rewrites the file to remove it, exactly as the store treats any
+other key it does not recognize. What the user experiences is the decision: their configured
+sub-agent default no longer does anything, and they reconfigure the reviewer instead. That
 is a deliberate decision recorded in `requirements.md`, and its whole justification is that the
 install population is currently one person — so it is the decision to revisit if that changes
 before this ships, not a general principle about how ShipIt treats settings.
@@ -369,10 +425,11 @@ The audit (`../252-custom-models/ui-audit.md`, D16) found the per-vendor Claude/
 uniquely held exactly one thing: `SubAgentDefaultsSection`. Req 7 deletes it, so:
 
 - **`SubAgentDefaultsSection` is removed**, with `SubAgentDefaults` and its store, wire and
-  route members (`credential-store.ts:1208`, `services/settings.ts:457`, the bootstrap and
-  WS shapes).
+  route members. **Done in phase 2**, with the store rather than with the tab: the
+  Services-card session had already deleted the two tabs, so the component was dead code
+  rendering a setting the server still read.
 - **`ClaudeTab` and `CodexTab` are removed**, and with them the `agent-claude` / `agent-codex`
-  tabs and the "Agent" nav group (`Settings.tsx:23`, `:144-165`).
+  tabs and the "Agent" nav group. **Done** — by the Services-card session, ahead of this phase.
 - **A "Reviewer" tab** holds the two reviewers, each a model picker grouped by
   `(service, billing mode)` plus a reasoning select, and each labelled **Auto-configured** or
   **Pinned** with what it currently resolves to (req 8) — the same control shape as
@@ -400,6 +457,12 @@ same `(anthropic, key)` / `(openai, key)` credential route the Services add-flow
 | 3 | Settings: the Reviewer tab, and the emptied vendor tabs deleted | 1, 5, 8 | Both slots configurable, each labelled Auto-configured or Pinned with what it resolves to, refreshed when a credential changes |
 | 4 | Attribution: the resolved reviewer persisted on the consult card and rendered | 9 | The card says model, service/mode, harness and effort — not just "Consulted Claude" |
 | 5 | Every product-owned caller migrated; `CLAUDE.md` and `shipit-docs` updated | 2, 6 | No authored or generated command names a backend for a review |
+
+**Phase 5 is now load-bearing rather than tidy-up.** Until it lands, every command ShipIt
+itself authors or generates for a review (`compose-review-body.ts`, the two harness system
+prompts, `prompts/spec-discipline.md`) names `--agent` and nothing else, which req 7 refuses.
+That is the cost of the phase boundary and it was taken deliberately; it is not a reason to
+widen phase 2.
 
 **Phase 4 is not "confirm nothing changed".** The draft said attribution was unchanged, and
 the review found that the persisted consult card carries only `subAgentId`, duration and cost

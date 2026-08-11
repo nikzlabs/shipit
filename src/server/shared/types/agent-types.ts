@@ -35,60 +35,51 @@ export interface AgentReasoningCapability {
 }
 
 /**
- * docs/217 — per-agent defaults applied when an agent is invoked as a SUB-agent
- * (`shipit agent run --agent <id>` from inside another session). A grouped
- * object (not a scalar) so the "Sub-agent defaults" section can grow: it started
- * with `reasoningEffort` and now also carries a default `model`. Each field
- * absent ⇒ the sub-agent falls back to the backend's native default (no
- * `--effort` flag; `models[0]` for the model).
+ * docs/261 req 6 — the roles an agent may ask for by name.
+ *
+ * A role is the **implicit** path: the caller names what it wants done and
+ * ShipIt resolves who does it, from settings the user owns. It supplies no
+ * service, no model and no harness — asking for a review and choosing the
+ * reviewer are two different things, and only the first belongs to the agent.
+ *
+ * One role today. It is a list rather than a literal because the CLI has to
+ * reject an unknown role by name, and a second role (a summarizer, a test
+ * writer) would land here rather than growing another flag.
  */
-export interface SubAgentDefaults {
-  /** Reasoning effort the sub-agent runs with (a value from `reasoning.options`). */
-  reasoningEffort?: string;
-  /** Model alias/id the sub-agent runs with (a value from the agent's `models`). */
-  model?: string;
-  /**
-   * docs/252 — the rest of the selection triple for {@link SubAgentDefaults.model}.
-   *
-   * This is the third persisted model selection and the easiest of the three to
-   * miss. `model` is a bare string, and the sub-agent spawn picks its credential
-   * route from `subAgentId` *before* reading it — so once the same model id is
-   * reachable through two services, that string cannot say which, and it would
-   * silently resolve to the harness's own vendor. That is exactly the
-   * harness/service conflation this feature removes, surviving in a corner.
-   *
-   * Backfilled from `model` when the credential store loads (see
-   * `CredentialStore.migrateSubAgentDefaults`), biased to the agent's own
-   * vendor — the frozen fact for any value written before this feature.
-   */
-  serviceId?: string;
-  billingMode?: BillingMode;
-}
+export const SUB_AGENT_ROLES = ["reviewer"] as const;
+export type SubAgentRole = (typeof SUB_AGENT_ROLES)[number];
 
 /**
- * A write patch for {@link SubAgentDefaults}. An explicit `null` for a field
- * clears it (reverting to the backend's native default); `undefined`/absent
- * leaves it unchanged.
+ * docs/261 req 7 — what a one-shot `shipit agent run` runs on.
  *
- * docs/252 phase 4 — `serviceId`/`billingMode` ride WITH `model` and are never
- * patched on their own: they say which service the id was chosen from, which is
- * a question only the user can answer once two services offer the same id
- * (req 5). Phase 3 left them out entirely and had the server guess, which meant
- * a deliberate choice between two services could not be expressed at all.
+ * Exactly two shapes, and the asymmetry between them is the feature:
  *
- * They are still not free-form. The server validates the whole triple against
- * the harness's ELIGIBLE set before storing it, so a client cannot invent a
- * service, name one the install has no credential for, or write a row the
- * catalogue does not carry. Sent without them, `model` resolves as it did
- * before.
+ *  - **`role`** — resolved from ShipIt's settings (req 6). The caller names
+ *    nothing else, and naming a role *and* an explicit parameter is refused
+ *    rather than reconciled: they are answers to two different questions.
+ *  - **`explicit`** — the caller states everything, and an omission is an
+ *    **error** rather than a silent completion from a stored default the caller
+ *    cannot see (req 7). That is why every field here is required: a
+ *    half-specified explicit call is not expressible, which is the type-level
+ *    statement of the rule the whole feature exists to establish.
+ *
+ * A **child session** is neither, and deliberately so (req 10): it inherits from
+ * its parent, because it *has* a parent, where a one-shot run has nothing but
+ * its own arguments. `shipit session create` is untouched by this type.
  */
-export interface SubAgentDefaultsPatch {
-  reasoningEffort?: string | null;
-  model?: string | null;
-  /** Only read alongside a non-null `model`; both must be present or neither. */
-  serviceId?: string;
-  billingMode?: BillingMode;
-}
+export type SubAgentSpawnTarget =
+  | { kind: "role"; role: SubAgentRole }
+  | {
+      kind: "explicit";
+      /** The harness that runs (req 3's `--agent`). */
+      subAgentId: AgentId;
+      /** The `(service, billing mode, model)` triple that identifies a model (req 3). */
+      serviceId: string;
+      billingMode: BillingMode;
+      modelId: string;
+      /** The reasoning level (req 5) — part of the call, never the harness's default. */
+      reasoningEffort: string;
+    };
 
 /**
  * docs/261 req 4 — which of the two configured reviewers a slot is.

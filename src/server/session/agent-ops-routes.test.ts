@@ -698,6 +698,47 @@ describe("agent-ops routes", () => {
     expect(res.json().error).toContain("rate limit reached");
   });
 
+  /**
+   * docs/261 req 7 — every explicit parameter survives the worker→orchestrator
+   * hop.
+   *
+   * Honest about what this can and cannot catch: the relay forwards
+   * `request.body` verbatim, so it would pass today against a route that named
+   * none of these fields — the drop that actually happened was one hop further
+   * on, at the orchestrator's own route schema (covered in
+   * `integration_tests/agent-spawn-route.test.ts`). What it does catch is the
+   * plausible future edit: someone "tightening" this relay to pick named fields,
+   * and forgetting one.
+   */
+  it("POST /agent-ops/agent/spawn forwards the whole explicit target", async () => {
+    client.setResponse("POST", "/agent/spawn", { ok: true, status: 200, body: { status: "success", text: "ok" } });
+    const payload = {
+      agentId: "codex",
+      serviceId: "openai",
+      billingMode: "sub",
+      modelId: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      prompt: "review",
+      depth: 0,
+    };
+    const res = await app.inject({ method: "POST", url: "/agent-ops/agent/spawn", payload });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/agent/spawn");
+    expect(client.calls[0].body).toEqual(payload);
+  });
+
+  // docs/261 req 6 — and a role goes over the same hop, alone.
+  it("POST /agent-ops/agent/spawn forwards a role", async () => {
+    client.setResponse("POST", "/agent/spawn", { ok: true, status: 200, body: { status: "success", text: "ok" } });
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/agent/spawn",
+      payload: { role: "reviewer", prompt: "review", depth: 0 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].body).toEqual({ role: "reviewer", prompt: "review", depth: 0 });
+  });
+
   it("GET /agent-ops/agent/result forwards the run id as ?spawnId (planning#247)", async () => {
     client.setResponse("GET", "/agent/result", {
       ok: true, status: 200,

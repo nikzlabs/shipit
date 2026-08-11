@@ -48,16 +48,29 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
 
 ## Phase 2 — `--role reviewer`, and the fully explicit spawn
 
-- [ ] `--role reviewer`, mutually exclusive with every explicit flag
-- [ ] The explicit shape end to end — `--agent`, `--service`, `--billing-mode`, `--model`,
+- [x] `--role reviewer`, mutually exclusive with every explicit flag — refused at the shim (for
+      the message) and at the HTTP edge (for the guarantee)
+- [x] The explicit shape end to end — `--agent`, `--service`, `--billing-mode`, `--model`,
       `--effort` — through the CLI parser, worker relay body, HTTP route schema,
       `RunSubAgentInput`, validation, spawn and attribution
-- [ ] **Fix the pre-existing drop**: `--model` is parsed today and never reaches the route
-      (`api-routes-agent.ts:122` declares `{ agentId, prompt, depth }`), and no effort flag is
-      parsed at all
-- [ ] An incomplete explicit call is REFUSED — `fallbackModel` does not survive on this path
-- [ ] `sub-agent.ts` reads the role resolution or the explicit arguments, never a stored default
-- [ ] `SubAgentDefaults` deleted: store, wire shape, settings route, bootstrap
+- [x] **Fix the pre-existing drop**: `--model` was parsed and never reached the route, and no
+      effort flag was parsed at all. Both now cross every hop, with a per-hop test
+- [x] An incomplete explicit call is REFUSED — `fallbackModel` is gone with the store, so the
+      spawn has nothing left to fall back to
+- [x] `sub-agent.ts` reads the role resolution or the explicit arguments, never a stored default;
+      the target is captured once, at admission, and a role arrives already routed
+- [x] `SubAgentDefaults` deleted: store, load-time migration, wire shape, settings route,
+      bootstrap — and `SubAgentDefaultsSection`, orphaned when the vendor tabs went (its phase 3
+      entry moved here, since phase 3 has no reason to touch it now)
+- [x] The refusal repeated at the EXECUTION boundary: `SubAgentSpawnRequest.model` is required
+      and the worker's `/agent/spawn` refuses a spawn naming none — the orchestrator's edge is
+      where an incomplete call is refused, but the worker is where a missing model would be
+      filled in by the CLI (added after cross-backend review)
+- [x] The reviewer ranks against the resident process's spawn stamp, not the mutable session
+      row: `set_model` mid-turn otherwise hands the work back to the model that wrote it
+      (added after cross-backend review)
+- [x] Caller gates (session, pin, depth, runner, budget) precede target resolution, and the cap
+      slot is spent only once every refusal is behind us
 
 ## Phase 3 — Settings
 
@@ -67,7 +80,8 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
 - [ ] The server sends the resolution; the client does not re-derive it
 - [ ] The resolution is re-broadcast when a credential, the catalogue or harness availability
       changes, so an open tab does not show a stale answer
-- [ ] `SubAgentDefaultsSection`, `ClaudeTab`, `CodexTab` and the Agent nav group removed
+- [x] `ClaudeTab`, `CodexTab` and the Agent nav group removed (the Services-card session);
+      `SubAgentDefaultsSection` removed with the store, in phase 2
 - [ ] Driven in the dogfood instance, screenshots against the audit
 
 Services-first (audit D1) is **docs/252's**, not this feature's — no requirement here asks for

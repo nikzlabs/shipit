@@ -5,7 +5,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { releaseResidentForCredentialChange } from "./resident-spawn-guard.js";
-import type { AgentId, SubAgentDefaultsPatch } from "../shared/types.js";
+import type { AgentId } from "../shared/types.js";
 import type { ApiDeps } from "./api-routes.js";
 import type { ServiceManager } from "./service-manager.js";
 
@@ -138,8 +138,6 @@ export async function registerBootstrapRoutes(
     autoResetMergedBranch?: boolean;
     /** docs/144 — global gate for sub-agent spawning. */
     enableSubAgents?: boolean;
-    /** docs/217 — per-agent sub-agent defaults patch, keyed by agent id. */
-    agentSubAgentDefaults?: Record<string, SubAgentDefaultsPatch>;
     /** docs/163 — voice-note delivery mode (native / external / both). */
     voiceDeliveryMode?: "native" | "external" | "both";
     /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs (1-100). */
@@ -182,7 +180,6 @@ export async function registerBootstrapRoutes(
           ...(request.body.autoFixCi !== undefined ? { autoFixCi: request.body.autoFixCi } : {}),
           ...(request.body.autoResetMergedBranch !== undefined ? { autoResetMergedBranch: request.body.autoResetMergedBranch } : {}),
           ...(request.body.enableSubAgents !== undefined ? { enableSubAgents: request.body.enableSubAgents } : {}),
-          ...(request.body.agentSubAgentDefaults !== undefined ? { agentSubAgentDefaults: request.body.agentSubAgentDefaults } : {}),
           ...(request.body.voiceDeliveryMode !== undefined ? { voiceDeliveryMode: request.body.voiceDeliveryMode } : {}),
           ...(request.body.failoverCutoffs !== undefined ? { failoverCutoffs: request.body.failoverCutoffs } : {}),
           ...(request.body.accountSelectionMode !== undefined ? { accountSelectionMode: request.body.accountSelectionMode } : {}),

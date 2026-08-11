@@ -23,6 +23,7 @@ import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { persistTurnInProgress } from "../chat-card-persistence.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
+import type { SubAgentSpawnTarget } from "../../shared/types.js";
 import type * as InstalledHarnesses from "../../shared/installed-harnesses.js";
 import { SUB_AGENT_TRANSPORT_TIMEOUT_MS } from "../../shared/sub-agent-run.js";
 import { WorkerAbortedError, WorkerTimeoutError } from "../worker-http.js";
@@ -36,6 +37,34 @@ interface FakeSession {
   id: string;
   agentId?: string;
   agentPinned?: boolean;
+  /** docs/261 — the row's model selection, which the reviewer ranking must NOT trust blindly. */
+  serviceId?: string;
+  billingMode?: "sub" | "key";
+  model?: string;
+}
+
+/**
+ * docs/261 req 7 — the explicit target every non-role spawn now carries.
+ *
+ * There is no "just the harness" shape left: a one-shot run names the harness,
+ * the service, the billing mode, the model AND the reasoning level, and an
+ * omission is refused rather than completed from a stored default. The triple is
+ * a real catalogue row and matches the fake registry's eligible set, so these
+ * tests exercise the gates rather than the validation (which has its own file).
+ */
+function explicit(
+  subAgentId: "codex" | "claude",
+  over: Partial<Extract<SubAgentSpawnTarget, { kind: "explicit" }>> = {},
+): SubAgentSpawnTarget {
+  return {
+    kind: "explicit",
+    subAgentId,
+    serviceId: "openai",
+    billingMode: "sub",
+    modelId: "gpt-5.6-sol",
+    reasoningEffort: "high",
+    ...over,
+  };
 }
 
 /**
@@ -61,7 +90,8 @@ function makeDeps(opts: {
   spawnResult?: SubAgentRunResult;
   spawnResults?: SubAgentRunResult[];
   runnerPresent?: boolean;
-  subAgentDefaults?: { reasoningEffort?: string; model?: string };
+  /** docs/261 — credential routes the reviewer resolution can choose between. */
+  credentialRoutes?: { id: string; serviceId: string; billingMode: "sub" | "key"; via: string; status: string; priority: number; isPrimary: boolean; label: string; createdAt: number; updatedAt: number }[];
 }) {
   const session: FakeSession | null =
     opts.session === undefined ? { id: "s1", agentId: "claude", agentPinned: true } : opts.session;
@@ -87,6 +117,8 @@ function makeDeps(opts: {
   // then persists via chatHistoryManager.replaceInProgress — stub all four.
   const runner = {
     subAgentSpawnsThisTurn: opts.subAgentSpawnsThisTurn ?? 0,
+    /** docs/261 — the resident CLI's spawn stamp; a test sets it to say what is really running. */
+    appliedSpawnIdentity: undefined as string | undefined,
     // A FOREGROUND consult: the invoking agent is blocked waiting, so its turn
     // is still in flight and the card rides the in-progress turn. The
     // backgrounded (post-turn) case has its own describe block below.
@@ -120,12 +152,23 @@ function makeDeps(opts: {
     } as never,
     credentialStore: {
       getEnableSubAgents: () => opts.enableSubAgents ?? true,
-      getAgentSubAgentDefaults: () => opts.subAgentDefaults ?? {},
       // planning#342 — benching reads the failing row's own service rather than
       // deriving one from the harness, so the fake has to answer for the
       // account ids these tests fail over between.
       getCredentialRoute: (routeId: string) =>
         (routeId.startsWith("acct-") ? { id: routeId, serviceId: "openai" } : undefined),
+      // docs/261 — the reviewer resolution reads the two slots and the credential
+      // routes. Unpinned + whatever routes the test wired: an unpinned slot is
+      // *auto-configured*, which is the state a fresh install is in.
+      getReviewerPin: () => undefined,
+      listCredentialRoutes: (serviceId?: string, billingMode?: string) =>
+        (opts.credentialRoutes ?? []).filter(
+          (r) =>
+            (serviceId === undefined || r.serviceId === serviceId)
+            && (billingMode === undefined || r.billingMode === billingMode),
+        ),
+      getCredentialSecret: () => "sk-test",
+      getSelectionMode: () => "strict" as const,
     } as never,
     agentRegistry: {
       refreshAuth: vi.fn(),
@@ -135,9 +178,10 @@ function makeDeps(opts: {
             name: "Codex",
             installed: true,
             hasRunnableModels: opts.hasRunnableModels ?? true,
-            // docs/252 phase 3 — a real registry entry carries the eligible set,
-            // and an UNSET sub-agent default resolves to its first entry rather
-            // than leaving the consult selectionless.
+            // docs/252 phase 3 — a real registry entry carries the eligible set.
+            // docs/261 req 7 — and it is what an EXPLICIT call is checked
+            // against: a harness told to run a model no credential of its own
+            // offers is refused rather than rerouted.
             eligibleModels: [
               {
                 serviceId: "openai",
@@ -145,6 +189,22 @@ function makeDeps(opts: {
                 billingMode: "sub",
                 modelId: "gpt-5.6-sol",
                 label: "GPT-5.6 Sol",
+              },
+              {
+                serviceId: "openai",
+                serviceName: "OpenAI",
+                billingMode: "sub",
+                modelId: "gpt-5.6-terra",
+                label: "GPT-5.6 Terra",
+              },
+              // A second SERVICE and a second billing MODE, so a test can vary
+              // the axes a hard-coded `openai/sub` would otherwise satisfy.
+              {
+                serviceId: "anthropic",
+                serviceName: "Anthropic",
+                billingMode: "key",
+                modelId: "claude-opus-5",
+                label: "Opus 5",
               },
             ],
           })),
@@ -175,13 +235,13 @@ async function expectServiceError(p: Promise<unknown>, status: number): Promise<
 describe("runSubAgent — authorization gates", () => {
   it("rejects when the setting is off (403) and never spawns", async () => {
     const { deps, runner } = makeDeps({ enableSubAgents: false });
-    await expectServiceError(runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 }), 403);
+    await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }), 403);
     expect(runner.spawnSubAgent).not.toHaveBeenCalled();
   });
 
   it("rejects an unknown agent (400)", async () => {
     const { deps } = makeDeps({ agentKnown: false });
-    await expectServiceError(runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 }), 400);
+    await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }), 400);
   });
 
   // docs/252 phase 9 (req 14) — a harness this deployment did not install offers
@@ -191,43 +251,219 @@ describe("runSubAgent — authorization gates", () => {
     uninstalledHarnesses.add("codex");
     const { deps, runner } = makeDeps({});
     const err = await expectServiceError(
-      runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 }), 400);
+      runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }), 400);
     expect(err.message).toMatch(/not installed in this deployment/);
     expect(runner.spawnSubAgent).not.toHaveBeenCalled();
   });
 
   it("rejects an unauthed agent (400)", async () => {
     const { deps } = makeDeps({ hasRunnableModels: false });
-    await expectServiceError(runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 }), 400);
+    await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }), 400);
   });
 
   it("rejects a pre-pin session (409)", async () => {
     const { deps } = makeDeps({ session: { id: "s1", agentId: "claude", agentPinned: false } });
-    await expectServiceError(runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 }), 409);
+    await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }), 409);
   });
 
   it("rejects a non-zero depth — recursion guard (403)", async () => {
     const { deps, runner } = makeDeps({});
-    await expectServiceError(runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 1 }), 403);
+    await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 1 }), 403);
     expect(runner.spawnSubAgent).not.toHaveBeenCalled();
   });
 
   it("rejects past the per-turn cap (429) without spawning", async () => {
     const { deps, runner } = makeDeps({ subAgentSpawnsThisTurn: SUB_AGENT_PER_TURN_CAP });
-    await expectServiceError(runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 }), 429);
+    await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }), 429);
     expect(runner.spawnSubAgent).not.toHaveBeenCalled();
   });
 
   it("rejects an empty prompt (400)", async () => {
     const { deps } = makeDeps({});
-    await expectServiceError(runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "   ", depth: 0 }), 400);
+    await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "   ", depth: 0 }), 400);
+  });
+
+  // docs/261 — a harness pointed at a model no credential of its own offers is
+  // refused rather than rerouted: an explicit call is taken literally.
+  it("rejects an explicit selection the named harness cannot run (400)", async () => {
+    const { deps, runner } = makeDeps({});
+    const err = await expectServiceError(
+      runSubAgent(deps, "s1", {
+        target: explicit("claude", { modelId: "gpt-5.6-luna" }),
+        prompt: "review",
+        depth: 0,
+      }),
+      400,
+    );
+    expect(err.message).toContain("cannot run");
+    expect(runner.spawnSubAgent).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The per-turn budget is spent by spawns, not by attempts. The cap is CHECKED
+   * before anything is resolved and INCREMENTED only once every refusal is
+   * behind us — otherwise three typo'd calls exhaust a turn's reviews without a
+   * single sub-agent having run.
+   */
+  it("does not spend a cap slot on a refused call", async () => {
+    const { deps, runner } = makeDeps({});
+    for (let i = 0; i < SUB_AGENT_PER_TURN_CAP; i++) {
+      await expectServiceError(
+        runSubAgent(deps, "s1", {
+          target: explicit("claude", { modelId: "gpt-5.6-luna" }),
+          prompt: "review",
+          depth: 0,
+        }),
+        400,
+      );
+    }
+    expect(runner.subAgentSpawnsThisTurn).toBe(0);
+    // …and the turn's reviews still work.
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Every gate about the CALLER — its session, its depth, its budget — runs
+   * before the target is resolved, so the status a caller gets says what is
+   * actually wrong with the call. A sub-agent trying to spawn a sub-agent is
+   * refused for recursion even on an install where no reviewer could have been
+   * resolved anyway; the reverse order would report "no reviewer available" and
+   * send the caller looking at its Settings.
+   */
+  it("refuses a recursive role call for recursion, not for an unresolvable reviewer", async () => {
+    const { deps } = makeDeps({ credentialRoutes: [] });
+    await expectServiceError(
+      runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer" }, prompt: "review", depth: 1 }),
+      403,
+    );
+  });
+
+  it("refuses a capped role call for the cap, not for an unresolvable reviewer", async () => {
+    const { deps } = makeDeps({ credentialRoutes: [], subAgentSpawnsThisTurn: SUB_AGENT_PER_TURN_CAP });
+    await expectServiceError(
+      runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer" }, prompt: "review", depth: 0 }),
+      429,
+    );
+  });
+});
+
+/**
+ * docs/261 reqs 6 + 4 — asking for a review by ROLE. The caller names nothing
+ * about who reviews; the harness, the model and the level are resolved from the
+ * user's reviewer settings and ranked against what the session is running.
+ */
+describe("runSubAgent — --role reviewer", () => {
+  const keyRoute = (serviceId: string) => ({
+    id: `${serviceId}-key`,
+    serviceId,
+    billingMode: "key" as const,
+    via: "string",
+    status: "ready",
+    priority: 0,
+    isPrimary: true,
+    label: "test",
+    createdAt: 0,
+    updatedAt: 0,
+  });
+
+  it("spawns on the reviewer furthest from the implementer, at the reviewer's level", async () => {
+    const { deps, runner } = makeDeps({
+      session: { id: "s1", agentId: "claude", agentPinned: true },
+      credentialRoutes: [keyRoute("openai"), keyRoute("anthropic")],
+    });
+    await runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer" }, prompt: "review", depth: 0 });
+    const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
+      .mock.calls[0][0];
+    // A Claude session's work goes to the GPT reviewer on the other harness —
+    // req 4's ideal, reached with nothing configured (req 8).
+    expect(arg.agentId).toBe("codex");
+    expect(arg.model).toBe("gpt-5.6-sol");
+    // req 5 — the level is part of the reviewer, never the harness's own default.
+    expect(arg.reasoningEffort).toBeTruthy();
+    // The captured route travels with it: a key-delivered credential is shaped,
+    // so the spawn carries the endpoint the reviewer's service is reached on.
+    expect(arg.serviceRouting).toBeDefined();
+  });
+
+  // req 4 — "reviewing works whichever model is implementing", with nothing to
+  // keep in sync. The same install, a different implementer, a different answer.
+  it("sends a Codex session's work the other way, with nothing reconfigured", async () => {
+    const { deps, runner } = makeDeps({
+      session: { id: "s1", agentId: "codex", agentPinned: true },
+      credentialRoutes: [keyRoute("openai"), keyRoute("anthropic")],
+    });
+    await runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer" }, prompt: "review", depth: 0 });
+    const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
+      .mock.calls[0][0];
+    expect(arg.agentId).toBe("claude");
+  });
+
+  /**
+   * req 4 — the ranking compares against what the session is RUNNING, not what
+   * its row says, and the difference is not cosmetic. The row is mutable under a
+   * running turn (`set_model`), so the failure this pins is: a Claude harness
+   * produces work with DeepSeek, the user switches the picker to Opus, the agent
+   * then asks for a review — and a row-based ranking calls DeepSeek the distant
+   * one and hands the work straight back to the model that wrote it.
+   *
+   * Reading the resident process's spawn stamp instead gives the opposite, and
+   * correct, answer. A test that used the row would pass either way, which is
+   * why the two are deliberately set to DIFFERENT models here.
+   */
+  it("ranks against the resident process's stamp, not a row changed mid-turn", async () => {
+    const { deps, runner } = makeDeps({
+      // The row: the user has just switched the picker to Opus.
+      session: {
+        id: "s1",
+        agentId: "claude",
+        agentPinned: true,
+        serviceId: "anthropic",
+        billingMode: "key",
+        model: "claude-opus-5",
+      },
+      credentialRoutes: [keyRoute("anthropic"), keyRoute("deepseek")],
+    });
+    // What is actually producing the work: DeepSeek, on the Claude harness.
+    runner.appliedSpawnIdentity = "claude|deepseek|key|deepseek-v4-flash|anthropic-messages|https://x";
+    await runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer" }, prompt: "review", depth: 0 });
+    const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
+      .mock.calls[0][0];
+    // Anthropic: a different family from what ran. Ranking against the ROW would
+    // have picked DeepSeek here — the thing that produced the work.
+    expect(arg.model).toBe("claude-opus-5");
+  });
+
+  // The review STOPS and says so rather than spawning something unrunnable —
+  // docs/252 req 9's shape, never a silent no-op.
+  it("refuses when no configured reviewer has a usable credential", async () => {
+    const { deps, runner } = makeDeps({ credentialRoutes: [] });
+    const err = await expectServiceError(
+      runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer" }, prompt: "review", depth: 0 }),
+      400,
+    );
+    expect(err.message).toContain("No reviewer is available");
+    expect(runner.spawnSubAgent).not.toHaveBeenCalled();
+  });
+
+  // The role resolves a reviewer; it does not bypass the gates that decide
+  // whether ANY sub-agent may run.
+  it("still honours the global gate", async () => {
+    const { deps } = makeDeps({
+      enableSubAgents: false,
+      credentialRoutes: [keyRoute("openai"), keyRoute("anthropic")],
+    });
+    await expectServiceError(
+      runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer" }, prompt: "review", depth: 0 }),
+      403,
+    );
   });
 });
 
 describe("runSubAgent — happy path", () => {
   it("spawns, returns text, increments the per-turn counter, records usage, emits spinner + persisted consult card", async () => {
     const { deps, runner, emitMessage, record, replaceInProgress } = makeDeps({});
-    const res = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review this", depth: 0 });
+    const res = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review this", depth: 0 });
 
     expect(res.text).toBe("2 bugs found");
     expect(res.subAgentId).toBe("codex");
@@ -313,7 +549,7 @@ describe("runSubAgent — happy path", () => {
         costUsd: 0,
       },
     });
-    const res = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    const res = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
 
     // the LAST consult-card emission is the terminal one (the first is pending)
     const card = emitMessage.mock.calls
@@ -338,7 +574,7 @@ describe("runSubAgent — happy path", () => {
       spawnResult: { status: "success", text: review, truncated: false, durationMs: 900_000, costUsd: 0 },
     });
 
-    const res = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    const res = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
 
     const emitted = emitMessage.mock.calls
       .map((c) => c[0] as { type: string; card?: { outputMarkdown?: string; outputTruncated?: true } })
@@ -358,26 +594,68 @@ describe("runSubAgent — happy path", () => {
     expect(persistedCard?.subAgentConsult?.outputTruncated).toBeUndefined();
   });
 
-  it("forwards the invoked agent's global reasoning + model defaults to the spawn (docs/217)", async () => {
-    const { deps, runner } = makeDeps({ subAgentDefaults: { reasoningEffort: "high", model: "gpt-5.5" } });
-    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+  // docs/261 req 7 — the model and the effort come from the CALL, and they are
+  // the whole reason the explicit shape exists: `--model` used to be parsed by
+  // the shim and dropped before the route, while the effort came from a stored
+  // per-harness default the caller could not see. Both now reach the spawn
+  // verbatim, which is the hop this test pins.
+  it("forwards the explicitly named model and effort to the spawn", async () => {
+    const { deps, runner } = makeDeps({});
+    await runSubAgent(deps, "s1", {
+      target: explicit("codex", { modelId: "gpt-5.6-terra", reasoningEffort: "low" }),
+      prompt: "review",
+      depth: 0,
+    });
     expect(runner.spawnSubAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ agentId: "codex", reasoningEffort: "high", model: "gpt-5.5" }),
+      expect.objectContaining({ agentId: "codex", reasoningEffort: "low", model: "gpt-5.6-terra" }),
     );
   });
 
-  it("omits reasoningEffort + model when no defaults are set — backend uses its own default", async () => {
-    const { deps, runner } = makeDeps({ subAgentDefaults: {} });
-    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+  // Neither field has an "omit it" branch any more. A reviewer's level is part
+  // of what a reviewer IS (req 5) and an explicit call must name one (req 7), so
+  // a spawn that passed no `--effort` flag — the old unset-default behaviour —
+  // is no longer reachable.
+  it("always passes a model and an effort — there is no unset default left", async () => {
+    const { deps, runner } = makeDeps({});
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
     const calls = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } }).mock.calls;
     const arg = calls[0][0];
-    expect(arg).not.toHaveProperty("reasoningEffort");
-    // docs/252 phase 3 — the MODEL is no longer omitted. An unset default means
-    // "the harness's own first model", and leaving it out made the adapter pick
-    // that from the whole catalogue join — which on an install with no
-    // first-party credential is a model it cannot run. Resolving it here also
-    // makes what runs and what is recorded the same by construction.
+    expect(arg.reasoningEffort).toBe("high");
     expect(arg.model).toBe("gpt-5.6-sol");
+  });
+
+  /**
+   * docs/261 req 3 — a model is `(service, billing mode, id)`, and all three
+   * come from the call. Every other test here happens to name `openai/sub`,
+   * which a hop that hard-coded or defaulted those two would satisfy; this one
+   * names a different service AND a different mode, and follows them all the way
+   * into the usage row's attribution — which is where getting them wrong bills
+   * the wrong credential.
+   */
+  it("carries the named service and billing mode into the spawn and the attribution", async () => {
+    const { deps, runner, record } = makeDeps({
+      credentialRoutes: [{
+        id: "anthropic-key", serviceId: "anthropic", billingMode: "key", via: "string",
+        status: "ready", priority: 0, isPrimary: true, label: "test", createdAt: 0, updatedAt: 0,
+      }],
+    });
+    await runSubAgent(deps, "s1", {
+      target: explicit("claude", {
+        serviceId: "anthropic",
+        billingMode: "key",
+        modelId: "claude-opus-5",
+      }),
+      prompt: "review",
+      depth: 0,
+    });
+    const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
+      .mock.calls[0][0];
+    expect(arg.model).toBe("claude-opus-5");
+    expect(record).toHaveBeenCalledWith("s1", expect.anything(), 4200, 1000, 200,
+      expect.objectContaining({
+        model: "claude-opus-5",
+        attribution: expect.objectContaining({ serviceId: "anthropic", billingMode: "key" }),
+      }));
   });
 
   it("forwards a carried-back rate-limit snapshot into the sub-agent's limits provider", async () => {
@@ -388,7 +666,7 @@ describe("runSubAgent — happy path", () => {
     const { deps, recordAgentRateLimits } = makeDeps({
       spawnResult: { status: "success", text: "ok", truncated: false, durationMs: 1000, costUsd: 0, rateLimits },
     });
-    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
     // Attributed to the sub-agent (codex), so its pill — not the pinned
     // agent's — refreshes. docs/252 req 10 adds the session AND the route the
     // consult actually ran on: quota is filed against whatever `(service,
@@ -405,13 +683,13 @@ describe("runSubAgent — happy path", () => {
     const { deps, recordAgentRateLimits } = makeDeps({
       spawnResult: { status: "success", text: "ok", truncated: false, durationMs: 1000, costUsd: 0 },
     });
-    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
     expect(recordAgentRateLimits).not.toHaveBeenCalled();
   });
 
   it("selects a healthy subscription account proactively for a one-shot run", async () => {
     const { deps, runner, selectAccountForTurn } = makeDeps({});
-    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
     expect(selectAccountForTurn).toHaveBeenCalledTimes(1);
     const [service, selectOpts] = selectAccountForTurn.mock.calls[0] as [
       string,
@@ -434,7 +712,7 @@ describe("runSubAgent — happy path", () => {
         { status: "success", text: "review complete", truncated: false, durationMs: 20, costUsd: 0 },
       ],
     });
-    const result = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    const result = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
     expect(markAccountExhausted).toHaveBeenCalledWith("openai", "acct-primary", Date.parse(resetAt));
     expect(selectAccountForTurn).toHaveBeenLastCalledWith("openai", { exclude: ["acct-primary"] });
     expect(runner.spawnSubAgent).toHaveBeenCalledTimes(2);
@@ -452,7 +730,7 @@ describe("runSubAgent — happy path", () => {
         { status: "success", text: "review complete", truncated: false, durationMs: 20, costUsd: 0 },
       ],
     });
-    const result = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    const result = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
     expect(markAccountExhausted).toHaveBeenCalledTimes(1);
     expect(runner.spawnSubAgent).toHaveBeenCalledTimes(2);
     expect(result.text).toBe("review complete");
@@ -472,7 +750,7 @@ describe("runSubAgent — happy path", () => {
       .mockReturnValueOnce({ ok: true, route: { kind: "account", id: "acct-secondary" } })
       .mockReturnValueOnce({ ok: true, route: { kind: "account", id: "acct-tertiary" } });
 
-    const result = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    const result = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
 
     expect(runner.spawnSubAgent).toHaveBeenCalledTimes(3);
     expect(markAccountExhausted).toHaveBeenCalledTimes(2);
@@ -495,7 +773,7 @@ describe("runSubAgent — happy path", () => {
       .mockReturnValueOnce({ ok: true, route: { kind: "account", id: "acct-secondary" } })
       .mockReturnValueOnce({ ok: false, reason: "all_exhausted", earliestResetAt });
 
-    const result = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    const result = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
 
     expect(runner.spawnSubAgent).toHaveBeenCalledTimes(2);
     expect(result.status).toBe("error");
@@ -516,7 +794,7 @@ describe("runSubAgent — happy path", () => {
       .mockReturnValueOnce({ ok: true, route: { kind: "account", id: "acct-primary" } })
       .mockReturnValueOnce({ ok: false, reason: "all_exhausted", earliestResetAt });
 
-    const result = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    const result = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
 
     expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
     expect(result.status).toBe("error");
@@ -530,7 +808,7 @@ describe("runSubAgent — happy path", () => {
     const { deps, runner, markAccountExhausted } = makeDeps({
       spawnResult: { status: "error", text: "You've hit your session limit · resets 5:10pm (UTC)", error: "This account cannot access model opus", truncated: false, durationMs: 10, costUsd: 0 },
     });
-    const result = await runSubAgent(deps, "s1", { subAgentId: "claude", prompt: "review", depth: 0 });
+    const result = await runSubAgent(deps, "s1", { target: explicit("claude"), prompt: "review", depth: 0 });
     expect(result.status).toBe("error");
     expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
     expect(markAccountExhausted).not.toHaveBeenCalled();
@@ -540,7 +818,7 @@ describe("runSubAgent — happy path", () => {
     const { deps, runner, markAccountExhausted } = makeDeps({
       spawnResult: { status: "error", text: "", error: "This account cannot access model opus", truncated: false, durationMs: 10, costUsd: 0 },
     });
-    const result = await runSubAgent(deps, "s1", { subAgentId: "claude", prompt: "review", depth: 0 });
+    const result = await runSubAgent(deps, "s1", { target: explicit("claude"), prompt: "review", depth: 0 });
     expect(result.status).toBe("error");
     expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
     expect(markAccountExhausted).not.toHaveBeenCalled();
@@ -550,7 +828,7 @@ describe("runSubAgent — happy path", () => {
     const { deps, emitMessage } = makeDeps({
       spawnResult: { status: "success", text: "", truncated: false, durationMs: 1000, costUsd: 0 },
     });
-    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
     const card = emitMessage.mock.calls
       .map((c) => c[0] as { type: string; card?: { outputMarkdown?: string } })
       .filter((m) => m.type === "sub_agent_consult_card")
@@ -560,8 +838,8 @@ describe("runSubAgent — happy path", () => {
 
   it("gives each brokered call its own card id — one card per run, patched in place", async () => {
     const { deps, emitMessage } = makeDeps({});
-    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
-    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "re-review", depth: 0 });
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "re-review", depth: 0 });
     const cardIds = emitMessage.mock.calls
       .map((c) => c[0] as { type: string; card?: { cardId?: string } })
       .filter((m) => m.type === "sub_agent_consult_card")
@@ -584,7 +862,7 @@ describe("runSubAgent — happy path", () => {
       runner.running = false;
       throw new Error("worker unreachable");
     });
-    await expect(runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 })).rejects.toThrow(
+    await expect(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 })).rejects.toThrow(
       "worker unreachable",
     );
     const msgs = emitMessage.mock.calls.map((c) => c[0] as { type: string });
@@ -610,18 +888,18 @@ describe("runSubAgent — happy path", () => {
   it("allows a same-provider spawn (no extra credentials needed)", async () => {
     // session pinned to claude, sub-agent also claude → no cross-provider window
     const { deps, runner } = makeDeps({ session: { id: "s1", agentId: "claude", agentPinned: true } });
-    const res = await runSubAgent(deps, "s1", { subAgentId: "claude", prompt: "draft tests", depth: 0 });
+    const res = await runSubAgent(deps, "s1", { target: explicit("claude"), prompt: "draft tests", depth: 0 });
     expect(res.status).toBe("success");
     expect(runner.spawnSubAgent).toHaveBeenCalled();
   });
 
   it("counts the spawn against the budget up to the cap across calls", async () => {
     const { deps, runner } = makeDeps({});
-    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "a", depth: 0 });
-    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "b", depth: 0 });
-    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "c", depth: 0 });
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "a", depth: 0 });
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "b", depth: 0 });
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "c", depth: 0 });
     expect(runner.subAgentSpawnsThisTurn).toBe(3);
-    await expectServiceError(runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "d", depth: 0 }), 429);
+    await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "d", depth: 0 }), 429);
   });
 });
 
@@ -642,7 +920,7 @@ describe("runSubAgent — durable in-flight consult card", () => {
       expect(replaceInProgress).toHaveBeenCalled();
       return { status: "success", text: "done", truncated: false, durationMs: 10, costUsd: 0 };
     });
-    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
     expect(cardAtSpawn).toMatchObject({ status: "pending" });
   });
 
@@ -662,7 +940,7 @@ describe("runSubAgent — durable in-flight consult card", () => {
       return { status: "success", text: "9 findings", truncated: false, durationMs: 900_000, costUsd: 0 };
     });
 
-    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
 
     expect(updateSubAgentConsultCard).toHaveBeenCalledWith(
       "s1",
@@ -696,7 +974,7 @@ describe("runSubAgent — durable in-flight consult card", () => {
     });
 
     await expect(
-      runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 }),
+      runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }),
     ).rejects.toBeInstanceOf(WorkerAbortedError);
 
     // An abort is a cancellation, not a fault.
@@ -726,7 +1004,7 @@ describe("runSubAgent — durable in-flight consult card", () => {
       throw new WorkerTimeoutError("/agent/spawn", SUB_AGENT_TRANSPORT_TIMEOUT_MS);
     });
     await expect(
-      runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 }),
+      runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }),
     ).rejects.toBeInstanceOf(WorkerTimeoutError);
     expect(updateSubAgentConsultCard).toHaveBeenCalledWith(
       "s1",
@@ -966,7 +1244,7 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
 
     const deps = {
       sessionManager: { get: () => ({ id: "s1", agentId: "claude", agentPinned: true }), list: () => [] },
-      credentialStore: { getEnableSubAgents: () => true, getAgentSubAgentDefaults: () => ({}) },
+      credentialStore: { getEnableSubAgents: () => true },
       agentRegistry: { refreshAuth: vi.fn(), get: () => ({ name: "Codex", installed: true, hasRunnableModels: true }) },
       runnerRegistry: { get: () => runner },
       usageManager: { record: vi.fn(), getSessionUsage: () => null, getSessionTokenTotals: () => null },
@@ -990,7 +1268,7 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
     describe(`launched ${launch}`, () => {
       it("is still re-readable by `shipit agent result <id>` a turn later", async () => {
         const { dbManager, chatHistoryManager, runner, deps } = consultScenario(launch);
-        const res = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+        const res = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
 
         startTurnTwo(chatHistoryManager, runner as never);
 
@@ -1005,7 +1283,7 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
 
       it("is still in the transcript a session switch / full reload rehydrates from", async () => {
         const { dbManager, chatHistoryManager, runner, deps } = consultScenario(launch);
-        await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+        await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
         startTurnTwo(chatHistoryManager, runner as never);
 
         // Both rehydration paths CLAUDE.md calls out read `load()`. Exactly one
@@ -1019,7 +1297,7 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
 
       it("does not duplicate the finished turn it landed after", async () => {
         const { dbManager, chatHistoryManager, deps } = consultScenario(launch);
-        await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+        await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
 
         // The in-progress path revived the finished turn's assistant row as a
         // second copy, so the user saw the same message twice until the next
@@ -1087,7 +1365,7 @@ describe("runSubAgent — committing work a consult left after its turn ended (p
     };
     const deps = {
       sessionManager: { get: () => ({ id: "s1", kind: "repo", agentId: "claude", agentPinned: true }), list: () => [] },
-      credentialStore: { getEnableSubAgents: () => true, getAgentSubAgentDefaults: () => ({}) },
+      credentialStore: { getEnableSubAgents: () => true },
       agentRegistry: { refreshAuth: vi.fn(), get: () => ({ name: "Codex", installed: true, hasRunnableModels: true }) },
       runnerRegistry: { get: () => runner },
       usageManager: { record: vi.fn(), getSessionUsage: () => null, getSessionTokenTotals: () => null },
@@ -1100,7 +1378,7 @@ describe("runSubAgent — committing work a consult left after its turn ended (p
   it("commits and pushes the consult's work once its turn is over", async () => {
     const { deps, schedulePostTurnPush } = scenario({ turnEndsDuringConsult: true });
 
-    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
 
     const log = await git.log();
     expect(log[0].message).toContain("Sub-agent consult (codex)");
@@ -1113,7 +1391,7 @@ describe("runSubAgent — committing work a consult left after its turn ended (p
   it("leaves the work to the ordinary post-turn commit while the turn is still running", async () => {
     const { deps, schedulePostTurnPush } = scenario({ turnEndsDuringConsult: false });
 
-    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
 
     expect((await git.log()).length).toBe(2); // init + the turn's commit
     expect(schedulePostTurnPush).not.toHaveBeenCalled();
@@ -1126,7 +1404,7 @@ describe("runSubAgent — committing work a consult left after its turn ended (p
     (deps as unknown as { createGitManager: (d: string) => GitManager }).createGitManager = () =>
       new GitManager(fs.mkdtempSync(path.join(os.tmpdir(), "shipit-not-a-repo-")));
 
-    const res = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    const res = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
 
     expect(res.status).toBe("success");
     expect(res.text).toBe("done");

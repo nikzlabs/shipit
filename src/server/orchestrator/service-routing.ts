@@ -593,3 +593,34 @@ export function sessionSpawnIdentity(
     shaping?.endpoint.url ?? "-",
   ].join("|");
 }
+
+/**
+ * docs/261 — read back the harness and model a resident CLI was actually
+ * spawned with, from `runner.appliedSpawnIdentity`.
+ *
+ * The inverse of {@link sessionSpawnIdentity}, and the only capture of "what is
+ * producing this work" the orchestrator keeps outside a turn's own local
+ * variables. The reviewer ranking needs it: it compares against the
+ * *implementer*, and the session ROW is mutable under a running turn
+ * (`set_model`), so ranking against the row can name the very model that wrote
+ * the code as the distant one. The stamp moves only when a process is spawned,
+ * which is exactly when what is running changes.
+ *
+ * Returns `undefined` for an unparseable or absent stamp, and omits `selection`
+ * when the stamped session had no model — both of which the caller reads as
+ * "fall back to the row", never as an answer.
+ */
+export function parseSpawnIdentity(
+  identity: string | undefined,
+): { harnessId: AgentId; selection?: ModelSelection } | undefined {
+  if (!identity) return undefined;
+  const [harnessId, serviceId, billingMode, modelId] = identity.split("|");
+  if (!harnessId) return undefined;
+  const complete =
+    serviceId && serviceId !== "-"
+    && (billingMode === "sub" || billingMode === "key")
+    && modelId && modelId !== "-";
+  return complete
+    ? { harnessId: harnessId as AgentId, selection: { serviceId, billingMode, modelId } }
+    : { harnessId: harnessId as AgentId };
+}

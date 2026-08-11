@@ -515,8 +515,26 @@ export function registerAgentOpsRoutes(
   // request open until the subprocess exits.
   // ---------------------------------------------------------------------------
 
-  // POST /agent-ops/agent/spawn { agentId, prompt, depth }
-  app.post<{ Body: { agentId?: string; prompt?: string; depth?: number } }>(
+  // POST /agent-ops/agent/spawn { prompt, depth, and the spawn target }
+  //
+  // docs/261 reqs 6 + 7 — the target is EITHER `role` (ShipIt resolves the
+  // reviewer from its own settings) or the five explicit fields, which the
+  // orchestrator refuses unless all five are present. They are declared here
+  // rather than left to the `relay` pass-through so this hop states what it
+  // carries: `--model` was parsed by the shim for three releases and named by
+  // nothing between it and the spawn, which is exactly how it went missing.
+  app.post<{
+    Body: {
+      prompt?: string;
+      depth?: number;
+      role?: string;
+      agentId?: string;
+      serviceId?: string;
+      billingMode?: string;
+      modelId?: string;
+      reasoningEffort?: string;
+    };
+  }>(
     "/agent-ops/agent/spawn",
     async (request, reply) => relay("POST", "/agent/spawn", request.body ?? {}, reply, { timeoutMs: 0 }),
   );
