@@ -1,17 +1,18 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: reset view mode on file change
 import { useEffect, useCallback, useState } from "react";
-import { RobotIcon } from "@phosphor-icons/react";
+import { RobotIcon, DownloadSimpleIcon, PencilSimpleIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
-import { Button } from "./ui/button.js";
+import { Button, buttonVariants } from "./ui/button.js";
 import { FileContentView } from "./FileContentView/FileContentView.js";
 import { FileReviewFooter } from "./FileContentView/FileReviewFooter.js";
 import { FileReviewSendDialog } from "./SendReviewDialog.js";
 import { SourceToggle, type ViewMode } from "./FileContentView/SourceToggle.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useFileStore } from "../stores/file-store.js";
 import { useFileReviewControls } from "../hooks/use-file-review-controls.js";
 import { kindFromPreviewType, supportsSourceToggle } from "../utils/file-content-kind.js";
-import type { FilePreviewType } from "../utils/file-preview-type.js";
+import { isEditableFilePath, type FilePreviewType } from "../utils/file-preview-type.js";
 import { WithTooltip } from "./ui/tooltip.js";
 
 /**
@@ -52,6 +53,15 @@ export interface FilePreviewModalProps {
   line?: number | null;
   actions?: FilePreviewAction[];
   /**
+   * Whether the previewed file exists on disk in the session workspace. When
+   * true the modal renders its own Download and Edit controls — both belong to
+   * the preview itself, not to whichever surface opened it, so a doc opened
+   * from the PR card behaves like one opened from the file tree. False for an
+   * in-memory preview (a pasted image), which has no path either the download
+   * route or the editor could resolve.
+   */
+  fileOnDisk?: boolean;
+  /**
    * Optional sibling docs in the same directory. When more than one is
    * provided, the modal renders a tab strip in the header. The active tab is
    * the entry whose `path` equals `filePath`.
@@ -79,6 +89,20 @@ export interface FilePreviewModalProps {
   onAskAgentReview?: (filePath: string) => void;
 }
 
+/**
+ * URL of the raw-file download route for a previewed path. Each path segment is
+ * encoded separately so a name carrying `#`, `?`, or a space survives the trip
+ * while the `/` separators stay real separators for the route's wildcard param.
+ * A leading slash is dropped the same way `openPreview` drops it, so an upload
+ * path (`/uploads/x.png`) resolves against the session directory rather than
+ * producing an empty first segment.
+ */
+function fileDownloadHref(sessionId: string, filePath: string): string {
+  const relative = filePath.startsWith("/") ? filePath.slice(1) : filePath;
+  const encoded = relative.split("/").map(encodeURIComponent).join("/");
+  return `/api/sessions/${sessionId}/files/download/${encoded}`;
+}
+
 export function FilePreviewModal({
   filePath,
   content,
@@ -87,12 +111,24 @@ export function FilePreviewModal({
   actions,
   siblings,
   onSwitchSibling,
+  fileOnDisk,
   onClose,
   onSendComments,
   onAskAgentReview,
 }: FilePreviewModalProps) {
   const sessionId = useSessionStore((s) => s.sessionId) ?? "";
   const kind = kindFromPreviewType(fileType, filePath);
+
+  // Direct editing needs a graduated session (one that has left the warm pool
+  // and so is present in the sessions list) — the server rejects a write to a
+  // warm session either way. Gated here rather than at the call sites so every
+  // surface that opens a preview offers the same controls; `isEditableFilePath`
+  // rules out binaries, images and uploads.
+  const sessionGraduated = useSessionStore((s) =>
+    s.sessions.some((x) => x.id === s.sessionId),
+  );
+  const showEdit =
+    !!fileOnDisk && !!sessionId && sessionGraduated && isEditableFilePath(filePath);
 
   // HTML/SVG default to rendered; a small toggle in the header flips to source.
   const [viewMode, setViewMode] = useState<ViewMode>("rendered");
@@ -149,6 +185,32 @@ export function FilePreviewModal({
                     <RobotIcon size={ICON_SIZE.SM} className="mr-1" />
                     Ask agent to review
                   </Button>
+                </WithTooltip>
+              )}
+              {showEdit && (
+                <WithTooltip label="Edit file">
+                  <Button
+                    variant="secondary"
+                    size="md"
+                    aria-label={`Edit ${filePath}`}
+                    onClick={() => {
+                      void useFileStore.getState().openEditor(sessionId, filePath);
+                    }}
+                  >
+                    <PencilSimpleIcon size={ICON_SIZE.SM} />
+                  </Button>
+                </WithTooltip>
+              )}
+              {fileOnDisk && sessionId && (
+                <WithTooltip label="Download file">
+                  <a
+                    href={fileDownloadHref(sessionId, filePath)}
+                    download
+                    aria-label={`Download ${filePath}`}
+                    className={buttonVariants({ variant: "secondary", size: "md" })}
+                  >
+                    <DownloadSimpleIcon size={ICON_SIZE.SM} />
+                  </a>
                 </WithTooltip>
               )}
               {actions?.map((action) => (

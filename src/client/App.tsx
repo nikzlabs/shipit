@@ -87,7 +87,6 @@ import { UsageModal } from "./components/UsageModal.js";
 import type { TurnDiffData } from "./components/DiffPanel.js";
 import type { TurnUsage } from "../server/shared/types.js";
 import { deriveEffectivePreviewStatus } from "./utils/preview-status.js";
-import { isEditableFilePath } from "./utils/file-preview-type.js";
 
 /** Stable empty fallback so the zustand selector never returns a fresh array. */
 const EMPTY_TURN_USAGE: TurnUsage[] = [];
@@ -216,6 +215,7 @@ export default function App() {
   const previewContent = useFileStore((s) => s.previewContent);
   const previewType = useFileStore((s) => s.previewType);
   const previewActions = useFileStore((s) => s.previewActions);
+  const previewOnDisk = useFileStore((s) => s.previewOnDisk);
   const previewLine = useFileStore((s) => s.previewLine);
   const editFile = useFileStore((s) => s.editFile);
   const editContent = useFileStore((s) => s.editContent);
@@ -1302,36 +1302,13 @@ export default function App() {
   }, []);
 
   const handleOpenFilePreview = useCallback((filePath: string) => {
-    const { sessionId: sid, sessions } = useSessionStore.getState();
-    if (sid) {
-      // Mirror the FileTree gate: only a graduated session (present in the
-      // warm-excluding list) may edit; the server rejects warm-session writes.
-      const graduated = sessions.some((s) => s.id === sid);
-      const downloadAction = {
-        label: "Download",
-        onClick: () => {
-          const a = document.createElement("a");
-          a.href = `/api/sessions/${sid}/files/download/${filePath}`;
-          a.download = "";
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-        },
-      };
-      const actions =
-        isEditableFilePath(filePath) && graduated
-          ? [
-              {
-                label: "Edit",
-                onClick: () => {
-                  void useFileStore.getState().openEditor(sid, filePath);
-                },
-              },
-              downloadAction,
-            ]
-          : [downloadAction];
-      void useFileStore.getState().openPreview(sid, filePath, { actions });
-    }
+    const sid = useSessionStore.getState().sessionId;
+    // Edit and Download are no longer passed in here — the preview modal
+    // renders both itself, so every surface that opens a file (PR card, docs
+    // panel, diff block, a `path:line` link in chat) gets them, not just this
+    // one. The modal applies the same gates: an editable path in a graduated
+    // session, and a file that exists on disk.
+    if (sid) void useFileStore.getState().openPreview(sid, filePath);
   }, []);
 
   const handleDocStartSession = useCallback(
@@ -2202,6 +2179,7 @@ export default function App() {
             fileType={previewType}
             line={previewLine}
             actions={previewActions}
+            fileOnDisk={previewOnDisk}
             siblings={previewSiblings}
             onSwitchSibling={handleSwitchSibling}
             onClose={() => useFileStore.getState().closePreview()}
