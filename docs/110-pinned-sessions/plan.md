@@ -47,7 +47,7 @@ All changes live in `SessionSidebar.tsx`, specifically the `RepoGroup` and `Sess
 New pins land on top (ordered by `pinnedAt` descending); a user can drag to set an explicit order within a repo's pinned set. This reuses the **native HTML5 drag-and-drop** the sidebar already uses for repo-group reordering — there is **no `@dnd-kit` / `react-aria` dependency** in the tree, and we don't add one.
 
 Implementation (all in `RepoGroup`, local to one repo group):
-- Each pinned row's tree is wrapped in a draggable shell, enabled only when the repo has **more than one** pinned session.
+- Each pinned row's tree is wrapped in a draggable shell, enabled only when the repo has **more than one** pinned session. The shell carries the list's own `flex flex-col` + `ROW_GAP_CLASS`: row spacing is a flex `gap` on the list and rows have no vertical margin of their own, so a plain wrapper here renders the pin and its spawned children flush against each other — visible only inside a pinned tree, which is what made it survive unnoticed.
 - A session-scoped MIME type, `application/x-shipit-pinned-session`, gates the drag so a stray text/file drag can't look like a pin reorder.
 - `dragover` computes a before/after slot from the row's bounding-rect midpoint and renders a green drop-indicator line (the same `--color-success` line the repo reorder uses).
 - `drop` splices the source id into the target slot and calls `reorderPins(repo.url, ids)`.

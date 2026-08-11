@@ -82,6 +82,18 @@ export const GROUP_GAP_CLASS = "mb-1.5";
 export const BAND_CLEARANCE_CLASS = "pt-1 pb-1";
 
 /**
+ * The vertical rhythm between session rows, 4px. It lives on the LIST as a flex
+ * `gap`, so a row itself carries no vertical margin — which means any wrapper
+ * interposed between the list and the rows swallows the gap for everything
+ * inside it, silently and only for that subtree. That is exactly what the
+ * pinned sub-section's drag shell did (docs/110 Phase 2): a pinned session and
+ * its spawned children sat flush against each other while every other row in
+ * the sidebar kept its 4px. So a wrapper that holds rows re-declares
+ * `flex flex-col` + this class rather than leaving the rhythm to its parent.
+ */
+export const ROW_GAP_CLASS = "gap-1";
+
+/**
  * docs/128 — pinned group for privileged ops/host-debugging sessions. Keyed off
  * the server-authoritative `kind: "ops"` field, separate from repo and orphan
  * groups, with a Wrench icon so it reads as "the host tools" rather than a repo.
@@ -138,7 +150,7 @@ export function OpsSessionGroup({
         </button>
       </div>
       {!isCollapsed && (
-        <div className={`flex flex-col gap-1 ${separated ? BAND_CLEARANCE_CLASS : ""}`}>
+        <div className={`flex flex-col ${ROW_GAP_CLASS} ${separated ? BAND_CLEARANCE_CLASS : ""}`}>
           {sessions.map((session) => (
             <SessionItem
               key={session.id}
@@ -213,7 +225,7 @@ export function SandboxSessionGroup({
         </button>
       </div>
       {!isCollapsed && (
-        <div className={`flex flex-col gap-1 ${separated ? BAND_CLEARANCE_CLASS : ""}`}>
+        <div className={`flex flex-col ${ROW_GAP_CLASS} ${separated ? BAND_CLEARANCE_CLASS : ""}`}>
           {sessions.map((session) => (
             <SessionItem
               key={session.id}
@@ -260,7 +272,7 @@ export function OrphanSessionGroup({
           {label}
         </span>
       </div>
-      <div className="flex flex-col gap-1">
+      <div className={`flex flex-col ${ROW_GAP_CLASS}`}>
         {sessions.map((session) => (
           <SessionItem
             key={session.id}
@@ -534,7 +546,7 @@ export function RepoGroup({
 
       {/* Session list — hidden when collapsed */}
       {!isCollapsed && (
-        <div ref={listRef} data-testid="group-session-list" className={`flex flex-col gap-1 ${separated ? BAND_CLEARANCE_CLASS : "pb-2"}`}>
+        <div ref={listRef} data-testid="group-session-list" className={`flex flex-col ${ROW_GAP_CLASS} ${separated ? BAND_CLEARANCE_CLASS : "pb-2"}`}>
           {(() => {
             // New session row — matches SessionItem shape so it can render as
             // selected. docs/110 — rendered below the pinned sub-section (see the
@@ -697,13 +709,17 @@ export function RepoGroup({
                 return (
                   <div
                     key={`pin-${s.id}`}
+                    data-testid="pinned-tree"
                     draggable={pinReorderEnabled}
                     onDragStart={pinReorderEnabled ? onPinDragStart(s.id) : undefined}
                     onDragOver={pinReorderEnabled ? onPinDragOver(s.id) : undefined}
                     onDragLeave={pinReorderEnabled ? onPinDragLeave(s.id) : undefined}
                     onDrop={pinReorderEnabled ? onPinDrop(s.id) : undefined}
                     onDragEnd={pinReorderEnabled ? onPinDragEnd : undefined}
-                    className={`relative ${pinDragId === s.id ? "opacity-40" : ""}`}
+                    // A flex column with the list's own row gap: the shell sits
+                    // BETWEEN the list and the rows, so without it the pin's
+                    // session and its children render flush (see ROW_GAP_CLASS).
+                    className={`relative flex flex-col ${ROW_GAP_CLASS} ${pinDragId === s.id ? "opacity-40" : ""}`}
                   >
                     {pinDropTarget?.id === s.id && pinDropTarget.position === "before" && (
                       <div className="absolute left-2 right-2 -top-px h-0.5 bg-(--color-success) z-20 rounded-full pointer-events-none" />
