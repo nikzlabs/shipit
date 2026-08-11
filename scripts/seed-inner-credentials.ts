@@ -69,16 +69,18 @@ const HEALTH_TIMEOUT_MS = 120_000;
 const POLL_INTERVAL_MS = 1_000;
 
 /**
- * The variables a vendor CLI reads **directly**, so their mere presence in the
- * orchestrator's environment can redirect a spawn that ShipIt believes is
- * running on a connected subscription account.
+ * The variables a vendor CLI reads **directly**, so their presence in the
+ * orchestrator's environment can decide an **unshaped** spawn — the harness
+ * running on its own vendor, where `applyServiceRouting` is a no-op and so
+ * does not clear them.
  *
  * Not a catalogue fact — a property of the CLIs, asserted by the code that
  * strips them: `scrubEnvAuthForScopedHome` (`agents/claude/process.ts`) for the
  * two Anthropic names, and the Codex adapter's `delete env.OPENAI_API_KEY` for
- * the third. Both strip only when the spawn is account-scoped, and a local-mode
- * non-turn spawn is not (`session-runner.ts` `spawnSubAgent` passes the factory
- * no `resolveHome`), which is why this warning is worth printing.
+ * the third. Both strip only when a scoped home applies, and
+ * `resolveLocalAgentHome` returns one only for an `account` route — so a turn
+ * with no route selected, and non-turn work whose own target differs from the
+ * runner's resident route, are not covered.
  */
 const CLI_READS_DIRECTLY = new Set(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY"]);
 
@@ -255,14 +257,35 @@ export async function seedCredentials(
   // holds a string credential is left alone: re-POSTing would duplicate it on a
   // `sub` mode (which permits several) and 409 on a `key` mode, and PATCHing
   // would silently overwrite a credential the developer edited in the inner UI.
+  //
+  // A discovery that FAILS aborts the whole run rather than carrying on. There
+  // is no server-side uniqueness key for `(service, billing mode, string)` — a
+  // subscription is *meant* to hold several — so a blind POST after a lost GET
+  // is exactly how a duplicate appears, and it grows one per boot. Nothing is
+  // lost by stopping: the next dev-service start re-runs this, and doing
+  // nothing is the correct outcome for a seeder that cannot see the state it
+  // is reconciling against. (Cross-agent review found this; the first cut
+  // logged and continued, copying the repo seeder's per-entry tolerance into a
+  // place where the cost is a silently duplicated credential.)
   const held = new Set<string>();
   try {
     const res = await api(fetchImpl, baseUrl, "GET", "/api/credential-routes");
-    for (const route of res.body?.routes ?? []) {
+    if (!res.ok || !Array.isArray(res.body?.routes)) {
+      log(
+        `credentials: could not list existing credentials (HTTP ${res.status}) —`
+        + " skipping, so a lost read cannot duplicate a subscription credential",
+      );
+      return { skipped: true, results: [] };
+    }
+    for (const route of res.body.routes) {
       if (route.via === "string") held.add(`${route.serviceId}:${route.billingMode}`);
     }
   } catch (err) {
-    log(`credentials: could not list existing credentials (${errorMessage(err)}) — continuing`);
+    log(
+      `credentials: could not list existing credentials (${errorMessage(err)}) —`
+      + " skipping, so a lost read cannot duplicate a subscription credential",
+    );
+    return { skipped: true, results: [] };
   }
 
   const results: SeedCredentialResult[] = [];
@@ -309,29 +332,47 @@ export async function seedCredentials(
 }
 
 /**
- * Say, at boot, which supplied variables can bypass a connected subscription.
+ * Say, at boot, what supplying these credentials can cost.
  *
- * Printed from the CANDIDATES rather than the results: the hazard is the
- * variable being in the orchestrator's environment at all, which is true
- * whether this run stored it, skipped it as already present, or failed.
+ * Two warnings, because there are two mechanisms and the first one is the
+ * bigger and less obvious of the two. A cross-agent review caught that an
+ * earlier version printed only the second and called the other five names
+ * "inert", which is wrong in the way that matters.
+ *
+ * Printed from the CANDIDATES rather than the results: both hazards follow from
+ * the credential existing, whether this run stored it, skipped it as already
+ * present, or failed.
  */
 export function warnAboutAmbientAuth(candidates: readonly CredentialCandidate[]): string[] {
-  const ambient = candidates.filter((c) => CLI_READS_DIRECTLY.has(c.envName));
-  if (ambient.length === 0) return [];
-  const lines = [
-    `credentials: ⚠ ${ambient.map((c) => c.envName).join(", ")} — the CLI reads`
-    + " these directly, and a local-mode non-turn spawn (session naming, PR"
-    + " descriptions) is not account-scoped, so they take precedence over a"
-    + " connected subscription for that work.",
-  ];
-  const metered = ambient.filter((c) => c.billingMode === "key");
+  const lines: string[] = [];
+
+  // 1. Background work follows the install. `firstEligibleNonTurnSelection`
+  //    (`non-turn-model.ts`) resolves an unset background-work model to the
+  //    first eligible model in catalogue order, so a metered key can become
+  //    what session naming and PR descriptions spend on — no CLI involved, and
+  //    true of every metered key, not just the vendor-native ones.
+  const metered = candidates.filter((c) => c.billingMode === "key");
   if (metered.length > 0) {
     lines.push(
-      `credentials: ⚠ ${metered.map((c) => c.envName).join(", ")} bill per token.`
-      + " Unset the secret in the outer Settings → Secrets if you are not"
-      + " deliberately testing metered billing.",
+      `credentials: ⚠ metered (billed per token): ${metered.map((c) => c.envName).join(", ")}.`
+      + " ShipIt's background work (session naming, PR descriptions) follows the"
+      + " first eligible model in catalogue order unless it is pinned — check"
+      + " Settings → Services → Background work.",
     );
   }
+
+  // 2. The vendor-native names additionally bypass a connected account on an
+  //    UNSHAPED spawn — see CLI_READS_DIRECTLY.
+  const ambient = candidates.filter((c) => CLI_READS_DIRECTLY.has(c.envName));
+  if (ambient.length > 0) {
+    lines.push(
+      `credentials: ⚠ ${ambient.map((c) => c.envName).join(", ")} are read by the CLI`
+      + " directly. A redirected turn clears them, but a turn on the harness's own"
+      + " vendor with no account route resolved will use them instead of a"
+      + " connected subscription.",
+    );
+  }
+
   for (const line of lines) log(line);
   return lines;
 }

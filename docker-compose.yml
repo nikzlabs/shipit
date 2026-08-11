@@ -212,15 +212,15 @@ services:
     # fails the build here with the missing name rather than quietly making
     # that service untestable in dogfood. Keep it in catalogue order.
     #
-    # ⚠ BILLING, for the three names the vendor CLIs read directly
-    # (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY): a local-mode
-    # NON-TURN spawn — session naming, PR descriptions — is not account-scoped
-    # (`session-runner.ts` `spawnSubAgent` calls the factory with no
-    # `resolveHome`), so `scrubEnvAuthForScopedHome` is a no-op there and the
-    # CLI prefers the ambient variable over a connected subscription account.
-    # The two API keys are metered. The other five names are ShipIt's own and
-    # no CLI reads them, so they are inert until the router selects their
-    # service. See the `dogfooding-shipit` skill.
+    # ⚠ BILLING — supplying a metered key has a cost even if you never select
+    # it for a turn. ShipIt's background work (session naming, PR descriptions)
+    # resolves an unpinned model to the FIRST ELIGIBLE one in catalogue order
+    # (`firstEligibleNonTurnSelection`), so a key can become what that work
+    # spends on. Check Settings → Services → Background work. The three
+    # vendor-native names (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN,
+    # OPENAI_API_KEY) additionally bypass a connected account on a spawn that
+    # is neither redirected nor account-scoped. See the `dogfooding-shipit`
+    # skill for the full mechanism.
     x-shipit-secrets:
       - { name: GITHUB_TOKEN }
       - { name: ANTHROPIC_AUTH_TOKEN }

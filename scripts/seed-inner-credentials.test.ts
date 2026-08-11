@@ -134,6 +134,24 @@ describe("seedCredentials", () => {
     expect(calls.filter((c) => c.method === "POST")).toHaveLength(1);
   });
 
+  it("seeds nothing at all when the existing-route list cannot be read", async () => {
+    // No server-side uniqueness key for a `sub` mode, so a blind POST after a
+    // lost GET duplicates the credential once per boot.
+    for (const listing of [{ status: 500, body: { error: "boom" } }, { body: {} }]) {
+      const { fetchImpl, calls } = fakeFetch({
+        ...OK_BOOTSTRAP,
+        "GET /api/credential-routes": listing,
+        "POST /api/credential-routes": { body: {} },
+      });
+      const result = await seedCredentials(
+        { fetchImpl, baseUrl: "http://orch", env: { ZAI_CODING_PLAN_KEY: "glm" } },
+        opts,
+      );
+      expect(result).toEqual({ skipped: true, results: [] });
+      expect(calls.filter((c) => c.method === "POST")).toHaveLength(0);
+    }
+  });
+
   it("carries on after one credential fails (req 5)", async () => {
     let posts = 0;
     const { fetchImpl } = fakeFetch({
@@ -197,20 +215,31 @@ describe("seedCredentials", () => {
 });
 
 describe("warnAboutAmbientAuth", () => {
-  it("warns for the variables a vendor CLI reads directly", () => {
+  it("warns that ANY metered key can become what background work spends on", () => {
+    // Not just the vendor-native names: `firstEligibleNonTurnSelection` walks
+    // the catalogue over whatever credentials exist.
+    const lines = warnAboutAmbientAuth(collectCandidates({ DEEPSEEK_API_KEY: "k" }));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("DEEPSEEK_API_KEY");
+    expect(lines[0]).toContain("metered (billed per token)");
+    expect(lines[0]).toContain("Background work");
+  });
+
+  it("adds the CLI-bypass warning for a vendor-native name", () => {
     const lines = warnAboutAmbientAuth(collectCandidates({ ANTHROPIC_API_KEY: "k" }));
-    expect(lines.join("\n")).toContain("ANTHROPIC_API_KEY");
-    expect(lines.join("\n")).toContain("bill per token");
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("read by the CLI");
   });
 
   it("warns about a subscription token's precedence without calling it metered", () => {
     const lines = warnAboutAmbientAuth(collectCandidates({ ANTHROPIC_AUTH_TOKEN: "t" }));
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain("take precedence over a connected subscription");
+    expect(lines[0]).toContain("read by the CLI");
+    expect(lines[0]).not.toContain("metered");
   });
 
-  it("says nothing for ShipIt's own variable names, which no CLI reads", () => {
-    expect(warnAboutAmbientAuth(collectCandidates({ ZAI_CODING_PLAN_KEY: "a", ZAI_API_KEY: "b" }))).toEqual([]);
+  it("says nothing for a subscription delivered under a ShipIt-owned name", () => {
+    expect(warnAboutAmbientAuth(collectCandidates({ ZAI_CODING_PLAN_KEY: "a" }))).toEqual([]);
   });
 });
 
@@ -235,8 +264,14 @@ describe("the dev service's x-shipit-secrets block", () => {
     ).toEqual([]);
   });
 
-  it("declares nothing the catalogue no longer names, beyond GITHUB_TOKEN", () => {
-    const known = new Set([...credentialStorageEnvNames(), "GITHUB_TOKEN"]);
-    expect(declared.filter((name) => !known.has(name))).toEqual([]);
+  // Deliberately NOT asserted: that the block contains nothing else. The dev
+  // service may legitimately need an unrelated secret (`GITHUB_TOKEN` already
+  // is one), and forbidding that would make this guard block work it has no
+  // opinion about. A stale entry left by a renamed `storageEnv` is
+  // indistinguishable from a deliberate one, so it is not worth the false
+  // positives. (Cross-agent review found the earlier assertion too strict.)
+
+  it("declares no duplicate names", () => {
+    expect(declared).toEqual([...new Set(declared)]);
   });
 });

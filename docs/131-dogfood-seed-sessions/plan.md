@@ -270,14 +270,22 @@ why it looked done. It does not satisfy req 12, and the gap is exact:
 | Are its models eligible in the picker? | **Yes** | `listConfiguredCredentials` reads `env[storageEnv]` directly (`service-routing.ts`) |
 | Does it have a route id? | **Yes**, synthetic | `envRouteIdFor` → `env:<NAME>`, or a legacy `claude-api-key`-style id |
 | Does inner Settings → Services show it? | **No** | `listCredentialRoutes` reads the credential STORE only (`services/credential-routes.ts`); `ServicesPanel.tsx` renders that plus provider accounts |
-| Can it be ordered, benched, failed over to? | **No** | `stringSelectionFor` reaches it only when *nothing* is stored, and says so: "it carries no row, so ShipIt tracks no quota for it" |
-| Can a quota reader attach to it? | **No** | `LimitsRegistry` is keyed `modeKey → routeId`; a provider's `routeIds()` names accounts and cached routes, and there is no row to attach to |
+| Can it be ordered, persistently benched, failed over to? | **No** | `stringSelectionFor` reaches it only when *nothing* is stored — it has no row to carry a priority or an `exhaustedUntil` |
+| Can a quota reader attach to it? | **Partly** | `credentialOwnerForRouteId` resolves an `env:` id from the catalogue, and Claude's provider keeps cached reserved routes in `routeIds()` — so an *event-fed* snapshot does land. What it cannot do is survive as a stored bench, or be reported for a service with no registered limits provider |
 
 So an env key is an *eligibility* fact, not a credential. `app-di.ts` seeds
 `process.env` **from** the stored routes at boot; nothing does the inverse, and
 `syncProcessEnvForMode` is explicit that ShipIt only ever touches a value it put
 there. That deliberate restraint is right for a real deployment and is exactly
 what leaves the dogfood instance credential-less.
+
+The quota row was overstated in the first draft of this doc ("nothing to attach
+a reader to") and a cross-agent review corrected it. The accurate statement is
+narrower and still sufficient for `planning#339`: a stored row is what a
+per-credential quota snapshot can be *kept on* across restarts and what the
+Services card renders a pill against. Registering GLM's `zai-plan-usage`
+provider is still that issue's own work — only Claude's and Codex's are
+registered today (`agents/index.ts`).
 
 ### The missing half
 
@@ -289,15 +297,17 @@ up, and the POST also fires `propagateCredentialChange()` and the
 
 Generalisation is the catalogue's, not the script's: it walks
 `credentialStorageEnvNames()` and places each name with
-`credentialModeForStorageEnv()`, so a new service is covered by the catalogue
-edit alone (req 11's "not a hand-maintained list"). There is no GLM branch.
+`credentialModeForStorageEnv()`. There is no GLM branch.
 
-The one list that *cannot* be derived is `docker-compose.yml`'s
-`x-shipit-secrets` block — static YAML, read by the outer orchestrator's secret
-resolver long before any of this code runs. `seed-inner-credentials.test.ts`
-guards it against the catalogue in both directions, so adding a service fails
-the build with the missing name rather than quietly making that service
-untestable in dogfood.
+Adding a service is therefore *nearly* one catalogue edit — `x-shipit-secrets`
+is the exception, and it cannot be derived: static YAML, read by the outer
+orchestrator's secret resolver long before any of this code runs. So
+`seed-inner-credentials.test.ts` guards it, and adding a service fails the build
+naming the missing key rather than quietly making that service untestable in
+dogfood. Deliberately a one-way guard: it does **not** assert the block contains
+nothing else, since the dev service may legitimately want an unrelated secret
+(`GITHUB_TOKEN` already is one) and a stale entry left by a renamed `storageEnv`
+is indistinguishable from a deliberate one.
 
 Idempotency mirrors req 4's: a `(service, billing mode)` that already holds a
 `via: "string"` route is left completely alone. Not a PATCH — re-writing the
@@ -305,37 +315,74 @@ secret on every boot would silently clobber a credential edited in the inner UI.
 A connected **account** is not a reason to skip, since an account and a supplied
 token are different credentials of the same mode.
 
-### The billing hazard, stated rather than fixed
+### The billing hazards, stated rather than fixed
 
-Three of the eight names — `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
-`OPENAI_API_KEY` — are read by the vendor CLIs **directly**, so their presence
-in the inner orchestrator's environment can decide a spawn regardless of what
-ShipIt selected. A *turn* is protected: local mode spawns with `HOME` at the
-routed account root (`local-agent-home.ts`) and `scrubEnvAuthForScopedHome`
-drops them. **Non-turn work is not.** `SessionRunner.spawnSubAgent` calls the
-agent factory with no `resolveHome`, so `scopedHome` is `undefined`, the scrub
-is a no-op, and Codex's `hasFileAuth` probe looks at `AGENT_HOME` rather than
-the account root. Session naming and PR descriptions therefore run on the
-ambient variable while ShipIt believes they ran on the connected subscription —
-metered, for the two API keys.
+Two mechanisms, and the first draft of this section had only the second — and
+had it wrong. Both corrections came from the cross-agent review; the wrong one
+is left visible here because it is the more instructive.
 
-This predates the change and this feature cannot fix it from here (the fix is to
-thread the resolved account into the local sub-agent spawn, which is docs/150 /
-docs/252 territory and touches the container path too). What the feature does
-owe is that it never becomes silent:
+**1. Background work follows the install.** Session naming and PR descriptions
+resolve an unpinned model through `firstEligibleNonTurnSelection`
+(`non-turn-model.ts`): the *first eligible model in catalogue order*, over
+whatever credentials the install holds. So supplying **any** metered key can
+make it what that work spends on, with no CLI and no ambient-variable trick
+involved. Observed live on the smoke instance: with only `DEEPSEEK_API_KEY` set,
+Settings → Services → Background work reads "DeepSeek · V4 Flash". This is the
+hazard that actually generalises across all eight names, and calling the five
+ShipIt-namespace ones "inert" — as the first draft did — was wrong.
+
+**2. Three names bypass a connected account.** `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN` and `OPENAI_API_KEY` are read by the vendor CLIs
+directly. The first draft said local-mode non-turn spawns are never scoped
+because `SessionRunner.spawnSubAgent` passes no `resolveHome`. **That is false**:
+`systemTurnDeps.agentFactory` prefers `runner.createAgent`
+(`runner-registry-factory.ts`), and local mode binds `resolveLocalAgentHome`
+into exactly that closure (`app-lifecycle.ts`). The real shape is narrower:
+
+- A **redirected** spawn is safe outright — `applyServiceRouting` deletes every
+  Anthropic credential variable and sets exactly one, so an ambient key cannot
+  reach a turn pointed at another service.
+- An **unshaped** spawn (the harness on its own vendor) is safe only when a
+  scoped `HOME` resolves, and `resolveLocalAgentHome` returns one **only for an
+  `account` route** — for a reserved/string route it deliberately keeps the
+  process-global home. With no account route, the scrub is a no-op and the
+  ambient variable is what the CLI reads.
+- Non-turn work adds a mismatch: `resolveLocalAgentHome` reads the *runner's*
+  resident route while `runNonTurnSpawn` selects its own target, so the home can
+  belong to a different credential than the work was routed to.
+
+Neither predates nor is caused by this change, and neither is fixable from here
+(the second is docs/150 / docs/252 territory and touches the container path
+too). What the feature owes is that they never become silent:
 
 - Declaring a name seeds nothing; **supplying a value is the per-key opt-in**,
   and it already has the right granularity — the outer Settings → Secrets is
   per-name.
-- The seed prints a `⚠` line naming whichever of the three it finds, and marks
-  the metered ones.
-- The `dogfooding-shipit` skill says all of this, replacing the narrower
-  "leave `ANTHROPIC_API_KEY` unset" advice it carried for one key.
+- The seed prints a `⚠` line per applicable hazard: one for every metered key,
+  naming Background work; one more for the vendor-native names.
+- The `dogfooding-shipit` skill carries both, replacing the narrower "leave
+  `ANTHROPIC_API_KEY` unset" advice it had for one key.
 
-The other five names are ShipIt's own; no CLI reads them, so they are inert in
-the environment until the router selects their service. `ZAI_CODING_PLAN_KEY` is
-not an exception — its `targetOverride` renames it to `ANTHROPIC_AUTH_TOKEN`
-only at spawn shaping, when `zai:sub` was actually selected.
+`ZAI_CODING_PLAN_KEY` is worth naming explicitly as *not* a case of hazard 2:
+its `targetOverride` renames it to `ANTHROPIC_AUTH_TOKEN` only at spawn shaping,
+when `zai:sub` was actually selected.
+
+### How a stored credential reaches a local spawn
+
+Worth recording because the review's highest-severity finding was that it does
+not — that `SHIPIT_CREDENTIAL_<routeId>` is loaded only at `app-di` boot (and
+indeed `isAllowedAgentEnvKey` filters that prefix out there), so a route created
+at runtime would make a shaped spawn find no credential and raise
+`auth_required` until a restart.
+
+It is delivered elsewhere: `applyLocalMcp` wraps the local adapter's `run()` in
+`withTemporaryEnv(localMcpSpawnEnv(credentialStore))` → `selectAgentEnvForPush`
+→ `collectServiceCredentialEnv`, which emits every per-route name and is read
+**live from the store on every spawn**. So a credential seeded after boot works
+on the next turn, with no restart. Confirmed by running one on the dogfood
+instance rather than by reading: a session pinned to `deepseek:key` logged
+`route=reserved:cred_…` and `[claude] service routing: deepseek/key ->
+https://api.deepseek.com/anthropic`, and answered.
 
 ### What becomes reachable
 

@@ -49,14 +49,12 @@ able to do with it.
     ShipIt in every session — nobody visits the inner Settings to re-add it.
     This applies to **every** service ShipIt supports, in both billing modes
     where a service has both, so an agent can exercise any model/credential
-    combination in the dogfood loop without a human configuring it first. It is
-    not a per-service feature: adding a service to the catalogue must make its
-    key seedable without anyone remembering to extend a list.
+    combination in the dogfood loop without a human configuring it first.
 
-12. What arrives in the inner ShipIt is a credential the product can *see* — it
-    shows up in inner Settings → Services the way a credential added by hand
-    does, the router can select it, and the quota system can report on it. A
-    value that merely exists in the environment does not satisfy this.
+12. "Present in the inner ShipIt" means the inner ShipIt shows it: it appears in
+    Settings → Services the way a credential added by hand does, and behaves
+    like one. A value that only exists in the environment does not satisfy
+    requirement 11.
 
 Not required in this version: the outer agent replying to an inner agent
 mid-task — follow-up messages, answering a question the inner agent asks,
@@ -73,12 +71,23 @@ _(none — implementation is unblocked.)_
   want to go to settings in every session"*, with GLM as the motivating case.
   Then, when the scope was put back as "GLM plus a generic mechanism": *"we need
   to propagate all keys that we support, so the agent could test all
-  combinations in the dogfood."* Requirement 11 is the second statement, so it
-  says every service and both billing modes, and says the coverage must not be a
-  hand-maintained list. Requirement 12 is the *first* statement read strictly —
-  "present in the inner ShipIt" was checked against the code and turned out not
-  to follow from the environment variable alone, so it is stated as its own
-  requirement rather than assumed. Neither says how; see `plan.md`.
+  combinations in the dogfood."* Requirement 11 is the second statement. Neither
+  says how; see `plan.md`.
+
+  Requirement 12 pins down what "present in the inner ShipIt" means, because the
+  environment variable was *already* forwarded and did not produce it. It is
+  deliberately limited to the observable half — it appears in Settings and
+  behaves like a hand-added credential. A first draft went further and required
+  router selection and quota reporting; a cross-agent review was right that
+  those are inferred mechanism promoted into a requirement, and the quota half
+  also promised something not delivered (only Claude's and Codex's limits
+  providers are registered — GLM's is `planning#339`). Both were removed. Two
+  further implementation invariants the first draft carried — "adding a service
+  to the catalogue must make its key seedable without extending a list", and
+  ordering/failover semantics — were removed for the same reason and moved to
+  `plan.md`, where the compose-list guard belongs. The catalogue claim was also
+  not quite true as a requirement: `x-shipit-secrets` remains a hand-maintained
+  list that a test *checks*, not one the catalogue generates.
 
 - 2026-08-11 — Does propagating every key silently create metered spend?
   Answered from the code, and **not** treated as a new requirement, because the

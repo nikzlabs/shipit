@@ -25,10 +25,21 @@ the same way 2026-08-11. Nothing outstanding.
 - [x] Guard test: `x-shipit-secrets` is asserted against
       `credentialStorageEnvNames()` in both directions, so a new service fails
       the build naming the missing key.
-- [x] Billing hazard established from the code and surfaced rather than hidden
-      — `spawnSubAgent` passes no `resolveHome`, so a local-mode non-turn spawn
-      is unscoped and `scrubEnvAuthForScopedHome` is a no-op. Recorded in
-      `plan.md`, warned at seed time, documented in the skill.
+- [x] Cross-agent review (Codex, 2026-08-11). Four findings folded in: the
+      failed-discovery duplication path (a lost GET now aborts the run instead
+      of POSTing blind), the over-strict reverse compose assertion (dropped),
+      the wrong non-turn billing mechanism, and the overstated quota claim. One
+      finding — "a seeded route is unusable until restart" — was **refuted**;
+      see below.
+- [x] Billing hazards established from the code and surfaced rather than hidden.
+      Two of them: background work follows `firstEligibleNonTurnSelection`, so
+      any metered key can become what it spends on (observed live: with only
+      DeepSeek set, Background work reads "DeepSeek · V4 Flash"); and the three
+      vendor-native names bypass a connected account on an *unshaped* spawn with
+      no account route. The first draft's mechanism — "`spawnSubAgent` passes no
+      `resolveHome`" — was wrong: `systemTurnDeps.agentFactory` prefers
+      `runner.createAgent`, which local mode binds with `resolveLocalAgentHome`.
+      Corrected in `plan.md`, the seed warning, and the skill.
 
 ## Manual smoke (2026-08-11, `dev` service in production ShipIt)
 
@@ -46,6 +57,16 @@ the same way 2026-08-11. Nothing outstanding.
 - [x] **req 4** — restarting the dev service logged
       `deepseek:key already has a credential, leaving it alone`, and
       `/api/credential-routes` still had exactly one row.
+- [x] **A seeded credential authenticates a real turn — no restart needed.**
+      The check the first smoke run missed, and the one the review predicted
+      would fail. A headless inner session pinned to
+      `deepseek:key / deepseek-v4-flash` logged
+      `route=reserved:cred_eccfbb97-…` and
+      `[claude] service routing: deepseek/key -> https://api.deepseek.com/anthropic`,
+      and answered. The delivery path is `applyLocalMcp` → `localMcpSpawnEnv` →
+      `selectAgentEnvForPush`, which applies `SHIPIT_CREDENTIAL_*` to
+      `process.env` around each spawn, read live from the store — so the boot-only
+      `app-di` seeding (which filters that prefix out anyway) is not the path.
 
 ## Manual smoke (2026-08-04, `dev` service in production ShipIt)
 

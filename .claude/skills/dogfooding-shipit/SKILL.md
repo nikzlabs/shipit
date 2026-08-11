@@ -32,20 +32,22 @@ The `dev` service's credentials are **user-supplied secrets**, set once in the o
 
 ### A supplied key becomes a credential ROUTE, not just a variable
 
-This matters and is not what the environment alone gives you. A bare variable is read by `listConfiguredCredentials` (`service-routing.ts`), so its models are already *eligible* — but it has no row, so inner Settings → Services shows nothing, it can be neither benched nor ordered nor failed over to, and the quota system has nothing to attach a reader to. `scripts/seed-inner-credentials.ts` closes that: at boot it POSTs each supplied variable to `/api/credential-routes`, so the inner instance holds a real credential.
+This matters and is not what the environment alone gives you. A bare variable is read by `listConfiguredCredentials` (`service-routing.ts`), so its models are already *eligible* and it does get a synthetic `env:<NAME>` route id. What it does **not** have is a row — so inner Settings → Services shows nothing, and it can be neither ordered, nor persistently benched, nor failed over to (`stringSelectionFor` reaches it only when nothing is stored). `scripts/seed-inner-credentials.ts` closes that: at boot it POSTs each supplied variable to `/api/credential-routes`, so the inner instance holds a real credential.
 
-### ⚠ Three names bypass a connected subscription
+The stored credential reaches a local turn through `applyLocalMcp` → `localMcpSpawnEnv` → `selectAgentEnvForPush`, which applies `SHIPIT_CREDENTIAL_*` to `process.env` around each spawn, read live from the store. **No orchestrator restart is needed** — a credential seeded (or added by hand) after boot works on the next turn. Verified with a real inner turn.
 
-`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `OPENAI_API_KEY` are read by the vendor CLIs **directly**, so their mere presence in the inner orchestrator's environment can decide a spawn.
+### ⚠ Two billing hazards, and the first one is the one people miss
 
-A *turn* is safe: it spawns with `HOME` at the routed account's root (`local-agent-home.ts`) and `scrubEnvAuthForScopedHome` drops them. **Non-turn work is not** — session naming and PR descriptions go through `spawnSubAgent`, which in local mode calls the agent factory with no `resolveHome` (`session-runner.ts`), so the scrub is a no-op and Codex's `hasFileAuth` check misses the account root too. Consequence:
+**1. Any metered key can become what background work spends on.** Session naming and PR descriptions resolve an unpinned model with `firstEligibleNonTurnSelection` (`non-turn-model.ts`) — the *first eligible model in catalogue order*, over whatever credentials the install holds. So supplying only a DeepSeek key makes that the background-work model, and it bills. No CLI is involved, and this applies to every metered `key` mode, not just the vendor-native ones. Check **Settings → Services → Background work**, and pin it if you care.
 
-- `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` are **metered**, so background work quietly bills per token while every real turn runs on the subscription. Set them only when you are deliberately testing metered billing.
-- `ANTHROPIC_AUTH_TOKEN` is a subscription token, not metered — but it still takes precedence over a connected account, so attribution points at the wrong credential.
+**2. Three names bypass a connected account.** `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `OPENAI_API_KEY` are read by the vendor CLIs **directly**. Two things protect a spawn, and neither is universal:
 
-The other five names are ShipIt's own; no CLI reads them, so they are inert until the router selects their service. The seed logs a `⚠` line naming whichever of the three it finds.
+- A **redirected** spawn is safe: `applyServiceRouting` deletes every Anthropic credential variable and sets exactly one, so a GLM or DeepSeek turn can never pick up an ambient Anthropic key.
+- An **unshaped** spawn — the harness on its own vendor — is safe only when a scoped `HOME` resolves, which `resolveLocalAgentHome` does **only for an `account` route**. With no route selected it deliberately keeps the process-global home, `scrubEnvAuthForScopedHome` is a no-op, and the ambient variable is what the CLI uses.
 
-`local-agent-credentials.ts` maintains the unscoped fallback home (planning#284) and is not on the per-turn path.
+Non-turn work has a further wrinkle: `resolveLocalAgentHome` reads the *runner's* resident route, while `runNonTurnSpawn` selects its own target — so the home can belong to a different credential than the work was routed to.
+
+The seed prints a `⚠` line for each hazard that applies. `local-agent-credentials.ts` maintains the unscoped fallback home (planning#284) and is not on the per-turn path.
 
 ## Seeding
 
