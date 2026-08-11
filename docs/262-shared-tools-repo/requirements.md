@@ -91,6 +91,11 @@ receives data when someone clicks buttons in the previewed pages.
     session-disposal behavior as equivalent same-repo services. Only services
     the tools repository marks for automatic startup run automatically; the
     rest start on demand.
+17. A tool is not necessarily a web preview only — it may ship a **companion
+    CLI**. The agent can run that CLI inside the project session to modify
+    things programmatically. The CLI and the tool's UI work on the same live
+    state: the user observes the result of a CLI change in the UI, and the
+    user can also make changes through the UI.
 
 ## Out of scope (v1)
 
@@ -109,6 +114,9 @@ answers to the structured questions of 2026-08-11. Requirements 12–16 and the
 amendments to reqs 5, 7, 10, and 11 come from the independent requirements
 review of 2026-08-11 (brokered reviewer; coverage and contradiction brief),
 whose findings the user resolved the same day — see Resolved questions.
+Requirement 17 restates the user's follow-up (voice message, 2026-08-11):
+tools may also be companion CLIs the agent drives, with the user observing and
+acting through the UI.
 
 ## Open questions
 
