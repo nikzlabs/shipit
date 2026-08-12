@@ -110,6 +110,8 @@ import { ICON_SIZE } from "../design-tokens.js";
 
 Motion tokens are defined in `index.css` (shared, not per-theme). Use `transition-[color] duration-[var(--duration-fast)]` instead of Tailwind's `transition-colors` to reference the token. Avoid animating layout properties (`width`, `height`) unless explicitly resizing.
 
+**Do not scale a surface full of text.** `zoom-in-95` is right for a tooltip, a popover, or a dropdown menu — each sits near its transform origin, so 5% moves it a fraction of a pixel. On a dialog it is wrong: the fade finishes first, so the text is readable while the scale still has ~1% to run, and every line slides a pixel or two and re-rasterises from blurry to crisp as it lands. `DialogContent` therefore fades only, and `dialog.test.tsx` guards it.
+
 ## UI Primitives
 
 Shared components in `src/client/components/ui/` using [CVA](https://cva.style) (class-variance-authority) for variant-based styling. Never duplicate token class strings across components — use these primitives instead.

@@ -117,6 +117,27 @@ describe("Dialog back-button dismissal", () => {
   });
 });
 
+describe("DialogContent opening motion", () => {
+  // The dialog fades; it does not scale. A 5% scale on a panel this size drags
+  // its text the last pixel or two into place after the fade has already made
+  // it readable — the "the label nudges up when Settings opens" report. The
+  // guard is here because the classes are easy to re-add by copying another
+  // surface's animation, and the effect is a few frames long: obvious as a
+  // complaint, invisible in review.
+  it("fades in and out with no scale", () => {
+    render(
+      <Dialog open onOpenChange={vi.fn()}>
+        <DialogContent data-testid="motion-content">
+          <DialogTitle>Hi</DialogTitle>
+        </DialogContent>
+      </Dialog>,
+    );
+    const classes = screen.getByTestId("motion-content").className;
+    expect(classes).toContain("data-[state=open]:fade-in-0");
+    expect(classes).not.toMatch(/zoom-(in|out)/);
+  });
+});
+
 describe("DialogContent close button", () => {
   it("renders a default close button that fires onOpenChange(false)", () => {
     const onOpenChange = vi.fn();

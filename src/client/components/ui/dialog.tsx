@@ -166,8 +166,17 @@ const DialogContent = forwardRef<
         // there's no inset (desktop, no nav bar), so this is a no-op off-mobile.
         "max-md:[padding-bottom:env(safe-area-inset-bottom)]",
         "md:rounded-xl md:max-h-[90vh]",
-        "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
-        "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
+        // Fade only — deliberately no `zoom-in-95`/`zoom-out-95`. A scale on a
+        // panel this large moves its text, and the fade finishes first: by the
+        // time the content is fully opaque the scale is still ~0.99, so every
+        // line slides the last pixel or two into place *after* you can read it,
+        // re-rasterising from blurry to crisp as it lands. Measured on Settings:
+        // a row 78px above the dialog's centre settled 1.9px upward over 140ms,
+        // ~1px of it plainly visible. Small surfaces (tooltip, popover, dropdown
+        // menu) keep their zoom — they are close to their transform origin, so
+        // the same 5% moves them a fraction of a pixel.
+        "data-[state=open]:animate-in data-[state=open]:fade-in-0",
+        "data-[state=closed]:animate-out data-[state=closed]:fade-out-0",
         className,
       )}
       {...props}
