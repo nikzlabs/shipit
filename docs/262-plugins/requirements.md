@@ -169,7 +169,10 @@ receipts below keep the original "tools" vocabulary of the early rounds.
 22. A plugin repository may ship **agent instructions** (e.g. skills) that a
     project session picks up, under the same standing grant as req 19. The
     instructions travel with the plugin; projects never keep copies that must
-    be kept in sync.
+    be kept in sync. The instructions reach the agent the same way the
+    project's own skills do, **whichever agent backend runs the session**
+    (Claude, Codex, or a later one) — a plugin's skills are never tied to one
+    backend.
 23. A plugin repository declares the **credential names** its services and
     CLIs require for their own job (e.g. a third-party API key). Values
     resolve from a store associated with the plugin repository, so one key
@@ -197,6 +200,13 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     (req 15), a reproduction, and a proposed fix as a diff in the issue
     body. This does not relax req 7: a project session still never pushes to
     the plugin repository.
+26. A plugin can declare named **settings** that a consuming project sets in
+    its `shipit.yaml` declaration — for example, the root directory inside
+    the project workspace where the plugin reads and writes its durable
+    output (reqs 18, 21). The plugin's declared defaults apply when a project
+    sets nothing. Like the startup override (req 16), settings are
+    per-project configuration, not copied definitions — they do not weaken
+    req 5.
 
 ## Out of scope (v1)
 
@@ -243,7 +253,8 @@ resolved by the user on 2026-08-11 — see Resolved questions. The **plugin**
 naming was decided by the user on 2026-08-11; earlier rounds used "tools",
 and quoted historical material below keeps that vocabulary. The req 16
 startup override and requirement 25 (feedback channel) come from the user's
-doc review of 2026-08-12.
+doc review of 2026-08-12, as do req 22's backend-independence sentence and
+requirement 26 (plugin settings) from its third round.
 
 ## Open questions
 
@@ -351,3 +362,12 @@ doc review of 2026-08-12.
   optionally carrying a repro and a proposed diff in the body. Proposal PRs
   from project sessions were considered and rejected for v1 (they would
   relax req 7). → req 25.
+- **2026-08-12 — Plugin skills across agent backends** (doc review, round
+  3). The user raised that plugin-shipped skills must be reachable by
+  Claude, Codex, and other backends. Transcribed as the backend-independence
+  sentence: plugin skills reach the agent the same way project skills do,
+  whichever backend runs the session. → req 22 amended.
+- **2026-08-12 — Plugin settings in shipit.yaml** (doc review, round 3).
+  Stated directly by the user: plugins need per-project settings written in
+  the project's `shipit.yaml` — the example given is the root directory
+  where a plugin reads and writes files. → req 26.
