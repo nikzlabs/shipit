@@ -79,6 +79,9 @@ export function CodeEditor({
       .map((c) => ({ id: c.id, kind: "line", line: c.line, text: c.text }));
   }, [comments]);
 
+  // `lineComments` is intentionally absent from the deps (see the note at the
+  // end of this effect): including it would tear down and rebuild the whole
+  // Monaco editor on every comment change. The effect below syncs it instead.
   // eslint-disable-next-line no-restricted-syntax -- Monaco lifecycle (createEditor + cleanup)
   useEffect(() => {
     if (!editorRef.current) return;
@@ -160,6 +163,7 @@ export function CodeEditor({
     };
     // The lineComments dep is intentionally omitted: we sync via the
     // separate effect below to avoid tearing down the editor on every change.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `lineComments` omitted on purpose — including it would rebuild the Monaco editor on every comment change; the effect below syncs it instead
   }, [filePath, content, sessionId, addLineComment, editComment, deleteComment, setComposing, readOnly, revealLine, language]);
 
   // Sync comments without rebuilding the editor.

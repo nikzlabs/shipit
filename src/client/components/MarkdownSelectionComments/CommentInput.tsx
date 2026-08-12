@@ -51,6 +51,9 @@ export function CommentInput({
     language: voiceLanguage || undefined,
     sttProvider,
   });
+  // `onTranscript` is a stable `useCallback`, so depending on it directly
+  // (rather than on the whole `voice` object) wires the subscription up once.
+  const { onTranscript } = voice;
 
   // Focus the textarea on mount without the browser scrolling it into view.
   // The new-comment input renders at the bottom of the document, so the native
@@ -66,7 +69,7 @@ export function CommentInput({
   // still sees freshly-typed text.
   // eslint-disable-next-line no-restricted-syntax -- transcript subscription with cleanup
   useEffect(() => {
-    return voice.onTranscript((transcript) => {
+    return onTranscript((transcript) => {
       const ta = textareaRef.current;
       let cursor = 0;
       setText((current) => {
@@ -87,7 +90,7 @@ export function CommentInput({
         }
       });
     });
-  }, [voice.onTranscript]);
+  }, [onTranscript]);
 
   useEventListener(window, "keydown", (e) => {
     if (e.key !== "Escape") return;

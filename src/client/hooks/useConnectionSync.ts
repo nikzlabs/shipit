@@ -70,7 +70,10 @@ export function useConnectionSync(params: {
   // On per-session WS connect, fetch session history + send any pending message
   // (No activate_session needed — the per-session WS auto-activates via URL)
   // (No set_agent needed — passed as query param on WS URL)
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  // `onSessionConnect` is a caller-supplied callback that is re-created on each
+  // render; this effect must run on connection-status transitions only, so it
+  // is invoked but deliberately not depended on.
+  // eslint-disable-next-line no-restricted-syntax -- existing usage; status-transition-keyed, see above
   useEffect(() => {
     if (status === "open" && !historyLoadedRef.current && useSessionStore.getState().sessionId) {
       historyLoadedRef.current = true;
@@ -130,6 +133,7 @@ export function useConnectionSync(params: {
       // after HTTP history hydration.
       useSessionStore.setState({ subAgentSpawns: {} });
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `onSessionConnect` is re-created each render; this effect must key on connection-status transitions only (see above)
   }, [status, send]);
 
   // PR status is now delivered via SSE (pr_status event) — no HTTP polling needed.

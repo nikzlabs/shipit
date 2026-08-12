@@ -672,6 +672,9 @@ function OtherAnswerInput({
     language: voiceLanguage || undefined,
     sttProvider,
   });
+  // `onTranscript` is a stable `useCallback`, so depending on it directly
+  // (rather than on the whole `voice` object) wires the subscription up once.
+  const { onTranscript } = voice;
 
   // Keep latest value/onChange in refs so the subscription wires up once.
   const valueRef = useRef(value);
@@ -683,7 +686,7 @@ function OtherAnswerInput({
 
   // eslint-disable-next-line no-restricted-syntax -- transcript subscription with cleanup
   useEffect(() => {
-    return voice.onTranscript((transcript) => {
+    return onTranscript((transcript) => {
       const ta = textareaRef.current;
       onDictatedRef.current();
       const res = spliceTranscript({
@@ -701,7 +704,7 @@ function OtherAnswerInput({
         }
       });
     });
-  }, [voice.onTranscript]);
+  }, [onTranscript]);
 
   // Reserve room on the right for the mic so dictated/typed text never slides
   // under it; the mobile mic is a larger thumb target so it needs more space.

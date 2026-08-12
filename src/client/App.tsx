@@ -1281,6 +1281,11 @@ export default function App() {
     [],
   );
 
+  // `handleDocStartSession` is referenced only inside the deferred `onClick`
+  // below, and is declared further down this component — naming it in the
+  // dependency array would evaluate the binding during render, before its
+  // `const` initializer has run (TDZ). It is a `useCallback`, so the closure
+  // captured here stays correct.
   const handleOpenDoc = useCallback((filePath: string, doc?: DocEntry) => {
     const sid = useSessionStore.getState().sessionId;
     if (!sid) return;
@@ -1299,6 +1304,7 @@ export default function App() {
         ]
       : undefined;
     void useFileStore.getState().openPreview(sid, filePath, { actions });
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `handleDocStartSession` is declared below and used only in the deferred onClick; naming it here would read the const before its initializer (TDZ)
   }, []);
 
   const handleOpenFilePreview = useCallback((filePath: string) => {
