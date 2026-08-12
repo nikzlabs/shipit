@@ -17,18 +17,21 @@ Next design slice (server mechanics):
 - [ ] Compose-fragment merging + security validation of plugin services (reqs 3, 5, 16, 20)
 - [ ] Agent refresh transport: `shipit plugin` shim → worker agent-ops relay → orchestrator, with guard tests (req 12; orchestrator routes are container-denied)
 - [ ] Egress execution-surface semantics: host satisfaction is agent-container truth today (services are unconfined, docs/172); decide whether plugin services get their own containment (req 24)
-- [ ] Skills materialization into each backend's discovery root + refresh re-scan (req 22, docs/209)
 - [ ] Credential name resolution + `secrets_status` plugin grouping (req 23)
 - [ ] CLI PATH mechanism + collision checks (reqs 17, 20)
-- [ ] Skills disclosure via docs/209 mechanism (req 22)
+- [ ] Skills materialization into each backend's discovery root, namespaced, with refresh re-scan (req 22, docs/209 — one mechanism, one item)
 - [ ] Feedback-channel registration as issue destination (req 25)
+- [ ] Pin durability: persist the resolved SHA keyed by the consumer declaration; warn when a tag moves (req 8)
+- [ ] Install stamping: re-run on plugin commit / install string / `install-inputs` content change, mirroring agent.install's convention (req 7)
+- [ ] Settings file: validate declared settings + consumer values, materialize the `SHIPIT_SETTINGS` JSON per imported plugin (req 26)
+- [ ] Fetch-authority boundary: repository fetches stay orchestrator-side; guard test that plugin install/services/CLIs cannot reach fetch credentials; standing-grant activation without prompts, identity always visible (req 19)
 - [ ] Self-use mode (`repo: self`, req 27): live working-tree activation, no generations/refresh, consumer-path parity for services/CLIs/skills/settings
 - [ ] GitHub App mode: multi-repo token minting for declared plugin repos (req 10)
 
 Verification (plan.md §5 — drives the implementation):
 
-- [ ] Test plugin exported by the ShipIt repo itself, self-declared (`repo: self`, req 27): one tiny service, one CLI, one skill, one setting, one credential name, one host
-- [ ] Dogfood everything but services in the inner instance (`RUNTIME_MODE=local` skips Docker): parsing, generations, tab, needs, CLI wrappers, skills, refresh relay
+- [ ] Test plugin exported by the ShipIt repo itself: one tiny service, one CLI, one skill, one setting, one credential name, one host — exercised via TWO fixtures: self-declared (`repo: self`, live path) and consumer-declared by `owner/name` (checkout/generation/refresh path)
+- [ ] Dogfood everything but services in the inner instance (`RUNTIME_MODE=local` skips Docker): parsing, tab, needs, CLI wrappers, skills via the self fixture; generations + refresh relay via the consumer fixture — including admitting the relay in local mode's explicit agent-ops route allowlist (`local-agent-ops.ts`) with the parity test extended
 - [ ] Service path via integration tests (isTestMode fakes): fragment merge, per-service startup/overrides, origin on service messages, collision failures
 - [ ] One real-instance end-to-end: plugin service + preview + `window.shipit` interaction
 

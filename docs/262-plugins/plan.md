@@ -6,7 +6,7 @@ description: The shipit.yaml formats on both sides of the plugin edge, and the U
 
 # Plugin repositories — declaration format & UI design
 
-Implements [requirements.md](requirements.md) (26 requirements; cited as
+Implements [requirements.md](requirements.md) (27 requirements; cited as
 `(req N)`). This design slice covers **how plugins are declared and used**
 and **every UI change**, with committed prototypes in
 [mockup.html](mockup.html) (services panel) and
@@ -114,9 +114,10 @@ Rules (review findings, both rounds):
   declaring itself — `repo: self` in a `repos:` entry (with a `name`; no
   `branch`/`pin`, both are errors) plus ordinary `use:` entries. The
   "checkout" is the session's own working tree: **editable, live** — no
-  staging, no generations, no refresh (req 12/15 coherence is deliberately
-  traded for liveness; that is the point of dogfooding). Req 7's read-only
-  rule does not apply; no feedback destination is registered (the repo's own
+  staging, no generations, no refresh. Req 15 itself scopes its coherence
+  guarantee to tracked, read-only checkouts and names the self-declared
+  working tree as the ratified exception (final-review finding 1); req 7's
+  read-only rule likewise does not apply; no feedback destination is registered (the repo's own
   issues are already this session's); `/project` and the CLI cwd point at
   the same working tree. Everything else — services, commands, skills,
   settings, needs — activates through exactly the consumer path.
@@ -136,6 +137,7 @@ exports:
         reqs: plugins/requirements/cli                  # command name → entry (req 17)
       skills: plugins/requirements/skills               # dir shipped to sessions (req 22)
       install: npm --prefix . ci                        # see Install contract (req 7)
+      install-inputs: [package-lock.json]                 # files whose content re-triggers install
       credentials: [FAL_KEY]        # names only — values live with each project (req 23)
       hosts: [fal.run]              # informational; grants nothing (req 24)
       settings:                     # declared settings + defaults (req 26)
@@ -152,7 +154,8 @@ plugin's checkout root inside its writable layer** — a copy-on-write layer
 over the read-only checkout, so `node_modules` and build output land in the
 layer, never in the checkout and never in the project (req 7). Writes outside
 the layer fail. Install re-runs when its stamped inputs change: the plugin
-commit, the install string, or declared install-input files.
+commit, the install string, or the content of the manifest's
+`install-inputs` files (the same convention `agent.install` already uses).
 
 ## 2. How a plugin is used inside a session
 
@@ -203,7 +206,18 @@ commit, the install string, or declared install-input files.
   the **worker's agent-ops surface** — like `shipit service` and the issue
   shim — because orchestrator API routes are default-denied to containers
   (`api-container-guard.ts`); the browser's `/api/plugin-repos` endpoints
-  are not the agent's path.
+  are not the agent's path. In the dogfood inner instance, local mode's
+  agent-ops host allowlists routes explicitly (`local-agent-ops.ts`), so the
+  relay must be added there too, with the parity test extended.
+- **Fetch authority and the standing grant** (req 19): repository fetches
+  run **orchestrator-side** (the bare cache), so fetch credentials never
+  exist inside the session container — plugin `install`, services, and CLIs
+  cannot read them, by construction, and a guard test owns that boundary
+  (slice 2). The standing grant means activation never prompts: a new
+  tracked-branch commit stages, validates, and activates with no approval
+  step, and the visible repo/ref/commit identity on the plugin card — in
+  every state, including degraded and collision — is the accountability
+  surface that replaces approval.
 - **Feedback** (req 25 — review finding 12): each declared repo registers
   its `name` in the **same tracker registry** the issue shim and Issues UI
   resolve (`GET /api/trackers`) — a separate registry would leave
@@ -236,7 +250,7 @@ only the `shipit.yaml` key says `plugins:`.
 | **The Plugins tab** — a right-rail tab holding one card per declared repo: ref @ exact SHA, the plugins used from it, needs, grants, refresh, degraded and collision states (reqs 12, 13, 15, 20, 23, 24) | tab mock 1–3 | The right-rail tab strip (`App.tsx` ~1690–1895; `Tab.badge` slot for the warn dot) | New tab, gated on **plugin intent, not on valid repos** (round-two finding 2): a `plugins:` block that parses to zero valid repos still shows the tab, and parse warnings, never-fetched, and unavailable states all count toward the warn dot — otherwise an invalid declaration erases its own warning surface (req 13). The dot uses the existing `Tab.badge` slot with an accessible label ("Plugins — attention required"). Client state is a **session-scoped store** (not pane-local): seeded from the snapshot on attach/reload, stale-session guarded, refetched by the `files-changed` shipit.yaml hook, feeding the dot while the pane is closed; when the tab disappears (declaration edited away, session switch to a plugin-less repo) an effective-tab fallback coerces `rightTab` to Preview/Files, and the tab joins `useTabLabelCollapse`'s dependency key. Mobile needs nothing separate — the same right panel renders under Workspace. Data: `GET /api/plugin-repos?sessionId` returns one authoritative snapshot (declaration incl. **`consumerRepoUrl`**, resolved ref/SHA, exports, needs and their satisfaction, degraded/collision state); WS `plugin_repo_status` carries deltas with `sessionId`. Grants happen here: **"Add key…" opens the Project Settings dialog on the CONSUMING project's secret store** — `setProjectSettingsRepoUrl(consumerRepoUrl, "secrets")`; passing the plugin repo's URL would save the key into the wrong store, since that call selects the store `/api/secrets` writes to (round-two finding 1). "Allow (session)/(instance)" posts to the existing not-container-accessible `POST /api/egress/hosts` with the scope choice. The `PrLifecycleCard` and its strip are **untouched**. No "commits behind" badge (req 15 wants ref + exact commit, not network polling) |
 | Needs — credentials (req 23) | tab mock 1 | `SecretsTab.tsx` / `DeclaredSecretRow.tsx`, fed by `secrets_status` | `secrets_status.declared` gains an **origin** dimension (it is flat, name-keyed today — `service.ts:117`, and `SecretsTab` save assumes unique names). A project credential and a plugin credential with the same name are **deliberately the same stored secret**; multiple claimants render as one row with claimant chips |
 | Needs — hosts (req 24) | tab mock 1 | The plugin card's needs rows, over the existing `POST /api/egress/hosts` (global or session scope; browser-only) | "Host not allowed" is evaluated against the **agent container's** allowlist — where companion CLIs run — because today's containment lives in the agent's netns while compose service containers have unrestricted egress (docs/172 residual). The need-row therefore names the blocked claimant (e.g. "blocks `artk`") rather than asserting one repository-level truth across both execution surfaces (round-two finding 4). Whether plugin *services* get their own containment is an explicit slice-2 decision, not a side effect of compose validation. Grant endpoints stay browser-only, so plugin code cannot self-grant |
-| Degraded / collision reporting (reqs 13, 20) | tab mock 2 | Card states inside the Plugins tab | **One card per declared repo, always** — simultaneous problems compose as multiple issue rows under one header whose status chip shows the worst state (round-two finding 8). **Degraded** distinguishes "refresh failed — prior version `<sha>` remains active" (req 15) from "never fetched — session runs without this repo's services" (req 13); **collision** names the colliding domain and the fix as "under the `use` entry whose alias is `<alias>`" (a `use` entry is a YAML sequence item, so there is no bracket path). Not transcript cards — no new DB columns, stores, or migrations |
+| Degraded / collision reporting (reqs 13, 20) | tab mock 2 | Card states inside the Plugins tab | **One card per declared repo, always** — simultaneous problems compose as multiple issue rows under one header whose status chip shows the worst state (round-two finding 8). Every card state, including degraded and collision, keeps the full `owner/repo` + ref @ commit identity visible (req 19 — the identity is what the standing grant trades approval for). **Degraded** distinguishes "refresh failed — prior version `<sha>` remains active" (req 15) from "never fetched — session runs without this repo's services" (req 13); **collision** names the colliding domain and the fix as "under the `use` entry whose alias is `<alias>`" (a `use` entry is a YAML sequence item, so there is no bracket path). Not transcript cards — no new DB columns, stores, or migrations |
 
 Settings → Network egress is **unchanged** (it is explicitly the global-only
 editor — `SettingsEgress.tsx:135`); the diagnostics panel addition and the
@@ -276,10 +290,14 @@ coherent in one UI.
 ## 5. Verification: dogfood a plugin inside ShipIt itself
 
 The implementation is driven by a **test plugin exported by the ShipIt repo
-itself** and self-declared (`repo: self`, req 27) — a deliberately small
-export with one tiny service, one CLI, one skill, one declared setting, one
-declared credential name, and one declared host, so every contract in this
-design has a living exercise.
+itself** — a deliberately small export with one tiny service, one CLI, one
+skill, one declared setting, one declared credential name, and one declared
+host — exercised through **two fixtures**, because self-use deliberately has
+no checkout, generations, or refresh (req 27) and therefore cannot dogfood
+them: (a) **self-declared** (`repo: self`) for the live-working-tree path,
+and (b) **consumer-declared** — the inner instance declaring the test
+plugin's repo by `owner/name` — for checkout, generation activation, pin
+durability, and refresh.
 
 What runs where — the dogfood boundary:
 
@@ -289,8 +307,10 @@ What runs where — the dogfood boundary:
   the inner loop: declaration parsing and phased validation, checkout and
   generation mechanics, the Plugins tab (gating, warn dot, cards, grants),
   needs plumbing (`secrets_status` origin, egress rows), CLI wrappers and
-  credential injection, skills materialization, `shipit plugin refresh`
-  through the agent-ops relay.
+  credential injection, skills materialization, and — via the consumer
+  fixture — checkout/generation mechanics and `shipit plugin refresh`
+  through the agent-ops relay (which local mode's explicit route allowlist
+  must admit; see §2).
 - **Integration tests** (`isTestMode`, fakes — the existing pattern): the
   service path — compose-fragment merge, per-service startup and overrides,
   origin on `service_list`/`service_status`, collision activation failures.

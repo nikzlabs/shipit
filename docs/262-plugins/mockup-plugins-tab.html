@@ -110,6 +110,7 @@ the wrong place. "Allow" posts to the existing browser-only <code>POST /api/egre
     <div class="card">
       <div class="ch">
         <span class="name">game-tools</span>
+        <span class="chip mono">nicolasalt/game-tools</span>
         <span class="chip mono">main @ a1b2c3f</span>
         <span class="chip err">collision · stale</span>
         <span class="spread"></span>
@@ -126,6 +127,7 @@ the wrong place. "Allow" posts to the existing browser-only <code>POST /api/egre
     <div class="card">
       <div class="ch">
         <span class="name">art-kit</span>
+        <span class="chip mono">nicolasalt/art-kit</span>
         <span class="chip mono">v1.2.0 @ —</span>
         <span class="chip err">unavailable</span>
         <span class="spread"></span>
@@ -149,6 +151,7 @@ the wrong place. "Allow" posts to the existing browser-only <code>POST /api/egre
     <div class="card">
       <div class="ch">
         <span class="name">game-tools</span>
+        <span class="chip mono">nicolasalt/game-tools</span>
         <span class="chip mono">main @ a1b2c3f</span>
         <span class="spread"></span>
         <button class="btn">↻ Refresh</button>
@@ -158,22 +161,39 @@ the wrong place. "Allow" posts to the existing browser-only <code>POST /api/egre
     <div class="card">
       <div class="ch">
         <span class="name">docs-templates</span>
+        <span class="chip mono">nicolasalt/docs-templates</span>
         <span class="chip mono">main @ 4f2a9c1</span>
         <span class="spread"></span>
         <button class="btn">↻ Refresh</button>
       </div>
       <div class="crow"><div class="grow sub">files only — no plugins activated (checked out at <code>/plugins/docs-templates</code>)</div></div>
     </div>
+    <div class="sub" style="padding:6px 2px 0">No status chips, no dot — absence of a dot means healthy.
+    A project with no <code>plugins:</code> block never shows the tab.</div>
+  </div>
+</div>
+
+<h2>4 · Self-use — in the plugin repository's OWN session (req 27)</h2>
+<p class="note">A different session: the plugin repo dogfooding itself via <code>repo: self</code>.
+The card shows <b>live working tree</b> instead of ref @ commit — req 15's coherence guarantee
+scopes itself to tracked checkouts, and this is the ratified exception. No Refresh button: edits
+apply live. Everything else (services, commands, skills, settings, needs) went through the exact
+consumer path.</p>
+<div class="rail">
+  <div class="tabs">
+    <span class="tab">Preview</span><span class="tab">Files</span><span class="tab">Issues</span>
+    <span class="tab">Plugins</span>
+    <span class="tab">Terminal</span><span class="tab">PR</span>
+  </div>
+  <div class="pane">
     <div class="card">
       <div class="ch">
-        <span class="name">game-tools</span>
+        <span class="name">tools-dev</span>
         <span class="chip mono">self · live working tree</span>
         <span class="spread"></span>
       </div>
-      <div class="crow"><div class="grow sub">self-use (req 27): this repository dogfooding its own exports — uses <b>requirements</b> as <code>reqs</code>. Editable, no refresh: edits in the working tree apply live.</div></div>
+      <div class="crow"><div class="grow sub">this repository's own exports — uses <b>requirements</b> as <code>reqs</code>. Editable; changes apply live, no refresh.</div></div>
     </div>
-    <div class="sub" style="padding:6px 2px 0">No status chips, no dot — absence of a dot means healthy.
-    A project with no <code>plugins:</code> block never shows the tab.</div>
   </div>
 </div>
 

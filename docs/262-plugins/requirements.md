@@ -124,7 +124,11 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     update either completes coherently or leaves the prior complete version
     active with a visible failure. The running commit is also readable by the
     plugin itself, so a plugin can decide whether a version change
-    invalidates caches it keeps, instead of assuming it does.
+    invalidates caches it keeps, instead of assuming it does. These
+    guarantees apply to tracked, read-only checkouts; a repository the
+    session self-declares (req 27) is deliberately **live** — its editable
+    working tree replaces the exact-commit correspondence, which is the
+    point of developing there.
 16. Plugin services follow the same start, health, preview, stop, and
     session-disposal behavior as equivalent same-repo services. A plugin
     declares whether its services start automatically; services not marked
@@ -418,6 +422,12 @@ user's follow-up of 2026-08-12 during the design phase.
   smooth. → req 27. Follow-up answer, same day: activation in the own repo is
   by **explicit self-declaration** (the repo declares itself as a consumer;
   agent recommendation accepted) — no automatic second activation path.
+- **2026-08-12 — Req 15 reconciled with req 27** (final design review,
+  finding 1). Req 27's live working tree cannot correspond to one exact
+  commit, so req 15 now states its own scope: its guarantees bind tracked,
+  read-only checkouts, and a self-declared repository is deliberately live.
+  This records the exception the user already ratified in req 27 ("editable
+  because it is the same repository"); no new decision was taken.
 - **2026-08-12 — Declared hosts, informational** (doc review, round 5).
   Stated directly by the user: a plugin declares the hosts it needs in its
   manifest (otherwise the user cannot know what to add), and ShipIt offers a
