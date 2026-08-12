@@ -327,7 +327,11 @@ no checkout, generations, or refresh (req 27) and therefore cannot dogfood
 them: (a) **self-declared** (`repo: self`) for the live-working-tree path,
 and (b) **consumer-declared** — the inner instance declaring the test
 plugin's repo by `owner/name` — for checkout, generation activation, pin
-durability, and refresh.
+durability, and refresh. The consumer fixture lives in the dogfood seed repo
+`nicolasalt-shipit/todo-list` (its PR #13): it exports its own tiny
+`todo-stats` CLI plugin, dogfoods it via `repo: self`, and consumes this
+repo's `probe` by `owner/name` — two declared repos in one project, which
+also exercises req 14 independence.
 
 What runs where — the dogfood boundary:
 
