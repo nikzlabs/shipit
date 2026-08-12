@@ -520,3 +520,14 @@ compose: docker-compose.yml
 ```
 
 See [shipit-yaml.md](shipit-yaml.md) for the full shipit.yaml reference.
+
+## Network egress
+
+Compose services follow the owning session's Network setting. In a contained
+session, ShipIt starts services on an internal-only session network, installs
+the standard egress allowlist in each service network namespace, and then gives
+the service its controlled internet route. An unlisted destination is blocked
+from a service in the same way that it is blocked from the agent container.
+Add required package or API hosts through Settings → Network. An Open session,
+or a deployment with containment explicitly disabled, keeps normal Docker
+egress.

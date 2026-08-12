@@ -399,6 +399,22 @@ describe("generateComposeOverride", () => {
     expect(override).toContain("NET_RAW");
   });
 
+  it("makes the service network internal while egress containment is active", () => {
+    const override = generateComposeOverride(
+      [{ name: "web", ports: ["5173:5173"] }],
+      { ...baseOpts, containEgress: true, containDns: true },
+    );
+    expect(override).toContain("internal: true");
+    expect(override).toContain("127.0.0.1");
+
+    const openOverride = generateComposeOverride(
+      [{ name: "web", ports: ["5173:5173"] }],
+      baseOpts,
+    );
+    expect(openOverride).not.toContain("internal: true");
+    expect(openOverride).not.toContain("127.0.0.1");
+  });
+
   it("labels manual services without adding profiles", () => {
     const override = generateComposeOverride(
       [{ name: "db", shipitPreview: "manual" }],

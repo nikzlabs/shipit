@@ -1,0 +1,7 @@
+- [x] Generate an internal-only Compose network for contained sessions.
+- [x] Install the Tier A/B/C egress stack in each service network namespace before internet access is enabled.
+- [x] Re-apply containment when Compose recreates a service container.
+- [x] Add regression tests for override generation and fail-closed orchestration.
+- [x] Update the egress design reference and agent-facing Compose documentation.
+- [x] Run targeted and affected tests, lint, and typecheck.
+- [x] Request independent review (ShipIt reviewer run failed with API `ENOTIMP`; self-audit completed, including the pre-pause DNS path).

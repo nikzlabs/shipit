@@ -579,6 +579,12 @@ export function setupServiceManager(
           await containerManager.ensureConnectedToSessionNetwork(runner.sessionId, networkName);
         }
       : undefined,
+    containServicesFn: containerManager?.isEgressContained(runner.sessionId)
+      ? async (serviceNames: string[]) => {
+          await containerManager.containComposeServices(runner.sessionId, serviceNames);
+      }
+      : undefined,
+    containServiceDns: containerManager?.isEgressDnsContained(runner.sessionId) ?? false,
   });
 
   serviceManagers.set(runner.sessionId, mgr);

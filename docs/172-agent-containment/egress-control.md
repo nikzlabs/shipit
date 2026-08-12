@@ -13,6 +13,19 @@ GitHub PAT) to an arbitrary host. Per Anthropic's
 [How we contain Claude](https://www.anthropic.com/engineering/how-we-contain-claude),
 once approval friction is removed this is the load-bearing environment-layer defense.
 
+## Compose service coverage
+
+Compose-managed services use the same effective Contained/Open policy and host
+allowlist as the agent container (docs/263). For a contained session, ShipIt
+generates the session Compose network as `internal` and points Docker DNS at
+loopback, so repository-controlled service code cannot route traffic or tunnel
+data through Docker's host-side resolver when it first starts. After `compose up`,
+ShipIt pauses each service, attaches a private per-session egress bridge, installs
+the Tier A firewall plus the enabled Tier B resolver and Tier C proxy in that
+service's network namespace, and only then resumes it. A setup failure removes
+the paused service. Every `compose up` repeats this reconciliation so replacement
+containers cannot silently return with open egress.
+
 It depends on and composes with **planning#131** (`docs/201-container-api-trust-boundary/`):
 that work default-denies the orchestrator API for container-origin requests, which is
 what makes egress *settings* (the global toggle, the allowlist) safe to mutate from the

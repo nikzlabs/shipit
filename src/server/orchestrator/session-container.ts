@@ -56,7 +56,8 @@ import {
 import type { DepDirOverlaySpec } from "./overlay-session.js";
 import { egressEnforceEnabled, allowEgressToSubnets } from "./egress-firewall-install.js";
 import { extractNetworkSubnets } from "./egress-firewall.js";
-import { egressDnsEnabled } from "./egress-dns-install.js";
+import { containComposeServices as applyComposeServiceEgress } from "./compose-service-egress.js";
+import { egressDnsEnabled, orchestratorCallbackHost } from "./egress-dns-install.js";
 import { egressProxyEnabled } from "./egress-proxy-install.js";
 import {
   kernelRuntime,
@@ -492,6 +493,47 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    */
   get dockerClient(): Docker {
     return this.docker;
+  }
+
+  /** Boot-effective containment used when generating the Compose override. */
+  isEgressContained(sessionId: string): boolean {
+    if (!egressEnforceEnabled()) return false;
+    const sc = this.containers.get(sessionId);
+    return sc?.egressContainedAtStart ?? this.resolveEgressConfig?.(sessionId)?.contained ?? true;
+  }
+
+  isEgressDnsContained(sessionId: string): boolean {
+    return this.isEgressContained(sessionId) && egressDnsEnabled();
+  }
+
+  /**
+   * Apply the owning session's effective egress policy to its running Compose
+   * services. Called after every Compose `up`, because that command can replace
+   * containers while preserving service names.
+   */
+  async containComposeServices(sessionId: string, serviceNames: string[]): Promise<void> {
+    if (!egressEnforceEnabled()) return;
+    const sidecarImage = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
+    const sc = this.containers.get(sessionId);
+    const config = this.resolveEgressConfig?.(sessionId) ?? { contained: true, extraHosts: [] };
+    const contained = sc?.egressContainedAtStart ?? config.contained;
+    if (!contained) return;
+    if (!sidecarImage) {
+      throw new Error(
+        "Compose egress containment is on but SESSION_EGRESS_SIDECAR_IMAGE is not set",
+      );
+    }
+    await applyComposeServiceEgress({
+      docker: this.docker,
+      sessionId,
+      sidecarImage,
+      config: { ...config, contained },
+      serviceNames,
+      dnsEnabled: egressDnsEnabled(),
+      proxyEnabled: egressProxyEnabled(),
+      labels: this.baseLabels(),
+      orchestratorHost: orchestratorCallbackHost(),
+    });
   }
 
   /**

@@ -87,6 +87,14 @@ export interface ComposeOverrideOptions {
   /** Docker stack name (e.g. "shipit-dev") — added as a label for cleanup filtering. */
   stackName?: string;
   /**
+   * Make the session network internal while Compose services are being
+   * contained. A separate private egress bridge is attached only after the
+   * service namespace has received its firewall/resolver/proxy stack.
+   */
+  containEgress?: boolean;
+  /** Point Docker DNS at the Tier B loopback resolver during containment setup. */
+  containDns?: boolean;
+  /**
    * User-declared top-level named volumes (from the user's compose file).
    * When provided, the override emits a labels overlay for each entry so
    * the disk janitor's `docker volume prune --filter "label=shipit-managed"`
@@ -768,6 +776,11 @@ export function generateComposeOverride(
       labels,
       networks: ["shipit-session"],
       cap_drop: ["NET_RAW"],
+      // On an internal Docker network, ordinary routed traffic is blocked but
+      // Docker's embedded DNS can still forward queries through the daemon.
+      // Point its upstream at loopback until the controlled resolver is in the
+      // namespace, closing the pre-pause DNS-tunnelling window.
+      ...(opts.containDns ? { dns: ["127.0.0.1"] } : {}),
     };
 
     // docs/150 §7 / #1646 — run compose services as the same UID the session
@@ -879,6 +892,7 @@ export function generateComposeOverride(
     networks: {
       "shipit-session": {
         name: `shipit-session-${opts.sessionId}`,
+        ...(opts.containEgress ? { internal: true } : {}),
       },
     },
   };
