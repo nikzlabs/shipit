@@ -188,6 +188,15 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     plugin that calls external APIs therefore includes adding its hosts to
     the egress allowlist — a deliberate user act, stated here so it is a
     known onboarding cost rather than a surprise.
+25. The agent (or the user) in a project session can report feedback on a
+    plugin — a bug, a limitation, a feature request — as an **issue on the
+    plugin's own repository**, from within the session. Declaring the plugin
+    is what grants the channel, and it is brokered the way declared issue
+    trackers are: no tracker credential enters the session container. The
+    report can carry the session's context — the running plugin commit
+    (req 15), a reproduction, and a proposed fix as a diff in the issue
+    body. This does not relax req 7: a project session still never pushes to
+    the plugin repository.
 
 ## Out of scope (v1)
 
@@ -232,14 +241,13 @@ child session testing whether ShipIt's own issue-tracker support could have
 been built as a shared tool (analysis on planning#355). All findings were
 resolved by the user on 2026-08-11 — see Resolved questions. The **plugin**
 naming was decided by the user on 2026-08-11; earlier rounds used "tools",
-and quoted historical material below keeps that vocabulary.
+and quoted historical material below keeps that vocabulary. The req 16
+startup override and requirement 25 (feedback channel) come from the user's
+doc review of 2026-08-12.
 
 ## Open questions
 
-- **Plugin feedback channel.** How does the agent (or the user) in a project
-  session report a bug or a limitation in a plugin, given that the plugin
-  checkout is read-only (req 7)? V1 candidate: file an issue on the plugin's
-  own repository from within the session.
+(None.)
 
 ## Resolved questions
 
@@ -337,3 +345,9 @@ and quoted historical material below keeps that vocabulary.
   directly by the user: a plugin declares whether its services start
   automatically, and the consuming repository can override it. → req 16
   amended.
+- **2026-08-12 — Plugin feedback channel** (doc review; brainstormed).
+  Answer: **an issue on the plugin's own repository**, filed from within the
+  project session over the same brokered path as declared issue trackers,
+  optionally carrying a repro and a proposed diff in the body. Proposal PRs
+  from project sessions were considered and rejected for v1 (they would
+  relax req 7). → req 25.
