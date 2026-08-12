@@ -124,7 +124,7 @@ export function MessageList({
   );
   const messages = deferred.messages;
 
-  const { containerRef, currentMatchRef } = useMessageScroll(messages, isLoading, currentMatch);
+  const { containerRef, contentRef, currentMatchRef } = useMessageScroll(messages, isLoading, currentMatch);
 
   const voicePlaybackEnabled = useSettingsStore((s) => s.voicePlaybackEnabled);
   // docs/178 — transient "Compacting…" indicator (emit-only; not persisted).
@@ -262,7 +262,18 @@ export function MessageList({
     <ShipitPointerSessionProvider value={deferred.sessionId ?? null}>
     <div
       ref={containerRef}
-      className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-2 [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_5rem]"
+      className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4"
+    >
+    {/* The messages live in their own element rather than directly in the
+        scroll container, so that one ResizeObserver on it reports every change
+        in the transcript's height — the scroll container's own box never
+        changes when its content grows. `useMessageScroll` uses that to stay
+        pinned to the bottom while a message paints; see the hook. The spacing
+        and content-visibility utilities move with the messages, so the elements
+        they apply to are unchanged. */}
+    <div
+      ref={contentRef}
+      className="space-y-3 sm:space-y-2 [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_5rem]"
     >
       {/* planning#12 — floating "Reply" button shown when the user highlights text
           inside a message bubble; quotes the passage into the composer. Scoped
@@ -526,6 +537,7 @@ export function MessageList({
         ))}
 
       {!isLoading && messages.length > 0 && renderRewindPoint(messages.length, true)}
+    </div>
     </div>
     </ShipitPointerSessionProvider>
   );

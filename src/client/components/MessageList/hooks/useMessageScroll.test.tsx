@@ -17,21 +17,63 @@ function flushFrame(): void {
   });
 }
 
+// jsdom has no ResizeObserver and no layout, so the observations the hook relies
+// on are driven by hand: `growContent()` plays the part of the browser reporting
+// that the transcript got taller.
+let observers: { cb: ResizeObserverCallback; targets: Element[] }[] = [];
+let observedTargets: Element[] = [];
+
+// Only an observer actually watching the content element hears about it growing —
+// so a hook that watched only the scroll container gets no callback here, and the
+// tests below fail rather than passing on a notification it would never receive.
+function growContent(): void {
+  const content = document.querySelector('[data-testid="content"]');
+  act(() => {
+    for (const o of observers) {
+      if (content && o.targets.includes(content)) o.cb([], {} as ResizeObserver);
+    }
+  });
+}
+
 function user(text: string): ChatMessage {
   return { role: "user", text };
 }
 
 function Harness({ messages }: { messages: ChatMessage[] }) {
-  const { containerRef } = useMessageScroll(messages, false, undefined);
-  return <div ref={containerRef} data-testid="scroller" />;
+  const { containerRef, contentRef } = useMessageScroll(messages, false, undefined);
+  return (
+    <div ref={containerRef} data-testid="scroller">
+      <div ref={contentRef} data-testid="content" />
+    </div>
+  );
 }
 
 beforeEach(() => {
   rafQueue = [];
+  observers = [];
+  observedTargets = [];
   vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback): number => {
     rafQueue.push(cb);
     return rafQueue.length;
   });
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      private readonly entry: { cb: ResizeObserverCallback; targets: Element[] };
+      constructor(cb: ResizeObserverCallback) {
+        this.entry = { cb, targets: [] };
+        observers.push(this.entry);
+      }
+      observe(target: Element): void {
+        this.entry.targets.push(target);
+        observedTargets.push(target);
+      }
+      unobserve(): void {}
+      disconnect(): void {
+        this.entry.targets.length = 0;
+      }
+    },
+  );
   // Pin time so the settle loop terminates on height-stability, not the safety cap.
   vi.spyOn(performance, "now").mockReturnValue(0);
 });
@@ -77,8 +119,19 @@ describe("useMessageScroll", () => {
     expect(rafQueue.length).toBe(0);
   });
 
-  it("keeps settling through the scroll event its own pin fires after a tall child paints", () => {
-    let height = 100;
+  it("watches the element holding the messages, not only the scroll container", () => {
+    const view = render(<Harness messages={[]} />);
+    // The scroll container's own box never changes when the transcript grows, so
+    // watching it alone cannot see a message paint its real height.
+    expect(observedTargets).toContain(view.getByTestId("content"));
+  });
+
+  it("re-pins when the transcript grows after the settle loop has given up", () => {
+    // The loop stops once the height holds steady for a few frames — which an
+    // 80px `content-visibility` placeholder does before it paints, and which any
+    // card that expands asynchronously does long after. The height is stable
+    // here throughout the loop, so the growth lands with nothing else watching.
+    let height = 300;
     let scrollTop = 0;
 
     const view = render(<Harness messages={[]} />);
@@ -93,34 +146,65 @@ describe("useMessageScroll", () => {
       },
     });
 
-    // Send: the layout effect pins to the bottom of the placeholder height.
     act(() => {
       view.rerender(<Harness messages={[user("a very long message")]} />);
     });
-    expect(scrollTop).toBe(100);
+    for (let i = 0; i < 6; i++) flushFrame();
+    expect(rafQueue.length).toBe(0); // the loop has given up
+    expect(scrollTop).toBe(300); // stranded at the placeholder's bottom
 
-    // The message paints its real height, then the browser delivers the scroll
-    // event for OUR pin — a frame late, so it reports the pre-growth offset and
-    // looks like the user jumped far from the bottom. Mistaking that for a user
-    // scroll cancels the settle loop and strands the view partway.
-    act(() => {
-      height = 2000;
-      div.dispatchEvent(new Event("scroll"));
-    });
-
-    flushFrame();
-    flushFrame();
-    flushFrame();
-    flushFrame();
+    height = 2000;
+    growContent();
 
     expect(scrollTop).toBe(2000);
   });
 
-  it("honours a plain scroll event again once the settle loop has finished", () => {
+  it("does not mistake the position its own re-pin corrected for the user scrolling away", () => {
+    // The observation lands in the same rendering update as the growth, so the
+    // scroll event that growth produces is delivered afterwards and reports the
+    // corrected position. Verified in a real browser: without the correction the
+    // event reports a position ~700px above the new bottom, and reading that as
+    // a user scroll is what stranded the view.
+    let height = 300;
+    let scrollTop = 0;
+
+    const view = render(<Harness messages={[]} />);
+    const div = view.getByTestId("scroller");
+    Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
+    Object.defineProperty(div, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (v: number) => {
+        scrollTop = v;
+      },
+    });
+
+    act(() => {
+      view.rerender(<Harness messages={[user("a very long message")]} />);
+    });
+    for (let i = 0; i < 6; i++) flushFrame();
+
+    height = 2000;
+    growContent();
+    act(() => {
+      div.dispatchEvent(new Event("scroll"));
+    });
+
+    // Auto-follow survived, so the next message still pins.
+    act(() => {
+      height = 2500;
+      view.rerender(<Harness messages={[user("a very long message"), { role: "assistant", text: "reply" }]} />);
+    });
+
+    expect(scrollTop).toBe(2500);
+  });
+
+  it("leaves growing content alone once the user has scrolled away", () => {
     let height = 2000;
     let scrollTop = 0;
 
-    const view = render(<Harness messages={[]} />);
+    const view = render(<Harness messages={[{ role: "assistant", text: "hi" }]} />);
     const div = view.getByTestId("scroller");
     Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => height });
     Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
@@ -133,62 +217,13 @@ describe("useMessageScroll", () => {
     });
 
     act(() => {
-      view.rerender(<Harness messages={[user("hello")]} />);
-    });
-    // Let the height settle, which ends the window in which scroll events are ours.
-    for (let i = 0; i < 6; i++) flushFrame();
-    expect(scrollTop).toBe(2000);
-
-    // A scrollbar drag or Page Up — no wheel, no touch — must still pause
-    // auto-follow, or ignoring our own events would leave it stuck on forever.
-    act(() => {
-      scrollTop = 0;
-      div.dispatchEvent(new Event("scroll"));
+      div.dispatchEvent(new Event("scroll")); // scrolled to the top, far from the bottom
     });
 
-    act(() => {
-      height = 2500;
-      view.rerender(<Harness messages={[user("hello"), { role: "assistant", text: "reply" }]} />);
-    });
-    flushFrame();
+    height = 2600; // a card further down expands
+    growContent();
 
     expect(scrollTop).toBe(0);
-  });
-
-  it("hands control back to the scroll handler as soon as a gesture stops the settle loop", () => {
-    const height = 2000;
-    let scrollTop = 0;
-
-    const view = render(<Harness messages={[]} />);
-    const div = view.getByTestId("scroller");
-    Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => height });
-    Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
-    Object.defineProperty(div, "scrollTop", {
-      configurable: true,
-      get: () => scrollTop,
-      set: (v: number) => {
-        scrollTop = v;
-      },
-    });
-
-    // Send, then wheel away mid-settle: the scroll events the gesture produces
-    // must register as the user's, not be swallowed as the loop's own.
-    act(() => {
-      view.rerender(<Harness messages={[user("hello")]} />);
-    });
-    act(() => {
-      div.dispatchEvent(new Event("wheel"));
-      scrollTop = 500;
-      div.dispatchEvent(new Event("scroll"));
-    });
-
-    // Streaming continues: the view stays where the user put it.
-    act(() => {
-      view.rerender(<Harness messages={[user("hello"), { role: "assistant", text: "reply" }]} />);
-    });
-    flushFrame();
-
-    expect(scrollTop).toBe(500);
   });
 
   it("stops the in-flight settle loop the instant the user wheels — even within the near-bottom band", () => {
@@ -243,14 +278,9 @@ describe("useMessageScroll", () => {
       },
     });
 
-    // Let the mount's settle loop finish first — while it runs, scroll events are
-    // its own and are ignored by design (see the settle-window tests above).
-    for (let i = 0; i < 6; i++) flushFrame();
-
     // Simulate the user scrolling up: dispatch a scroll event so the hook records
     // that we are no longer near the bottom.
     act(() => {
-      scrollTop = 0;
       div.dispatchEvent(new Event("scroll"));
     });
 

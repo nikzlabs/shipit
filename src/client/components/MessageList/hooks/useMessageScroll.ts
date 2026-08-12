@@ -31,28 +31,14 @@ function now(): number {
  * keep correcting until `scrollHeight` has been unchanged for a few frames
  * (bounded by a safety cap so streaming never loops forever).
  */
-function scheduleScrollToBottom(
-  container: HTMLElement,
-  shouldContinue: () => boolean,
-  onSettled: () => void,
-): () => void {
+function scheduleScrollToBottom(container: HTMLElement, shouldContinue: () => boolean): () => void {
   let cancelled = false;
   let lastHeight = -1;
   let stableFrames = 0;
   const start = now();
 
-  const stop = () => {
-    if (cancelled) return;
-    cancelled = true;
-    onSettled();
-  };
-
   const tick = () => {
-    if (cancelled) return;
-    if (!shouldContinue()) {
-      stop();
-      return;
-    }
+    if (cancelled || !shouldContinue()) return;
     scrollToBottom(container);
 
     const height = container.scrollHeight;
@@ -65,22 +51,22 @@ function scheduleScrollToBottom(
 
     if (stableFrames < STABLE_FRAMES && now() - start < MAX_SCROLL_SETTLE_MS) {
       window.requestAnimationFrame(tick);
-    } else {
-      // Settled: report it so the caller stops treating scroll events as ours.
-      stop();
     }
   };
 
   window.requestAnimationFrame(tick);
 
-  return stop;
+  return () => {
+    cancelled = true;
+  };
 }
 
 /**
  * Scroll behavior for the message transcript: keep the conversation pinned to
  * the bottom while the user is near it, anchor on a newly-appended user message,
- * and scroll the current search match into view. Returns the container ref (for
- * the scroll element) and the current-match ref (handed to `HighlightedText` so
+ * and scroll the current search match into view. Returns the container ref (the
+ * scroll element), the content ref (the element wrapping the messages, whose
+ * height is watched) and the current-match ref (handed to `HighlightedText` so
  * the active match can be scrolled to).
  */
 export function useMessageScroll(
@@ -89,18 +75,17 @@ export function useMessageScroll(
   currentMatch: SearchMatch | undefined,
 ): {
   containerRef: React.RefObject<HTMLDivElement | null>;
+  contentRef: React.RefObject<HTMLDivElement | null>;
   currentMatchRef: React.RefObject<HTMLElement | null>;
 } {
   const containerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
   const previousMessageCountRef = useRef(0);
   const currentMatchRef = useRef<HTMLElement | null>(null);
   // Canceller for the in-flight post-send settle loop, so a manual scroll can
   // halt it the instant the user takes control (see the gesture listeners below).
   const cancelSettleRef = useRef<(() => void) | null>(null);
-  // True while that loop is re-pinning the view, i.e. while every scroll event
-  // the container fires is one we caused (see `handleScroll`).
-  const settlingRef = useRef(false);
 
   // Track whether the user has scrolled away from the bottom, and let any manual
   // scroll take authoritative control — we must never fight a user's scroll.
@@ -110,20 +95,6 @@ export function useMessageScroll(
     if (!container) return;
 
     const handleScroll = () => {
-      // While the settle loop is running, every scroll event is our own doing: a
-      // programmatic pin fires one too, and it is delivered a frame later — by
-      // which time a `content-visibility: auto` child may have painted its real
-      // height, so the event reports a position far above the *new* bottom
-      // although nobody touched the scrollbar. Reading that as "the user scrolled
-      // away" cancelled the loop mid-message and stranded the view partway: the
-      // exact stranding the loop exists to correct, and worse the taller the
-      // message or card that just painted. Comparing the offset against the one
-      // we pinned is not a way out — scroll anchoring shifts the position between
-      // the write and the event, so our own echo does not report the offset we
-      // wrote. A real user scroll always comes with a gesture, and those (below)
-      // stop the loop first, which reopens this handler.
-      if (settlingRef.current) return;
-
       const near = isNearBottom(container);
       autoScrollRef.current = near;
       // Moving away from the bottom (scrollbar drag, keyboard, momentum) cancels
@@ -131,39 +102,43 @@ export function useMessageScroll(
       if (!near) cancelSettleRef.current?.();
     };
 
-    // These fire only from genuine user input — never from a programmatic
-    // `scrollTop` write — so they are an unambiguous "user took control" signal,
-    // and they cover every way a person can scroll this container: `wheel`
-    // (mouse, trackpad, momentum), `touchmove` (touch), `pointerdown` (grabbing
-    // the scrollbar), `keydown` (Page Down, arrows, Home/End, with focus inside
-    // the transcript; the composer is outside this container, so typing there
-    // does not reach us). Halt the in-flight settle loop on the very first
-    // gesture, even before it crosses the near-bottom threshold, so a manual
-    // scroll is never overridden — and so `handleScroll` starts honouring the
-    // events the gesture itself produces.
+    // `wheel`/`touchmove` fire only from genuine user input — never from a
+    // programmatic `scrollTop` write — so they are an unambiguous "user took
+    // control" signal. Halt the in-flight settle loop on the very first gesture,
+    // even before it crosses the near-bottom threshold, so a manual scroll is
+    // never overridden.
     const handleManualScroll = () => {
       cancelSettleRef.current?.();
     };
-    const MANUAL_SCROLL_EVENTS = ["wheel", "touchmove", "pointerdown", "keydown"] as const;
 
     handleScroll();
     container.addEventListener("scroll", handleScroll, { passive: true });
-    for (const type of MANUAL_SCROLL_EVENTS) {
-      container.addEventListener(type, handleManualScroll, { passive: true });
-    }
+    container.addEventListener("wheel", handleManualScroll, { passive: true });
+    container.addEventListener("touchmove", handleManualScroll, { passive: true });
 
+    // Two things move the bottom out from under us, and neither fires a scroll
+    // event: the container getting shorter (the composer growing), and the
+    // transcript getting taller. The second is the one that stranded the view —
+    // a message renders as an 80px `content-visibility` placeholder and grows
+    // when it paints, which the container's own box never reflects, so watching
+    // only the container missed it. Watching the content element catches every
+    // height change whenever it lands, including a card that expands long after
+    // the settle loop has given up. It also lands in the same rendering update
+    // as the growth, i.e. BEFORE the scroll event that growth would otherwise
+    // produce, so `handleScroll` never sees a position stranded by our own pin
+    // and never mistakes it for the user scrolling away.
     const observer = typeof ResizeObserver !== "undefined"
       ? new ResizeObserver(() => {
           if (autoScrollRef.current) scrollToBottom(container);
         })
       : null;
     observer?.observe(container);
+    if (contentRef.current) observer?.observe(contentRef.current);
 
     return () => {
       container.removeEventListener("scroll", handleScroll);
-      for (const type of MANUAL_SCROLL_EVENTS) {
-        container.removeEventListener(type, handleManualScroll);
-      }
+      container.removeEventListener("wheel", handleManualScroll);
+      container.removeEventListener("touchmove", handleManualScroll);
       observer?.disconnect();
     };
   }, []);
@@ -198,17 +173,10 @@ export function useMessageScroll(
     scrollToBottom(container);
     autoScrollRef.current = true;
 
-    settlingRef.current = true;
-    const cancel = scheduleScrollToBottom(
-      container,
-      () => {
-        const latestContainer = containerRef.current;
-        return latestContainer === container && autoScrollRef.current;
-      },
-      () => {
-        settlingRef.current = false;
-      },
-    );
+    const cancel = scheduleScrollToBottom(container, () => {
+      const latestContainer = containerRef.current;
+      return latestContainer === container && autoScrollRef.current;
+    });
     cancelSettleRef.current = cancel;
     return () => {
       cancel();
@@ -220,15 +188,9 @@ export function useMessageScroll(
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (currentMatch && currentMatchRef.current) {
-      // Jumping to a match is the user deliberately leaving the bottom, and it is
-      // the one scroll here that moves the view without a gesture — so say so
-      // outright rather than leaving `handleScroll` to infer it, which it cannot
-      // do while the settle loop owns the scroll events.
-      cancelSettleRef.current?.();
-      autoScrollRef.current = false;
       currentMatchRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [currentMatch]);
 
-  return { containerRef, currentMatchRef };
+  return { containerRef, contentRef, currentMatchRef };
 }
