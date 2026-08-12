@@ -1064,16 +1064,29 @@ describe("ProviderAccountManager", () => {
         expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: b } });
       });
 
-      // Conservative, and cheap: a demotion only orders an account last, and
-      // every tier is still tried (req 5).
-      it("treats an unparseable reset time as not expired", () => {
+      // A demotion is not "tried last": `clear[0]` wins outright, so a demoted
+      // account is never reached at all while any account is clear. A reading
+      // with no usable reset time therefore demotes FOREVER — the same trap in
+      // a rarer form, which is why an unusable timestamp is not evidence
+      // either. Being wrong costs one refused attempt (req 5).
+      it("treats an unusable reset time as no evidence, for the cutoff tier", () => {
         const { a, b } = twoReadyAccounts();
         const mgr = mgrWith({
           [a]: { session: { usedPct: 95, resetAt: "not-a-date" } },
           [b]: { session: win(10) },
         });
 
-        expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: b } });
+        expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
+      });
+
+      it("treats an unusable reset time as no evidence, for the spent tier too", () => {
+        const { a, b } = twoReadyAccounts();
+        const mgr = mgrWith({
+          [a]: { session: { usedPct: 100, resetAt: "" } },
+          [b]: { session: win(10) },
+        });
+
+        expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
       });
     });
 
@@ -1375,6 +1388,27 @@ describe("ProviderAccountManager", () => {
         expect(store.getCredentialRoute(healthy.id)?.exhaustedUntil).toBeNull();
         // A still-100% reading clears nothing; that account stays blocked.
         expect(store.getCredentialRoute(spent.id)?.exhaustedUntil).not.toBeNull();
+      });
+
+      // A refresh merges per-window: a newer snapshot can advance `fetchedAt`
+      // and still carry one window the provider did not re-report. If that
+      // window has since rolled over, its 100% is about a period that ended and
+      // must not hold the refusal open against the reading the user just asked
+      // for (req 9's "user upgrades their plan and presses refresh").
+      it("a rolled-over 100% window does not hold the refusal open", () => {
+        const { healthy, exhaustedAt } = setupBenchedPair();
+        const quota = withLimits(root, store, {
+          [healthy.id]: {
+            ...windows(exhaustedAt + 1),
+            weekly: { usedPct: 100, resetAt: new Date(Date.now() - 60_000).toISOString() },
+          },
+        });
+
+        expect(quota.selectAccountForTurn("anthropic")).toEqual({
+          ok: true,
+          route: { kind: "account", id: healthy.id },
+        });
+        expect(store.getCredentialRoute(healthy.id)?.exhaustedUntil).toBeNull();
       });
 
       it("a null usedPct counts as HEALTHY — below the warning threshold, not unknown-bad", () => {

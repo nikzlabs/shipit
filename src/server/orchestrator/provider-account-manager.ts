@@ -19,6 +19,7 @@ import {
   nativeServiceForHarness,
 } from "../shared/catalogue/index.js";
 import { credentialModeKey, orderCredentialRoutes, refusalBlockedUntil } from "../shared/types/domain-types/credential-route.js";
+import { subscriptionWindowIsCurrent } from "../shared/types/usage-limits-types.js";
 import { probeNestedString } from "./agents/agent-auth-base.js";
 
 /**
@@ -1026,8 +1027,13 @@ export class ProviderAccountManager {
     if (!snapshot || typeof snapshot.fetchedAt !== "number" || !Number.isFinite(snapshot.fetchedAt)) return false;
     const observedAt = typeof account.exhaustedAt === "number" ? account.exhaustedAt : 0;
     if (snapshot.fetchedAt <= observedAt) return false;
+    const now = Date.now();
     for (const key of ["session", "weekly"] as const) {
-      const window = snapshot[key] as { usedPct?: unknown } | null | undefined;
+      const window = snapshot[key] as { usedPct?: unknown; resetAt?: unknown } | null | undefined;
+      // A newer snapshot can still carry one window the provider did not
+      // re-report; if that window has since rolled over, its 100% must not
+      // hold the refusal open against the reading the user just asked for.
+      if (!subscriptionWindowIsCurrent(window, now)) continue;
       if (typeof window?.usedPct === "number" && window.usedPct >= 100) return false;
     }
     this.credentialStore.upsertCredentialRoute({ ...account, exhaustedUntil: null, exhaustedAt: null });
@@ -1419,10 +1425,13 @@ function snapshotExhaustedResetAt(
     const window = limits?.[key] as { usedPct: number | null; resetAt: string } | null | undefined;
     if (window === null || window === undefined) continue;
     if (window.usedPct === null || window.usedPct < 100) continue;
-    const at = Date.parse(window.resetAt);
-    // An exhausted window whose reset already passed is stale, not spent.
-    if (Number.isNaN(at)) resets.push(Number.POSITIVE_INFINITY);
-    else if (at > now) resets.push(at);
+    // A spent window that no longer describes now is stale, not spent — and an
+    // unusable `resetAt` is the worse half of that: it never expires, so it
+    // parked the account in the last tier for the life of the snapshot with no
+    // clock to end it. Both are "not evidence"; the harness's own refusal is
+    // what may bench an account (req 5).
+    if (!subscriptionWindowIsCurrent(window, now)) continue;
+    resets.push(Date.parse(window.resetAt));
   }
   if (resets.length === 0) return null;
   return Math.min(...resets);
@@ -1444,31 +1453,6 @@ function readClaudeAccessToken(file: string): string | null {
 
 
 /**
- * Has this window's period already ended?
- *
- * A percentage describes the window it was measured in. Once `resetAt` passes,
- * that window is gone and its number is a fact about a period that no longer
- * exists — so it must not keep answering questions about the current one.
- *
- * This matters because snapshots are **event-fed only** (`limits-registry.ts`:
- * no polling, by design — Anthropic's usage API locks out on a handful of
- * calls). A snapshot refreshes when a turn runs on that account, or when the
- * user presses the refresh button. An account nothing routes to therefore
- * cannot produce the reading that would make it routable again, which is the
- * self-blocking shape docs/260 removed from the hard blocks; the same shape
- * survived in the cutoff tier until this check existed.
- *
- * An unparseable `resetAt` reads as "not expired": it is the conservative
- * answer, and it is cheap, because a demotion only orders an account last —
- * every tier is still tried (req 5).
- */
-function windowHasReset(window: { resetAt?: unknown } | null | undefined, now: number): boolean {
-  if (typeof window?.resetAt !== "string") return false;
-  const at = Date.parse(window.resetAt);
-  return !Number.isNaN(at) && at <= now;
-}
-
-/**
  * docs/150 reqs 4–6 — has this account crossed either proactive cutoff?
  *
  * Separate from {@link exhaustedUntil} on purpose: that answers "can this
@@ -1481,12 +1465,12 @@ function windowHasReset(window: { resetAt?: unknown } | null | undefined, now: n
  * reason: Claude reports `usedPct` only above a warning threshold, so treating
  * silence as "past 90%" would demote every healthy account.
  *
- * An **expired** window is not over its cutoff either (docs/260 req 8). The
- * exhaustion check has always ignored a spent window whose reset has passed;
- * this one did not, so an account that hit its 5h limit stayed demoted after
- * that limit reset — permanently, under strict priority, because the demotion
- * is exactly what kept turns off the account whose turns are the only source
- * of a fresher reading. The primary could never be routed back to.
+ * A window that no longer describes now (`subscriptionWindowIsCurrent`) is not
+ * over its cutoff either (docs/260 req 8). Without that rule an account that
+ * hit its 5h limit stayed demoted after the limit reset — permanently, under
+ * strict priority, because the demotion is exactly what kept turns off the
+ * account whose turns are the only source of a fresher reading, and a demoted
+ * account is never reached at all while any account is clear.
  */
 function isOverCutoff(
   limits: { session?: unknown; weekly?: unknown } | undefined,
@@ -1496,7 +1480,7 @@ function isOverCutoff(
   for (const [key, cutoff] of [["session", cutoffs.session], ["weekly", cutoffs.weekly]] as const) {
     const window = limits?.[key] as { usedPct: number | null; resetAt?: unknown } | null | undefined;
     if (window?.usedPct === null || window?.usedPct === undefined) continue;
-    if (windowHasReset(window, now)) continue;
+    if (!subscriptionWindowIsCurrent(window, now)) continue;
     if (window.usedPct >= cutoff) return true;
   }
   return false;
