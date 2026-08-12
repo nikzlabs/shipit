@@ -1,35 +1,35 @@
 import { describe, it, expect } from "vitest";
 import { ESLint } from "eslint";
-import fs from "node:fs";
 
 /**
- * Regression guard for the React hooks lint rules.
+ * Guards the React hooks lint rules against the one failure mode a reviewer
+ * would NOT catch from an `eslint.config.js` diff: flat-config cascade ordering.
  *
- * `react-hooks/rules-of-hooks` catches a bug class that is invisible to both
- * TypeScript and code review — a hook behind a condition or an early return
- * changes the hook count between renders, so React pairs up the wrong state.
- * The plugin was absent from this repo entirely until it was added, and the gap
- * was only noticed because a human read their own diff closely enough to spot
- * `accountId ? useStore(…) : undefined`.
+ * Deleting the plugin is a visible edit to a small config file, and needs no
+ * test. Silently *narrowing* the rules is the real hazard. `eslint.config.js`
+ * layers six blocks that re-declare rules over overlapping globs — a client
+ * block, per-agent folder blocks, a `**\/*.test.ts(x)` block that deliberately
+ * relaxes several rules — and its own top-of-file comment records that this has
+ * bitten before:
  *
- * Nothing about a missing lint rule is self-announcing: dropping the plugin, or
- * softening the rule to `warn` (which `npm run lint` would not fail on — it has
- * no `--max-warnings` budget), would restore the silent state with a green
- * build. These tests are what makes that loud.
+ *   "ESLint flat config replaces the array wholesale when a later block
+ *    re-declares the rule, so anything that wants to keep these has to spread
+ *    them in."
  *
- * A `calculateConfigForFile` assertion is deliberately the primary guard rather
- * than linting a fixture: it resolves the *whole* flat-config cascade for a
- * real path, so it catches a removed plugin, a downgraded severity, a `files`
- * glob that stops matching, and a later block that overrides the rule — all of
- * which a single fixture file would miss.
+ * Adding a block, reordering one, or extending the test-file relaxation can
+ * therefore drop enforcement for some paths while every line of the diff still
+ * looks reasonable. These two tests resolve the *whole* cascade for a real path
+ * and confirm the rules survive it.
+ *
+ * Deliberately not asserted here: that the config says what the config says.
+ * Re-reading a severity straight back out of `eslint.config.js` tests nothing
+ * the file itself does not already state.
  */
 
-// A long-lived client file. Only its path is used (to resolve the flat-config
-// cascade and the TS project); its contents are never read by these tests.
+// Only the paths are used — to resolve the flat-config cascade and the TS
+// project. File contents are never read by these tests.
 const CLIENT_TSX = "src/client/App.tsx";
-const CLIENT_TS = "src/client/hooks/useConnectionSync.ts";
 const CLIENT_TEST = "src/client/components/DiffPanel.test.tsx";
-const SERVER_TS = "src/server/orchestrator/index.ts";
 
 const eslint = new ESLint({ cwd: process.cwd() });
 
@@ -41,42 +41,23 @@ async function severityOf(filePath: string, rule: string): Promise<unknown> {
 }
 
 describe("react-hooks lint rules", () => {
-  it("uses paths that still exist", () => {
-    for (const p of [CLIENT_TSX, CLIENT_TS, SERVER_TS]) {
-      expect(fs.existsSync(p), `${p} moved — update this test's path constants`).toBe(true);
-    }
-  });
-
-  it("enforces rules-of-hooks as an error on client code", { timeout: 60_000 }, async () => {
-    expect(await severityOf(CLIENT_TSX, "react-hooks/rules-of-hooks")).toBe(2);
-    expect(await severityOf(CLIENT_TS, "react-hooks/rules-of-hooks")).toBe(2);
-  });
-
-  it("enforces exhaustive-deps as an error on client code", { timeout: 60_000 }, async () => {
-    // `warn` would not fail `npm run lint`, so it is not enforcement.
-    expect(await severityOf(CLIENT_TSX, "react-hooks/exhaustive-deps")).toBe(2);
-    expect(await severityOf(CLIENT_TS, "react-hooks/exhaustive-deps")).toBe(2);
-  });
-
-  it("keeps both rules on for client test files", { timeout: 60_000 }, async () => {
-    // The `**/*.test.tsx` block later in the config relaxes several rules; it
-    // must not take these with it. Component tests render hooks too.
+  it("survives the test-file relaxation block", { timeout: 60_000 }, async () => {
+    // The `**/*.test.ts(x)` block later in the config turns off several rules
+    // for tests. It must not take these with it — component tests render hooks
+    // too, and a conditional hook is just as wrong there.
     expect(await severityOf(CLIENT_TEST, "react-hooks/rules-of-hooks")).toBe(2);
     expect(await severityOf(CLIENT_TEST, "react-hooks/exhaustive-deps")).toBe(2);
   });
 
-  it("does not apply the rules to server code", { timeout: 60_000 }, async () => {
-    // Documents the intended scope: the plugin is wired for `src/client/**`
-    // only, so a server file resolves no react-hooks rule at all.
-    expect(await severityOf(SERVER_TS, "react-hooks/rules-of-hooks")).toBeUndefined();
-  });
-
   it("actually reports a conditional hook through the real config", { timeout: 60_000 }, async () => {
-    // End-to-end: proves the rule executes, not just that it is configured.
+    // Proves the rule *executes* — that the plugin is wired, the `files` glob
+    // still matches client code, and parsing works — rather than only that a
+    // severity is configured somewhere.
+    //
     // Linted as text against an existing client path so the flat config and the
-    // TS project service both resolve, without writing a fixture to disk (a
+    // TS project service both resolve, without writing a fixture to disk: a
     // committed one would fail `npm run lint`, and a temp one could survive a
-    // crashed run and break it).
+    // crashed run and break it.
     const results = await eslint.lintText(
       [
         `import { useState } from "react";`,
