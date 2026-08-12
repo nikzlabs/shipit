@@ -49,6 +49,13 @@ export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
   // --- Agent API endpoints (Codex / OpenAI) ---
   ".openai.com", // api.openai.com, auth.openai.com
   ".chatgpt.com", // chatgpt.com (Codex subscription auth)
+  // --- Catalogue provider API endpoints ---
+  // Exact hosts preserve the default-deny boundary: these services need their
+  // inference endpoint, not arbitrary sibling subdomains.
+  "api.deepseek.com",
+  "api.z.ai",
+  "openrouter.ai",
+  "ai-gateway.vercel.sh",
 
   // --- Git host ---
   // ShipIt only authenticates against GitHub today (see docs/172 Gap 2). The
@@ -112,6 +119,11 @@ export const EGRESS_LIFELINE_ALLOWLIST: readonly string[] = [
   // --- Agent API endpoints (Codex / OpenAI) ---
   ".openai.com",
   ".chatgpt.com",
+  // --- Catalogue provider API endpoints ---
+  "api.deepseek.com",
+  "api.z.ai",
+  "openrouter.ai",
+  "ai-gateway.vercel.sh",
 ];
 
 /**
