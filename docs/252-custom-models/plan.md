@@ -3109,7 +3109,7 @@ Each one moves to the control it was already describing:
 
 | String (verbatim, from `CredentialRouting.tsx`) | Where it goes |
 |---|---|
-| "How ShipIt picks between these accounts" | The segmented control's tooltip, **and** its accessible name (`role="radiogroup"`), so it is read without hovering |
+| "How ShipIt picks between these accounts" | The segmented control's accessible name (`role="radiogroup"`) — **no tooltip**, see below |
 | "Use in order" + "New sessions start on the first account with quota left. Best when they differ — a bigger plan first, a smaller one as backup." | Tooltip on the first segment, the option's name as its first line |
 | "Spread across accounts" + "New sessions go to whichever account has been used least, so quota drains evenly. Best when they are equivalent." | Tooltip on the second segment, same shape |
 | "Start new work on the next account once an account passes these. Accounts past their cutoff are still used when no other account is below one, so nothing is stranded." | Tooltip on the two cutoff fields |
@@ -3119,11 +3119,20 @@ in a 470px row beside the cutoffs. Its full name "Spread across accounts" leads 
 so nothing is only available in the short form. `{noun}` still interpolates — "credential" on a
 string-delivered mode, "account" on an account-backed one — exactly as today.
 
+**The band title gets no tooltip, because it would have no trigger.** The first draft of this
+table gave "How ShipIt picks between these accounts" a tooltip on the group. The two segments
+fill the group's box, so every hover lands on a segment and the group's tooltip either never
+opens or fights the one that does. A tooltip needs a hoverable trigger of its own, and inventing
+one — an ⓘ beside the control — would add a pixel to save a sentence nobody asked to keep on
+screen. So the string survives only as the control's accessible name: read on focus, costing
+nothing.
+
 `WithTooltip` (Radix) rather than a `title` attribute: it opens on keyboard focus as well as
 hover, and a `title` is unreachable that way. One change to the primitive — `label` widens from
 `string` to `ReactNode`, since two of these carry a bold first line. **A test asserts each of the
-four strings is still present in the rendered band**, so a later tidy-up cannot quietly delete
-what the compaction promised to keep.
+four strings is still reachable from the rendered band** — three as tooltip content, the fourth
+as the group's accessible name — so a later tidy-up cannot quietly delete what the compaction
+promised to keep.
 
 **Ordering is drag-and-drop, and `Make primary` goes (req 21).** "Primary" was never a property.
 `isPrimary` is stamped on read from position (`orderCredentialRoutes`, `index === 0`), every

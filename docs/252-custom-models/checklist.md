@@ -269,8 +269,8 @@ landed ahead of this checklist's per-phase sections.
 - [ ] `⋯` menu: Rename / Reconnect / Disconnect (account), Rename / Replace secret / Remove (key)
 - [ ] Rename for a supplied key (the label patch endpoint already exists)
 - [ ] Drag-and-drop ordering replaces the carets, for both row types
-- [ ] Routing band: segmented control + inline cutoffs, with all four existing strings kept verbatim in `WithTooltip`s (`label` widened to `ReactNode`); the group string is also the radiogroup's accessible name
-- [ ] Guard test: each of the four band strings is still present in the rendered band
+- [ ] Routing band: segmented control + inline cutoffs, with three existing strings kept verbatim in `WithTooltip`s (`label` widened to `ReactNode`); the band title survives only as the radiogroup's accessible name — no tooltip, it would have no trigger
+- [ ] Guard test: all four band strings are still reachable — three as tooltip content, the title as the accessible name
 - [ ] Delete `Make primary`: the button, both badges, `POST …/:id/primary`, `makePrimaryProviderAccount`, `ProviderAccountManager.makePrimary`
 - [ ] Reconnect opens the **same** `AddServiceDialog` on step 3 (`initialService` + `initialMode` + an existing `signInAccountId`); delete the row's inline challenge
 - [ ] Guard test: cancelling a reconnect leaves the account connected and in the same position
