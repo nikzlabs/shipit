@@ -615,7 +615,7 @@ async function sweepOrphanSessionNetworks(
   runDocker: (args: string[]) => Promise<string>,
   paceMs: number,
 ): Promise<number> {
-  const SESSION_NETWORK_RE = /^shipit-session-([a-f0-9-]{12})/;
+  const SESSION_NETWORK_RE = /^shipit-(?:session|egress)-([a-f0-9-]{12})/;
 
   // Preserve networks for every session that still holds on-disk state, i.e.
   // anything not `evicted` (see `sweepOrphanSessionVolumes` for why `list()`

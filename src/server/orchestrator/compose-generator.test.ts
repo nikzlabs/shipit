@@ -406,7 +406,7 @@ describe("generateComposeOverride", () => {
     );
     expect(override).toContain("internal: true");
     expect(override).toContain("127.0.0.1");
-    expect(override).toContain("networks: !reset");
+    expect(override).toContain("networks: !override");
     expect(override).toContain("restart: no");
     expect(override).toContain("net.ipv4.conf.all.route_localnet: \"1\"");
 

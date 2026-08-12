@@ -501,14 +501,15 @@ export class ServicePoller {
    * so a poll landing in that gap sees no row for a service that is fine.
    *
    * A `paused` container is deliberately NOT routed here, and gets no forward
-   * branch either — it is left at whatever status it already had. Pausing is
-   * something only a human with a shell does; nothing in ShipIt pauses a
-   * service container. And neither answer we can express is true: `stopped` is
+   * branch either — it is left at whatever status it already had. ShipIt's
+   * Compose egress installer pauses services during its short fail-closed
+   * setup window and owns the transition back to running or removal. Neither
+   * answer the poller can express is true: `stopped` is
    * wrong because the process is intact and `docker unpause` resumes it
    * mid-instruction, while `running` is wrong because connections to it hang.
    * The honest status is a `paused` member of the `ServiceStatus` union, which
    * would ripple through the preview gating, the client and the agent's
-   * service registry for a state ShipIt never produces. Leaving it alone is
+   * service registry for this short internal state. Leaving it alone is
    * the cheap correct-enough answer; what matters is that it counts as a
    * conclusive row, so reconciliation cannot walk a paused service to
    * `stopped` 30 seconds later.

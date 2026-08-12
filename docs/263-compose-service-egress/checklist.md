@@ -5,3 +5,4 @@
 - [x] Update the egress design reference and agent-facing Compose documentation.
 - [x] Run targeted and affected tests, lint, and typecheck.
 - [x] Independent review completed; all nine findings were addressed (restart persistence, Tier C sysctl, intra-session subnet, reconnect idempotency, allowlist reload, Tier A-only mode, network replacement, paused recovery, and orphan cleanup).
+- [x] Second independent review completed; all ten follow-up findings were addressed, including correct Compose `!override` semantics, service-only orphan cleanup, stop/start reinstallation, legacy reload compatibility, serialized passes, and non-destructive refresh failure.

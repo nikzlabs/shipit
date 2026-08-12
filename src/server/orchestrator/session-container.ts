@@ -411,6 +411,8 @@ export const CONTAINER_BUILD_ID_LABEL = "shipit-build-id";
 export class SessionContainerManager extends EventEmitter<SessionContainerManagerEvents> {
   private docker: Docker;
   private containers = new Map<string, SessionContainer>();
+  /** Serialize service containment per session; concurrent Compose starts can overlap. */
+  private composeEgressRuns = new Map<string, Promise<void>>();
   private imageName: string;
   private networkName: string;
   private defaultMemoryLimit: number;
@@ -523,18 +525,28 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         "Compose egress containment is on but SESSION_EGRESS_SIDECAR_IMAGE is not set",
       );
     }
-    await applyComposeServiceEgress({
-      docker: this.docker,
-      sessionId,
-      sidecarImage,
-      config: { ...config, contained },
-      serviceNames,
-      dnsEnabled: egressDnsEnabled(),
-      proxyEnabled: egressProxyEnabled(),
-      labels: this.baseLabels(),
-      orchestratorHost: orchestratorCallbackHost(),
-      refresh,
-    });
+    const prior = this.composeEgressRuns.get(sessionId) ?? Promise.resolve();
+    const run = (async () => {
+      try { await prior; } catch { /* a failed predecessor must not poison the queue */ }
+      await applyComposeServiceEgress({
+        docker: this.docker,
+        sessionId,
+        sidecarImage,
+        config: { ...config, contained },
+        serviceNames,
+        dnsEnabled: egressDnsEnabled(),
+        proxyEnabled: egressProxyEnabled(),
+        labels: this.baseLabels(),
+        orchestratorHost: orchestratorCallbackHost(),
+        refresh,
+      });
+    })();
+    this.composeEgressRuns.set(sessionId, run);
+    try {
+      await run;
+    } finally {
+      if (this.composeEgressRuns.get(sessionId) === run) this.composeEgressRuns.delete(sessionId);
+    }
   }
 
   /**

@@ -95,7 +95,7 @@ describe("containComposeServices", () => {
       serviceNames: ["web"],
       dnsEnabled: true,
       proxyEnabled: true,
-    })).rejects.toThrow("iptables failed");
+    })).rejects.toThrow("egress containment failed for 1 Compose service");
 
     expect(container.unpause).not.toHaveBeenCalled();
     expect(events).toEqual(["pause", "connect", "remove", "stop"]);
@@ -146,7 +146,7 @@ describe("containComposeServices", () => {
       serviceNames: ["web"],
       dnsEnabled: true,
       proxyEnabled: true,
-    })).rejects.toThrow("left paused");
+    })).rejects.toThrow("egress containment failed for 1 Compose service");
     expect(container.remove).toHaveBeenCalledWith({ force: true });
     expect(container.unpause).not.toHaveBeenCalled();
   });
