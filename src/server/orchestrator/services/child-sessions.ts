@@ -269,9 +269,7 @@ export async function spawnChildSession(
   // model and `--agent` was omitted, route to that backend so `--model gpt-5.5`
   // alone lands on Codex instead of silently inheriting the parent's Claude.
   // When both are given, reject a cross-backend mismatch with an actionable
-  // message. An unlisted/versioned id (`modelOwner === undefined`) is passed
-  // through for forward-compat — the CLI forwards `--model` as-is, so a
-  // valid-but-newer id the picker hasn't surfaced yet must not be rejected.
+  // message.
   let agentOverride: AgentId | undefined = opts.agent;
   if (opts.model) {
     const modelOwner = agentIdForModel(opts.model);
@@ -282,6 +280,42 @@ export async function spawnChildSession(
         400,
         `Model '${opts.model}' belongs to agent '${modelOwner}', not '${agentOverride}'. ` +
           `Pass --agent ${modelOwner}, or omit --agent to derive it from the model.`,
+      );
+    }
+    // planning#359 — and an id the catalogue carries for NO harness is refused
+    // here rather than accepted and forwarded to the CLI.
+    //
+    // This block used to pass an unrecognised id straight through, on a
+    // forward-compat argument that predates the service catalogue: the CLI takes
+    // `--model` as-is, so a valid-but-newer id the picker had not surfaced yet
+    // must not be rejected. docs/252 retired the premise and nobody revisited
+    // the passthrough. Three things are now true and each is sufficient:
+    //
+    //  - **It is the only surface that accepts one.** The WS `set_model`
+    //    message, the browser seed, the session-creation route and
+    //    `shipit agent run` all gate on `selectionExists` (see
+    //    `sessions.setModelSelection`'s contract and `sub-agent-target.ts`) —
+    //    "a value quietly replaced by a working one is the same failure as a
+    //    value quietly supplied" applies equally to one quietly accepted.
+    //  - **The session cannot hold it coherently.** A bare id resolves to no
+    //    `(service, mode)`, so `setModel` nulls both: no endpoint shaping, no
+    //    credential routing, no usage attribution, no failover. The turn can
+    //    only ever reach the harness's own vendor, which is what made
+    //    `--model deepseek-v4` a session that spawned Claude Code against
+    //    Anthropic asking for a DeepSeek model.
+    //  - **req 7 says so**: the catalogue is ShipIt's, and a model it does not
+    //    yet know about takes a ShipIt change rather than a spawn flag.
+    //
+    // Checked against the harness the child will actually run on, by the same
+    // precedence `childAgentId` uses below, so the list in the message is the
+    // list that harness can speak to.
+    const childHarness: AgentId = agentOverride ?? parent.agentId ?? defaultAgentId;
+    const offered = getAgentCapabilities(childHarness)?.models ?? [];
+    if (!offered.includes(opts.model)) {
+      throw new ServiceError(
+        400,
+        `Unknown model '${opts.model}' for agent '${childHarness}'. `
+          + `Valid models: ${offered.join(", ")}.`,
       );
     }
   }

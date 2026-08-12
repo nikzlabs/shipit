@@ -29,15 +29,13 @@
  * brokered token) and the CIDRs passed to the installer.
  */
 
-/**
- * Concrete FQDNs the Tier A ipset resolves to IPs. This is the IP-floor's own
- * list, distinct from (though overlapping with) the Tier C suffix allowlist in
- * `egress-allowlist.ts`: a packet filter matches addresses, so suffix wildcards
- * like `.anthropic.com` can't be expressed here — the concrete endpoints are.
- * GitHub is intentionally absent: it is covered by `gh api meta` CIDR ranges.
- */
-export const EGRESS_TIER_A_RESOLVE_HOSTS: readonly string[] = [
-  // Agent APIs — Claude / Anthropic
+import { catalogueEndpointHosts } from "../shared/catalogue/index.js";
+
+/** The half of {@link EGRESS_TIER_A_RESOLVE_HOSTS} the catalogue cannot supply. */
+const TIER_A_HAND_LISTED_HOSTS: readonly string[] = [
+  // Agent APIs — Claude / Anthropic. The OAuth, subscription and telemetry
+  // hosts alongside the inference one: the catalogue declares only where a turn
+  // is sent, so these cannot be derived from it.
   "api.anthropic.com",
   "console.anthropic.com",
   "statsig.anthropic.com",
@@ -51,6 +49,25 @@ export const EGRESS_TIER_A_RESOLVE_HOSTS: readonly string[] = [
   "registry.yarnpkg.com",
   "pypi.org",
   "files.pythonhosted.org",
+];
+
+/**
+ * Concrete FQDNs the Tier A ipset resolves to IPs. This is the IP-floor's own
+ * list, distinct from (though overlapping with) the Tier C suffix allowlist in
+ * `egress-allowlist.ts`: a packet filter matches addresses, so suffix wildcards
+ * like `.anthropic.com` can't be expressed here — the concrete endpoints are.
+ * GitHub is intentionally absent: it is covered by `gh api meta` CIDR ranges.
+ */
+export const EGRESS_TIER_A_RESOLVE_HOSTS: readonly string[] = [
+  ...TIER_A_HAND_LISTED_HOSTS,
+  // planning#359 — every service the catalogue can route a turn to, derived for
+  // the same reason the Tier B/C list derives them: docs/252 shipped four
+  // non-first-party services into the picker with none of their hosts opened,
+  // so a DeepSeek session's every turn died on a connection error. Catalogue
+  // endpoints are already concrete FQDNs, which is exactly the shape this tier
+  // needs — the two lists agree on the hosts and differ only in what each tier
+  // can express (this one cannot hold a suffix at all).
+  ...catalogueEndpointHosts().filter((host) => !TIER_A_HAND_LISTED_HOSTS.includes(host)),
 ];
 
 /**

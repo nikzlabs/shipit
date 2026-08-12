@@ -20,6 +20,7 @@ import {
   sandboxLifelineBase,
   sandboxLifelineEgressConfig,
 } from "./egress-allowlist.js";
+import { catalogueEndpointHosts } from "../shared/catalogue/index.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { McpServerConfig, OAuthTokens } from "../shared/types/mcp-types.js";
 import type { SessionInfo } from "../shared/types.js";
@@ -218,6 +219,69 @@ describe("buildEgressAllowlist", () => {
     for (const e of EGRESS_DEFAULT_ALLOWLIST) {
       expect(normalizeHost(e)).toBe(e); // already normalized in source
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// planning#359 — a catalogue service cannot ship without network access
+// ---------------------------------------------------------------------------
+
+describe("service-catalogue API hosts", () => {
+  const catalogueHosts = catalogueEndpointHosts();
+
+  it("has a host for every service the catalogue can route a turn to", () => {
+    // Guards the derivation itself: an empty list would make every assertion
+    // below vacuously true.
+    expect(catalogueHosts.length).toBeGreaterThan(0);
+    expect(catalogueHosts).toContain("api.deepseek.com");
+  });
+
+  it("every catalogue endpoint host is reachable in an ordinary session", () => {
+    // The reported failure: docs/252 shipped DeepSeek, GLM, OpenRouter and
+    // Vercel into the picker while the allowlist still named only Anthropic and
+    // OpenAI, so `--model deepseek-v4-pro` produced a session whose every turn
+    // died on a REFUSED DNS query ("Unable to connect to API"). Deriving the
+    // hosts is the fix; this is what stops the next service row regressing it.
+    const allowed = makeAllowlist(EGRESS_DEFAULT_ALLOWLIST);
+    for (const host of catalogueHosts) {
+      expect(allowed.isAllowed(host), `${host} is not on the default allowlist`).toBe(true);
+    }
+  });
+
+  it("every catalogue endpoint host is reachable in a Network-off sandbox", () => {
+    // A session's own inference API is its lifeline whichever service it runs
+    // on, so the lifeline slice must not be narrower than the catalogue either.
+    const lifeline = makeAllowlist(EGRESS_LIFELINE_ALLOWLIST);
+    for (const host of catalogueHosts) {
+      expect(lifeline.isAllowed(host), `${host} is not on the lifeline`).toBe(true);
+    }
+  });
+
+  it("opens provider hosts EXACTLY — no derived wildcard", () => {
+    // The security boundary this list exists for: a suffix entry is a per-entry
+    // judgement (".anthropic.com" covers OAuth and telemetry subdomains), and a
+    // derived one would never have been judged by anybody. So a catalogue host
+    // that no hand-written entry already covers must appear as its own exact
+    // hostname — `api.deepseek.com`, never `.deepseek.com`.
+    const handWritten = [".anthropic.com", ".claude.ai", ".openai.com", ".chatgpt.com"];
+    for (const host of catalogueHosts) {
+      if (handWritten.some((e) => hostMatchesEntry(host, e))) continue;
+      expect(EGRESS_DEFAULT_ALLOWLIST).toContain(host);
+      expect(EGRESS_DEFAULT_ALLOWLIST).not.toContain(`.${host}`);
+      // …and the exact entry really is exact: a sibling subdomain stays closed.
+      expect(makeAllowlist([host]).isAllowed(`evil.${host}`)).toBe(false);
+    }
+  });
+
+  it("keeps the lifeline a strict subset of the default list", () => {
+    // The lifeline is now the first term of the default list rather than a
+    // hand-kept copy of it, which is what makes the two impossible to diverge.
+    for (const entry of EGRESS_LIFELINE_ALLOWLIST) {
+      expect(EGRESS_DEFAULT_ALLOWLIST).toContain(entry);
+    }
+    // Still lifeline-ONLY: registries and the git host are not in it.
+    expect(EGRESS_LIFELINE_ALLOWLIST).not.toContain(".npmjs.org");
+    expect(EGRESS_LIFELINE_ALLOWLIST).not.toContain(".github.com");
   });
 });
 

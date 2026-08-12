@@ -136,6 +136,44 @@ export function resolveStyle(harnessId: AgentId, model: ModelDef): ApiStyle | un
   return harness.styles.find((style) => model.styles.includes(style));
 }
 
+/**
+ * Every distinct API **host** the catalogue points a turn at, in catalogue
+ * order — one entry per hostname, however many services, modes and styles share
+ * it.
+ *
+ * planning#359 — this exists because a catalogue row is only half of what makes
+ * a service reachable: a session container's egress is default-deny
+ * (`egress-allowlist.ts`, `egress-firewall.ts`), so a service whose host nothing
+ * opened resolves to a REFUSED DNS query and the harness reports a connection
+ * failure rather than anything about the model. Both egress tiers derive their
+ * provider hosts from here, so adding a service row opens its host in the same
+ * edit — the alternative was three hand-kept lists that had already drifted,
+ * which is the same class of drift the catalogue removed for labels and context
+ * windows.
+ *
+ * Hostname only, so the caller gets the **exact** host and never a suffix: the
+ * allowlists' security posture is that a wildcard is justified per entry, and a
+ * derived one would never have been.
+ *
+ * Throws on an endpoint that is not a parseable URL. Deliberately loud — the
+ * rows are authored source with a test over them (`catalogue.test.ts`), so a
+ * malformed endpoint is a build-time mistake and not a runtime condition to fall
+ * back from.
+ */
+export function catalogueEndpointHosts(): string[] {
+  const out: string[] = [];
+  for (const service of SERVICES) {
+    for (const mode of service.modes) {
+      for (const url of Object.values(mode.endpoints)) {
+        if (!url) continue;
+        const host = new URL(url).hostname.toLowerCase();
+        if (host && !out.includes(host)) out.push(host);
+      }
+    }
+  }
+  return out;
+}
+
 /** The endpoint a turn on this selection and harness would be sent to. */
 export function resolveEndpoint(harnessId: AgentId, selection: ModelSelection): string | undefined {
   const mode = getMode(selection.serviceId, selection.billingMode);

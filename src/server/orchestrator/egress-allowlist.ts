@@ -26,10 +26,75 @@
 import type { CredentialStore } from "./credential-store.js";
 import type { EgressAllowlistEntry, EgressAllowlistSource, SessionInfo } from "../shared/types.js";
 import { getMcpOAuthProvider } from "./mcp-oauth-providers.js";
+import { catalogueEndpointHosts } from "../shared/catalogue/index.js";
 
 // ---------------------------------------------------------------------------
 // Default base allowlist — the hosts every session legitimately needs
 // ---------------------------------------------------------------------------
+
+/**
+ * The two first-party vendors' API and auth hosts, which predate the service
+ * catalogue and are **not** derivable from it: the catalogue declares only the
+ * inference endpoint, while a CLI also talks to its vendor's OAuth, subscription
+ * and telemetry hosts. That is what these suffix entries buy and why they stay
+ * hand-written; every other provider host comes from
+ * {@link CATALOGUE_API_HOSTS}.
+ */
+const FIRST_PARTY_AGENT_HOSTS: readonly string[] = [
+  // --- Agent API endpoints (Claude / Anthropic) ---
+  ".anthropic.com", // api.anthropic.com (inference), console.anthropic.com (OAuth), statsig.anthropic.com
+  ".claude.ai", // claude.ai OAuth / subscription endpoints
+  "platform.claude.com", // Claude Code subscription authentication; exact host keeps other claude.com services closed
+  // --- Agent API endpoints (Codex / OpenAI) ---
+  ".openai.com", // api.openai.com, auth.openai.com
+  ".chatgpt.com", // chatgpt.com (Codex subscription auth)
+];
+
+/**
+ * planning#359 — every service-catalogue API host the entries above do not
+ * already cover: `api.deepseek.com`, `api.z.ai`, `openrouter.ai`,
+ * `ai-gateway.vercel.sh` today.
+ *
+ * **Derived, never hand-listed.** docs/252 shipped four non-first-party services
+ * into the picker without opening any of their hosts, so selecting DeepSeek V4
+ * Pro produced a session whose every turn died on a REFUSED DNS query — the
+ * agent reporting "Unable to connect to API", which reads as a provider outage
+ * and is ShipIt's own containment. A hand-kept second list would have gone stale
+ * again at the next service row; deriving makes "ship a service" and "open its
+ * host" one edit, and a test asserts the two can never diverge.
+ *
+ * **Exact hosts, deliberately.** {@link catalogueEndpointHosts} returns
+ * hostnames, so nothing here can become a wildcard: a suffix entry is a
+ * per-entry security judgement (see the ones above), and a derived one would
+ * never have been made by anybody.
+ */
+const CATALOGUE_API_HOSTS: readonly string[] = catalogueEndpointHosts().filter(
+  (host) => !FIRST_PARTY_AGENT_HOSTS.some((entry) => hostMatchesEntry(host, entry)),
+);
+
+/**
+ * docs/211 — the **lifeline** allowlist: the irreducible hosts a contained
+ * agent must reach for the loop to function at all — its inference/auth API.
+ * Used when a sandbox session's `network` capability is OFF: egress is dropped
+ * to this set (plus the ShipIt orchestrator/worker, which the resolver/proxy add
+ * separately via {@link orchestratorInternalNames}, and plus GitHub when the
+ * `git` capability is granted — see {@link EGRESS_GITHUB_LIFELINE_HOSTS}).
+ *
+ * This is the LLM-API slice of {@link EGRESS_DEFAULT_ALLOWLIST} — registries and
+ * the git host are deliberately excluded ("no internet, lifeline only"). Cutting
+ * these hosts would kill the agent, so "off" is lifeline-only, never a literal
+ * air-gap.
+ *
+ * planning#359 — the slice is now the *first term of* the default list rather
+ * than a hand-kept copy of its first five entries, which is what let a service
+ * be reachable in an ordinary session and unreachable in a Network-off sandbox.
+ * Whichever service a session runs on IS its lifeline, so every catalogue host
+ * belongs here for the same reason Anthropic's and OpenAI's always did.
+ */
+export const EGRESS_LIFELINE_ALLOWLIST: readonly string[] = [
+  ...FIRST_PARTY_AGENT_HOSTS,
+  ...CATALOGUE_API_HOSTS,
+];
 
 /**
  * The always-on base allowlist. Grouped by purpose so it's obvious why each
@@ -42,13 +107,8 @@ import { getMcpOAuthProvider } from "./mcp-oauth-providers.js";
  * credential store (see `mcpHostsFromCredentialStore`).
  */
 export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
-  // --- Agent API endpoints (Claude / Anthropic) ---
-  ".anthropic.com", // api.anthropic.com (inference), console.anthropic.com (OAuth), statsig.anthropic.com
-  ".claude.ai", // claude.ai OAuth / subscription endpoints
-  "platform.claude.com", // Claude Code subscription authentication; exact host keeps other claude.com services closed
-  // --- Agent API endpoints (Codex / OpenAI) ---
-  ".openai.com", // api.openai.com, auth.openai.com
-  ".chatgpt.com", // chatgpt.com (Codex subscription auth)
+  // --- Agent API endpoints (every service the catalogue can route a turn to) ---
+  ...EGRESS_LIFELINE_ALLOWLIST,
 
   // --- Git host ---
   // ShipIt only authenticates against GitHub today (see docs/172 Gap 2). The
@@ -89,29 +149,6 @@ export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
   ".maven.apache.org", // repo.maven.apache.org — Maven Central (Gradle's mavenCentral() default)
   ".maven.org", // repo1.maven.org — Maven Central canonical / CDN alias
   ".sonatype.org", // oss.sonatype.org, s01.oss.sonatype.org — common snapshot + transitive source
-];
-
-/**
- * docs/211 — the **lifeline** allowlist: the irreducible hosts a contained
- * agent must reach for the loop to function at all — its inference/auth API.
- * Used when a sandbox session's `network` capability is OFF: egress is dropped
- * to this set (plus the ShipIt orchestrator/worker, which the resolver/proxy add
- * separately via {@link orchestratorInternalNames}, and plus GitHub when the
- * `git` capability is granted — see {@link EGRESS_GITHUB_LIFELINE_HOSTS}).
- *
- * This is the LLM-API slice of {@link EGRESS_DEFAULT_ALLOWLIST} — registries and
- * the git host are deliberately excluded ("no internet, lifeline only"). Cutting
- * these hosts would kill the agent, so "off" is lifeline-only, never a literal
- * air-gap.
- */
-export const EGRESS_LIFELINE_ALLOWLIST: readonly string[] = [
-  // --- Agent API endpoints (Claude / Anthropic) ---
-  ".anthropic.com",
-  ".claude.ai",
-  "platform.claude.com",
-  // --- Agent API endpoints (Codex / OpenAI) ---
-  ".openai.com",
-  ".chatgpt.com",
 ];
 
 /**

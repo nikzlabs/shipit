@@ -11,6 +11,7 @@ import {
   buildIpsetMembers,
   extractNetworkSubnets,
 } from "./egress-firewall.js";
+import { catalogueEndpointHosts } from "../shared/catalogue/index.js";
 
 describe("isValidIp", () => {
   it("accepts well-formed IPv4", () => {
@@ -166,5 +167,23 @@ describe("EGRESS_TIER_A_RESOLVE_HOSTS", () => {
       expect(h.startsWith(".")).toBe(false); // concrete, not a suffix entry
       expect(h).not.toContain("github"); // GitHub comes from gh api meta CIDRs
     }
+  });
+
+  it("resolves every service-catalogue API host (planning#359)", () => {
+    // The IP floor is the un-bypassable tier: a host Tier B/C allow but this set
+    // omits is still dropped by the packet filter unless the resolve-and-pin
+    // path happens to have run for it. Derived from the same catalogue the
+    // allowlist derives from, so the two tiers cannot disagree about which
+    // providers exist.
+    const catalogueHosts = catalogueEndpointHosts();
+    expect(catalogueHosts.length).toBeGreaterThan(0);
+    for (const host of catalogueHosts) {
+      expect(EGRESS_TIER_A_RESOLVE_HOSTS, `${host} is not resolved into the Tier A ipset`)
+        .toContain(host);
+    }
+  });
+
+  it("names each host once — the derived half does not duplicate the hand-listed one", () => {
+    expect(new Set(EGRESS_TIER_A_RESOLVE_HOSTS).size).toBe(EGRESS_TIER_A_RESOLVE_HOSTS.length);
   });
 });

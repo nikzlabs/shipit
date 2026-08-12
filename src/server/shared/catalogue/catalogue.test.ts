@@ -13,6 +13,7 @@ import {
   HARNESSES,
   allHarnesses,
   allServices,
+  catalogueEndpointHosts,
   catalogueEntriesForHarness,
   catalogueContextWindows,
   catalogueModelLabels,
@@ -121,6 +122,38 @@ describe("a model's declared styles are reachable", () => {
   it("every model declares at least one style", () => {
     for (const { service, mode, model } of everyRow()) {
       expect(model.styles.length, `${service.id}/${mode.kind}/${model.id}`).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("endpoints are well-formed, and their hosts are derivable", () => {
+  // planning#359 — the session container's egress is default-deny and both
+  // tiers derive their provider hosts from these endpoints
+  // (`catalogueEndpointHosts`), so a row whose URL cannot be parsed would not
+  // merely be unshaped: it would throw where the allowlist is built. Loud here
+  // instead.
+  it("every endpoint is an absolute https URL with a host", () => {
+    for (const service of SERVICES) {
+      for (const mode of service.modes) {
+        for (const [style, url] of Object.entries(mode.endpoints)) {
+          const where = `${service.id}/${mode.kind}/${style}`;
+          const parsed = new URL(url as string);
+          expect(parsed.protocol, where).toBe("https:");
+          expect(parsed.hostname, where).toBeTruthy();
+        }
+      }
+    }
+  });
+
+  it("catalogueEndpointHosts covers every declared endpoint, de-duplicated", () => {
+    const hosts = catalogueEndpointHosts();
+    expect(new Set(hosts).size).toBe(hosts.length);
+    for (const service of SERVICES) {
+      for (const mode of service.modes) {
+        for (const url of Object.values(mode.endpoints)) {
+          expect(hosts).toContain(new URL(url as string).hostname);
+        }
+      }
     }
   });
 });
