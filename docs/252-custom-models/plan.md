@@ -3000,18 +3000,22 @@ as *working*.
 - `ChallengePlaceholder` takes a `shape`, because the box it stands in for differs: a code to
   read (98px) or a field to paste into (84px). One placeholder could only be right for one of
   them.
-- `ClaudeAuthOutput` puts the CLI's last three lines under it, uncollapsed, plus the phase
-  message the server already emits ("Waiting for Claude CLI to print an authentication link").
-  It renders in the wait, in the challenge and in the *stalled* state — the failure copy says
-  "copy the diagnostic details", and these are them — so the stream is continuous rather than
-  appearing and disappearing with each state.
+- **The narration goes IN that box**, via `status` and `line`: ShipIt's phase message where
+  the link will be ("Waiting for Claude CLI to print an authentication link"), the CLI's own
+  latest line where the field will be, a pulse for the rest. One panel holds everything
+  transient about the sign-in. The rejected cut streamed three lines *below* the box, which
+  put the same output on screen twice — live there, and again inside the buffer the challenge
+  already carried — and the human called it on sight from a screenshot.
+- **`ClaudeAuthOutput` is therefore what it always was: the whole buffer, collapsed.** It is
+  the record you open when something went wrong, and it renders in the wait as well as in the
+  challenge and the failure — one control that stays put, rather than appearing with the field
+  and pushing everything under it down.
 - **The output is a terminal, not a log**, which is what `authLogTail` is for. One entry can
   be a whole screen redraw; the spinner emits a line per frame; `claude_control` entries are a
   byte counter rather than words. Unfiltered and wrapped, that moved the dialog between 466
   and 648px while the user was reading it. Now: entries split into lines, redraw-only lines
-  and repeats dropped, each line clipped to one row, and the block a fixed three rows whether
-  it holds three or none. Measured live, the whole Anthropic flow — start, wait, challenge —
-  holds one height, 486px.
+  and repeats dropped, and only the newest survivor is shown — in a slot of fixed height.
+  Measured live, the whole Anthropic flow — start, wait, challenge — holds one height (419px).
 - A known artifact, left alone deliberately: some lines read `Esctocancel`. The CLI positions
   each word with a cursor move and the **server** strips those before the client sees them
   (`auth-diagnostics.ts:64`), so the spacing is already gone on arrival. Restoring it means

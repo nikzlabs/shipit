@@ -287,8 +287,10 @@ describe("ServicesPanel", () => {
     it("shows what the Claude CLI is saying while the wizard runs", async () => {
       // Anthropic's sign-in is a wizard ShipIt drives, not a code handed over,
       // so the wait before the paste field can run for a while — and a pulse
-      // alone reads as stuck rather than as working. The CLI is talking the
-      // whole time, so the last lines of it are on screen, uncollapsed.
+      // alone reads as stuck rather than as working. What the CLI is saying
+      // goes IN the box the field will occupy: everything transient about the
+      // sign-in in one panel, and the full buffer stays one collapsed control
+      // rather than a second live copy of the same lines.
       const account = {
         id: "acct-anthropic-1",
         serviceId: "anthropic", billingMode: "sub", via: "account",
@@ -307,27 +309,35 @@ describe("ServicesPanel", () => {
       await userEvent.click(screen.getByTestId("add-service-sign-in"));
       await waitFor(() => expect(logins()).toBe(1));
 
-      // The placeholder is shaped for the box Anthropic actually shows — a
-      // field to paste into, not a code to read.
+      // Nothing known yet: the box is the shape of the one Anthropic shows — a
+      // field to paste into, not a code to read — and says nothing.
       const placeholder = await screen.findByTestId("add-service-signin-starting");
       expect(placeholder.textContent).toBe("");
 
-      for (const message of ["Launching the Claude CLI.", "Opening the browser.", "Waiting for you to approve.", "Still waiting."]) {
+      useSettingsStore.getState().setClaudeAuthProgress("acct-anthropic-1", {
+        attemptId: "attempt-1",
+        phase: "waiting_for_url",
+        message: "Waiting for Claude CLI to print an authentication link.",
+      });
+      for (const message of ["Launching the Claude CLI.", "Still waiting."]) {
         useSettingsStore.getState().appendClaudeAuthLog("acct-anthropic-1", {
           attemptId: "attempt-1", timestamp: "2026-08-11T00:00:00.000Z",
           level: "info", source: "claude_stdout", message,
         });
       }
 
-      // The last three lines, in the panel, with the first one behind the
-      // disclosure rather than gone.
-      const tail = await screen.findByTestId("provider-account-output-tail-acct-anthropic-1");
-      expect(tail).toHaveTextContent("Still waiting.");
-      expect(tail).not.toHaveTextContent("Launching the Claude CLI.");
-      expect(screen.getByTestId("provider-account-diagnostics-acct-anthropic-1")).toHaveTextContent("Claude CLI output (4)");
+      // Both of them inside the box: the phase where the link will be, the
+      // CLI's own latest line where the field will be.
+      await waitFor(() => expect(screen.getByTestId("add-service-signin-starting"))
+        .toHaveTextContent("Waiting for Claude CLI to print an authentication link."));
+      expect(screen.getByTestId("add-service-signin-starting-line")).toHaveTextContent("Still waiting.");
+      // And nowhere else: the buffer is ONE control, and it is closed. An
+      // always-on tail beside it put the same lines on screen twice.
+      const buffer = screen.getByTestId("provider-account-diagnostics-acct-anthropic-1");
+      expect(buffer).toHaveTextContent("Claude CLI output (2)");
+      expect(buffer).not.toHaveAttribute("open");
 
-      // And it stays when the paste field arrives — one continuous stream
-      // across that boundary, not something that appears with the challenge.
+      // The box becomes the real thing, and the buffer is there to open.
       useSettingsStore.getState().setProviderAccountAuth("claude", "acct-anthropic-1", {
         provider: "claude", accountId: "acct-anthropic-1",
         verificationUri: "https://claude.ai/oauth/authorize",
@@ -335,7 +345,11 @@ describe("ServicesPanel", () => {
       await waitFor(() => expect(
         screen.getByTestId("provider-account-challenge-acct-anthropic-1"),
       ).toBeInTheDocument());
-      expect(screen.getByTestId("provider-account-output-tail-acct-anthropic-1")).toHaveTextContent("Still waiting.");
+      expect(screen.queryByTestId("add-service-signin-starting")).not.toBeInTheDocument();
+      // Still one, still closed — it does not appear from nowhere with the
+      // field and push everything under it down.
+      expect(screen.getByTestId("provider-account-diagnostics-acct-anthropic-1"))
+        .toHaveTextContent("Claude CLI output (2)");
     });
 
     it("leaves a mode that also takes a key alone — there the sign-in is a choice", async () => {

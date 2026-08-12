@@ -76,6 +76,7 @@ import {
   AccountChallenge,
   ChallengePlaceholder,
   ClaudeAuthOutput,
+  useAuthProgressLine,
   ProviderAccountRows,
   abandonAccount,
   cancelAccountLogin,
@@ -843,6 +844,10 @@ function AddServiceDialog({
   const authKey = signInProvider && signInAccountId
     ? providerAccountAuthKey(signInProvider, signInAccountId)
     : undefined;
+  /** Only Claude narrates; for Codex this is empty and the box just pulses. */
+  const authProgress = useAuthProgressLine(
+    signInProvider === "claude" ? signInAccountId : undefined,
+  );
   const pendingAuth = useSettingsStore((s) => (authKey ? s.providerAccountAuths[authKey] : undefined));
   const authError = useSettingsStore((s) => (authKey ? s.providerAccountAuthErrors[authKey] : undefined));
   const signInStalled = !!signInAccount && !signedIn && !pendingAuth && !startingSignIn
@@ -1079,22 +1084,28 @@ function AddServiceDialog({
                         a line of prose and then grew by the height of a panel,
                         which is the jump this placeholder exists to remove.
                       */
+                      /*
+                        **What the sign-in is doing goes IN the box**, not in a
+                        block under it: ShipIt's phase message where the link
+                        will be, the CLI's latest line where the field will be,
+                        and a pulse for the rest. Anthropic's wizard runs about
+                        six seconds and narrates the whole way, and a pulse
+                        alone reads as stuck. An earlier cut streamed three
+                        lines *below* the box, which put the same output on
+                        screen twice — live there, and again inside the
+                        collapsed buffer the challenge already carries.
+                      */
                       <ChallengePlaceholder
                         shape={signInProvider === "claude" ? "paste" : "code"}
+                        {...authProgress}
                         testId="add-service-signin-starting"
                       />
                     )}
-                    {/*
-                      **What the CLI is saying, while it says it.** Anthropic's
-                      sign-in is a wizard ShipIt drives, so the wait before the
-                      paste field can run for a while — and a pulse alone reads
-                      as stuck rather than as working. Outside the challenge
-                      too, deliberately: the wait is exactly when the user has
-                      nothing else to look at. `AccountChallenge` renders the
-                      same component once the field is up, so the output is
-                      continuous across that boundary rather than appearing with
-                      it.
-                    */}
+                    {/* The buffer, collapsed — the same control `AccountChallenge`
+                        carries a moment later, rendered here so it does not
+                        appear from nowhere and move everything under it when the
+                        field arrives. Collapsed is the whole point: the live
+                        line is in the box above, and this is the record. */}
                     {signInProvider === "claude" && signInAccountId && !pendingAuth && (
                       <ClaudeAuthOutput accountId={signInAccountId} />
                     )}

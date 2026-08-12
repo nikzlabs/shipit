@@ -301,7 +301,7 @@ const PULSE = "animate-pulse rounded bg-(--color-bg-secondary)";
 
 /**
  * The challenge box before the provider's code has arrived: **the same box, at
- * the same size**, with the lines it is about to hold drawn as a pulse.
+ * the same size**, holding whatever is known so far and pulsing for the rest.
  *
  * It shares `CHALLENGE_BOX` with the real thing rather than approximating it,
  * because the whole job here is that nothing moves when the code lands — a
@@ -309,18 +309,36 @@ const PULSE = "animate-pulse rounded bg-(--color-bg-secondary)";
  * same reason it takes the `shape`: the two providers put different things in
  * that box (OpenAI a code to read, Anthropic a field to paste into), so one
  * placeholder can only be right for one of them.
+ *
+ * **`status` and `line` are what stop it reading as stuck.** A pulse says
+ * "something is loading"; it does not say the thing is still going. Anthropic's
+ * wizard runs about six seconds and narrates the whole way, so the narration
+ * goes *here*, in the box the paste field is about to occupy — one place for
+ * everything transient about the sign-in, rather than a second block of live
+ * text underneath it.
  */
 export function ChallengePlaceholder({
   shape,
+  status,
+  line,
   testId,
 }: {
   shape: "code" | "paste";
+  /** Where the sign-in has got to, in ShipIt's words. Takes the link's slot. */
+  status?: string;
+  /** The provider tool's own latest line. Takes the input's slot. */
+  line?: string;
   testId?: string;
 }) {
   return (
     <div className={CHALLENGE_BOX} data-testid={testId} aria-busy="true">
-      {/* `h-4`, not `h-5`: the link above is inline, so its line box is 16px. */}
-      <div className={`h-4 w-52 ${PULSE}`} />
+      {/* `h-4` / `text-xs`: the link above is inline, so its line box is 16px,
+          and the stand-in has to be the same or the box changes height. */}
+      {status ? (
+        <p className="truncate text-xs leading-4 text-(--color-text-secondary)">{status}</p>
+      ) : (
+        <div className={`h-4 w-52 ${PULSE}`} />
+      )}
       {shape === "code" ? (
         <div>
           <div className={`h-4 w-40 ${PULSE}`} />
@@ -329,15 +347,24 @@ export function ChallengePlaceholder({
       ) : (
         // The paste row: a field and its Submit, both at their real heights.
         <div className="flex gap-2">
-          <div className={`h-[34px] min-w-0 flex-1 ${PULSE}`} />
+          {line ? (
+            <div
+              className="flex h-[34px] min-w-0 flex-1 items-center overflow-hidden rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2"
+              data-testid={testId ? `${testId}-line` : undefined}
+            >
+              <span className="truncate font-mono text-[10px] text-(--color-text-tertiary)">
+                {line}
+              </span>
+            </div>
+          ) : (
+            <div className={`h-[34px] min-w-0 flex-1 ${PULSE}`} />
+          )}
           <div className={`h-[34px] w-28 ${PULSE}`} />
         </div>
       )}
     </div>
   );
 }
-
-const AUTH_TAIL_LINES = 3;
 
 /** Terminal escape sequences: colours, cursor moves, OSC titles, charset picks. */
 const ANSI = new RegExp(
@@ -384,68 +411,54 @@ export function authLogTail(
 }
 
 /**
- * **What the Claude CLI is saying, while it says it.**
+ * **Where a sign-in has got to, for the box that is waiting on it** — ShipIt's
+ * own phase message, and the provider tool's latest readable line.
  *
- * Anthropic's sign-in is a wizard ShipIt drives rather than a code the provider
- * hands over, so between pressing *Sign in* and the paste field appearing there
- * is a stretch with nothing to look at — and a pulse alone reads as *stuck*
- * rather than as *working*. The CLI is talking the whole time, so this shows
- * it: the last few lines in the panel, uncollapsed, with the full buffer behind
- * a disclosure for when something has actually gone wrong.
+ * Returned as data rather than rendered, because it belongs *inside*
+ * {@link ChallengePlaceholder} and not in a block of its own: the transient
+ * part of a sign-in is one panel, not two things stacked.
+ */
+export function useAuthProgressLine(accountId: string | undefined): {
+  status?: string;
+  line?: string;
+} {
+  const all = useSettingsStore((s) => s.claudeAuthDiagnostics);
+  const diagnostics = (accountId ? all[accountId] : undefined) ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
+  const line = authLogTail(diagnostics.entries, 1)[0];
+  return {
+    ...(diagnostics.message ? { status: diagnostics.message } : {}),
+    ...(line ? { line } : {}),
+  };
+}
+
+/**
+ * **The whole sign-in buffer, one collapsed control** (docs/150).
  *
- * Claude only. Codex's device flow produces no such stream, and has a code on
- * screen within a moment anyway.
+ * Collapsed, and the only place the output is spelled out: an always-on tail
+ * beside it put the same lines on screen twice — once live under the box, once
+ * inside this — which is what it looked like in use, and why it is gone. The
+ * live line lives in the box now ({@link ChallengePlaceholder}); this is the
+ * record you open when something went wrong.
+ *
+ * Claude only. Codex's device flow produces no such stream.
  */
 export function ClaudeAuthOutput({ accountId }: { accountId: string }) {
   const diagnostics = useSettingsStore((s) => s.claudeAuthDiagnostics)[accountId]
     ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
   const { entries } = diagnostics;
-  if (entries.length === 0 && !diagnostics.message) return null;
+  if (entries.length === 0) return null;
 
-  const tail = authLogTail(entries, AUTH_TAIL_LINES);
   return (
-    <div className="space-y-1" data-testid={`provider-account-output-${accountId}`}>
-      {diagnostics.message && (
-        <p className="truncate text-[11px] text-(--color-text-secondary)">{diagnostics.message}</p>
-      )}
-      {/*
-        **A fixed three rows, whatever arrives.** The CLI is driving a terminal,
-        so one log entry can be a screen redraw: measured live, letting it wrap
-        moved the dialog between 466 and 648px while the user was reading it.
-        Each line gets one row and is clipped; the block is the height of three
-        rows whether it holds three or one.
-      */}
-      <div
-        className="h-[42px] overflow-hidden"
-        data-testid={`provider-account-output-tail-${accountId}`}
-      >
-        {tail.map((line, index) => (
-          <div
-            key={`${index}:${line}`}
-            className="truncate font-mono text-[10px] leading-[14px] text-(--color-text-tertiary)"
-          >
-            {line}
-          </div>
-        ))}
-      </div>
-      {/* docs/150 — the whole buffer stays reachable for the sign-in that goes
-          wrong; it is the tail above that is new, and always on. Rendered from
-          the first entry rather than once there are more than fit above,
-          because a disclosure that appears part-way through moves everything
-          under it at the moment the user is reading. */}
-      {entries.length > 0 && (
-        <details className="group" data-testid={`provider-account-diagnostics-${accountId}`}>
-          <summary className="cursor-pointer select-none text-xs text-(--color-text-link) transition-colors hover:text-(--color-accent)">
-            Claude CLI output ({entries.length})
-          </summary>
-          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) p-2 font-mono text-[var(--font-size-code)] text-(--color-text-secondary)">
-            {entries.map((entry) =>
-              `${entry.timestamp} ${entry.level.toUpperCase()} ${entry.source}: ${entry.message}`,
-            ).join("\n")}
-          </pre>
-        </details>
-      )}
-    </div>
+    <details className="group" data-testid={`provider-account-diagnostics-${accountId}`}>
+      <summary className="cursor-pointer select-none text-xs text-(--color-text-link) transition-colors hover:text-(--color-accent)">
+        Claude CLI output ({entries.length})
+      </summary>
+      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) p-2 font-mono text-[var(--font-size-code)] text-(--color-text-secondary)">
+        {entries.map((entry) =>
+          `${entry.timestamp} ${entry.level.toUpperCase()} ${entry.source}: ${entry.message}`,
+        ).join("\n")}
+      </pre>
+    </details>
   );
 }
 

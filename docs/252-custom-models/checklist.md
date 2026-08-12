@@ -254,8 +254,9 @@ landed ahead of this checklist's per-phase sections.
       restart a live login.
 - [x] **The Anthropic wait shows the Claude CLI's own output** (req 18 follow-up). Its sign-in
       is a wizard, not a code hand-over, so the wait runs ~6s and a pulse alone read as stuck.
-      `ClaudeAuthOutput` shows the phase message and the last three readable lines — in the
-      wait, the challenge and the failure — and `authLogTail` makes a terminal stream readable
-      (redraw lines, spinner frames, repeats and `claude_control` dropped, one row per line).
-      `ChallengePlaceholder` takes the `shape` of the box it stands in for. The whole flow
-      holds one height, measured live.
+      The phase message and the CLI's latest line render INSIDE the placeholder box — one
+      panel for everything transient — while `ClaudeAuthOutput` stays what it was, the whole
+      buffer collapsed, present from the wait so it does not shift the layout when the field
+      arrives. `authLogTail` makes a terminal stream readable (redraw lines, spinner frames,
+      repeats and `claude_control` dropped). `ChallengePlaceholder` takes the `shape` of the
+      box it stands in for. The whole flow holds one height, measured live.
