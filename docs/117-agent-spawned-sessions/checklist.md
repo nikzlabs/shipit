@@ -75,6 +75,17 @@ disk work, derive backend from model, and surface the resolved agent/model on
 - [x] `shipit-docs/sessions.md` — documents model-as-source-of-truth derivation, fail-fast validation, and the new `view` fields.
 - [x] Tests: shim view rendering (`shipit.test.ts`); spawn validation, model→agent derivation, and `view` agent/model exposure (`agent-spawned-session.test.ts`).
 
+## Resolved-pair validation (planning#304) (DONE)
+
+The cross-backend guard now validates the *resolved* `(harness, model)` pair
+the child is pinned to, not only the flags the caller passed — on both halves
+of the inheritance rule.
+
+- [x] `shared/agent-registry.ts` — new `harnessOffersModel` / `anyHarnessOffersModel` membership helpers over the catalogue model lists (membership, not `agentIdForModel`'s single owner).
+- [x] `services/child-sessions.ts` — explicit `--agent X --model M` refused when M is known and X does not offer it; a bare `--model M` switches harness only when the parent's own cannot run M (and names the parent's harness otherwise, keeping the install gate in force); the install gate runs on the resolved child harness.
+- [x] `services/child-sessions.ts` — an inherited model the child's harness cannot run is dropped along with its `serviceId`/`billingMode` (keep the harness, drop the model — the WS-connect self-heal); an id no harness lists passes through unchanged.
+- [x] Regression tests (non-vacuity verified by neutering each guard): the inherited-drop case in `agent-spawned-session.test.ts`; the no-switch install-gate case in `child-sessions-harness-gate.test.ts`; the membership helpers in `agent-registry.test.ts`.
+
 ## Phase 4 — Cross-repo spawns *(OPTIONAL — DEFERRED)*
 
 Per-account setting that allows `--repo <owner/name>` on

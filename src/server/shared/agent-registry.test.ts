@@ -7,7 +7,14 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentRegistry, ALLOWED_ENV_KEYS, isAllowedAgentEnvKey, getAgentCapabilities } from "./agent-registry.js";
+import {
+  AgentRegistry,
+  ALLOWED_ENV_KEYS,
+  anyHarnessOffersModel,
+  isAllowedAgentEnvKey,
+  getAgentCapabilities,
+  harnessOffersModel,
+} from "./agent-registry.js";
 
 const ORIGINAL_OPENAI_KEY = process.env.OPENAI_API_KEY;
 
@@ -207,5 +214,29 @@ describe("isAllowedAgentEnvKey (docs/088)", () => {
     expect(isAllowedAgentEnvKey("RANDOM_SECRET")).toBe(false);
     expect(isAllowedAgentEnvKey("mcp_linear_KEY")).toBe(false);
     expect(isAllowedAgentEnvKey("MCP__linear__KEY")).toBe(false);
+  });
+});
+
+describe("harnessOffersModel / anyHarnessOffersModel (planning#304)", () => {
+  it("answers membership per harness — never 'the first owner'", () => {
+    // gpt-5.5 is Codex-only today; claude-opus-5 is Claude-only.
+    expect(harnessOffersModel("codex", "gpt-5.5")).toBe(true);
+    expect(harnessOffersModel("claude", "gpt-5.5")).toBe(false);
+    expect(harnessOffersModel("claude", "claude-opus-5")).toBe(true);
+    expect(harnessOffersModel("codex", "claude-opus-5")).toBe(false);
+    // The membership form is what survives a shared id: whatever the owner
+    // test answers, "does THIS harness list it" is the question the spawn
+    // boundary must ask.
+    expect(anyHarnessOffersModel("gpt-5.5")).toBe(true);
+    expect(anyHarnessOffersModel("claude-opus-5")).toBe(true);
+  });
+
+  it("an id no harness lists is unknown, not cross-backend", () => {
+    // A retired id (gpt-5.6) or a versioned slug the picker has not surfaced:
+    // "offered by nobody" is the distinct third state the spawn boundary keys
+    // its drop/reject logic off, so forward-compat ids pass through untouched.
+    expect(anyHarnessOffersModel("gpt-5.6")).toBe(false);
+    expect(anyHarnessOffersModel("some-future-model-2026")).toBe(false);
+    expect(harnessOffersModel("claude", "gpt-5.6")).toBe(false);
   });
 });

@@ -1057,6 +1057,32 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect((same.json() as { session: { model?: string } }).session.model).toBe("claude-opus-4-7");
   });
 
+  it("drops an inherited model the child's harness cannot run (planning#304)", { timeout: 15_000 }, async () => {
+    // The guard on the RESOLVED pair, not just the flags the caller passed.
+    // The parent's row names a model its own harness does not offer — a stale
+    // pin, written here directly the way a writer bug or a legacy row would
+    // leave it — and the child inherits it because no flag changes the harness.
+    // The spawn must not write that pair: the model (and the service/mode that
+    // only mean something next to it) is dropped, so the child starts on its
+    // own harness's default — rather than carrying a model its first turn
+    // cannot run, and rather than failing the spawn over a row the caller did
+    // not create.
+    const parentId = await createParentSession();
+    sessionManager.setModel(parentId, "gpt-5.5"); // a Codex-only model on a Claude parent
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Stale parent" },
+    });
+    expect(res.statusCode).toBe(200);
+    const child = sessionManager.get((res.json() as { sessionId: string }).sessionId);
+    expect(child?.agentId).toBe("claude");
+    expect(child?.model).toBeUndefined();
+    expect(child?.serviceId).toBeUndefined();
+    expect(child?.billingMode).toBeUndefined();
+  });
+
   it("POST /spawn rejects an unknown agent id with 400", { timeout: 15_000 }, async () => {
     const parentId = await createParentSession();
     const res = await app.inject({

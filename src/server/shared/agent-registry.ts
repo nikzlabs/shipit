@@ -190,6 +190,35 @@ export function agentIdForModel(model: string | undefined): AgentId | undefined 
 }
 
 /**
+ * Whether `harness`'s catalogue list offers `model` — "can this CLI speak to
+ * it", asked of the full catalogue join, not this install's credential-filtered
+ * eligible set.
+ *
+ * The spawn boundary asks this of the RESOLVED (child harness, model) pair so
+ * both halves of the selection rule — an explicit `--agent`/`--model` and an
+ * inherited parent selection — are validated by one question (planning#304).
+ * Deliberately **membership**, not {@link agentIdForModel}'s single "owner":
+ * ownership is not unique (the catalogue anticipates two harnesses offering the
+ * same id), and the owner answer is whichever sorts first, so an owner test
+ * would erase a valid selection the day a second harness lists the same id.
+ */
+export function harnessOffersModel(harness: AgentId, model: string): boolean {
+  return getAgentCapabilities(harness)?.models.includes(model) ?? false;
+}
+
+/**
+ * Whether ANY harness's catalogue list offers `model`. The companion to
+ * {@link harnessOffersModel}: a model no harness lists at all is an id the
+ * picker has not surfaced (a versioned slug, a retired id), and is passed
+ * through for forward-compat — so a boundary that refuses a cross-backend
+ * mismatch must refuse only when the model is known to belong to some other
+ * backend, never when it belongs to none.
+ */
+export function anyHarnessOffersModel(model: string): boolean {
+  return KNOWN_AGENT_IDS.some((h) => harnessOffersModel(h, model));
+}
+
+/**
  * Static capability lookup keyed by agent id, independent of runtime detection.
  *
  * `AgentRegistry.get(id)` only returns an entry after `detect()` has probed
